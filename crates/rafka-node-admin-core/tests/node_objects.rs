@@ -844,6 +844,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
             mesh: "mesh1".into(),
             kind: NodeKind::RpcNode,
             otel_debug: false,
+            tags: Default::default(),
         };
         // The put reaches the node's mesh-primary only with what its request carries: a body that
         // changes a field RDM owns is refused here, and one that changes otel_debug has no row field.

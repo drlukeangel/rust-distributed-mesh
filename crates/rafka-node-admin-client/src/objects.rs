@@ -55,14 +55,7 @@ pub struct NodeSpec {
     pub kind: NodeKind,
 }
 
-/// Which tags a `node.get` filter requires.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TagFilter {
-    /// The node holds every one of these tags.
-    All(BTreeSet<String>),
-    /// The node holds at least one of these tags.
-    Any(BTreeSet<String>),
-}
+pub use rafka_node_rpc_contract::status::TagFilter;
 
 /// What `node.get` selects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +64,7 @@ pub enum NodeSelector {
     Id(NodeId),
     /// Every node of the mesh.
     Mesh(String),
-    /// Every node whose config tags match.
+    /// Every node carrying the tag labels the filter names: all of them, or any of them (R-TG1).
     Tags(TagFilter),
 }
 
@@ -180,6 +173,9 @@ pub struct NodeMeta {
     pub kind: NodeKind,
     /// Caller-owned, copied on replace and settable by put: the node's OpenTelemetry debug level.
     pub otel_debug: bool,
+    /// Caller-owned, copied on recover and replace and settable by put: the node's tag labels
+    /// (R-TG1), a set a put replaces whole.
+    pub tags: BTreeSet<String>,
 }
 
 impl NodeMeta {
@@ -187,7 +183,7 @@ impl NodeMeta {
     /// step of recover and replace. Nothing RDM owns is copied, the name least of all: the
     /// successor's `path.name` and identity come from its own create spec.
     pub fn with_caller_owned_of(&self, predecessor: &NodeMeta) -> NodeMeta {
-        NodeMeta { otel_debug: predecessor.otel_debug, ..self.clone() }
+        NodeMeta { otel_debug: predecessor.otel_debug, tags: predecessor.tags.clone(), ..self.clone() }
     }
 
     /// `node.update`'s validation from the held record, in the documented order
@@ -339,12 +335,16 @@ impl Nodes {
     }
 
     async fn select(&self, selector: &NodeSelector) -> Result<Vec<NodeView>, CallEnd> {
+        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
         let select = match selector {
             NodeSelector::Id(id) => NodeSelect::Id(id.clone()),
             NodeSelector::Mesh(mesh) => NodeSelect::Mesh(mesh.clone()),
-            NodeSelector::Tags(_) => return Err(CallEnd::NotBackedToday { op: NodeOp::Get, why: "tags are node config, and how a tag is held in a node's config map is not documented, so no request selects by it" }),
+            // A filter no node can match is refused here, by name, and nothing is sent.
+            NodeSelector::Tags(filter) => match filter.refusal() {
+                Some(reason) => return Err(refused(&target, NodeOp::Get.name(), StatusReply::rejected_tags(&reason))),
+                None => NodeSelect::Tags(filter.clone()),
+            },
         };
-        let target = NodeTarget::CurrentPath(self.carrier.fabric_primary().clone());
         match read(&self.carrier, &target, &StatusRequest::GetNodes { select }).await? {
             StatusReply::Nodes { nodes } => Ok(nodes),
             other => Err(refused(&target, NodeOp::Get.name(), other)),
@@ -354,9 +354,10 @@ impl Nodes {
     /// `node.update`: put the full meta entity `body` over what RDM `held`, a single call to the
     /// node's mesh-primary `mesh_primary` over `route` (R13; [`crate::NodeRpc::node_update`]). The
     /// mesh-primary decides from its own held record whether the node carries traffic; the request
-    /// carries the exact birth and the name, so a body that differs from `held` in a field RDM owns
-    /// is refused here, `RejectedMetaFieldIsRdmOwned { field }`, and nothing is sent. A body that
-    /// changes `otel_debug` ends `NotBackedToday`: the node row has no field that carries it.
+    /// carries the exact birth, the name and the tags, so a body that differs from `held` in a field
+    /// RDM owns is refused here, `RejectedMetaFieldIsRdmOwned { field }`, as are tags that are not a
+    /// node's tag set, `RejectedTags`, and nothing is sent. A body that changes `otel_debug` ends
+    /// `NotBackedToday`: the node row has no field that carries it.
     pub async fn update(&self, held: &NodeMeta, body: &NodeMeta, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice) -> Result<rafka_node_rpc_contract::status::StatusReply, CallEnd> {
         // The name's traffic rule is the mesh-primary's: only the fields the request cannot carry are checked here.
         if let Err(e) = body.check_update(held, crate::Traffic::Stopped) {
@@ -365,12 +366,18 @@ impl Nodes {
             span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), field = e.field.name(), "the put changes a field RDM owns; nothing is sent"));
             return Ok(rafka_node_rpc_contract::status::StatusReply::RejectedMetaFieldIsRdmOwned { field: e.field.name().into() });
         }
+        if let Some(reason) = rafka_node_rpc_contract::status::tags_refusal(&body.tags) {
+            let span = NodeOp::Update.span();
+            span.record("outcome", "rejected-tags");
+            span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), reason = %reason, "the put's tags are not a node's tag set; nothing is sent"));
+            return Ok(rafka_node_rpc_contract::status::StatusReply::rejected_tags(&reason));
+        }
         if body.otel_debug != held.otel_debug {
             return Err(CallEnd::NotBackedToday { op: NodeOp::Update, why: "otel_debug: the node row has no field that carries it" });
         }
         let incarnation = held.incarnation.clone().ok_or_else(|| CallEnd::Indeterminate { reason: format!("{} ({}) has no known birth; node.update names an exact birth", held.name, held.node_id) })?;
         let birth = crate::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation };
-        crate::NodeRpc::new(self.carrier.client()).node_update(mesh_primary, route, &birth, &body.name, &rafka_node_rpc::CallOptions::default()).await
+        crate::NodeRpc::new(self.carrier.client()).node_update(mesh_primary, route, &birth, &body.name, &body.tags, &rafka_node_rpc::CallOptions::default()).await
     }
 
     /// `node.connections.get`: the connections the exact birth `birth` holds, under the name it
@@ -571,6 +578,7 @@ mod tests {
             mesh: "mesh1".into(),
             kind: NodeKind::RpcNode,
             otel_debug: false,
+            tags: BTreeSet::new(),
         }
     }
 
@@ -580,6 +588,7 @@ mod tests {
     fn a_put_changing_a_field_rdm_owns_is_refused_naming_the_field() {
         let held = held();
         assert_eq!(NodeMeta { otel_debug: true, ..held.clone() }.check_update(&held, Traffic::Routed), Ok(()));
+        assert_eq!(NodeMeta { tags: ["rabbit".to_string()].into(), ..held.clone() }.check_update(&held, Traffic::Routed), Ok(()), "tags are caller-owned: a put may change them whatever the traffic");
         let cases: Vec<(NodeMeta, MetaField)> = vec![
             (NodeMeta { node_id: NodeId::mint(), ..held.clone() }, MetaField::NodeId),
             (NodeMeta { incarnation: Some(IncarnationId::mint()), ..held.clone() }, MetaField::Incarnation),

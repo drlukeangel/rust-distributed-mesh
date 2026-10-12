@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 /// Serve an `UpdateNode` at the admin `me` (born `me_id`): one span holds the whole put.
 #[allow(clippy::too_many_arguments)]
 pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, client: Option<&NodeRpcClient>, moved: &crate::status_rpc::RowMoved, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, req: &StatusRequest) -> StatusReply {
-    let StatusRequest::UpdateNode { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateNode only") };
+    let StatusRequest::UpdateNode { node_id, incarnation, name, tags: _ } = req else { unreachable!("update is called for UpdateNode only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
         node = %me, node_id = %node_id, incarnation_id = %incarnation.0, from = tracing::field::Empty, to = %name,
@@ -61,7 +61,7 @@ pub(crate) fn meta_of(n: &Node) -> NodeMeta {
 }
 
 fn meta(n: &Node, name: PathName) -> NodeMeta {
-    NodeMeta { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone(), endpoint: None, transport_addr: n.transport_addr, exe: None, runtime: None, status: rafka_node_admin_client::NodeStatus::Pending, name, mesh: n.mesh.clone(), kind: n.kind, otel_debug: false }
+    NodeMeta { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone(), endpoint: None, transport_addr: n.transport_addr, exe: None, runtime: None, status: rafka_node_admin_client::NodeStatus::Pending, name, mesh: n.mesh.clone(), kind: n.kind, otel_debug: false, tags: Default::default() }
 }
 
 #[allow(clippy::too_many_arguments)]
