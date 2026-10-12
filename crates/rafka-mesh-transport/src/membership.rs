@@ -1859,10 +1859,12 @@ impl Prior {
     }
 
     /// The fence of a frame of `publisher` at `version` arriving on `side`, `after` the projection the
-    /// receiver holds once it applied.
-    fn fence(self, publisher: &PublisherId, side: Side, version: u64, after: Option<&Full>) -> Fence {
+    /// receiver holds once it applied. `publisher_left`: the receiver holds the publisher's birth
+    /// stopped or departed ([`DigestBook::publisher_left`]).
+    fn fence(self, publisher: &PublisherId, side: Side, version: u64, after: Option<&Full>, publisher_left: bool) -> Fence {
         Fence {
             publisher: publisher.to_string(),
+            publisher_left,
             channel: side.name(),
             held: self.held.map(|(p, v)| (p.to_string(), v)),
             version,
@@ -2493,7 +2495,7 @@ impl View {
                         .in_scope(|| tracing::info!("a delta applied at exactly its base version"));
                         self.learn_mesh_ids(&delta.changed);
                         let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.departed.clone());
-                        let fence = prior.fence(source_publisher, side, *topology_version, rx.held_full(mesh));
+                        let fence = prior.fence(source_publisher, side, *topology_version, rx.held_full(mesh), self.book.publisher_left(&source_publisher.incarnation).is_some());
                         let carried = self.apply_full(mesh, &full, fabric, side, &fence, source_publisher.node.split('.').next() == Some(mesh.as_str()));
                         drop(rx);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
@@ -2645,7 +2647,7 @@ impl View {
         // fabric primary as the acting primary of a mesh with no primary. Only the first hears the
         // members it publishes.
         let publishers_own = i.publisher.node.split('.').next() == Some(i.mesh.as_str());
-        let fence = prior.fence(&i.publisher, side, i.topology_version, Some(&i.full));
+        let fence = prior.fence(&i.publisher, side, i.topology_version, Some(&i.full), self.book.publisher_left(&i.publisher.incarnation).is_some());
         let carried = self.apply_full(&i.mesh, &i.full, fabric, side, &fence, publishers_own);
         let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.publisher.clone(), i.topology_version, i.full.clone()));
         // The fabric primary's clock is sampled from its own mesh's aggregate, never from one it
@@ -4146,6 +4148,12 @@ struct StopMark {
 pub(crate) struct Fence {
     /// The source's publisher (its exact birth): the version's epoch.
     publisher: String,
+    /// The receiver holds the publisher's birth stopped or departed ([`DigestBook::publisher_left`]).
+    /// A stopped birth publishes nothing (node-status-heartbeat-connections.md §A.4), so the frame
+    /// was published before that: a newer version of the epoch the receiver holds
+    /// ([`View::predecessor`]), ordered only against facts its own epoch carried. It is never the
+    /// next epoch of a stop or restart another publisher carried.
+    publisher_left: bool,
     /// Where the frame arrived.
     channel: &'static str,
     /// The source held before the frame, `(publisher, version)`, when one was held.
@@ -4607,7 +4615,8 @@ impl DigestBook {
 
     /// The restarts of `mesh` the projection frame `fence` describes moved past: this book holds the
     /// restart carried at some version of the source, this frame is newer than that version (or of the
-    /// source's next epoch), and the projection after it no longer carries the restart. Its
+    /// source's next epoch: another publisher's, unless that publisher is held stopped or departed here,
+    /// [`Fence::publisher_left`]), and the projection after it no longer carries the restart. Its
     /// mesh-primary took node.started of the birth, and the restart ends here (gossip.md:
     /// "NodeRestarting stays until node.started of the same `(node.id, incarnation)` arrives").
     /// Decided and taken under one hold, so one end is spanned whichever receive path applies it.
@@ -4619,7 +4628,7 @@ impl DigestBook {
             let moved: Vec<((String, u32, String), LifecycleOp, u64)> = in_flight
                 .iter()
                 .filter(|(k, o)| o.is_restart() && o.name.mesh == mesh && !fence.post_restarts.contains(*k))
-                .filter_map(|(k, o)| carried.get(k).filter(|(p, v)| *p != fence.publisher || fence.version > *v).map(|(_, v)| (k.clone(), o.clone(), *v)))
+                .filter_map(|(k, o)| carried.get(k).filter(|(p, v)| if *p == fence.publisher { fence.version > *v } else { !fence.publisher_left }).map(|(_, v)| (k.clone(), o.clone(), *v)))
                 .collect();
             for (k, _, _) in &moved {
                 in_flight.remove(k);
@@ -5034,7 +5043,9 @@ impl DigestBook {
     /// is newer than that version, and the projection after it no longer carries the stop; then the
     /// stop ends here (`Some(true)`, [`Self::stop_ended_in_projection`]). A refresh at the version that
     /// carried it, or a projection that never carried it here, is refused by name (`Some(false)`). A
-    /// new publisher's projection is the next epoch of the source (receivers install its full first).
+    /// new publisher's projection is the next epoch of the source (receivers install its full first),
+    /// unless its publisher is held stopped or departed here ([`Fence::publisher_left`]): published
+    /// before that, it is ordered only against the versions of its own epoch.
     /// Decided and taken under one hold of the stop marks: a node's backbone and mesh channel each
     /// apply their projections under their own receiver, and the stop ends on one of them, once.
     fn stopped_entry(&self, d: &MeshDigest, fence: &Fence) -> Option<bool> {
@@ -5042,7 +5053,7 @@ impl DigestBook {
         let mark = {
             let mut marks = self.stopped_marks.lock().unwrap();
             let held = marks.get(d.node.node_id.as_str()).filter(|m| m.incarnation == d.node.incarnation)?;
-            let moved = held.carried.as_ref().is_some_and(|(publisher, version)| *publisher != fence.publisher || fence.version > *version) && !fence.post_stops.contains(&key);
+            let moved = held.carried.as_ref().is_some_and(|(publisher, version)| if *publisher == fence.publisher { fence.version > *version } else { !fence.publisher_left }) && !fence.post_stops.contains(&key);
             if !moved {
                 drop(marks);
                 self.refuse_in_projection(d, fence);
