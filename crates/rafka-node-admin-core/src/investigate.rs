@@ -166,6 +166,11 @@ pub struct PeerMesh {
     pub unheard_ms: Option<u64>,
     /// The ladder has decided the rebirth of the mesh's node-admins.
     pub rebirth_decided: bool,
+    /// The ladder's 60 s decision found the latest probe `unreachable`: no member answered and no
+    /// carrier reported its edge to a node-admin lost. The mesh is held; its node-admin is created
+    /// only on the provider's exact exit proof of every node-admin of the mesh
+    /// (mesh-investigation.md step 5, "Fully crashed"), which the fabric-primary reads, never the ladder.
+    pub unreachable_decided: bool,
 }
 
 /// One investigation per peer mesh the fabric primary has heard on the backbone.
@@ -206,12 +211,24 @@ impl Ladder {
         self.meshes.get(mesh).is_some_and(|s| s.verdict == Some(true))
     }
 
+    /// Has this ladder's decision on `mesh` come out `unreachable` (a hold)? True from the 60 s
+    /// decision until the mesh is heard again or the ladder forgets it.
+    pub(crate) fn unreachable_decided(&self, mesh: &str) -> bool {
+        self.meshes.get(mesh).is_some_and(|s| s.verdict == Some(false))
+    }
+
+    /// Has this ladder taken its decision on `mesh`, either way? Until it has, a node-admin of a mesh
+    /// the backbone carried waits for it.
+    pub(crate) fn decided(&self, mesh: &str) -> bool {
+        self.meshes.get(mesh).is_some_and(|s| s.verdict.is_some())
+    }
+
     /// What this ladder holds of `mesh`: `unheard_ms` is set while the ladder tracks the mesh as unheard
     /// (from the rung [`Rungs::track`] on, until it is heard again), the same clock [`Self::step`] counts;
     /// `None` when the ladder holds no investigation of the mesh at all.
     pub fn peer_mesh(&self, mesh: &str) -> Option<PeerMesh> {
         let st = self.meshes.get(mesh)?;
-        Some(PeerMesh { unheard_ms: st.tracked.then(|| st.unheard.as_millis() as u64), rebirth_decided: st.verdict == Some(true) })
+        Some(PeerMesh { unheard_ms: st.tracked.then(|| st.unheard.as_millis() as u64), rebirth_decided: st.verdict == Some(true), unreachable_decided: st.verdict == Some(false) })
     }
 
     /// What the R-D1 fence reads of `mesh`, for the Build door, the drive and the drift check alike:
@@ -225,7 +242,7 @@ impl Ladder {
     /// backbone never carried is what the ladder holds of it (watched from the seat).
     pub fn fence(&self, mesh: &str, unheard: Option<Duration>) -> Option<PeerMesh> {
         match unheard {
-            Some(t) => (t >= self.rungs.track).then(|| PeerMesh { unheard_ms: Some(t.as_millis() as u64), rebirth_decided: self.rebirth_decided(mesh) }),
+            Some(t) => (t >= self.rungs.track).then(|| PeerMesh { unheard_ms: Some(t.as_millis() as u64), rebirth_decided: self.rebirth_decided(mesh), unreachable_decided: self.unreachable_decided(mesh) }),
             None => self.peer_mesh(mesh),
         }
     }
@@ -887,7 +904,7 @@ mod tests {
         let mut l = Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500)));
         assert_eq!(
             l.fence("mesh1", Some(Duration::from_secs(7))),
-            Some(PeerMesh { unheard_ms: Some(7000), rebirth_decided: false }),
+            Some(PeerMesh { unheard_ms: Some(7000), rebirth_decided: false, unreachable_decided: false }),
             "a seat taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is fenced"
         );
         assert_eq!(l.fence("mesh1", Some(Duration::from_millis(200))), None, "heard within the tracking rung: no fence");
@@ -900,7 +917,7 @@ mod tests {
             }
         }
         assert!(l.rebirth_decided("mesh1"), "two carrier-edge-lost probes decide the rebirth");
-        assert_eq!(l.fence("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), rebirth_decided: true }), "the decided rebirth is the ladder's");
+        assert_eq!(l.fence("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), rebirth_decided: true, unreachable_decided: false }), "the decided rebirth is the ladder's");
         assert_eq!(l.fence("mesh9", None), None, "a mesh never carried on the backbone and never stepped: the ladder holds nothing");
     }
 
@@ -1185,10 +1202,34 @@ mod tests {
         walk(&mut l, [CarrierEdgeLost, CarrierEdgeLost]);
         assert!(l.rebirth_decided("mesh2"));
         let mut held = ladder();
+        assert!(!held.unreachable_decided("mesh2") && !held.decided("mesh2"), "not stepped yet: nothing is decided either way");
         walk(&mut held, [Unreachable, Unreachable]);
         assert!(!held.rebirth_decided("mesh2"), "a hold decides no rebirth");
         l.forget("mesh2");
         assert!(!l.rebirth_decided("mesh2"));
+    }
+
+    /// CONTRACT (mesh-investigation.md step 5): the 60 s decision on `unreachable` evidence is a hold the
+    /// ladder exposes as its own fact, `unreachable_decided`, beside `rebirth_decided` and never
+    /// with it: the fabric-primary reads the provider's exit proof of the mesh's node-admins only for
+    /// a mesh whose decision opened this way. A carrier-edge-lost decision is the rebirth, not the hold.
+    /// A mesh heard again is decided neither way. Must NOT happen: the hold read as a rebirth, or the
+    /// fact surviving the silence.
+    #[test]
+    fn an_unreachable_decision_is_exposed_as_a_hold_and_never_as_a_rebirth() {
+        let mut l = ladder();
+        walk(&mut l, [Unreachable, Unreachable]);
+        assert!(l.unreachable_decided("mesh2") && l.decided("mesh2") && !l.rebirth_decided("mesh2"));
+        let fenced = l.fence("mesh2", Some(Duration::from_secs(61))).expect("an unheard mesh is fenced");
+        assert_eq!((fenced.rebirth_decided, fenced.unreachable_decided), (false, true), "the fence reads the hold: {fenced:?}");
+        assert_eq!(l.peer_mesh("mesh2").map(|p| (p.rebirth_decided, p.unreachable_decided)), Some((false, true)));
+        let mut reborn = ladder();
+        walk(&mut reborn, [CarrierEdgeLost, CarrierEdgeLost]);
+        assert!(reborn.rebirth_decided("mesh2") && reborn.decided("mesh2") && !reborn.unreachable_decided("mesh2"), "a carrier-edge-lost decision is the rebirth");
+        assert_eq!(reborn.peer_mesh("mesh2").map(|p| (p.rebirth_decided, p.unreachable_decided)), Some((true, false)));
+        // A direct backbone receipt resets t: the mesh is decided neither way.
+        assert!(matches!(l.step("mesh2", Duration::ZERO).as_slice(), [Step::Cancel { .. }]));
+        assert!(!l.unreachable_decided("mesh2") && !l.decided("mesh2"), "heard again: the hold is over");
     }
 
     /// CONTRACT (#2803 detection): a fabric primary that loses its seat drops every investigation;

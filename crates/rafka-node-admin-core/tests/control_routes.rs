@@ -480,7 +480,7 @@ async fn a_stop_of_a_node_of_a_peer_mesh_held_unheard_is_refused_by_name_and_ope
     let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let h = heard.clone();
     let _ = cp.peer_mesh.set(Arc::new(move |mesh: &str| {
-        (mesh == "mesh2").then(|| PeerMesh { unheard_ms: (!h.load(std::sync::atomic::Ordering::SeqCst)).then_some(7_000), rebirth_decided: false })
+        (mesh == "mesh2").then(|| PeerMesh { unheard_ms: (!h.load(std::sync::atomic::Ordering::SeqCst)).then_some(7_000), rebirth_decided: false, unreachable_decided: false })
     }));
     let app = router(cp.clone(), Router::new());
     let seed = builds.facts().await.unwrap().len();

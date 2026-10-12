@@ -2276,6 +2276,7 @@ pub async fn reconcile_drift(
     hold: &(dyn Fn(&str) -> Option<u64> + Sync),
     defers: &(dyn Fn(&str) -> bool + Sync),
     decided: &(dyn Fn(&str) -> bool + Sync),
+    unreachable: &(dyn Fn(&str) -> bool + Sync),
     exits: &Records,
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| n.node_id == *me_id)?;
@@ -6741,7 +6742,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 // starts a reconciliation Build for proven drift.
                                                 if cut_off_view.authorizes() {
                                                     let durable_rows = if now.holds_fabric_seat(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &records).await;
+                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &accepted, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().unreachable_decided(mesh), &records).await;
                                                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                                                     // proven exited is not live there, and holds no seat.
                                                     if opened.is_some() {

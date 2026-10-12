@@ -429,7 +429,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     t.nodes.push(node("mesh2.rpc.1", true, false));
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
     let r = rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await;
-    let held = |rebirth_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(31_000), rebirth_decided };
+    let held = |rebirth_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(31_000), rebirth_decided, unreachable_decided: false };
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-unheard-mesh-drive");
     let drive = Drive::detached(r.build.clone());
@@ -471,6 +471,51 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     assert_eq!(dispatched.last().map(|(x, _)| x.as_str()), Some("mesh2.admin.1"), "the mesh reconciles its own nodes once heard: {dispatched:?}");
 }
 
+/// CONTRACT (mesh-investigation.md step 5, "Fully crashed"; R-D1): mesh2 has lost every node-admin and
+/// the investigation's 60 s decision on it came out `unreachable`, a hold. The fabric-primary opened
+/// the attempt on the provider's exact exit proof of every node-admin, so the drive runs the create of
+/// the mesh's first node-admin, and only it, on the fabric-primary; the mesh's second admin and its
+/// ordinary node still wait for the mesh to be heard. With no decision at all the fence stands for the
+/// first admin too. Must NOT happen: the fence refusing the one create the exit proof opened (the
+/// mesh waiting for ever), or the hold releasing more than that create.
+#[tokio::test]
+async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric_primary_and_nothing_else_of_the_held_mesh_does() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    for n in ["mesh2.admin.1", "mesh2.rpc.1"] {
+        let mut lost = node(n, false, false);
+        lost.status = NodeStatus::Dead;
+        t.nodes.push(lost);
+    }
+    let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
+    let r = rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await;
+    let held = |unreachable_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: false, unreachable_decided };
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-crashed-mesh-drive");
+    let drive = Drive::detached(r.build.clone());
+    let before = r.builds.read_build(&r.build).await.unwrap();
+
+    // No decision: the fence stands for the first admin.
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
+    match r.env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.1") && why.contains("no rebirth decided"), "{why}"),
+        other => panic!("nothing is claimed for a held mesh with no decision: {other:?}"),
+    }
+    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing dispatched, nothing run");
+
+    // The 60 s decision came out unreachable: the create of the first node-admin, and only it, runs on the fabric-primary.
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
+    match r.env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.2") && why.contains("unreachable"), "the second admin waits for the mesh to be heard, and the stall names the decision: {why}"),
+        other => panic!("the mesh's other nodes wait until it is heard again: {other:?}"),
+    }
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "only the mesh's first node-admin ran");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), before.attempt + 1)], "the create ran in process on the fabric-primary");
+    let fenced = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
+    assert_eq!(fenced.len(), 2, "the fence is named for the undecided admin.1 and then for admin.2: {fenced:?}");
+    assert_eq!((fenced[1].1.get("target").map(String::as_str), fenced[1].1.get("rebirth_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("false")), "{:?}", fenced[1].1);
+    eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", fenced[1].0, fenced[1].1);
+}
+
 /// The R-D1 fixture: mesh2's only node-admin is proven exited (so the fabric-primary of mesh1 is
 /// the executor of mesh2's work in its view), mesh2 keeps its rpc node, the Build grows mesh2 to two
 /// admins and two rpc nodes, a restored `mesh2.admin.1` is seated as mesh2's primary, and the
@@ -484,7 +529,7 @@ async fn rebirth_rig() -> Rig {
     t.nodes.push(node("mesh2.rpc.1", true, false));
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
     let r = rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await;
-    r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: true });
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: true, unreachable_decided: false });
     r
 }
 
