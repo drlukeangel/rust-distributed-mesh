@@ -81,9 +81,10 @@ pub struct NodeRows {
 /// door is what the node's next row (its `<path>.old` move, its `Deleted` row) carries. It is fed by
 /// this writer's own puts, and by the point read a claim or an arrival makes of the row at the
 /// node's `path.name` (R13: rebuild after a seat change reads the mesh's own rows): a row the node
-/// already holds is held as found. Nothing on the move or `Deleted` write path reads the store: those
-/// rows are written from this record. A `Deleted` row stays held for its node: a rerun of the delete
-/// writes the same row.
+/// already holds is held as found. The move and `Deleted` rows are written from this record; for a
+/// node it holds no record of, the one read is the same point read of the row the node holds
+/// ([`WrittenRows::known_row`]), for the tags no executor record carries. A `Deleted` row stays held
+/// for its node: a rerun of the delete writes the same row.
 #[derive(Debug, Default)]
 pub struct WrittenRows(Mutex<HashMap<NodeId, NodeRow>>);
 
