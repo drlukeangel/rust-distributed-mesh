@@ -12,7 +12,7 @@
 
 use rafka_node_admin_core::deployment::container::ContainerDeploymentProvider;
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
-use rafka_node_admin_core::deployment::provider::{adopt, AdoptRefusal, DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
+use rafka_node_admin_core::deployment::provider::{adopt, AdoptRefusal, DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::model::DeploymentId;
 use rafka_mesh_entity::runtime::{RuntimeFact, RuntimeLocator};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -91,6 +91,30 @@ fn daemon_state(id: &str) -> String {
     } else {
         "absent".into()
     }
+}
+
+/// CONTRACT (lifecycles/node-create.md: exact provider proof of a runtime's state, even for a
+/// deployment that never joined): the container provider's `find` tells the three facts of one exact
+/// launch apart, whichever admin of its control domain asks. A launch never made is `NeverLaunched`;
+/// a launch whose container runs is `Running`; once this provider terminated it (which removes the
+/// container, so the daemon holds nothing by its name) it is `Exited`, to this provider and to a fresh
+/// one that never saw it. Must NOT happen: a launch that ran read as never launched once its container
+/// is gone, so a re-run relaunches it under the same incarnation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn find_tells_a_running_container_launch_a_terminated_one_and_one_never_launched_apart() {
+    let fabric = fabric_name("find-three");
+    let Some(p) = provider(&fabric).await else { return };
+    let _cleanup = Fabric(fabric.clone());
+    let (spec, never) = (launch(&p, &fabric, 0), launch(&p, &fabric, 1));
+    assert_eq!(p.find(&never).await.unwrap(), Found::NeverLaunched, "no container and no launch of it");
+    let h = p.spawn(&spec).await.expect("the launch");
+    assert_eq!(p.find(&spec).await.unwrap(), Found::Running(h.clone()), "its container runs");
+    p.terminate(&h, TerminationMode::Immediate).await.expect("terminate the launch");
+    assert_eq!(daemon_state(&container_id(&h)), "absent", "terminate removes the container");
+    assert_eq!(p.find(&spec).await.unwrap(), Found::Exited, "the launch ran and its container is gone: exited");
+    let fresh = ContainerDeploymentProvider::prepare(&fabric).await.unwrap();
+    assert_eq!(fresh.find(&spec).await.unwrap(), Found::Exited, "a provider of the same domain that never saw the launch proves it exited too");
+    assert_eq!(fresh.find(&never).await.unwrap(), Found::NeverLaunched);
 }
 
 /// CONTRACT: a container runtime is named by its provider control domain (the Docker daemon) and
