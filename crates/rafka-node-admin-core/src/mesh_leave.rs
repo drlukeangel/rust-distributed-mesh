@@ -777,8 +777,21 @@ pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts
             HandoffVerdict::Incomplete { reason, without_exit } => HandoffVerdict::Incomplete { reason: format!("{reader}: the final primary {sender} holds no fact of the Build ({detail}): {reason}"), without_exit },
             other => other,
         }),
-        Err(e) => Err(StatusReply::NotReady { reason: format!("{reader}: the manifest {receipt_manifest} could not be read from {sender}: {e}") }),
+        // A read that failed is not the final primary holding nothing: the leave stays open and the
+        // call is refused naming the read.
+        Err(e) => Err(refuse_source_failed("mesh-leave", key, &format!("the Build log of {sender} (the final primary), read by {reader} over fetch-build-facts"), &format!("fetch-build-facts {} for the manifest {receipt_manifest}", key.build_id), &e.to_string())),
     }
+}
+
+/// The refusal of `call` (`leave-mesh` at the leaving mesh-primary, `mesh-leave` at the
+/// fabric-primary) for the leave `key` because what it had to read failed: `source` failed `op` for
+/// `cause`. `RejectedSourceFailed`, under its reject span naming the call, the round and the three
+/// fields; it is never this admin's own `NotReady` (node-rpc-envelope.md, "Node RPC readiness gate").
+/// Nothing is admitted or accepted.
+pub fn refuse_source_failed(call: &'static str, key: &LeaveKey, source: &str, op: &str, cause: &str) -> StatusReply {
+    tracing::info_span!("rdm.node_admin.mesh.reject.via-source-failed", call, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, source, op, cause)
+        .in_scope(|| tracing::info!("what the call needed to read failed: it is refused by name and nothing is admitted"));
+    StatusReply::source_failed(source, op, cause)
 }
 
 /// The admin a `leave-mesh`'s handoff goes back to, the owner of the workflow: the admin that sent
@@ -789,7 +802,7 @@ pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts
 pub fn leave_owner(sender: Option<&NodeId>, fabric_primary: Option<&NodeId>, me: &str, key: &LeaveKey) -> Result<NodeId, StatusReply> {
     match sender.or(fabric_primary) {
         Some(owner) => Ok(owner.clone()),
-        None => Err(StatusReply::NotReady { reason: format!("{me}: leave-mesh for {} came from an endpoint this admin holds no birth for, and its view names no fabric-primary to hand the leave back to", key.mesh_id) }),
+        None => Err(refuse_source_failed("leave-mesh", key, &format!("the view of {me}"), &format!("resolve the owner of leave-mesh for {}", key.mesh_id), "the calling endpoint is no birth this admin holds, and its view names no fabric-primary to hand the leave back to")),
     }
 }
 
@@ -797,10 +810,9 @@ pub fn leave_owner(sender: Option<&NodeId>, fabric_primary: Option<&NodeId>, me:
 /// provider proof path the owner stops it through (mesh-leave.md step 5). A runtime the provider
 /// refuses is refused by name.
 pub fn adopt_final_runtime(provider: &dyn crate::deployment::provider::DeploymentProvider, final_runtime: &rafka_mesh_entity::RuntimeFact, me: &str, key: &LeaveKey) -> Result<(), StatusReply> {
-    let _ = key;
     match crate::deployment::provider::adopt(provider, final_runtime) {
         Ok(_) => Ok(()),
-        Err(refusal) => Err(StatusReply::NotReady { reason: format!("{me}: no provider proof path to the final primary's runtime {}: {refusal}", final_runtime.deployment_id) }),
+        Err(refusal) => Err(refuse_source_failed("mesh-leave", key, &format!("the {:?} provider of {me}", provider.kind()), &format!("adopt the final primary's runtime {}", final_runtime.deployment_id), &refusal.to_string())),
     }
 }
 

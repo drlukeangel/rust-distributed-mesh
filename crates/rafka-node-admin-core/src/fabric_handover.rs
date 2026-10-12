@@ -161,6 +161,13 @@ pub struct SourceFailure {
     pub cause: String,
 }
 
+impl SourceFailure {
+    /// The refusal that names this failure, within the reply's budgets.
+    pub fn reply(&self) -> Reply {
+        Reply::source_failed(&self.source, &self.op, &self.cause)
+    }
+}
+
 impl std::fmt::Display for SourceFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}: {}", self.source, self.op, self.cause)
@@ -185,10 +192,14 @@ pub fn won_claim_in(facts: &[crate::build_state::BuildFact], build_id: &str, att
 }
 
 /// The executor the Won claim of `attempt` of `build_id` names, from the fabric-primary `fabric_primary`'s
-/// Build facts as `read` over FetchBuildFacts returned them.
+/// Build facts as `read` over FetchBuildFacts returned them. A fabric-primary that holds no fact of
+/// the Build holds no claim of it: none was ever written there, and the answer is no claim (`None`),
+/// never a failed read. A read that failed is the [`SourceFailure`] naming the fabric-primary's Build
+/// log, the fetch and the read's own failure.
 pub fn won_claim_from_read(read: Result<Vec<crate::build_state::BuildFact>, crate::build_facts_read::FetchFailure>, build_id: &str, attempt: u32, fabric_primary: &str) -> Result<Option<String>, SourceFailure> {
     match read {
         Ok(facts) => Ok(won_claim_in(&facts, build_id, attempt)),
+        Err(crate::build_facts_read::FetchFailure::UnknownBuild(_)) => Ok(None),
         Err(e) => Err(SourceFailure { source: format!("the Build log of the fabric-primary {fabric_primary}, read over fetch-build-facts"), op: format!("fetch-build-facts {build_id} for the claim of attempt {attempt}"), cause: e.to_string() }),
     }
 }
@@ -370,7 +381,17 @@ fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
 }
 
 fn reject(call: &'static str, side: &'static str, reason: &'static str, detail: &str, p: &Payload) {
-    tracing::info_span!(
+    reject_span(call, side, reason, detail, p, None);
+}
+
+/// The reject span of a handover call refused because `failed` failed: reason `source-failed` and
+/// the three fields the reply names.
+fn reject_failed(call: &'static str, side: &'static str, failed: &SourceFailure, p: &Payload) {
+    reject_span(call, side, "source-failed", &failed.to_string(), p, Some(failed));
+}
+
+fn reject_span(call: &'static str, side: &'static str, reason: &'static str, detail: &str, p: &Payload, failed: Option<&SourceFailure>) {
+    let span = tracing::info_span!(
         "rdm.node_admin.fabric.reject.via-handover",
         call,
         side,
@@ -381,8 +402,16 @@ fn reject(call: &'static str, side: &'static str, reason: &'static str, detail: 
         incumbent = %format!("{}:{}:{}", p.incumbent.mesh, p.incumbent.node_id, p.incumbent.incarnation.0),
         successor = %format!("{}:{}:{}", p.successor.mesh, p.successor.node_id, p.successor.incarnation.0),
         expected_epoch = p.expected_epoch,
-    )
-    .in_scope(|| tracing::info!("a fabric-primary handover call was refused"));
+        source = tracing::field::Empty,
+        op = tracing::field::Empty,
+        cause = tracing::field::Empty,
+    );
+    if let Some(f) = failed {
+        span.record("source", f.source.as_str());
+        span.record("op", f.op.as_str());
+        span.record("cause", f.cause.as_str());
+    }
+    span.in_scope(|| tracing::info!("a fabric-primary handover call was refused"));
 }
 
 /// One TakeSeats call, as both sides hold it.
@@ -424,7 +453,20 @@ fn epoch_of(seats: &[CommittedSeat], seat: Seat) -> String {
 }
 
 fn reject_seats(side: &'static str, reason: &'static str, detail: &str, t: &TakeSeatsCall) {
-    tracing::info_span!(
+    reject_seats_span(side, reason, detail, t, Named::Nothing);
+}
+
+/// What a seat transfer's reject span names beside its reason.
+enum Named<'a> {
+    Nothing,
+    /// The seat the call left out, at the epoch the holder holds it.
+    Omitted { seat: &'a WireSeat, current: u64 },
+    /// What failed, the operation and the cause.
+    Failed(&'a SourceFailure),
+}
+
+fn reject_seats_span(side: &'static str, reason: &'static str, detail: &str, t: &TakeSeatsCall, named: Named<'_>) {
+    let span = tracing::info_span!(
         "rdm.node_admin.seat.reject.via-take-seats",
         side,
         reason,
@@ -435,8 +477,25 @@ fn reject_seats(side: &'static str, reason: &'static str, detail: &str, t: &Take
         attempt = t.attempt,
         holder = %births(&t.holder),
         successor = %births(&t.successor),
-    )
-    .in_scope(|| tracing::info!("a seat transfer call was refused"));
+        seat = tracing::field::Empty,
+        current = tracing::field::Empty,
+        source = tracing::field::Empty,
+        op = tracing::field::Empty,
+        cause = tracing::field::Empty,
+    );
+    match named {
+        Named::Nothing => {}
+        Named::Omitted { seat, current } => {
+            span.record("seat", seat.name());
+            span.record("current", current);
+        }
+        Named::Failed(f) => {
+            span.record("source", f.source.as_str());
+            span.record("op", f.op.as_str());
+            span.record("cause", f.cause.as_str());
+        }
+    }
+    span.in_scope(|| tracing::info!("a seat transfer call was refused"));
 }
 
 impl HandoverDoor {
@@ -462,16 +521,17 @@ impl HandoverDoor {
 
     /// Make `stage` of `payload`'s handover durable, then hold it. A stage that could not be made
     /// durable is not held: the caller answers the failure by name.
-    async fn record(&self, payload: &Payload, stage: Stage) -> Result<(), String> {
+    async fn record(&self, payload: &Payload, stage: Stage) -> Result<(), SourceFailure> {
         self.persist(payload, stage).await?;
         self.handovers.put(payload.clone(), stage);
         Ok(())
     }
 
-    /// Make `stage` of `payload`'s handover durable: a blind put of its own row.
-    async fn persist(&self, payload: &Payload, stage: Stage) -> Result<(), String> {
+    /// Make `stage` of `payload`'s handover durable: a blind put of its own row. A put the store
+    /// refuses is the [`SourceFailure`] naming the row, the stage and the store's error.
+    async fn persist(&self, payload: &Payload, stage: Stage) -> Result<(), SourceFailure> {
         let row = HandoverRow { operation: payload.operation.clone(), fabric: payload.fabric.clone(), incumbent: payload.incumbent.clone(), successor: payload.successor.clone(), expected_epoch: payload.expected_epoch, stage: stage.durable() };
-        self.storage.put_handover(&row).await.map_err(|e| format!("{}: handover {} could not be made durable at {stage:?}: {e}", self.me, payload.operation))
+        self.storage.put_handover(&row).await.map_err(|e| SourceFailure { source: format!("fabric.storage of {}, handover row {}", self.me, payload.operation), op: format!("put the handover row at {stage:?}"), cause: e.to_string() })
     }
 
     /// Hold the handovers `fabric.storage` records, as this admin started with them. Returns how many
@@ -526,7 +586,7 @@ impl HandoverDoor {
                     return Err(HandoverError::Refused(format!("{} holds no fabric seat record: the epoch the handover names is unknown", self.me)));
                 };
                 let p = Payload { fabric: self.fabric.clone(), incumbent, successor, expected_epoch: held.epoch, operation: operation.clone() };
-                self.record(&p, Stage::Sent).await.map_err(HandoverError::Refused)?;
+                self.record(&p, Stage::Sent).await.map_err(|e| HandoverError::Refused(e.to_string()))?;
                 p
             }
         };
@@ -597,9 +657,18 @@ impl HandoverDoor {
             }
             return Reply::AlreadyApplied;
         }
+        let refuse_failed = |failed: SourceFailure| {
+            reject_failed("take", side, &failed, &payload);
+            failed.reply()
+        };
         let held = self.membership.seats().fabric();
         let Some(held) = held else {
-            return refuse("not-ready", "this admin holds no fabric seat record".into(), Reply::NotReady { reason: format!("{} holds no fabric seat record to compare the command's epoch with", self.me) });
+            // Never written here, which is not a read that failed: named as absent.
+            return refuse_failed(SourceFailure {
+                source: format!("the seat records of {}", self.me),
+                op: "read the fabric seat".into(),
+                cause: format!("no fabric seat record is held: none was ever written to this admin's seat records, so the epoch {} the command names cannot be compared", payload.expected_epoch),
+            });
         };
         if !held.is_birth(&payload.incumbent.node_id, &payload.incumbent.incarnation) {
             return refuse("not-authority", format!("the fabric seat is held by {held}, not the caller"), Reply::RejectedNotAuthority);
@@ -619,11 +688,11 @@ impl HandoverDoor {
         };
         let holder = SeatHolder { mesh: payload.successor.mesh.clone(), node_id: payload.successor.node_id.clone(), incarnation: payload.successor.incarnation.clone(), epoch: committed };
         // The record is durable with or before the seat commit, and held only once the seat is.
-        if let Err(e) = self.persist(&payload, Stage::Committed(committed)).await {
-            return refuse("not-ready", e.clone(), Reply::NotReady { reason: e });
+        if let Err(failed) = self.persist(&payload, Stage::Committed(committed)).await {
+            return refuse_failed(failed);
         }
         if let Err(e) = self.storage.put_seat(&SeatRow { seat: Seat::FabricPrimary, holder: holder.clone() }).await {
-            return refuse("not-ready", e.to_string(), Reply::NotReady { reason: format!("{}: the fabric seat could not be made durable: {e}", self.me) });
+            return refuse_failed(SourceFailure { source: format!("fabric.storage of {}, fabric-primary seat row", self.me), op: format!("put the fabric-primary seat row at epoch {committed} for {}", births(&payload.successor)), cause: e.to_string() });
         }
         match self.membership.seats().take(Seat::FabricPrimary, &holder) {
             SeatTaken::Held { .. } | SeatTaken::Same => {}
@@ -666,7 +735,7 @@ impl HandoverDoor {
         match self.call(&payload.incumbent.node_id, &payload.taken(committed)).await {
             Ok(Reply::Applied | Reply::AlreadyApplied) => {
                 if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {
-                    reject("taken", "successor", "storage", &e, &payload);
+                    reject_failed("taken", "successor", &e, &payload);
                     return;
                 }
                 tracing::info_span!("rdm.node_admin.fabric.update.via-handover-taken-acknowledged", fabric = %payload.fabric, operation = %payload.operation, committed_epoch = committed)
@@ -704,7 +773,7 @@ impl HandoverDoor {
             }
             match self.call(&payload.incumbent.node_id, &payload.taken(committed)).await {
                 Ok(Reply::Applied | Reply::AlreadyApplied) => {
-                    self.record(&payload, Stage::Confirmed(committed)).await.map_err(HandoverError::Unconfirmed)
+                    self.record(&payload, Stage::Confirmed(committed)).await.map_err(|e| HandoverError::Unconfirmed(e.to_string()))
                 }
                 Ok(refusal) => {
                     let (reason, detail) = refusal_reason(&refusal);
@@ -775,8 +844,9 @@ impl HandoverDoor {
             return refuse("stale-epoch", format!("a later seat record is held: {held}"), Reply::RejectedStaleEpoch { expected: committed, current: held.epoch });
         }
         (self.project_view)().await;
-        if let Err(e) = self.record(&payload, Stage::Confirmed(committed)).await {
-            return refuse("not-ready", e.clone(), Reply::NotReady { reason: e });
+        if let Err(failed) = self.record(&payload, Stage::Confirmed(committed)).await {
+            reject_failed("taken", side, &failed, &payload);
+            return failed.reply();
         }
         tracing::info_span!(
             "rdm.node_admin.fabric.update.via-handover-confirmed",
@@ -799,6 +869,10 @@ impl HandoverDoor {
             reject_seats("holder", reason, &detail, &t);
             reply
         };
+        let refuse_failed = |failed: SourceFailure| {
+            reject_seats_span("holder", "source-failed", &failed.to_string(), &t, Named::Failed(&failed));
+            failed.reply()
+        };
         if t.fabric != self.fabric {
             return refuse("conflict", format!("the call names fabric {}, this admin is in {}", t.fabric, self.fabric), Reply::RejectedConflict { operation: t.operation.clone() });
         }
@@ -816,7 +890,7 @@ impl HandoverDoor {
         // operation's row under this holder's mesh.
         let recorded = match self.storage.seat_transfer(&self.me.mesh, &t.operation).await {
             Ok(r) => r,
-            Err(e) => return refuse("not-ready", e.to_string(), Reply::NotReady { reason: format!("{}: the seat-transfer row of {} under mesh {} could not be read: {e}", self.me, t.operation, self.me.mesh) }),
+            Err(e) => return refuse_failed(SourceFailure { source: format!("fabric.storage of {}, seat-transfer row {} under mesh {}", self.me, t.operation, self.me.mesh), op: format!("read the seat-transfer row of {}", t.operation), cause: e.to_string() }),
         };
         if let Some(row) = recorded {
             if !t.matches(&row) {
@@ -836,7 +910,7 @@ impl HandoverDoor {
                 let detail = format!("no Won claim of attempt {} of Build {} is known to this admin or its fabric-primary", t.attempt, t.build_id);
                 return refuse("not-the-claimed-executor", detail.clone(), Reply::RejectedNotEligible { reason: format!("{}: {detail}", self.me) });
             }
-            Err(e) => return refuse("not-ready", e.to_string(), Reply::NotReady { reason: format!("{}: the claim of attempt {} of Build {} could not be read: {e}", self.me, t.attempt, t.build_id) }),
+            Err(failed) => return refuse_failed(failed),
         }
         // ... and the admin the election seats once this birth is gone, inside this mesh.
         let view = self.topology.read().await.clone();
@@ -853,8 +927,12 @@ impl HandoverDoor {
             return refuse("not-authority", format!("{} holds no seat", self.me), Reply::RejectedNotAuthority);
         }
         for (seat, h) in &held {
-            if !t.seats.iter().any(|e| e.seat == WireSeat::of(*seat, &self.me.mesh)) {
-                return refuse("stale-seat", format!("the call does not name the {} seat this admin holds at epoch {}", seat.name(), h.epoch), Reply::RejectedStaleSeat { seat: WireSeat::of(*seat, &self.me.mesh), expected: 0, current: h.epoch });
+            let seat = WireSeat::of(*seat, &self.me.mesh);
+            if !t.seats.iter().any(|e| e.seat == seat) {
+                // Every seat moves in the one row: a seat left out names no epoch, stale or current.
+                let detail = format!("the call does not name the {} seat this admin holds at epoch {}", seat.name(), h.epoch);
+                reject_seats_span("holder", "seat-omitted", &detail, &t, Named::Omitted { seat: &seat, current: h.epoch });
+                return Reply::RejectedSeatOmitted { seat, current: h.epoch };
             }
         }
         let mut committed = Vec::new();
@@ -889,7 +967,7 @@ impl HandoverDoor {
         if let Err(e) = self.storage.put_seat_transfer(&row).await {
             // Nothing moved: the writes are this admin's again.
             (self.cut_off_writes)(WriteCutOff::Lift).await;
-            return refuse("not-ready", e.to_string(), Reply::NotReady { reason: format!("{}: the seat transfer {} could not be made durable: {e}", self.me, t.operation) });
+            return refuse_failed(SourceFailure { source: format!("fabric.storage of {}, seat-transfer row {} under mesh {}", self.me, t.operation, self.me.mesh), op: format!("put the seat-transfer row of {} moving {} seat(s) to {}", t.operation, committed.len(), births(&t.successor)), cause: e.to_string() });
         }
         let op = LifecycleOp { build_id: t.build_id.clone(), attempt: t.attempt, operation: t.operation.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), name: self.me.clone(), event_at_rafka_ms: self.membership.clock().now_rafka_ms() };
         let successor = committed[0].record();
