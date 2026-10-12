@@ -1,17 +1,21 @@
 //! Fixed bytes for the coordinated 2026-10-07 status reseal (#2923); the four drain/stop command
-//! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand.
+//! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand, as are
+//! `node.connections.delete`'s request (21) and its two replies (31, 32), and the reads' four
+//! requests (22..=25) and six replies (33..=38) with the views they carry.
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
-use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rafka_mesh_entity::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, DrainReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
 fn mesh() -> MeshId { MeshId::parse("1123456789ab").unwrap() }
 fn fabric() -> FabricId { FabricId::parse("2123456789ab").unwrap() }
 fn birth() -> IncarnationId { IncarnationId("birth".into()) }
+fn connection() -> ConnectionId { ConnectionId::parse("3123456789ab").unwrap() }
 
 fn bytes(hex: &str) -> Vec<u8> {
     hex.as_bytes().chunks_exact(2).map(|pair| {
@@ -20,7 +24,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_twenty_one_variant_wire_schema() {
+fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c30313233343536373839616205626972746803"),
@@ -56,6 +60,11 @@ fn requests_match_the_frozen_twenty_one_variant_wire_schema() {
         (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c30313233343536373839616205626972746801016b0176"),
         (ApplyNodeName { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "130c3031323334353637383961620562697274680b6d657368312e7270632e31"),
         (UpdateNode { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "140c3031323334353637383961620562697274680b6d657368312e7270632e31"),
+        (DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "150c30313233343536373839616205626972746801010c333132333435363738396162"),
+        (GetNodes { select: NodeSelect::Mesh("mesh1".into()) }, "1601056d65736831"),
+        (GetMeshes { mesh: Some("mesh1".into()) }, "1701056d65736831"),
+        (GetFabric, "18"),
+        (GetConnections { node_id: node(), incarnation: birth() }, "190c303132333435363738396162056269727468"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -66,7 +75,7 @@ fn requests_match_the_frozen_twenty_one_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_thirty_one_variant_wire_schema() {
+fn replies_match_the_frozen_thirty_nine_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -100,6 +109,33 @@ fn replies_match_the_frozen_thirty_one_variant_wire_schema() {
         (NameHeld { name: "n".into(), by: node() }, "1c016e0c303132333435363738396162"),
         (NodeRowRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
         (NameNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "1e016e01610172"),
+        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![] }, "1f010c3331323334353637383961620000"),
+        (RejectedConnectionScope { reason: "r".into() }, "200172"),
+        (
+            Nodes { nodes: vec![node_view()] },
+            concat!(
+                "2101",
+                "0b6d657368312e7270632e31", "01", "056d65736831", "0c303132333435363738396162", "010165", "01056269727468",
+                "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304",
+            ),
+        ),
+        (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31")),
+        (
+            Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![] } },
+            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00"),
+        ),
+        (
+            Connections {
+                connections: ConnectionsView {
+                    node: "n".into(),
+                    complete: true,
+                    connections: vec![ConnectionView { id: "i".into(), source: "s".into(), destination: "d".into(), kind: "direct".into(), state: "connected".into(), carrier: None, reason: Some("r".into()), logged_at_ms: 300 }],
+                },
+            },
+            concat!("24", "016e", "01", "01", "0169", "0173", "0164", "06646972656374", "09636f6e6e6563746564", "00", "010172", "ac02"),
+        ),
+        (UnknownMesh { mesh: "m".into() }, "25016d"),
+        (ReadOverBound { read: "r".into(), bytes: 300, max: 65536 }, "260172ac02808004"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -145,6 +181,37 @@ fn the_largest_mesh_leave_fits_the_request_ceiling() {
     assert_eq!(Status::decode_request(&bytes).unwrap(), request);
 }
 
+/// One node as a `node.get` answer carries it: an rpc node with its birth, provider, address, load
+/// and gossip stats, the optional fields it lacks absent.
+fn node_view() -> NodeView {
+    NodeView {
+        name: "mesh1.rpc.1".parse().unwrap(),
+        kind: rafka_mesh_entity::NodeKind::RpcNode,
+        mesh: "mesh1".into(),
+        node_id: node(),
+        endpoint_id: Some("e".into()),
+        incarnation_id: Some(birth()),
+        deployment_id: None,
+        provider: Some(ProviderKind::Process),
+        data_dir: None,
+        status: NodeStatus::ReadyForTraffic,
+        is_primary: false,
+        is_fabric_primary: false,
+        admin_api_base: None,
+        transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
+        listeners: vec![],
+        declared: None,
+        parked: false,
+        load: Some(rafka_mesh_entity::NodeLoad { cpu_used_millicores: 1, cpu_budget_millicores: 2, ram_used_bytes: 3, ram_budget_bytes: 4 }),
+        gossip: Some(rafka_mesh_entity::GossipStats { heard: 2, neighbours: 1, frames_sent: 3, frames_received: 4 }),
+    }
+}
+
+/// One mesh as a `mesh.get` answer carries it.
+fn mesh_view() -> MeshView {
+    MeshView { id: Some(mesh()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap()] }
+}
+
 fn golden<T: serde::Serialize>(value: T, expected: &str) {
     assert_eq!(postcard::to_allocvec(&value).unwrap(), bytes(expected));
 }
@@ -171,4 +238,18 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(RetryOn::TargetReachable { node_id: node() }, "010c303132333435363738396162");
     golden(RetryOn::AuthorityReady, "02");
     golden(RetryOn::AuthorityAddressed, "03");
+    golden(ConnectionScope::All, "00");
+    golden(ConnectionScope::Connections(vec![connection()]), "01010c333132333435363738396162");
+    golden(NodeSelect::Id(node()), "000c303132333435363738396162");
+    golden(NodeSelect::Mesh("m".into()), "01016d");
+    for (status, expected) in [
+        (NodeStatus::Pending, "00"), (NodeStatus::ReadyForTraffic, "01"), (NodeStatus::Draining, "02"), (NodeStatus::Leaving, "03"),
+        (NodeStatus::PendingReconnect, "04"), (NodeStatus::Restarting, "05"), (NodeStatus::Dead, "06"), (NodeStatus::Deleted, "07"),
+    ] { golden(status, expected); }
+    for (status, expected) in [
+        (ScopeStatus::Pending, "00"), (ScopeStatus::ReadyForTraffic, "01"), (ScopeStatus::Leaving, "02"), (ScopeStatus::Dead, "03"),
+        (ScopeStatus::Degraded, "04"), (ScopeStatus::StateSync, "05"), (ScopeStatus::StateCommit, "06"),
+    ] { golden(status, expected); }
+    golden(ProviderKind::Process, "00");
+    golden(ProviderKind::Container, "01");
 }

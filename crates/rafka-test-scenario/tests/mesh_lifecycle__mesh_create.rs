@@ -96,6 +96,10 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let (_, mesh2_view) = estate.get("/api/meshes/mesh2").await;
     assert_eq!(s(&mesh2_view["admin_api_base"]), mesh2_base);
     assert_eq!(s(&mesh2_view["primary_admin"]), mesh2_primary);
+    // The created mesh is a new identity, distinct from every mesh the fabric already had.
+    let (_, m1) = estate.get("/api/meshes/mesh1").await;
+    let mesh2_id = s(&mesh2_view["id"]);
+    assert!(!mesh2_id.is_empty() && mesh2_id != s(&m1["id"]), "mesh2 is a new identity: {mesh2_view}");
     let fabric_base = estate.admin.clone();
     estate.admin = mesh2_base.clone();
 

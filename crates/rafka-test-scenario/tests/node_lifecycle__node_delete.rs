@@ -14,6 +14,9 @@
 //!    having heard an event.
 //! 3. The pre-notice is never emitted before the executor's claim, the departure never before
 //!    the terminal proof, and the departure is not drift: nothing is reborn.
+//! 4. The delete releases identity, not storage (node-delete.md "Storage": "Retain data dir and
+//!    endpoint key; a later spec can inherit them"): the victim's data dir and its endpoint key
+//!    stay, and no step of the delete releases storage.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -63,6 +66,9 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     .await;
     assert_eq!(found["reply"]["incarnation_id"], victim["incarnation_id"], "{found}");
     assert!(before.iter().all(|n| n["routable"] == true), "every live node is routable before the delete: {before:#?}");
+    // The victim's data dir, read while an admin still advertises it.
+    let victim_dir = std::path::PathBuf::from(estate.data_dir_of(VICTIM).await);
+    assert!(victim_dir.join("node-key").is_file(), "the victim's data dir holds its endpoint key before the delete: {victim_dir:?}");
 
     // 1. The removal.
     let (status, d) = estate.delete(&format!("/api/nodes/{VICTIM}")).await;
@@ -75,6 +81,9 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let after = estate.settled_shape(&[("mesh1", 2, 2), ("mesh2", 1, 1)], Duration::from_secs(60)).await;
     assert!(after.iter().all(|n| n["name"] != VICTIM), "the current topology no longer lists the node: {after:#?}");
     estate.artifact("nodes-after.json", &json!(after));
+    // 4. node-delete.md step 3: "Retain the data dir, node-identity.json and endpoint key."
+    assert!(victim_dir.is_dir(), "the delete keeps the victim's data dir: {victim_dir:?}");
+    assert!(victim_dir.join("node-key").is_file(), "the delete keeps the victim's endpoint key in its data dir: {victim_dir:?}");
 
     let gone = wait_for("mesh1.rpc.1 holds the departure", Duration::from_secs(30), || async {
         let r = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
@@ -122,14 +131,15 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).collect();
     assert_eq!(deleting.len(), 1, "one pre-notice for one retirement: {deleting:?}");
     assert_eq!(deleted.len(), 1, "one departure for one retirement: {deleted:?}");
-    // The node's row (ops-naming "Node data", the delete point): the fabric-primary writes it with
-    // status Deleted at the executor's NodeDeleted, from the record it held at the NodeDeleting; the
-    // node born after it at the same path.name claims the row there, seeded from the Deleted row.
+    // The node's row (ops-naming "Node data", the delete point; R13): the mesh's primary, which
+    // executes the delete, writes it with status Deleted at its NodeDeleted from the exact record it
+    // acted on; the node born after it at the same path.name claims the row there at its create,
+    // seeded from the Deleted row.
     let row_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == VICTIM).collect();
     assert_eq!(row_deleted.len(), 1, "one Deleted row for one delete: {row_deleted:?}");
     let a = &row_deleted[0]["attributes"];
-    assert_eq!((s(&a["outcome"]), s(&a["node_id"]), s(&a["held_from"])), ("row-deleted".to_string(), victim_id.clone(), "node-deleting".to_string()), "{a}");
-    let row_seeded: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node_id"] == newcomer2["node_id"]).collect();
+    assert_eq!((s(&a["outcome"]), s(&a["node_id"]), s(&a["node"])), ("row-deleted".to_string(), victim_id.clone(), "mesh2.admin.1".to_string()), "{a}");
+    let row_seeded: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node_id"] == newcomer2["node_id"] && sp["attributes"]["moment"] == "claim").collect();
     assert_eq!(row_seeded.len(), 1, "the newcomer at {VICTIM} claims its row once: {row_seeded:?}");
     let a = &row_seeded[0]["attributes"];
     assert_eq!((s(&a["outcome"]), s(&a["seeded_from"])), ("row-seeded".to_string(), victim_id.clone()), "{a}");
@@ -189,6 +199,8 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // The mesh primary publishes the departure from that reply, before the runtime exits.
     let published = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).map(start).min().expect("the executor published NodeStopped from the left reply");
     assert!(left_at <= published && published < terminal, "NodeStopped follows left and precedes the terminal proof");
+    let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["build_id"] == build_id).map(|sp| s(&sp["attributes"]["step"])).collect();
+    assert!(!victim_steps.iter().any(|st| st == "ReleaseStorage"), "no step of the delete releases storage: {victim_steps:?}");
     for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"] {
         let done = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
@@ -196,13 +208,33 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
             .unwrap_or_else(|| panic!("{step} completed on the executor"));
         assert!(start(done) < terminal, "{step} precedes termination");
     }
-    // The command hooks: node-draining and node-leaving are heard by the other nodes of the fabric; the
-    // node authors no node-left frame (it gossips nothing for its stop).
+    // The command hooks: node-draining and node-leaving, which the owning mesh-admin authors, are heard
+    // by the other nodes of the fabric; the node authors no node-left frame (it gossips nothing for its
+    // stop).
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == VICTIM).count(), 0, "no node-left frame of the victim is heard by anyone");
-    for kind in ["node-draining", "node-leaving", "node-drained"] {
+    for kind in ["node-draining", "node-leaving"] {
         let heard = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] != VICTIM).count();
         assert!(heard >= 1, "{kind} for the victim was heard by another node: {heard}");
     }
+    // The completion hook is the victim's own (gossip.md "Node-draining and node-leaving events": "The
+    // node-drained upward call runs NodeDrained in the sending node after eligible in-flight work
+    // reaches zero. The node publishes the event on its own mesh channel."). What the doc makes certain
+    // is the publication and the call, not a peer's receipt: "the directed calls are the certainty"
+    // (gossip.md §10), and NodeDrained rides no aggregate (§7: only NodeDeleting and NodeDeleted are
+    // retained, in `in_flight` and `departed`; "No event is retried by the application and no second
+    // delivery mechanism exists"). The victim's stop cuts its gossip neighbours right after the drain
+    // (node-stop.md step 3), so a peer holds the frame only if iroh-gossip pushed it before the cut.
+    // The victim takes its own frame on its mesh channel, hands it to gossip, and calls node-drained at
+    // the executor, which accepted it (asserted above).
+    let own_hook: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["kind"] == "node-drained" && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] == VICTIM)
+        .collect();
+    assert_eq!(own_hook.len(), 1, "the victim published its node-drained once: {own_hook:#?}");
+    assert_eq!((s(&own_hook[0]["attributes"]["via"]), s(&own_hook[0]["attributes"]["forwarded_by"])), ("mesh-channel".to_string(), String::new()), "on its own mesh channel, as its author: {}", own_hook[0]);
+    let call: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["completion"] == "node-drained").collect();
+    assert_eq!(call.len(), 1, "the victim made one node-drained completion call: {call:#?}");
+    assert_eq!((s(&call[0]["attributes"]["hook"]), s(&call[0]["attributes"]["answer"])), ("published".to_string(), "applied".to_string()), "the hook went to gossip before the call, which the executor applied: {}", call[0]);
     let heard_deleting = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     // The victim's own mesh hears the pre-notice on its channel. A peer mesh gets it only inside a backbone

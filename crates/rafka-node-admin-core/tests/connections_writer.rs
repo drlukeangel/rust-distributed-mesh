@@ -29,7 +29,7 @@ fn resolved(e: &ConnectionEnd) -> ResolvedNode {
 }
 
 fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-    NodeConnection { source: source.clone(), destination: destination.clone(), kind, state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+    NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
 }
 
 fn data_dir(tag: &str) -> std::path::PathBuf {
@@ -44,7 +44,7 @@ async fn a_restart_hydrates_the_latest_proxy_row_and_the_first_resolution_uses_i
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
     // The previous birth wrote: Direct to dest failed, the carrier's edge to dest, a Proxy via the carrier.
     {
-        let storage = FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap();
+        let storage = FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap();
         let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
         failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 1, attempt_ordinal: 2 });
         for r in [failed, row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 11), row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 12)] {
@@ -53,7 +53,7 @@ async fn a_restart_hydrates_the_latest_proxy_row_and_the_first_resolution_uses_i
         }
     }
     // The next birth: a fresh writer over the same storage hydrates its held projection.
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     assert_eq!(writer.hydrate().await.unwrap(), 3);
@@ -73,7 +73,7 @@ async fn a_restart_hydrates_the_latest_proxy_row_and_the_first_resolution_uses_i
 async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pair() {
     let dir = data_dir("bounded");
     let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.hydrate().await.unwrap();
@@ -105,7 +105,7 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
 async fn a_direct_connected_beside_a_proxy_is_retired_durably_and_the_route_cuts_back() {
     let dir = data_dir("retire");
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.hydrate().await.unwrap();
@@ -128,7 +128,7 @@ async fn a_direct_connected_beside_a_proxy_is_retired_durably_and_the_route_cuts
 async fn an_accepted_inbound_direct_connected_retires_the_proxy_like_a_dial() {
     let dir = data_dir("accepted");
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.hydrate().await.unwrap();
@@ -183,7 +183,7 @@ impl ConnectionsStorage for RefusingIndex {
 async fn a_refused_retirement_write_keeps_the_proxy_effective_until_it_lands() {
     let dir = data_dir("refused-retirement");
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
+    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.hydrate().await.unwrap();
@@ -225,7 +225,7 @@ async fn a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connect
     use rafka_node_rpc::CarrierEdges;
     let dir = data_dir("edges");
     let (me, dest) = (end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     writer.hydrate().await.unwrap();
     assert_eq!(writer.edge_not_active(&dest.node_id).await, None, "no fact is not an edge fact");
@@ -273,7 +273,7 @@ async fn a_carrier_names_the_edge_a_dial_has_just_failed_however_slow_the_write(
     use rafka_node_rpc::CarrierEdges;
     let dir = data_dir("edges-slow");
     let (me, dest) = (end("mesh2.rpc.1"), end("mesh2.admin.1"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowIndex(Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap())));
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(SlowIndex(Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())));
     let writer = ConnectionsWriter::new(me.clone(), storage, Arc::new(Mutex::new(ConnectionsHeld::new())));
     writer.hydrate().await.unwrap();
     writer.direct_failed(&resolved(&dest), "timed out");
@@ -289,7 +289,7 @@ async fn a_carrier_names_the_edge_a_dial_has_just_failed_however_slow_the_write(
 async fn a_refused_observation_write_leaves_no_held_fact_and_the_next_observation_lands_it() {
     let dir = data_dir("refused-observation");
     let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
-    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
+    let storage = Arc::new(RefusingIndex { inner: Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap()), refuse: std::sync::atomic::AtomicU32::new(0) });
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.hydrate().await.unwrap();
@@ -324,7 +324,7 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     use rafka_node_rpc_contract::ping::{Ping, PingRequest};
     let dir = data_dir("dead-cold");
     let (me, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = Arc::new(ConnectionsWriter::new(me.clone(), storage.clone(), held.clone()));
     writer.hydrate().await.unwrap();
@@ -404,7 +404,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     let dir = data_dir("held-name");
     let (me, peer) = (end("mesh1.rpc.1.new"), end("mesh1.rpc.2"));
     let taken: PathName = "mesh1.rpc.1".parse().unwrap();
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &me.name, &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &me.name, &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     // The process's held name, as its membership holds it: none told yet, so the birth's.
@@ -443,15 +443,15 @@ async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
     let dir = data_dir("restart-series");
     let (previous, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
     let me = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..previous.clone() };
-    let open = || FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap();
+    let open = || async { FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap() };
     {
-        let storage = open();
+        let storage = open().await;
         let mut failed = row(&previous, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
         failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 4, attempt_ordinal: 2 });
         storage.append_history(&failed).await.unwrap();
         storage.put_connection(&failed).await.unwrap();
     }
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(open());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(open().await);
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
     assert_eq!(writer.hydrate().await.unwrap(), 1);
     writer.direct_failed(&resolved(&dest), "refused after the restart");
@@ -474,7 +474,7 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
     let dir = data_dir("next-birth-series");
     let (me, gone) = (end("mesh1.rpc.1"), end("mesh1.rpc.3"));
     let next = ConnectionEnd { incarnation: Some(IncarnationId::mint()), ..gone.clone() };
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &me.name, &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &me.name, &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
     writer.hydrate().await.unwrap();
     for i in 0..2 {

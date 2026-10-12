@@ -215,8 +215,8 @@ impl DeploymentProvider for Fleet {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id && self.running(s.pid)).map(|s| s.handle.clone())
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(self.spawned.lock().unwrap().iter().find(|s| s.handle.deployment_id == spec.deployment_id && self.running(s.pid)).map(|s| s.handle.clone()))
     }
 }
 
@@ -301,7 +301,7 @@ async fn accepted_build(builds: &MemoryBuildStateAdapter) -> BuildId {
 }
 
 fn request(build_id: &BuildId, attempt: u32, node: &PathName) -> CreateRequest {
-    CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: &RPC_NODE, restart_of: None, held_runtimes: Vec::new() }
+    CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() }
 }
 
 /// Attempt 1 by `lost`, killed at `dies`.

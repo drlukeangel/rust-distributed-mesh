@@ -51,7 +51,8 @@ pub struct Deployed {
     /// The authority holds this birth: the deployment is a later start of a node it admitted
     /// before (a parked or restarted birth), whose join is reconciled to its row and handed its
     /// row's config; `false` at a first start, admitted under its create spec's name whatever row
-    /// stands at that path.name (R-JN1 item 6). Set by the one that registers the deployment, never
+    /// stands at that path.name (R-JN1 item 6), and handed its row's config when that row is its own
+    /// create's claim. Set by the one that registers the deployment, never
     /// inferred from the last accepted name, which an admin that joined after the stop lacks
     /// (`MeshMembership::parked_unheard`).
     pub held: bool,
@@ -211,9 +212,9 @@ pub struct JoinDoor {
     /// Install the reported address for the key: membership's `register_location`, the live
     /// resolver, and with it the cancel of every dial aimed at the key's old address.
     pub install: Arc<dyn Fn(&MeshDigest) + Send + Sync>,
-    /// Project the installed birth into the view this admin's status authority resolves senders
-    /// from, so the admitted birth is known to that authority when the join is answered: its
-    /// first declaration is never `unknown peer`.
+    /// Project the installed birth into the view this admin's status authority decides from, so the
+    /// admitted birth is in that view when the join is answered: its first declaration finds its
+    /// subject held.
     pub known: Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
     /// The mesh primary this admin sees, by path.name.
     pub primary: Arc<dyn Fn() -> Option<String> + Send + Sync>,
@@ -240,6 +241,7 @@ impl JoinDoor {
             incarnation_id = %d.node.incarnation.0,
             reported_addr = %d.node.transport_addr,
             served_by = %self.me,
+            caller = tracing::field::Empty,
             admitted_as = tracing::field::Empty,
             config_keys = tracing::field::Empty,
             outcome = tracing::field::Empty,
@@ -250,11 +252,11 @@ impl JoinDoor {
         self.decide(peer, d, span.clone()).instrument(span).await
     }
 
+    /// Decide a join on its digest against what was deployed. Nothing checks who is calling
+    /// (node-rpc.md §14): the caller's endpoint names the call in its span, and the digest's
+    /// endpoint is what the deployment verifies.
     async fn decide(&self, peer: EndpointId, mut d: MeshDigest, span: tracing::Span) -> JoinReply {
-        if peer != d.node.endpoint_id {
-            span.record("outcome", "unauthorized");
-            return JoinReply::Unauthorized { reason: format!("{}: the calling endpoint {} is not the endpoint {} the digest of {} names", self.me, peer.0, d.node.endpoint_id.0, d.node.name) };
-        }
+        span.record("caller", peer.0.as_str());
         match self.joins.standing(&d) {
             Standing::Mismatch(m) => {
                 span.record("outcome", "mismatch");
@@ -267,15 +269,19 @@ impl JoinDoor {
                 // reported name, when it is the last accepted one, is never admitted (R-JN1).
                 d.node.name = name;
                 span.record("admitted_as", tracing::field::display(&d.node.name));
-                // A held birth's row config, handed beside its name: read before anything is
-                // installed, so a row that cannot be read installs nothing. A first start is
-                // admitted under its create spec's name (R-JN1 item 6): the row at that path.name,
-                // if any, is a predecessor's (a recovery's exited node), which the birth's own
-                // claim takes over after it joins (node_rows.rs `claim`), so it is not read here.
-                let row = if held { (self.row)(d.node.name.clone()).await } else { Ok(None) };
-                let config = match row {
+                // The row's config, handed beside its name and installed on the digest: read before
+                // anything is installed, so a row that cannot be read installs nothing. A first start
+                // is admitted under its create spec's name (R-JN1 item 6), and its row there is its own
+                // create's claim, written before it was launched (node-create.md step 1) and seeded
+                // from the previous row at that path.name (node-recovery.md step 4): it is handed that
+                // config at its join, before it publishes anything or declares readiness (node-start.md
+                // step 2). Another node's row at a first start's name (a create that wrote no claim, a
+                // predecessor's row) is handed nothing and refuses nothing; a held birth's join is
+                // reconciled to its row, and another node's row there is refused by name.
+                let config = match (self.row)(d.node.name.clone()).await {
                     Ok(None) => None,
                     Ok(Some(row)) if row.node_id == d.node.node_id => Some(row.config),
+                    Ok(Some(_)) if !held => None,
                     Ok(Some(row)) => {
                         span.record("outcome", "mismatch");
                         let m = Mismatch { field: "name", deployed: format!("the row at {} holds node {}", row.name, row.node_id), reported: format!("node {} as {}", d.node.node_id, d.node.name) };
@@ -288,6 +294,12 @@ impl JoinDoor {
                         return JoinReply::NotReady { reason: format!("{}: the node row at {} could not be read: {why}", self.me, d.node.name) };
                     }
                 };
+                // The digest installed for the birth carries the config it is handed, as it carries the
+                // row's name: what the birth publishes from its first digest on. The writer's arrival
+                // then finds the birth carrying its row's config and tells it nothing.
+                if let Some(c) = &config {
+                    d.config = c.clone();
+                }
                 span.record("config_keys", config.as_ref().map_or(0, |c| c.len()) as u64);
                 // The member cert is issued for this exact birth BEFORE it is admitted: a refused
                 // issuance leaves nothing installed for its key and completes no report.

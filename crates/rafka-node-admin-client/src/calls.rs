@@ -321,22 +321,17 @@ impl<'a> NodeRpc<'a> {
         self.status(NodeOp::Start, birth, req, opts).await
     }
 
-    /// `node.config.update`, the caller's single call to the fabric-primary: put the exact birth's whole
-    /// config. `ConfigUpdated` is `node.config.updated`: the fabric-primary wrote the node's row and the
-    /// birth holds the config. A config past its cap is `RejectedConfig`, naming the cap.
-    pub async fn config_update(&self, fabric_primary: &NodeTarget, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+    /// `node.config.update`, the caller's single call to the exact birth's mesh-primary, the writer of
+    /// that mesh's rows: put the birth's whole config. `route` is the caller's choice: `Direct` to the
+    /// mesh-primary, or `ViaPeer` through a carrier (Forward `0x1A`) when it is not directly
+    /// reachable, executed exactly as chosen (`NodeRpcClient::call_routed`). `ConfigUpdated` is
+    /// `node.config.updated`: the mesh-primary wrote the node's row and the birth applied the config.
+    /// A config past its cap is `RejectedConfig`, naming the cap; an admin that is not the birth's
+    /// mesh-primary refuses `RejectedNotAuthority`, naming the seat.
+    pub async fn config_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
-        let birth = ExactBirth { target: fabric_primary.clone(), ..birth.clone() };
-        self.status(NodeOp::ConfigUpdate, &birth, req, opts).await
-    }
-
-    /// The fabric-primary's call to the exact birth: hold this whole config and carry it in the next digest.
-    /// `route` is the caller's choice: `Direct` to the birth, or `ViaPeer` through the birth's
-    /// mesh-primary (Forward `0x1A`), executed exactly as chosen (`NodeRpcClient::call_routed`).
-    pub async fn config_apply(&self, birth: &ExactBirth, route: &RouteChoice, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::ApplyNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
         let span = NodeOp::ConfigUpdate.span();
-        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(&birth.node_id, route, &req, opts), span.clone()).await;
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, &req, opts), span.clone()).await;
         let r = ended(out);
         span.record("outcome", match &r {
             Ok(reply) => reply.name(),
@@ -344,6 +339,13 @@ impl<'a> NodeRpc<'a> {
         });
         span.in_scope(|| tracing::info!(op = NodeOp::ConfigUpdate.name(), route = route.token(), "an object call ended"));
         r
+    }
+
+    /// The mesh-primary's call to the exact birth of its mesh, direct: hold this whole config and
+    /// carry it in the next digest.
+    pub async fn config_apply(&self, birth: &ExactBirth, config: std::collections::BTreeMap<String, String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::ApplyNodeConfig { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), config };
+        self.status(NodeOp::ConfigUpdate, birth, req, opts).await
     }
 
     /// `node.update` of the exact birth's name, the caller's single call to the node's mesh-primary
@@ -365,10 +367,27 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
+    /// `node.connections.delete` of the exact birth's connections named by `scope`, the caller's single
+    /// call to the node's mesh-primary `mesh_primary` (R-CR2, R-CR3): it carries the cut to the exact
+    /// birth and holds the birth's `node.connections.deleted` for its rename precondition, answering the
+    /// birth's reply. `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
+    pub async fn connections_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rafka_node_rpc_contract::status::ConnectionScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::DeleteConnections { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
+        let span = NodeOp::ConnectionsDelete.span();
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, &req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(reply) => reply.name(),
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), route = route.token(), scope = scope.name(), "an object call ended"));
+        r
+    }
+
     /// The mesh-primary's call to the exact birth, after it wrote the renamed row: take this name and carry
     /// it in every digest from now on (`ApplyNodeName`, R12/R13). `Applied` once the birth holds and
-    /// published it, `AlreadyApplied` for the name it holds, `Busy` naming its in-flight count while it
-    /// routes traffic. `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
+    /// published it, `AlreadyApplied` for the name it holds, `Busy` naming the connections it holds
+    /// while it holds any (R-CR1). `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
     pub async fn name_apply(&self, birth: &ExactBirth, route: &RouteChoice, name: &rafka_mesh_entity::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::ApplyNodeName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
         let span = NodeOp::Update.span();

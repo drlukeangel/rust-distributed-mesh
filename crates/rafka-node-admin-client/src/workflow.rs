@@ -80,7 +80,7 @@ pub enum WorkflowKind {
     Stop(PathName),
     /// `node.start` of this parked node: `start-node:<path.name>`.
     Start(PathName),
-    /// `node.restart` of this node: `retire-node:<path.name>` then `restart-node:<path.name>`.
+    /// `node.restart` of this node: `restart-node:<path.name>`, one operation.
     Restart(PathName),
     /// `node.delete` of this node: `retire-node:<path.name>`.
     Delete(PathName),
@@ -143,15 +143,16 @@ macro_rules! start_rows {
     };
 }
 
-/// The retire leg of `target` under `retire-node`, from its drain to its departure (a delete, or the
-/// first half of a restart); its SeatTransfer row exists for a node-admin target alone.
-fn retire_rows(target: &PathName) -> Vec<Row> {
-    let mut rows: Vec<Row> = seat_transfer_row("retire-node", NodeStep::Drain, target).into_iter().collect();
+/// The shutdown leg of `target` under `operation`, from its drain to its `stopped` (the stop half of
+/// a delete under `retire-node`, the stop of a restart under `restart-node`); its SeatTransfer row
+/// exists for a node-admin target alone.
+fn shutdown_rows(operation: &'static str, target: &PathName) -> Vec<Row> {
+    let mut rows: Vec<Row> = seat_transfer_row(operation, NodeStep::Drain, target).into_iter().collect();
     rows.extend([
-        row("retire-node", "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
-        row("retire-node", "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
-        row("retire-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
-        row("retire-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
+        row(operation, "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
+        row(operation, "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
+        row(operation, "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
+        row(operation, "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
     ]);
     rows
 }
@@ -184,21 +185,20 @@ impl WorkflowKind {
                 rows
             }
             Self::Start(_) => start_rows!("start-node", &[], NodeStep::Start).into(),
-            // A restart: the birth is held, drains and stops (it parks), then the same process starts.
+            // A restart is one operation: the birth is held, drains and stops (it parks), then the
+            // same process starts, and its one `Complete` ends it.
             Self::Restart(n) => {
-                let mut rows = vec![row("retire-node", "NodeRestarting", NodeStep::Restart, &[NodeEvent::Restarting], false)];
-                rows.extend(retire_rows(n));
-                rows.push(row("retire-node", "Complete", NodeStep::Restart, &[], false));
+                let mut rows = vec![row("restart-node", "NodeRestarting", NodeStep::Restart, &[NodeEvent::Restarting], false)];
+                rows.extend(shutdown_rows("restart-node", n));
                 rows.extend(start_rows!("restart-node", &[NodeEvent::Restarted], NodeStep::Restart));
                 rows
             }
             Self::Delete(n) => {
                 let mut rows = vec![row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false)];
-                rows.extend(retire_rows(n));
+                rows.extend(shutdown_rows("retire-node", n));
                 rows.extend([
                     row("retire-node", "TerminateRuntime", NodeStep::Stop, &[], false),
                     row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
-                    row("retire-node", "ReleaseStorage", NodeStep::Delete, &[], false),
                     row("retire-node", "RemoveTopologyMembership", NodeStep::Delete, &[], false),
                     row("retire-node", "Complete", NodeStep::Delete, &[], true),
                 ]);

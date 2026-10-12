@@ -75,7 +75,7 @@ impl DeploymentProvider for Stubborn<'_> {
         }
         self.inner.signal_stop(h).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, rafka_node_admin_core::deployment::provider::DeployError> {
         self.inner.find(spec).await
     }
 }
@@ -103,9 +103,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-        let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-        // A cell that fails before its own terminate leaves no node running.
-        let _reap = common::ReapOnDrop(template.data_root.clone());
+        let template = template(&admin);
         let builds = MemoryBuildStateAdapter::new();
         let sink = Published::default();
         let process = ProcessDeploymentProvider::new();
@@ -132,7 +130,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
                 attempt: 1,
                 node: "mesh1.rpc.1".parse().unwrap(),
                 spec: &RPC_NODE,
-                restart_of: None,
+                data_dir: None,
                 held_runtimes: Vec::new(),
             })
             .await
@@ -149,7 +147,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
                 attempt: 1,
                 node: created.node.clone(),
                 handle: created.handle.clone(),
-                kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
+                exit: None,
             })
             .await;
         assert_eq!(
@@ -168,9 +166,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-        let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-        // A cell that fails before its own terminate leaves no node running.
-        let _reap = common::ReapOnDrop(template.data_root.clone());
+        let template = template(&admin);
         let builds = MemoryBuildStateAdapter::new();
         let sink = Published::default();
         let process = ProcessDeploymentProvider::new();
@@ -191,18 +187,18 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             template: &template,
             timeouts: timeouts(),
         };
-        let create = |build_id, restart_of| CreateRequest {
+        let create = |build_id| CreateRequest {
             build_id,
             attempt: 1,
             node: "mesh1.rpc.1".parse().unwrap(),
             spec: &RPC_NODE,
-            restart_of,
+            data_dir: None,
             held_runtimes: Vec::new(),
         };
 
         // Birth A, then A exits.
         let a = pipeline
-            .create(&create(publish_build(&builds, add_node()).await, None))
+            .create(&create(publish_build(&builds, add_node()).await))
             .await
             .unwrap_or_else(|e| panic!("create A: {e}"));
         process
@@ -213,7 +209,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
 
         // Birth B at the same path, ready.
         let b = pipeline
-            .create(&create(publish_build(&builds, add_node()).await, None))
+            .create(&create(publish_build(&builds, add_node()).await))
             .await
             .unwrap_or_else(|e| panic!("create B: {e}"));
         assert_ne!(b.node.incarnation_id, a.node.incarnation_id, "a new birth");
@@ -231,7 +227,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
                 attempt: 1,
                 node: b.node.clone(),
                 handle: b.handle.clone(),
-                kind: rafka_node_admin_core::deployment::pipeline::RetireKind::Removal,
+                exit: None,
             })
             .await;
         // B is live and admits its node-admin: its drain-node was admitted and its stop-node answered

@@ -162,7 +162,6 @@ The names, attributes, and units of OTLP spans/metrics across the substrate are 
 | `rdm.node_rpc.handler.reject.via-internal-rpc-failure` | `fault` |
 | `rdm.node_rpc.connection.reject.via-stale-slot` | `slot`, `node` |
 | `rdm.node_rpc.connection.evict.via-slot-superseded` / `via-incarnation-superseded` (the pool dropped a connection or dial whose exact slot target, or process birth, the resolver no longer names; `crates/rafka-node-rpc/src/pool.rs`) | `peer`, `slot`, `outcome` (`cancelled` / `late-connect-dropped` / `evicted`), `elapsed_ms` |
-| `rdm.node_rpc.connection.evict.via-timeout-strikes` (two consecutive reply deadlines evicted a pooled connection; never reachability) | `peer`, `slot`, `strikes` |
 
 On the membership, backbone and Build-topic spans above (`via-subscribe`, `via-resubscribe`, `via-status-publisher`, `via-refeed`, the Build-topic `fabric` rows), `fabric` is the Fabric's id (`RDM_FABRIC_ID`), the key of those topics; on the election spans it is the Fabric's name.
 

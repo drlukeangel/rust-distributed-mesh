@@ -6,7 +6,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId};
-use rafka_mesh_transport::membership::Membership;
+use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::deployment::pipeline::NodeObserver;
 use rafka_node_admin_core::model::Node;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
@@ -27,6 +27,9 @@ pub struct LiveMesh {
     pub resolver: Arc<StaticResolver>,
     /// The commands this admin side sent and awaits a completion call for.
     pub commands: Arc<rafka_node_admin_core::node_commands::CommandBook>,
+    /// Every round check-in (`StateCommitted`, `TrafficOpened`) a node made to this admin side, in
+    /// arrival order: the request as it came.
+    pub check_ins: Arc<tokio::sync::watch::Sender<Vec<rafka_node_rpc_contract::status::StatusRequest>>>,
 }
 
 impl LiveMesh {
@@ -103,22 +106,89 @@ impl NodeObserver for LiveMesh {
 }
 
 /// Every runtime a process provider launched under `data_root` (each birth's data dir carries the
-/// `deployment.json` the provider writes at spawn: its pid and start token) is killed when this is
+/// `deployment.json` the provider writes at spawn: its pid and start token) is stopped when this is
 /// dropped, however the cell ends: a cell that panics before its own terminate leaves no node behind.
-/// A pid whose start token no longer matches is another process (or none) and is left alone.
+/// The drop returns once each of them has exited. A pid whose start token no longer matches is
+/// another process (or none) and is left alone. [`AdminSide`] holds one over the data root of every
+/// launch from its template.
 pub struct ReapOnDrop(pub std::path::PathBuf);
 
 impl Drop for ReapOnDrop {
     fn drop(&mut self) {
         let Ok(dirs) = std::fs::read_dir(&self.0) else { return };
-        for dir in dirs.flatten() {
-            let Ok(record) = std::fs::read_to_string(dir.path().join("deployment.json")) else { continue };
-            let Ok(record) = serde_json::from_str::<serde_json::Value>(&record) else { continue };
-            let Some(pid) = record["pid"].as_u64().and_then(|p| u32::try_from(p).ok()) else { continue };
-            let start = record["start"].as_u64();
-            if start.is_some() && rafka_mesh_entity::runtime::process_start_token(pid) == start {
-                eprintln!("reap: {} still runs as pid {pid} after the cell: killed", dir.path().display());
-                let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+        // Every birth still running is signalled first, then each exit is awaited: the births stop
+        // together.
+        let signalled: Vec<Pidfd> = dirs.flatten().filter_map(|dir| Pidfd::kill_birth(&dir.path())).collect();
+        for birth in signalled {
+            birth.await_exit(Duration::from_secs(5));
+        }
+    }
+}
+
+/// One process this reap signalled, held by a pidfd: the fd names that exact process for its whole
+/// life (a recycled pid is another process and never matches it), and reads ready once every task of
+/// it has exited, so its sockets are released.
+struct Pidfd {
+    fd: std::os::fd::OwnedFd,
+    pid: u32,
+    dir: std::path::PathBuf,
+}
+
+impl Pidfd {
+    /// SIGKILL the runtime `dir`'s `deployment.json` names, when that exact process still runs.
+    fn kill_birth(dir: &std::path::Path) -> Option<Self> {
+        use std::os::fd::FromRawFd;
+        let record = std::fs::read_to_string(dir.join("deployment.json")).ok()?;
+        let record = serde_json::from_str::<serde_json::Value>(&record).ok()?;
+        let pid = record["pid"].as_u64().and_then(|p| u32::try_from(p).ok())?;
+        let start = record["start"].as_u64()?;
+        // The fd is opened before the start token is read: a token that matches then names the
+        // process the fd holds, and the signal below cannot reach a process that took the pid later.
+        // SAFETY: pidfd_open(2) with a pid and no flags; no memory is touched.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_int, 0 as libc::c_uint) };
+        if raw < 0 {
+            let e = std::io::Error::last_os_error();
+            // ESRCH: no such process, its exit already waited for by the provider.
+            if e.raw_os_error() != Some(libc::ESRCH) {
+                eprintln!("reap: {} names pid {pid}, which cannot be held to stop it: pidfd_open: {e}", dir.display());
+            }
+            return None;
+        }
+        // SAFETY: `raw` is a pidfd this call just opened and nothing else owns.
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw as libc::c_int) };
+        if rafka_mesh_entity::runtime::process_start_token(pid) != Some(start) {
+            return None;
+        }
+        eprintln!("reap: {} still runs as pid {pid} after the cell: killed", dir.display());
+        // SAFETY: pidfd_send_signal(2) on the pidfd held above, no siginfo, no flags.
+        let sent = unsafe { libc::syscall(libc::SYS_pidfd_send_signal, std::os::fd::AsRawFd::as_raw_fd(&fd), libc::SIGKILL, std::ptr::null::<libc::siginfo_t>(), 0 as libc::c_uint) };
+        if sent < 0 {
+            eprintln!("reap: SIGKILL to pid {pid} ({}) failed: {}", dir.display(), std::io::Error::last_os_error());
+            return None;
+        }
+        Some(Self { fd, pid, dir: dir.to_path_buf() })
+    }
+
+    /// Wait until the process has exited, at most `within`; a process still running after that is
+    /// named.
+    fn await_exit(self, within: Duration) {
+        let mut ready = libc::pollfd { fd: std::os::fd::AsRawFd::as_raw_fd(&self.fd), events: libc::POLLIN, revents: 0 };
+        loop {
+            // SAFETY: poll(2) over the one pollfd above, which outlives the call.
+            let n = unsafe { libc::poll(&mut ready, 1, within.as_millis() as libc::c_int) };
+            match n {
+                1.. => return,
+                0 => {
+                    eprintln!("reap: pid {} ({}) has not exited {within:?} after SIGKILL", self.pid, self.dir.display());
+                    return;
+                }
+                _ => {
+                    let e = std::io::Error::last_os_error();
+                    if e.kind() != std::io::ErrorKind::Interrupted {
+                        eprintln!("reap: awaiting the exit of pid {} ({}) failed: poll: {e}", self.pid, self.dir.display());
+                        return;
+                    }
+                }
             }
         }
     }
@@ -128,10 +198,14 @@ impl Drop for ReapOnDrop {
 pub const TEST_MESH_ID: &str = "meshd0000001";
 
 /// The admin side of a fabric: one endpoint serving gossip on `ip`, used as
-/// the nodes' membership seed, and the observer over it.
+/// the nodes' membership seed, and the observer over it. It is the launcher of every node a cell
+/// launches from its template, and owns their teardown: dropped, it stops every node launched under
+/// its data root and ends its publication rounds.
 pub struct AdminSide {
     pub observer: LiveMesh,
     pub seed: (String, SocketAddr),
+    /// The fabric this admin side serves.
+    pub fabric: FabricId,
     /// The births this admin side deployed and awaits a `JoinNode` from.
     pub joins: Arc<rafka_node_admin_core::join::Joins>,
     /// The admin every launch from `template` names as its launcher.
@@ -141,10 +215,24 @@ pub struct AdminSide {
     rows: Arc<std::sync::Mutex<std::collections::HashMap<rafka_mesh_entity::PathName, rafka_node_admin_core::storage::NodeRow>>>,
     /// The digest this admin side publishes as itself, on the membership cadence as a node-admin does.
     digest: Arc<std::sync::Mutex<rafka_mesh_entity::digest::MeshDigest>>,
+    /// Over the data root where every launch from this admin side's template keeps its births'
+    /// data dirs and the fabric's store root: stops every node launched under it, before the
+    /// admin's endpoint closes.
+    reap: ReapOnDrop,
+    /// Its publication rounds as its mesh's primary.
+    _rounds: AbortOnDrop,
+    /// Its own digest, published on the membership cadence.
+    _publisher: AbortOnDrop,
     _router: Router,
 }
 
 impl AdminSide {
+    /// The data root every launch from this admin side's template uses: the nodes under it are
+    /// stopped when the admin side drops.
+    pub fn data_root(&self) -> &std::path::Path {
+        &self.reap.0
+    }
+
     /// Say `status` as this admin side's own digest: how a test moves its authority from Pending
     /// to ReadyForTraffic.
     pub async fn publish_status(&self, status: rafka_mesh_entity::digest::MemberStatus) {
@@ -190,26 +278,32 @@ impl AdminSide {
 }
 
 pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs()).await
+    admin_side_taking_joins(ip, fabric, "mesh1.admin.1", true, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs()).await
 }
 
 /// [`admin_side`] whose rafka-time is `reference_ms` (adopted once, as a Day-0 root adopts its own
 /// clock) instead of the OS clock: a node it admits adopts that lineage, so a reading that matches
 /// it cannot have come from an OS clock.
 pub async fn admin_side_on_rafka_time(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: u64) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true, Some(reference_ms), |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs()).await
+    admin_side_taking_joins(ip, fabric, "mesh1.admin.1", true, Some(reference_ms), |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs()).await
 }
 
 /// [`admin_side`] that also serves what `serve` adds (an app's ops) and publishes itself as
 /// `status` to start with.
 pub async fn admin_side_serving(ip: std::net::IpAddr, fabric: &FabricId, status: rafka_mesh_entity::digest::MemberStatus, serve: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true, None, serve, status, no_certs()).await
+    admin_side_taking_joins(ip, fabric, "mesh1.admin.1", true, None, serve, status, no_certs()).await
+}
+
+/// [`admin_side_serving`] as the node-admin `name` of `mesh1` (`mesh1.admin.<n>`): a second admin
+/// side of the same fabric and mesh, for a cell where a seat moves between two node-admins.
+pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name: &str, status: rafka_mesh_entity::digest::MemberStatus, serve: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder) -> AdminSide {
+    admin_side_taking_joins(ip, fabric, name, true, None, serve, status, no_certs()).await
 }
 
 /// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
 /// `NotReady` by name, always.
 pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, false, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs()).await
+    admin_side_taking_joins(ip, fabric, "mesh1.admin.1", false, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs()).await
 }
 
 fn no_certs() -> Arc<dyn rafka_node_admin_core::certs::CertSigner> {
@@ -219,10 +313,10 @@ fn no_certs() -> Arc<dyn rafka_node_admin_core::certs::CertSigner> {
 /// [`admin_side_on_rafka_time`] whose join door issues each admitted birth's member cert with
 /// `signer`, on the admin side's rafka-time (the reference, when given).
 pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, reference_ms: Option<u64>, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, true, reference_ms, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, signer).await
+    admin_side_taking_joins(ip, fabric, "mesh1.admin.1", true, reference_ms, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, signer).await
 }
 
-async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder, status: rafka_mesh_entity::digest::MemberStatus, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>) -> AdminSide {
+async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder, status: rafka_mesh_entity::digest::MemberStatus, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the membership silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()
@@ -239,10 +333,10 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
             rafka_time.adopt(ms);
         }
         None => {
-            rafka_node_admin_core::rafka_time::adopt_own_clock(&tracing::Span::current(), &rafka_time, "mesh1.admin.1", rafka_node_admin_core::rafka_time::OWN_CLOCK_DAY0_ROOT);
+            rafka_node_admin_core::rafka_time::adopt_own_clock(&tracing::Span::current(), &rafka_time, name, rafka_node_admin_core::rafka_time::OWN_CLOCK_DAY0_ROOT);
         }
     }
-    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), "mesh1.admin.1", Arc::new(rafka_time.clone()), vec![]).await.unwrap();
+    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), name, Arc::new(rafka_time.clone()), vec![]).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
     let joins = Arc::new(rafka_node_admin_core::join::Joins::default());
@@ -252,15 +346,15 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
     let door = {
         let learner = membership.clone();
         Arc::new(rafka_node_admin_core::join::JoinDoor {
-            me: "mesh1.admin.1".parse().unwrap(),
+            me: name.parse().unwrap(),
             joins: joins.clone(),
             answer: Arc::new({
-                let rafka_time = rafka_time.clone();
+                let (rafka_time, served_by) = (rafka_time.clone(), name.to_string());
                 move || {
-                let rafka_time = rafka_time.clone();
+                let (rafka_time, served_by) = (rafka_time.clone(), served_by.clone());
                 Box::pin(async move {
                     Ok(rafka_node_admin_core::wire::JoinAnswer {
-                        served_by: "mesh1.admin.1".into(),
+                        served_by,
                         control: rafka_node_admin_core::wire::JoinControl { provider: rafka_node_admin_core::model::ProviderKind::Process, fabric: None, shutdown: None, build: None, rafka_time_ms: rafka_time.now_ms(), member_cert: Vec::new(), name: None, config: None },
                         statuses: vec![],
                     })
@@ -285,7 +379,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
     let own_digest_slot: Arc<std::sync::OnceLock<rafka_mesh_entity::digest::MeshDigest>> = Arc::new(std::sync::OnceLock::new());
     // The admin side holds its own mesh at a version its primary put into the mesh, as a running
     // admin does; it serves the topology it holds like every node.
-    let admin_publisher = rafka_mesh_entity::PublisherId { node: "mesh1.admin.1".into(), incarnation: admin_incarnation.clone() };
+    let admin_publisher = rafka_mesh_entity::PublisherId { node: name.into(), incarnation: admin_incarnation.clone() };
     let held = rafka_mesh_transport::snapshot::Chunk {
         mesh: "mesh1".into(),
         publisher: admin_publisher,
@@ -303,18 +397,25 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
     // The completion calls a commanded node makes back (`node-drained`, `node-left`) resolve the
     // open commands of this admin side.
     let commands = Arc::new(rafka_node_admin_core::node_commands::CommandBook::default());
+    // The round check-ins a node makes to this admin side as its commander are held in order and
+    // acknowledged; the admin side keeps no checklist.
+    let check_ins = Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
     let serve_commands = {
-        let commands = commands.clone();
+        let (commands, check_ins, receiver) = (commands.clone(), check_ins.clone(), name.to_string());
         move |b: rafka_node_rpc::ServerBuilder| {
             b.serve::<rafka_node_rpc_contract::status::Status, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Product("rdm".into()), move |_peer: rafka_node_rpc::PeerContext, req: rafka_node_rpc_contract::status::StatusRequest| {
-                let commands = commands.clone();
+                let (commands, check_ins, receiver) = (commands.clone(), check_ins.clone(), receiver.clone());
                 async move {
                     use rafka_node_rpc_contract::status::StatusRequest as R;
-                    let (R::NodeDrained { node_id, incarnation, .. } | R::NodeLeft { node_id, incarnation, .. }) = &req else {
+                    if matches!(req, R::StateCommitted { .. } | R::TrafficOpened { .. }) {
+                        check_ins.send_modify(|held| held.push(req));
+                        return Ok(rafka_node_rpc_contract::status::StatusReply::Applied);
+                    }
+                    let (R::NodeDrained { incarnation, .. } | R::NodeLeft { incarnation, .. }) = &req else {
                         return Ok(rafka_node_rpc_contract::status::StatusReply::NotReady { reason: "the admin side serves completion calls only".into() });
                     };
-                    let (node_id, incarnation) = (node_id.clone(), incarnation.clone());
-                    Ok(rafka_node_admin_core::node_commands::accept_completion(&commands, "mesh1.admin.1", Some((&node_id, Some(&incarnation), "the commanded birth")), &req))
+                    let incarnation = incarnation.clone();
+                    Ok(rafka_node_admin_core::node_commands::accept_completion(&commands, &receiver, Some((Some(&incarnation), "the commanded birth")), "", &req))
                 }
             })
         }
@@ -324,15 +425,14 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
         .expect("the admin side's catalog seals");
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, rpc_server).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();
-    // A node admits a downward lifecycle operation (a probe, a drain) only from a node-admin it
-    // holds in its own membership book, so the admin side publishes its digest as a real
-    // node-admin does on joining.
+    // The admin side publishes its digest as a real node-admin does on joining: a node addresses a
+    // drain's completion and its start's join to the admin its membership book holds.
     let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
     let admin_digest = rafka_mesh_entity::digest::MeshDigest {
         fabric_id: fabric.clone(),
         node: rafka_mesh_entity::digest::MeshNode {
             node_id: admin_node_id.clone(),
-            name: "mesh1.admin.1".parse().unwrap(),
+            name: name.parse().unwrap(),
             endpoint_id: rafka_mesh_entity::EndpointId(admin_ep.id().to_string()),
             transport_addr: addr,
             incarnation: admin_incarnation.clone(),
@@ -351,21 +451,50 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, takes_
         gossip: None,
     };
     membership.publish(&admin_digest).await.expect("the admin's digest publishes");
+    // The launcher is its mesh's primary, as a node-admin holding the seat is: it executes its
+    // members' lifecycle, authors their statuses from what they report to it, and publishes its
+    // member projection on its own mesh channel each round and at once on a material change
+    // (gossip.md §3.1 `Members`, the admin's publication round). Its members take every status
+    // from that projection.
+    let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", name, admin_incarnation.clone(), vec![]).await.expect("the launcher joins the backbone");
+    backbone.set_mesh_primary(true);
+    let rounds = {
+        let (backbone, membership) = (backbone.clone(), membership.clone());
+        AbortOnDrop(tokio::spawn(async move {
+            loop {
+                backbone.publish(&membership, backbone.own_members(&membership)).await;
+                backbone.round_wake(&membership, tokio::time::Instant::now() + rafka_mesh_transport::membership::gossip_interval()).await;
+            }
+        }))
+    };
     let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
-    let _publisher = {
+    let publisher = {
         let cell = digest_cell.clone();
-        membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone())
+        AbortOnDrop(membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone()))
     };
     let _ = own_digest_slot.set(admin_digest.clone());
     let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")), rafka_time.clone())));
     let resolver = Arc::new(StaticResolver::new());
     AdminSide {
-        observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands },
+        observer: LiveMesh { membership, client: NodeRpcClient::new(admin_ep.clone(), resolver.clone()), resolver, commands, check_ins },
         seed: (admin_ep.id().to_string(), addr),
+        fabric: fabric.clone(),
         joins,
-        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
+        launcher: rafka_mesh_entity::launch::Launcher { name: name.parse().unwrap(), node_id: admin_node_id, incarnation: admin_incarnation },
         rows,
         digest: digest_cell,
+        reap: ReapOnDrop(std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint()))),
+        _rounds: rounds,
+        _publisher: publisher,
         _router: router,
+    }
+}
+
+/// A task that ends with its holder.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }

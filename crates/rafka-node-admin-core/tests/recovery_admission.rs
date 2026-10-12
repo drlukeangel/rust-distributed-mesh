@@ -66,9 +66,9 @@ fn opened(facts: &[BuildFact]) -> usize {
 /// CONTRACT (#3051 acceptance 4, node-recovery.md "Numbered end-to-end sequence" step 1: "A repeat
 /// submit answers AlreadyApplied or BuildInProgress, never a second recovery"): the fabric-primary
 /// admits the first recovery of `mesh1.rpc.2`'s exited birth as the next attempt of the accepted
-/// Build. A repeat while that attempt is open answers `BuildInProgress`; a repeat once its
-/// `recover-node` operation completed for that exact birth answers `AlreadyApplied` naming the
-/// attempt that recovered it; a recovery submitted while another Build runs answers that Build's
+/// Build. A repeat while that attempt is open answers `BuildInProgress`; a repeat once its three
+/// operations (node.delete of the exited birth, node.create, node.update) completed answers
+/// `AlreadyApplied` naming the attempt that recovered it; a recovery submitted while another Build runs answers that Build's
 /// `BuildInProgress`. A node-admin whose mesh holds no other live node-admin is mesh recovery, never
 /// node recovery: refused by name. A repeat after a later
 /// topology Build was accepted is still `AlreadyApplied`: the recovery is keyed on the exited birth
@@ -116,7 +116,7 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     let repeat = cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await;
     assert!(matches!(&repeat, Err(Refusal::BuildInProgress(id)) if *id == b0), "{repeat:?}");
 
-    // The executor completes `recover-node:mesh1.rpc.2` for the exited birth.
+    // The executor completes the recovery of the exited birth: its delete, create and update.
     builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 2, executor: "mesh1.admin.1".into() }).await.unwrap();
     for r in recovery_receipts(&b0, 2, &path, &node_id, &birth, "mesh1.admin.1") {
         builds.append_step_receipt(&r).await.unwrap();
@@ -264,16 +264,21 @@ async fn until(what: &str, builds: &dyn BuildStateAdapter, id: &rafka_node_admin
     panic!("{what}: never held; last projection {:?}", builds.read_build(id).await);
 }
 
-/// The step receipts a recovery attempt writes for `recover-node:<path>` of the exited birth, as
-/// the recovery pipeline writes them (`DeploymentPipeline::recover`): `NodeDeleting` and
-/// `NodeDeleted` carry the lifecycle operation naming the exited birth, and `Complete` commits no
-/// output; the create's steps between them and `Complete` are elided (they name the new node, not
-/// the exited one).
+/// The step receipts a recovery attempt writes for the exited birth (node-recovery.md "Steps"), as
+/// its three workflows write them: the delete's (`retire-node:<path>`: `NodeDeleting` and
+/// `NodeDeleted` carry the lifecycle operation naming the exited birth, `Complete` commits no
+/// output), then the create's `Complete` (`create-node:<path>`) and the update's (`update-node:<path>`);
+/// the create's steps before its `Complete` and the update's `UpdateNode` are elided (they name the
+/// new node, not the exited one).
 fn recovery_receipts(build: &rafka_node_admin_core::build::BuildId, attempt: u32, path: &PathName, node_id: &NodeId, birth: &IncarnationId, executor: &str) -> Vec<BuildStepReceipt> {
-    deletion_receipts("recover-node", build, attempt, path, node_id, birth, executor)
+    let mut receipts = deletion_receipts("retire-node", build, attempt, path, node_id, birth, executor);
+    for kind in ["create-node", "update-node"] {
+        receipts.push(BuildStepReceipt { build_id: build.clone(), attempt, operation: format!("{kind}:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: Some(executor.into()) });
+    }
+    receipts
 }
 
-/// The step receipts of node workflow `kind` (`recover-node`, `replace-node`, `retire-node`) at
+/// The step receipts of node workflow `kind` (`replace-node`, `retire-node`) at
 /// `path` that deleted the exact birth: `NodeDeleting` and `NodeDeleted` carry the node.delete's
 /// lifecycle operation naming that birth, as every deleting pipeline writes them; `Complete` ends
 /// the operation. The steps between them name the successor, never the deleted birth: elided.
@@ -291,8 +296,8 @@ fn deletion_receipts(kind: &str, build: &rafka_node_admin_core::build::BuildId, 
 /// CONTRACT (node-recovery.md "Numbered end-to-end sequence" steps 1-2: the mesh-primary submits
 /// the recovery to the fabric-primary, keyed on the exited birth, and "A repeat submit answers
 /// AlreadyApplied or BuildInProgress, never a second recovery"): when the mesh-primary that
-/// executes the recovery is NOT the fabric-primary, every receipt of its `recover-node` operation
-/// rides the fabric's Build topic to the fabric-primary, and the fabric-primary answers a repeat
+/// executes the recovery is NOT the fabric-primary, every receipt of its three operations rides the
+/// fabric's Build topic to the fabric-primary, and the fabric-primary answers a repeat
 /// submit for that exited birth `AlreadyApplied`, naming the attempt that recovered it, from the
 /// receipts it heard. Must NOT happen: a receipt of the recovery that cannot be broadcast (the
 /// executor's own log alone holds it), or a second recovery attempt opened by the fabric-primary.
@@ -334,7 +339,7 @@ async fn a_recovery_run_by_a_mesh_primary_that_is_not_the_fabric_primary_is_answ
     }
     mp.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: first.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     until("the fabric-primary hears the recovery attempt converge", &*fp, &b0, |p| p.state == rafka_node_admin_core::build_state::BuildState::Complete && p.attempt == first.attempt).await;
-    assert_eq!(fp.recovery_of(&path, &node_id, &birth).await.unwrap(), Some((b0.clone(), first.attempt, format!("recover-node:{path}"))), "the fabric-primary's recovery index holds the exited birth from the heard receipts");
+    assert_eq!(fp.recovery_of(&path, &node_id, &birth).await.unwrap(), Some((b0.clone(), first.attempt, format!("retire-node:{path}"))), "the fabric-primary's recovery index holds the exited birth from the heard receipts");
 
     // The repeat submit, at the fabric-primary.
     let before = opened(&fp.facts().await.unwrap());

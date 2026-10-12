@@ -65,5 +65,7 @@ pub mod store_root;
 pub mod status_storage;
 pub mod topology;
 pub mod topology_read;
+pub mod views;
 pub mod wire;
 pub mod wiring;
+pub mod workflows;

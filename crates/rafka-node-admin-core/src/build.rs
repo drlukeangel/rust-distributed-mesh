@@ -182,10 +182,14 @@ pub enum BuildOperation {
         /// The mesh to create.
         mesh: String,
     },
-    /// Create a node at `node`.
+    /// Create a node at `node` (node-create.md).
     CreateNode {
         /// The node to create.
         node: PathName,
+        /// Node recovery's create (node-recovery.md sequence step 4): the exited birth whose data
+        /// dir the new node takes over whole, with the endpoint key it holds. `None`: a fresh data dir.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        over: Option<ExitedBirth>,
     },
     /// Restart a node's exact birth.
     RestartNode {
@@ -228,23 +232,32 @@ pub enum BuildOperation {
         /// The birth started.
         from_incarnation: IncarnationId,
     },
-    /// Recover `node` from its exact exited birth `(node_id, from_incarnation)` (node-recovery.md):
-    /// node.delete of the exited instance (no stop frames; node.deleted from the exit proof), then
-    /// node.create at the same path.name over the inherited data dir, with a new node.id. Executed
-    /// by the node's mesh-primary.
-    RecoverNode {
-        /// The node's `path.name`.
+    /// Delete the parked exact birth `from_incarnation` a replacement left at `node`, a `.old` path
+    /// (node-decommission.md): its stop steps are done; `NodeDeleting`, the provider's exact Exited
+    /// proof, `NodeDeleted`, and `Complete` naming the birth. Storage is kept.
+    DeleteNode {
+        /// The parked node's `.old` path.
         node: PathName,
-        /// The exited instance's node.id.
-        node_id: NodeId,
-        /// The exited birth.
+        /// The birth deleted.
         from_incarnation: IncarnationId,
     },
-    /// Remove the logical node through the retire pipeline; what happens to its storage is the
-    /// accepted Build's StorageMeta for the path, decided there.
+    /// Remove the logical node through the retire pipeline (node-delete.md): its storage stays.
     RetireNode {
         /// The node to retire.
         node: PathName,
+        /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
+        /// exact exited birth, deleted on its mesh-primary's recorded exit proof. Its stop steps are
+        /// already done, and nothing is sent to it. `None`: the birth the view holds at `node`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exited: Option<ExitedBirth>,
+    },
+    /// node.update of the node at `node` (node-update.md; node-recovery.md sequence step 6): the
+    /// caller-owned meta of the exited birth `from` copied onto the new node created at its path.
+    UpdateNode {
+        /// The node updated: the one created at the exited birth's path.name.
+        node: PathName,
+        /// The exited birth whose caller-owned meta is copied.
+        from: ExitedBirth,
     },
     /// Shut a whole mesh down (mesh-leave.md): the fabric-primary owns the workflow, the mesh's
     /// primary drains and stops every other member, and the fabric-primary stops the final primary
@@ -258,21 +271,40 @@ pub enum BuildOperation {
 }
 
 impl BuildOperation {
+    /// The node the operation acts on; `None` for a mesh operation.
+    pub fn node(&self) -> Option<&PathName> {
+        match self {
+            Self::CreateNode { node, .. } | Self::ReplaceNode { node, .. } | Self::RestartNode { node } | Self::DrainNode { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::UpdateNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } => None,
+        }
+    }
+
     /// The idempotency key.
     pub fn key(&self) -> String {
         match self {
             Self::CreateMesh { mesh } => format!("create-mesh:{mesh}"),
-            Self::CreateNode { node } => format!("create-node:{node}"),
+            Self::CreateNode { node, .. } => format!("create-node:{node}"),
             Self::ReplaceNode { node, .. } => format!("replace-node:{node}"),
             Self::RestartNode { node } => format!("restart-node:{node}"),
             Self::DrainNode { node, .. } => format!("drain-node:{node}"),
             Self::StopNode { node, .. } => format!("stop-node:{node}"),
             Self::StartNode { node, .. } => format!("start-node:{node}"),
-            Self::RecoverNode { node, .. } => format!("recover-node:{node}"),
+            Self::UpdateNode { node, .. } => format!("update-node:{node}"),
+            Self::DeleteNode { node, .. } => format!("delete-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
         }
     }
+}
+
+/// The exact exited birth a node recovery acts for: the node.id and incarnation its mesh-primary
+/// proved exited (node-recovery.md "Detection and proof").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExitedBirth {
+    /// The exited birth's node.id.
+    pub node_id: NodeId,
+    /// The exited birth's incarnation.
+    pub incarnation: IncarnationId,
 }
 
 /// The ordered operations that realize a Build.
@@ -502,10 +534,10 @@ fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOper
             let taken: BTreeSet<u32> = members.iter().map(|n| n.name.ordinal).collect();
             let mut ord = 1;
             for _ in have..want {
-                while taken.contains(&ord) || ops.contains(&BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) }) {
+                while taken.contains(&ord) || ops.contains(&BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord), over: None }) {
                     ord += 1;
                 }
-                ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) });
+                ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord), over: None });
                 ord += 1;
             }
         } else if have > want {
@@ -513,7 +545,7 @@ fn reconcile_counts(t: &Topology, desired: &MeshDesired, ops: &mut Vec<BuildOper
             // non-primaries first, then by descending ordinal
             order.sort_by(|a, b| a.is_primary.cmp(&b.is_primary).then(b.name.ordinal.cmp(&a.name.ordinal)));
             for n in order.into_iter().take((have - want) as usize) {
-                ops.push(BuildOperation::RetireNode { node: n.name.clone() });
+                ops.push(BuildOperation::RetireNode { node: n.name.clone(), exited: None });
             }
         }
     }
@@ -523,7 +555,7 @@ fn create_mesh(desired: &MeshDesired, ops: &mut Vec<BuildOperation>) {
     ops.push(BuildOperation::CreateMesh { mesh: desired.name.clone() });
     for (kind, want) in desired.counts() {
         for ord in 1..=want {
-            ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord) });
+            ops.push(BuildOperation::CreateNode { node: PathName::new(&desired.name, kind, ord), over: None });
         }
     }
 }
@@ -583,7 +615,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
                 return Err(BuildReject::UnknownMesh { mesh: mesh.clone() });
             }
             if !observed.node(target).is_some_and(|n| n.status.is_live()) {
-                ops.push(BuildOperation::CreateNode { node: target.clone() });
+                ops.push(BuildOperation::CreateNode { node: target.clone(), over: None });
             }
         }
         BuildIntent::AddNode { mesh, node_kind, target: None } => {
@@ -597,7 +629,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
         BuildIntent::RemoveNode { node, incarnation: Some(birth) } => {
             // Done once that birth is gone or another birth holds the path.
             if observed.node(node).is_some_and(|n| n.incarnation_id.as_ref() == Some(birth) && n.status.is_live()) {
-                ops.push(BuildOperation::RetireNode { node: node.clone() });
+                ops.push(BuildOperation::RetireNode { node: node.clone(), exited: None });
             }
         }
         BuildIntent::RemoveNode { node, incarnation: None } => {
@@ -605,7 +637,7 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             if node.kind == NodeKind::NodeAdmin && live(observed, &node.mesh, NodeKind::NodeAdmin).len() <= 1 {
                 return Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: node.mesh.clone() });
             }
-            ops.push(BuildOperation::RetireNode { node: node.clone() });
+            ops.push(BuildOperation::RetireNode { node: node.clone(), exited: None });
         }
         BuildIntent::RestartNode { node, from_incarnation } => {
             let n = observed.node(node).ok_or_else(|| BuildReject::UnknownNode { node: node.to_string() })?;
@@ -720,7 +752,7 @@ mod tests {
     }
 
     fn create(s: &str) -> BuildOperation {
-        BuildOperation::CreateNode { node: p(s) }
+        BuildOperation::CreateNode { node: p(s), over: None }
     }
 
     fn with_incarnations(mut t: Topology) -> Topology {
@@ -760,7 +792,7 @@ mod tests {
     fn a_pinned_remove_is_done_once_that_birth_is_gone_and_never_refused() {
         let t = with_incarnations(mn());
         let pinned = pin(BuildIntent::RemoveNode { node: p("mesh1.rpc.3"), incarnation: None }, &t).unwrap();
-        assert_eq!(plan(&pinned, &t).unwrap().operations, vec![BuildOperation::RetireNode { node: p("mesh1.rpc.3") }]);
+        assert_eq!(plan(&pinned, &t).unwrap().operations, vec![BuildOperation::RetireNode { node: p("mesh1.rpc.3"), exited: None }]);
         let mut gone = t.clone();
         gone.nodes.retain(|n| n.name != p("mesh1.rpc.3"));
         assert_eq!(plan(&pinned, &gone), Ok(BuildPlan { operations: vec![] }), "done, not unknown-node");
@@ -774,7 +806,7 @@ mod tests {
     }
 
     fn retire(s: &str) -> BuildOperation {
-        BuildOperation::RetireNode { node: p(s) }
+        BuildOperation::RetireNode { node: p(s), exited: None }
     }
 
     fn desired(meshes: &[(&str, u32, u32)]) -> BuildIntent {

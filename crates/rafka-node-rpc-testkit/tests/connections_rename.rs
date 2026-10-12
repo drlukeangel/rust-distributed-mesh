@@ -4,9 +4,10 @@
 //! and `ApplyNodeName` makes it hold and publish the renamed one).
 //!
 //! CONTRACT: `mesh1.rpc.1` is born `mesh1.rpc.1.new`, and its join to its admin is a connections
-//! entry naming `mesh1.rpc.1.new` as its source. Told `ApplyNodeName { mesh1.rpc.1 }` with nothing
-//! in flight it answers `Applied`; its peer `mesh1.rpc.2` hears the renamed digest and resolves the
-//! birth at `mesh1.rpc.1`, and nothing at `mesh1.rpc.1.new`. The peer then dials it: the renamed
+//! entry naming `mesh1.rpc.1.new` as its source. It is stopped (R-CR1a: its stop deletes every
+//! connection), its row is renamed `mesh1.rpc.1` while it is stopped, and it starts under the row's
+//! name; its peer `mesh1.rpc.2` hears the renamed digest and resolves the birth at `mesh1.rpc.1`, and
+//! nothing at `mesh1.rpc.1.new`. The peer then dials it: the renamed
 //! node's accept entry names `mesh1.rpc.1` as its source with its own node id and birth, and is held
 //! as its own Direct; the peer's dial entry names `mesh1.rpc.1` as its destination with the same
 //! node id. The entry written before the rename stays exactly as written (the log is kept). What
@@ -21,6 +22,8 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, P
 use rafka_node_rpc::{CallOptions, NodeResolver, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+use rafka_node_admin_core::model::NodeStatus;
+use rafka_node_admin_core::storage::NodeRow;
 use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
@@ -41,6 +44,10 @@ fn kept_log(store: &std::path::Path, fabric: &FabricId, name: &PathName) -> Vec<
 
 #[test]
 fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends() {
+    // The stop parks the process (its parking flag is process-wide): the cell runs in a process of its own.
+    if crate::own_process::delegated(module_path!(), "a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends") {
+        return;
+    }
     let cap = crate::common::capture("a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -49,6 +56,8 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         let root = std::env::temp_dir().join(format!("connections-rename-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
+        // The cell reads the node's kept log on the store root: its fabric is past its first state-commit.
+        crate::common::store_past_state_commit(&store, &fabric).await;
         let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
         let taken: PathName = "mesh1.rpc.1".parse().unwrap();
         let peer_name: PathName = "mesh1.rpc.2".parse().unwrap();
@@ -111,15 +120,28 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             "the join is an entry naming the birth's name as its source: {before:#?}"
         );
 
-        // The rename, with nothing in flight.
+        // The rename (R-CR1a): stopped, which deletes every connection it held, its row renamed while
+        // it is stopped, then started under the row's name.
         let (d, _) = book.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
-        let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.to_string() };
-        match admin.observer.client.call::<Status>(&NodeTarget::ExactNode(renamed.node_id.clone()), &apply, &opts).await.0 {
-            RpcOutcome::Reply(r) => assert_eq!(r.into_value(), StatusReply::Applied),
-            other => panic!("ApplyNodeName did not end in a reply: {other:?}"),
-        }
+        let target = NodeTarget::ExactNode(renamed.node_id.clone());
+        let call = |req: StatusRequest| {
+            let (client, target, opts) = (&admin.observer.client, &target, &opts);
+            async move {
+                match client.call::<Status>(target, &req, opts).await.0 {
+                    RpcOutcome::Reply(r) => r.into_value(),
+                    other => panic!("{} did not end in a reply: {other:?}", req.op()),
+                }
+            }
+        };
+        let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 1, operation: format!("stop-node:{born}") };
+        assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
+        admin.put_row(NodeRow { name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, config: Default::default() });
+        let key = node::load_or_mint_key(&root.join(born.to_string())).unwrap();
+        admin.deployed_as(&renamed, &key, taken.clone(), Some(born.clone()));
+        let start = StatusRequest::StartNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 2, operation: format!("start-node:{taken}") };
+        assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");
 
         // The peer hears the renamed digest, and the feed of its own process takes it into its
         // resolver: each answer change ticks the resolver. Its book holds the digest before the
@@ -199,4 +221,107 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             "an observed {origin} fact {source} -> {destination} landed: {observed:#?}"
         );
     }
+}
+
+/// CONTRACT: a node renamed while it is stopped records its start's join connection under the
+/// name its join answer handed it (lifecycles/node-start.md step 2: the node installs the handed
+/// name before it publishes anything; fabric-node-lifecycle.md §8: a row names the ends'
+/// path.names; R12: the node publishes only the row's name). `mesh1.rpc.1.new` is stopped, its
+/// row is renamed `mesh1.rpc.1` while it is stopped, and it starts: the start records no
+/// connection until it holds `mesh1.rpc.1`, so the entry of its join dial to its admin names
+/// `mesh1.rpc.1` as its source, with its own node id and birth. What must NOT happen: an entry
+/// written by the start naming `mesh1.rpc.1.new`, the name the node gave up at its join (the
+/// node would hold `mesh1.rpc.1` and a connection whose kept entry names the other name).
+#[test]
+fn a_node_renamed_while_stopped_records_its_join_connection_under_the_handed_name() {
+    // The stop parks the process (its parking flag is process-wide): the cell runs in a process of its own.
+    if crate::own_process::delegated(module_path!(), "a_node_renamed_while_stopped_records_its_join_connection_under_the_handed_name") {
+        return;
+    }
+    let cap = crate::common::capture("a_node_renamed_while_stopped_records_its_join_connection_under_the_handed_name");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let root = std::env::temp_dir().join(format!("join-row-name-{}", NodeId::mint()));
+        let store = root.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        // The cell reads the node's kept log on the store root: its fabric is past its first state-commit.
+        crate::common::store_past_state_commit(&store, &fabric).await;
+        let born: PathName = "mesh1.rpc.1.new".parse().unwrap();
+        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        let dir = root.join(born.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        let key = node::load_or_mint_key(&dir).unwrap();
+        let launch = Launch {
+            fabric: "fabric1".into(),
+            fabric_id: fabric.clone(),
+            name: born.clone(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+            seeds: vec![admin.seed.clone()],
+            launcher: Some(admin.launcher.clone()),
+            data_dir: dir.clone(),
+            store_dir: store.clone(),
+            mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
+            mesh_issuer: None,
+        };
+        admin.deployed(&launch, &key);
+        let seams: Arc<OnceLock<Seams>> = Arc::default();
+        let slot = seams.clone();
+        let _running = node::start_with_seams(&launch, move |b, s| {
+            let _ = slot.set(s);
+            b
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{} comes up: {e}", launch.name));
+        let seams = seams.get().cloned().expect("the node handed its seams");
+        let book = &admin.observer.membership.book;
+        let mut heard = book.heard_changes();
+        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+            heard.changed().await.unwrap();
+        }
+
+        // Stopped (its stop deletes every connection it held), its row renamed while it is stopped.
+        let (d, _) = book.get(launch.node_id.as_str()).unwrap();
+        admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let target = NodeTarget::ExactNode(launch.node_id.clone());
+        let call = |req: StatusRequest| {
+            let (client, target, opts) = (&admin.observer.client, &target, &opts);
+            async move {
+                match client.call::<Status>(target, &req, opts).await.0 {
+                    RpcOutcome::Reply(r) => r.into_value(),
+                    other => panic!("{} did not end in a reply: {other:?}", req.op()),
+                }
+            }
+        };
+        let stop = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_join_row".into(), attempt: 1, operation: format!("stop-node:{born}") };
+        assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
+        seams.connections.drain().await;
+        let at_stop = kept_log(&store, &fabric, &born).len();
+        admin.put_row(NodeRow { name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, config: Default::default() });
+        admin.deployed_as(&launch, &key, taken.clone(), Some(born.clone()));
+        let start = StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_join_row".into(), attempt: 2, operation: format!("start-node:{taken}") };
+        assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");
+        seams.connections.drain().await;
+
+        // Every entry the start wrote names the name the node holds, the handed one.
+        let started = kept_log(&store, &fabric, &born)[at_stop..].to_vec();
+        let join = started
+            .iter()
+            .find(|e| e.kind == ConnectionKind::Direct && e.state == ConnectionState::Connected && e.destination.name.to_string() == "mesh1.admin.1")
+            .unwrap_or_else(|| panic!("the start's join dialled the admin: an entry for it: {started:#?}"));
+        assert_eq!(
+            (&join.source.name, &join.source.node_id, join.source.incarnation.as_ref()),
+            (&taken, &launch.node_id, Some(&launch.incarnation)),
+            "the join's entry names {taken}, the name its join answer handed, as its source: {started:#?}"
+        );
+        let gave_up: Vec<&NodeConnection> = started.iter().filter(|e| e.source.name == born).collect();
+        assert!(gave_up.is_empty(), "no entry the start wrote names {born}, the name the node gave up at its join: {gave_up:#?}");
+        let _ = std::fs::remove_dir_all(&root);
+    });
 }

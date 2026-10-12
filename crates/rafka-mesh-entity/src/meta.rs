@@ -15,17 +15,19 @@ pub struct NodeMeta {
     pub placement: PlacementMeta,
 }
 
-/// What survives a topology-preserving runtime loss or restart, and what happens to persistent
-/// storage when the logical node is intentionally retired. The type holds exactly the three
-/// meaningful states; no invalid combination is representable.
+/// What survives a topology-preserving runtime loss or restart, and the declared disposition of
+/// persistent storage once its node is gone. A delete releases no storage in any state
+/// (node-delete.md "Storage"). The type holds exactly the three meaningful states; no invalid
+/// combination is representable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "persistence", rename_all = "kebab-case", try_from = "StorageMetaRow")]
 pub enum StorageMeta {
-    /// Fresh storage at every birth; nothing survives a restart or a retirement.
+    /// Fresh storage for a new node.
     Ephemeral,
-    /// Storage survives a restart; `on_retire` says what an intentional retirement does with it.
+    /// Storage survives stop, start and restart, and a new node created over an inherited data dir
+    /// keeps it; `on_retire` is its declared disposition once the node is gone.
     Persistent {
-        /// What an intentional retirement does with the storage.
+        /// The declared disposition of the storage once the node is gone.
         on_retire: PersistentRetireDisposition,
     },
 }
@@ -65,13 +67,15 @@ impl TryFrom<StorageMetaRow> for StorageMeta {
     }
 }
 
-/// What an intentional retirement does with persistent storage.
+/// The declared disposition of persistent storage once its node is gone. node.delete acts on
+/// neither: it retains the data dir and endpoint key (node-delete.md "Storage"); application
+/// storage removal is separate work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PersistentRetireDisposition {
-    /// Retirement leaves the storage where it is.
+    /// The storage is kept.
     Preserve,
-    /// Retirement releases the storage through an explicit provider action on its exact locator.
+    /// The storage may be removed by separate application work; node.delete does not release it.
     Release,
 }
 

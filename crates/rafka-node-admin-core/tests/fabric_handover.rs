@@ -220,9 +220,11 @@ async fn fabric(successor_status: NodeStatus, third: bool, serve_incumbent: bool
     (Pair { incumbent, successor, mesh1_id: MeshId::mint() }, third)
 }
 
+/// One call; a call with no reply panics naming the outcome and the leg it used (the dial's failure,
+/// or the pooled connection it rode).
 async fn send(from: &Admin, to: &Admin, req: Request) -> Reply {
-    let (out, _) = from.client.call::<FabricPrimaryHandover>(&NodeTarget::ExactNode(to.resolved.node_id.clone()), &req, &CallOptions::default()).await;
-    out.reply().unwrap_or_else(|| panic!("no reply: {out:?}")).value().clone()
+    let (out, ev) = from.client.call::<FabricPrimaryHandover>(&NodeTarget::ExactNode(to.resolved.node_id.clone()), &req, &CallOptions::default()).await;
+    out.reply().unwrap_or_else(|| panic!("no reply: {out:?} evidence {ev:?}")).value().clone()
 }
 
 fn take(f: &Pair, epoch: u64, operation: &str) -> Request {
@@ -327,7 +329,7 @@ fn fabric_primary_of(t: &Topology) -> Option<String> {
 /// its Build door and driven from the committed seat; once the handover is confirmed, the
 /// incumbent's view names the successor. What must NOT happen: the successor answering Applied
 /// while its view still names the incumbent (its Build door then refuses the resubmit
-/// not-fabric-primary, naming the admin that yielded).
+/// not-fabric-primary, naming the incumbent the seat moved from).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_successor_answers_the_command_with_its_view_naming_it_the_fabric_primary() {
     let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
@@ -367,12 +369,12 @@ async fn a_wrong_birth_a_stale_epoch_and_a_conflict_are_each_refused_by_name() {
     let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
     let op = "fabric-primary-handover:refusals";
     let other_birth = |b: &HandoverBirth| HandoverBirth { incarnation: IncarnationId("another-birth".into()), ..b.clone() };
-    // The command names a birth that is not the receiver's, or not the caller's.
+    // The command names a birth that is not the receiver's, or one the receiver's view does not hold.
     let wrong_successor = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: other_birth(&birth(&f.successor)), expected_epoch: 7, operation: op.into() };
     assert_eq!(send(&f.incumbent, &f.successor, wrong_successor).await, Reply::RejectedWrongBirth { role: "successor".into() });
     let wrong_incumbent = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: other_birth(&birth(&f.incumbent)), successor: birth(&f.successor), expected_epoch: 7, operation: op.into() };
     assert_eq!(send(&f.incumbent, &f.successor, wrong_incumbent).await, Reply::RejectedWrongBirth { role: "incumbent".into() });
-    // A completion naming a successor that is not the caller, or an incumbent that is not the receiver.
+    // A completion naming a successor the receiver's view does not hold, or an incumbent that is not the receiver.
     let taken_wrong_successor = Request::FabricPrimaryTaken { fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: other_birth(&birth(&f.successor)), expected_epoch: 7, committed_epoch: 8, operation: op.into() };
     assert_eq!(send(&f.successor, &f.incumbent, taken_wrong_successor).await, Reply::RejectedWrongBirth { role: "successor".into() });
     let taken_wrong_incumbent = Request::FabricPrimaryTaken { fabric: "fabric1".into(), incumbent: other_birth(&birth(&f.incumbent)), successor: birth(&f.successor), expected_epoch: 7, committed_epoch: 8, operation: op.into() };
@@ -381,7 +383,7 @@ async fn a_wrong_birth_a_stale_epoch_and_a_conflict_are_each_refused_by_name() {
     assert_eq!(send(&f.incumbent, &f.successor, take(&f, 5, op)).await, Reply::RejectedStaleEpoch { expected: 5, current: 7 });
     // A completion whose committed epoch is not the next one.
     assert_eq!(send(&f.successor, &f.incumbent, taken(&f, 7, 9, op)).await, Reply::RejectedStaleEpoch { expected: 8, current: 9 });
-    // A command from a caller that is not the seat holder: the successor's record says someone else.
+    // A command naming an incumbent that is not the seat holder: the successor's record says someone else.
     let impostor = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: birth(&f.successor), expected_epoch: 7, operation: "fabric-primary-handover:impostor".into() };
     let seat_elsewhere = SeatHolder { mesh: "mesh9".into(), node_id: NodeId::parse("000000000003").unwrap(), incarnation: IncarnationId("x".into()), epoch: 8 };
     f.successor.door.membership.seats().take(Seat::FabricPrimary, &seat_elsewhere);
@@ -520,14 +522,14 @@ async fn each_stage_of_the_handover_is_a_durable_row_on_both_admins() {
     let _spans = capture();
     let (incumbent_dir, successor_dir) = (DataDir::new("handover-incumbent"), DataDir::new("handover-successor"));
     let fabric_id = FabricId::mint();
-    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap())).await;
-    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap())).await;
+    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
     let f = join(incumbent, successor).await;
     let op = operation_of(&f);
     f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("confirmed");
     until("the successor holds the confirmation", || matches!(f.successor.door.handovers.get(&op), Some((_, Stage::Confirmed(8))))).await;
-    let successor_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap().handovers().await.unwrap();
-    let incumbent_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap().handovers().await.unwrap();
+    let successor_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap().handovers().await.unwrap();
+    let incumbent_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap().handovers().await.unwrap();
     let expect = |rows: &[HandoverRow], stage: HandoverStage| {
         assert_eq!(rows.len(), 1, "one handover: {rows:?}");
         let r = &rows[0];
@@ -567,7 +569,7 @@ async fn a_successor_restarted_between_commit_and_confirmation_keeps_the_leave_c
     let dir = DataDir::new("handover-restart");
     let fabric_id = FabricId::mint();
     let (incumbent, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", false).await;
-    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap())).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
     let f = join(incumbent, successor).await;
     let op = operation_of(&f);
     // The incumbent's door is not serving: the commit happens and its completion is not acknowledged.
@@ -577,7 +579,7 @@ async fn a_successor_restarted_between_commit_and_confirmation_keeps_the_leave_c
     // The successor exits and is born again over its data dir.
     let committed_birth = birth(&f.successor);
     drop(f.successor);
-    let (reborn, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap())).await;
+    let (reborn, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
     assert_ne!(birth(&reborn).incarnation, committed_birth.incarnation, "a restart is a new birth");
     assert!(reborn.door.handovers.get(&op).is_none(), "nothing is held before the admin reads its storage");
     assert_eq!(reborn.door.restore().await.unwrap(), 1);
@@ -702,16 +704,16 @@ struct Seats {
 }
 
 async fn seats_fabric() -> Seats {
-    seats_fabric_with(|| Arc::new(MemoryFabricStorage::new())).await
+    seats_fabric_with(|| async { Arc::new(MemoryFabricStorage::new()) as Arc<dyn FabricStorage> }).await
 }
 
 /// The seats fabric with each admin's fabric.storage given by `storage` (one per admin).
-async fn seats_fabric_with(storage: impl Fn() -> Arc<dyn FabricStorage>) -> Seats {
+async fn seats_fabric_with<F: std::future::Future<Output = Arc<dyn FabricStorage>>>(storage: impl Fn() -> F) -> Seats {
     let fabric_id = FabricId::mint();
-    let (p, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true, storage()).await;
-    let (n, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true, storage()).await;
-    let (m, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true, storage()).await;
-    let (x, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, storage()).await;
+    let (p, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true, storage().await).await;
+    let (n, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true, storage().await).await;
+    let (m, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true, storage().await).await;
+    let (x, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, storage().await).await;
     let mut pn = node_of(&p, NodeStatus::ReadyForTraffic, true);
     pn.is_primary = true;
     let mut nn = node_of(&n, NodeStatus::ReadyForTraffic, false);
@@ -937,7 +939,8 @@ async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_
     let trace_id = story.in_scope(rafka_mesh_telemetry::current_traceparent).and_then(|tp| tp.split('-').nth(1).map(str::to_string)).expect("the cell's root span has a trace context");
     let root = DataDir::new("seat-transfer-root");
     let f = seats_fabric_with(|| {
-        Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&root.0), &rafka_node_admin_core::model::IncarnationId::mint()).unwrap()) as Arc<dyn FabricStorage>
+        let at = rafka_node_admin_core::store_root::StoreRoot::at(&root.0);
+        async move { Arc::new(FileFabricStorage::open(&at, &rafka_node_admin_core::model::IncarnationId::mint()).await.unwrap()) as Arc<dyn FabricStorage> }
     })
     .await;
     let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
@@ -1037,10 +1040,10 @@ fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
         let root = rafka_node_admin_core::store_root::StoreRoot::at(&d.join("store"));
         let inc = rafka_node_admin_core::model::IncarnationId::mint();
         let stores = SeatStores {
-            mesh: std::sync::Arc::new(rafka_node_admin_core::storage::FileMeshStorage::open(&root, &inc).unwrap()),
-            nodes: std::sync::Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).unwrap()),
-            fabric: std::sync::Arc::new(rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &inc).unwrap()),
-            status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).unwrap()),
+            mesh: std::sync::Arc::new(rafka_node_admin_core::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
+            nodes: std::sync::Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
+            fabric: std::sync::Arc::new(rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &inc).await.unwrap()),
+            status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
         };
         let row = MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::ReadyForTraffic };
         stores.apply(WriteCutOff::Set { reason: "take-seats:mesh1.admin.2".into(), fabric_seat: false }).await;
@@ -1052,4 +1055,190 @@ fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
         stores.status.put_mesh_status(&row).await.expect("a lift gives the status writes back");
         let _ = std::fs::remove_dir_all(&d);
     });
+}
+
+/// CONTRACT (R14 item 4; node-rpc-envelope.md, TakeSeats: "P's execution authority ends at the
+/// row's epoch"): a holder that opened its stores before the fabric's first state-commit holds what
+/// it writes in its scratchpad. A seat transfer cuts those stores off; once its seat row commits,
+/// every row the moving seats' stores still hold (the Mesh row, the mesh's status rows and, the
+/// fabric seat moving too, the Fabric identity) is dropped: never read again, and a later
+/// publication writes none of them. What must NOT happen: a row whose writer's authority ended
+/// kept and read in place of the store root, or written there after the seat row.
+#[test]
+fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
+    use rafka_node_admin_core::fabric_handover::{SeatStores, WriteCutOff};
+    use rafka_node_admin_core::fabric_storage::FabricStorage as _;
+    use rafka_node_admin_core::status_storage::{MeshStatusRow, StatusStorage};
+    use rafka_node_admin_core::storage::MeshStorage as _;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let d = std::env::temp_dir().join(format!("seat-stores-held-{}", rafka_node_admin_core::model::NodeId::mint()));
+        let pad = rafka_node_admin_core::record_store::Scratchpad::new();
+        let root = rafka_node_admin_core::store_root::StoreRoot::held_at(&d.join("store"), pad.clone());
+        let inc = rafka_node_admin_core::model::IncarnationId::mint();
+        let stores = SeatStores {
+            mesh: std::sync::Arc::new(rafka_node_admin_core::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
+            nodes: std::sync::Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
+            fabric: std::sync::Arc::new(rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &inc).await.unwrap()),
+            status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
+        };
+        stores.mesh.put_mesh(&rafka_node_admin_core::storage::MeshRecord { mesh_id: rafka_node_admin_core::model::MeshId::mint(), name: "mesh1".into() }).await.unwrap();
+        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::ReadyForTraffic }).await.unwrap();
+        stores.fabric.put_identity(&rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap();
+        assert!(stores.mesh.mesh("mesh1").await.unwrap().is_some(), "the holder reads the Mesh row it holds");
+        let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by take-seats:b1";
+        stores.apply(WriteCutOff::Set { reason: reason.into(), fabric_seat: true }).await;
+        stores.apply(WriteCutOff::Committed { reason: reason.into(), fabric_seat: true }).await;
+        assert!(stores.mesh.mesh("mesh1").await.unwrap().is_none(), "a Mesh row dropped at the commit is never read");
+        assert!(stores.fabric.fabric().await.unwrap().is_none(), "a Fabric identity dropped at the commit is never read");
+        let published = pad.publish().await.unwrap();
+        assert_eq!((published.written(), published.dropped(), published.held()), (0, 0, 0), "nothing the holder held is published after the seat row: {published:?}");
+        fn files(dir: &std::path::Path, out: &mut Vec<String>) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                if e.path().is_dir() {
+                    files(&e.path(), out);
+                } else {
+                    out.push(e.path().display().to_string());
+                }
+            }
+        }
+        let mut on_root = Vec::new();
+        files(&d.join("store"), &mut on_root);
+        assert!(on_root.is_empty(), "no row reached the store root: {on_root:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    });
+}
+
+/// CONTRACT (R14 items 2 and 4; R13: the fabric-primary writes another mesh's rows only as acting
+/// primary of a mesh with no primary, an authority its fabric seat gives it; mesh-leave.md step 7):
+/// a holder that opened its stores before the fabric's first state-commit holds the rows it wrote as
+/// acting primary of mesh2 (mesh2's Node row and its Mesh status row) in its scratchpad. Once a seat
+/// transfer moving the fabric seat commits, every one of them is dropped: never read again, and a
+/// later publication writes none of them. What must NOT happen: a row its writer held as acting
+/// primary kept after the fabric seat moved, read in place of the store root or written there.
+#[test]
+fn a_committed_fabric_seat_transfer_drops_the_rows_its_holder_held_as_acting_primary_of_another_mesh() {
+    use rafka_node_admin_core::fabric_handover::{SeatStores, WriteCutOff};
+    use rafka_node_admin_core::status_storage::{MeshStatusRow, StatusStorage as _};
+    use rafka_node_admin_core::storage::{NodeRow, NodesStorage as _};
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let d = std::env::temp_dir().join(format!("seat-stores-acting-{}", NodeId::mint()));
+        let pad = rafka_node_admin_core::record_store::Scratchpad::new();
+        let root = rafka_node_admin_core::store_root::StoreRoot::held_at(&d.join("store"), pad.clone());
+        let inc = IncarnationId::mint();
+        let stores = SeatStores {
+            mesh: std::sync::Arc::new(rafka_node_admin_core::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
+            nodes: std::sync::Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
+            fabric: std::sync::Arc::new(FileFabricStorage::open(&root, &inc).await.unwrap()),
+            status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
+        };
+        let row = NodeRow { name: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: Default::default() };
+        let dead = MeshStatusRow { mesh_id: MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::Dead };
+        stores.nodes.put_node_row(&row).await.unwrap().expect("mesh2.rpc.1 is a free key");
+        stores.status.put_mesh_status_of("mesh2", &dead).await.unwrap();
+        assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), Some(row.clone()), "the holder reads the mesh2 Node row it holds");
+        assert!(stores.status.mesh_status_held_of("mesh2", &dead).await.unwrap(), "the holder reads the mesh2 status row it holds");
+        let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by take-seats:b1";
+        stores.apply(WriteCutOff::Set { reason: reason.into(), fabric_seat: true }).await;
+        stores.apply(WriteCutOff::Committed { reason: reason.into(), fabric_seat: true }).await;
+        assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), None, "a mesh2 Node row dropped at the commit is never read");
+        assert!(!stores.status.mesh_status_held_of("mesh2", &dead).await.unwrap(), "a mesh2 status row dropped at the commit is never read");
+        let published = pad.publish().await.unwrap();
+        assert_eq!((published.written(), published.dropped(), published.held()), (0, 0, 0), "nothing the holder held as acting primary is published after the seat row: {published:?}");
+        let mut on_root = Vec::new();
+        let mut dirs = vec![d.join("store")];
+        while let Some(dir) = dirs.pop() {
+            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                if e.path().is_dir() {
+                    dirs.push(e.path());
+                } else {
+                    on_root.push(e.path().display().to_string());
+                }
+            }
+        }
+        assert!(on_root.is_empty(), "no row reached the store root: {on_root:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    });
+}
+
+// ---- No caller check inside the mesh (node-rpc.md §14) ----
+
+/// An admin endpoint no view of the fabric holds a birth for, reaching `to`: the caller a receiver
+/// never heard of.
+async fn stranger_to(to: &[&Admin]) -> Admin {
+    let (stranger, _) = admin(&FabricId::mint(), "mesh9", "mesh9.admin.1", "000000000077", false).await;
+    for a in to {
+        stranger.resolver.insert(a.resolved.clone());
+        assert!(a.door.topology.read().await.births().all(|n| n.endpoint_id.as_ref().map(|e| e.0.as_str()) != Some(stranger.resolved.endpoint_id.to_string().as_str())), "the stranger is in no birth of {}'s view", a.resolved.name);
+    }
+    stranger
+}
+
+/// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who is calling"): a handover command
+/// and a handover completion sent from an endpoint the receiver's view holds no birth for are each
+/// decided on the births the payload names. The successor commits the seat at the next epoch and its
+/// own completion confirms it at the incumbent; a completion from the stranger moves the incumbent's
+/// seat record to the successor it names. The direction refusals stay, decided by the payload and
+/// what the receiver holds: an incumbent birth the successor's view does not hold, or a successor
+/// birth the incumbent's view does not hold, is `RejectedWrongBirth`. What must NOT happen:
+/// `Unauthorized` naming the caller.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_handover_command_and_completion_from_an_endpoint_no_view_holds_are_decided_on_the_births_they_name() {
+    if crate::own_process::delegated(module_path!(), "a_handover_command_and_completion_from_an_endpoint_no_view_holds_are_decided_on_the_births_they_name") {
+        return;
+    }
+    let spans = capture();
+    let other_birth = |b: &HandoverBirth| HandoverBirth { incarnation: IncarnationId("another-birth".into()), ..b.clone() };
+    // The command.
+    let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
+    let stranger = stranger_to(&[&f.incumbent, &f.successor]).await;
+    let op = "fabric-primary-handover:stranger";
+    let wrong_incumbent = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: other_birth(&birth(&f.incumbent)), successor: birth(&f.successor), expected_epoch: 7, operation: op.into() };
+    assert_eq!(send(&stranger, &f.successor, wrong_incumbent).await, Reply::RejectedWrongBirth { role: "incumbent".into() });
+    assert_eq!(send(&stranger, &f.successor, take(&f, 7, op)).await, Reply::Applied, "the command is decided on the births it names");
+    until("the incumbent confirms the successor's commit", || f.incumbent.door.membership.seats().fabric() == Some(holder_of(&f.successor, 8))).await;
+    assert_eq!(f.successor.door.membership.seats().fabric(), Some(holder_of(&f.successor, 8)));
+    until("the incumbent's confirmation span", || spans.position(CONFIRMED).is_some()).await;
+    // The completion.
+    let (g, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
+    let stranger = stranger_to(&[&g.incumbent, &g.successor]).await;
+    let wrong_successor = Request::FabricPrimaryTaken { fabric: "fabric1".into(), incumbent: birth(&g.incumbent), successor: other_birth(&birth(&g.successor)), expected_epoch: 7, committed_epoch: 8, operation: op.into() };
+    assert_eq!(send(&stranger, &g.incumbent, wrong_successor).await, Reply::RejectedWrongBirth { role: "successor".into() });
+    assert_eq!(g.incumbent.door.membership.seats().fabric(), Some(holder_of(&g.incumbent, 7)), "a refused completion moves nothing");
+    assert_eq!(send(&stranger, &g.incumbent, taken(&g, 7, 8, op)).await, Reply::Applied, "the completion is decided on the births it names");
+    assert_eq!(g.incumbent.door.membership.seats().fabric(), Some(holder_of(&g.successor, 8)));
+    let reasons: Vec<String> = spans.named(REJECTED).iter().map(|f| f["reason"].clone()).collect();
+    assert!(reasons.iter().all(|r| r == "wrong-birth"), "only the payload's births are refused: {reasons:?}");
+    assert_eq!(spans.named(COMMITTED).len(), 1, "one commit, the successor's");
+    assert_eq!(spans.named(CONFIRMED).len(), 2, "both incumbents confirmed");
+}
+
+/// CONTRACT (node-rpc.md §14; node-rpc-envelope.md "TakeSeats"): a TakeSeats call from an endpoint
+/// the holder's view holds no birth for is decided on the successor it names: the executor the
+/// attempt's Won claim names and the admin the election seats once the holder is gone. P commits both
+/// seats to N in one row and answers SeatsCommitted. The direction refusals stay: a successor the Won
+/// claim does not name is `RejectedNotEligible`, a successor birth P's view does not hold is
+/// `RejectedWrongBirth`. What must NOT happen: `Unauthorized` naming the caller.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_take_seats_call_from_an_endpoint_the_holder_never_heard_of_is_decided_on_the_successor_it_names() {
+    if crate::own_process::delegated(module_path!(), "a_take_seats_call_from_an_endpoint_the_holder_never_heard_of_is_decided_on_the_successor_it_names") {
+        return;
+    }
+    let spans = capture();
+    let f = seats_fabric().await;
+    let stranger = stranger_to(&[&f.p]).await;
+    let op = "replace-node:mesh1.admin.1";
+    assert!(matches!(send(&stranger, &f.p, take_seats(&f.p, &f.m, 3, 7, "b1", op)).await, Reply::RejectedNotEligible { .. }), "the Won claim of b1 names N, not M");
+    let mut wrong = take_seats(&f.p, &f.n, 3, 7, "b1", op);
+    if let Request::TakeSeats { successor, .. } = &mut wrong {
+        successor.incarnation = IncarnationId("another-birth".into());
+    }
+    assert_eq!(send(&stranger, &f.p, wrong).await, Reply::RejectedWrongBirth { role: "successor".into() });
+    assert_eq!(send(&stranger, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op)).await, Reply::SeatsCommitted { seats: committed_to(&f.n, 4, 8) }, "the call is decided on the successor it names");
+    assert_eq!((f.p.door.membership.seats().mesh("mesh1"), f.p.door.membership.seats().fabric()), (Some(holder_of(&f.n, 4)), Some(holder_of(&f.n, 8))), "P moved both seats to N");
+    assert_eq!(spans.named(SEATS_COMMITTED).len(), 1);
+    let reasons: Vec<String> = spans.named(SEATS_REJECTED).iter().map(|f| f["reason"].clone()).collect();
+    assert!(reasons.iter().all(|r| r == "not-the-claimed-executor" || r == "wrong-birth"), "only the payload's successor is refused: {reasons:?}");
+    let _ = (&f.m, &f.x);
 }

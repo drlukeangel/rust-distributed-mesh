@@ -32,7 +32,7 @@ fn end(name: &str) -> ConnectionEnd {
 }
 
 fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {
-    NodeConnection { source: source.clone(), destination: destination.clone(), kind, state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
+    NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: source.clone(), destination: destination.clone(), kind, state, carrier: carrier.cloned(), recovery: None, reason: None, logged_at_ms: at }
 }
 
 /// Every span this process emitted, from the evidence exporter's JSONL files in `dir`.
@@ -71,7 +71,7 @@ async fn source_reconnect_failures_grow_log_keep_two_current_members() {
     // The source, its carrier's edge and its own Proxy to the destination (the previous birth's
     // facts), then the destination made unreachable: a key nobody serves, a port nobody listens on.
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
-    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&data_dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).unwrap());
+    let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&data_dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap());
     let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
     let writer = Arc::new(ConnectionsWriter::new(me.clone(), storage.clone(), held.clone()));
     writer.hydrate().await.unwrap();

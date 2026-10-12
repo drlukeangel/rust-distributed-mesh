@@ -143,6 +143,7 @@ enum WireAction {
     Stop { path: PathName, from_incarnation: IncarnationId },
     Start { path: PathName, from_incarnation: IncarnationId },
     Recover { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
+    Delete { path: PathName, from_incarnation: IncarnationId },
 }
 
 impl From<&MeshDesired> for WireMeshDesired {
@@ -198,6 +199,7 @@ impl From<&AttemptAction> for WireAction {
             AttemptAction::Stop { path, from_incarnation } => Self::Stop { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Start { path, from_incarnation } => Self::Start { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Recover { path, node_id, from_incarnation } => Self::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::Delete { path, from_incarnation } => Self::Delete { path: path.clone(), from_incarnation: from_incarnation.clone() },
         }
     }
 }
@@ -210,6 +212,7 @@ impl From<WireAction> for AttemptAction {
             WireAction::Stop { path, from_incarnation } => Self::Stop { path, from_incarnation },
             WireAction::Start { path, from_incarnation } => Self::Start { path, from_incarnation },
             WireAction::Recover { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation },
+            WireAction::Delete { path, from_incarnation } => Self::Delete { path, from_incarnation },
         }
     }
 }
@@ -431,6 +434,12 @@ impl From<WireStorageDisposition> for StorageDisposition {
     }
 }
 
+/// The step an earlier build ran on a removal to release storage. No step of this build runs it (a
+/// delete retains storage, node-delete.md "Storage"); its receipt keeps its typed output
+/// (`WireOutput::Storage`), so the positional layout of `WireOutput` and a Build fact an earlier
+/// build wrote still decode.
+pub const RELEASE_STORAGE_STEP: &str = "ReleaseStorage";
+
 /// The type of output each step produces; a step not listed commits none.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Produces {
@@ -475,13 +484,13 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::RuntimeEvidence
     } else if is(CreateStep::ApplyMeshPending) {
         Produces::MeshPending
-    } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) {
+    } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) || step == crate::deployment::pipeline::ReplaceStep::RenamePredecessor.name() {
         Produces::LifecycleOp
     } else if ret(RetireStep::DrainNode) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
         Produces::CommandAdmission
     } else if ret(RetireStep::AwaitNodeDrained) || ret(RetireStep::AwaitNodeLeft) {
         Produces::Completion
-    } else if ret(RetireStep::ReleaseStorage) {
+    } else if step == RELEASE_STORAGE_STEP {
         Produces::Storage
     } else if ret(RetireStep::TerminateRuntime) {
         Produces::Terminal

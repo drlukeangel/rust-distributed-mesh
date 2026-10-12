@@ -11,7 +11,8 @@ pub struct Emitter {
     pub name: String,
 }
 
-fn test_only(attrs: &[syn::Attribute]) -> bool {
+/// Whether an item is test-only: `#[test]`, `#[tokio::test]` and the like, or `#[cfg(test)]`.
+pub fn test_only(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| {
         a.path().segments.last().is_some_and(|s| s.ident == "test")
             || (a.path().is_ident("cfg") && a.parse_args::<syn::Path>().is_ok_and(|p| p.is_ident("test")))

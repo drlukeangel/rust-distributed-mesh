@@ -195,7 +195,11 @@ pub struct FabricBuildStateAdapter {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeatRecord {
     /// The record names this birth, names none, or names a birth proven gone: it ends nothing.
-    Open,
+    Open {
+        /// The path.name of this birth when the record names it (from the digests held); `None`
+        /// when the record names none or a birth proven gone.
+        holder: Option<String>,
+    },
     /// The record names another live birth: this birth's authority ended at that record's epoch.
     Moved {
         /// The record, in words.
@@ -218,7 +222,7 @@ pub struct SeatSource {
 impl SeatSource {
     /// A Build log no seat record governs (a fixture with no membership).
     pub fn unrecorded() -> Self {
-        Self { read: Arc::new(|| SeatRecord::Open), changed: None }
+        Self { read: Arc::new(|| SeatRecord::Open { holder: None }), changed: None }
     }
 }
 
@@ -257,9 +261,15 @@ impl Authority {
     /// Enter the gate for one mutation: refused by name once the seat record names another live
     /// birth.
     pub async fn enter(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, BuildStateError> {
+        self.enter_naming().await.map(|(held, _)| held)
+    }
+
+    /// [`Self::enter`], with the holder an open record names (`SeatRecord::Open::holder`), read
+    /// under the same lock.
+    pub async fn enter_naming(&self) -> Result<(tokio::sync::MutexGuard<'_, ()>, Option<String>), BuildStateError> {
         let held = self.decisions.lock().await;
         match (self.seat.read)() {
-            SeatRecord::Open => Ok(held),
+            SeatRecord::Open { holder } => Ok((held, holder)),
             SeatRecord::Moved { by, to } => Err(BuildStateError::Fenced { node: self.node.clone(), by, to }),
         }
     }
@@ -436,11 +446,12 @@ impl FabricBuildStateAdapter {
         }
     }
 
-    /// Whether this admin's Build log still decides anything: refused by name once it yielded the
-    /// seat. The fabric-primary's drive passes this before every dispatch; it holds the gate only
-    /// for the check, because an attempt lasts as long as its steps and the fence is sticky.
-    pub async fn fence_check(&self) -> Result<(), BuildStateError> {
-        self.authority.enter().await.map(|_| ())
+    /// Whether this admin's Build log still decides anything: refused by name once the committed
+    /// seat record names another live birth, else the holder the open record names. The
+    /// fabric-primary's drive passes this before every dispatch; it holds the gate only for the
+    /// check, because an attempt lasts as long as its steps and the fence is sticky.
+    pub async fn fence_check(&self) -> Result<Option<String>, BuildStateError> {
+        self.authority.enter_naming().await.map(|(_, holder)| holder)
     }
 
     /// Resolves once this admin's Build log is fenced: the drive's wait on an executor's run ends
@@ -661,6 +672,42 @@ mod tests {
             let sent: usize = messages.iter().map(|m| BuildMessage::from_bytes(m).unwrap().facts.len()).sum();
             assert_eq!(sent, 60, "no fact lost");
         }
+    }
+
+    /// CONTRACT (node-replace.md 2): a replace's `RenamePredecessor` receipt names the exact old
+    /// birth (its output is the `LifecycleOp` of the predecessor) and travels the Build topic like
+    /// every other committed output: the fabric-primary's append of it succeeds, so its live `Step`
+    /// frame is made (`FramedBuilds` frames a receipt only after the append returned), and a peer
+    /// folds the same receipt with the same old birth.
+    #[test]
+    fn a_replace_rename_receipt_naming_the_old_birth_travels_the_build_topic() {
+        let op = rafka_mesh_entity::LifecycleOp {
+            build_id: "bld-1".into(),
+            attempt: 2,
+            operation: "replace-node:mesh1.rpc.1".into(),
+            node_id: rafka_mesh_entity::NodeId::mint(),
+            incarnation: rafka_mesh_entity::IncarnationId::mint(),
+            name: "mesh1.rpc.1".parse().unwrap(),
+            event_at_rafka_ms: 7,
+        };
+        let receipt = BuildStepReceipt {
+            build_id: BuildId("bld-1".into()),
+            attempt: 2,
+            operation: op.operation.clone(),
+            step: crate::deployment::pipeline::ReplaceStep::RenamePredecessor.name().into(),
+            outcome: crate::build_state::StepOutcome::Complete,
+            output: Some(serde_json::to_value(&op).unwrap()),
+            executor: Some("mesh1.admin.1".into()),
+        };
+        let bytes = match encode(vec![BuildFact::Step(receipt.clone())]) {
+            Ok(b) => b,
+            Err(e) => panic!("the rename receipt must have a wire shape: {e}"),
+        };
+        let back = BuildMessage::from_bytes(&bytes).unwrap().facts;
+        assert_eq!(back, vec![BuildFact::Step(receipt)], "a peer folds the same receipt");
+        let BuildFact::Step(s) = &back[0] else { unreachable!() };
+        let named: rafka_mesh_entity::LifecycleOp = serde_json::from_value(s.output.clone().unwrap()).unwrap();
+        assert_eq!((named.node_id, named.incarnation), (op.node_id, op.incarnation), "the receipt names the exact old birth");
     }
 
     /// CONTRACT (node-rpc-envelope.md TakeSeats: "The row is the fence: P's execution authority ends

@@ -15,8 +15,9 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 /// sequence): the silence (one staleness floor, marked on the pruner's gossip-interval sweep);
 /// half a floor after the mark, on the next tick, tickle round 1 (one direct connect, then the
 /// connects through up to `VIA_PEER_TICKLE_FANOUT` peers at once, each to a killed process and so
-/// spending the call's whole budget: `offline::tickle_round`); round 2 one floor after round 1 began, or once round
-/// 1 ended if that is later, and its own round; TRUE OFFLINE, the provider's exit proof and the
+/// spending the call's whole budget: `offline::tickle_round`); round 2 one floor after round 1's no-path
+/// verdict, when its probes ended (the hold-down runs from that instant: offline.rs
+/// `RoundEnd::ViaPeer::verdict_at_ms`), and its own round; TRUE OFFLINE, the provider's exit proof and the
 /// submit on the next tick; then the recovery Build's run (node.delete, node.create through the
 /// new node's start), one call budget.
 pub fn node_recovery_due() -> std::time::Duration {
@@ -27,7 +28,7 @@ pub fn node_recovery_due() -> std::time::Duration {
         other => panic!("the default call budget is not one overall deadline: {other:?}"),
     };
     let round = rafka_node_admin_core::offline::tickle_round(call);
-    floor + gossip + floor / 2 + gossip + floor.max(round) + round + gossip + call
+    floor + gossip + floor / 2 + gossip + round + floor + round + gossip + call
 }
 
 #[path = "../../../tools/test-support/own_process.rs"]
@@ -74,7 +75,7 @@ mod mesh_lifecycle__mesh_create;
 mod mesh_lifecycle__mesh_leave_no_survivor;
 mod mesh_lifecycle__mesh_leave_resume;
 mod mesh_lifecycle__mesh_recover;
-mod mesh_lifecycle__mesh_replace;
+mod mesh_lifecycle__fabric_primary_handover;
 mod mesh_membership__backbone;
 mod mesh_rpc__proof_store;
 mod mesh_runtime__boot_trace;

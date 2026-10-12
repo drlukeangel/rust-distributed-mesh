@@ -13,7 +13,7 @@
 //!   live members of its mesh at once, and last the provider's inspection of the birth's exact
 //!   runtime (node-recovery.md step 2, ruling R-SW1). An answer from the exact birth (`Current`,
 //!   `CurrentParked`, `Blocked`), or a runtime that still runs, ends it: the seat stays. Only a
-//!   runtime found exited is a verified loss (`Records::mark_exited`); a failed ping, `NotSent`,
+//!   runtime found exited is a verified loss, its exit-proof row put (`Records::put_exit`); a failed ping, `NotSent`,
 //!   a deadline, silence and the observer-inferred `Dead` are not.
 //!
 //! [`plan`] decides what a pass owes, from the view and what was already said; [`run`] drives it.
@@ -97,7 +97,9 @@ pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view
 /// a birth proven gone (`lost`: a vacancy the election fills before this birth's own record lands)
 /// ends nothing; a record naming another live birth ended this birth's authority at its epoch, and
 /// names that birth's path.name from `name_of` (the digest book, which holds a birth before the
-/// projected view does). Read from the record alone: no history, no write.
+/// projected view does). An open record naming this birth names its path.name as the holder; one
+/// naming none or a birth proven gone names no holder. Read from the record alone: no history, no
+/// write.
 pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
     match record {
         Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {
@@ -105,7 +107,8 @@ pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSe
             let by = format!("the fabric seat record names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.0, h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
             crate::fabric_builds::SeatRecord::Moved { by, to }
         }
-        _ => crate::fabric_builds::SeatRecord::Open,
+        Some(h) if h.is_birth(&me.0, &me.1) => crate::fabric_builds::SeatRecord::Open { holder: name_of(&h.node_id) },
+        _ => crate::fabric_builds::SeatRecord::Open { holder: None },
     }
 }
 
@@ -297,10 +300,11 @@ pub async fn inspect_birth(provider: &dyn crate::deployment::provider::Deploymen
         Err(e) => return Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
     };
     let inspected = provider.inspect(&handle).await;
-    match crate::deployment::provider::exit_proof(inspected, &fact, data_dir.as_deref().map(std::path::Path::new), &inc.0) {
-        crate::deployment::provider::DeploymentStatus::Exited { code } => Finding::Exited { code },
-        crate::deployment::provider::DeploymentStatus::Running => Finding::Running,
-        other => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
+    match crate::deployment::provider::exit_proof(inspected, &fact, data_dir.as_deref().map(std::path::Path::new), &inc.0).await {
+        Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => Finding::Exited { code },
+        Ok(crate::deployment::provider::DeploymentStatus::Running) => Finding::Running,
+        Ok(other) => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
+        Err(e) => Finding::Unproven { reason: format!("its exit record cannot be read: {e}") },
     }
 }
 
@@ -368,6 +372,10 @@ pub async fn run(w: Watch) {
     let me_birth = (w.me_id.clone(), w.incarnation.clone());
     let mut seats_changed = w.membership.seats().subscribe();
     let mut held_the_fabric_seat = false;
+    // A turn runs from the gate to the next idle wait: the pass below, then the yield check at the
+    // top of the loop, which can hand facts on. It is held in an Option so it ends (`take`) right
+    // before the idle wait and begins again right after it.
+    let mut turn = Some(w.gate.turn("seat-watch").await);
     loop {
         // A fabric seat this birth held, now recorded to another birth: the record already fences
         // its Build log; the committed facts are handed to the neighbours before the new holder acts.
@@ -376,13 +384,14 @@ pub async fn run(w: Watch) {
         if let Some((by, to)) = owed {
             w.builds.hand_over_facts(&by, to).await;
         }
+        drop(turn.take());
         tokio::select! {
             _ = seats_changed.changed() => {}
             _ = w.membership.concerns().heard() => {}
             _ = tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()) => {}
         }
         // Held here while the admin is parked: its own wait, outside every lock.
-        w.gate.opened().await;
+        turn = Some(w.gate.turn("seat-watch").await);
         let heard = w.membership.concerns().drain();
         let view = w.topology.read().await.clone();
         let plan = plan(&view, &w.me, &me_birth, &heard, &mut said);
@@ -427,6 +436,7 @@ pub async fn run(w: Watch) {
                 detail = tracing::field::Empty,
                 iroh_known_addrs = tracing::field::Empty,
                 iroh_active_addrs = tracing::field::Empty,
+                exit_proof_row = tracing::field::Empty,
             );
             // One read of iroh's local view of the suspect, recorded beside the investigation;
             // the finding is the provider's and the Node RPC's, never this.
@@ -437,8 +447,11 @@ pub async fn run(w: Watch) {
             let finding = w.looker.look(&view, &node).instrument(span.clone()).await;
             span.record("finding", finding.name());
             span.record("detail", finding.detail().as_str());
-            if let (Finding::Exited { .. }, Some(inc)) = (&finding, node.incarnation_id.as_ref()) {
-                w.records.mark_exited(&node.node_id, inc);
+            if let Finding::Exited { code } = &finding {
+                // The verified loss is recorded durably: the holder's exit-proof row is what every
+                // projection reads as its proven loss.
+                let recorded = w.records.put_exit(&node, *code, "provider").await;
+                span.record("exit_proof_row", recorded.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()).as_str());
             }
             span.in_scope(|| tracing::info!("a silent seat holder was looked at"));
         }

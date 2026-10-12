@@ -18,6 +18,10 @@
 //! ApplyFabricEvent   the fabric-primary -> a mesh primary
 //! ```
 //!
+//! The reads (`node.get`, `mesh.get`, `fabric.get`, `node.connections.get`) ride the same op until
+//! the node, mesh and fabric families have op numbers of their own: a caller asks, the receiver
+//! answers from what it holds, and nothing changes. Their answers are [`crate::views`].
+//!
 //! Legal moves run forward along `Pending -> ReadyForTraffic -> Draining -> Leaving` (and
 //! `Pending -> ReadyForTraffic -> Leaving -> Dead` for a Mesh), skips included; the same
 //! state again is `AlreadyApplied`, a backward move `RejectedInvalidNodeTransition` or `RejectedInvalidMeshTransition`. A declaration
@@ -27,7 +31,8 @@
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-use rafka_mesh_entity::{ConfigOverCap, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS, OPAQUE_ID_LEN};
+use crate::views::{ConnectionsView, FabricView, MeshView, NodeView};
+use rafka_mesh_entity::{ConfigOverCap, ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS, OPAQUE_ID_LEN};
 use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
@@ -308,9 +313,11 @@ pub enum StatusRequest {
         /// The operation: `start-node:<path>`.
         operation: String,
     },
-    /// Upward: a caller asks the fabric-primary to put the exact birth's whole config (`node.config.update`).
-    /// The fabric-primary writes the node's row, tells the node, and answers [`StatusReply::ConfigUpdated`]
-    /// (`node.config.updated`); a config past its cap is [`StatusReply::RejectedConfig`]. A single call, never a Build.
+    /// Upward: a caller asks the exact birth's mesh-primary, the writer of that mesh's rows, to put the
+    /// birth's whole config (`node.config.update`), through a carrier (Forward `0x1A`) when it cannot
+    /// reach it directly. The mesh-primary writes the node's row, tells the node, and answers
+    /// [`StatusReply::ConfigUpdated`] (`node.config.updated`) once the node applied it; a config past its
+    /// cap is [`StatusReply::RejectedConfig`]. A single call, never a Build.
     UpdateNodeConfig {
         /// The birth whose config is put.
         node_id: NodeId,
@@ -319,8 +326,8 @@ pub enum StatusRequest {
         /// The whole config: a put replaces, it never merges.
         config: BTreeMap<String, String>,
     },
-    /// Downward: the fabric-primary tells the exact birth its config; the birth holds it and carries it in
-    /// its next digest. Answered `Applied`.
+    /// Downward: the birth's mesh-primary tells the exact birth its config; the birth holds it and carries
+    /// it in its next digest. Answered `Applied`.
     ApplyNodeConfig {
         /// The birth told.
         node_id: NodeId,
@@ -358,6 +365,107 @@ pub enum StatusRequest {
         /// The `path.name` the record is put with.
         name: String,
     },
+    /// `node.connections.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact
+    /// birth's mesh-primary, which commands the birth with the same request and holds its completion
+    /// for the birth's rename precondition (R-CR2); the birth itself hard-cuts the connections the
+    /// scope names, writing each drop under the name it holds, and answers
+    /// [`StatusReply::ConnectionsDeleted`] (`node.connections.deleted`). Its endpoint stays bound and
+    /// the call's own stream stays open. An empty `Connections` list is refused by name
+    /// ([`StatusReply::RejectedConnectionScope`]).
+    DeleteConnections {
+        /// The birth whose connections are cut.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// Which connections.
+        scope: ConnectionScope,
+    },
+    /// `node.get` (node-rpc-envelope.md "Typed objects mapped to wire and execution owners"): a
+    /// caller asks a node-admin for the nodes its view holds that `select` selects, answered
+    /// [`StatusReply::Nodes`]; an id the view does not hold selects nothing. A read: nothing
+    /// changes and nothing is published.
+    GetNodes {
+        /// Which nodes.
+        select: NodeSelect,
+    },
+    /// `mesh.get`: a caller asks a node-admin for one mesh its view holds, by the mesh's minted id
+    /// or its name, or for every mesh (`None`), answered [`StatusReply::Meshes`]; a mesh the view
+    /// does not hold is [`StatusReply::UnknownMesh`]. A read.
+    GetMeshes {
+        /// The mesh's minted id or name; `None` for every mesh of the fabric.
+        mesh: Option<String>,
+    },
+    /// `fabric.get`: a caller asks a node-admin for the fabric as its view holds it, answered
+    /// [`StatusReply::Fabric`]. A read.
+    GetFabric,
+    /// `node.connections.get` (fabric-mesh-node-lifecycles.md: "Reading or cutting a node's held
+    /// connections"): a caller asks the exact birth for the connections it holds as its own, its
+    /// latest Direct per destination and its active Proxies, each named by the minted id
+    /// `DeleteConnections` names it by, answered [`StatusReply::Connections`]. A read.
+    GetConnections {
+        /// The birth asked.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+    },
+}
+
+/// Which nodes `node.get` selects. Positional order is part of the wire schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeSelect {
+    /// The node with this minted id.
+    Id(NodeId),
+    /// Every node of the mesh with this name.
+    Mesh(String),
+}
+
+impl NodeSelect {
+    /// The selection's name in spans and evidence.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Id(_) => "id",
+            Self::Mesh(_) => "mesh",
+        }
+    }
+}
+
+/// The most connection ids one `node.connections.delete { scope: Connections }` names: a request at
+/// the cap fits the Status request bound, and more is refused by name.
+pub const MAX_CONNECTION_IDS: usize = 64;
+
+/// Which of a birth's connections `node.connections.delete` cuts (R-CR3). Positional order is part
+/// of the wire schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConnectionScope {
+    /// Every connection, exactly the stop's cut: the gossip neighbours and the pooled peer
+    /// connections, never the endpoint or the call's own stream. A tag of its own, never a value in
+    /// the list.
+    All,
+    /// The exact connections named by the minted id of their open entry, as `node.connections.get`
+    /// returns them: only those pooled peer connections are cut. At least one, at most
+    /// [`MAX_CONNECTION_IDS`].
+    Connections(Vec<ConnectionId>),
+}
+
+impl ConnectionScope {
+    /// The scope's name in spans and evidence.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Connections(_) => "connections",
+        }
+    }
+
+    /// Why the scope is refused, by name, or `None` when it names a cut: an empty list or one past
+    /// [`MAX_CONNECTION_IDS`] names nothing to cut that the request can carry.
+    pub fn refusal(&self) -> Option<String> {
+        match self {
+            Self::All => None,
+            Self::Connections(ids) if ids.is_empty() => Some("node.connections.delete names no connection: Connections needs at least one connection id (All is its own scope)".into()),
+            Self::Connections(ids) if ids.len() > MAX_CONNECTION_IDS => Some(format!("node.connections.delete names {} connections, over the {MAX_CONNECTION_IDS} one request carries", ids.len())),
+            Self::Connections(_) => None,
+        }
+    }
 }
 
 /// The longest `receipt_manifest` reference a `MeshLeave` carries.
@@ -402,6 +510,11 @@ impl StatusRequest {
             Self::ApplyNodeConfig { .. } => "apply-node-config",
             Self::ApplyNodeName { .. } => "apply-node-name",
             Self::UpdateNode { .. } => "update-node",
+            Self::DeleteConnections { .. } => "delete-connections",
+            Self::GetNodes { .. } => "node.get",
+            Self::GetMeshes { .. } => "mesh.get",
+            Self::GetFabric => "fabric.get",
+            Self::GetConnections { .. } => "node.connections.get",
         }
     }
 }
@@ -578,8 +691,8 @@ pub enum StatusReply {
         /// The answering birth's incarnation.
         incarnation: IncarnationId,
     },
-    /// The reply of an `UpdateNodeConfig`: the fabric-primary wrote the node's row and the exact birth holds
-    /// the config (`node.config.updated`).
+    /// The reply of an `UpdateNodeConfig`: the birth's mesh-primary wrote the node's row and the exact
+    /// birth holds the config (`node.config.updated`).
     ConfigUpdated {
         /// The birth whose config was put.
         node_id: NodeId,
@@ -599,7 +712,7 @@ pub enum StatusReply {
         /// The store's refusal.
         reason: String,
     },
-    /// The fabric-primary wrote the node's row, and the exact birth did not apply the config: the
+    /// The mesh-primary wrote the node's row, and the exact birth did not apply the config: the
     /// record holds the new config, the birth does not.
     ConfigNotApplied {
         /// The node's `path.name`.
@@ -663,6 +776,60 @@ pub enum StatusReply {
         /// Its detail.
         reason: String,
     },
+    /// `node.connections.deleted`: the cut is complete. Every connection named is accounted for by
+    /// its entry id: `closed` were open and are cut, their drops written under the name the birth
+    /// holds; `not_open` were named and are unknown or already closed; `held` are the connections
+    /// the birth still holds after the cut (none after `All`).
+    ConnectionsDeleted {
+        /// The open entries cut.
+        closed: Vec<ConnectionId>,
+        /// The ids named that are no open entry of the birth: unknown, or already closed.
+        not_open: Vec<ConnectionId>,
+        /// The open entries the birth still holds.
+        held: Vec<ConnectionId>,
+    },
+    /// The `DeleteConnections` scope names nothing the birth can cut (an empty list, or more ids
+    /// than one request carries); nothing is cut.
+    RejectedConnectionScope {
+        /// Why, by name.
+        reason: String,
+    },
+    /// The answer to a `GetNodes`: the nodes the answering admin's view holds that the request
+    /// selected, sorted by `path.name`.
+    Nodes {
+        /// The nodes.
+        nodes: Vec<NodeView>,
+    },
+    /// The answer to a `GetMeshes`: the mesh named, or every mesh the answering admin's view holds.
+    Meshes {
+        /// The meshes.
+        meshes: Vec<MeshView>,
+    },
+    /// The answer to a `GetFabric`: the fabric as the answering admin's view holds it.
+    Fabric {
+        /// The fabric.
+        fabric: FabricView,
+    },
+    /// The answer to a `GetConnections`: the connections the exact birth holds as its own.
+    Connections {
+        /// The connections.
+        connections: ConnectionsView,
+    },
+    /// The `GetMeshes` named a mesh the answering admin's view does not hold, by id or by name.
+    UnknownMesh {
+        /// The mesh as the request named it.
+        mesh: String,
+    },
+    /// A read's answer encodes past the Status reply bound: nothing of it is sent, and the reply
+    /// names the read, the answer's size and the bound.
+    ReadOverBound {
+        /// The read (`node.get`, `mesh.get`, `fabric.get`, `node.connections.get`).
+        read: String,
+        /// The answer's encoded size, in bytes.
+        bytes: u64,
+        /// The Status reply bound, in bytes.
+        max: u64,
+    },
 }
 
 /// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -699,6 +866,11 @@ impl RetryOn {
 /// the incarnation (a one-byte length and [`OPAQUE_ID_LEN`] characters), the retry event at its
 /// largest (a variant byte and a node id), and a two-byte length prefix on the reason.
 pub const MAX_BLOCKED_REASON_BYTES: usize = 1024 - 1 - (1 + CROCKFORD60_LEN) - (1 + OPAQUE_ID_LEN) - (1 + 1 + CROCKFORD60_LEN) - 2;
+
+/// The most connection ids one `node.connections.deleted` carries across its three lists: each id
+/// is a one-byte length and [`CROCKFORD60_LEN`] characters, after the variant (one byte) and three
+/// list lengths (at most three bytes each). A birth holds one entry per peer and kind, far fewer.
+pub const MAX_REPORTED_CONNECTIONS: usize = (64 * 1024 - 1 - 3 * 3) / (1 + CROCKFORD60_LEN);
 
 /// The most bytes of a node's `path.name` a config refusal carries.
 pub const MAX_REFUSAL_NODE_BYTES: usize = 128;
@@ -750,6 +922,17 @@ impl StatusReply {
         Self::NameNotApplied { node: within(node, MAX_REFUSAL_NODE_BYTES), answered: within(answered, MAX_REFUSAL_ANSWERED_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
+    /// `answer` to the read `read` when it encodes within the Status reply bound; past it,
+    /// [`StatusReply::ReadOverBound`] naming the read, the answer's size and the bound, so the
+    /// caller gets a named refusal and never a reset. An answer that does not encode at all is
+    /// returned as it is: the server's own encode refuses it as a handler fault.
+    pub fn within_reply_bound(answer: Self, read: &str) -> Self {
+        match Status::encode_reply(&answer) {
+            Ok(bytes) if bytes.len() > Status::MAX_REPLY_FRAME_BYTES => Self::ReadOverBound { read: read.to_string(), bytes: bytes.len() as u64, max: Status::MAX_REPLY_FRAME_BYTES as u64 },
+            _ => answer,
+        }
+    }
+
     /// The reply's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
@@ -784,6 +967,14 @@ impl StatusReply {
             Self::NameHeld { .. } => "name-held",
             Self::NodeRowRefused { .. } => "node-row-refused",
             Self::NameNotApplied { .. } => "name-not-applied",
+            Self::ConnectionsDeleted { .. } => "connections-deleted",
+            Self::RejectedConnectionScope { .. } => "rejected-connection-scope",
+            Self::Nodes { .. } => "nodes",
+            Self::Meshes { .. } => "meshes",
+            Self::Fabric { .. } => "fabric",
+            Self::Connections { .. } => "connections",
+            Self::UnknownMesh { .. } => "unknown-mesh",
+            Self::ReadOverBound { .. } => "read-over-bound",
         }
     }
 }
@@ -793,13 +984,16 @@ impl NodeProtocol for Status {
     const NAME: &'static str = "status";
     /// The larger of a declaration's bound and a config put at its cap ([`MAX_CONFIG_REQUEST_BYTES`]).
     const MAX_REQUEST_FRAME_BYTES: usize = if MAX_CONFIG_REQUEST_BYTES > MAX_DECLARATION_REQUEST_BYTES { MAX_CONFIG_REQUEST_BYTES } else { MAX_DECLARATION_REQUEST_BYTES };
-    const MAX_REPLY_FRAME_BYTES: usize = 1024;
+    /// A `node.connections.deleted` names every connection it accounts for by id: the bound holds
+    /// [`MAX_REPORTED_CONNECTIONS`] of them. A read's answer past it is
+    /// [`StatusReply::ReadOverBound`] ([`StatusReply::within_reply_bound`]).
+    const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     /// A declaration travels the ordinary Direct/ViaPeer route like any other call.
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 21;
-    const REPLY_VARIANTS: u32 = 31;
+    const REQUEST_VARIANTS: u32 = 26;
+    const REPLY_VARIANTS: u32 = 39;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -815,6 +1009,11 @@ impl NodeProtocol for Status {
             | StatusReply::Blocked { .. }
             | StatusReply::NodeUpdated { .. }
             | StatusReply::Stopped { .. }
+            | StatusReply::ConnectionsDeleted { .. }
+            | StatusReply::Nodes { .. }
+            | StatusReply::Meshes { .. }
+            | StatusReply::Fabric { .. }
+            | StatusReply::Connections { .. }
             | StatusReply::Started => ReplyKind::Success,
             StatusReply::RejectedStaleIncarnation { .. }
             | StatusReply::RejectedStaleMesh { .. }
@@ -830,7 +1029,10 @@ impl NodeProtocol for Status {
             | StatusReply::RejectedMetaFieldIsRdmOwned { .. }
             | StatusReply::NameHeld { .. }
             | StatusReply::NodeRowRefused { .. }
-            | StatusReply::NameNotApplied { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::NameNotApplied { .. }
+            | StatusReply::RejectedConnectionScope { .. }
+            | StatusReply::UnknownMesh { .. }
+            | StatusReply::ReadOverBound { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -922,6 +1124,14 @@ mod tests {
             (StatusReply::NameHeld { name: "mesh1.rpc.1".into(), by: NodeId::mint() }, ReplyKind::ProtocolRefusal),
             (StatusReply::NodeRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::NameNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![] }, ReplyKind::Success),
+            (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::Nodes { nodes: vec![node_view()] }, ReplyKind::Success),
+            (StatusReply::Meshes { meshes: vec![mesh_view()] }, ReplyKind::Success),
+            (StatusReply::Fabric { fabric: crate::views::FabricView { id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::StateSync, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()] } }, ReplyKind::Success),
+            (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
+            (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -960,6 +1170,11 @@ mod tests {
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
             StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
+            StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },
+            StatusRequest::GetNodes { select: NodeSelect::Mesh("mesh1".into()) },
+            StatusRequest::GetMeshes { mesh: None },
+            StatusRequest::GetFabric,
+            StatusRequest::GetConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
@@ -1015,6 +1230,72 @@ mod tests {
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
         let short = StatusReply::blocked(node_id.clone(), incarnation.clone(), "rows not yet published", RetryOn::AuthorityAddressed);
         assert_eq!(short, StatusReply::Blocked { node_id, incarnation, reason: "rows not yet published".into(), retry_on: RetryOn::AuthorityAddressed }, "a reason within its budget is kept whole");
+    }
+
+    /// CONTRACT (R-CR3: the completion names every id it accounts for; a request names at most
+    /// `MAX_CONNECTION_IDS`): a `DeleteConnections` naming the most ids one request carries fits the
+    /// Status request bound, and a `ConnectionsDeleted` naming `MAX_REPORTED_CONNECTIONS` ids fits the
+    /// reply bound. An empty list and one past the cap are refused by name; `All` never is.
+    #[test]
+    fn a_connections_delete_at_its_caps_encodes_within_the_status_bounds() {
+        let ids = |n: usize| (0..n).map(|_| ConnectionId::mint()).collect::<Vec<_>>();
+        let q = StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(ids(MAX_CONNECTION_IDS)) };
+        let len = Status::encode_request(&q).unwrap().len();
+        assert!(len <= MAX_DECLARATION_REQUEST_BYTES, "{MAX_CONNECTION_IDS} ids encode to {len}, over {MAX_DECLARATION_REQUEST_BYTES}");
+        let r = StatusReply::ConnectionsDeleted { closed: ids(MAX_REPORTED_CONNECTIONS - 2), not_open: ids(1), held: ids(1) };
+        let len = Status::encode_reply(&r).unwrap().len();
+        assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "{MAX_REPORTED_CONNECTIONS} ids encode to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
+        assert!(ConnectionScope::Connections(vec![]).refusal().is_some_and(|r| r.contains("at least one")));
+        assert!(ConnectionScope::Connections(ids(MAX_CONNECTION_IDS + 1)).refusal().is_some_and(|r| r.contains("over the")));
+        assert_eq!(ConnectionScope::All.refusal(), None);
+        assert_eq!(ConnectionScope::Connections(ids(1)).refusal(), None);
+    }
+
+    fn node_view() -> crate::views::NodeView {
+        crate::views::NodeView {
+            name: "mesh1.rpc.12".parse().unwrap(),
+            kind: rafka_mesh_entity::NodeKind::RpcNode,
+            mesh: "mesh1".into(),
+            node_id: NodeId::mint(),
+            endpoint_id: Some("e".repeat(64)),
+            incarnation_id: Some(IncarnationId::mint()),
+            deployment_id: Some("d".repeat(32)),
+            provider: Some(crate::views::ProviderKind::Process),
+            data_dir: Some("/var/lib/rdm/fabric1/mesh1.rpc.12".into()),
+            status: crate::views::NodeStatus::ReadyForTraffic,
+            is_primary: false,
+            is_fabric_primary: false,
+            admin_api_base: None,
+            transport_addr: Some("127.0.0.1:41235".parse().unwrap()),
+            listeners: vec![("control".into(), "127.0.0.1:41236".parse().unwrap())],
+            declared: Some("ReadyForTraffic".into()),
+            parked: false,
+            load: Some(rafka_mesh_entity::NodeLoad { cpu_used_millicores: 2400, cpu_budget_millicores: 16000, ram_used_bytes: 123_456_789, ram_budget_bytes: 64_000_000_000 }),
+            gossip: Some(rafka_mesh_entity::GossipStats { heard: 20, neighbours: 5, frames_sent: 123_456, frames_received: 654_321 }),
+        }
+    }
+
+    fn mesh_view() -> crate::views::MeshView {
+        crate::views::MeshView { id: Some(MeshId::mint()), name: "mesh1".into(), status: crate::views::ScopeStatus::ReadyForTraffic, primary_admin: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, nodes: vec!["mesh1.admin.1".parse().unwrap(), "mesh1.rpc.1".parse().unwrap()] }
+    }
+
+    fn connection_view() -> crate::views::ConnectionView {
+        crate::views::ConnectionView { id: ConnectionId::mint().to_string(), source: "mesh1.rpc.1".into(), destination: "mesh1.admin.1".into(), kind: "direct".into(), state: "connected".into(), carrier: None, reason: Some("dialled".into()), logged_at_ms: 1_791_332_804_963 }
+    }
+
+    /// CONTRACT (a read past the reply bound is a named refusal, never a reset): an answer within
+    /// the Status reply bound is answered as it is; one past it is `ReadOverBound` naming the read,
+    /// the answer's encoded size and the bound, and that refusal itself fits the bound. One mesh of
+    /// 150 nodes at a realistic size each fits.
+    #[test]
+    fn a_read_answer_past_the_reply_bound_is_refused_naming_its_size() {
+        let mesh = StatusReply::Nodes { nodes: (0..150).map(|_| node_view()).collect() };
+        assert_eq!(StatusReply::within_reply_bound(mesh.clone(), "node.get"), mesh, "150 nodes fit the bound");
+        let over = StatusReply::Nodes { nodes: (0..400).map(|_| node_view()).collect() };
+        let size = Status::encode_reply(&over).unwrap().len() as u64;
+        let refused = StatusReply::within_reply_bound(over, "node.get");
+        assert_eq!(refused, StatusReply::ReadOverBound { read: "node.get".into(), bytes: size, max: Status::MAX_REPLY_FRAME_BYTES as u64 });
+        assert!(Status::encode_reply(&refused).unwrap().len() <= Status::MAX_REPLY_FRAME_BYTES);
     }
 
     #[test]

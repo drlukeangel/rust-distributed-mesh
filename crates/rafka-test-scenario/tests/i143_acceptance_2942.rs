@@ -4,7 +4,7 @@
 //! estate's manifest and every process's spans land under it, feature `i143-2942`, test the
 //! cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
-//! The estate is the mesh leave of `mesh_replace`: {mesh1, mesh2} -> {mesh2}, owned by the
+//! The estate is the mesh leave of `mesh_lifecycle__fabric_primary_handover`: {mesh1, mesh2} -> {mesh2}, owned by the
 //! fabric-primary (a mesh2 admin). The last admin of mesh1 is the final mesh-primary the
 //! fabric-primary drains and stops itself, whose exit its `TerminateRuntime` step proves; its own
 //! leave is read from its leg spans.
