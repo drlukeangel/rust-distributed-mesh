@@ -1968,13 +1968,14 @@ impl View {
     /// path.name adopts the mesh's held status, fabric-authority.md §7). Only a name no live birth
     /// holds resolves to its departed holder: that departure is the answer.
     fn departed_publisher(&self, publisher: &str) -> Option<LifecycleOp> {
+        let departure = self.book.departed().into_iter().find(|op| op.name.to_string() == publisher)?;
         if self.own_name() == publisher {
             return None;
         }
         if self.book.all().iter().any(|d| d.node.name.to_string() == publisher && !self.book.is_departed(d.node.node_id.as_str())) {
             return None;
         }
-        self.book.departed().into_iter().find(|op| op.name.to_string() == publisher)
+        Some(departure)
     }
 
     /// Hold a status frame if it is newer than the one held: the one door for a status heard on a
