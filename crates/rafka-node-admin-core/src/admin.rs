@@ -6478,7 +6478,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // once over the facts held before the hierarchy's first round, then on every fact.
                                     {
                                         let (book, named) = (membership.book.clone(), Mutex::new(NamedSteps::new()));
-                                        journal.derive_on_every_fact(Arc::new(move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap())));
+                                        journal.derive_on_every_fact(Arc::new(move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap()))).await;
                                     }
 
                                     let hierarchy;
@@ -7930,7 +7930,7 @@ mod tests {
             crate::build_state::BuildFact::Step(deleted("NodeDeleted")),
             crate::build_state::BuildFact::Step(deleted("Complete")),
             crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }),
-        ]);
+        ]).await;
         let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         crate::fabric_storage::FabricStorage::claim_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
         crate::fabric_storage::FabricStorage::put_pointer(&*fabric, &crate::fabric_storage::FabricPointer { build_id: b1.clone(), submitted_at_ms: 1 }).await.unwrap();
