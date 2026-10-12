@@ -781,6 +781,28 @@ mod tests {
         );
     }
 
+    /// CONTRACT (states.md "Who sets each state": node ReadyForTraffic is set by "the node's
+    /// mesh-primary" from "the node's node.started report, after every start gate"; node-update.md:
+    /// "a stopped predecessor to or from `<name>.old`", the stopped node reads that name at its next
+    /// start): a node-admin renamed to `mesh1.admin.2.old` while stopped and started again under the
+    /// row's name is the same birth, so once it is ready it owes its node.started to mesh1's primary,
+    /// found by the node id it was born with. Must NOT happen: the admin missing from its own view
+    /// because its row's name ends `.old`, so it owes nothing and its mesh-primary holds it Pending.
+    #[test]
+    fn a_node_admin_started_under_a_dot_old_row_name_owes_its_node_started_to_its_mesh_primary() {
+        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let me_id = id_of(&me.to_string());
+        let mut v = view("mesh1.admin.1", "mesh2.admin.1");
+        let own = v.nodes.iter_mut().find(|n| n.node_id == me_id).unwrap();
+        own.name = me.renamed();
+        assert!(own.name.old, "the row's name is {}", own.name);
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let d = Declarer::new();
+        owed_from_view(&d, &me.renamed(), &me_id, "inc", rafka_mesh_entity::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
+        let due: Vec<(Key, String)> = d.due(&me_id, &v, &BTreeSet::new()).into_iter().map(|(p, to)| (p.key, to.name.to_string())).collect();
+        assert_eq!(due, vec![(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), "mesh1.admin.1".to_string())], "its node.started, owed to mesh1's primary by its exact birth");
+    }
+
     /// CONTRACT: an obligation newly created by this admin's own readiness or the declare gate,
     /// with no topology change, is due at once (the wake that finds it is the declarer's input).
     #[test]
