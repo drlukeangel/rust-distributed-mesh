@@ -97,7 +97,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             .unwrap_or_else(|e| panic!("{} comes up: {e}", launch.name));
             (running, seams.get().cloned().expect("the node handed its seams"))
         };
-        let (_renamed_node, renamed_seams) = start(renamed.clone()).await;
+        let (renamed_node, renamed_seams) = start(renamed.clone()).await;
         let (peer_node, peer_seams) = start(peer.clone()).await;
 
         // Both births are held ready by the admin, and each by the other.
@@ -159,6 +159,23 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         };
         if tokio::time::timeout(Duration::from_secs(10), took).await.is_err() {
             panic!("the peer's book holds {taken} for the birth, and its resolver still names it {:?}", resolver.resolve(&NodeTarget::ExactNode(renamed.node_id.clone())).map(|n| n.name));
+        }
+
+        // The renamed node names the peer too: an accepted connection is Direct Connected evidence only
+        // from a peer the accepting node's resolver names (connections.md §10; rafka-node-rpc
+        // server.rs `with_connection_observer`: a peer the resolver does not hold is reported to
+        // nothing), and a node takes a peer's birth into its resolver from that peer's own digest
+        // (gossip.md §3.1: an own-mesh birth's endpoints come from its Digest, its status from the
+        // projection). Its restart may come before the peer's next heartbeat reaches it.
+        let own_resolver = &renamed_node.node_rpc.resolver;
+        let mut own_moved = own_resolver.changes().expect("the live resolver ticks on every answer change");
+        let holds_peer = async {
+            while own_resolver.resolve(&NodeTarget::ExactNode(peer.node_id.clone())).is_err() {
+                own_moved.changed().await.unwrap();
+            }
+        };
+        if tokio::time::timeout(Duration::from_secs(10), holds_peer).await.is_err() {
+            panic!("the renamed node's resolver never named the peer {peer_name}: {:?}", own_resolver.resolve(&NodeTarget::ExactNode(peer.node_id.clone())));
         }
 
         // The peer dials the renamed node: one entry at each end.
