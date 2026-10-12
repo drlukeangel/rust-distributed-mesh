@@ -109,6 +109,33 @@ fn parse_network_addresses(out: &str) -> std::collections::BTreeSet<IpAddr> {
 }
 
 /// Does a `docker inspect` failure say no object has that name (and nothing else)?
+/// The record a launch's spawn writes in its data dir, naming the launch and its container: a
+/// container this provider removed (its terminate, `remove_fabric`) leaves the daemon nothing by its
+/// name, and this record is what says the launch ran ([`ContainerDeploymentProvider::find`]).
+const LAUNCH_FILE: &str = "container-launch.json";
+
+/// Write the launch record of `deployment`, whose container is `container`, in `data_dir`. A
+/// blocking call: run it on the blocking pool.
+fn record_launch(data_dir: &Path, deployment: &crate::model::DeploymentId, container: &str) -> Result<(), String> {
+    let file = data_dir.join(LAUNCH_FILE);
+    let record = serde_json::json!({ "deployment_id": deployment.0, "container": container });
+    std::fs::write(&file, record.to_string()).map_err(|e| format!("{}: {e}", file.display()))
+}
+
+/// Whether the launch record in `data_dir` names `deployment`: `false` when none was written or it
+/// names another launch; `Err` names a record that cannot be read or parsed, never read as "never
+/// launched". A blocking call: run it on the blocking pool.
+fn recorded_launch(data_dir: &Path, deployment: &crate::model::DeploymentId) -> Result<bool, String> {
+    let file = data_dir.join(LAUNCH_FILE);
+    let raw = match std::fs::read_to_string(&file) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", file.display()))?;
+    Ok(v.get("deployment_id").and_then(|d| d.as_str()) == Some(deployment.0.as_str()))
+}
+
 /// What a container's Docker status says of its launch ([`ContainerDeploymentProvider::find`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContainerLaunch {
@@ -439,16 +466,24 @@ impl ContainerDeploymentProvider {
     }
 
     /// What became of this launch's container, by its name (the name carries the deployment id):
-    /// none by that name, or one Docker created and never started, was never launched; one that runs
-    /// is the live runtime; one that exited or is dead ran and has exited. `Err` names a `docker
-    /// inspect` that failed for any other reason, or answered what this build cannot read, a status
-    /// it cannot place included.
+    /// one that runs is the live runtime; one that exited or is dead ran and has exited; one Docker
+    /// created and never started was never launched. None by that name: the launch ran and its
+    /// container was removed when its launch record ([`LAUNCH_FILE`]) in the data dir names it, else
+    /// it was never launched. `Err` names a `docker inspect` that failed for any other reason, or
+    /// answered what this build cannot read (a status it cannot place included), or a launch record
+    /// that cannot be read.
     async fn find_by_name(&self, spec: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
         let name = container_name(spec);
         let named = |reason: String| DeployError::Spawn { node: spec.node.to_string(), reason: format!("finding container {name}: {reason}") };
         let state = match docker(&["inspect", "--format", "{{.State.Status}} {{.State.Pid}} {{.Id}}", &name]).await {
             Ok(state) => state,
-            Err(e) if inspect_says_absent(&e) => return Ok(Found::NeverLaunched),
+            Err(e) if inspect_says_absent(&e) => {
+                let (dir, deployment) = (spec.data_dir.clone(), spec.deployment_id.clone());
+                return match crate::record_store::blocking_io(move || recorded_launch(&dir, &deployment)).await.map_err(named)? {
+                    true => Ok(Found::Exited),
+                    false => Ok(Found::NeverLaunched),
+                };
+            }
             Err(e) => return Err(named(e)),
         };
         let mut parts = state.split_whitespace();
@@ -571,6 +606,9 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         // `docker run -d` answers the immutable id: the runtime's identity,
         // not the (reusable) name.
         let id = docker(&argv).await.map_err(err)?.trim().to_string();
+        // Which launch this container realises, so a later `find` knows it ran once the container is removed.
+        let (dir, deployment, container) = (spec.data_dir.clone(), spec.deployment_id.clone(), id.clone());
+        crate::record_store::blocking_io(move || record_launch(&dir, &deployment, &container)).await.map_err(err)?;
         self.data_dirs.lock().unwrap().insert(id.clone(), (spec.data_dir.clone(), spec.deployment_id.clone()));
         let pid = docker(&["inspect", "--format", "{{.State.Pid}}", &id]).await.map_err(err)?.parse::<u32>().ok().filter(|p| *p > 0);
         // The pipeline registers this exact handle and makes its runtime fact
@@ -813,6 +851,29 @@ mod tests {
     #[test]
     fn container_names_carry_only_safe_characters() {
         assert_eq!(docker_safe("mesh1.rpc.2/x y"), "mesh1.rpc.2-x-y");
+    }
+
+    /// CONTRACT (lifecycles/node-create.md: exact provider proof of a runtime's state): the launch
+    /// record a spawn writes says a launch whose container is gone ran, only when it names that launch;
+    /// none, or one naming another launch, says never launched; one that cannot be read or parsed is
+    /// refused by name. Must NOT happen: an unreadable record read as "never launched", which would
+    /// relaunch a birth that ran.
+    #[test]
+    fn a_launch_record_says_a_launch_ran_only_when_it_names_it_and_an_unreadable_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("container-launch-record-{}", crate::model::DeploymentId::mint().0));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (this, other) = (crate::model::DeploymentId::mint(), crate::model::DeploymentId::mint());
+        assert_eq!(recorded_launch(&dir, &this), Ok(false), "no record: never launched");
+        record_launch(&dir, &other, "c0ffee").unwrap();
+        assert_eq!(recorded_launch(&dir, &this), Ok(false), "the record of another launch");
+        record_launch(&dir, &this, "c0ffee").unwrap();
+        assert_eq!(recorded_launch(&dir, &this), Ok(true), "the record names this launch");
+        std::fs::write(dir.join(LAUNCH_FILE), b"not json").unwrap();
+        assert!(recorded_launch(&dir, &this).expect_err("an unparsable record").contains(LAUNCH_FILE));
+        std::fs::remove_file(dir.join(LAUNCH_FILE)).unwrap();
+        std::fs::create_dir_all(dir.join(LAUNCH_FILE)).unwrap();
+        assert!(recorded_launch(&dir, &this).expect_err("an unreadable record").contains(LAUNCH_FILE));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// CONTRACT (lifecycles/node-create.md: exact provider proof of a runtime's state): a container's
