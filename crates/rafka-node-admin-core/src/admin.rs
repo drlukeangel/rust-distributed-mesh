@@ -1784,22 +1784,104 @@ pub async fn exit_proof_of(
         (_, Some(r)) => (r.runtime.clone(), r.data_dir.clone(), r.incarnation_id.clone()),
         _ => return Err(format!("no runtime fact: the book holds {} for it and no durable row names it", if held_row.is_some() { "a digest without a runtime" } else { "no digest of this birth" })),
     };
-    // Proof is the exact runtime's own terminal status, in this provider's control domain; anything
-    // else proves nothing.
-    let handle = crate::deployment::provider::adopt(provider, &fact).map_err(|e| format!("the provider refused to adopt its runtime: {e}"))?;
+    match runtime_proof(provider, &fact, data_dir.as_deref(), &birth).await {
+        RuntimeProof::Exited { code, source } => Ok((code, source)),
+        RuntimeProof::Running => Err(format!("its runtime is not proven exited: {:?}", crate::deployment::provider::DeploymentStatus::Running)),
+        RuntimeProof::Unproven(why) => Err(why),
+    }
+}
+
+/// What the provider proves of one exact runtime ([`runtime_proof`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RuntimeProof {
+    /// The runtime exited: its exit code when one is proven, and where the proof came from
+    /// (`provider`: the provider's own terminal status; `exit-record`: the runtime's exit record in its
+    /// data dir; `none`: exited with no code).
+    Exited { code: Option<i32>, source: &'static str },
+    /// The runtime still runs: no proof, however long it has been silent.
+    Running,
+    /// Nothing is proven, and why.
+    Unproven(String),
+}
+
+/// The provider's proof of the exact runtime `fact` of the birth `birth` (deployment-provider.md: "Once
+/// adopted/spawned, provider `Exited`/terminal status for that exact handle is valid evidence"): the
+/// fact adopted in this provider's control domain and inspected, and only the runtime's own terminal
+/// status counts; its exit code is the provider's, else the one the runtime's own exit record in
+/// `data_dir` proves for that birth.
+pub(crate) async fn runtime_proof(provider: &dyn crate::deployment::provider::DeploymentProvider, fact: &rafka_mesh_entity::RuntimeFact, data_dir: Option<&str>, birth: &IncarnationId) -> RuntimeProof {
+    let handle = match crate::deployment::provider::adopt(provider, fact) {
+        Ok(h) => h,
+        Err(e) => return RuntimeProof::Unproven(format!("the provider refused to adopt its runtime: {e}")),
+    };
     let inspected = provider.inspect(&handle).await;
-    let status = crate::deployment::provider::exit_proof(inspected.clone(), &fact, data_dir.as_deref().map(std::path::Path::new), &birth.0).await.map_err(|e| format!("its exit record cannot be read: {e}"))?;
-    match status {
-        crate::deployment::provider::DeploymentStatus::Exited { code } => {
+    match crate::deployment::provider::exit_proof(inspected.clone(), fact, data_dir.map(std::path::Path::new), &birth.0).await {
+        Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => {
             let source = match (&inspected, code) {
                 (_, None) => "none",
                 (crate::deployment::provider::DeploymentStatus::Exited { code: Some(_) }, _) => "provider",
                 _ => "exit-record",
             };
-            Ok((code, source))
+            RuntimeProof::Exited { code, source }
         }
-        other => Err(format!("its runtime is not proven exited: {other:?}")),
+        Ok(crate::deployment::provider::DeploymentStatus::Running) => RuntimeProof::Running,
+        Ok(other) => RuntimeProof::Unproven(format!("its runtime is not proven exited: {other:?}")),
+        Err(e) => RuntimeProof::Unproven(format!("its exit record cannot be read: {e}")),
     }
+}
+
+/// A node-admin relaunched on a data dir that holds its own row asks the provider about its former
+/// birth, the one that row names (fabric-node-lifecycle-elections.md §4.1: "Only the provider's exit
+/// proof vacates a seat; no probe outcome does"; node-recovery.md "Detection and proof" step 3: the
+/// provider is asked "about the exact runtime recorded at launch. Exited is the proof, recorded
+/// durably"). The runtime is the one the data dir recorded for exactly that birth: its own runtime row
+/// in `nodes`, written when the birth started ([`NodesStorage::put_runtime`]). Exited is recorded as
+/// the birth's exit-proof row among its mesh's status rows ([`Records::put_exit`]), the fact every
+/// projection reads as the birth's proven loss, so the seats its records name fall vacant under the
+/// ordinary seat rules (fabric-recovery.md step 2). A runtime that still runs proves nothing and holds
+/// its seats; neither does a runtime that cannot be resolved or told. Nothing else is decided here:
+/// no supersedes (node-recovery.md "Lineage"), no seat taken. One
+/// `rdm.node_admin.node.resolve.via-relaunch-exit-proof` span names the former birth and the outcome
+/// (`exited`, `running`, `unproven`).
+pub(crate) async fn relaunch_exit_proof(provider: &dyn crate::deployment::provider::DeploymentProvider, nodes: &dyn crate::storage::NodesStorage, records: &Records, former: &crate::storage::NodeRecord, me: (&PathName, &NodeId, &IncarnationId)) -> RuntimeProof {
+    let span = tracing::info_span!(
+        "rdm.node_admin.node.resolve.via-relaunch-exit-proof",
+        node = %me.0,
+        node_id = %me.1,
+        incarnation_id = %me.2.0,
+        former_node_id = %former.node_id,
+        former_incarnation_id = %former.incarnation_id.0,
+        outcome = tracing::field::Empty,
+        exit_code = tracing::field::Empty,
+        exit_proof = tracing::field::Empty,
+        exit_proof_row = tracing::field::Empty,
+        reason = tracing::field::Empty,
+    );
+    let proof = match nodes.runtime(&former.node_id, &former.incarnation_id).await {
+        Ok(Some(row)) => runtime_proof(provider, &row.runtime, row.data_dir.as_deref(), &former.incarnation_id).await,
+        Ok(None) => RuntimeProof::Unproven(format!("this data dir records no runtime of the former birth {} at {}", former.node_id, former.incarnation_id.0)),
+        Err(e) => RuntimeProof::Unproven(format!("the runtime row of the former birth {} at {} could not be read: {e}", former.node_id, former.incarnation_id.0)),
+    };
+    match &proof {
+        RuntimeProof::Exited { code, source } => {
+            span.record("outcome", "exited").record("exit_code", code.map(|c| c.to_string()).unwrap_or_default().as_str()).record("exit_proof", *source);
+            let mut node = Node::allocated(former.name.clone());
+            node.node_id = former.node_id.clone();
+            node.incarnation_id = Some(former.incarnation_id.clone());
+            match records.put_exit(&node, *code, source).await {
+                Ok(_) => span.record("exit_proof_row", "put"),
+                Err(e) => span.record("exit_proof_row", e.as_str()),
+            };
+        }
+        RuntimeProof::Running => {
+            span.record("outcome", "running").record("reason", "its runtime still runs: no proof, its seats stay with it");
+        }
+        RuntimeProof::Unproven(why) => {
+            span.record("outcome", "unproven").record("reason", why.as_str());
+        }
+    }
+    span.in_scope(|| tracing::info!("the relaunched node-admin asked the provider about its former birth's exact runtime"));
+    proof
 }
 
 /// The workflow an exited member's removal was announced by ([`RecoverySubmitter::removal_announced`]):
@@ -5652,6 +5734,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             }
                             let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
                             let provider_dyn: Arc<dyn crate::deployment::provider::DeploymentProvider> = crate::wiring::apply(wiring.provider.take(), prepared.provider.clone());
+                            // A relaunch over a data dir that holds an own row: the provider's proof of the former
+                            // birth that row names, recorded before this birth publishes anything, so the seats its
+                            // records name fall vacant under the ordinary seat rules only on that proof.
+                            if let Some(former) = restart.as_ref() {
+                                relaunch_exit_proof(&*provider_dyn, &*nodes_storage, &records, former, (&name, &node_id, &incarnation)).await;
+                            }
                             let handover = Arc::new(crate::fabric_handover::HandoverDoor {
                                 fabric: cfg.fabric.clone(),
                                 me: name.clone(),
@@ -5773,6 +5861,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 deployment_id: runtime.deployment_id.clone(),
                                 incarnation: incarnation.0.clone(),
                             });
+                            // This birth's exact runtime, recorded in its own data dir under its own key, a blind put
+                            // (node-recovery.md "Detection and proof" step 3: "the exact runtime recorded at launch"):
+                            // a relaunch on this data dir proves this birth's exit from it
+                            // ([`relaunch_exit_proof`]), and every node-admin this one launches is handed it with the
+                            // other runtime rows it holds.
+                            nodes_storage
+                                .put_runtime(&crate::storage::RuntimeRow { node_id: node_id.clone(), name: name.clone(), incarnation_id: incarnation.clone(), runtime: runtime.clone(), data_dir: Some(cfg.data_dir.display().to_string()) })
+                                .await
+                                .map_err(storage_err)?;
                             // Own digest, published on the membership cadence.
                             let digest = Arc::new(Mutex::new(MeshDigest {
                                 fabric_id: cfg.fabric_id.clone(),
@@ -8069,6 +8166,68 @@ mod tests {
         assert_eq!(attr("inspector"), "mesh2.admin.1", "{a:?}");
         assert_eq!((submits, proof), (0, None), "no exit-proof row and no recovery submit without an exit proof");
         eprintln!("span rdm.node_admin.node.resolve.via-provider-inspection trace_id={} {a:?}", inspections[0].trace_id);
+    }
+
+    /// CONTRACT (fabric-node-lifecycle-elections.md §4.1: "Only the provider's exit proof vacates a
+    /// seat; no probe outcome does"; node-recovery.md "Detection and proof" step 3: "Exited is the
+    /// proof, recorded durably. Still running is no proof"): a node-admin relaunched over its data dir
+    /// asks the provider about its former birth's exact runtime, the runtime row its data dir holds
+    /// for exactly that birth, and records the birth's exit-proof row only on the provider's Exited. A
+    /// runtime that still runs, one the provider cannot tell, and a birth whose runtime the data dir
+    /// does not record are no proof: nothing is recorded, and the outcome names which.
+    /// Must NOT happen: an exit-proof row of a former birth that still runs, or of one never inspected.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_relaunched_admin_records_its_former_births_exit_only_on_the_providers_exited() {
+        use crate::deployment::provider::DeploymentStatus;
+        use crate::status_storage::StatusStorage;
+        use crate::storage::NodesStorage;
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-former").unwrap();
+        let former = crate::storage::NodeRecord {
+            node_id: NodeId::mint(),
+            fabric_id: fabric1(),
+            name: "mesh1.admin.1".parse().unwrap(),
+            mesh_id: mesh_id("mesh1"),
+            incarnation_id: IncarnationId::mint(),
+            endpoint_id: EndpointId("former-key".into()),
+            transport_addr: "127.0.0.1:1".parse().unwrap(),
+            listeners: Vec::new(),
+        };
+        let me: (PathName, NodeId, IncarnationId) = ("mesh1.admin.1".parse().unwrap(), NodeId::mint(), IncarnationId::mint());
+        let capture = crate::span_capture::Capture::new("i143-s57-relaunch-exit-proof");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let cases = [
+            (Some(DeploymentStatus::Exited { code: Some(9) }), RuntimeProof::Exited { code: Some(9), source: "provider" }, "exited"),
+            (Some(DeploymentStatus::Running), RuntimeProof::Running, "running"),
+            (Some(DeploymentStatus::Unknown), RuntimeProof::Unproven("its runtime is not proven exited: Unknown".into()), "unproven"),
+            (None, RuntimeProof::Unproven(format!("this data dir records no runtime of the former birth {} at {}", former.node_id, former.incarnation_id.0)), "unproven"),
+        ];
+        for (status, want, outcome) in cases {
+            let nodes = crate::storage::MemoryNodesStorage::default();
+            if status.is_some() {
+                nodes.put_runtime(&crate::storage::RuntimeRow { node_id: former.node_id.clone(), name: former.name.clone(), incarnation_id: former.incarnation_id.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
+            }
+            let provider = Answers { domain: fact.control_domain.clone(), status: status.clone().unwrap_or(DeploymentStatus::Unknown), inspected: Default::default() };
+            let status_rows = Arc::new(crate::status_storage::MemoryStatusStorage::default());
+            let records = Records::default();
+            records.set_status(status_rows.clone(), "mesh1".into(), me.0.clone(), me.1.clone());
+            let proof = relaunch_exit_proof(&provider, &nodes, &records, &former, (&me.0, &me.1, &me.2)).await;
+            assert_eq!(proof, want, "{outcome}");
+            assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), usize::from(status.is_some()), "the provider is asked about the recorded runtime, and only then: {outcome}");
+            let row = status_rows.node_exit_of("mesh1", &former.node_id, &former.incarnation_id).await.unwrap();
+            match outcome {
+                "exited" => assert_eq!(row.map(|r| (r.name.to_string(), r.exit_code, r.proof)), Some(("mesh1.admin.1".to_string(), Some(9), "provider".to_string())), "the exit-proof row of the former birth"),
+                _ => assert_eq!(row, None, "no proof, no row: {outcome}"),
+            }
+        }
+        let spans = capture.named("rdm.node_admin.node.resolve.via-relaunch-exit-proof");
+        assert_eq!(spans.len(), 4, "one span per relaunch: {spans:?}");
+        let attr = |i: usize, k: &str| spans[i].attributes.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr(0, "outcome"), attr(0, "exit_proof"), attr(0, "exit_proof_row")), ("exited".to_string(), "provider".to_string(), "put".to_string()));
+        assert_eq!((attr(1, "outcome"), attr(1, "exit_proof_row")), ("running".to_string(), String::new()));
+        assert_eq!((attr(2, "outcome"), attr(3, "outcome")), ("unproven".to_string(), "unproven".to_string()));
+        assert_eq!((attr(0, "former_node_id"), attr(0, "former_incarnation_id"), attr(0, "node_id")), (former.node_id.to_string(), former.incarnation_id.0.clone(), me.1.to_string()));
+        eprintln!("span rdm.node_admin.node.resolve.via-relaunch-exit-proof trace_id={}", spans[0].trace_id);
     }
 
     /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
