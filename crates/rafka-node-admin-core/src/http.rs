@@ -234,9 +234,9 @@ impl ControlPlane {
                 .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
             // The Build is current the moment it is durable in the builds store: nothing else is written.
             crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &self.me.to_string(), "accepted").await.map_err(Refusal::State)?;
-            // The Build topic carries the Fabric record as it always did, naming the Build now current.
+            // The Build topic carries the Fabric record, its identity.
             if let Some(identity) = self.accepted.record().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))? {
-                self.builds.publish_fabric(&identity, Some(&build_id)).await.map_err(Refusal::State)?;
+                self.builds.publish_fabric(&identity).await.map_err(Refusal::State)?;
             }
             tracing::info!(build_id = %build_id, "build accepted");
             self.build_submitted.notify_waiters();

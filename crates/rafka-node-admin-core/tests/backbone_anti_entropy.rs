@@ -69,8 +69,8 @@ impl BuildStateAdapter for HeldBuilds {
     async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(o).await
     }
-    async fn publish_fabric(&self, record: &FabricIdentity, current: Option<&BuildId>) -> Result<(), BuildStateError> {
-        self.inner.publish_fabric(record, current).await
+    async fn publish_fabric(&self, record: &FabricIdentity) -> Result<(), BuildStateError> {
+        self.inner.publish_fabric(record).await
     }
     async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(id).await

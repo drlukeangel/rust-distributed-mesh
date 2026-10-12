@@ -245,8 +245,8 @@ impl BuildStateAdapter for FramedBuilds {
     async fn open_attempt(&self, opened: &crate::build_state::AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(opened).await
     }
-    async fn publish_fabric(&self, record: &crate::fabric_storage::FabricIdentity, current: Option<&BuildId>) -> Result<(), BuildStateError> {
-        self.inner.publish_fabric(record, current).await
+    async fn publish_fabric(&self, record: &crate::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
+        self.inner.publish_fabric(record).await
     }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await

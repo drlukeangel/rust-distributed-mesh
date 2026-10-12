@@ -682,17 +682,8 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
     })
 }
 
-/// The Fabric record of the Build topic's frame: the identity, and the Build its sender read as
-/// current when it sent it. The frame is the one the topic always carried; no receiver takes
-/// `build_id` as a pointer (R-BI3: a receiver reads its current Build from its own Build entities).
-#[derive(Serialize, Deserialize)]
-struct WireFabric {
-    fabric_id: FabricId,
-    name: String,
-    build_id: Option<BuildId>,
-}
-
-/// The Fabric identity a join answer carries.
+/// The Fabric identity: the Fabric record of the Build topic's frame and a join answer carry it. A
+/// receiver reads its current Build from its own Build entities (R-BI3), never from the record.
 #[derive(Serialize, Deserialize)]
 struct WireFabricIdentity {
     fabric_id: FabricId,
@@ -704,7 +695,7 @@ struct WireFabricIdentity {
 pub(crate) struct WireMessage {
     nonce: u64,
     facts: Vec<WireFact>,
-    fabric: Option<WireFabric>,
+    fabric: Option<WireFabricIdentity>,
     shutdown: Option<FabricShutdown>,
 }
 
@@ -714,7 +705,7 @@ impl WireMessage {
         Ok(Self {
             nonce: m.nonce,
             facts: m.facts.iter().map(fact_to_wire).collect::<Result<_, _>>()?,
-            fabric: m.fabric.as_ref().map(|r| WireFabric { fabric_id: r.identity.fabric_id.clone(), name: r.identity.name.clone(), build_id: r.current.clone() }),
+            fabric: m.fabric.as_ref().map(|r| WireFabricIdentity { fabric_id: r.fabric_id.clone(), name: r.name.clone() }),
             shutdown: m.shutdown.clone(),
         })
     }
@@ -723,7 +714,7 @@ impl WireMessage {
         Ok(BuildMessage {
             nonce: self.nonce,
             facts: self.facts.into_iter().map(fact_from_wire).collect::<Result<_, _>>()?,
-            fabric: self.fabric.map(|r| crate::fabric_builds::FabricMessage { identity: FabricIdentity { fabric_id: r.fabric_id, name: r.name }, current: r.build_id }),
+            fabric: self.fabric.map(|r| FabricIdentity { fabric_id: r.fabric_id, name: r.name }),
             shutdown: self.shutdown,
         })
     }

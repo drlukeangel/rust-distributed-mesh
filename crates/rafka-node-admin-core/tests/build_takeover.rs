@@ -158,7 +158,7 @@ async fn admin(peers: Vec<iroh::EndpointAddr>) -> Admin {
         .unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
     let router = Router::builder(endpoint.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
-    // As a started admin: its fabric.storage holds the Fabric record (no Build named yet).
+    // As a started admin: its fabric.storage holds the Fabric record, and it holds no Build yet.
     let storage = Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new());
     rafka_node_admin_core::fabric_storage::FabricStorage::claim_identity(&*storage, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
     let accepted = Arc::new(AcceptedStore::new(storage, "test-admin"));

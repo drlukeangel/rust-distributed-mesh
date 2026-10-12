@@ -742,10 +742,9 @@ pub trait BuildStateAdapter: Send + Sync {
     /// same drift) changes nothing and succeeds; one that asks for another action is refused
     /// `AttemptTaken`, so no caller is told an attempt is open for an action it does not carry.
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError>;
-    /// Tell the fabric the Fabric record and the Build `current` this admin reads as current, on the
-    /// Build topic (its frame is unchanged: `crate::wire::WireMessage`). A local-only adapter has no
-    /// fabric to tell.
-    async fn publish_fabric(&self, _record: &crate::fabric_storage::FabricIdentity, _current: Option<&BuildId>) -> Result<(), BuildStateError> {
+    /// Tell the fabric the Fabric record, its identity, on the Build topic. A local-only adapter has
+    /// no fabric to tell.
+    async fn publish_fabric(&self, _record: &crate::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
         Ok(())
     }
     /// The folded view of `build_id`.

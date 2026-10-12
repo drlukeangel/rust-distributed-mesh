@@ -1,8 +1,7 @@
 //! The Build-facts read (`FetchBuildFacts`, op `0x1F`; node-rpc-envelope.md "Build facts, op
 //! `0x1F`, rdm"; i143 R-G6).
 //!
-//! A node-admin that holds the Fabric record but not the facts of the Build it points at asks
-//! another node-admin for them. The responder ([`BuildFactsDoor`]) reads its own local Build log
+//! A node-admin that does not hold the facts of a Build asks another node-admin for them. The responder ([`BuildFactsDoor`]) reads its own local Build log
 //! once and streams the facts of the one Build, packed by the method the Build topic's catch-up
 //! uses ([`crate::fabric_builds::encode_chunks`]): it provides what it holds and decides nothing.
 //! The caller ([`fetch_build_facts`]) returns the facts only for a stream that ended with its `End`,
