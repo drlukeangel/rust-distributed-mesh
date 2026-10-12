@@ -310,6 +310,9 @@ impl AdminRunner {
     /// leave ends. Nothing of the final primary is stopped, written or published here.
     async fn record_mesh_deleted(&self, key: &LeaveKey, manifest: ExitManifest) -> Result<(), String> {
         crate::mesh_leave::record_completion(&*self.builds, key, &self.me.to_string(), &manifest).await?;
+        // The mesh-primary committed the row Dead before it called: this fabric-primary's view states
+        // the mesh deleted from its acceptance on, so a node.delete of its last admin names it.
+        self.records.hold_mesh_deleted(&key.mesh_id);
         self.leaves.close(key);
         self.refresh_view().await;
         Ok(())
@@ -409,7 +412,9 @@ impl AdminRunner {
     /// mesh of the same name created after it is a new mesh with a new id. The id is dropped at the
     /// receipt, never left for a later sweep to find the mesh without a member.
     fn forget_mesh_id(&self, mesh: &str) {
-        self.records.meshes.lock().unwrap().remove(mesh);
+        if let Some(id) = self.records.meshes.lock().unwrap().remove(mesh) {
+            self.records.deleted_meshes_forget(&id);
+        }
     }
 
     /// `LeaveMesh` at the leaving mesh's primary: admit it and run the member workflows.

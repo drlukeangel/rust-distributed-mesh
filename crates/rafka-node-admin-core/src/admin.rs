@@ -318,6 +318,11 @@ pub struct Records {
     /// mesh id's, never a name's (states.md: an id is never reissued; a name is, R-MN1). After
     /// mesh.deleted the last admin, still its primary, publishes MeshStatus Dead (R-NS1 item 1).
     heard_dead: Mutex<BTreeMap<(String, String, u64), Option<MeshId>>>,
+    /// The meshes this admin, as fabric-primary, accepted mesh.deleted for: a validated `MeshLeave`,
+    /// which the mesh-primary calls only after it committed the mesh row Dead (node-rpc-envelope.md,
+    /// mesh delete command pair). Dead in this admin's projection from that acceptance on, without
+    /// waiting for the MeshStatus Dead gossip; dropped with the mesh's id at mesh-left.
+    deleted_meshes: Mutex<std::collections::HashSet<MeshId>>,
     /// This admin's own logical node, set once at start: the projection knows the mesh it authors
     /// the status of (a mesh primary restates no heard status as its own, gossip.md MeshStatus).
     me: std::sync::OnceLock<NodeId>,
@@ -413,6 +418,21 @@ impl Records {
                 *bound = id_of(&f.0, &f.1);
             }
         }
+    }
+
+    /// Hold that this fabric-primary accepted mesh.deleted for the mesh `id` (a validated `MeshLeave`).
+    pub fn hold_mesh_deleted(&self, id: &MeshId) {
+        self.deleted_meshes.lock().unwrap().insert(id.clone());
+    }
+
+    /// Drop the mesh `id` from the meshes this fabric-primary accepted mesh.deleted for (its mesh-left).
+    pub fn deleted_meshes_forget(&self, id: &MeshId) {
+        self.deleted_meshes.lock().unwrap().remove(id);
+    }
+
+    /// Whether this fabric-primary accepted mesh.deleted for the mesh `id`.
+    pub fn mesh_deleted(&self, id: &MeshId) -> bool {
+        self.deleted_meshes.lock().unwrap().contains(id)
     }
 
     /// Whether a MeshStatus Dead bound to the mesh `id` is held, unless this admin authors that mesh's
@@ -1111,6 +1131,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         let authored_here = records.me.get().is_some_and(|me| topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
         let status = match row {
             Some(rafka_node_rpc_contract::status::MeshState::Dead) => ScopeStatus::Dead,
+            _ if id.as_ref().is_some_and(|id| records.mesh_deleted(id)) => ScopeStatus::Dead,
             _ if records.heard_dead(id.as_ref(), authored_here) => ScopeStatus::Dead,
             Some(rafka_node_rpc_contract::status::MeshState::Leaving) => ScopeStatus::Leaving,
             _ if ready => ScopeStatus::ReadyForTraffic,
@@ -1287,6 +1308,16 @@ pub async fn exit_proof_of(
     }
 }
 
+/// The workflow an exited member's removal was announced by ([`RecoverySubmitter::removal_announced`]):
+/// which announcement, and the operation, Build and attempt it names (a mesh.delete announced by its
+/// mesh's status names its operation and no Build).
+struct Announced {
+    announced: &'static str,
+    operation: String,
+    build_id: String,
+    attempt: u32,
+}
+
 /// What the mesh primary's recovery of one TRUE OFFLINE member reads and calls
 /// (node-recovery.md "Detection and proof" step 3, sequence step 1).
 #[derive(Clone)]
@@ -1406,7 +1437,7 @@ impl RecoverySubmitter {
             }
         }
         if let Inspected::Exited(code, source) = &outcome {
-            if let Some((announced, op)) = self.removal_announced(n) {
+            if let Some(Announced { announced, operation, build_id, attempt }) = self.removal_announced(n).await {
                 // The provider's exact Exited is recorded durably whatever follows: the birth's
                 // exit-proof row is the proven loss every projection reads (`Records::read_exits`).
                 let exit_proof_row = match crate::offline::put_exit_proof(&*self.status_storage, n, *code, source, local_now_ms()).await {
@@ -1421,9 +1452,9 @@ impl RecoverySubmitter {
                     incarnation_id = %incarnation,
                     submitter = %self.me,
                     announced,
-                    operation = %op.operation,
-                    build_id = %op.build_id,
-                    attempt = op.attempt,
+                    operation = %operation,
+                    build_id = %build_id,
+                    attempt,
                     exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
                     exit_proof = *source,
                     exit_proof_row = %exit_proof_row,
@@ -1440,20 +1471,29 @@ impl RecoverySubmitter {
     /// now (node-recovery.md: recovery is drift reconciliation for a member that exits outside any
     /// workflow; "Failure and receipts": an exit during a workflow belongs to that workflow): its
     /// node's departure (`node-deleted`), else an open `NodeDeleting` overlay naming the exact birth
-    /// (`node-deleting`). A recovery's own node.delete of the exited birth (`retire-node:<path>`) is
-    /// such a workflow too: its overlay closes when its attempt's verdict is terminal
-    /// (`DigestBook::deletions_from_facts`), and a recovery whose Build ended Failed is submitted
-    /// again by the next tick, or by the keep of failed submits once its delete departed the birth.
-    fn removal_announced(&self, n: &Node) -> Option<(&'static str, rafka_mesh_entity::LifecycleOp)> {
+    /// (`node-deleting`), else the mesh.delete of its mesh (mesh-delete.md: from mesh.deleting, the
+    /// mesh's status deleting, to mesh.deleted, every member's removal is the mesh.delete's;
+    /// `mesh-deleting`, `mesh-deleted`), the status the book holds for the mesh. A recovery's own
+    /// node.delete of the exited birth (`retire-node:<path>`) is such a workflow too: its overlay
+    /// closes when its attempt's verdict is terminal (`DigestBook::deletions_from_facts`), and a
+    /// recovery whose Build ended Failed is submitted again by the next tick, or by the keep of failed
+    /// submits once its delete departed the birth.
+    async fn removal_announced(&self, n: &Node) -> Option<Announced> {
         let incarnation = n.incarnation_id.as_ref()?;
+        let of = |announced: &'static str, op: rafka_mesh_entity::LifecycleOp| Announced { announced, operation: op.operation, build_id: op.build_id, attempt: op.attempt };
         if let Some(op) = self.book.departed().into_iter().find(|op| op.node_id == n.node_id) {
-            return Some(("node-deleted", op));
+            return Some(of("node-deleted", op));
         }
-        self.book
-            .in_flight()
-            .into_iter()
-            .find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_restart() && !op.is_stop())
-            .map(|op| ("node-deleting", op))
+        if let Some(op) = self.book.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_restart() && !op.is_stop()) {
+            return Some(of("node-deleting", op));
+        }
+        let announced = match self.book.statuses.mesh(&n.mesh)?.status.as_str() {
+            "leaving" => "mesh-deleting",
+            "dead" => "mesh-deleted",
+            _ => return None,
+        };
+        let operation = self.topology.read().await.meshes.iter().find(|m| m.name == n.mesh).and_then(|m| m.id.clone()).map(|id| crate::mesh_leave::operation(&id)).unwrap_or_else(|| format!("mesh.delete of {}", n.mesh));
+        Some(Announced { announced, operation, build_id: String::new(), attempt: 0 })
     }
 
     /// The inspection's span, named when its verdict for the birth changes (a hung member is
@@ -6859,6 +6899,50 @@ mod tests {
             assert_eq!((attr("node"), attr("node_id"), attr("incarnation_id")), ("mesh2.rpc.1".to_string(), node.node_id.to_string(), member.node.incarnation.0.clone()), "{case}: the exact birth: {a:?}");
             assert_eq!((attr("announced"), attr("operation"), attr("build_id"), attr("attempt")), (announced.to_string(), format!("{workflow}:mesh2.rpc.1"), "bld-removal".to_string(), "2".to_string()), "{case}: the workflow the exit belongs to: {a:?}");
             assert_eq!(attr("submitter"), "mesh2.admin.1", "{case}: {a:?}");
+            eprintln!("span rdm.node_admin.build.reject.via-exit-inside-workflow trace_id={} {a:?}", rejects[0].trace_id);
+        }
+    }
+
+    /// CONTRACT (node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that
+    /// workflow"; mesh-delete.md: from mesh.deleting, the mesh's status deleting, to mesh.deleted, every
+    /// member's removal is the mesh.delete's): an exited member of a mesh whose status the mesh primary
+    /// holds deleting or deleted is not a member to recover, a primary lost mid-delete included: its
+    /// exit is recorded as its exit-proof row, no recovery is submitted, and one
+    /// `rdm.node_admin.build.reject.via-exit-inside-workflow` span names the mesh.delete. Must NOT
+    /// happen: mesh_lifecycle__mesh_leave_resume on f8001275, where mesh2's surviving admin, seated
+    /// after its primary was killed mid-delete, submitted the recovery of that primary 220 times
+    /// (trace 8b3d152a6a51c90fc06a4031cd055d37, refused while the Build reconciled).
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_proven_exit_of_a_member_of_a_deleting_or_deleted_mesh_submits_no_recovery() {
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-mesh-deleting").unwrap();
+        for (status, announced) in [("leaving", "mesh-deleting"), ("dead", "mesh-deleted")] {
+            let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+            member.node.runtime = Some(fact.clone());
+            let book = DigestBook::default();
+            for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+                book.record(d);
+            }
+            book.statuses.take(&rafka_mesh_transport::membership::Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
+            let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+            let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
+            crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
+            let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
+            let (recovery, status_rows, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+            let capture = crate::span_capture::Capture::new(&format!("i143-3078-mesh-{status}"));
+            let outcome = {
+                let _g = tracing::dispatcher::set_default(&capture.dispatch);
+                recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
+            };
+            assert_eq!(outcome, Inspected::Exited(Some(137), "provider"), "{status}: the provider proved the exact runtime exited");
+            let proof = status_rows.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap();
+            let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+            let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
+            assert_eq!((submits.len(), proof.is_some()), (0, true), "{status}: no recovery of a member of a mesh being deleted, its exit recorded: {submits:?}");
+            assert_eq!(rejects.len(), 1, "{status}: the refusal is spanned once: {rejects:?}");
+            let a = &rejects[0].attributes;
+            assert_eq!(a.get("announced").map(String::as_str), Some(announced), "{status}: {a:?}");
+            assert!(a.get("operation").is_some_and(|o| o.contains("mesh2") || o.starts_with("shutdown-mesh:")), "{status}: the mesh.delete is named: {a:?}");
             eprintln!("span rdm.node_admin.build.reject.via-exit-inside-workflow trace_id={} {a:?}", rejects[0].trace_id);
         }
     }
