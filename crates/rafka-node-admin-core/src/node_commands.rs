@@ -177,7 +177,13 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
         }
         let _ = commands.complete(&CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("checked above") });
     }
-    tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), "otel.kind" = "internal")
+    // A command not admitted names why on its span (the reply, or why no reply came), as its step's
+    // receipt does: the refusal is read where it happened.
+    let detail = match &admission {
+        CommandAdmission::Refused { .. } | CommandAdmission::NotSent { .. } | CommandAdmission::Indeterminate { .. } | CommandAdmission::StartFailed { .. } => format!("{admission:?}"),
+        _ => String::new(),
+    };
+    tracing::info_span!("rdm.node_admin.node.update.via-command-sent", node = %node.name, command = cmd.operation_prefix(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, admission = admission.name(), detail = %detail, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("the command was sent to the exact birth"));
     admission
 }

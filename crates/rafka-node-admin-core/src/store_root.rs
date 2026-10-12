@@ -7,24 +7,45 @@
 //! (fabric-node-lifecycle.md §4.3), so no two writers share a key. A node's data dir keeps only its
 //! own runtime material. A `store_dir` that is missing or unreadable fails the boot by name; nothing
 //! falls back to the data dir and nothing creates the `store_dir` (the provider supplies it).
+//!
+//! The store exists once the fabric's first state-commit published it (states.md, Rounds;
+//! node-identity-and-state.md §2.7, The write: "Before then `system.ops.nodes` and
+//! `system.ops.meshes` do not exist"). A node that opens a root holding no Fabric row yet holds
+//! every row it writes in its [`Scratchpad`] until its commit-state action publishes them; a node
+//! that opens a root the fabric-primary already published the Fabric row to writes to it directly.
 
-use crate::model::{FabricId, PathName};
-use crate::record_store::StorageError;
+use crate::model::{FabricId, IncarnationId, PathName};
+use crate::record_store::{FileRecords, Scratchpad, StorageError};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The env variable that names a node's `store_dir`.
 pub use rafka_mesh_entity::launch::ENV_STORE_DIR;
 
+/// The Fabric row's file under the root: the fabric-primary publishes it at the fabric's first
+/// state-commit, so a root that holds it is a store that exists.
+const FABRIC_ROW: &str = "fabric/identity.json";
+
 /// The fabric's store root, `<store_dir>/<fabric_id>/`, checked at boot.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct StoreRoot {
     dir: PathBuf,
+    /// What this process holds before the fabric's first state-commit: `Some` when it opened the
+    /// root before the Fabric row was published to it.
+    scratchpad: Option<Arc<Scratchpad>>,
+}
+
+impl std::fmt::Debug for StoreRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoreRoot").field("dir", &self.dir).field("writes_to", &self.writes_to()).finish()
+    }
 }
 
 impl StoreRoot {
     /// The root of `fabric_id` under `store_dir`: `store_dir` must be a readable directory, refused by
     /// name (its path and the cause) otherwise and never created here; the fabric's directory under it
-    /// is created when absent.
+    /// is created when absent. A root that holds no Fabric row yet is opened with a scratchpad: the
+    /// stores opened on it hold their rows until it is published.
     pub fn open(store_dir: &Path, fabric_id: &FabricId) -> Result<Self, StorageError> {
         let refused = |cause: String| StorageError::Io { file: store_dir.display().to_string(), reason: format!("the store_dir ({ENV_STORE_DIR}) cannot be used: {cause}") };
         let meta = std::fs::metadata(store_dir).map_err(|e| refused(e.to_string()))?;
@@ -34,13 +55,47 @@ impl StoreRoot {
         std::fs::read_dir(store_dir).map_err(|e| refused(format!("it cannot be listed: {e}")))?;
         let dir = store_dir.join(fabric_id.to_string());
         std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: format!("the fabric's store root could not be created: {e}") })?;
-        Ok(Self { dir })
+        let scratchpad = (!dir.join(FABRIC_ROW).exists()).then(Scratchpad::new);
+        Ok(Self { dir, scratchpad })
     }
 
     /// The root at `dir` itself, the fabric's directory already chosen and created by the caller (a
-    /// cell's own directory, or a store an embedding app hands in).
+    /// cell's own directory, or a store an embedding app hands in), written directly.
     pub fn at(dir: &Path) -> Self {
-        Self { dir: dir.to_path_buf() }
+        Self { dir: dir.to_path_buf(), scratchpad: None }
+    }
+
+    /// [`Self::at`], every store opened on it holding its rows in `scratchpad` until it is published.
+    pub fn held_at(dir: &Path, scratchpad: Arc<Scratchpad>) -> Self {
+        Self { dir: dir.to_path_buf(), scratchpad: Some(scratchpad) }
+    }
+
+    /// What this process holds for the root before the fabric's first state-commit, when it opened
+    /// the root before then.
+    pub fn scratchpad(&self) -> Option<&Arc<Scratchpad>> {
+        self.scratchpad.as_ref()
+    }
+
+    /// Where a write to a store opened on this root goes now: `scratchpad` before its publication,
+    /// `store-root` after it, or when the root already held the Fabric row at open.
+    pub fn writes_to(&self) -> &'static str {
+        match &self.scratchpad {
+            Some(s) if !s.published() => "scratchpad",
+            _ => "store-root",
+        }
+    }
+
+    /// Open the store `dir` under `base` (a directory of this root), written by the process born as
+    /// `writer`: held in this root's scratchpad until it is published.
+    pub async fn records(&self, base: &Path, dir: &str, writer: &IncarnationId) -> Result<FileRecords, StorageError> {
+        match &self.scratchpad {
+            Some(scratchpad) => {
+                let store = base.join(dir);
+                let store = store.strip_prefix(&self.dir).unwrap_or(&store).display().to_string().trim_end_matches('/').to_string();
+                FileRecords::open_held(base, dir, writer, scratchpad, store).await
+            }
+            None => FileRecords::open(base, dir, writer).await,
+        }
     }
 
     /// `<store_dir>/<fabric_id>/`.

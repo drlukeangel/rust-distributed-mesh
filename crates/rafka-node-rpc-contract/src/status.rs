@@ -313,9 +313,11 @@ pub enum StatusRequest {
         /// The operation: `start-node:<path>`.
         operation: String,
     },
-    /// Upward: a caller asks the fabric-primary to put the exact birth's whole config (`node.config.update`).
-    /// The fabric-primary writes the node's row, tells the node, and answers [`StatusReply::ConfigUpdated`]
-    /// (`node.config.updated`); a config past its cap is [`StatusReply::RejectedConfig`]. A single call, never a Build.
+    /// Upward: a caller asks the exact birth's mesh-primary, the writer of that mesh's rows, to put the
+    /// birth's whole config (`node.config.update`), through a carrier (Forward `0x1A`) when it cannot
+    /// reach it directly. The mesh-primary writes the node's row, tells the node, and answers
+    /// [`StatusReply::ConfigUpdated`] (`node.config.updated`) once the node applied it; a config past its
+    /// cap is [`StatusReply::RejectedConfig`]. A single call, never a Build.
     UpdateNodeConfig {
         /// The birth whose config is put.
         node_id: NodeId,
@@ -324,8 +326,8 @@ pub enum StatusRequest {
         /// The whole config: a put replaces, it never merges.
         config: BTreeMap<String, String>,
     },
-    /// Downward: the fabric-primary tells the exact birth its config; the birth holds it and carries it in
-    /// its next digest. Answered `Applied`.
+    /// Downward: the birth's mesh-primary tells the exact birth its config; the birth holds it and carries
+    /// it in its next digest. Answered `Applied`.
     ApplyNodeConfig {
         /// The birth told.
         node_id: NodeId,
@@ -711,8 +713,8 @@ pub enum StatusReply {
         /// The answering birth's incarnation.
         incarnation: IncarnationId,
     },
-    /// The reply of an `UpdateNodeConfig`: the fabric-primary wrote the node's row and the exact birth holds
-    /// the config (`node.config.updated`).
+    /// The reply of an `UpdateNodeConfig`: the birth's mesh-primary wrote the node's row and the exact
+    /// birth holds the config (`node.config.updated`).
     ConfigUpdated {
         /// The birth whose config was put.
         node_id: NodeId,
@@ -732,7 +734,7 @@ pub enum StatusReply {
         /// The store's refusal.
         reason: String,
     },
-    /// The fabric-primary wrote the node's row, and the exact birth did not apply the config: the
+    /// The mesh-primary wrote the node's row, and the exact birth did not apply the config: the
     /// record holds the new config, the birth does not.
     ConfigNotApplied {
         /// The node's `path.name`.

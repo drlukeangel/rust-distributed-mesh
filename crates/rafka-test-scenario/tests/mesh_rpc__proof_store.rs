@@ -9,7 +9,8 @@
 //! 3. A killed node is recovered by its mesh-primary (node-recovery.md): a new logical node at
 //!    the same path.name over the inherited data dir and endpoint key, so it keeps the store.
 //! 4. A planned replacement (node-replace.md) does not inherit it: `path:` reaches the successor,
-//!    whose store is empty; `exact:<old>` never follows the replacement.
+//!    whose store is empty; the predecessor is parked at `<path>.old`, and once node.delete of it
+//!    publishes its departure, `exact:<old>` resolves Gone and never follows the replacement.
 //! 5. A key or value over its limit is refused by name, and writes nothing.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
@@ -122,9 +123,16 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
     assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
-    // A node's own live resolver knows more: the replacement published the old birth's
-    // departure, so the other rpc node answers Gone for the old id, the new holder for the
-    // path, and Unknown for an id nobody ever saw.
+    // The replace parks the predecessor at `<path>.old`, stopped, with its data (node-replace.md
+    // step 3); node.delete of that parked birth is the recipe's step that releases its identity,
+    // and its NodeDeleted is the departure (node-rpc.md: Gone comes only from NodeDeleted).
+    let old_name = format!("{NODE}.old");
+    let (status, d) = estate.delete(&format!("/api/nodes/{old_name}")).await;
+    assert_eq!(status, 202, "node.delete of the parked {old_name} is accepted: {d}");
+    estate.await_attempt(d["build_id"].as_str().unwrap(), Estate::attempt_of(&d), Duration::from_secs(120)).await;
+    // A node's own live resolver knows more: the parked predecessor's delete published the old
+    // birth's departure, so the other rpc node answers Gone for the old id, the new holder for
+    // the path, and Unknown for an id nobody ever saw.
     let other = "path:mesh1.rpc.2";
     let gone = wait_for("mesh1.rpc.2 holds the old birth's departure", Duration::from_secs(30), || async {
         let r = estate.probe(&["resolve", "--target", other, "--query", &exact_recovered]);

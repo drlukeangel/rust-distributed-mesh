@@ -49,7 +49,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // A member node of any kind is born, restarted and retired by its own mesh's primary
         // admin (the fabric primary when the mesh has none): the rule names no role, so a
         // product's kinds get the same executor as the proof product's rpc node.
-        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. }
+        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. }
             if node.kind != NodeKind::NodeAdmin =>
         {
             mesh_executor(&node.mesh, None, t)
@@ -62,7 +62,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // operation's terminate step would stop the executor mid-step. It is a hand-off: the admin
         // the election seats once the target drains (a Draining birth is no candidate,
         // fabric-node-lifecycle-elections.md section 2) executes it, and drains the target first.
-        BuildOperation::RetireNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. }
+        BuildOperation::RetireNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. }
             if t.fabric_primary().is_some_and(|fp| fp.name == *node) =>
         {
             successor_of(node, t)
@@ -72,7 +72,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // mesh-admin). The mesh primary never executes its own: the admin its mesh seats once it
         // drains does. A mesh with no other admin has no mesh admin to execute it: the fabric
         // primary, which owns what happens to a mesh that has none.
-        BuildOperation::RetireNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } => {
+        BuildOperation::RetireNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. } => {
             if t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == *node) {
                 mesh_successor_of(node, t).or_else(|| held_admins(&node.mesh, Some(node), t).is_empty().then(fabric).flatten())
             } else {
@@ -114,7 +114,7 @@ pub fn held_admins<'a>(mesh: &str, target: Option<&PathName>, t: &'a Topology) -
 /// that the view seats no admin at all.
 pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
     let node = match op {
-        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::UpdateNode { node, .. } => node,
+        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::UpdateNode { node, .. } | BuildOperation::DeleteNode { node, .. } => node,
         _ => return format!("{}: no admin holds the seat that executes it in this view", op.key()),
     };
     let held: Vec<String> = held_admins(&node.mesh, Some(node), t).into_iter().map(|n| format!("{} ({:?})", n.name, n.status)).collect();

@@ -165,7 +165,8 @@ fn acts_on(action: &AttemptAction) -> &IncarnationId {
         | AttemptAction::Drain { from_incarnation, .. }
         | AttemptAction::Stop { from_incarnation, .. }
         | AttemptAction::Start { from_incarnation, .. }
-        | AttemptAction::Recover { from_incarnation, .. } => from_incarnation,
+        | AttemptAction::Recover { from_incarnation, .. }
+        | AttemptAction::Delete { from_incarnation, .. } => from_incarnation,
     }
 }
 

@@ -28,6 +28,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tracing::instrument::WithSubscriber as _;
+use tracing::Instrument as _;
 
 /// Why this admin holds back its Ready for want of control facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,13 +230,19 @@ impl Hydrator {
             return;
         }
         let (me, kind) = (self.me.clone(), blocker.kind());
-        self.in_flight = Some(tokio::spawn(async move {
-            let span = tracing::info_span!("rdm.node_admin.fabric.update.via-entry-repeat", node = %me, blocker = kind, outcome = tracing::field::Empty);
-            let result = tracing::Instrument::instrument(entry(), span.clone()).await;
-            span.record("outcome", match &result { Ok(()) => "retrieved".to_string(), Err(e) => format!("failed: {e}") }.as_str());
-            span.in_scope(|| tracing::info!("no pointer and no Build identified: the control entry is retrieved again"));
-            End::Entry(result)
-        }));
+        // The request is a step of the turn that started it: it runs under that turn's span and dispatcher.
+        let parent = tracing::Span::current();
+        self.in_flight = Some(tokio::spawn(
+            async move {
+                let span = tracing::info_span!("rdm.node_admin.fabric.update.via-entry-repeat", node = %me, blocker = kind, outcome = tracing::field::Empty);
+                let result = entry().instrument(span.clone()).await;
+                span.record("outcome", match &result { Ok(()) => "retrieved".to_string(), Err(e) => format!("failed: {e}") }.as_str());
+                span.in_scope(|| tracing::info!("no pointer and no Build identified: the control entry is retrieved again"));
+                End::Entry(result)
+            }
+            .instrument(parent)
+            .with_current_subscriber(),
+        ));
     }
 
     async fn fetch(&mut self, blocker: &HydrationBlocker, id: BuildId, now: Instant) {
@@ -243,45 +251,48 @@ impl Hydrator {
             return;
         };
         let (client, local, builds, accepted, me, kind) = (self.client.clone(), self.local.clone(), self.builds.clone(), self.accepted.clone(), self.me.clone(), blocker.kind());
-        self.in_flight = Some(tokio::spawn(async move {
-            let span = tracing::info_span!(
-                "rdm.node_admin.build.update.via-fetch-facts",
-                node = %me,
-                build_id = %id,
-                target = %target.name,
-                blocker = kind,
-                facts = tracing::field::Empty,
-                chunks = tracing::field::Empty,
-                outcome = tracing::field::Empty,
-            );
-            let fetched = {
-                use tracing::Instrument as _;
-                fetch_build_facts(&client, &NodeTarget::ExactNode(target.node_id.clone()), &id).instrument(span.clone()).await
-            };
-            match fetched {
-                Ok(f) if f.complete => {
-                    span.record("facts", f.facts.len() as u64);
-                    span.record("chunks", f.chunks);
-                    local.absorb_facts(&f.facts).await;
-                    accepted.resolve_wanted(&*builds).await;
-                    span.record("outcome", "absorbed");
-                    span.in_scope(|| tracing::info!("the responder's complete holdings of the Build are absorbed into the local Build log"));
-                    End::Absorbed(target.node_id)
-                }
-                Ok(f) => {
-                    span.record("facts", f.facts.len() as u64);
-                    span.record("outcome", "responder-incomplete");
-                    tracing::info_span!("rdm.node_admin.build.reject.via-fetch-incomplete", node = %me, build_id = %id, target = %target.name)
-                        .in_scope(|| tracing::info!("the responder says its holdings of the Build are not whole: nothing is absorbed"));
-                    End::Failed(target.node_id)
-                }
-                Err(e) => {
-                    span.record("outcome", e.reason());
-                    tracing::info_span!("rdm.node_admin.build.reject.via-fetch-failed", node = %me, build_id = %id, target = %target.name, reason = e.reason(), detail = %e)
-                        .in_scope(|| tracing::info!("the Build-facts read produced nothing to absorb"));
-                    End::Failed(target.node_id)
+        // The request is a step of the turn that started it: it runs under that turn's span and dispatcher.
+        let parent = tracing::Span::current();
+        self.in_flight = Some(tokio::spawn(
+            async move {
+                let span = tracing::info_span!(
+                    "rdm.node_admin.build.update.via-fetch-facts",
+                    node = %me,
+                    build_id = %id,
+                    target = %target.name,
+                    blocker = kind,
+                    facts = tracing::field::Empty,
+                    chunks = tracing::field::Empty,
+                    outcome = tracing::field::Empty,
+                );
+                let fetched = fetch_build_facts(&client, &NodeTarget::ExactNode(target.node_id.clone()), &id).instrument(span.clone()).await;
+                match fetched {
+                    Ok(f) if f.complete => {
+                        span.record("facts", f.facts.len() as u64);
+                        span.record("chunks", f.chunks);
+                        local.absorb_facts(&f.facts).await;
+                        accepted.resolve_wanted(&*builds).await;
+                        span.record("outcome", "absorbed");
+                        span.in_scope(|| tracing::info!("the responder's complete holdings of the Build are absorbed into the local Build log"));
+                        End::Absorbed(target.node_id)
+                    }
+                    Ok(f) => {
+                        span.record("facts", f.facts.len() as u64);
+                        span.record("outcome", "responder-incomplete");
+                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-incomplete", node = %me, build_id = %id, target = %target.name)
+                            .in_scope(|| tracing::info!("the responder says its holdings of the Build are not whole: nothing is absorbed"));
+                        End::Failed(target.node_id)
+                    }
+                    Err(e) => {
+                        span.record("outcome", e.reason());
+                        tracing::info_span!("rdm.node_admin.build.reject.via-fetch-failed", node = %me, build_id = %id, target = %target.name, reason = e.reason(), detail = %e)
+                            .in_scope(|| tracing::info!("the Build-facts read produced nothing to absorb"));
+                        End::Failed(target.node_id)
+                    }
                 }
             }
-        }));
+            .instrument(parent)
+            .with_current_subscriber(),
+        ));
     }
 }

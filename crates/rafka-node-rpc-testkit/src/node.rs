@@ -341,17 +341,22 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // observes of its pooled connections (connections.md sections 4.2, 9 and 10).
     // The storage fault the originate door arms (testkit only): the product's file storage,
     // decorated.
-    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name);
+    let step = tracing::info_span!(parent: boot, "rdm.mesh.node.resolve.via-connections-hydrated", node = %launch.name, writes_to = tracing::field::Empty);
+    // Before the fabric's first state-commit the node holds its connections rows in its scratchpad;
+    // its commit-state action publishes them (states.md, Rounds).
+    let store_root = rafka_node_admin_core::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).map_err(|e| anyhow!("refusing to start: {e}"))?;
+    step.record("writes_to", store_root.writes_to());
     let fault = Arc::new(crate::faults::StorageFault::default());
     let connections = Arc::new(rafka_node_admin_core::connections_writer::ConnectionsWriter::new(
         rafka_mesh_entity::connections::ConnectionEnd { name: launch.name.clone(), node_id: launch.node_id.clone(), incarnation: Some(launch.incarnation.clone()) },
         Arc::new(crate::faults::FaultedConnectionsStorage::new(
             Arc::new(
                 rafka_node_admin_core::storage::FileConnectionsStorage::open(
-                    &rafka_node_admin_core::store_root::StoreRoot::open(&launch.store_dir, &launch.fabric_id).map_err(|e| anyhow!("refusing to start: {e}"))?,
+                    &store_root,
                     &launch.name,
                     &launch.incarnation,
                 )
+                .await
                 .map_err(|e| anyhow!("connections storage: {e}"))?,
             ),
             fault.clone(),
@@ -507,23 +512,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
 
                             // A delta that does not follow what this node holds desynchronizes that source; the node tops
                             // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
-                            {
-                                let (client, rafka_time, me, me_id) = (client.clone(), rafka_time.clone(), name.clone(), launch.node_id.clone());
-                                membership.spawn_top_up(Arc::new(move |membership: Membership, primary: MeshDigest, meshes: Vec<String>| {
-                                    let (client, rafka_time, me, me_id) = (client.clone(), rafka_time.clone(), me.clone(), me_id.clone());
-                                    Box::pin(async move {
-                                        let mut done = rafka_mesh_transport::membership::TopUpDone::default();
-                                        for mesh in meshes {
-                                            let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &membership, Some(&mesh), None)
-                                                .await
-                                                .map_err(|e| format!("{mesh}: {e}"))?;
-                                            read.adopt_rafka_time(&rafka_time, &membership, &me, &me.split('.').next().unwrap_or_default().to_string(), &me_id, &primary.node.name.to_string()).map_err(|e| format!("{mesh}: {e}"))?;
-                                            done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
-                                        }
-                                        Ok(done)
-                                    })
-                                }));
-                            }
+                            membership.spawn_top_up(rafka_node_admin_core::topology_read::top_up_fetch(client.clone(), rafka_time.clone(), name.clone(), launch.node_id.clone()));
                             // From here the node is on the mesh, Pending: it answers status, drain-node and stop-node, and
                             // says Pending on the membership cadence while its `hydrate_before_ready` hook runs. It is
                             // published ReadyForTraffic only once the hook has passed ("born full").
@@ -549,7 +538,11 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                         })
                                     })
                                 };
-                                Arc::new(rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), membership.clone(), set_status, current, Some(declare)).with_retire(cancel.clone()))
+                                Arc::new(
+                                    rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), membership.clone(), set_status, current, Some(declare))
+                                        .with_retire(cancel.clone())
+                                        .with_round_actions(Arc::new(rafka_node_admin_core::fabric_rounds::StorePublication::new(store_root.scratchpad().cloned(), None))),
+                                )
                             };
                             own.set_connections(connections.clone());
                             let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
@@ -1015,7 +1008,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // birth (a hook blocked on its authority's word runs again on it).
             let blocker = me.hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
-            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_default();
+            // A sender this node holds no digest of is named by the one fact it holds of it: its endpoint.
+            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
                 me.addressed.note(&from.node.node_id);
             }
@@ -1110,7 +1104,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         }
                     };
                     tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the fabric-primary's config is held and rides this birth's digest"));
+                        .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this birth's digest"));
                     Ok(StatusReply::Applied)
                 }
                 StatusRequest::ApplyNodeName { name, .. } => {

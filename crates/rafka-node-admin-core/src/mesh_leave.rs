@@ -70,6 +70,19 @@ impl RosterBirth {
         let incarnation_id = n.incarnation_id.as_ref().map(|i| i.0.clone()).ok_or_else(|| format!("{} has no known birth", n.name))?;
         Ok(Self { node: n.name.to_string(), node_id: n.node_id.to_string(), incarnation_id })
     }
+
+    /// The record of this exact birth the accepted roster alone gives (R11: the roster decides
+    /// what runs): its `path.name`, node id and incarnation, `Leaving` as a birth of a leaving
+    /// mesh. The member workflow reads the rest where it reads it for any birth (its runtime from
+    /// the birth's durable runtime row). It carries no config: no row is written from it.
+    pub fn record(&self) -> Result<Node, String> {
+        let name: crate::model::PathName = self.node.parse().map_err(|e| format!("the roster birth's path.name {} does not parse: {e:?}", self.node))?;
+        let mut n = Node::allocated(name);
+        n.node_id = NodeId::parse(&self.node_id).map_err(|e| format!("the roster birth {}'s node id {} does not parse: {e}", self.node, self.node_id))?;
+        n.incarnation_id = Some(crate::model::IncarnationId(self.incarnation_id.clone()));
+        n.status = crate::model::NodeStatus::Leaving;
+        Ok(n)
+    }
 }
 
 /// The exit manifest: the accepted roster, and the provider's terminal receipt of every birth that
@@ -466,9 +479,10 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
     }
     let handle = crate::deployment::provider::adopt(provider, &row.runtime).map_err(|r| format!("the runtime of {named} cannot be adopted in this provider domain: {r}"))?;
     let inspected = provider.inspect(&handle).await;
-    match crate::deployment::provider::exit_proof(inspected, &row.runtime, row.data_dir.as_deref().map(std::path::Path::new), &lost.incarnation_id) {
-        crate::deployment::provider::DeploymentStatus::Exited { code } => Ok(TerminalReceipt { node: lost.node.clone(), node_id: lost.node_id.clone(), incarnation_id: lost.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: code }),
-        other => Err(format!("the runtime of {named} is not proven exited: {other:?}")),
+    match crate::deployment::provider::exit_proof(inspected, &row.runtime, row.data_dir.as_deref().map(std::path::Path::new), &lost.incarnation_id).await {
+        Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => Ok(TerminalReceipt { node: lost.node.clone(), node_id: lost.node_id.clone(), incarnation_id: lost.incarnation_id.clone(), runtime: Some(runtime.clone()), exit_code: code }),
+        Ok(other) => Err(format!("the runtime of {named} is not proven exited: {other:?}")),
+        Err(e) => Err(format!("the exit record of {named} cannot be read: {e}")),
     }
 }
 
@@ -479,7 +493,7 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
 /// then `RosterAmended` admits `held`. A lost primary not proven exited refuses the resume by name
 /// and nothing is amended (R-D1).
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
+pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, records: &crate::admin::Records, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
     let operation = key.operation.as_str();
     let lost = &admitted.final_primary;
     let steps = builds.read_build(&BuildId(key.build_id.clone())).await.map_err(|e| format!("{executor}: the Build {} could not be read for the receipts of {operation}: {e}", key.build_id))?.steps;
@@ -488,6 +502,9 @@ pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn cr
             span_unproven(key, lost, &reason);
             format!("{operation} is refused: the final primary {} {} is silent but not proven exited, so {} {} is not admitted in its place: {reason}", lost.node, lost.incarnation_id, held.node, held.incarnation_id)
         })?;
+        // Recorded durably before its receipt: the exit-proof row is the proven loss every
+        // projection reads.
+        records.put_exit_of_receipt(&terminal).await.map_err(|e| format!("{operation} is refused: the lost final primary's proven exit is not recorded: {e}"))?;
         record_predecessor_exit(builds, key, executor, &terminal).await?;
     }
     amend_roster(builds, key, executor, &RosterAmended { predecessor: lost.clone(), final_primary: held.clone(), final_runtime: held_runtime.clone() }).await
@@ -511,6 +528,11 @@ where
     let first = accepted_row(own, operation, STEP_LEAVING_ROSTER).ok_or_else(|| format!("{operation}: no {STEP_LEAVING_ROSTER} receipt is recorded: the leave has no roster to run over"))??.final_primary;
     let last = |steps: &[BuildStepReceipt]| amendment_chain(&first, steps, operation).map(|c| c.last().map(|a| a.final_primary.clone()).unwrap_or_else(|| first.clone()));
     if &last(own)? == me {
+        let amendments = amendment_chain(&first, own, operation)?.len();
+        if amendments > 0 {
+            tracing::info_span!("rdm.node_admin.mesh.resolve.via-own-build-facts", operation = %operation, me = %named(me), first_primary = %named(&first), amendments)
+                .in_scope(|| tracing::info!("this admin's own Build facts hold the amendment that names it final primary: it runs the roster captured once plus every amendment, reading the owner for nothing"));
+        }
         return Ok((amended_roster(roster, own, operation)?, Vec::new()));
     }
     let known: Vec<BuildStepReceipt> = fetch_owner().await?.into_iter().filter_map(|f| if let BuildFact::Step(r) = f { Some(r) } else { None }).filter(|r| r.operation == operation || r.operation.starts_with(&format!("{operation}/"))).collect();
@@ -609,21 +631,77 @@ where
     Ok((admitted.roster, known))
 }
 
+/// The records the leave's member workflows act on (R11: the leave acts on the immutable accepted
+/// roster's exact births; mesh-leave.md "Failure/certainty behavior": "No timeout or gossip absence
+/// proves exit"): every roster birth as `view` holds that exact birth (node id and incarnation), else
+/// as `held` gives it, the record this admin's membership holds of the birth. A member that sent its
+/// terminal `Leaving` and went silent leaves the view one gossip interval later (a graceful
+/// departure, fabric-node-lifecycle.md §6) and still has no Exited receipt: its record is the held
+/// one. A birth neither holds is absent here, and runs from the roster birth itself
+/// ([`members_exited`], [`RosterBirth::record`]).
+pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&RosterBirth) -> Option<Node>) -> Vec<Node> {
+    let exact = |b: &RosterBirth, n: &Node| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id);
+    roster
+        .iter()
+        .filter_map(|b| {
+            view.iter().find(|n| exact(b, n)).cloned().or_else(|| {
+                let n = held(b).filter(|n| exact(b, n))?;
+                tracing::info_span!("rdm.node_admin.mesh.resolve.via-held-record", member = %b.node, node_id = %b.node_id, incarnation_id = %b.incarnation_id, status = ?n.status)
+                    .in_scope(|| tracing::info!("a roster birth the view no longer holds is worked from the record this admin's membership holds of it"));
+                Some(n)
+            })
+        })
+        .collect()
+}
+
+/// The read the leave's member workflows take before they run (R13: "Rebuild after a seat change
+/// reads the mesh's own rows"): the row of every roster birth `records` hold no record of, held by
+/// `rows`, the writer of the mesh's rows, so the birth's `Deleted` row is written from the row its
+/// node holds ([`birth_row_deleted`]); the admin created for a leaving mesh with no admin left
+/// joined after such a birth stopped, and its views never held it. One
+/// `rdm.node_admin.mesh.resolve.via-roster-row` span per birth read names what the read found; a
+/// row not read leaves the birth's `Deleted` write to refuse by name.
+pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executor: &str, operation: &str, roster: &[RosterBirth], records: &[Node]) {
+    let Some(rows) = rows else { return };
+    let exact = |b: &RosterBirth, n: &Node| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id);
+    for b in roster.iter().filter(|b| !records.iter().any(|n| exact(b, n))) {
+        let read = match (b.node.parse::<crate::model::PathName>(), NodeId::parse(&b.node_id)) {
+            (Ok(name), Ok(node_id)) => rows.hold_row_of(&name, &node_id).await,
+            (name, node_id) => Err(format!("{executor}: the roster birth {} ({}) names no path.name or node id: {:?} {:?}", b.node, b.node_id, name.err(), node_id.err())),
+        };
+        let (outcome, detail) = match &read {
+            Ok(true) => ("held", String::new()),
+            Ok(false) => ("no-row", format!("the store holds no row of {} at {}", b.node_id, b.node)),
+            Err(e) => ("unreadable", e.clone()),
+        };
+        tracing::info_span!("rdm.node_admin.mesh.resolve.via-roster-row", node = %executor, member = %b.node, node_id = %b.node_id, incarnation_id = %b.incarnation_id, operation, outcome, detail = %detail)
+            .in_scope(|| tracing::info!("the row of a roster birth this admin holds no record of is read from the mesh's own rows"));
+    }
+}
+
 /// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
 /// every ordinary node in parallel, then, only once every one has its exact terminal receipt, every
 /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
 /// step receipt of the accepted Build. A member whose exact Exited receipt the Build already holds
 /// (a successful child of an earlier, incomplete run) keeps it and is not run again; a failed or
 /// unrunnable member leaves its tier incomplete. `me` is the final primary (still running, its exact
-/// runtime `final_runtime`); `records` are the view's Node records of the mesh, of any status;
+/// runtime `final_runtime`); `records` are the Node records of the roster's births
+/// ([`roster_records`]: the view's record, else the membership's record of that exact birth), and a
+/// roster birth they hold no record of runs from the roster birth itself ([`RosterBirth::record`]):
+/// the accepted roster decides what runs (mesh-delete.md, "Resume after the primary's loss" step 3);
 /// `known` are step receipts read from the owner's Build facts at admission
 /// ([`admission_roster`]), folded with this Build's own; `shutdown` is one member's drain/stop
-/// workflow and the provider's terminal receipt of its exact runtime.
+/// workflow and the provider's terminal receipt of its exact runtime; `delete_row` is the
+/// mesh-primary's write of a member's row `Deleted` on that member's exact Exited receipt (step 3:
+/// "On that receipt the mesh-primary, the writer of its mesh's rows, writes the member's row
+/// Deleted"), a keyed write that is repeated for a retained receipt, never inferred done from it.
 #[allow(clippy::too_many_arguments)]
-pub async fn members_exited<F, Fut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], shutdown: F) -> Result<ExitManifest, String>
+pub async fn members_exited<F, Fut, G, GFut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], shutdown: F, delete_row: G) -> Result<ExitManifest, String>
 where
     F: Fn(Node) -> Fut,
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
+    G: Fn(RosterBirth) -> GFut,
+    GFut: std::future::Future<Output = Result<(), String>>,
 {
     use tracing::Instrument;
     if !roster.contains(me) {
@@ -635,9 +713,13 @@ where
     let held = exit_receipts(&steps, &key.operation, roster);
     let mut receipts: Vec<TerminalReceipt> = Vec::new();
     let mut remaining: Vec<&RosterBirth> = Vec::new();
+    let mut retained: Vec<&RosterBirth> = Vec::new();
     for b in roster.iter().filter(|b| *b != me) {
         match held.get(&(b.node_id.clone(), b.incarnation_id.clone())) {
-            Some(t) => receipts.push(t.clone()),
+            Some(t) => {
+                receipts.push(t.clone());
+                retained.push(b);
+            }
             None => remaining.push(b),
         }
     }
@@ -650,15 +732,40 @@ where
         for b in remaining.iter().filter(|b| is_admin(b) == admins) {
             match records.iter().find(|n| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id)) {
                 Some(n) => members.push(n.clone()),
-                None => failed.push(format!("{} {}: this view holds no record of the accepted birth, so its workflow cannot run and it has no Exited receipt", b.node, b.incarnation_id)),
+                // The accepted roster decides what runs, not what this admin holds: a birth it never
+                // held a record of (it joined after that birth stopped) runs from the roster birth.
+                None => match b.record() {
+                    Ok(n) => {
+                        tracing::info_span!("rdm.node_admin.mesh.resolve.via-roster-birth", member = %b.node, node_id = %b.node_id, incarnation_id = %b.incarnation_id, tier, operation = %key.operation, attempt = key.attempt)
+                            .in_scope(|| tracing::info!("a roster birth this admin holds no record of runs from the accepted roster's exact birth"));
+                        members.push(n);
+                    }
+                    Err(e) => failed.push(format!("{} {}: {e}", b.node, b.incarnation_id)),
+                },
             }
         }
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-leave-tier", tier, members = members.len(), mesh_id = %key.mesh_id, operation = %key.operation, attempt = key.attempt, outcome = tracing::field::Empty);
-        let outcomes = join_all(members.iter().cloned().map(&shutdown)).instrument(span.clone()).await;
+        // A retained member of this tier exited in an earlier run: its row is written Deleted again
+        // (keyed and repeatable), never taken as written because its receipt is held.
+        let kept: Vec<RosterBirth> = retained.iter().filter(|b| is_admin(b) == admins).map(|b| (*b).clone()).collect();
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-leave-tier", tier, members = members.len(), retained = kept.len(), mesh_id = %key.mesh_id, operation = %key.operation, attempt = key.attempt, outcome = tracing::field::Empty);
+        let exit_then_row = |n: Node| {
+            let (shutdown, delete_row) = (&shutdown, &delete_row);
+            async move {
+                let t = shutdown(n).await?;
+                delete_row(RosterBirth { node: t.node.clone(), node_id: t.node_id.clone(), incarnation_id: t.incarnation_id.clone() }).await?;
+                Ok::<TerminalReceipt, String>(t)
+            }
+        };
+        let (outcomes, kept_rows) = futures_util::future::join(join_all(members.iter().cloned().map(exit_then_row)), join_all(kept.iter().cloned().map(&delete_row))).instrument(span.clone()).await;
         for (n, r) in members.iter().zip(outcomes) {
             match r {
                 Ok(t) => receipts.push(t),
                 Err(e) => failed.push(format!("{}: {e}", n.name)),
+            }
+        }
+        for (b, r) in kept.iter().zip(kept_rows) {
+            if let Err(e) = r {
+                failed.push(format!("{} {} (Exited receipt retained): {e}", b.node, b.incarnation_id));
             }
         }
         span.record("outcome", if failed.is_empty() { "complete" } else { "incomplete" });
@@ -682,6 +789,95 @@ where
     tracing::info_span!("rdm.node_admin.mesh.update.via-exit-manifest-recorded", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), roster = manifest.roster.len())
         .in_scope(|| tracing::info!("every other member's exact exit is proven: the exit manifest is recorded"));
     Ok(manifest)
+}
+
+/// A roster birth's row `Deleted` on its exact Exited receipt (mesh-leave.md step 3 at the
+/// mesh-primary; step 7 for the final primary at the fabric-primary): written by `rows`, the
+/// writer of the mesh's rows, from the record `records` hold of the exact birth, else from the
+/// record the writer holds of the node's row (a departed birth the view no longer names). A
+/// refusal names the birth and the writer's reason; `executor` is the admin writing.
+pub async fn birth_row_deleted(rows: Option<&crate::node_rows::NodeRows>, executor: &str, operation: &str, records: &[Node], b: &RosterBirth) -> Result<(), String> {
+    let rows = rows.ok_or_else(|| format!("{executor} holds no writer of node rows, so {} {}'s row is not written Deleted", b.node, b.incarnation_id))?;
+    let exact = records.iter().find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id));
+    let written = match exact {
+        Some(record) => rows.deleted(record, operation).await,
+        None => {
+            let name: crate::model::PathName = b.node.parse().map_err(|e| format!("{executor}: the roster birth's path.name {} does not parse: {e}", b.node))?;
+            let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("{executor}: the roster birth {}'s node id {} does not parse: {e}", b.node, b.node_id))?;
+            rows.deleted_birth(&name, &node_id, operation).await
+        }
+    };
+    written.map_err(|e| format!("{} {}'s row is not written Deleted: {e}", b.node, b.incarnation_id))
+}
+
+/// mesh-left at the fabric-primary (mesh-leave.md step 7), after exact coverage and before the
+/// `MeshLeft` receipt: "At mesh-left the fabric-primary writes the final primary's row Deleted, as
+/// acting primary of a mesh that has none left, and the mesh row Dead". `rows` is the
+/// fabric-primary's writer, `records` its view's records of the mesh, `final_primary` the exact
+/// final birth; the Dead row is committed through `status` and held in `declared`.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
+pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, records: &[Node], final_primary: &RosterBirth, proof: &[TerminalReceipt]) -> Result<(), String> {
+    birth_row_deleted(rows, executor, &key.operation, records, final_primary).await?;
+    drop_departed_contacts(rows, executor, key, mesh, proof).await?;
+    ensure_mesh_dead(status, declared, executor, key, mesh).await
+}
+
+/// mesh-left drops the contact of every birth the complete proof set `proof` names from the removed
+/// mesh's contacts (R-MN1; R14 item 2: the contacts are the mesh primary's rows, written here by the
+/// fabric-primary as acting primary of a mesh with none left, mesh-leave.md step 7): a departed
+/// birth never answers, and a maker's stored map never hands it to a mesh created again under the
+/// name (`dropped_contacts`, as a seated primary drops a departed member's). A blind removal of each
+/// birth's own key; one `rdm.node_admin.node.remove.via-mesh-left-contact` span names them, and a
+/// refused removal ends mesh-left by name.
+async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &LeaveKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
+    let rows = rows.ok_or_else(|| format!("{}: {executor} holds no nodes store to drop {mesh}'s contacts from", key.operation))?;
+    let span = tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-contact", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, dropped = tracing::field::Empty, error = tracing::field::Empty);
+    let mut dropped = Vec::new();
+    for t in proof {
+        let node_id = NodeId::parse(&t.node_id).map_err(|e| format!("{}: the Exited receipt of {} {} names no node id ({:?}): {e}", key.operation, t.node, t.incarnation_id, t.node_id))?;
+        if let Err(e) = rows.storage().remove_contact(mesh, &node_id).await {
+            let why = format!("{}: the contact of {} ({node_id}) could not be dropped from {mesh}'s contacts: {e}", key.operation, t.node);
+            span.record("error", why.as_str());
+            span.in_scope(|| tracing::info!("mesh-left: a departed birth's contact is not dropped"));
+            return Err(why);
+        }
+        dropped.push(format!("{} {node_id}", t.node));
+    }
+    span.record("dropped", dropped.join(", ").as_str());
+    span.in_scope(|| tracing::info!("mesh-left: the removed mesh's departed births' contacts are dropped"));
+    Ok(())
+}
+
+/// mesh-left's ensure-Dead (R-MD1 = A): the mesh row Dead among the leaving mesh's own status rows
+/// (`status/<mesh>/`), read by its key. The row held is the mesh-primary's commit at mesh.deleted
+/// (or this fabric-primary's earlier write): AlreadyApplied, nothing written, no second transition.
+/// No row held means no primary survived to write it: this fabric-primary puts it as acting primary
+/// of a mesh with none left (mesh-leave.md step 7) and records it as applied. One
+/// `rdm.node_admin.mesh.update.via-dead-row` span names the outcome and who wrote the row.
+async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str) -> Result<(), String> {
+    let dead = rafka_node_rpc_contract::status::MeshState::Dead;
+    let row = crate::status_storage::MeshStatusRow { mesh_id: key.mesh_id.clone(), state: dead };
+    let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, writer = tracing::field::Empty, error = tracing::field::Empty);
+    let refused = |e: String| {
+        span.record("outcome", "not-committed");
+        span.record("error", e.as_str());
+        span.in_scope(|| tracing::info!("mesh-left: the mesh row Dead is not committed"));
+        format!("{}: the mesh row Dead of {mesh} ({}) is not committed: {e}", key.operation, key.mesh_id)
+    };
+    let held = status.mesh_status_held_of(mesh, &row).await.map_err(|e| refused(format!("the row among {mesh}'s status rows could not be read: {e}")))?;
+    let applied_here = declared.lock().unwrap().meshes.get(&key.mesh_id) == Some(&dead);
+    let (outcome, writer) = if held {
+        ("already-applied", if applied_here { "acting-primary" } else { "mesh-primary" })
+    } else {
+        status.put_mesh_status_of(mesh, &row).await.map_err(|e| refused(format!("status.storage refused the row among {mesh}'s status rows: {e}")))?;
+        declared.lock().unwrap().meshes.insert(key.mesh_id.clone(), dead);
+        ("applied", "acting-primary")
+    };
+    span.record("outcome", outcome);
+    span.record("writer", writer);
+    span.in_scope(|| tracing::info!("mesh-left: the mesh row Dead stands among the mesh's status rows before the MeshLeft receipt; the mesh's name is released"));
+    Ok(())
 }
 
 /// What the fabric-primary decides of a `MeshLeave` handoff from the Build facts it read from the

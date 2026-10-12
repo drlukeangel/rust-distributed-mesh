@@ -7,10 +7,14 @@
 //! - `never`: the application never answers; the fabric stays in state-sync with a named blocker.
 //! - `foreign-build`: answers `StateSynced` naming another Build.
 //! - `old-attempt`: answers `StateSynced` naming attempt 0, an attempt older than any claimed.
+//! - `hold`: takes the round and holds its answer at the admin's fault cut `state-sync` (armed at
+//!   boot) until the fault door releases it, then answers `StateSynced` for the round.
 //!
 //! `traffic_opened` is the one notice after the open-traffic round; it only records a span.
 
+use crate::admin_faults::{AdminFaults, CutSpec, Probe};
 use rafka_node_admin_core::wiring::{FabricHooks, StateSyncRound, SyncState};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
 
@@ -25,7 +29,12 @@ pub enum Mode {
     ForeignBuild,
     /// Answer with an attempt older than any claimed.
     OldAttempt,
+    /// Hold the answer at the fault cut `state-sync` until the door releases it, then answer.
+    Hold,
 }
+
+/// The fault cut a `hold` application parks its answers at.
+pub const STATE_SYNC_CUT: &str = "state-sync";
 
 impl Mode {
     /// The mode `RDM_TEST_APP` names (unset: answer at once), refused by name when malformed.
@@ -37,7 +46,8 @@ impl Mode {
             ("never", "") => Ok(Self::Never),
             ("foreign-build", "") => Ok(Self::ForeignBuild),
             ("old-attempt", "") => Ok(Self::OldAttempt),
-            _ => Err(format!("RDM_TEST_APP `{v}` is not answer[:<ms>], never, foreign-build or old-attempt")),
+            ("hold", "") => Ok(Self::Hold),
+            _ => Err(format!("RDM_TEST_APP `{v}` is not answer[:<ms>], never, foreign-build, old-attempt or hold")),
         }
     }
 
@@ -47,15 +57,21 @@ impl Mode {
             Self::Never => "never".into(),
             Self::ForeignBuild => "foreign-build".into(),
             Self::OldAttempt => "old-attempt".into(),
+            Self::Hold => "hold".into(),
         }
     }
 }
 
-/// The hooks of this application in `mode`.
-pub fn hooks(mode: Mode) -> FabricHooks {
+/// The hooks of this application in `mode`, held at the cuts of `faults` (the admin's own). A `hold`
+/// application arms its cut here, at boot, before any round can reach it.
+pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String> {
+    if mode == Mode::Hold {
+        faults.arm(STATE_SYNC_CUT, CutSpec::StateSync)?;
+    }
     let sync_mode = mode.clone();
     let sync_state = SyncState::hook(move |round: StateSyncRound| {
         let mode = sync_mode.clone();
+        let faults = faults.clone();
         let span = tracing::info_span!("rdm.testkit.app.update.via-sync-state", mode = %mode.label(), fabric_id = %round.fabric_id, build_id = %round.build_id, attempt = round.attempt, operation = %round.operation, "otel.kind" = "internal");
         tracing::info_span!(parent: &span, "rdm.testkit.app.update.via-sync-state-taken", mode = %mode.label(), build_id = %round.build_id, attempt = round.attempt, "otel.kind" = "internal").in_scope(|| tracing::info!("the application took the round"));
         async move {
@@ -77,6 +93,11 @@ pub fn hooks(mode: Mode) -> FabricHooks {
                     tracing::info!("the application answers state-synced for attempt 0");
                     StateSyncRound { attempt: 0, ..round }
                 }
+                Mode::Hold => {
+                    faults.hold(Probe::StateSync { build_id: round.build_id.clone(), attempt: round.attempt }).await;
+                    tracing::info!("the fault door released the held round: state-synced");
+                    round
+                }
             }
         }
         .instrument(span)
@@ -85,5 +106,5 @@ pub fn hooks(mode: Mode) -> FabricHooks {
         let span = tracing::info_span!("rdm.testkit.app.update.via-traffic-opened", fabric_id = %round.fabric_id, build_id = %round.build_id, attempt = round.attempt, operation = %round.operation, "otel.kind" = "internal");
         Box::pin(async move { tracing::info!("the application opens client traffic") }.instrument(span))
     });
-    FabricHooks { sync_state: Some(sync_state), traffic_opened: Some(traffic_opened) }
+    Ok(FabricHooks { sync_state: Some(sync_state), traffic_opened: Some(traffic_opened) })
 }

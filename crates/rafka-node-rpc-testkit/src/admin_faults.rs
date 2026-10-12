@@ -101,6 +101,9 @@ pub enum CutSpec {
     /// skips that neighbour's catch-up, so none of its frames is offered to the topic. It models the
     /// one-shot catch-up lost at the send seam.
     CatchUp,
+    /// The testkit application took the fabric's `sync_state` round and has not answered it: the
+    /// fabric stays in state-sync until the release (`test_app` mode `hold`).
+    StateSync,
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -170,6 +173,13 @@ pub enum Probe {
         /// The neighbour.
         neighbour: String,
     },
+    /// The application's answer to a `sync_state` round, about to be returned.
+    StateSync {
+        /// The round's Build.
+        build_id: String,
+        /// The round's attempt.
+        attempt: u32,
+    },
 }
 
 impl CutSpec {
@@ -187,6 +197,7 @@ impl CutSpec {
             (CutSpec::ProviderDomain, Probe::ProviderDomain) => true,
             (CutSpec::LeaveAnnouncement { announcements, channel }, Probe::LeaveAnnouncement { announcement, channel: c, .. }) => announcements.contains(announcement) && (channel == "any" || channel == c),
             (CutSpec::CatchUp, Probe::CatchUp { .. }) => true,
+            (CutSpec::StateSync, Probe::StateSync { .. }) => true,
             _ => false,
         }
     }
@@ -204,6 +215,7 @@ impl Probe {
             Probe::ProviderDomain => json!({"control_domain": "reported foreign"}),
             Probe::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Probe::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
+            Probe::StateSync { build_id, attempt } => json!({"build_id": build_id, "attempt": attempt}),
         }
     }
 }
@@ -412,6 +424,9 @@ impl FabricStorage for FaultedFabricStorage {
     async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
         self.inner.fabric().await
     }
+    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
+        self.inner.fabric_rows().await
+    }
     async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
         self.faults.hold(Probe::Pointer { build_id: None }).await;
         self.inner.put_identity(identity).await
@@ -480,11 +495,11 @@ impl DeploymentProvider for FaultedProvider {
     async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
         self.inner.signal_stop(handle).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
         self.inner.find(spec).await
     }
-    fn bind_ip(&self, node: &rafka_node_admin_core::model::PathName) -> std::net::IpAddr {
-        self.inner.bind_ip(node)
+    async fn bind_ip(&self, node: &rafka_node_admin_core::model::PathName) -> Result<std::net::IpAddr, DeployError> {
+        self.inner.bind_ip(node).await
     }
     fn launched(&self) -> Vec<DeploymentHandle> {
         self.inner.launched()
@@ -518,6 +533,9 @@ impl LifecycleEvents for FaultedEvents {
     // to the trait's empty default withholds that event's gossip from every faulted estate.
     async fn stopped(&self, op: &LifecycleOp) {
         self.inner.stopped(op).await
+    }
+    async fn joined(&self, op: &LifecycleOp) {
+        self.inner.joined(op).await
     }
     async fn draining(&self, op: &LifecycleOp) {
         self.inner.draining(op).await

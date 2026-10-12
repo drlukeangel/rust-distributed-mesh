@@ -245,6 +245,15 @@ pub enum AttemptAction {
         /// The exited birth.
         from_incarnation: IncarnationId,
     },
+    /// Delete the parked exact birth a replacement left at `<path>.old` (node-decommission.md): its
+    /// stop steps are done; the provider's exact Exited is the proof, then `NodeDeleted` and its
+    /// Deleted row. The topology never names a `.old` path: this action is its only door.
+    Delete {
+        /// The node's `.old` path.
+        path: PathName,
+        /// The birth deleted.
+        from_incarnation: IncarnationId,
+    },
 }
 
 fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
@@ -378,13 +387,14 @@ pub(crate) fn plan_for(topology: &FabricTopology, observed: &Topology, action: O
 }
 
 /// How far the `replace-node:<path>` operation of a Replace attempt's exact birth got, from the
-/// Build's receipts. The view alone cannot say: once the successor holds the path the view names
-/// another birth, while the old identity's `NodeDeleted` is still owed.
+/// Build's receipts. The view alone cannot say: once the predecessor is parked it leaves every book,
+/// and once the successor holds the path the view names another birth.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ReplaceProgress {
-    /// The old birth's `NodeDeleting` is receipted: the operation began for this birth.
+    /// The operation began for this birth: a replace's `DrainNode`, or a receipt naming the exact
+    /// birth (a recovery's `NodeDeleting`, the `RenamePredecessor` of either).
     started: bool,
-    /// The old birth's `NodeDeleted` and the operation's `Complete` are receipted.
+    /// The operation's `Complete` is receipted, at or after the attempt it began in.
     finished: bool,
     /// How far a recovery's three operations got for its exited birth.
     recovery: RecoveryProgress,
@@ -408,14 +418,15 @@ pub(crate) enum RecoveryProgress {
 impl ReplaceProgress {
     /// The progress of `build`'s Replace action, `default` for any other.
     pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
-        // A standalone drain, stop or start: the receipts of its operation in an attempt that
-        // carried this exact action (its `Opened` fact fenced the attempt to the birth) are this
-        // birth's. Its first step's receipt says the operation began; its `Complete`, that it
-        // completed for the birth.
-        if let Some(action @ (AttemptAction::Drain { path, .. } | AttemptAction::Stop { path, .. } | AttemptAction::Start { path, .. })) = &build.action {
+        // A standalone drain, stop, start or parked delete: the receipts of its operation in an
+        // attempt that carried this exact action (its `Opened` fact fenced the attempt to the birth)
+        // are this birth's. Its first step's receipt says the operation began; its `Complete`, that
+        // it completed for the birth.
+        if let Some(action @ (AttemptAction::Drain { path, .. } | AttemptAction::Stop { path, .. } | AttemptAction::Start { path, .. } | AttemptAction::Delete { path, .. })) = &build.action {
             let (operation, first) = match action {
                 AttemptAction::Drain { .. } => (format!("drain-node:{path}"), "DrainNode"),
                 AttemptAction::Start { .. } => (format!("start-node:{path}"), "StartNode"),
+                AttemptAction::Delete { .. } => (format!("delete-node:{path}"), "NodeDeleting"),
                 _ => (format!("stop-node:{path}"), "StopNode"),
             };
             let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action));
@@ -438,9 +449,9 @@ impl ReplaceProgress {
                 .map(|s| s.attempt)
                 .min()
         };
-        let started = done("NodeDeleting", true).is_some();
-        let finished = done("NodeDeleted", true).is_some_and(|deleted| build.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= deleted));
-        Self { started, finished, ..Self::default() }
+        let began = [done("DrainNode", false), done("NodeDeleting", true), done("RenamePredecessor", true)].into_iter().flatten().min();
+        let finished = began.is_some_and(|began| build.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= began));
+        Self { started: began.is_some(), finished, ..Self::default() }
     }
 }
 
@@ -501,13 +512,21 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     // and the path it acts on is neither created nor repaired by this attempt. It is planned while
     // the view holds the exact birth, or while its receipts say it began (a stop's view drops the
     // Leaving birth), and not once its `Complete` receipt names the birth.
-    if let Some(AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation }) = action {
-        let held = observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
+    if let Some(
+        AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation } | AttemptAction::Delete { path, from_incarnation },
+    ) = action
+    {
+        // A delete of a parked `<path>.old` is admitted from the record the fabric-primary holds of
+        // that exact birth, never from a view (only its replace's executor's view names the path):
+        // it is planned until its `Complete` names the birth.
+        let deleting = matches!(action, Some(AttemptAction::Delete { .. }));
+        let held = deleting || observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
         if !replace_progress.finished && (held || replace_progress.started) {
             let (node, from_incarnation) = (path.clone(), from_incarnation.clone());
             ops.push(match action {
                 Some(AttemptAction::Drain { .. }) => BuildOperation::DrainNode { node, from_incarnation },
                 Some(AttemptAction::Start { .. }) => BuildOperation::StartNode { node, from_incarnation },
+                Some(AttemptAction::Delete { .. }) => BuildOperation::DeleteNode { node, from_incarnation },
                 _ => BuildOperation::StopNode { node, from_incarnation },
             });
         }
@@ -541,12 +560,12 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
         Some(AttemptAction::Restart { path, from_incarnation }) => observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status != NodeStatus::Leaving).map(|_| path),
         _ => None,
     };
-    // One replace operation for the exact birth, never a retirement followed by a creation: the
-    // old identity's departure is published only after the successor is admitted and ready. The
+    // One replace operation for the exact birth, never a retirement followed by a creation. The
     // operation is planned while the view holds that birth, while its receipts say it began (the
-    // view then holds the successor, or nothing, at the path), and for a birth the view never held
-    // again that a requested replacement names (resolved from the durable records). It owns its
-    // path: the generic create below never plans it a second time.
+    // view then holds the successor, or nothing, at the path: a parked predecessor has left every
+    // book), and for a birth the view never held again that a requested replacement names (resolved
+    // from the durable records). It owns its path: the generic create below never plans it a second
+    // time.
     let replaced: Option<(&PathName, &IncarnationId)> = match action {
         Some(AttemptAction::Replace { path, from_incarnation }) if !replace_progress.finished => {
             let planned = match observed.node(path) {
@@ -614,13 +633,18 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     BuildPlan { operations: ops }
 }
 
-/// `Fabric.build_id` as this admin holds it: the pointer in `fabric.storage`, and the Build it
-/// names in `builds.storage`. The fabric-primary moves it on acceptance (Build persisted first);
-/// every other admin learns the record on the Build topic and persists its own copy. A learned
-/// record is taken only once its Build is held locally. Each move is its own pointer row ordered by
-/// its Build's submission time, so a lagging copy never moves the pointer back.
+/// `Fabric.build_id` as this admin holds it: the pointer rows in `fabric.storage` folded with the
+/// pointer it learned, and the Build it names in `builds.storage`. `fabric/` has one writer, the
+/// fabric-primary (R14 item 2): it moves the pointer on acceptance (Build persisted first) through
+/// `fabric.storage`. Every admin that hears a Fabric record (its entry answer, the Build topic)
+/// holds it as its own runtime state, never as a row: before the fabric's first state-commit the
+/// store root holds nothing to read, and after it the fabric-primary's rows are there. A learned
+/// record is taken only once its Build is held locally. Each move is ordered by its Build's
+/// submission time, so a lagging copy never moves the pointer back.
 pub struct AcceptedStore {
     storage: Arc<dyn FabricStorage>,
+    /// The Fabric identity and pointer this admin learned last: runtime state, folded with the rows.
+    learned: Mutex<Option<(FabricIdentity, FabricPointer)>>,
     /// A learned record whose Build is not held yet.
     wanted: Mutex<Option<FabricRecord>>,
     node: String,
@@ -629,17 +653,28 @@ pub struct AcceptedStore {
 impl AcceptedStore {
     /// A store over `storage`, held by the admin named `node`.
     pub fn new(storage: Arc<dyn FabricStorage>, node: impl Into<String>) -> Self {
-        Self { storage, wanted: Mutex::new(None), node: node.into() }
+        Self { storage, learned: Mutex::new(None), wanted: Mutex::new(None), node: node.into() }
     }
 
-    /// The fabric record held, when one is.
+    /// The fabric record held, when one is: the identity row (or the learned identity while the
+    /// store holds none) and the newest of the pointer rows and the learned pointer.
     pub async fn record(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        self.storage.fabric().await
+        let (identity, pointer) = self.storage.fabric_rows().await?;
+        let learned = self.learned.lock().unwrap().clone();
+        let identity = identity.or_else(|| learned.as_ref().map(|(i, _)| i.clone()));
+        let pointer = pointer.into_iter().chain(learned.map(|(_, p)| p)).max_by(|a, b| a.order().cmp(&b.order()));
+        Ok(identity.map(|i| FabricRecord { fabric_id: i.fabric_id, name: i.name, build_id: pointer.map(|p| p.build_id) }))
     }
 
     /// The Build the pointer names, when it names one.
     pub async fn build_id(&self) -> Option<BuildId> {
-        self.storage.fabric().await.ok().flatten().and_then(|r| r.build_id)
+        self.record().await.ok().flatten().and_then(|r| r.build_id)
+    }
+
+    /// The pointer this admin learned (its entry answer, the Build topic), when it learned one: what
+    /// it writes as the fabric-primary when the seat comes to it (`crate::admin`'s fabric rows).
+    pub fn learned_pointer(&self) -> Option<FabricPointer> {
+        self.learned.lock().unwrap().as_ref().map(|(_, p)| p.clone())
     }
 
     /// The accepted Build: the one the pointer names, as `builds` holds it.
@@ -648,11 +683,12 @@ impl AcceptedStore {
         builds.read_build(&id).await.ok()
     }
 
-    /// Move the pointer to `build_id` (its Build is already durable in `builds.storage`;
-    /// `submitted_at_ms` is that Build's submission time, the order of pointer rows): a blind put of
-    /// the move's own row. Returns the record now held, the identity and the newest pointer folded.
+    /// The fabric-primary moves the pointer to `build_id` (its Build is already durable in
+    /// `builds.storage`; `submitted_at_ms` is that Build's submission time, the order of pointer
+    /// rows): a blind put of the move's own row. Returns the record now held, the identity and the
+    /// newest pointer folded.
     pub async fn point(&self, build_id: &BuildId, submitted_at_ms: u64, via: &str) -> Result<FabricRecord, FabricStorageError> {
-        let before = self.storage.fabric().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "no Fabric identity to point".into() })?;
+        let before = self.record().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "no Fabric identity to point".into() })?;
         // The span opens BEFORE the write: the pointer is readable (by the Ready guard, by a
         // reader) the moment the row is renamed into place, which is before `put_pointer`
         // returns, so a span opened after the write can start later than a read that already saw it.
@@ -670,26 +706,48 @@ impl AcceptedStore {
             Err(e) => span.in_scope(|| tracing::info!(error = %e, "Fabric.build_id could not be moved")),
         }
         put?;
-        self.storage.fabric().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the Fabric identity vanished after the pointer was put".into() })
+        self.record().await?.ok_or_else(|| FabricStorageError::Io { file: "identity.json".into(), reason: "the Fabric identity vanished after the pointer was put".into() })
     }
 
-    /// A Fabric record heard on the Build topic (`from`). Taken when its Build is held; otherwise
-    /// remembered until the Build's facts arrive. A pointer row older than the one held is ordered
-    /// out by every reader's fold.
+    /// A Fabric record heard on the Build topic or in an entry answer (`from`). Taken when its Build
+    /// is held, as this admin's runtime state (nothing is written: the fabric-primary wrote it);
+    /// otherwise remembered until the Build's facts arrive. A record naming another Fabric, or a
+    /// pointer older than the one learned, is ordered out.
     pub async fn learn(&self, record: FabricRecord, builds: &dyn BuildStateAdapter, from: &str) {
         let Some(id) = record.build_id.clone() else { return };
-        match self.storage.fabric().await {
+        let before = match self.record().await {
             Ok(Some(mine)) if mine.fabric_id != record.fabric_id => return,
-            Ok(Some(mine)) if mine.build_id.as_ref() == Some(&id) => return,
+            Ok(mine) => mine,
             Err(_) => return,
-            _ => {}
+        };
+        if self.learned.lock().unwrap().as_ref().is_some_and(|(_, p)| p.build_id == id) {
+            return;
         }
         let Ok(named) = builds.read_build(&id).await else {
             *self.wanted.lock().unwrap() = Some(record);
             return;
         };
-        let _ = self.point(&id, named.submitted_at_ms, &format!("gossip:{from}")).await;
+        let pointer = FabricPointer { build_id: id.clone(), submitted_at_ms: named.submitted_at_ms };
+        {
+            let mut learned = self.learned.lock().unwrap();
+            if learned.as_ref().is_some_and(|(_, p)| p.order() >= pointer.order()) {
+                *self.wanted.lock().unwrap() = None;
+                return;
+            }
+            *learned = Some((FabricIdentity { fabric_id: record.fabric_id.clone(), name: record.name.clone() }, pointer));
+        }
         *self.wanted.lock().unwrap() = None;
+        let previous = before.as_ref().and_then(|r| r.build_id.clone());
+        tracing::info_span!(
+            "rdm.node_admin.fabric.update.via-pointer-learned",
+            node = %self.node,
+            fabric_id = %record.fabric_id,
+            build_id = %id,
+            previous_build_id = %previous.as_ref().map(|b| b.0.as_str()).unwrap_or(""),
+            on_store_root = previous.as_ref() == Some(&id),
+            from = %from,
+        )
+        .in_scope(|| tracing::info!("this admin holds the Fabric.build_id it heard as its own runtime state; the fabric-primary writes fabric/"));
     }
 
     /// The Build a remembered Fabric record names: the pointer this admin heard and cannot take yet.
@@ -1023,6 +1081,65 @@ mod tests {
         assert_eq!(plan(&cur, &later, Some(&stop)).operations, vec![]);
     }
 
+    /// CONTRACT (node-decommission.md): the delete of the parked predecessor at `<path>.old` plans its
+    /// one operation `delete-node:<path>.old` until its `Complete` names the birth, whatever the view
+    /// holds: the fabric-primary admitted it from the record it holds of that exact birth, and no view
+    /// names a `.old` path but its replace's executor's. It never plans a create or repair of the
+    /// path's successor.
+    #[test]
+    fn a_delete_of_a_parked_old_birth_plans_only_its_operation_until_its_complete_names_the_birth() {
+        use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
+        let cur = t(&[("mesh1", 2, 3)]);
+        let path: PathName = "mesh1.rpc.2.old".parse().unwrap();
+        let mut held = mn();
+        let from = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
+        let mut parked = held.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().clone();
+        parked.name = path.clone();
+        parked.status = NodeStatus::Leaving;
+        parked.parked = true;
+        held.nodes.iter_mut().find(|x| x.name.to_string() == "mesh1.rpc.2").unwrap().incarnation_id = Some(IncarnationId::mint());
+        held.nodes.push(parked);
+        held.nodes.retain(|x| x.name.to_string() != "mesh1.rpc.3");
+        let delete = AttemptAction::Delete { path: path.clone(), from_incarnation: from.clone() };
+        let op = vec![BuildOperation::DeleteNode { node: path.clone(), from_incarnation: from.clone() }];
+        assert_eq!(plan(&cur, &held, Some(&delete)).operations, op, "only the delete, never a repair of mesh1.rpc.3");
+        assert_eq!(op[0].key(), "delete-node:mesh1.rpc.2.old");
+        // The Complete commits no output: the attempt's fenced action names the birth.
+        let step = |attempt: u32, step: &str| BuildStepReceipt {
+            build_id: crate::build::BuildId("b1".into()),
+            attempt,
+            operation: format!("delete-node:{path}"),
+            step: step.into(),
+            outcome: StepOutcome::Complete,
+            output: None,
+            executor: None,
+        };
+        let other = IncarnationId::mint();
+        let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
+            build_id: crate::build::BuildId("b1".into()),
+            topology: cur.clone(),
+            submitted_change: None,
+            submitted_at_ms: 0,
+            state: BuildState::Pending,
+            attempt: 9,
+            executor: None,
+            steps,
+            last_failure: None,
+            reason: AttemptReason::Delete,
+            action: Some(delete.clone()),
+            // Attempt 8 deleted another parked birth at the path; attempt 9 is this delete.
+            attempt_actions: [(8, AttemptAction::Delete { path: path.clone(), from_incarnation: other.clone() }), (9, delete.clone())].into(),
+            attempt_executors: Default::default(),
+            opened: 0,
+            reported: Default::default(),
+        };
+        let gone = mn();
+        assert_eq!(plan_for_build(&build(vec![]), &gone).operations, op, "the view never names the parked birth (a fabric-primary that did not run its replace) and nothing began: owed");
+        assert_eq!(plan_for_build(&build(vec![step(9, "NodeDeleting")]), &gone).operations, op, "begun, the birth gone from the view: still owed");
+        assert_eq!(plan_for_build(&build(vec![step(9, "NodeDeleting"), step(9, "Complete")]), &gone).operations, vec![], "completed for this birth");
+        assert_eq!(plan_for_build(&build(vec![step(8, "NodeDeleting"), step(8, "Complete")]), &gone).operations, op, "another birth's Complete is not this delete's");
+    }
+
     /// CONTRACT: a standalone stop is planned until its `Complete` receipt names the exact birth; after it,
     /// whatever the view holds (nothing, once the Leaving birth is pruned) nothing is planned, and a
     /// `Complete` receipt of an attempt that carried a stop of another birth is not this stop's progress.
@@ -1071,12 +1188,13 @@ mod tests {
         assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete"), step(7, "StopNode")]), &gone).operations, stop, "another birth's Complete is not this stop's");
     }
 
-    /// CONTRACT: the replace operation is planned until the old birth's `NodeDeleted` and the
-    /// operation's `Complete` are receipted. Once its `NodeDeleting` is receipted it is planned
-    /// whatever the view holds at the path (the successor, or nothing): the departure is still owed.
-    /// A receipt of another birth of the path is not this replace's progress.
+    /// CONTRACT: the replace operation is planned until its `Complete` is receipted. Once it began
+    /// (a replace's `DrainNode`, or a receipt naming the exact birth: a recovery's `NodeDeleting`, the
+    /// `RenamePredecessor` of either) it is planned whatever the view holds at the path (the
+    /// successor, or nothing: a parked predecessor has left every book). A receipt of another birth of
+    /// the path is not this replace's progress.
     #[test]
-    fn a_replace_is_planned_until_its_old_identity_is_deleted_and_the_operation_complete() {
+    fn a_replace_is_planned_until_the_operation_is_complete() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.3".parse().unwrap();
@@ -1123,6 +1241,16 @@ mod tests {
         let mut gone = mn();
         gone.nodes.retain(|x| x.name != path);
         assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&from))]), &gone).operations, replace);
+        // A replace of a live birth (node-replace.md): it began at its drain, the parked predecessor
+        // left the view, the rename names the birth, and it finishes at Complete with no NodeDeleted.
+        assert_eq!(plan_for_build(&build(vec![step(6, "DrainNode", None)]), &gone).operations, replace, "begun at the drain: the parked predecessor left the view");
+        assert_eq!(plan_for_build(&build(vec![step(6, "RenamePredecessor", Some(&IncarnationId::mint()))]), &o).operations, vec![], "another birth's rename is not this replace's");
+        let renamed = vec![step(6, "DrainNode", None), step(6, "RenamePredecessor", Some(&from))];
+        assert_eq!(plan_for_build(&build(renamed.clone()), &o).operations, replace, "renamed, the successor not complete");
+        let mut complete = renamed;
+        complete.push(step(7, "Complete", None));
+        assert_eq!(plan_for_build(&build(complete), &o).operations, vec![], "the replace is complete: the predecessor stays parked at <path>.old");
+        assert_eq!(plan_for_build(&build(vec![step(5, "Complete", None), step(6, "DrainNode", None)]), &o).operations, replace, "a Complete before the operation began is not its end");
     }
 
     /// CONTRACT (node-recovery.md, Operation summary "Steps"; rdm-code-conformance.md §0.1 and §2

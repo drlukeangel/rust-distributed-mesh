@@ -47,8 +47,8 @@ impl DeploymentProvider for Running {
     async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
         Ok(())
     }
-    async fn find(&self, _: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
-        None
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+        Ok(None)
     }
 }
 
@@ -111,6 +111,9 @@ impl LifecycleEvents for Events {
     }
     async fn stopped(&self, op: &LifecycleOp) {
         self.note("stopped", op);
+    }
+    async fn joined(&self, op: &LifecycleOp) {
+        self.note("joined", op);
     }
     async fn draining(&self, op: &LifecycleOp) {
         self.note("draining", op);

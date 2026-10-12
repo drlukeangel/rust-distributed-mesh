@@ -161,6 +161,12 @@ impl SeatFold {
         Self { storage, mesh, name, me, folded: Mutex::new(false) }
     }
 
+    /// The status store this fold reads: this admin's own mesh's rows, and another mesh's through
+    /// its `_of` reads.
+    pub fn storage(&self) -> &Arc<dyn crate::status_storage::StatusStorage> {
+        &self.storage
+    }
+
     /// The view `now` is being installed: when it names this admin its mesh's primary and this
     /// tenure has not folded the mesh's rows, fold them into `declared` (R14 item 7: the rebuild on
     /// a seat change reads the shared root). Every other admin of the mesh folds none of them: what
@@ -251,7 +257,8 @@ pub struct StatusAuthority {
     /// This admin's rounds (commit-state, open-traffic); filled once the admin holds the handles
     /// they act through.
     pub rounds: Arc<OnceLock<Arc<crate::fabric_rounds::FabricRounds>>>,
-    /// The fabric-primary's `node.config.update` door; filled once the admin's node-RPC client exists.
+    /// This admin's `node.config.update` door, served while it holds a mesh's primary seat (the writer
+    /// of that mesh's rows); filled once the admin's node-RPC client exists.
     pub configs: crate::node_config::NodeConfigsSlot,
     /// This admin as the subject of `ApplyNodeConfig`: it holds the config and publishes its digest
     /// carrying it; filled once its digest exists.
@@ -889,7 +896,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             };
             configure(config.clone()).await;
             tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.name, sender = %sender_name, keys = config.len(), outcome = "applied", "otel.kind" = "internal")
-                .in_scope(|| tracing::info!("the fabric-primary's config is held and rides this admin's digest"));
+                .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this admin's digest"));
             Some(StatusReply::Applied)
         }
         StatusRequest::ApplyNodeName { name, .. } => {
@@ -1087,6 +1094,18 @@ mod tests {
         }
         async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
             self.inner.node_exit(node_id, incarnation_id).await
+        }
+        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.mesh_status_held_of(mesh, row).await
+        }
+        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status_of(mesh, row).await
+        }
+        async fn node_exit_of(&self, mesh: &str, node_id: &crate::model::NodeId, incarnation_id: &crate::model::IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+            self.inner.node_exit_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_exit_of(mesh, row).await
         }
     }
 
