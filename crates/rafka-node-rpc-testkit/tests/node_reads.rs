@@ -199,9 +199,14 @@ fn a_node_update_sets_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_ta
         let dir = std::env::temp_dir().join(format!("node-tags-{}", NodeId::mint()));
         let running = start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         let me = running.digest.lock().unwrap().clone();
+        // A node.update is refused until the initial fabric has first reached ready-for-traffic (states.md "The
+        // initial fabric before ready-for-traffic"): the admin is ready in both seats, and the fabric is ready.
         tokio::time::timeout(WRONG, async {
             loop {
-                let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rafka_node_admin_core::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
+                let t = running.control.topology.read().await;
+                let ready = t.fabric.status == rafka_node_admin_core::model::ScopeStatus::ReadyForTraffic
+                    && t.births().any(|n| n.node_id == me.node.node_id && n.status == rafka_node_admin_core::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
+                drop(t);
                 if ready {
                     return;
                 }
@@ -209,7 +214,7 @@ fn a_node_update_sets_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_ta
             }
         })
         .await
-        .expect("the admin's view never held it ready in both seats");
+        .expect("the admin's view never held it ready in both seats under a ready-for-traffic fabric");
         let admin = ResolvedNode { node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let nodes = Nodes::new(BuildCarrier::new(client.clone(), me.node.name.clone()));
