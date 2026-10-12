@@ -276,11 +276,16 @@ pub struct NodeRow {
     pub status: crate::model::NodeStatus,
     /// The application's own key/values on the node (capped: [`rafka_mesh_entity::check_config`]).
     pub config: BTreeMap<String, String>,
-    /// The node's tag labels (R-TG1): caller-owned meta set through `node.update`, each one a row
-    /// of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
-    /// a row written before tags existed carries none.
-    #[serde(default)]
+    /// The node's tag labels (R-TG1): the node's own property, set through `node.update`, each one a
+    /// row of the tags index while the row is live (node-rpc-envelope.md "Meta and config": "a
+    /// node's tags are its own property, not config"). A `Deleted` row keeps them, as it keeps the
+    /// config; a new node carries none.
     pub tags: BTreeSet<String>,
+    /// The caller-owned group (node-rpc-envelope.md "Meta and config": "Caller-owned, copied on
+    /// recover and replace | `otel_debug` and whatever else is added here"): the node's OpenTelemetry
+    /// debug level, settable by `node.update`'s put. A `Deleted` row keeps it; a recovery's
+    /// node.update copies it onto the new node created at the path.name.
+    pub otel_debug: bool,
     /// What the create that claimed the name allocated (lifecycles/node-create.md step 1: the claim
     /// precedes everything prepared or launched for the birth): the claim row only. The claim is the
     /// one write of the create that outlives a lost executor (its Build receipts are in that
@@ -366,13 +371,6 @@ pub trait NodesStorage: Send + Sync {
     /// in one step against every other row write; a row of another node there (the name was
     /// released before and claimed since) is left as it is. Returns whether `holder`'s row went.
     async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, StorageError>;
-    /// The `Deleted` row the node `node_id` of `mesh` left when its runtime exit was proven: a point
-    /// read by the exited node's own id, `None` when it left none. The row is the exited node's own
-    /// and outlives the key it was written at: a node created at its `path.name` takes that key
-    /// (the claim replaces the row standing there), not this row, so the record, config and tag
-    /// labels the exited node held stay readable to the steps of the recovery that follow its create
-    /// (node-recovery.md step 6), whichever executor runs them.
-    async fn exited_row(&self, mesh: &str, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError>;
     /// The nodes carrying `label`, in every mesh: a point read of the label's rows of the tags index
     /// (R-TG1), never a read of any node's row. The index is a lookup structure the store keeps with
     /// every write of a row, as it keeps the id index: one row per (label, node id), a blind put when
@@ -409,8 +407,6 @@ pub struct MemoryNodesStorage {
     ids: Mutex<BTreeMap<NodeId, PathName>>,
     /// The node row's tags index: per label, the nodes carrying it, kept with `rows` under its lock.
     tags: Mutex<BTreeMap<String, BTreeSet<NodeId>>>,
-    /// Each exited node's `Deleted` row, by its node id: written with the row at its `path.name`.
-    exited: Mutex<BTreeMap<NodeId, NodeRow>>,
 }
 
 /// The tags index after `node_id`'s labels `leaving` go and `arriving` come.
@@ -478,9 +474,6 @@ impl NodesStorage for MemoryNodesStorage {
             index_put(&mut self.ids.lock().unwrap(), previous.as_ref(), row);
             let (leaving, arriving) = row.tag_moves(previous.as_ref());
             tags_move(&mut self.tags.lock().unwrap(), &row.node_id, &leaving, &arriving);
-            if row.status == crate::model::NodeStatus::Deleted {
-                self.exited.lock().unwrap().insert(row.node_id.clone(), row.clone());
-            }
         }
         Ok(claimed)
     }
@@ -515,9 +508,6 @@ impl NodesStorage for MemoryNodesStorage {
         }
         Ok(held)
     }
-    async fn exited_row(&self, mesh: &str, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
-        Ok(self.exited.lock().unwrap().get(node_id).filter(|r| r.name.mesh == mesh).cloned())
-    }
     async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError> {
         tag_key(label, "memory nodes store")?;
         Ok(self.tags.lock().unwrap().get(label).cloned().unwrap_or_default())
@@ -526,14 +516,8 @@ impl NodesStorage for MemoryNodesStorage {
 
 const NODE_FORMAT: &str = "node-record/4";
 const RUNTIME_FORMAT: &str = "node-runtime/1";
-const ROW_FORMAT: &str = "node-row/1";
+const ROW_FORMAT: &str = "node-row/2";
 const ROW_ID_FORMAT: &str = "node-row-id/1";
-/// The format of an exited node's own row, `nodes/<mesh>/exited/<node id>.json` of the fabric's store
-/// root: a key family one build writes (a `Deleted` row put) and a later build reads (a recovery's
-/// update). The `Deleted` row at the `path.name` key cannot carry the exited node's meta to that
-/// update: the new node's claim replaces the row at that key ([`claim_against`] treats a `Deleted`
-/// row as free), and a create that fails after its claim releases the key.
-const ROW_EXITED_FORMAT: &str = "node-row-exited/1";
 const TAG_FORMAT: &str = "node-tag/1";
 
 /// One row of the node row's tags index: the node carries the label. Its key is the node id, in the
@@ -560,8 +544,6 @@ struct RowId {
 struct MeshNodes {
     rows: FileRecords,
     ids: FileRecords,
-    /// Each exited node's `Deleted` row, a file named by the node's id (`exited/<node id>.json`).
-    exited: FileRecords,
     contacts: FileRecords,
     root: crate::store_root::StoreRoot,
     base: std::path::PathBuf,
@@ -579,7 +561,6 @@ impl MeshNodes {
         Ok(Self {
             rows: root.records(&base, "rows", writer).await?,
             ids: root.records(&base, "ids", writer).await?,
-            exited: root.records(&base, "exited", writer).await?,
             contacts: root.records(&base, "contacts", writer).await?,
             root: root.clone(),
             base,
@@ -591,7 +572,7 @@ impl MeshNodes {
 
     /// Every store of this mesh's rows opened so far: rows, ids, contacts and each label's rows.
     fn stores(&self) -> Vec<FileRecords> {
-        let mut all = vec![self.rows.clone(), self.ids.clone(), self.exited.clone(), self.contacts.clone()];
+        let mut all = vec![self.rows.clone(), self.ids.clone(), self.contacts.clone()];
         all.extend(self.labels.lock().unwrap_or_else(|e| e.into_inner()).values().cloned());
         all
     }
@@ -900,11 +881,6 @@ impl NodesStorage for FileNodesStorage {
             rows.rows.write_claimed(&key, ROW_FORMAT, row, move |standing| claim_against(standing, &claim).map(|()| true).map_err(|held| held.to_string())).await?;
             rows.index_put(previous.as_ref(), row).await?;
             rows.tags_arrive(&row.node_id, &arriving).await?;
-            // An exited node's row is also its own keyed row, which the next node created at its
-            // `path.name` does not replace (a blind put of its own key, after the row it mirrors).
-            if row.status == crate::model::NodeStatus::Deleted {
-                rows.exited.write(row.node_id.as_str(), ROW_EXITED_FORMAT, row).await?;
-            }
         }
         Ok(claimed)
     }
@@ -947,9 +923,6 @@ impl NodesStorage for FileNodesStorage {
             rows.index_drop(holder, name).await?;
         }
         Ok(held)
-    }
-    async fn exited_row(&self, mesh: &str, node_id: &NodeId) -> Result<Option<NodeRow>, StorageError> {
-        self.mesh(mesh).await?.exited.read::<NodeRow>(node_id.as_str(), ROW_EXITED_FORMAT).await
     }
     async fn tagged(&self, label: &str) -> Result<BTreeSet<NodeId>, StorageError> {
         tag_key(label, &self.root.dir().join("nodes").display().to_string())?;
@@ -1209,49 +1182,7 @@ mod tests {
     }
 
     fn row(name: &str) -> NodeRow {
-        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None }
-    }
-
-    /// CONTRACT (node-recovery.md step 6: "node[2].update copies the exited node's caller-owned meta";
-    /// node-delete.md step 3: "the record and its config stay"): the `Deleted` row an exited node
-    /// leaves is also its own row, read by the exited node's id, so the recovery's update finds its
-    /// config and tag labels after the node created at its `path.name` took that key. In memory and on
-    /// disk alike, and across a reopen: the row stands after another node's claim replaced the row at
-    /// the key and after that claim was released. A node that left no `Deleted` row (it holds a live
-    /// row, or never held one) has none.
-    /// What must NOT happen: the exited node's meta gone with the key it was written at.
-    #[tokio::test]
-    async fn an_exited_nodes_deleted_row_is_read_by_its_id_after_a_new_node_took_its_name() {
-        let d = crate::record_store::tempdir("exited-row");
-        let root = crate::store_root::StoreRoot::at(&d.join("root"));
-        let w = IncarnationId::mint();
-        let file = FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &w).await.unwrap();
-        let mem = MemoryNodesStorage::default();
-        let labelled = |r: NodeRow, status| NodeRow { status, tags: ["rabbit".to_string(), "red".to_string()].into(), config: BTreeMap::from([("tier".to_string(), "gold".to_string())]), ..r };
-        let mut exited = Vec::new();
-        for n in [&file as &dyn NodesStorage, &mem as &dyn NodesStorage] {
-            let live = labelled(row("mesh1.rpc.1"), crate::model::NodeStatus::ReadyForTraffic);
-            assert_eq!(n.put_node_row(&live).await.unwrap(), Ok(()));
-            assert_eq!(n.exited_row("mesh1", &live.node_id).await.unwrap(), None, "a live row is not an exited row");
-            let gone = NodeRow { status: crate::model::NodeStatus::Deleted, ..live.clone() };
-            assert_eq!(n.put_node_row(&gone).await.unwrap(), Ok(()));
-            assert_eq!(n.exited_row("mesh1", &live.node_id).await.unwrap(), Some(gone.clone()), "the Deleted row, with its config and tag labels");
-            // The new node's claim replaces the row at the key; the exited node's own row stands.
-            let new = NodeRow { node_id: NodeId::mint(), status: crate::model::NodeStatus::Pending, tags: BTreeSet::new(), ..live.clone() };
-            assert_eq!(n.put_node_row(&new).await.unwrap(), Ok(()));
-            assert_eq!(n.node_row_at(&new.name).await.unwrap(), Some(new.clone()));
-            assert_eq!(n.exited_row("mesh1", &live.node_id).await.unwrap(), Some(gone.clone()), "the claim replaced the row at the path.name, not the exited node's own");
-            // The claim released (a create that failed after its claim): the key is empty, the exited row stands.
-            assert!(n.release_node_row(&new.name, &new.node_id).await.unwrap());
-            assert_eq!(n.node_row_at(&new.name).await.unwrap(), None);
-            assert_eq!(n.exited_row("mesh1", &live.node_id).await.unwrap(), Some(gone.clone()), "{:?}", new);
-            assert_eq!(n.exited_row("mesh1", &new.node_id).await.unwrap(), None, "the new node left none");
-            exited.push(gone);
-        }
-        // On disk the row survives the store's reopening (the file store is the first).
-        let reopened = FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
-        let gone = exited[0].clone();
-        assert_eq!(reopened.exited_row("mesh1", &gone.node_id).await.unwrap().map(|r| (r.node_id, r.tags)), Some((gone.node_id.clone(), gone.tags.clone())));
+        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, otel_debug: false }
     }
 
     /// CONTRACT (CLAUDE.md read rule: a lookup by id that cannot read the store's own key reads the
@@ -1335,7 +1266,7 @@ mod tests {
         let mut record = crate::model::Node::allocated(from.name.clone());
         record.node_id = from.node_id.clone();
         record.status = from.status;
-        crate::node_rows::move_row(&file, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), &from.name, &to.name).await.unwrap();
+        crate::node_rows::move_row(&file, &"mesh1.admin.1".parse().unwrap(), &record, Default::default(), &from.name, &to.name).await.unwrap();
         assert_eq!(file.node_row_at(&from.name).await.unwrap(), None, "the old key is let go");
         assert_eq!(file.node_row_at(&to.name).await.unwrap(), Some(to.clone()), "the row the node held there is left as it is");
         assert_eq!(file.node_row_name("mesh1", &from.node_id).await.unwrap(), Some(to.name.clone()), "the row the node holds is named in the id index");
@@ -1549,7 +1480,7 @@ mod tests {
     /// thread keeps running meanwhile, and the read answers the row.
     #[test]
     fn a_node_row_read_waits_on_the_disk_off_the_runtime_thread() {
-        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None };
+        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, otel_debug: false };
         let name = row.name.clone();
         let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
         assert!(ran, "the runtime thread ran while the row read waited on the disk");
@@ -1597,7 +1528,7 @@ mod tests {
     async fn a_second_nodes_row_at_a_held_name_is_refused_by_the_adapter_and_nothing_is_written() {
         let d = crate::record_store::tempdir("storage-claim");
         let name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None };
+        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None, otel_debug: false };
         let check = async |n: &dyn NodesStorage, store: &str| {
             let (first, second) = (NodeId::mint(), NodeId::mint());
             let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");

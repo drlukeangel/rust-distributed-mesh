@@ -117,9 +117,10 @@ impl NodeConfigs {
             Some(_) => {}
         }
         let _one = self.one_at_a_time.lock().await;
-        // The row carries the node's tags as this writer knows them: a config put changes the config.
-        let tags = match self.written.known_row(storage, &subject.mesh, node_id).await {
-            Ok(row) => row.map(|r| r.tags).unwrap_or_default(),
+        // The row carries the node's tags and its caller-owned group as this writer knows them: a
+        // config put changes the config.
+        let (tags, otel_debug) = match self.written.known_row(storage, &subject.mesh, node_id).await {
+            Ok(row) => row.map(|r| (r.tags, r.otel_debug)).unwrap_or_default(),
             Err(why) => {
                 let detail = format!("{me}: {why}: the row of {} is not written without the tags it carries", subject.name);
                 span.record("detail", detail.as_str());
@@ -127,7 +128,7 @@ impl NodeConfigs {
             }
         };
         span.record("tags", crate::node_rows::labels(&tags).as_str());
-        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None };
+        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, otel_debug, allocated: None };
         let refused = match storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);

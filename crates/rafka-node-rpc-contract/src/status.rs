@@ -369,6 +369,10 @@ pub enum StatusRequest {
         /// The node's whole set of tag labels: a put replaces it, it never merges. At most
         /// [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
         tags: BTreeSet<String>,
+        /// The caller-owned group (node-rpc-envelope.md "Meta and config": "Caller-owned, copied on
+        /// recover and replace | `otel_debug` and whatever else is added here"): the node's
+        /// OpenTelemetry debug level, put as given.
+        otel_debug: bool,
     },
     /// `node.connections.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact
     /// birth's mesh-primary, which commands the birth with the same request and holds its completion
@@ -1388,7 +1392,7 @@ mod tests {
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
-            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into(), tags: ["rabbit".to_string(), "red".to_string()].into() },
+            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into(), tags: ["rabbit".to_string(), "red".to_string()].into(), otel_debug: true },
             StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::All(["rabbit".to_string(), "red".to_string()].into())) },
             StatusRequest::GetMeshes { mesh: None },
@@ -1434,7 +1438,7 @@ mod tests {
         assert_eq!((at_cap.len(), tags_refusal(&at_cap)), (MAX_NODE_TAGS, None));
         let longest_name = format!("{}.broker.4294967295.old", "m".repeat(64));
         for q in [
-            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: longest_name.clone(), tags: at_cap.clone() },
+            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: longest_name.clone(), tags: at_cap.clone(), otel_debug: true },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::Any(at_cap.clone())) },
         ] {
             let len = Status::encode_request(&q).unwrap().len();

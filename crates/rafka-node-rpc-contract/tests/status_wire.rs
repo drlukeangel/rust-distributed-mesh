@@ -64,7 +64,7 @@ fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
         (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c30313233343536373839616205626972746801016b0176"),
         (ApplyNodeName { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "130c3031323334353637383961620562697274680b6d657368312e7270632e31"),
         // node_id | incarnation | name | tags (len 1: "red")
-        (UpdateNode { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into(), tags: ["red".to_string()].into() }, "140c3031323334353637383961620562697274680b6d657368312e7270632e310103726564"),
+        (UpdateNode { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into(), tags: ["red".to_string()].into(), otel_debug: true }, "140c3031323334353637383961620562697274680b6d657368312e7270632e31010372656401"),
         (DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "150c30313233343536373839616205626972746801010c333132333435363738396162"),
         (GetNodes { select: NodeSelect::Mesh("mesh1".into()) }, "1601056d65736831"),
         (GetMeshes { mesh: Some("mesh1".into()) }, "1701056d65736831"),

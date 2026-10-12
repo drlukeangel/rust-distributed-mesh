@@ -820,8 +820,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
     assert_eq!(again[1..], first[1..], "every event again, replayed by the executor of the last attempt: {again:?}");
 }
 
-/// CONTRACT: a put that changes a field RDM owns is refused before anything is sent, and one that
-/// changes otel_debug, which no row field carries, ends `NotBackedToday`. A put whose tags are not a
+/// CONTRACT: a put that changes a field RDM owns is refused before anything is sent. A put whose tags are not a
 /// node's tag set, and a `node.get` tag filter naming no label or a label that is not one, are
 /// refused by name before anything is sent (R-TG1). A `node.connections.delete` naming no connection
 /// is refused by name before anything is sent (R-CR3). Calls whose request no op carries say so by
@@ -849,13 +848,12 @@ fn calls_no_op_carries_today_say_so_by_name() {
             tags: Default::default(),
         };
         // The put reaches the node's mesh-primary only with what its request carries: a body that
-        // changes a field RDM owns is refused here, and one that changes otel_debug has no row field.
+        // changes a field RDM owns is refused here.
         let (mp, route) = (NodeId::mint(), rafka_node_rpc::RouteChoice::Direct);
         assert_eq!(
             nodes.update(&NodeMeta { status: rafka_node_admin_client::NodeStatus::Dead, ..held.clone() }, &held, &mp, &route).await.expect("a typed refusal"),
             rafka_node_rpc_contract::status::StatusReply::RejectedMetaFieldIsRdmOwned { field: MetaField::Status.name().into() }
         );
-        assert!(matches!(nodes.update(&held, &NodeMeta { otel_debug: true, ..held.clone() }, &mp, &route).await, Err(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
         // Tags that are not a node's tag set, and a tag filter no node can match, are refused here.
         let not_a_label = nodes.update(&held, &NodeMeta { tags: ["Rabbit".to_string()].into(), ..held.clone() }, &mp, &route).await.expect("a typed refusal");
         assert!(matches!(&not_a_label, rafka_node_rpc_contract::status::StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "{not_a_label:?}");

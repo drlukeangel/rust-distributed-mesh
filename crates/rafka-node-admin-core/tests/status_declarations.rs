@@ -559,9 +559,6 @@ impl NodesStorage for RefusingRows {
     async fn release_node_row(&self, name: &rafka_node_admin_core::model::PathName, _holder: &rafka_node_admin_core::model::NodeId) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
     }
-    async fn exited_row(&self, mesh: &str, node_id: &NodeId) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
-        self.0.exited_row(mesh, node_id).await
-    }
     async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rafka_node_admin_core::record_store::StorageError> {
         self.0.tagged(label).await
     }
@@ -951,7 +948,7 @@ fn a_node_created_at_a_deleted_rows_name_is_told_its_seeded_config() {
         let newcomer = birth("mesh1.rpc.3", NodeKind::RpcNode, "mesh1", false, false);
         let seeded: BTreeMap<String, String> = [("zone".to_string(), "b".to_string()), ("tags".to_string(), "edge".to_string())].into();
         rig.nodes
-            .put_node_row(&rafka_node_admin_core::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None })
+            .put_node_row(&rafka_node_admin_core::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, otel_debug: false })
             .await
             .unwrap()
             .unwrap();
@@ -1001,7 +998,7 @@ fn a_node_created_at_a_deleted_rows_name_in_a_mesh_whose_primary_is_not_the_fabr
         let seeded: BTreeMap<String, String> = [("zone".to_string(), "c".to_string()), ("tags".to_string(), "far".to_string())].into();
         let mp_rows = Arc::new(MemoryNodesStorage::default());
         mp_rows
-            .put_node_row(&rafka_node_admin_core::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None })
+            .put_node_row(&rafka_node_admin_core::storage::NodeRow { name: newcomer.node.name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: seeded.clone(), tags: Default::default(), allocated: None, otel_debug: false })
             .await
             .unwrap()
             .unwrap();
@@ -1082,7 +1079,7 @@ fn delete_all(b: &Birth) -> StatusRequest {
 }
 
 fn update_node(b: &Birth, name: &str) -> StatusRequest {
-    StatusRequest::UpdateNode { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into(), tags: Default::default() }
+    StatusRequest::UpdateNode { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into(), tags: Default::default(), otel_debug: false }
 }
 
 /// CONTRACT (R-CR1a, R-CR2, rulings 2026-10-11: a node changes its name only when it is not
@@ -1195,7 +1192,7 @@ fn a_rename_into_a_held_name_is_refused_name_held_and_nothing_is_written_or_told
         }
         let holder = NodeId::mint();
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
-        rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: taken.clone(), node_id: holder.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, otel_debug: false }).await.unwrap().unwrap();
         let held = reply(&call(&rig, &b["admin2"], &update_node(&succ, "mesh1.rpc.3")).await);
         assert_eq!(held, StatusReply::NameHeld { name: taken.to_string(), by: holder.clone() });
         assert_eq!(rig.nodes.node_row_at(&taken).await.unwrap().map(|r| r.node_id), Some(holder), "the holder keeps the name");
@@ -1233,7 +1230,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_no
         let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
         let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: carrier.node_id.clone(), path: carrier.name.clone() };
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
-        let reply = rafka_node_admin_client::NodeRpc::new(&client).node_update(&rig.admin.node.node_id, &route, &exact(&succ), &taken, &Default::default(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rafka_node_admin_client::NodeRpc::new(&client).node_update(&rig.admin.node.node_id, &route, &exact(&succ), &taken, &Default::default(), false, &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::NodeUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
         assert_eq!(row.node_id, succ.node.node_id);
@@ -1265,7 +1262,7 @@ fn a_stopped_nodes_rename_at_its_mesh_primary_writes_the_row_and_tells_the_node_
         if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == stopped.node.node_id) {
             (n.parked, n.status) = (true, NodeStatus::Leaving);
         }
-        rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: stopped.node.name.clone(), node_id: stopped.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: stopped.node.name.clone(), node_id: stopped.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, otel_debug: false }).await.unwrap().unwrap();
         let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
         let reply = reply(&call(&rig, &b["admin2"], &update_node(stopped, &to.to_string())).await);
         assert_eq!(reply, StatusReply::NodeUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() });
@@ -1285,7 +1282,55 @@ fn labels(l: &[&str]) -> std::collections::BTreeSet<String> {
 }
 
 fn update_node_tagged(b: &Birth, name: &str, tags: &[&str]) -> StatusRequest {
-    StatusRequest::UpdateNode { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into(), tags: labels(tags) }
+    StatusRequest::UpdateNode { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into(), tags: labels(tags), otel_debug: false }
+}
+
+/// CONTRACT (node-rpc-envelope.md "Meta and config": the caller-owned group "`otel_debug` and
+/// whatever else is added here" is "settable by put"; node-update.md: "`node.update` puts a node's full
+/// meta entity as a blind write"; step 7: "A change that touches no name completes after the row is
+/// written"): a caller's `UpdateNode` of the live `mesh1.rpc.1` at mesh1's primary carrying
+/// `otel_debug` true ends `NodeUpdated` with the birth told nothing, and its row holds it. A
+/// `node.config.update` of rpc.1 then writes its row with the new config and keeps it; the stopped
+/// `mesh1.rpc.2`, whose row carries it, renamed to `mesh1.rpc.2.old` with it, keeps it at the row's
+/// new name. The `via-update-node` span names the group put.
+/// What must NOT happen: the put refused or dropped for want of a field, or a config put or a rename
+/// writing the row without it.
+#[test]
+fn an_otel_debug_put_is_written_to_the_row_and_a_config_put_or_a_rename_keeps_it() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let rpc1 = &b["rpc1"];
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        let debug = |b: &Birth, name: &str| StatusRequest::UpdateNode { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into(), tags: Default::default(), otel_debug: true };
+
+        let put = reply(&call(&rig, &b["admin2"], &debug(rpc1, "mesh1.rpc.1")).await);
+        assert_eq!(put, StatusReply::NodeUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
+        assert!(node.seen.lock().unwrap().is_empty(), "a put that changes no name tells the birth nothing: {:?}", node.seen.lock().unwrap());
+        let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote rpc.1's row");
+        assert_eq!((row.node_id.clone(), row.otel_debug), (rpc1.node.node_id.clone(), true), "the row holds the caller-owned group the put set");
+
+        let config: BTreeMap<String, String> = [("zone".to_string(), "c".to_string())].into();
+        let req = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: config.clone() };
+        assert_eq!(reply(&call(&rig, &b["admin2"], &req).await), StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
+        let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("rpc.1's row");
+        assert_eq!((row.config, row.otel_debug), (config, true), "the config put writes the new config and keeps the caller-owned group");
+
+        let rpc2 = &b["rpc2"];
+        if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == rpc2.node.node_id) {
+            (n.parked, n.status) = (true, NodeStatus::Leaving);
+        }
+        rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, otel_debug: true }).await.unwrap().unwrap();
+        let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
+        let renamed = reply(&call(&rig, &b["admin2"], &debug(rpc2, &to.to_string())).await);
+        assert_eq!(renamed, StatusReply::NodeUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });
+        assert_eq!(rig.nodes.node_row_at(&to).await.unwrap().map(|r| r.otel_debug), Some(true), "the row at the new name keeps the caller-owned group");
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-update-node");
+    let seen: Vec<_> = spans.iter().map(|(_, a)| (a.get("outcome").cloned().unwrap_or_default(), a.get("otel_debug").cloned().unwrap_or_default())).collect();
+    assert_eq!(seen, vec![("node-updated".to_string(), "true".to_string()), ("node-updated".to_string(), "true".to_string())], "{spans:?}");
+    eprintln!("trace {}: rdm.node_admin.node.update.via-update-node otel_debug=true outcome=node-updated (no apply sent)", spans[0].0);
 }
 
 /// CONTRACT (R-TG1, Luke 2026-10-12: tags are labels in the node's meta, set through node.update;
@@ -1330,7 +1375,7 @@ fn a_tags_put_is_written_with_no_apply_and_a_config_put_or_a_rename_keeps_the_ta
         if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == rpc2.node.node_id) {
             (n.parked, n.status) = (true, NodeStatus::Leaving);
         }
-        rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: labels(&["red"]), allocated: None }).await.unwrap().unwrap();
+        rig.nodes.put_node_row(&rafka_node_admin_core::storage::NodeRow { name: rpc2.node.name.clone(), node_id: rpc2.node.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: labels(&["red"]), allocated: None, otel_debug: false }).await.unwrap().unwrap();
         let to: PathName = "mesh1.rpc.2.old".parse().unwrap();
         let renamed = reply(&call(&rig, &b["admin2"], &update_node_tagged(rpc2, &to.to_string(), &["red"])).await);
         assert_eq!(renamed, StatusReply::NodeUpdated { node_id: rpc2.node.node_id.clone(), incarnation: rpc2.node.incarnation_id.clone().unwrap() });
@@ -1378,7 +1423,7 @@ fn a_mesh_primarys_rename_of_itself_is_applied_in_process() {
             })
         }));
         let to: PathName = "mesh1.admin.1.old".parse().unwrap();
-        let update = StatusRequest::UpdateNode { node_id: me.node.node_id.clone(), incarnation: inc.clone(), name: to.to_string(), tags: Default::default() };
+        let update = StatusRequest::UpdateNode { node_id: me.node.node_id.clone(), incarnation: inc.clone(), name: to.to_string(), tags: Default::default(), otel_debug: false };
         let renamed = reply(&call(&rig, &b["admin2"], &update).await);
         assert_eq!(renamed, StatusReply::NodeUpdated { node_id: me.node.node_id.clone(), incarnation: inc });
         assert_eq!(rig.nodes.node_row_at(&to).await.unwrap().map(|r| r.node_id), Some(me.node.node_id.clone()), "the row moved to the new name");
@@ -1499,7 +1544,7 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
     for (case, (node_id, incarnation)) in [("not in the view", unknown), ("no known birth", no_birth)] {
         let requests = [
             StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: [("zone".to_string(), "a".to_string())].into() },
-            StatusRequest::UpdateNode { node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.rpc.2".into(), tags: Default::default() },
+            StatusRequest::UpdateNode { node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.rpc.2".into(), tags: Default::default(), otel_debug: false },
             StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All },
         ];
         for req in requests {

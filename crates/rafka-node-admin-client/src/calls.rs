@@ -348,7 +348,8 @@ impl<'a> NodeRpc<'a> {
         self.status(NodeOp::ConfigUpdate, birth, req, opts).await
     }
 
-    /// `node.update` of the exact birth's name and tags, the caller's single call to the node's
+    /// `node.update` of the exact birth's name, tags and caller-owned group (`otel_debug`), the
+    /// caller's single call to the node's
     /// mesh-primary `mesh_primary` (R13, R-TG1; node-rpc-envelope.md "Meta and config"): it validates
     /// from its held record, claims a changed name in its store adapter, puts each label's row of the
     /// tags index and tombstones each label dropped, writes the row, tells a live birth whose name
@@ -356,8 +357,9 @@ impl<'a> NodeRpc<'a> {
     /// told nothing, and a put that changes no name completes once the row is written. `route` is the
     /// caller's choice: `Direct` to the mesh-primary, or `ViaPeer` through a carrier (Forward `0x1A`),
     /// executed exactly as chosen (`NodeRpcClient::call_routed`).
-    pub async fn node_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &rafka_mesh_entity::PathName, tags: &std::collections::BTreeSet<String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::UpdateNode { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string(), tags: tags.clone() };
+    #[allow(clippy::too_many_arguments)]
+    pub async fn node_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &rafka_mesh_entity::PathName, tags: &std::collections::BTreeSet<String>, otel_debug: bool, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::UpdateNode { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string(), tags: tags.clone(), otel_debug };
         let span = NodeOp::Update.span();
         let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, &req, opts), span.clone()).await;
         let r = ended(out);

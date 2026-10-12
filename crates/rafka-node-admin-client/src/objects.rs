@@ -205,19 +205,22 @@ pub struct NodeMeta {
     pub mesh: String,
     /// RDM-owned, copied on replace.
     pub kind: NodeKind,
-    /// Caller-owned, copied on replace and settable by put: the node's OpenTelemetry debug level.
+    /// Caller-owned, copied on recover and replace and settable by put: the node's OpenTelemetry
+    /// debug level.
     pub otel_debug: bool,
-    /// Caller-owned, copied on recover and replace and settable by put: the node's tag labels
-    /// (R-TG1), a set a put replaces whole.
+    /// The node's own property, settable by put and never copied (node-rpc-envelope.md "Meta and
+    /// config": "a node's tags are its own property, not config"): its tag labels (R-TG1), a set a
+    /// put replaces whole.
     pub tags: BTreeSet<String>,
 }
 
 impl NodeMeta {
     /// The successor `self` with the caller-owned group of `predecessor` copied onto it: the copy
     /// step of recover and replace. Nothing RDM owns is copied, the name least of all: the
-    /// successor's `path.name` and identity come from its own create spec.
+    /// successor's `path.name` and identity come from its own create spec. The tags are the
+    /// successor's own and stay as they are.
     pub fn with_caller_owned_of(&self, predecessor: &NodeMeta) -> NodeMeta {
-        NodeMeta { otel_debug: predecessor.otel_debug, tags: predecessor.tags.clone(), ..self.clone() }
+        NodeMeta { otel_debug: predecessor.otel_debug, ..self.clone() }
     }
 
     /// `node.update`'s validation from the held record, in the documented order
@@ -388,10 +391,10 @@ impl Nodes {
     /// `node.update`: put the full meta entity `body` over what RDM `held`, a single call to the
     /// node's mesh-primary `mesh_primary` over `route` (R13; [`crate::NodeRpc::node_update`]). The
     /// mesh-primary decides from its own held record whether the node carries traffic; the request
-    /// carries the exact birth, the name and the tags, so a body that differs from `held` in a field
-    /// RDM owns is refused here, `RejectedMetaFieldIsRdmOwned { field }`, as are tags that are not a
-    /// node's tag set, `RejectedTags`, and nothing is sent. A body that changes `otel_debug` ends
-    /// `NotBackedToday`: the node row has no field that carries it.
+    /// carries the exact birth, the name, the tags and the caller-owned group (`otel_debug`), so a
+    /// body that differs from `held` in a field RDM owns is refused here,
+    /// `RejectedMetaFieldIsRdmOwned { field }`, as are tags that are not a node's tag set,
+    /// `RejectedTags`, and nothing is sent.
     pub async fn update(&self, held: &NodeMeta, body: &NodeMeta, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice) -> Result<rafka_node_rpc_contract::status::StatusReply, CallEnd> {
         // The name's traffic rule is the mesh-primary's: only the fields the request cannot carry are checked here.
         if let Err(e) = body.check_update(held, crate::Traffic::Stopped) {
@@ -406,12 +409,9 @@ impl Nodes {
             span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), reason = %reason, "the put's tags are not a node's tag set; nothing is sent"));
             return Ok(rafka_node_rpc_contract::status::StatusReply::rejected_tags(&reason));
         }
-        if body.otel_debug != held.otel_debug {
-            return Err(CallEnd::NotBackedToday { op: NodeOp::Update, why: "otel_debug: the node row has no field that carries it" });
-        }
         let incarnation = held.incarnation.clone().ok_or_else(|| CallEnd::Indeterminate { reason: format!("{} ({}) has no known birth; node.update names an exact birth", held.name, held.node_id) })?;
         let birth = crate::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation };
-        crate::NodeRpc::new(self.carrier.client()).node_update(mesh_primary, route, &birth, &body.name, &body.tags, &rafka_node_rpc::CallOptions::default()).await
+        crate::NodeRpc::new(self.carrier.client()).node_update(mesh_primary, route, &birth, &body.name, &body.tags, body.otel_debug, &rafka_node_rpc::CallOptions::default()).await
     }
 
     /// `node.connections.get`: the connections the exact birth `birth` holds, under the name it
@@ -684,10 +684,11 @@ mod tests {
 
     /// CONTRACT: the copy step of recover and replace copies only the caller-owned group: the
     /// successor takes the predecessor's `otel_debug` and keeps every field RDM owns as its own,
-    /// its name included (ops-naming "Identity"; node-rpc-envelope.md "Meta and config").
+    /// its name included, and its own tags (ops-naming "Identity"; node-rpc-envelope.md "Meta and
+    /// config": "a node's tags are its own property, not config").
     #[test]
     fn the_copy_step_copies_only_caller_owned_fields_never_the_name() {
-        let predecessor = NodeMeta { otel_debug: true, name: held().name.renamed(), ..held() };
+        let predecessor = NodeMeta { otel_debug: true, name: held().name.renamed(), tags: ["red".to_string()].into(), ..held() };
         let successor = NodeMeta { node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()), endpoint: Some("ep-9".into()), runtime: Some("dep-9".into()), status: NodeStatus::Pending, ..held() };
         let copied = successor.with_caller_owned_of(&predecessor);
         assert_eq!(copied, NodeMeta { otel_debug: true, ..successor.clone() }, "only otel_debug moves; the name stays the successor's own");

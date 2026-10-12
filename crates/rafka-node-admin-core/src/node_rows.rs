@@ -17,14 +17,16 @@
 //!   `AllocateIdentity` receipt names the node id, and before anything is prepared or launched
 //!   ([`NodeRows::claim`]): insert-and-fail inside the store adapter,
 //!   `NameHeld { by }` and nothing launched. The row's config is seeded from the previous row at
-//!   the `path.name` (a `Deleted` row) or the `<name>.old` row. A create that fails after its claim
-//!   withdraws it ([`NodeRows::withdraw`]), the holder's own key only.
+//!   the `path.name` (a `Deleted` row) or the `<name>.old` row, else, for a recovery's create, from
+//!   the `Deleted` row its node.delete recorded in the same run ([`DeletedMeta`]). A create that
+//!   fails after its claim withdraws it ([`NodeRows::withdraw`]), the holder's own key only.
 //! - A replace's `RenamePredecessor`: the predecessor's row moves to `<path>.old` and it lets go
 //!   of `<path>` ([`NodeRows::moved_to_old`]).
-//! - `NodeDeleted`: the row with status `Deleted`, the record and its config kept
-//!   ([`NodeRows::deleted`]).
+//! - `NodeDeleted`: the row with status `Deleted`, the record, its config, its tags and its
+//!   caller-owned group kept ([`NodeRows::deleted`]); what it holds of the config and the
+//!   caller-owned group is the step's receipt output ([`DeletedMeta`]).
 //! - A recovery's `node.update` (node-recovery.md step 6): the new node's row, put blind with the
-//!   caller-owned meta of the exited birth's `Deleted` row ([`NodeRows::copy_caller_owned`]); the
+//!   caller-owned group its node.delete's receipt carried ([`NodeRows::copy_caller_owned`]); the
 //!   one write of a row that keeps its name is [`put_meta`], which `node.update`'s door makes too.
 //! - A mesh delete (R-MN1, mesh-delete.md steps 3 and 7): each member's row `Deleted` on its exact
 //!   Exited receipt, by the deleting mesh's primary, and the final primary's in its own node.delete,
@@ -167,6 +169,51 @@ impl std::fmt::Display for RowRefused {
     }
 }
 
+/// What a row carries besides its key, its node and its status: the application's config, the
+/// node's tag labels and the caller-owned group (node-rpc-envelope.md "Meta and config").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RowMeta {
+    /// The application's config.
+    pub config: BTreeMap<String, String>,
+    /// The node's tag labels, its own property.
+    pub tags: std::collections::BTreeSet<String>,
+    /// The caller-owned group: the node's OpenTelemetry debug level.
+    pub otel_debug: bool,
+}
+
+impl RowMeta {
+    /// What `row` carries.
+    pub fn of(row: &NodeRow) -> Self {
+        Self { config: row.config.clone(), tags: row.tags.clone(), otel_debug: row.otel_debug }
+    }
+
+    /// The row of `node_id` at `name`, `status`, carrying this.
+    fn row(self, name: &PathName, node_id: &NodeId, status: NodeStatus) -> NodeRow {
+        NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: self.config, tags: self.tags, otel_debug: self.otel_debug, allocated: None }
+    }
+}
+
+/// What the `Deleted` row of an exited node holds that its recovery carries to the node created at
+/// its path.name (node-recovery.md step 4: the create's "config is seeded from the deleted row at
+/// that path.name"; step 6: "node[2].update copies the exited node's caller-owned meta (such as
+/// `otel_debug`)"): its config and its caller-owned group. The recovery's node.delete records it as
+/// its `NodeDeleted` receipt's output, so the steps of the same run read it there, whichever executor
+/// runs them and whatever the key the row stood at holds since (the new node's claim replaces it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeletedMeta {
+    /// The caller-owned group: the node's OpenTelemetry debug level.
+    pub otel_debug: bool,
+    /// The application's config.
+    pub config: BTreeMap<String, String>,
+}
+
+impl DeletedMeta {
+    /// What the `Deleted` row `row` holds.
+    pub fn of(row: &NodeRow) -> Self {
+        Self { otel_debug: row.otel_debug, config: row.config.clone() }
+    }
+}
+
 /// What a claim of a name did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Claimed {
@@ -263,6 +310,14 @@ impl NodeRows {
     /// written into the claim row with it ([`NodeRow::allocated`]), so the identity the claim is made
     /// with is durable wherever the claim is. One `via-node-row` span, `moment` `claim`.
     pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>) -> Result<Claimed, RowRefused> {
+        self.claim_carrying(name, node_id, operation, allocated, None).await
+    }
+
+    /// [`Self::claim`] of a recovery's create: `carried` is the `Deleted` row of the exited node
+    /// `(node id, what it held)` its node.delete recorded in the same run, which seeds the config when
+    /// neither the previous row at the `path.name` nor the `<name>.old` row stands (a claim of this
+    /// operation made and withdrawn before replaced the `Deleted` row and released the key).
+    pub async fn claim_carrying(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, carried: Option<(&NodeId, &DeletedMeta)>) -> Result<Claimed, RowRefused> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.create.via-node-row",
             node = %self.me,
@@ -279,7 +334,7 @@ impl NodeRows {
         let r = tracing::Instrument::instrument(
             async {
                 self.writer_check(&name.mesh, name).await?;
-                self.put_seeded(name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, &span).await
+                self.put_seeded(name, node_id, NodeStatus::Pending, &BTreeMap::new(), carried, allocated, &span).await
             },
             span.clone(),
         )
@@ -368,8 +423,8 @@ impl NodeRows {
                 self.writer_check(&name.mesh, &name).await?;
                 let parked = parked_record(record, &to);
                 let (config, _) = self.known_config(&parked);
-                let tags = self.known_tags(&parked).await?;
-                let (moved, written) = move_row(&*self.storage, &self.me, &parked, config, tags, &name, &to).await.map_err(|e| match e {
+                let (tags, otel_debug) = self.known_meta(&parked).await?;
+                let (moved, written) = move_row(&*self.storage, &self.me, &parked, RowMeta { config, tags, otel_debug }, &name, &to).await.map_err(|e| match e {
                     RenameRefused::NameHeld(h) => RowRefused::NameHeld(h),
                     RenameRefused::Unwritten(why) => RowRefused::Unwritten(why),
                 })?;
@@ -397,32 +452,31 @@ impl NodeRows {
     }
 
     /// `NodeDeleted` (node-decommission.md step 3): the row at the node's `path.name` (its `.old`
-    /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on
-    /// and its config kept, a blind put. One `via-node-row` span.
-    pub async fn deleted(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
+    /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on,
+    /// its config, its tags and its caller-owned group kept, a blind put. Answers the row written. One
+    /// `via-node-row` span.
+    pub async fn deleted(&self, record: &Node, operation: &str) -> Result<NodeRow, RowRefused> {
         let (config, config_from) = self.known_config(record);
-        let tags = match self.known_tags(record).await {
-            Ok(tags) => tags,
+        let (tags, otel_debug) = match self.known_meta(record).await {
+            Ok(meta) => meta,
             Err(e) => return self.deleted_row(&record.name, &record.node_id, Err(e), operation).await,
         };
-        self.deleted_row(&record.name, &record.node_id, Ok(Some((config, tags, config_from))), operation).await
+        self.deleted_row(&record.name, &record.node_id, Ok(Some((RowMeta { config, tags, otel_debug }, config_from))), operation).await
     }
 
     /// A recovery's `node.update` (node-recovery.md step 6: "node[2].update copies the exited node's
     /// caller-owned meta (such as `otel_debug`) as a blind put; config was seeded by the create"):
-    /// the caller-owned group of the exited birth `from`, as the `Deleted` row it left holds it
-    /// ([`NodesStorage::exited_row`], a point read by the exited node's id: the new node's claim
-    /// replaced the row at the path.name, not that row), copied onto the new node `onto` the create
-    /// made at its path.name, through [`NodeMeta::with_caller_owned_of`] (the declared copy: nothing
-    /// RDM owns moves, the name least of all), and put as a blind write of the new node's row
-    /// ([`put_meta`]), one change to a node record at a time with the config door. The row carries
-    /// the tag labels; `otel_debug` has no row field, so nothing of it is put
-    /// ([`rafka_node_admin_client::CallEnd::NotBackedToday`] says so to a caller that puts it).
+    /// the caller-owned group of the exited birth `from`, as `carried` holds it (what the exited
+    /// node's `Deleted` row held, recorded by the recovery's node.delete in the same run), copied onto
+    /// the new node `onto` the create made at its path.name through [`NodeMeta::with_caller_owned_of`]
+    /// (the declared copy: nothing RDM owns moves, the name least of all, and a node's tags are its
+    /// own), and put as a blind write of the new node's row ([`put_meta`]), its config and tags as the
+    /// row holds them, one change to a node record at a time with the config door.
     ///
-    /// The read is the store's, so it holds whichever executor runs the step: the one that wrote the
-    /// `Deleted` row or the one that took its seat. A store that holds none refuses by name, writing
-    /// nothing. One `via-caller-owned-copy` span names the exited birth and the labels copied.
-    pub async fn copy_caller_owned(&self, onto: &Node, from: &Node, operation: &str) -> Result<NodeRow, RowRefused> {
+    /// Nothing of the exited node is read here: the group is the run's own record, so the step holds
+    /// whichever executor runs it. One `via-caller-owned-copy` span names the exited birth and the
+    /// group copied.
+    pub async fn copy_caller_owned(&self, onto: &Node, from: &Node, carried: &DeletedMeta, operation: &str) -> Result<NodeRow, RowRefused> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-caller-owned-copy",
             node = %self.me,
@@ -430,15 +484,15 @@ impl NodeRows {
             node_id = %onto.node_id,
             from_node_id = %from.node_id,
             operation,
-            tags = tracing::field::Empty,
+            otel_debug = carried.otel_debug,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
-        let r = tracing::Instrument::instrument(self.copy_caller_owned_row(onto, from), span.clone()).await;
+        let r = tracing::Instrument::instrument(self.copy_caller_owned_row(onto, from, carried), span.clone()).await;
         match &r {
-            Ok(row) => {
-                span.record("tags", labels(&row.tags).as_str()).record("outcome", "meta-copied");
+            Ok(_) => {
+                span.record("outcome", "meta-copied");
             }
             Err(e) => {
                 span.record("outcome", e.outcome()).record("detail", e.to_string().as_str());
@@ -448,20 +502,10 @@ impl NodeRows {
         r
     }
 
-    async fn copy_caller_owned_row(&self, onto: &Node, from: &Node) -> Result<NodeRow, RowRefused> {
+    async fn copy_caller_owned_row(&self, onto: &Node, from: &Node, carried: &DeletedMeta) -> Result<NodeRow, RowRefused> {
         let me = &self.me;
         self.writer_check(&onto.name.mesh, &onto.name).await?;
-        let deleted = match self.storage.exited_row(&from.mesh, &from.node_id).await {
-            Ok(Some(row)) => row,
-            Ok(None) => {
-                return Err(RowRefused::Unwritten(format!(
-                    "{me}: nodes.storage holds no Deleted row of the exited birth {} at {}: its caller-owned meta is not copied onto {} and nothing is written",
-                    from.node_id, from.name, onto.node_id
-                )))
-            }
-            Err(e) => return Err(RowRefused::Unwritten(format!("{me}: the Deleted row of the exited birth {} could not be read: {e}: nothing is written", from.node_id))),
-        };
-        let exited = NodeMeta { tags: deleted.tags.clone(), ..crate::node_update::meta_of(from) };
+        let exited = NodeMeta { otel_debug: carried.otel_debug, ..crate::node_update::meta_of(from) };
         let copied = crate::node_update::meta_of(onto).with_caller_owned_of(&exited);
         // One change to a node record at a time (node-update.md "Config update"), with the door's puts.
         let door = self.configs.as_ref().and_then(|slot| slot.get().cloned());
@@ -474,37 +518,40 @@ impl NodeRows {
             Ok(None) => return Err(RowRefused::Unwritten(format!("{me} holds no row of the new node {} at {}: its claim is the row the exited birth's caller-owned meta is put on, and nothing is written", onto.node_id, onto.name))),
             Err(why) => return Err(RowRefused::Unwritten(format!("{me}: {why}: the new node's row is not put and nothing is written"))),
         };
-        match put_meta(&*self.storage, &self.written, &new.name, &onto.node_id, new.status, new.config, copied.tags).await {
+        let meta = RowMeta { otel_debug: copied.otel_debug, ..RowMeta::of(&new) };
+        match put_meta(&*self.storage, &self.written, &new.name, &onto.node_id, new.status, meta).await {
             Ok(Ok(row)) => Ok(row),
             Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
             Err(e) => Err(RowRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} ({}): {e}", onto.name, onto.node_id))),
         }
     }
 
-    /// The tags of the row `record`'s node is written with: the ones this writer holds for it, else
-    /// those of the row the node holds now (a point read through the id index); none when it holds
-    /// no row. A node's tags are never in the executor's record: they are meta only its rows carry.
-    async fn known_tags(&self, record: &Node) -> Result<std::collections::BTreeSet<String>, RowRefused> {
+    /// The tags and the caller-owned group of the row `record`'s node is written with: the ones this
+    /// writer holds for it, else those of the row the node holds now (a point read through the id
+    /// index); none when it holds no row. Neither is ever in the executor's record: they are meta
+    /// only its rows carry.
+    async fn known_meta(&self, record: &Node) -> Result<(std::collections::BTreeSet<String>, bool), RowRefused> {
         match self.written.known_row(&*self.storage, &record.mesh, &record.node_id).await {
-            Ok(row) => Ok(row.map(|r| r.tags).unwrap_or_default()),
-            Err(why) => Err(RowRefused::Unwritten(format!("{}: {why}: the row of {} is not written without the tags it carries", self.me, record.name))),
+            Ok(row) => Ok(row.map(|r| (r.tags, r.otel_debug)).unwrap_or_default()),
+            Err(why) => Err(RowRefused::Unwritten(format!("{}: {why}: the row of {} is not written without the tags and the caller-owned meta it carries", self.me, record.name))),
         }
     }
 
     /// The `Deleted` row of a birth the executor holds no record of any more (a mesh leave's
     /// member that departed the view after its exact Exited receipt, mesh-leave.md steps 3 and
-    /// 7): the row at `name` for `node_id`, the config this writer holds for the node. A writer that
-    /// holds no record of the node's row refuses by name and writes nothing: a `Deleted` row is never
-    /// written with a config the writer does not know. One `via-node-row` span.
-    pub async fn deleted_birth(&self, name: &PathName, node_id: &NodeId, operation: &str) -> Result<(), RowRefused> {
-        let known = self.written.row_of(node_id).map(|r| (r.config, r.tags, "writer-record"));
+    /// 7): the row at `name` for `node_id`, with what this writer holds of the node's row. A writer
+    /// that holds no record of the node's row refuses by name and writes nothing: a `Deleted` row is
+    /// never written with a config the writer does not know. One `via-node-row` span.
+    pub async fn deleted_birth(&self, name: &PathName, node_id: &NodeId, operation: &str) -> Result<NodeRow, RowRefused> {
+        let known = self.written.row_of(node_id).map(|r| (RowMeta::of(&r), "writer-record"));
         self.deleted_row(name, node_id, Ok(known), operation).await
     }
 
     /// The `Deleted` row of `node_id` at `name`, written from what the writer knows of it: its
-    /// config and tags (the row keeps both, as it keeps the record), or the refusal that names why
-    /// it knows neither. The store tombstones every tags index row of its labels with the write.
-    async fn deleted_row(&self, name: &PathName, node_id: &NodeId, known: Result<Option<(BTreeMap<String, String>, std::collections::BTreeSet<String>, &'static str)>, RowRefused>, operation: &str) -> Result<(), RowRefused> {
+    /// config, tags and caller-owned group (the row keeps all three, as it keeps the record), or the
+    /// refusal that names why it knows none. The store tombstones every tags index row of its labels
+    /// with the write.
+    async fn deleted_row(&self, name: &PathName, node_id: &NodeId, known: Result<Option<(RowMeta, &'static str)>, RowRefused>, operation: &str) -> Result<NodeRow, RowRefused> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-node-row",
             node = %self.me,
@@ -514,24 +561,25 @@ impl NodeRows {
             keys = tracing::field::Empty,
             config_from = tracing::field::Empty,
             tags = tracing::field::Empty,
+            otel_debug = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
-        if let Ok(Some((config, tags, config_from))) = &known {
-            span.record("keys", config.len() as u64).record("config_from", *config_from).record("tags", labels(tags).as_str());
+        if let Ok(Some((meta, config_from))) = &known {
+            span.record("keys", meta.config.len() as u64).record("config_from", *config_from).record("tags", labels(&meta.tags).as_str()).record("otel_debug", meta.otel_debug);
         }
         let r = tracing::Instrument::instrument(
             async {
                 self.writer_check(&name.mesh, name).await?;
-                let Some((config, tags, _)) = known? else {
+                let Some((meta, _)) = known? else {
                     return Err(RowRefused::Unwritten(format!("{}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know", self.me)));
                 };
-                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None };
+                let row = meta.row(name, node_id, NodeStatus::Deleted);
                 match self.storage.put_node_row(&row).await {
                     Ok(Ok(())) => {
                         self.written.hold(&row);
-                        Ok(())
+                        Ok(row)
                     }
                     Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
                     Err(e) => Err(RowRefused::Unwritten(format!("{}: nodes.storage refused the Deleted row of {name} ({node_id}): {e}", self.me))),
@@ -541,17 +589,19 @@ impl NodeRows {
         )
         .await;
         match &r {
-            Ok(()) => span.record("outcome", "row-deleted"),
+            Ok(_) => span.record("outcome", "row-deleted"),
             Err(e) => span.record("outcome", e.outcome()).record("detail", e.to_string().as_str()),
         };
-        span.in_scope(|| tracing::info!("node.delete: the Deleted row decided; the record, its config and its tags stay, its labels leave the tags index"));
+        span.in_scope(|| tracing::info!("node.delete: the Deleted row decided; the record, its config, its tags and its caller-owned meta stay, its labels leave the tags index"));
         r
     }
 
     /// The row of `node_id` at `name`, `status`, its config seeded from the previous row at the
     /// `path.name` (another node's row there: the store adapter refuses it unless it is `Deleted`),
-    /// else the `<name>.old` row, else `own`. A row the same node holds already is left as it is.
-    async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, span: &tracing::Span) -> Result<Claimed, RowRefused> {
+    /// else the `<name>.old` row, else the `Deleted` row a recovery's node.delete `carried` in its
+    /// receipt (the key it stood at holds nothing since a claim of this operation was withdrawn),
+    /// else `own`. A row the same node holds already is left as it is.
+    async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, carried: Option<(&NodeId, &DeletedMeta)>, allocated: Option<&Allocation>, span: &tracing::Span) -> Result<Claimed, RowRefused> {
         let me = &self.me;
         let previous = self.storage.node_row_at(name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous row at {name} could not be read for {node_id}: {e}")))?;
         if let Some(p) = previous.as_ref().filter(|p| p.node_id == *node_id) {
@@ -562,18 +612,22 @@ impl NodeRows {
             Some(p) => Some(p),
             None => self.storage.node_row_at(&name.renamed()).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the .old row at {} could not be read for {node_id}: {e}", name.renamed())))?.filter(|p| p.node_id != *node_id),
         };
-        let config = seed.as_ref().map_or_else(|| own.clone(), |p| p.config.clone());
-        if let Some(p) = &seed {
-            span.record("seeded_from", p.node_id.as_str());
+        let (config, seeded_from) = match (&seed, carried) {
+            (Some(p), _) => (p.config.clone(), Some(p.node_id.clone())),
+            (None, Some((exited, deleted))) => (deleted.config.clone(), Some(exited.clone())),
+            (None, None) => (own.clone(), None),
+        };
+        if let Some(from) = &seeded_from {
+            span.record("seeded_from", from.as_str());
         }
         span.record("keys", config.len() as u64);
-        // A new node carries no tags: they are its caller's meta, set through node.update (a
-        // recovery's copy of the caller-owned meta is its own step).
-        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags: Default::default(), allocated: allocated.cloned() };
+        // A new node carries no tags and the default caller-owned group: its tags are its own, set
+        // through node.update, and a recovery's copy of the caller-owned group is its own step.
+        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags: Default::default(), otel_debug: false, allocated: allocated.cloned() };
         match self.storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);
-                Ok(Claimed::Written { row, seeded_from: seed.map(|p| p.node_id) })
+                Ok(Claimed::Written { row, seeded_from })
             }
             Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
             Err(e) => Err(RowRefused::Unwritten(format!("{me}: nodes.storage refused the row of {name} ({node_id}): {e}"))),
@@ -675,7 +729,7 @@ impl NodeRows {
                 detail = tracing::field::Empty,
                 "otel.kind" = "internal",
             );
-            let r = tracing::Instrument::instrument(self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, &span), span.clone()).await;
+            let r = tracing::Instrument::instrument(self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, None, &span), span.clone()).await;
             record_claim(&span, &r);
             span.in_scope(|| tracing::info!("node.create: the birth's row decided"));
             match r {
@@ -735,20 +789,12 @@ pub enum RenameRefused {
 }
 
 /// `node.update`'s write of a row that keeps its name (node-update.md step 4): a blind put of the
-/// whole row at `name`, carrying `config` and `tags`, which the writer then holds as its record of
-/// `node_id`. The store adapter refuses it `NameHeld` when another node's live row holds `name`.
-/// The one write of a row's meta: the door's `node.update` and a recovery's copy of the caller-owned
-/// meta ([`NodeRows::copy_caller_owned`]) both put here.
-pub(crate) async fn put_meta(
-    storage: &dyn NodesStorage,
-    written: &WrittenRows,
-    name: &PathName,
-    node_id: &NodeId,
-    status: NodeStatus,
-    config: BTreeMap<String, String>,
-    tags: std::collections::BTreeSet<String>,
-) -> Result<Result<NodeRow, NameHeld>, crate::record_store::StorageError> {
-    let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: None };
+/// whole row at `name`, carrying `meta` (config, tags and the caller-owned group), which the writer
+/// then holds as its record of `node_id`. The store adapter refuses it `NameHeld` when another
+/// node's live row holds `name`. The one write of a row's meta: the door's `node.update` and a
+/// recovery's copy of the caller-owned meta ([`NodeRows::copy_caller_owned`]) both put here.
+pub(crate) async fn put_meta(storage: &dyn NodesStorage, written: &WrittenRows, name: &PathName, node_id: &NodeId, status: NodeStatus, meta: RowMeta) -> Result<Result<NodeRow, NameHeld>, crate::record_store::StorageError> {
+    let row = meta.row(name, node_id, status);
     Ok(match storage.put_node_row(&row).await? {
         Ok(()) => {
             written.hold(&row);
@@ -759,21 +805,21 @@ pub(crate) async fn put_meta(
 }
 
 /// The node's row moves from `from` to `to` in `storage`: written at `to` from its held `record`
-/// with `config` and `tags` (a put the store adapter refuses `NameHeld` when another node's live row holds
+/// with `meta` (a put the store adapter refuses `NameHeld` when another node's live row holds
 /// `to`; a row the node holds there already is left as it is, its id index entry naming `to`,
 /// [`NodesStorage::hold_node_row`]), then the node lets go of `from`
 /// (only its own row there goes). The one writer of a rename (R13: `node.update` is one write
 /// path): `node.update` at the node's mesh-primary (`crate::node_update`) and a replace's
 /// `RenamePredecessor` ([`NodeRows::moved_to_old`]) both move here. Answers what it did and the
 /// row written, if it wrote one.
-pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
+pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, meta: RowMeta, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
     if from == to {
         return Ok((Moved::Renamed, None));
     }
     let held_there = storage.hold_node_row(to, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read or named for the rename of {} from {from}: {e}", record.node_id)))?;
     let mut written = None;
     if !held_there {
-        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None };
+        let row = meta.row(to, &record.node_id, record.status);
         storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
         written = Some(row);
     }

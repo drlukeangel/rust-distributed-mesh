@@ -259,7 +259,7 @@ fn a_node_update_sets_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_ta
         // A put whose tags are not a tag set, past the typed object's own check, is refused by the
         // mesh-primary naming the label, and nothing changes.
         let birth = ExactBirth { target: NodeTarget::ExactNode(me.node.node_id.clone()), node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() };
-        let refused = NodeRpc::new(&client).node_update(&me.node.node_id, &route, &birth, &me.node.name, &labels(&["Rabbit"]), &rafka_node_rpc::CallOptions::default()).await.expect("a typed reply");
+        let refused = NodeRpc::new(&client).node_update(&me.node.node_id, &route, &birth, &me.node.name, &labels(&["Rabbit"]), false, &rafka_node_rpc::CallOptions::default()).await.expect("a typed reply");
         assert!(matches!(&refused, StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "refused naming the label: {refused:?}");
         assert_eq!(by_id().await[0].tags, labels(&["red"]), "a refused put changes nothing");
 

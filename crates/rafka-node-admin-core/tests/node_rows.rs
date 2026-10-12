@@ -206,7 +206,7 @@ async fn held(mp: &MeshPrimary, name: &str) -> Node {
 }
 
 fn row_of(n: &Node) -> NodeRow {
-    NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone(), tags: Default::default(), allocated: None }
+    NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone(), tags: Default::default(), allocated: None, otel_debug: false }
 }
 
 /// CONTRACT: `node.delete` leaves the node's row at its `path.name` with status `Deleted`, its
@@ -224,7 +224,7 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record_and_config() {
         mp.rows.deleted(&victim, "retire-node:mesh1.rpc.1").await.expect("the mesh primary writes the Deleted row");
         (storage.node_row_at(&victim.name).await.unwrap(), victim.node_id)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: Default::default(), allocated: None }), "the row says Deleted and keeps the record and the config");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false }), "the row says Deleted and keeps the record and the config");
     let spans = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
@@ -255,7 +255,7 @@ fn a_deleted_nodes_row_keeps_its_tags_and_the_tags_index_names_it_under_none() {
         mp.rows.claim(&victim.name, &born, "create-node:mesh1.rpc.1", None).await.expect("a node created at the Deleted row's path.name claims it");
         (row, storage.node_row_at(&victim.name).await.unwrap(), victim.node_id, rabbit, red)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: ["rabbit".to_string(), "red".to_string()].into(), allocated: None }), "the Deleted row keeps the record, the config and the tags");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: ["rabbit".to_string(), "red".to_string()].into(), allocated: None, otel_debug: false }), "the Deleted row keeps the record, the config and the tags");
     assert!(rabbit.is_empty() && red.is_empty(), "the tags index names the deleted node under neither label: rabbit {rabbit:?}, red {red:?}");
     let born_row = born_row.expect("the new node's row");
     assert_eq!((born_row.config, born_row.tags.len()), (tier("gold"), 0), "the new node is seeded the config and carries no tag");
@@ -276,13 +276,13 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, otel_debug: false }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
         mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "create-node:mesh1.rpc.2", None).await.expect("the name is free of live rows");
         (storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("silver"), tags: Default::default(), allocated: None }), "the new birth holds the row and the Deleted row's config");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("silver"), tags: Default::default(), allocated: None, otel_debug: false }), "the new birth holds the row and the Deleted row's config");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
@@ -302,7 +302,7 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
     let (deleted, next_row, born) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let name: PathName = "mesh1.rpc.2".parse().unwrap();
-        storage.put_node_row(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, otel_debug: false }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
         mp.rows.claim(&name, &born, "create-node:mesh1.rpc.2", None).await.expect("the name is free of live rows");
@@ -335,7 +335,7 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothi
     let (row, born, held) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let mp = mesh_primary(&storage);
-        let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None };
+        let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, otel_debug: false };
         storage.put_node_row(&held).await.unwrap().unwrap();
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
@@ -362,14 +362,14 @@ fn a_birth_no_create_claimed_gets_its_row_seeded_when_the_writers_view_holds_it(
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, otel_debug: false }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
         install(&mp.records, &mp.view, move |v| v.nodes.push(birth)).await;
         (storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None }), "the birth holds the row and the Deleted row's config");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, otel_debug: false }), "the birth holds the row and the Deleted row's config");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let rpc2: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["subject"] == "mesh1.rpc.2").collect();
     assert_eq!(rpc2.len(), 1, "{spans:#?}");
@@ -395,7 +395,7 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None };
+        let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, otel_debug: false };
         storage.put_node_row(&written).await.unwrap().unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
@@ -431,9 +431,9 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         let (old_pred, deleted_pred) = (NodeId::mint(), NodeId::mint());
         // P's writes, as its seat made them.
         for row in [
-            NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None },
-            NodeRow { name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None },
-            NodeRow { name: "mesh1.rpc.3".parse().unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None },
+            NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, otel_debug: false },
+            NodeRow { name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, otel_debug: false },
+            NodeRow { name: "mesh1.rpc.3".parse().unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, otel_debug: false },
         ] {
             p_store.put_node_row(&row).await.unwrap().unwrap();
         }
@@ -510,7 +510,7 @@ fn a_node_lets_go_only_of_its_own_row() {
         let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&dir, &rafka_node_admin_core::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
-            let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None };
+            let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, otel_debug: false };
             store.put_node_row(&held).await.unwrap().unwrap();
             assert!(!store.release_node_row(&held.name, &NodeId::mint()).await.unwrap(), "{kind}: another node lets go of nothing here");
             assert_eq!(store.node_row_at(&held.name).await.unwrap(), Some(held.clone()), "{kind}: a release by another node leaves the row");
@@ -542,8 +542,8 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
         mp.rows.claim(&pred.name, &succ, op, None).await.expect("the freed name is claimed");
         (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
     });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None }), "the predecessor's row moved to .old, parked, and stays its row, its config kept");
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None }), "the successor holds the path.name with the .old row's config");
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false }), "the predecessor's row moved to .old, parked, and stays its row, its config kept");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false }), "the successor holds the path.name with the .old row's config");
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     assert_eq!(renames.len(), 1, "{renames:#?}");
     let a = &renames[0]["attributes"];
@@ -574,8 +574,8 @@ fn a_recovered_nodes_row_moves_to_old_ends_deleted_and_its_successor_is_seeded_f
         mp.rows.deleted(&Node { name: pred.name.renamed(), ..pred.clone() }, op).await.expect("the .old row says Deleted");
         (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
     });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: Default::default(), allocated: None }), "the predecessor's row moved to .old and says Deleted, its config kept");
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None }), "the successor holds the path.name with the .old row's config");
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false }), "the predecessor's row moved to .old and says Deleted, its config kept");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false }), "the successor holds the path.name with the .old row's config");
     let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(deleted.len(), 1, "{deleted:#?}");
     let a = &deleted[0]["attributes"];
@@ -605,7 +605,7 @@ fn a_successor_heard_before_the_predecessor_lets_go_is_refused_name_held_and_the
         mp.rows.moved_to_old(&Node { status: NodeStatus::Leaving, parked: true, ..pred.clone() }, "replace-node:mesh1.rpc.1").await.expect("the predecessor's row moves");
         (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
     });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None }), "the predecessor's row moved to .old, parked, its config kept");
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false }), "the predecessor's row moved to .old, parked, its config kept");
     assert_eq!(row, None, "the successor was refused while the predecessor held the name, and the rename let it go");
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     assert_eq!(renames.len(), 1, "{renames:#?}");
@@ -654,8 +654,8 @@ fn a_rename_handled_again_after_the_successor_took_the_name_leaves_its_row() {
         let storage = Arc::new(MemoryNodesStorage::default());
         let mp = mesh_primary(&storage);
         let pred = held(&mp, "mesh1.rpc.1").await;
-        let held_old = NodeRow { name: pred.name.renamed(), node_id: pred.node_id.clone(), status: pred.status, config: tier("gold"), tags: Default::default(), allocated: None };
-        let held_new = NodeRow { name: pred.name.clone(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("platinum"), tags: Default::default(), allocated: None };
+        let held_old = NodeRow { name: pred.name.renamed(), node_id: pred.node_id.clone(), status: pred.status, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false };
+        let held_new = NodeRow { name: pred.name.clone(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("platinum"), tags: Default::default(), allocated: None, otel_debug: false };
         storage.put_node_row(&held_old).await.unwrap().unwrap();
         storage.put_node_row(&held_new).await.unwrap().unwrap();
         mp.rows.moved_to_old(&pred, "replace-node:mesh1.rpc.1").await.expect("a move made before is no refusal");
@@ -701,7 +701,7 @@ fn a_fabric_primary_whose_view_never_names_the_old_path_admits_the_parked_predec
         ];
         let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
         let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone(), tags: Default::default(), allocated: None, otel_debug: false }).await.unwrap().unwrap();
         assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
         let old: PathName = "mesh1.rpc.1.old".parse().unwrap();
         assert!(r.env.topology.read().await.node(&old).is_none(), "the view never names {old}");
@@ -907,7 +907,7 @@ mod writer {
         let cap = capture();
         let (err, spawned, row, held) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
-            let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None };
+            let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, otel_debug: false };
             storage.put_node_row(&held).await.unwrap().unwrap();
             let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
             let provider = Counted::default();
@@ -1066,7 +1066,7 @@ mod writer {
             )
             .await
             .unwrap();
-            storage.put_node_row(&NodeRow { name: "mesh1.rpc.6".parse().unwrap(), node_id: x.clone(), status: NodeStatus::Pending, config: BTreeMap::new(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+            storage.put_node_row(&NodeRow { name: "mesh1.rpc.6".parse().unwrap(), node_id: x.clone(), status: NodeStatus::Pending, config: BTreeMap::new(), tags: Default::default(), allocated: None, otel_debug: false }).await.unwrap().unwrap();
             let rerun_after_claim = create_attempt(&records, &provider, &builds, &other, "mesh1.rpc.6", 2).await;
             (lost_before_receipt, rerun_after_loss, x, rerun_after_claim)
         });
@@ -1679,7 +1679,7 @@ async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId)
     let mp = mesh_primary(&storage);
     let exited = held(&mp, "mesh1.rpc.1").await;
     // The exited birth's row, as its create claimed it.
-    storage.put_node_row(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+    storage.put_node_row(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false }).await.unwrap().unwrap();
     let born = NodeId::mint();
     if new_claimed_first {
         mp.rows.claim(&exited.name, &born, create, None).await.expect_err("the exited node's live row holds the name");
@@ -1700,7 +1700,7 @@ async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId)
 fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_seeded() {
     let cap = capture();
     let (row, exited, born) = cap.run(recovered(false));
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None }), "the new node holds the row, seeded from the exited node's");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false }), "the new node holds the row, seeded from the exited node's");
     let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(deleted.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(exited.as_str()), Some("row-deleted"))], "{deleted:#?}");
     let created = cap.spans_named("rdm.node_admin.node.create.via-node-row");
@@ -1715,7 +1715,7 @@ fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_
 fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_held_then_seeded() {
     let cap = capture();
     let (row, exited, born) = cap.run(recovered(true));
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None }), "the new node holds the row once the name is free");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None, otel_debug: false }), "the new node holds the row once the name is free");
     let created = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     assert_eq!(created.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(born.as_str()), Some("name-held")), (Some(born.as_str()), Some("row-seeded"))], "{created:#?}");
     assert_eq!(created[1]["attributes"]["seeded_from"].as_str(), Some(exited.as_str()));

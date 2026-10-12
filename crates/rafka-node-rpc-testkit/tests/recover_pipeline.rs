@@ -405,8 +405,8 @@ fn tier_gold() -> std::collections::BTreeMap<String, String> {
     [("tier".to_string(), "gold".to_string())].into()
 }
 
-/// A node is created through `pipeline`, and its row is put with tag labels and config through the
-/// writer `rows`'s store (as node.update's and node.config.update's puts are); its runtime exits; the
+/// A node is created through `pipeline`, and its row is put with tag labels, config and the
+/// caller-owned group (`otel_debug` true) through the writer `rows`'s store (as node.update's and node.config.update's puts are); its runtime exits; the
 /// recovery's node.delete of it runs through `pipeline`. `withdrawn`: before the recovery's create,
 /// a create of the same operation claims the path.name and withdraws its claim (it failed after its
 /// claim), so the key holds no row. Then the recovery's node.create over the exited node's data dir
@@ -421,7 +421,7 @@ async fn recovered_up_to_the_update(rig: &Rig, pipeline: &DeploymentPipeline<'_>
     let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
     let labels: std::collections::BTreeSet<String> = ["rabbit".to_string(), "red".to_string()].into();
     let claimed = storage.node_row_at(&path()).await.unwrap().expect("the create's claim left the node's row");
-    storage.put_node_row(&rafka_node_admin_core::storage::NodeRow { tags: labels.clone(), config: tier_gold(), ..claimed }).await.unwrap().unwrap();
+    storage.put_node_row(&rafka_node_admin_core::storage::NodeRow { tags: labels.clone(), config: tier_gold(), otel_debug: true, ..claimed }).await.unwrap().unwrap();
     assert!(rows.hold_row_of(&path(), &first.node.node_id).await.unwrap(), "the writer holds the node's row");
     assert_eq!(storage.tagged("rabbit").await.unwrap(), [first.node.node_id.clone()].into(), "the tags index names the node under its label");
 
@@ -451,6 +451,7 @@ async fn recovered_up_to_the_update(rig: &Rig, pipeline: &DeploymentPipeline<'_>
     let seeded = storage.node_row_at(&path()).await.unwrap().expect("the new node holds the row");
     assert_eq!(seeded.node_id, second.node.node_id);
     assert!(seeded.tags.is_empty(), "a new node carries no labels: a node's tags are its own: {seeded:?}");
+    assert!(!seeded.otel_debug, "the create seeds the config only: the caller-owned group is the update's copy: {seeded:?}");
     Recovered { first, second, labels, config: tier_gold(), build }
 }
 
@@ -489,7 +490,7 @@ async fn a_recovery_update_copies_the_caller_owned_group_its_delete_receipt_carr
     let Recovered { first, second, labels, config, build } = recovered_up_to_the_update(&rig, &pipeline, &storage, &rows, false).await;
     let carried = deleted_receipt_output(&rig.builds.read_build(&build).await.unwrap().steps);
     assert_eq!(carried["row"]["config"], serde_json::json!(config), "the delete's NodeDeleted receipt carries the Deleted row's config: {carried}");
-    assert_eq!(carried["row"]["otel_debug"], serde_json::json!(false), "and its caller-owned group: {carried}");
+    assert_eq!(carried["row"]["otel_debug"], serde_json::json!(true), "and its caller-owned group: {carried}");
     assert_eq!(carried["node_id"].as_str(), Some(first.node.node_id.as_str()), "naming the exited birth: {carried}");
     pipeline
         .update(&UpdateRequest { build_id: build.clone(), attempt: 2, node: second.node.clone(), from: first.node.clone() })
@@ -499,6 +500,7 @@ async fn a_recovery_update_copies_the_caller_owned_group_its_delete_receipt_carr
     let row = storage.node_row_at(&path()).await.unwrap().expect("the new node's row");
     assert_eq!(row.node_id, second.node.node_id, "the row at the path.name is still the new node's");
     assert_eq!(row.config, config, "the config the create seeded stays");
+    assert!(row.otel_debug, "node.update copied the exited node's caller-owned group onto the new node's row: {row:?}");
     assert!(row.tags.is_empty(), "the exited node's tag labels are its own and are not copied: {row:?}");
     for label in &labels {
         assert!(storage.tagged(label).await.unwrap().is_empty(), "the tags index names nobody under {label}");
@@ -513,7 +515,7 @@ async fn a_recovery_update_copies_the_caller_owned_group_its_delete_receipt_carr
     let f = &copied[0].2;
     assert_eq!(f.get("from_node_id"), Some(&first.node.node_id.to_string()), "{f:?}");
     assert_eq!(f.get("node_id"), Some(&second.node.node_id.to_string()), "{f:?}");
-    assert_eq!(f.get("otel_debug").map(String::as_str), Some("false"), "{f:?}");
+    assert_eq!(f.get("otel_debug").map(String::as_str), Some("true"), "{f:?}");
     assert_eq!(f.get("outcome").map(String::as_str), Some("meta-copied"), "{f:?}");
     rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
@@ -560,6 +562,7 @@ async fn a_recovery_update_run_by_the_admin_that_took_the_seat_reads_the_group_f
     let row = held_b.node_row_at(&path()).await.unwrap().expect("the new node's row");
     assert_eq!((row.node_id.clone(), row.config.clone()), (second.node.node_id.clone(), config), "the new node's row, its seeded config kept");
     assert!(row.tags.is_empty(), "{row:?}");
+    assert!(row.otel_debug, "the caller-owned group the delete's receipt carried is on the new node's row: {row:?}");
     let all = spans.0.lock().unwrap().clone();
     let copied: Vec<_> = all.values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-caller-owned-copy").collect();
     assert_eq!(copied.len(), 1, "one caller-owned copy span: {copied:?}");

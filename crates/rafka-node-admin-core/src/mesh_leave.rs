@@ -872,7 +872,7 @@ pub async fn birth_row_deleted(rows: Option<&crate::node_rows::NodeRows>, execut
             rows.deleted_birth(&name, &node_id, operation).await
         }
     };
-    written.map_err(|e| format!("{} {}'s row is not written Deleted: {e}", b.node, b.incarnation_id))
+    written.map(|_| ()).map_err(|e| format!("{} {}'s row is not written Deleted: {e}", b.node, b.incarnation_id))
 }
 
 /// mesh-left at the fabric-primary, after exact coverage and before the `MeshLeft` receipt: the

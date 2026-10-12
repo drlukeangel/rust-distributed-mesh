@@ -1008,6 +1008,22 @@ pub struct UpdateRequest {
     pub from: Node,
 }
 
+/// What a `NodeDeleted` step decided, its receipt's output: the lifecycle op it published, and what
+/// the `Deleted` row it wrote holds of the config and the caller-owned group (`None` where the
+/// executor keeps no node rows). A recovery's create seeds its config from it when the key the row
+/// stood at no longer holds that row, and its update copies the caller-owned group from it
+/// (node-recovery.md steps 4 and 6): the steps of one run read it from the run's own receipts,
+/// whichever executor runs them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeDeletedReceipt {
+    /// The lifecycle op `node.deleted` was published under.
+    #[serde(flatten)]
+    pub op: LifecycleOp,
+    /// What the `Deleted` row holds of the config and the caller-owned group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<crate::node_rows::DeletedMeta>,
+}
+
 /// The proven-terminal predecessor of a replace, whose storage the successor's create takes between
 /// its prepared identity and the start of its runtime.
 struct ExitedPredecessor<'a> {
@@ -1189,6 +1205,40 @@ impl DeploymentPipeline<'_> {
         let owner = handed_on.iter().map(|r| (r.step.clone(), r.executor.clone())).collect();
         let done = handed_on.into_iter().map(|r| (r.step, r.output)).collect();
         Ok(Run { build_id, attempt, node, operation, done, owner, reusing: true })
+    }
+
+    /// The `NodeDeleted` receipt the recovery's node.delete of `name` (`retire-node:<name>`) appended
+    /// in the Build's current run (an attempt from the latest `Opened` on), the latest one: what the
+    /// `Deleted` row it wrote holds, read from the Build's own log (node-rpc-envelope.md "Caller
+    /// execution and certainty": a later step "resumes from the recorded receipts"). With `from`, the
+    /// receipt must name that exact birth, else the read refuses by name: the update of a recovery
+    /// copies from the birth it recovers, never from another. `None`: the run holds no such receipt.
+    /// A Build this node cannot read, or a receipt whose output does not decode, is named.
+    async fn deleted_receipt(&self, build_id: &BuildId, name: &PathName, from: Option<&Node>) -> Result<Option<NodeDeletedReceipt>, String> {
+        let view = self.builds.read_build(build_id).await.map_err(|e| format!("{name}: Build {build_id} cannot be read for the NodeDeleted receipt of retire-node:{name}: {e}"))?;
+        let operation = format!("retire-node:{name}");
+        let Some(receipt) = view
+            .steps
+            .iter()
+            .filter(|r| r.operation == operation && r.step == RetireStep::NodeDeleted.name() && r.outcome == StepOutcome::Complete && r.attempt >= view.opened)
+            .max_by_key(|r| r.attempt)
+        else {
+            return Ok(None);
+        };
+        let done: NodeDeletedReceipt = serde_json::from_value(receipt.output.clone().unwrap_or(serde_json::Value::Null)).map_err(|e| format!("{name}: the NodeDeleted receipt of {operation} (Build {build_id}, attempt {}) does not decode: {e}", receipt.attempt))?;
+        if let Some(from) = from {
+            if done.op.node_id != from.node_id || from.incarnation_id.as_ref() != Some(&done.op.incarnation) {
+                return Err(format!(
+                    "{name}: the NodeDeleted receipt of {operation} (Build {build_id}, attempt {}) names birth {} at {}, and the recovery is of {} at {}",
+                    receipt.attempt,
+                    done.op.node_id,
+                    done.op.incarnation.0,
+                    from.node_id,
+                    from.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")
+                ));
+            }
+        }
+        Ok(Some(done))
     }
 
     fn pipeline_span(&self, kind: &'static str, build_id: &BuildId, node: &PathName, attempt: u32) -> tracing::Span {
@@ -1498,7 +1548,11 @@ impl DeploymentPipeline<'_> {
                 // claim is (`NodeRow::allocated`): a later run of this operation that never heard
                 // this one's receipts continues the same birth rather than being refused by it.
                 let allocated = crate::storage::Allocation { build_id: req.build_id.clone(), operation: run_operation.clone(), incarnation: id.incarnation.clone(), deployment_id: id.deployment_id.clone() };
-                rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated))
+                // A create over an inherited data dir is a recovery's (node-recovery.md step 4): its
+                // config is seeded from the Deleted row at the path.name, which its node.delete of the
+                // same run recorded in its receipt, the seed when the key no longer holds that row.
+                let carried = if inherits { self.deleted_receipt(&req.build_id, &req.node, None).await? } else { None };
+                rows.claim_carrying(&req.node, &id.node_id, &run_operation, Some(&allocated), carried.as_ref().and_then(|c| c.row.as_ref().map(|row| (&c.op.node_id, row))))
                     .await
                     .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
                 *claiming = Some(id.node_id.clone());
@@ -1995,8 +2049,8 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.deleting(&op).await;
             self.terminate_step(&mut run, &req.node, &req.handle).await?;
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&req.node, op.clone())).await?;
-            self.lifecycle.deleted(&op).await;
+            let done = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&req.node, op.clone())).await?;
+            self.lifecycle.deleted(&done.op).await;
             self.complete(&mut run).await
         }
         .instrument(span)
@@ -2069,7 +2123,7 @@ impl DeploymentPipeline<'_> {
         // published from its mesh-primary's recorded exit proof (node-recovery.md sequence step 3).
         let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
         let exit = req.exit.as_ref();
-        let op = self
+        let NodeDeletedReceipt { op, .. } = self
             .step(&mut run, RetireStep::NodeDeleted.name(), async {
                 if let Some(exit) = exit {
                     tracing::info_span!(
@@ -2131,13 +2185,16 @@ impl DeploymentPipeline<'_> {
     }
 
     /// `NodeDeleted`'s work (node-decommission.md step 3, before node.deleted): the writer of the
-    /// mesh's rows writes `record`'s row `Deleted` at its `path.name`, the record and its config
-    /// kept; a refusal fails the step by name.
-    async fn deleted_row(&self, record: &Node, op: LifecycleOp) -> Result<LifecycleOp, String> {
-        if let Some(rows) = self.sink.node_rows() {
-            rows.deleted(record, &op.operation).await.map_err(|e| format!("{}: the Deleted row of {} is not written: {e}", record.name, record.node_id))?;
-        }
-        Ok(op)
+    /// mesh's rows writes `record`'s row `Deleted` at its `path.name`, the record, its config and its
+    /// caller-owned group kept; a refusal fails the step by name. The step decides the op it
+    /// publishes and records what the row holds of the config and the caller-owned group
+    /// ([`NodeDeletedReceipt`]).
+    async fn deleted_row(&self, record: &Node, op: LifecycleOp) -> Result<NodeDeletedReceipt, String> {
+        let row = match self.sink.node_rows() {
+            Some(rows) => Some(crate::node_rows::DeletedMeta::of(&rows.deleted(record, &op.operation).await.map_err(|e| format!("{}: the Deleted row of {} is not written: {e}", record.name, record.node_id))?)),
+            None => None,
+        };
+        Ok(NodeDeletedReceipt { op, row })
     }
 
     /// Resolves when this deployment's own runtime has exited.
@@ -2462,8 +2519,8 @@ impl DeploymentPipeline<'_> {
             // "Storage"); the successor's create takes over only what HandoffStorage moves.
             let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
             let parked = Node { name: name.renamed(), ..old.clone() };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&parked, op)).await?;
-            self.lifecycle.deleted(&op).await;
+            let done = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&parked, op)).await?;
+            self.lifecycle.deleted(&done.op).await;
         }
         // node-replace.md 3: node.create at the freed name, a new node.id, incarnation and directory.
         let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, data_dir: None, held_runtimes: req.held_runtimes.clone() };
@@ -2499,14 +2556,20 @@ impl DeploymentPipeline<'_> {
             if onto.node_id == from.node_id || onto.incarnation_id.is_none() {
                 return Err(format!("{name}: node.update copies the exited birth {}'s caller-owned meta onto the node its create made there, and the node held at the path is {} at {}", from.node_id, onto.node_id, onto.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")));
             }
-            // The caller-owned group of the exited birth's Deleted row, put on the new node's row
+            // The caller-owned group of the exited birth's Deleted row, as the recovery's node.delete
+            // of the same run recorded it in its NodeDeleted receipt, put on the new node's row
             // through the writer of the mesh's rows (node-recovery.md step 6). A sink with no row
             // writer keeps no nodes store: there is no row to put.
             let Some(rows) = self.sink.node_rows() else {
                 tracing::info!(node = %name, from = %from.node_id, onto = %onto.node_id, "node.update onto the new node: this sink keeps no node rows, so there is no row to put");
                 return Ok(());
             };
-            rows.copy_caller_owned(onto, from, &operation).await.map(|_| ()).map_err(|e| format!("{name}: node.update copying the caller-owned meta of the exited birth {} onto {}: {e}", from.node_id, onto.node_id))
+            let carried = match self.deleted_receipt(&req.build_id, name, Some(from)).await? {
+                Some(NodeDeletedReceipt { row: Some(row), .. }) => row,
+                Some(NodeDeletedReceipt { row: None, .. }) => return Err(format!("{name}: the NodeDeleted receipt of the exited birth {} in Build {} records no Deleted row: its delete ran where no node rows are kept, and no caller-owned meta is copied onto {}", from.node_id, req.build_id, onto.node_id)),
+                None => return Err(format!("{name}: Build {} holds no NodeDeleted receipt of the exited birth {} in its current run: node.update copies the caller-owned meta its node.delete recorded, and nothing is copied onto {}", req.build_id, from.node_id, onto.node_id)),
+            };
+            rows.copy_caller_owned(onto, from, &carried, &operation).await.map(|_| ()).map_err(|e| format!("{name}: node.update copying the caller-owned meta of the exited birth {} onto {}: {e}", from.node_id, onto.node_id))
         })
         .await?;
         self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await

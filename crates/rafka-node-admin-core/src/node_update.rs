@@ -41,14 +41,14 @@ pub struct UpdateDoors<'a> {
 
 /// Serve an `UpdateNode` at the admin `me` (born `me_id`): one span holds the whole put.
 pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: UpdateDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, req: &StatusRequest) -> StatusReply {
-    let StatusRequest::UpdateNode { node_id, incarnation, name, tags } = req else { unreachable!("update is called for UpdateNode only") };
+    let StatusRequest::UpdateNode { node_id, incarnation, name, tags, otel_debug } = req else { unreachable!("update is called for UpdateNode only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
-        node = %me, node_id = %node_id, incarnation_id = %incarnation.0, from = tracing::field::Empty, to = %name, tags = %crate::node_rows::labels(tags),
+        node = %me, node_id = %node_id, incarnation_id = %incarnation.0, from = tracing::field::Empty, to = %name, tags = %crate::node_rows::labels(tags), otel_debug = *otel_debug,
         tags_arrived = tracing::field::Empty, tags_left = tracing::field::Empty, traffic = tracing::field::Empty, connections = tracing::field::Empty, apply = tracing::field::Empty,
         outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
-    let reply = tracing::Instrument::instrument(put(me, me_id, view, storage, doors, deleted, node_id, incarnation, name, tags, &span), span.clone()).await;
+    let reply = tracing::Instrument::instrument(put(me, me_id, view, storage, doors, deleted, node_id, incarnation, name, tags, *otel_debug, &span), span.clone()).await;
     span.record("outcome", reply.name());
     span.in_scope(|| tracing::info!("node.update decided"));
     reply
@@ -95,6 +95,7 @@ async fn put(
     incarnation: &rafka_mesh_entity::IncarnationId,
     name: &str,
     tags: &BTreeSet<String>,
+    otel_debug: bool,
     span: &tracing::Span,
 ) -> StatusReply {
     let now = view.read().await.clone();
@@ -151,7 +152,7 @@ async fn put(
     span.record("tags_arrived", crate::node_rows::labels(&tags.difference(&was).cloned().collect()).as_str());
     span.record("tags_left", crate::node_rows::labels(&was.difference(tags).cloned().collect()).as_str());
     if to == held.name {
-        match crate::node_rows::put_meta(storage, door.written(), &held.name, node_id, held.status, config, tags.clone()).await {
+        match crate::node_rows::put_meta(storage, door.written(), &held.name, node_id, held.status, crate::node_rows::RowMeta { config, tags: tags.clone(), otel_debug }).await {
             Ok(Ok(_)) => {}
             Ok(Err(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
             Err(e) => return StatusReply::node_row_refused(&held.name.to_string(), &format!("{me}: nodes.storage refused the row of {} ({node_id}): {e}", held.name)),
@@ -162,7 +163,7 @@ async fn put(
     let Some(moved) = doors.moved.get() else {
         return StatusReply::NotReady { reason: format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name) };
     };
-    match crate::node_rows::move_row(storage, me, &held, config, tags.clone(), &held.name, &to).await {
+    match crate::node_rows::move_row(storage, me, &held, crate::node_rows::RowMeta { config, tags: tags.clone(), otel_debug }, &held.name, &to).await {
         Ok((_, written)) => {
             if let Some(row) = written {
                 door.written().hold(&row);
