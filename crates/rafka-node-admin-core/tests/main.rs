@@ -37,6 +37,7 @@ mod connections_writer;
 mod container_proof;
 mod container_unsupported;
 mod control_routes;
+mod current_build;
 mod drift_convergence;
 mod fabric_handover;
 mod fabric_pointer_rows;

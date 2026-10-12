@@ -834,6 +834,19 @@ mod tests {
         assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("fabric.json") && reason.contains("fabric-record/1")), "{err}");
     }
 
+    /// CONTRACT (R-BI3: "The Fabric row carries no pointer to the newest Build"): the pointer rows
+    /// (`fabric/pointers/`, format `fabric-pointer/1`) are retired. A store root an older build left
+    /// them on is refused by name, the row and the retired format named, and is never read as a
+    /// Fabric with no pointer.
+    #[tokio::test]
+    async fn the_file_storage_refuses_a_retired_pointer_row_by_name() {
+        let d = tempdir();
+        std::fs::create_dir_all(d.join(FABRIC_DIR).join("pointers")).unwrap();
+        std::fs::write(d.join(FABRIC_DIR).join("pointers").join("00000000000000000010-bld-1.json"), br#"{"format":"fabric-pointer/1","record":{"build_id":"bld-1","submitted_at_ms":10}}"#).unwrap();
+        let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap_err();
+        assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("00000000000000000010-bld-1.json") && reason.contains("fabric-pointer/1")), "{err}");
+    }
+
     /// CONTRACT (node-identity-and-state.md §2.8: the fabric-primary claims the fabric's name "by
     /// insert-and-fail on its `(path, name)` ... idempotent for the same FabricId and `NameHeld` naming
     /// a different one"): a free key takes the identity; the same Fabric claiming again writes nothing;
