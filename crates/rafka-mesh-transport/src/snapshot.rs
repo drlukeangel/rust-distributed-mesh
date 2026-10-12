@@ -108,7 +108,10 @@ impl Full {
     /// never lists a stopped birth, and lists it again only after its `node.joined` cleared the
     /// stop ([`Full::apply`]). An expired departure is a local fact of the receiver's age.
     pub fn delta_to(&self, new: &Full) -> Delta {
-        let changed: Vec<MeshDigest> = new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d))).map(|(_, d)| without_load(d)).collect();
+        // A birth whose restart ended (node.started at the source) is named even when its digest is
+        // the same: its entry is what ends the restart at the receiver.
+        let restart_ended = |d: &MeshDigest| self.in_flight.iter().any(|(k, o)| o.is_restart() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation && !new.in_flight.contains_key(k));
+        let changed: Vec<MeshDigest> = new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d)) || restart_ended(d)).map(|(_, d)| without_load(d)).collect();
         // A changed birth's open restart travels again beside it: [`Full::apply`] clears a changed
         // birth's restart, so one the source still holds open stays open, and one node.started
         // ended there ends at the receiver too.
