@@ -1137,4 +1137,28 @@ mod tests {
         assert!(stores.contains("nodes/mesh2/rows refused 1") && stores.contains(row_a.node_id.as_str()), "the refusal of mesh2.rpc.1's claim names its holder: {stores}");
         eprintln!("span rdm.node_admin.fabric.update.via-round-action trace_id={} {:?}", b.trace_id, b.attributes);
     }
+    /// CONTRACT (`NodesStorage::release_node_row`: "its row goes when it is `holder`'s ... a row of
+    /// another node there (the name was released before and claimed since) is left as it is"; R14 item
+    /// 9: each writer publishes what it holds at commit-state): before the fabric's first state-commit
+    /// writer A claims mesh2.rpc.1 for its node and withdraws the claim, both held in its scratchpad;
+    /// writer B claims mesh2.rpc.1 for another node and publishes first. A's publication removes the row
+    /// standing at the key only while it is A's node's: B's row stands. Must NOT happen: a held
+    /// release removing at publication a row another writer published meanwhile.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_held_release_removes_at_publication_only_the_holders_own_row() {
+        let d = crate::record_store::tempdir("held-release");
+        let dir = d.join("root");
+        let (pad_a, pad_b) = (crate::record_store::Scratchpad::new(), crate::record_store::Scratchpad::new());
+        let nodes_a = FileNodesStorage::open(&d.join("a"), &crate::store_root::StoreRoot::held_at(&dir, pad_a.clone()), "mesh2", &IncarnationId::mint()).await.unwrap();
+        let nodes_b = FileNodesStorage::open(&d.join("b"), &crate::store_root::StoreRoot::held_at(&dir, pad_b.clone()), "mesh2", &IncarnationId::mint()).await.unwrap();
+        let (row_a, row_b) = (row("mesh2.rpc.1"), row("mesh2.rpc.1"));
+        assert_eq!(nodes_a.put_node_row(&row_a).await, Ok(Ok(())));
+        assert_eq!(nodes_a.release_node_row(&row_a.name, &row_a.node_id).await, Ok(true), "A withdraws its own claim");
+        assert_eq!(nodes_b.put_node_row(&row_b).await, Ok(Ok(())));
+        pad_b.publish().await.unwrap();
+        pad_a.publish().await.unwrap();
+        let reader = FileNodesStorage::open(&d.join("r"), &crate::store_root::StoreRoot::at(&dir), "mesh2", &IncarnationId::mint()).await.unwrap();
+        assert_eq!(reader.node_row_at(&row_b.name).await.unwrap(), Some(row_b), "A's held release left B's row standing at mesh2.rpc.1");
+    }
 }
