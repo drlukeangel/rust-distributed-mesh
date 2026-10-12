@@ -4,9 +4,10 @@
 //! Build. Every cell drives the estate through the typed objects of `rafka-node-admin-client`
 //! (`Builds`, `Nodes`) over Node RPC and awaits their reply streams. The one exception is cell 6,
 //! which sends `build.attempt.run` itself because that call is the fabric-primary's own, never a
-//! caller's. The one read that is not a Build call is cell 8's precondition: the surviving admin's own
-//! Build log, read over `FetchBuildFacts` (op `0x1F`, `fetch_build_facts`). The spans an estate exports
-//! are the flame of each cell; no cell asserts behaviour from them.
+//! caller's. The one read made outside the client's typed objects is cell 8's precondition: the surviving
+//! admin's own Build log, read over `FetchBuildFacts` (op `0x1F`, `fetch_build_facts`) and awaited through the
+//! client's `await_fact`. The spans an estate exports are the flame of each cell; no cell asserts behaviour
+//! from them.
 //!
 //! The estate: `mesh1` (two node-admins, one rpc node) holds the fabric-primary seat, and `mesh2`
 //! (two node-admins, two rpc nodes) is run by its own primary, so a node of `mesh2` is executed by
