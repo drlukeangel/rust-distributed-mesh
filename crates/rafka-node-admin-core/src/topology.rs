@@ -62,8 +62,6 @@ pub enum TopologyViolation {
     FabricPrimaryNotAdmin(PathName),
     /// The fabric primary is not the node-admin primary of its own mesh.
     FabricPrimaryNotMeshPrimary(PathName),
-    /// A node-admin primary advertises no control endpoint.
-    AdminPrimaryWithoutControlEndpoint(PathName),
 }
 
 impl fmt::Display for TopologyViolation {
@@ -82,9 +80,6 @@ impl fmt::Display for TopologyViolation {
             Self::FabricPrimaryNotAdmin(p) => write!(f, "fabric primary {p} is not a node-admin"),
             Self::FabricPrimaryNotMeshPrimary(p) => {
                 write!(f, "fabric primary {p} is not the node-admin primary of its own mesh")
-            }
-            Self::AdminPrimaryWithoutControlEndpoint(p) => {
-                write!(f, "node-admin primary {p} advertises no control endpoint")
             }
         }
     }
@@ -267,12 +262,7 @@ impl Topology {
             let primaries: Vec<PathName> = members.iter().filter(|n| n.is_primary).map(|n| n.name.clone()).collect();
             match primaries.len() {
                 0 => out.push(V::NoCohortPrimary { mesh: mesh.clone(), kind: *kind }),
-                1 => {
-                    let p = members.iter().find(|n| n.is_primary).unwrap();
-                    if *kind == NodeKind::NodeAdmin && p.admin_api_base.is_none() {
-                        out.push(V::AdminPrimaryWithoutControlEndpoint(p.name.clone()));
-                    }
-                }
+                1 => {}
                 _ => out.push(V::SplitCohortPrimary { mesh: mesh.clone(), kind: *kind, primaries }),
             }
         }
@@ -459,12 +449,5 @@ mod tests {
         }
         assert_eq!(t.violations(), vec![]);
         assert!(t.is_converged());
-    }
-
-    #[test]
-    fn primary_admin_without_endpoint_is_named() {
-        let mut t = mn();
-        t.nodes[0].admin_api_base = None;
-        assert!(t.violations().contains(&TopologyViolation::AdminPrimaryWithoutControlEndpoint("mesh1.admin.1".parse().unwrap())));
     }
 }

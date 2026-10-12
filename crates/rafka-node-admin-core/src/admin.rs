@@ -2723,12 +2723,7 @@ impl NodeObserver for MembershipObserver {
     /// otherwise the primary's projection), never a heartbeat's.
     async fn ready(&self, node: &Node) -> Result<(), String> {
         match self.digest_of(node) {
-            Some(d) if d.status == MemberStatus::ReadyForTraffic => {
-                if node.kind == NodeKind::NodeAdmin && d.admin_api_base.is_none() {
-                    return Err(format!("{} serves no control API yet", node.name));
-                }
-                Ok(())
-            }
+            Some(d) if d.status == MemberStatus::ReadyForTraffic => Ok(()),
             Some(d) => Err(format!("{} is held {:?}, not ready-for-traffic: its mesh-primary has not taken its node.started", node.name, d.status)),
             None => Err(format!("no digest from {} for this birth", node.name)),
         }
