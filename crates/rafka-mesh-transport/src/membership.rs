@@ -4768,6 +4768,36 @@ impl DigestBook {
         true
     }
 
+    /// The mesh-primary admitted the command `op` (`drain-node`, `stop-node`) on the birth of its own
+    /// mesh `op` names, and sets that birth `status` (states.md "Who sets each state": node
+    /// connections-deleting at "the admission of `node.connections.delete { scope: All }`; inside
+    /// node.stop the visible status is stopping", node stopping at "the stop call's admission"): held
+    /// for the birth, so its projection carries it from its next round. No heartbeat says it (gossip.md
+    /// §3.1: a Digest "carries no status"). `false` when the birth is not of this book's own mesh or
+    /// this book holds no digest of exactly that birth.
+    pub fn admitted(&self, op: &LifecycleOp, status: rafka_mesh_entity::MemberStatus) -> bool {
+        let own_mesh = self.own_mesh.lock().unwrap().clone();
+        let held = !own_mesh.is_empty() && op.name.mesh == own_mesh && self.inner.lock().unwrap().get(op.node_id.as_str()).is_some_and(|(d, _, _)| d.node.incarnation == op.incarnation);
+        if !held {
+            return false;
+        }
+        let prior = self.author_status(op.node_id.as_str(), &op.incarnation, status);
+        tracing::info_span!(
+            "rdm.mesh.membership.update.from-command-admitted",
+            node = %self.holder.lock().unwrap(),
+            member = %op.name,
+            node_id = %op.node_id,
+            incarnation_id = %op.incarnation.0,
+            build_id = %op.build_id,
+            attempt = op.attempt,
+            operation = %op.operation,
+            status = ?status,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+        )
+        .in_scope(|| tracing::info!("the mesh-primary admitted the command: the birth's status is set from it; its projection says so"));
+        true
+    }
+
     /// Set `status` for the birth `incarnation` of `node_id`, as its mesh-primary sets it (states.md
     /// "Who sets each state"): held for the birth, so its projection carries it, and given to the
     /// digest held of that exact birth. A move ticks `heard`. Returns the status held for that birth

@@ -2977,6 +2977,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rafka_mesh_transport::membership::Frame::NodeDraining { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-draining", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
         async {
+            // connections-deleting is this mesh-primary's to set at the drain's admission (states.md
+            // "Who sets each state"); its projection carries it.
+            self.membership.book.admitted(op, MemberStatus::Draining);
             if let Err(e) = self.backbone.publish_command_hook(&f).await {
                 tracing::info!(error = %e, "node-draining not sent on every channel");
             }
@@ -2989,6 +2992,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rafka_mesh_transport::membership::Frame::NodeLeaving { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-leaving", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation, channels = "mesh,backbone");
         async {
+            // stopping is this mesh-primary's to set at the stop's admission (states.md "Who sets each
+            // state"); its projection carries it.
+            self.membership.book.admitted(op, MemberStatus::Leaving);
             if let Err(e) = self.backbone.publish_command_hook(&f).await {
                 tracing::info!(error = %e, "node-leaving not sent on every channel");
             }
