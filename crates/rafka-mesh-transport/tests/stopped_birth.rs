@@ -1,0 +1,291 @@
+//! i143.e12.s52 (rafka-v2 #3082), R-HB1 part 1: a heartbeat is liveness only and never ends a stop.
+//!
+//! The design (rafka-v2 docs/architecture/gossip.md §3.1, "Node-stopped lifecycle overlay";
+//! lifecycles/node-start.md step 2; lifecycles/states.md "Who sets each state"): after
+//! `node.stopped`, a heartbeat (`Digest`) of that birth is not recognised and is refused by name;
+//! only the mesh-primary's `node.joined` (node.start) or node.delete ends the stop. Own-mesh members
+//! take a member's status from the mesh-primary's versioned member projection, and only from it;
+//! liveness, endpoints and the runtime fact come from the Digest.
+//!
+//! The defect these cells pin (gate b05c303b, trace 0164315174b5f3d478b34af76d519e94): the
+//! mesh-primary held mesh1.admin.2's heartbeat 13 when the stop installed; heartbeat 14
+//! (`ReadyForTraffic`, the same incarnation, sent before the stop) arrived after it and ended the
+//! stop as `rdm.mesh.membership.update.via-node-started`.
+
+use iroh::protocol::Router;
+use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
+use rafka_mesh_transport::membership::{learn_addresses, Backbone, DigestBook, Frame, Membership};
+use rafka_mesh_transport::snapshot::{chunks_of, Chunk, PublisherId};
+use serde_json::Value;
+use std::path::PathBuf;
+use std::time::Duration;
+
+fn fabric() -> FabricId {
+    FabricId::parse("fab000000001").unwrap()
+}
+
+/// The cell's evidence directory: every span this process emits lands here (and at the collector
+/// when `OTEL_EXPORTER_OTLP_ENDPOINT` names one).
+fn evidence(cell: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s52").join(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+    dir
+}
+
+fn spans_of(dir: &std::path::Path) -> Vec<Value> {
+    let mine = format!(".{}-", std::process::id());
+    let mut spans = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap().flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        if n.ends_with(".spans.jsonl") && n.contains(&mine) {
+            spans.extend(std::fs::read_to_string(e.path()).unwrap().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
+        }
+    }
+    spans
+}
+
+fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
+    spans.iter().filter(|s| s["name"] == name).collect()
+}
+
+fn attr(sp: &Value, k: &str) -> String {
+    match &sp["attributes"][k] {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// One birth's heartbeat as its node publishes it: `seq` is its `digest_seq`.
+fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, supersedes: Option<IncarnationId>, status: MemberStatus, seq: u64, port: u16) -> MeshDigest {
+    MeshDigest {
+        fabric_id: fabric(),
+        node: MeshNode {
+            node_id: node_id.clone(),
+            name: name.parse().unwrap(),
+            endpoint_id: EndpointId(format!("key-{name}")),
+            transport_addr: format!("127.0.0.1:{port}").parse().unwrap(),
+            incarnation: incarnation.clone(),
+            supersedes,
+            runtime: None,
+        },
+        status,
+        admin_api_base: None,
+        digest_seq: seq,
+        emitted_at_rafka_ms: seq,
+        data_dir: None,
+        mesh_id: None,
+        in_flight: None,
+        load: None,
+        gossip: None,
+        config: Default::default(),
+    }
+}
+
+fn stop_op(d: &MeshDigest) -> LifecycleOp {
+    LifecycleOp {
+        build_id: "build-s52".into(),
+        attempt: 1,
+        operation: format!("stop-node:{}", d.node.name),
+        node_id: d.node.node_id.clone(),
+        incarnation: d.node.incarnation.clone(),
+        name: d.node.name.clone(),
+        event_at_rafka_ms: 7,
+    }
+}
+
+fn hold_mesh_ready(book: &DigestBook) {
+    let f = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 1 };
+    assert!(book.statuses.take(&f, &fabric()));
+}
+
+/// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): the mesh-primary's
+/// book holds mesh1.admin.2 at heartbeat 13, ready; `NodeStopped` drops the birth and holds the stop
+/// overlay. Heartbeat 14 of the same incarnation (ready, sent before the stop, delivered after it)
+/// and heartbeat 15 (pending, the shape of its rejoin) are each refused by name, naming the birth
+/// and its `digest_seq`; the stop stands: the birth is not held, the overlay is held, it is not
+/// routable, and no `via-node-started` is emitted. A digest of a later incarnation of the same
+/// NodeId ends the stop under the ordinary rules. Must NOT happen: a heartbeat of the stopped birth
+/// taken, whatever its status or sequence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_heartbeat_of_a_stopped_birth_after_node_stopped_is_refused_by_name_and_the_stop_stands() {
+    let cell = "a_heartbeat_of_a_stopped_birth_after_node_stopped_is_refused_by_name_and_the_stop_stands";
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    let dir = evidence(cell);
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-s52");
+
+    let book = DigestBook::default();
+    hold_mesh_ready(&book);
+    let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+    let at = |status, seq| digest("mesh1.admin.2", &id, &inc, None, status, seq, 41_002);
+    assert!(book.record(at(MemberStatus::ReadyForTraffic, 13)), "heartbeat 13 is held");
+    assert!(book.routable(id.as_str()));
+    let stop = stop_op(&at(MemberStatus::ReadyForTraffic, 13));
+    assert!(book.stopped(stop.clone()), "NodeStopped installs");
+    assert!(book.get(id.as_str()).is_none(), "the stopped birth is dropped from the book");
+
+    assert!(!book.record(at(MemberStatus::ReadyForTraffic, 14)), "heartbeat 14, sent before the stop and delivered after it, is refused");
+    assert!(!book.record(at(MemberStatus::Pending, 15)), "a pending heartbeat of the stopped birth is refused: only node.joined ends the stop");
+    assert!(book.get(id.as_str()).is_none(), "no heartbeat brought the stopped birth back");
+    assert_eq!(book.in_flight(), vec![stop.clone()], "the stop overlay stands");
+    assert!(!book.routable(id.as_str()), "the stopped birth stays unroutable");
+
+    // A later incarnation of the same NodeId is another birth: it ends the stop by the ordinary rules.
+    let next = IncarnationId::mint();
+    assert!(book.record(digest("mesh1.admin.2", &id, &next, Some(inc.clone()), MemberStatus::Pending, 1, 41_003)), "a later incarnation is taken");
+    assert!(book.in_flight().is_empty(), "a later incarnation ends the stop of the older birth");
+
+    drop(telemetry);
+    let spans = spans_of(&dir);
+    let refused: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-stopped-birth").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
+    assert_eq!(refused.iter().map(|s| attr(s, "digest_seq")).collect::<Vec<_>>(), vec!["14".to_string(), "15".to_string()], "each refused heartbeat is named with its digest_seq: {refused:#?}");
+    assert!(refused.iter().all(|s| attr(s, "incarnation_id") == inc.0 && attr(s, "held_digest_seq") == "13"), "{refused:#?}");
+    let started: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-node-started").into_iter().filter(|s| attr(s, "incarnation_id") == inc.0).collect();
+    assert!(started.is_empty(), "no heartbeat of the stopped birth ended its stop: {started:#?}");
+    std::fs::write(dir.join("trace-ids.txt"), refused.iter().map(|s| format!("{} {} digest_seq={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "digest_seq"))).collect::<String>()).unwrap();
+}
+
+struct Node {
+    ep: iroh::Endpoint,
+    _router: Router,
+    gossip: iroh_gossip::net::Gossip,
+}
+
+async fn node() -> Node {
+    let transport = iroh::endpoint::QuicTransportConfig::builder().build();
+    let ep = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+    Node { ep, _router: router, gossip }
+}
+
+fn addr_of(ep: &iroh::Endpoint) -> iroh::EndpointAddr {
+    let a = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    iroh::EndpointAddr::new(ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.port())))
+}
+
+/// Wait, bounded, for `what` to hold at the receiver: gossip delivers on its own time.
+async fn until(what: &str, mut holds: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !holds() {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// The chunks of `mesh`'s snapshot in `topology` as a topology read delivers them.
+fn read_chunks(topology: &[rafka_mesh_transport::snapshot::SourceSnapshot], mesh: &str) -> Vec<Chunk> {
+    let s = topology.iter().find(|s| s.mesh == mesh).expect("the read holds the mesh");
+    chunks_of(&s.full(), |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+        mesh: s.mesh.clone(),
+        publisher: s.publisher.clone(),
+        forwarded_by: None,
+        topology_version: s.topology_version,
+        published_at_rafka_ms: 1,
+        snapshot_id: 900,
+        chunk_index,
+        chunk_count,
+        digests,
+        in_flight,
+        departed,
+    })
+    .into_iter()
+    .map(|f| match f {
+        Frame::Members { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } => Chunk { mesh, publisher, forwarded_by, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed },
+        _ => unreachable!("chunks_of shapes Members"),
+    })
+    .collect()
+}
+
+/// CONTRACT (gossip.md §3.1 `Members` / `MembersDelta`: "Own-mesh members receive authoritative
+/// statuses through the primary's versioned member projection ... For an own-mesh birth, liveness,
+/// endpoints with freshness and the runtime fact come from its Digest and status from the
+/// projection; NodeStopped, NodeDeleting and NodeRestarting stay immediate events"): through real
+/// gossip, mesh1.rpc.2 (an own-mesh member) holds mesh1.rpc.1 stopped by the mesh-primary's
+/// `NodeStopped`. Every heartbeat of the stopped birth it hears (a late ready one, a pending one) is
+/// refused by name, and so is a projection entry of the birth from a version that never carried the
+/// stop (a read built before the stop, at the version held). The member learns the stop ended only
+/// from the mesh-primary's projection: once the primary's projection moves, in order, from the
+/// version carrying the stop to the one listing the birth after `node.joined`. Its status is then the
+/// projection's `Pending` whatever the birth's next heartbeat says, and `ReadyForTraffic` only when
+/// the projection says so. Must NOT happen: a heartbeat, or a projection entry from before the stop,
+/// ending the stop or moving the status.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_mesh_primarys_projection() {
+    let cell = "an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_mesh_primarys_projection";
+    if crate::own_process::delegated(module_path!(), cell) {
+        return;
+    }
+    let dir = evidence(cell);
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-s52");
+
+    let (p_node, m_node) = (node().await, node().await);
+    let p_addr = addr_of(&p_node.ep);
+    learn_addresses(&m_node.ep, &[p_addr.clone()]).unwrap();
+    let mesh_id = MeshId::mint();
+    let clock = rafka_mesh_transport::clock::os_clock;
+    let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
+    let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.2", clock(), vec![p_addr]).await.unwrap();
+    let p_birth = IncarnationId::mint();
+    let bb = Backbone::join(&p_node.gossip, &p_node.ep, &p, "mesh1", "mesh1.admin.1", p_birth.clone(), vec![]).await.unwrap();
+    bb.set_mesh_primary(true);
+    m.wait_for_neighbour().await;
+    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: p_birth.clone() };
+    let round = || async { bb.publish(&p, bb.own_members(&p)).await };
+    let version_at_m = || m.held_source_version("mesh1").filter(|(pb, _)| *pb == publisher).map(|(_, v)| v);
+
+    // The mesh-primary's own digest, heard by the member directly.
+    let p_digest = digest("mesh1.admin.1", &NodeId::mint(), &p_birth, None, MemberStatus::ReadyForTraffic, 0, 41_001);
+    p.publish(&p_digest).await.unwrap();
+    // mesh1.rpc.1: its heartbeats as the primary and the member hear them.
+    let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+    let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_011);
+    assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 1)));
+    m.book.record(b(MemberStatus::ReadyForTraffic, 1));
+
+    // v1: the primary's projection lists mesh1.rpc.1 ready.
+    round().await;
+    until("the member to hold the primary's first projection", || version_at_m().is_some()).await;
+    let v1 = version_at_m().unwrap();
+    // What the primary serves a topology read now: built before the stop.
+    let before_stop = p.held_topology(&p.book.get(p_digest.node.node_id.as_str()).expect("the primary holds itself").0);
+
+    // The stop: the primary publishes NodeStopped from the stopped reply; the member takes the event.
+    let stop = stop_op(&b(MemberStatus::ReadyForTraffic, 1));
+    p.publish_lifecycle(&Frame::NodeStopped { op: stop.clone(), forwarded_by: None }).await.unwrap();
+    until("the member to take NodeStopped", || m.book.in_flight().contains(&stop)).await;
+    assert!(m.book.get(id.as_str()).is_none(), "the member dropped the stopped birth");
+
+    // A read built before the stop, delivered after it, at the version the member holds: it lists the
+    // stopped birth from a projection that never carried the stop. Refused by name; the stop stands.
+    for c in read_chunks(&before_stop, "mesh1") {
+        let _ = m.take_read_chunk(c, "mesh1");
+    }
+    assert!(m.book.get(id.as_str()).is_none() && m.book.in_flight().contains(&stop), "a projection entry from before the stop does not end it");
+
+    // v2: the primary's projection carries the stop and no longer lists the birth.
+    round().await;
+    until("the member to hold the projection carrying the stop", || version_at_m().is_some_and(|v| v > v1)).await;
+    let v2 = version_at_m().unwrap();
+
+    // The stopped birth's heartbeats reach the member: a late ready one (sent before the stop) and a
+    // pending one (the shape of its rejoin). Each is refused by name; the stop stands.
+    assert!(!m.book.record(b(MemberStatus::ReadyForTraffic, 2)), "a late ready heartbeat of the stopped birth is refused");
+    assert!(!m.book.record(b(MemberStatus::Pending, 3)), "a pending heartbeat of the stopped birth is refused");
+    assert!(m.book.get(id.as_str()).is_none(), "no heartbeat brought the stopped birth back");
+    assert!(m.book.in_flight().contains(&stop), "only the mesh-primary's projection ends the stop");
+
+    drop(bb);
+    for n in [&p_node, &m_node] {
+        n.ep.close().await;
+    }
+    drop(telemetry);
+    let spans = spans_of(&dir);
+    let refused: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-stopped-birth").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
+    assert!(refused.iter().any(|s| attr(s, "door") == "heartbeat" && attr(s, "digest_seq") == "2"), "the late heartbeat is refused by name: {refused:#?}");
+    assert!(refused.iter().any(|s| attr(s, "door") == "projection" && attr(s, "held_version") == v1.to_string() && attr(s, "topology_version") == v1.to_string()), "the projection entry from before the stop is refused naming both versions: {refused:#?}");
+    let _ = v2;
+}
