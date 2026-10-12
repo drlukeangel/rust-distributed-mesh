@@ -5808,11 +5808,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 let turn = park.turn("declarer").await;
                                                 let addressed = records.wake.take_addressed();
                                                 let view = topology.read().await.clone();
-                                                let own_ready = digest.lock().unwrap().status == MemberStatus::ReadyForTraffic;
+                                                let own = digest.lock().unwrap().status;
                                                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
                                                 let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
-                                                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own_ready, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
+                                                crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
                                                 declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
                                                 drop(turn);
                                                 // One coalesced wake from the inputs, never a timer: a poke during the round is
@@ -6399,8 +6399,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 d.clone()
                                             };
                                             let _ = membership_w.publish(&d).await;
+                                            // Its Draining reaches the other admins only as its mesh-primary sets it from
+                                            // its report (its heartbeat carries no status): the declarer owes the report.
+                                            records_w.wake.poke();
                                             tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-frozen", node = %me)
-                                                .in_scope(|| tracing::info!("reconciliation frozen; Draining"));
+                                                .in_scope(|| tracing::info!("reconciliation frozen; Draining, reported to this admin's mesh-primary"));
                                             drop(turn);
                                             if crate::shutdown::drain(me, me_id, drain_control, stopper).await {
                                                 done.notify_waiters();

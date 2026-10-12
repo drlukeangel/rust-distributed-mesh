@@ -4794,6 +4794,30 @@ impl DigestBook {
         true
     }
 
+    /// The mesh-primary applied its own mesh's member's report of `status` for its birth `incarnation`
+    /// of `node_id` (node-status.md "Status report": "A node reports to its mesh's primary, which sets
+    /// its status"): held for the birth, so its projection carries it from its next round. Its
+    /// node.started is [`Self::started`]. `false` when the birth is not of this book's own mesh or this
+    /// book holds no digest of exactly that birth.
+    pub fn reported(&self, node_id: &NodeId, incarnation: &IncarnationId, status: rafka_mesh_entity::MemberStatus) -> bool {
+        let own_mesh = self.own_mesh.lock().unwrap().clone();
+        let Some(name) = self.inner.lock().unwrap().get(node_id.as_str()).filter(|(d, _, _)| d.node.incarnation == *incarnation && !own_mesh.is_empty() && d.node.name.mesh == own_mesh).map(|(d, _, _)| d.node.name.clone()) else {
+            return false;
+        };
+        let prior = self.author_status(node_id.as_str(), incarnation, status);
+        tracing::info_span!(
+            "rdm.mesh.membership.update.from-status-report",
+            node = %self.holder.lock().unwrap(),
+            member = %name,
+            node_id = %node_id,
+            incarnation_id = %incarnation.0,
+            status = ?status,
+            prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+        )
+        .in_scope(|| tracing::info!("the mesh-primary applied its member's status report: the birth's status is set from it; its projection says so"));
+        true
+    }
+
     /// The mesh-primary admitted the command `op` (`drain-node`, `stop-node`) on the birth of its own
     /// mesh `op` names, and sets that birth `status` (states.md "Who sets each state": node
     /// connections-deleting at "the admission of `node.connections.delete { scope: All }`; inside

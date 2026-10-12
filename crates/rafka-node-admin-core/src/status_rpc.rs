@@ -276,9 +276,9 @@ pub struct StatusAuthority {
     /// answers beside the view. `None` only where no admin owns a digest book; a view read there is
     /// refused `NotReady` by name.
     pub loads: Option<crate::views::Loads>,
-    /// This admin's digest book: as its mesh's primary it takes node.started into it, its member's
-    /// DeclareNodeState(ReadyForTraffic) applied (`DigestBook::started`). `None` only where no admin
-    /// owns a digest book.
+    /// This admin's digest book: as its mesh's primary it sets each member's status there from the
+    /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
+    /// otherwise). `None` only where no admin owns a digest book.
     pub book: Option<rafka_mesh_transport::membership::DigestBook>,
 }
 
@@ -758,11 +758,26 @@ impl StatusAuthority {
             }
         };
         if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
-            // node.started: the birth's ReadyForTraffic, applied, is its mesh-primary's to set, and
-            // ends that exact birth's restart (states.md "Who sets each state"; gossip.md
-            // "NodeRestarting stays until node.started of the same (node.id, incarnation) arrives").
-            if let (NodeState::ReadyForTraffic, Some(book)) = (row.state, &self.book) {
-                book.started(&row.node_id, &row.incarnation_id);
+            // The node's report, applied, sets its status (node-status.md "Status report": "A node
+            // reports to its mesh's primary, which sets its status"), carried by this primary's member
+            // projection. node.started, its ReadyForTraffic, also ends that exact birth's restart
+            // (gossip.md "NodeRestarting stays until node.started of the same (node.id, incarnation)
+            // arrives").
+            if let Some(book) = &self.book {
+                match row.state {
+                    NodeState::ReadyForTraffic => {
+                        book.started(&row.node_id, &row.incarnation_id);
+                    }
+                    NodeState::Pending => {
+                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Pending);
+                    }
+                    NodeState::Draining => {
+                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Draining);
+                    }
+                    NodeState::Leaving => {
+                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Leaving);
+                    }
+                }
             }
             let mut t = self.topology.write().await;
             if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
