@@ -323,7 +323,7 @@ async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
 }
 
 /// CONTRACT (#2780): every documented Build/deployment step, lifecycle hook, accepted-Build
-/// persist-before-pointer cut, runtime publication/hydration cut and Pending gate of a real
+/// accepted-Build persistence cut, runtime publication/hydration cut and Pending gate of a real
 /// node-admin is held independently at its one point and released. For each cut: the testkit door
 /// acknowledges the arming and then the active hold (naming the exact call that parked: Build,
 /// attempt, operation, step); while it holds, the Build holds exactly the receipts before the cut
@@ -400,23 +400,20 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
         run.plain_delete(node).await;
     }
 
-    // The accepted Build is durable before Fabric.build_id names it: stalled between the two, and
-    // inside the pointer's own write.
-    accept_cut(&run, &create_order, "accept:build-durable-before-pointer", json!({"kind": "accepted-build"}), "persist-before-pointer", node).await;
-    run.plain_delete(node).await;
-    accept_cut(&run, &create_order, "pointer:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "persist-before-pointer", node).await;
+    // The accepted Build is its own entity, written once and current from the moment it is durable
+    // (R-BI3): stalled after the write, with the accepting request unanswered.
+    accept_cut(&run, &create_order, "accept:build-durable", json!({"kind": "accepted-build"}), "persist-accepted-build", node).await;
     run.plain_delete(node).await;
 
     // A mesh's first admin and the Pending gate.
     mesh_pending_cut(&run, &create_order).await;
 
-    // A joining admin, held at its hydration of the Fabric record and at its Ready gate.
-    // (Neither is removed afterwards: a joined admin with the lowest NodeId holds the fabric seat and
-    // would execute its own retire, which is not what these cuts explore.)
+    // A joining admin, held at its Ready gate.
+    // (It is not removed afterwards: a joined admin with the lowest NodeId holds the fabric seat and
+    // would execute its own retire, which is not what this cut explores.)
     // `WaitForNodeReady` holds no receipt until it completes, so a Build waiting on a held admin
     // holds a receipt for every step before it.
     let before_ready = index_of(&create_order, CreateStep::WaitForNodeReady.name());
-    joining_admin_cut(&run, &create_order, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "hydration", "mesh1.admin.3", before_ready, false, "").await;
     joining_admin_cut(&run, &create_order, "pending:provider-domain", json!({"kind": "provider-domain"}), "pending-gate", "mesh1.admin.4", before_ready, true, "refusing to act on its locator").await;
 
     finish(run, &dir, &create_order, &retire_order).await;
@@ -523,15 +520,13 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             assert_eq!(attr(hooks[0], "outcome"), "complete");
             return json!({"cut": cut, "hold_span_id": hold["span_id"], "hook_span_id": hooks[0]["span_id"], "hook_phase": attr(hooks[0], "phase"), "hold_ms": hold_ms});
         }
-        "pointer" => {
-            let moved: Vec<&Value> = named(spans, "rdm.node_admin.fabric.update.via-build-accepted").into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap()).collect();
-            assert!(!moved.is_empty(), "`{cut}`: Fabric.build_id moved to the Build");
-            // The accepting admin's move spans its own write (so it began inside the hold and ends after
-            // the release); every other admin moves its pointer only on hearing the record, which the
-            // accepting admin broadcasts after its write.
-            assert!(moved.iter().all(|s| span_end(s) >= span_end(hold)), "`{cut}`: no pointer move completed before the release");
-            assert!(moved.iter().filter(|s| attr(s, "via").starts_with("gossip")).all(|s| span_start(s) >= span_end(hold)), "`{cut}`: no other admin heard the record before the release");
-            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "pointer_span_id": moved[0]["span_id"], "pointer_moves": moved.iter().map(|s| json!({"node": attr(s, "node"), "via": attr(s, "via").chars().take(8).collect::<String>(), "ended_ms_after_release": (span_end(s) as i64 - span_end(hold) as i64) / 1_000_000})).collect::<Vec<_>>()});
+        "accepted" => {
+            let written: Vec<&Value> = named(spans, "rdm.node_admin.build.create.via-accepted").into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap()).collect();
+            assert_eq!(written.len(), 1, "`{cut}`: the Build was written once");
+            // The acceptance spans the write (R-BI3: the Build is its own entity, current once durable),
+            // so the hold inside it ends before the span does.
+            assert!(span_end(written[0]) >= span_end(hold), "`{cut}`: the acceptance did not end before the release");
+            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "accepted_span_id": written[0]["span_id"], "node": attr(written[0], "node"), "ended_ms_after_release": (span_end(written[0]) as i64 - span_end(hold) as i64) / 1_000_000});
         }
         "ready-after" => {
             let node = c["node"].as_str().unwrap();
@@ -707,11 +702,12 @@ async fn hook_cut(run: &Run, create_order: &[String], phase: &str, node: &str) {
 
 // ---- accepted-Build persistence and the pointer ------------------------------------------------------
 
-/// The Build is durable and `Fabric.build_id` has not moved: stalled at `spec`, with the accepting
-/// request unanswered. The request is made from a task, because it does not return until release.
+/// The Build is durable and is the current Build (nothing publishes it a second time): stalled at
+/// `spec`, with the accepting request unanswered. The request is made from a task, because it does
+/// not return until release.
 async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, group: &str, node: &str) {
     let door = run.fabric_door().await;
-    let pointer_before = run.fabric_build_id().await;
+    let previous = run.fabric_build_id().await;
     let ack = door.arm(id, spec.clone()).await;
     let request = {
         let (url, http) = (format!("{}/api/nodes/spawn", door.api), reqwest::Client::new());
@@ -721,32 +717,15 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
         })
     };
     let held = door.wait_held(id).await;
-    let build_id = held["hit"]["build_id"].as_str().or(held["hit"]["pointer_to_build_id"].as_str()).expect("the cut names the Build").to_string();
+    let build_id = held["hit"]["build_id"].as_str().expect("the cut names the Build").to_string();
     let b = run.build(&door, &build_id).await;
-    assert_eq!(run.fabric_build_id().await, pointer_before, "`{id}`: the Build is durable and Fabric.build_id still names the previous Build");
-    // Does anything execute a Build the pointer does not name yet? Every admin's own record of it,
-    // read for a few executor rounds (a round is 300 ms) while the cut holds.
-    let mut executed_during_hold = Value::Null;
-    for _ in 0..12 {
-        for n in run.estate.nodes().await.iter().filter(|n| n["kind"] == "node_admin").filter_map(|n| n["admin_api_base"].as_str().map(String::from)) {
-            let (st, seen) = run.estate.http_get(&n, &format!("/api/builds?id={build_id}")).await;
-            if st == 200 && (seen["attempt"].as_u64().unwrap_or(0) > 0 || seen["steps"].as_array().is_some_and(|s| !s.is_empty())) {
-                executed_during_hold = json!({"admin_api": n, "state": seen["state"], "attempt": seen["attempt"], "executor": seen["executor"], "receipts": seen["steps"].as_array().map(|s| s.len())});
-            }
-        }
-        if !executed_during_hold.is_null() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    }
+    // The Build is the current Build from the moment it is durable: no second write publishes it.
+    assert_eq!(run.fabric_build_id().await, build_id, "`{id}`: the Build is durable, so it is the current Build");
+    assert_ne!(build_id, previous, "`{id}`: the held Build is a new one");
     assert!(!request.is_finished(), "`{id}`: the accepting request is unanswered while the cut holds");
-    assert!(
-        executed_during_hold.is_null(),
-        "`{id}`: an unaccepted Build (Fabric.build_id still names the previous one) is executed by no admin; one claimed it: {executed_during_hold}"
-    );
     let during = json!({
         "build_readable": true, "build_state": b["state"], "attempt": b["attempt"], "receipts_while_held": b["steps"].as_array().map(|s| s.len()),
-        "fabric_build_id": pointer_before, "previous_build_id": pointer_before, "accepting_request_answered": false, "executed_before_the_pointer_named_it": executed_during_hold,
+        "current_build_id": build_id, "previous_build_id": previous, "accepting_request_answered": false,
     });
     let h = Hold { arm_ack: ack, held, build_id: build_id.clone(), attempt: b["attempt"].as_u64().unwrap_or(0), during };
     let rel = door.release(id).await;
@@ -756,7 +735,7 @@ async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, g
     let exec = run.member_door("mesh1").await;
     let after = run.after_create(&exec, &build_id, node, create_order).await;
     run.note_build(&build_id, 1);
-    run.span_check(json!({"kind": "pointer", "cut": id, "build_id": build_id}));
+    run.span_check(json!({"kind": "accepted", "cut": id, "build_id": build_id}));
     run.push(row(h, group, id, &spec, rel, after));
 }
 

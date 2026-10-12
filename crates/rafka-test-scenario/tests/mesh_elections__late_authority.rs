@@ -161,7 +161,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     let pointer = ready["attributes"]["build_id"].as_str().unwrap_or_default().to_string();
     assert!(
         !pointer.is_empty()
-            && named(&spans, "rdm.node_admin.fabric.update.via-build-accepted")
+            && named(&spans, "rdm.node_admin.build.create.via-accepted")
                 .into_iter()
                 .any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == pointer.as_str() && at(sp) < at(&ready)),
         "it held Fabric.build_id before Ready: {ready}"

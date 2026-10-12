@@ -225,7 +225,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     // 4 and 6: the fabric-primary moves the pointer on the fabric's store root; the late admin
     // committed Ready holding it, and the paused admin caught up to the row written while it was
     // stopped (R14: the fabric-primary writes `fabric/`, the shared store is authoritative).
-    let moved = named(&spans, "rdm.node_admin.fabric.update.via-build-accepted");
+    let moved = named(&spans, "rdm.node_admin.build.create.via-accepted");
     let late_ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| sp["attributes"]["node"] == "mesh1.admin.3" && sp["attributes"]["incarnation_id"] == late["incarnation_id"])

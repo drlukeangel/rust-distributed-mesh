@@ -935,27 +935,14 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     run.plain_create("rpc_node").await;
     silent_case(&run).await;
 
-    // The fabric-primary admin held while it accepts a Build: durable before the pointer, then in the pointer's write.
+    // The fabric-primary admin held while it accepts a Build: durable, and current from then on.
     let fdoor = run.fabric_door().await;
     let before = run.names().await;
     door_case(
         &run,
         Family::AcceptedBuildPersistence,
-        "accept:build-durable-before-pointer",
+        "accept:build-durable",
         json!({"kind": "accepted-build"}),
-        &fdoor,
-        Trigger::SpawnRequest,
-        Shape::Create { node: None },
-        Watch::NewNodes(before),
-        false,
-    )
-    .await;
-    let before = run.names().await;
-    door_case(
-        &run,
-        Family::FabricPrimaryStall,
-        "pointer:fabric-record-write",
-        json!({"kind": "pointer-write", "moves_pointer": true}),
         &fdoor,
         Trigger::SpawnRequest,
         Shape::Create { node: None },
@@ -982,8 +969,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     )
     .await;
 
-    // A joining admin held at its hydration of the Fabric record, and at its Ready gate on the provider domain.
-    join_case(&run, Family::RuntimeMetadataHydration, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "mesh1.admin.3", CreateStep::WaitForNodeReady, false).await;
+    // A joining admin held at its Ready gate on the provider domain.
     join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), "mesh1.admin.4", CreateStep::WaitForNodeReady, true).await;
 
     finish(run, &dir).await;
