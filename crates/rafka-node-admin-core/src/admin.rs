@@ -2721,10 +2721,15 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             // This admin executed the stop and holds its matching stopped reply: the overlay its own
             // view just took rides an aggregate it publishes for a mesh with no primary (R-NS1).
             self.membership.book.executed_stop(op);
-            tracing::info!("the node is parked: every mesh drops it from its book until it rejoins as itself");
+            tracing::info!("the node is stopped: every mesh drops it from its book; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
         }
         .instrument(span)
         .await
+    }
+    async fn joined(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        // The executor's own book ends the stop and holds the birth Pending; its next publication
+        // round carries both in this mesh's projection (gossip.md §3.1 `Members`): no frame here.
+        self.membership.book.joined(op);
     }
     async fn draining(&self, op: &rafka_mesh_entity::LifecycleOp) {
         let f = rafka_mesh_transport::membership::Frame::NodeDraining { op: op.clone(), forwarded_by: None };

@@ -534,6 +534,9 @@ impl LifecycleEvents for FaultedEvents {
     async fn stopped(&self, op: &LifecycleOp) {
         self.inner.stopped(op).await
     }
+    async fn joined(&self, op: &LifecycleOp) {
+        self.inner.joined(op).await
+    }
     async fn draining(&self, op: &LifecycleOp) {
         self.inner.draining(op).await
     }

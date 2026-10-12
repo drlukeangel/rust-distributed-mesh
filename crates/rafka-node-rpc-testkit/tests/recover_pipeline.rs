@@ -70,6 +70,7 @@ impl LifecycleEvents for Recorder {
     // A recovery publishes no stop, drain, leaving or mesh-leave event; this cell records the removal
     // and restart events it asserts, and states the rest as not recorded.
     async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn joined(&self, _op: &LifecycleOp) {}
     async fn draining(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     async fn mesh_leaving(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
@@ -92,7 +93,7 @@ struct Rig {
 async fn rig() -> Rig {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+    let template = template(&admin);
     Rig { admin, template, builds: MemoryBuildStateAdapter::new(), sink: Published::default(), provider: ProcessDeploymentProvider::new(), log: Log::default() }
 }
 

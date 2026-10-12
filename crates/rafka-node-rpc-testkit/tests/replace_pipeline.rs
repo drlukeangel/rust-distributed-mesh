@@ -97,6 +97,12 @@ impl LifecycleEvents for Recorder<'_> {
         self.log.lock().unwrap().push(format!("NodeStopped:{}:{}", op.node_id, op.operation));
         self.hear(rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None }).await;
     }
+    async fn joined(&self, op: &LifecycleOp) {
+        self.log.lock().unwrap().push(format!("node.joined:{}:{}", op.node_id, op.operation));
+        if let Some(m) = self.peer {
+            m.book.joined(op);
+        }
+    }
     // The replace's order is asserted from its steps; the drain and leaving hooks and the mesh-leave
     // events are not part of what this recorder hears.
     async fn draining(&self, _op: &LifecycleOp) {}
@@ -170,16 +176,13 @@ struct Rig {
     sink: Published,
     provider: ProcessDeploymentProvider,
     log: Log,
-    /// A cell that fails before its own terminate leaves no node running: held for the cell's life.
-    _reap: common::ReapOnDrop,
 }
 
 async fn rig() -> Rig {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-    let _reap = common::ReapOnDrop(template.data_root.clone());
-    Rig { admin, template, builds: MemoryBuildStateAdapter::new(), sink: Published::default(), provider: ProcessDeploymentProvider::new(), log: Log::default(), _reap }
+    let template = template(&admin);
+    Rig { admin, template, builds: MemoryBuildStateAdapter::new(), sink: Published::default(), provider: ProcessDeploymentProvider::new(), log: Log::default() }
 }
 
 impl Rig {
