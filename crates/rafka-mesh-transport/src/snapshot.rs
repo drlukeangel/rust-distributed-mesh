@@ -27,13 +27,15 @@ type OpKey = (String, u32, String);
 /// CONTRACT (gossip.md §3.1 "DOES bump / DOES NOT bump"): the view KEEPS the birth (identity,
 /// incarnation and lineage, the one transport address, the runtime fact and its metadata), the
 /// status routing reads, the control API base, the mesh id, the data dir and the descriptive tags.
-/// It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp), `in_flight` (the
-/// draining work count), `load` (the process's CPU and RAM) and `gossip` (the channel's
-/// heard/neighbour/frame counts): the digest's load and gossip stats.
+/// It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp), `node_state` (the
+/// liveness the birth self-publishes on its heartbeat, which the bump list does not name),
+/// `in_flight` (the draining work count), `load` (the process's CPU and RAM) and `gossip` (the
+/// channel's heard/neighbour/frame counts): the digest's load and gossip stats.
 pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
     let mut v = without_load(d);
     v.digest_seq = 0;
     v.emitted_at_rafka_ms = 0;
+    v.node_state = rafka_mesh_entity::NodeState::default();
     v
 }
 

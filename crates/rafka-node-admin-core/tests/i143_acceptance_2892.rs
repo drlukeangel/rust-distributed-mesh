@@ -148,6 +148,7 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rafka_mesh_entity
             runtime,
         },
         status: rafka_mesh_entity::MemberStatus::Pending,
+        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,
         emitted_at_rafka_ms: 0,

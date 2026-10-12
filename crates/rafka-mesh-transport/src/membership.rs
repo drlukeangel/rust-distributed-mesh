@@ -351,8 +351,9 @@ pub enum Frame {
         chunk_index: u32,
         /// The number of chunks in the snapshot.
         chunk_count: u32,
-        /// The members this chunk carries.
-        #[serde(with = "crate::wire::digests")]
+        /// The members this chunk carries, each a member projection entry: its digest, then the
+        /// status its mesh-primary holds (gossip.md §3.1).
+        #[serde(with = "crate::wire::entries")]
         digests: Vec<MeshDigest>,
         /// The open lifecycle overlays this chunk carries.
         in_flight: Vec<LifecycleOp>,
@@ -375,8 +376,9 @@ pub enum Frame {
         topology_version: u64,
         /// The Rafka-time of the publication.
         published_at_rafka_ms: u64,
-        /// The births added or changed.
-        #[serde(with = "crate::wire::digests")]
+        /// The births added or changed, each a member projection entry: its digest, then the status
+        /// its mesh-primary holds (gossip.md §3.1).
+        #[serde(with = "crate::wire::entries")]
         changed: Vec<MeshDigest>,
         /// The node ids no longer listed.
         removed: Vec<String>,
@@ -1974,7 +1976,8 @@ impl View {
     }
 
     /// [`View::take`], and whether a digest the frame carried was newer than the one held: the
-    /// book's admission of a heartbeat.
+    /// book's admission of a heartbeat. A heartbeat taken is answered as the book now holds it, with
+    /// the status held for its birth (a heartbeat carries none).
     fn take_with(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> (Vec<MeshDigest>, bool) {
         if let Frame::Digest { digest } = f {
             if &digest.fabric_id == fabric {
@@ -1982,7 +1985,8 @@ impl View {
                 if fresh {
                     self.note(digest, via);
                 }
-                return (vec![digest.clone()], fresh);
+                let held = fresh.then(|| self.book.get(digest.node.node_id.as_str()).map(|(d, _)| d)).flatten().unwrap_or_else(|| digest.clone());
+                return (vec![held], fresh);
             }
         }
         (self.take_other(f, fabric, via), false)
@@ -2787,9 +2791,11 @@ impl Membership {
                 Frame::Members { .. } | Frame::MembersDelta { .. } => v.take_snapshot(&frame, &f, Side::MeshChannel).carried,
                 _ => {
                     let (carried, fresh) = v.take_with(&frame, &f, "mesh-channel");
-                    // A member's clock follows its current mesh primary's heartbeat.
-                    if let Frame::Digest { digest } = &frame {
-                        let verdict = crate::discipline::from_mesh_primary_digest(&v.mesh, &v.node, v.primary.load(Ordering::Relaxed), &v.book.seats, digest, fresh);
+                    // A member's clock follows its current mesh primary's heartbeat, judged on the
+                    // digest as its book holds it: the primary's status is its own word, in its
+                    // projection, never on its heartbeat.
+                    if let (Frame::Digest { .. }, Some(held)) = (&frame, carried.first()) {
+                        let verdict = crate::discipline::from_mesh_primary_digest(&v.mesh, &v.node, v.primary.load(Ordering::Relaxed), &v.book.seats, held, fresh);
                         crate::discipline::offer(&observing, &v.node, "mesh-primary-digest", verdict);
                     }
                     carried
@@ -2859,16 +2865,20 @@ impl Membership {
         });
     }
 
-    /// Hold `d` as heard (an entry pull, or a frame another channel carried),
-    /// and register where it is.
+    /// Hold the digest a birth presented at its join (`JoinNode`), and register where it is. A join
+    /// digest carries no status: an own-mesh member is held as heard, with the status this book holds
+    /// for it ([`DigestBook::record_joined`]); a peer mesh's member is topology, its held status kept.
     pub fn learn(&self, d: MeshDigest, via: &'static str) {
         if d.fabric_id != self.fabric {
             return;
         }
         self.mesh.register(&d);
-        // An own-mesh member is heard directly and ages from that; a peer mesh's member an entry
-        // answer names is topology.
-        let taken = if d.node.name.mesh == self.view.mesh { self.book.record_forwarded(d.clone()) } else { self.book.record_topology(d.clone()) };
+        let taken = if d.node.name.mesh == self.view.mesh {
+            self.book.record_joined(d.clone())
+        } else {
+            let held = self.book.get(d.node.node_id.as_str()).filter(|(h, _)| h.node.incarnation == d.node.incarnation).map(|(h, _)| h.status);
+            self.book.record_topology(MeshDigest { status: held.unwrap_or(rafka_mesh_entity::MemberStatus::Pending), ..d.clone() })
+        };
         if taken {
             self.view.note(&d, via);
         }
@@ -2955,13 +2965,17 @@ impl Membership {
 
     /// Broadcast this member's digest on its mesh channel (and record it). The heartbeat is
     /// stamped here, once, for every caller: `digest_seq` is the next of this birth's own
-    /// sequence (from 1), and `emitted_at_rafka_ms` is the composed clock's reading. The order a
-    /// receiver acts on is the sequence, whatever the clock reads.
+    /// sequence (from 1), `emitted_at_rafka_ms` is the composed clock's reading, and `node_state` is
+    /// the liveness it self-publishes. The order a receiver acts on is the sequence, whatever the
+    /// clock reads.
     pub async fn publish(&self, d: &MeshDigest) -> Result<()> {
         *self.book.own.lock().unwrap() = Some(d.node.node_id.to_string());
         let mut d = self.with_config(d);
         d.digest_seq = self.digest_seq.fetch_add(1, Ordering::SeqCst) + 1;
         d.emitted_at_rafka_ms = self.clock.now_rafka_ms();
+        // The liveness this birth self-publishes (node-identity-and-state.md §4), from its own word
+        // about itself; its status never travels on its heartbeat.
+        d.node_state = rafka_mesh_entity::NodeState::self_published(d.status);
         d.load = Some(self.load.sample());
         d.gossip = Some(rafka_mesh_entity::GossipStats {
             heard: self.book.current(self.book.staleness_floor()).len() as u32,
@@ -3962,6 +3976,14 @@ impl CutOff {
     }
 }
 
+/// Whether a forwarded digest carries its status: a member projection entry (a topology read) does;
+/// a join digest, like every heartbeat, does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Carried {
+    Status,
+    NoStatus,
+}
+
 /// How a held member was last heard. Only `Direct` and `Forwarded` are liveness: a word received
 /// on the mesh channel or the backbone. `Topology` is a member known only from forwarded topology
 /// (a delta, a full, a replay, an entry answer): it is held, and never ages to silent for want of
@@ -4682,7 +4704,7 @@ impl DigestBook {
                 if mark.latest.as_ref().is_none_or(|(l, _, _)| d.digest_seq > l.digest_seq) && d.digest_seq > mark.held_seq {
                     let heard = match door {
                         "heartbeat" => Heard::Direct,
-                        "forwarded" => Heard::Forwarded,
+                        "forwarded" | "join" => Heard::Forwarded,
                         _ => Heard::Topology,
                     };
                     mark.latest = Some((d.clone(), now, heard));
@@ -4690,9 +4712,12 @@ impl DigestBook {
                 Some(mark.held_seq)
             }
         };
+        // The status the digest carried: a projection entry's (`topology`, `forwarded`); a heartbeat
+        // and a join digest carry none.
+        let carried_status = if matches!(door, "topology" | "forwarded") { format!("{:?}", d.status) } else { String::new() };
         let Some(held_seq) = held_seq else {
             self.end_stop(d.node.node_id.as_str());
-            tracing::info_span!("rdm.mesh.membership.update.via-node-started", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0, status = ?d.status, digest_seq = d.digest_seq)
+            tracing::info_span!("rdm.mesh.membership.update.via-node-started", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0, node_state = ?d.node_state, digest_seq = d.digest_seq, door)
                 .in_scope(|| tracing::info!("a later birth of a stopped node is heard: the stop of the older birth is over"));
             return false;
         };
@@ -4702,7 +4727,8 @@ impl DigestBook {
             member = %d.node.name,
             node_id = %d.node.node_id,
             incarnation_id = %d.node.incarnation.0,
-            status = ?d.status,
+            node_state = ?d.node_state,
+            entry_status = %carried_status,
             digest_seq = d.digest_seq,
             held_digest_seq = held_seq,
             door,
@@ -5268,9 +5294,10 @@ impl DigestBook {
     /// [`Self::record`], heard at `now`. `d` is a heartbeat: the member's liveness, endpoints and
     /// runtime fact. A heartbeat of a stopped birth is refused by name. For a birth of this book's own
     /// mesh, its status is the mesh-primary's (gossip.md §3.1: a Digest "carries no status: a member's
-    /// status comes only from its mesh-primary"): while this book's holder is the primary, it takes
-    /// its member's report and authors the status from it; otherwise the held status is the one its
-    /// primary's projection gave ([`Self::projected_status`]), and the heartbeat moves none.
+    /// status comes only from its mesh-primary"): the held status is the one this book holds for the
+    /// birth ([`Self::projected_status`]), which the primary sets from node.joined, node.started and
+    /// the commands it admits, and every other member takes from its primary's projection. No
+    /// heartbeat moves it, at the primary or anywhere.
     pub fn record_at(&self, d: MeshDigest, now: Instant) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "mesh-channel");
@@ -5279,10 +5306,8 @@ impl DigestBook {
         if self.stopped_refuses(&d, "heartbeat", now) {
             return false;
         }
-        let own_mesh = self.own_mesh_member(&d);
-        let authors = self.primary.load(Ordering::Relaxed);
         let mut stored = d.clone();
-        if own_mesh && !authors {
+        if self.own_mesh_member(&d) {
             stored.status = self.projected_status(&d);
         }
 
@@ -5304,9 +5329,6 @@ impl DigestBook {
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != stored.node || held.status != stored.status || now.saturating_duration_since(*at) > self.staleness_floor);
         inner.insert(d.node.node_id.to_string(), (stored, now, Heard::Direct));
         drop(inner);
-        if own_mesh && authors {
-            self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
-        }
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
         }
@@ -5377,16 +5399,29 @@ impl DigestBook {
 
     /// [`Self::record_forwarded`], heard at `now`.
     pub fn record_forwarded_at(&self, d: MeshDigest, now: Instant) -> bool {
-        self.record_forwarded_inner(d, now)
+        self.record_forwarded_inner(d, now, Carried::Status)
     }
 
-    fn record_forwarded_inner(&self, d: MeshDigest, now: Instant) -> bool {
+    /// Hold the digest a birth presented at its join (`JoinNode`, at the admin that deployed it or
+    /// commanded its start), as forwarded: its address and liveness, and no status, for a join digest
+    /// carries none. An own-mesh birth keeps the status this book holds for it; a first start's, which
+    /// it holds none for, is `Pending` (states.md "Who sets each state": node pending, from the node's
+    /// node.joined report).
+    pub fn record_joined(&self, d: MeshDigest) -> bool {
+        self.record_forwarded_inner(d, Instant::now(), Carried::NoStatus)
+    }
+
+    fn record_forwarded_inner(&self, mut d: MeshDigest, now: Instant, carried: Carried) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "forwarded");
             return false;
         }
-        if self.stopped_refuses(&d, "forwarded", now) {
+        if self.stopped_refuses(&d, if carried == Carried::Status { "forwarded" } else { "join" }, now) {
             return false;
+        }
+        let own_mesh = self.own_mesh_member(&d);
+        if carried == Carried::NoStatus && own_mesh {
+            d.status = self.projected_status(&d);
         }
 
         let mut inner = self.inner.lock().unwrap();
@@ -5407,10 +5442,27 @@ impl DigestBook {
         let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
-        // An own-mesh birth held from what its mesh-primary serves (a topology read) or what it said
-        // when it joined (its join digest, at the authority that deployed it): that status is held.
-        if self.own_mesh_member(&d) {
+        // An own-mesh birth held from what its mesh-primary serves (a topology read, each entry its
+        // status): that status is held. A join digest carries none: the held status stands, and a
+        // first start's, which this book holds none for, is set Pending by its mesh-primary from that
+        // node.joined report.
+        if own_mesh && carried == Carried::Status {
             self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
+        }
+        let first = carried == Carried::NoStatus && own_mesh && self.primary.load(Ordering::Relaxed) && !self.member_statuses.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(inc, _)| *inc == d.node.incarnation);
+        if first {
+            self.author_status(d.node.node_id.as_str(), &d.node.incarnation, rafka_mesh_entity::MemberStatus::Pending);
+            tracing::info_span!(
+                "rdm.mesh.membership.update.from-join-report",
+                node = %self.holder.lock().unwrap(),
+                member = %d.node.name,
+                node_id = %d.node.node_id,
+                incarnation_id = %d.node.incarnation.0,
+                node_state = ?d.node_state,
+                digest_seq = d.digest_seq,
+                status = "Pending",
+            )
+            .in_scope(|| tracing::info!("the mesh-primary took a first start's join report: the birth is held Pending; its projection says so"));
         }
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
@@ -5548,6 +5600,7 @@ mod tests {
                 runtime: None,
             },
             status,
+            node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: at,
             digest_seq: at,
@@ -6085,7 +6138,8 @@ mod tests {
         view.primary.store(true, Ordering::Relaxed);
         let predecessor = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
-        assert!(view.book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 5)), "the primary takes its member's report");
+        assert!(view.book.record(digest(&id, &inc, None, MemberStatus::Pending, 5)), "the primary holds its member's heartbeat");
+        assert!(view.book.started(&id, &inc), "and sets it ready-for-traffic from its node.started");
         for (side, forwarded_by) in [(Side::Backbone, None), (Side::MeshChannel, Some("mesh1.admin.1".to_string()))] {
             let late = Frame::Members { mesh: "mesh1".into(), publisher: predecessor.clone(), forwarded_by, topology_version: 9, published_at_rafka_ms: 9, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![digest(&id, &inc, None, MemberStatus::Draining, 6)], in_flight: vec![], departed: vec![] };
             view.take_snapshot(&late, &fabric, side);

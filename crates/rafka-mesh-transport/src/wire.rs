@@ -48,5 +48,6 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, WireError> {
 }
 
 // A membership digest travels as the shared `WireDigest` (`rafka_mesh_entity::wire`): the same
-// shape in a gossip frame and in the join.
-pub use rafka_mesh_entity::wire::{digest, digests, WireDigest};
+// shape in a heartbeat and in the join; a mesh-primary's member projection carries each member as a
+// `ProjectionEntry` (its digest, then its status).
+pub use rafka_mesh_entity::wire::{digest, entries, ProjectionEntry, WireDigest};

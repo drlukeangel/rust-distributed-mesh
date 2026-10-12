@@ -90,7 +90,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
             .unwrap_or_else(|e| panic!("{} comes up: {e}", launch.name));
             (running, seams.get().cloned().expect("the node handed its seams"))
         };
-        let (_cut_node, cut_seams) = start(cut.clone()).await;
+        let (cut_node, cut_seams) = start(cut.clone()).await;
         let (peer_node, peer_seams) = start(peer.clone()).await;
 
         // Both births are held ready by the admin, and the peer holds the renamed one.
@@ -103,6 +103,13 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         let mut peer_digests = peer_book.digest_changes();
         while peer_book.get(cut.node_id.as_str()).is_none() {
             peer_digests.changed().await.unwrap();
+        }
+        // And the node holds the peer: the admin side holds both ready from their node.started reports,
+        // which tell nothing of what either has heard of the other.
+        let node_book = &cut_node.membership.book;
+        let mut node_digests = node_book.digest_changes();
+        while node_book.get(peer.node_id.as_str()).is_none() {
+            node_digests.changed().await.unwrap();
         }
 
         // The peer dials the node, and the node dials the peer: the node holds a route to its admin (its

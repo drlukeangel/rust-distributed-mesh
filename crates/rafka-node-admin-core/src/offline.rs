@@ -1053,6 +1053,7 @@ pub(crate) mod tests {
             fabric_id: FabricId::parse("fab000000001").unwrap(),
             node: MeshNode { node_id: crate::model::NodeId::mint(), name: name.parse().unwrap(), endpoint_id: EndpointId("key".into()), transport_addr: "127.0.0.1:41000".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
             status: MemberStatus::ReadyForTraffic,
+            node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 1,
             digest_seq: 1,

@@ -2,6 +2,7 @@ use rafka_mesh_entity::lifecycle::*;
 use rafka_mesh_entity::digest::*;
 use rafka_mesh_transport::membership::*;
 use rafka_node_rpc_contract::status::*;
+use rafka_node_rpc_contract::status::NodeState;
 use rafka_node_admin_core::accepted::*;
 use rafka_node_admin_core::build_state::*;
 use rafka_mesh_entity::ids::*;
@@ -92,6 +93,7 @@ fn main() {
         fabric_id: fabric_id.clone(),
         node: mesh_node.clone(),
         status: MemberStatus::ReadyForTraffic,
+        node_state: Default::default(),
         admin_api_base: None,
         emitted_at_rafka_ms: 1718290000000,
         digest_seq: 1,

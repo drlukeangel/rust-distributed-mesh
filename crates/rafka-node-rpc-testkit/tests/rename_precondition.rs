@@ -90,7 +90,7 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
             .unwrap_or_else(|e| panic!("{} comes up: {e}", launch.name));
             (running, seams.get().cloned().expect("the node handed its seams"))
         };
-        let (_renamed_node, renamed_seams) = start(renamed.clone()).await;
+        let (renamed_node, renamed_seams) = start(renamed.clone()).await;
         let (peer_node, peer_seams) = start(peer.clone()).await;
 
         // Both births are held ready by the admin, and the peer holds the renamed one.
@@ -103,6 +103,13 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
         let mut peer_digests = peer_book.digest_changes();
         while peer_book.get(renamed.node_id.as_str()).is_none() {
             peer_digests.changed().await.unwrap();
+        }
+        // And the node holds the peer: the admin side holds both ready from their node.started reports,
+        // which tell nothing of what either has heard of the other.
+        let node_book = &renamed_node.membership.book;
+        let mut node_digests = node_book.digest_changes();
+        while node_book.get(peer.node_id.as_str()).is_none() {
+            node_digests.changed().await.unwrap();
         }
 
         // The peer dials the node: the node holds a route to its admin (its join) and to its peer.
@@ -132,9 +139,14 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
         };
         let drain = StatusRequest::DrainNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 1, operation: format!("drain-node:{born}") };
         assert_eq!(call(drain).await, StatusReply::Applied, "the drain is admitted");
-        while book.get(renamed.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::Draining) {
-            heard.changed().await.unwrap();
-        }
+        // The node's own state: its heartbeat carries no status (gossip.md §3.1 `Digest`).
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while *renamed_node.status.lock().unwrap() != MemberStatus::Draining {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the admitted drain leaves the node Draining");
 
         // Told its name while it holds both routes: Busy naming them, nothing held.
         let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.to_string() };

@@ -2314,8 +2314,9 @@ impl MembershipObserver {
     }
 }
 
-/// The blocker an exact birth names for its Ready (node-start.md step 3): only while its own digest
-/// in `book` says Pending, one `ProbeNodeState` to that birth over `client`, and the hook's blocker of
+/// The blocker an exact birth names for its Ready (node-start.md step 3): only while `book` holds the
+/// birth Pending (the status its mesh-primary set, never its heartbeat's), one `ProbeNodeState` to
+/// that birth over `client`, and the hook's blocker of
 /// a Status `Blocked` answer, named with the birth and the event it runs again on and no attempt
 /// counter. Every other answer names no blocker and frames nothing: a `NotReady` is the subject's
 /// door or handler not serving yet (node-rpc-envelope.md, "NotReady ... is never a hook blocker"),
@@ -2352,6 +2353,9 @@ impl NodeObserver for MembershipObserver {
             .map(|(d, _)| Publication { runtime: d.node.runtime, data_dir: d.data_dir })
     }
 
+    /// Ready once this admin's book holds the birth ready-for-traffic: the status its mesh-primary
+    /// set from the birth's node.started (this admin, as that primary, through its status authority;
+    /// otherwise the primary's projection), never a heartbeat's.
     async fn ready(&self, node: &Node) -> Result<(), String> {
         match self.digest_of(node) {
             Some(d) if d.status == MemberStatus::ReadyForTraffic => {
@@ -2360,7 +2364,7 @@ impl NodeObserver for MembershipObserver {
                 }
                 Ok(())
             }
-            Some(d) => Err(format!("{} reports {:?}", node.name, d.status)),
+            Some(d) => Err(format!("{} is held {:?}, not ready-for-traffic: its mesh-primary has not taken its node.started", node.name, d.status)),
             None => Err(format!("no digest from {} for this birth", node.name)),
         }
     }
@@ -4642,6 +4646,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             runtime: Some(runtime.clone()),
         },
         status: MemberStatus::Pending,
+        node_state: Default::default(),
         admin_api_base: Some(api_base.clone()),
         emitted_at_rafka_ms: 0,
         digest_seq: 0,
@@ -5256,6 +5261,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 },
                                 // Pending until it can take authority at once (the Ready gate below).
                                 status: MemberStatus::Pending,
+                                node_state: Default::default(),
                                 admin_api_base: Some(api_base.clone()),
                                 // Stamped by `Membership::publish`: this birth's own sequence and the composed clock.
                                 emitted_at_rafka_ms: 0,
@@ -6529,6 +6535,7 @@ mod tests {
                 runtime: None,
             },
             status,
+            node_state: Default::default(),
             admin_api_base: (name.kind == NodeKind::NodeAdmin).then(|| format!("http://admin-{name}")),
             emitted_at_rafka_ms: 0,
             digest_seq: 1,

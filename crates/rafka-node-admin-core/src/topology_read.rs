@@ -9,7 +9,7 @@
 //! through the receiver the Mesh channel's snapshots install into
 //! ([`Membership::take_read_chunk`]): there is no second install path.
 
-use rafka_mesh_entity::wire::WireDigest;
+use rafka_mesh_entity::wire::ProjectionEntry;
 use rafka_mesh_entity::{MeshDigest, PublisherId};
 use rafka_mesh_transport::membership::{Frame, Membership};
 use rafka_mesh_transport::snapshot::{chunks_of, Chunk, SourceSnapshot, Taken};
@@ -110,7 +110,7 @@ pub fn snapshot_replies(s: &SourceSnapshot, snapshot_id: u64) -> Vec<TopologyRep
             snapshot_id,
             chunk_index,
             chunk_count,
-            digests: digests.iter().map(WireDigest::from).collect(),
+            digests: digests.iter().map(ProjectionEntry::from).collect(),
             in_flight,
             departed,
         },

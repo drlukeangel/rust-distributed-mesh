@@ -1446,6 +1446,7 @@ mod tests {
                 runtime: None,
             },
             status: rafka_mesh_entity::MemberStatus::ReadyForTraffic,
+            node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 0,
             digest_seq: 1,

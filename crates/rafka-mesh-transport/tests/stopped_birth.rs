@@ -71,6 +71,7 @@ fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, supersedes:
             runtime: None,
         },
         status,
+        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: seq,
         emitted_at_rafka_ms: seq,
@@ -258,6 +259,7 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
     let (id, inc) = (NodeId::mint(), IncarnationId::mint());
     let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_011);
     assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 1)));
+    assert!(p.book.started(&id, &inc), "the primary sets it ready-for-traffic from its node.started");
     m.book.record(b(MemberStatus::ReadyForTraffic, 1));
 
     // v1: the primary's projection lists mesh1.rpc.1 ready.
@@ -313,8 +315,11 @@ async fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from
     assert!(m.book.record(b(MemberStatus::ReadyForTraffic, 4)), "the birth's heartbeat is taken once the stop is over");
     assert_eq!(m.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "its status is the projection's Pending, not the heartbeat's ReadyForTraffic");
 
-    // node.started: the primary takes the birth's report; its next projection says ready.
+    // node.started: the primary takes the birth's report (its DeclareNodeState(ReadyForTraffic)); its
+    // heartbeat says nothing of it. Its next projection says ready.
     assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 4)));
+    assert_eq!(p.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "the birth's heartbeat moves no status at the primary");
+    assert!(p.book.started(&id, &inc), "node.started of the birth");
     round().await;
     until("the member to take ready-for-traffic from the projection", || m.book.get(id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
     let v4 = version_at_m().unwrap();
@@ -387,6 +392,7 @@ async fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a
     let (id, inc) = (NodeId::mint(), IncarnationId::mint());
     let b = |status, seq| digest("mesh1.rpc.1", &id, &inc, None, status, seq, 41_031);
     assert!(p.book.record(b(MemberStatus::ReadyForTraffic, 1)));
+    assert!(p.book.started(&id, &inc), "the primary sets it ready-for-traffic from its node.started");
     m.book.record(b(MemberStatus::ReadyForTraffic, 1));
 
     // v1: the primary's projection lists mesh1.rpc.1 ready.

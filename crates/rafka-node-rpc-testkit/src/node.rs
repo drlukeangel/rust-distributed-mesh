@@ -415,6 +415,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
             runtime: Some(runtime.clone()),
         },
         status: MemberStatus::ReadyForTraffic,
+        node_state: Default::default(),
         admin_api_base: None,
         // Stamped by `Membership::publish`: this birth's own sequence and the composed clock.
         emitted_at_rafka_ms: 0,
