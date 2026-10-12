@@ -1559,6 +1559,67 @@ mod fully_crashed_mesh {
         println!("trace_id={} proof={a}", proof[0]["trace_id"].as_str().unwrap_or_default());
     }
 
+    /// CONTRACT (mesh-investigation.md step 5): "Fully crashed. Every node of mesh-x, its node-admins
+    /// included, has crashed" and "No answer from any member in either probe, with no exact provider exit
+    /// proof, means hold". The ladder's 60 s decision on the peer mesh came out `unreachable`, and the
+    /// provider proves both of its node-admins exited, but one of its ordinary members still runs
+    /// (it answers nothing). The mesh is not fully crashed: the fabric-primary opens no attempt and
+    /// creates no node-admin, and the proof read names the running member. When that member has exited
+    /// too, every node of the mesh is proven exited and the create of its first node-admin opens.
+    /// Must NOT happen: a node-admin created in process over a mesh whose member runs (the
+    /// members-live arm is carrier-edge-lost only), or a hold that does not name the member.
+    #[tokio::test]
+    async fn a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too() {
+        if crate::own_process::delegated(module_path!(), "a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too") {
+            return;
+        }
+        let dir = evidence_dir("a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s56");
+        let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-member-runs");
+        use tracing::Instrument as _;
+        let (member, nodes) = async {
+            let e = estate().await;
+            // The nodes of the peer mesh in path order are admin.1, admin.2, rpc.1, rpc.2, rpc.3: the
+            // third keeps running and answers nothing, the rest exit.
+            let (peer_mesh, admins) = crash_the_peer_mesh(&e, &[2]).await;
+            let member = format!("{peer_mesh}.rpc.1");
+            let before = e.accepted.current(&*e.builds).await.unwrap();
+            let (mut held, mut started) = (Held::new(), HashSet::new());
+            let peer = peer_mesh.clone();
+            let decided = move |m: &str| (m == peer).then_some(DECIDED_UNREACHABLE).flatten();
+            assert_eq!(pass(&e, &mut started, &mut held, &decided).await, None, "{member} still runs: the mesh is not fully crashed and is held");
+            let after = e.accepted.current(&*e.builds).await.unwrap();
+            assert_eq!(after.attempt, before.attempt, "no attempt was opened");
+            assert!(e.born().is_empty(), "no node-admin was created in process: {:?}", e.born());
+            // The member exits too: every node of the mesh is proven exited.
+            e.world.exit_with(&e.node_id(&member).await, Some(137));
+            let (peer, opened) = (peer_mesh.clone(), pass(&e, &mut started, &mut held, &|m: &str| (m == peer_mesh).then_some(DECIDED_UNREACHABLE).flatten()).await);
+            assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "{member} exited too: the create of {peer}'s first node-admin opens");
+            let current = e.accepted.current(&*e.builds).await.unwrap();
+            assert_eq!(one_step_create_of(&current.action).as_deref(), Some(admins[0].as_str()), "node.create of the mesh's first node-admin: {:?}", current.action);
+            (member, SHAPE.iter().find(|(m, _, _)| *m == peer).map(|(_, a, r)| a + r).unwrap())
+        }
+        .instrument(root.clone())
+        .await;
+        drop(root);
+        drop(telemetry);
+        let spans = collect_spans(&dir);
+        let mut proofs: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-crash-proof").collect();
+        proofs.sort_by_key(|p| p["end_unix_nano"].as_u64().unwrap_or_default());
+        assert_eq!(proofs.len(), 2, "the proof read is named once per distinct result, held and then proven: {proofs:?}");
+        let held = &proofs[0]["attributes"];
+        assert_eq!(held["outcome"], "held", "{held}");
+        assert!(held["unproven"].as_str().unwrap_or_default().contains(&member) && held["unproven"].as_str().unwrap_or_default().contains("not proven exited"), "the hold names the running member and why: {held}");
+        assert_eq!(held["nodes"].as_str(), Some(nodes.to_string().as_str()), "the proof is read over every node of the mesh: {held}");
+        let proven = &proofs[1]["attributes"];
+        assert_eq!((proven["outcome"].as_str(), proven["unproven"].as_str()), (Some("proven"), Some("")), "{proven}");
+        assert!(proven["proven"].as_str().unwrap_or_default().contains(&member), "the proof lists the member: {proven}");
+        println!("trace_id={} held={held} proven={proven}", proofs[0]["trace_id"].as_str().unwrap_or_default());
+    }
+
     /// CONTRACT: the proof is read for a mesh whose ladder decision came out `unreachable`, not
     /// before: with every node of the mesh proven exited and the ladder at 30 s (silent-marked, probes
     /// outstanding, no decision), nothing opens, and once the mesh is heard again (no hold) the exits
