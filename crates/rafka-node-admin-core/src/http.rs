@@ -42,9 +42,10 @@ pub struct ControlPlane {
     /// the live view carries it, so the refusal names the exclusion instead of hiding it.
     pub absence: std::sync::OnceLock<Arc<dyn Fn(&PathName) -> String + Send + Sync>>,
     /// This admin's view projected now, from the same inputs the periodic refresh projects
-    /// from: what a decision on one node reads, so it never acts on a snapshot up to one refresh
-    /// old (set once by the admin that owns the inputs).
-    pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> Topology + Send + Sync>>,
+    /// from (the node rows of the births that do not publish read with it): what a decision on one
+    /// node reads, so it never acts on a snapshot up to one refresh old (set once by the admin that
+    /// owns the inputs).
+    pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Topology> + Send>> + Send + Sync>>,
     /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
     /// stopped or deleted from here (R-D1). Set once by the admin that owns the ladder.
@@ -278,7 +279,7 @@ impl ControlPlane {
             self.authority(route).await?;
             let (_admitted, current) = self.current_settled().await?;
             let t = match self.view_now.get() {
-                Some(project) => project(),
+                Some(project) => project().await,
                 None => self.topology.read().await.clone(),
             };
             for step in &steps {
@@ -321,13 +322,17 @@ impl ControlPlane {
         async {
             self.authority(route).await?;
             let (_admitted, current) = self.current_settled().await?;
-            // The topology never names a `.old` path: the stopped birth a rename left there is found in
-            // the view alone, and only a delete acts on it.
+            // A delete acts only on a `.old` path: the stopped birth a node.update renamed there, found in
+            // the view (below), which reads a renamed birth by its node id through the node-row id index
+            // (R12). Any other action's `.old` or `.new` name is its accepted path's (node-replace.md: a
+            // predecessor renamed `<name>.old`, a successor born `<name>.new`): a node renamed while
+            // stopped is started by its row's name (R-JN1, node-start.md step 2), and its birth is fenced
+            // below in the view, which lists it at its row's name.
             let parked_old = kind == ActionKind::Delete && path.old;
             // A birth of a mesh deleted at mesh.deleted (its last admin, alive): no accepted Build names
             // the mesh, and only a delete acts on it (mesh-delete.md step 7).
             let deleted_mesh = kind == ActionKind::Delete && !path.old && !current.topology.meshes.contains_key(&path.mesh) && self.of_deleted_mesh(&path).await;
-            if (kind == ActionKind::Delete) != (path.old || deleted_mesh) || (!parked_old && !deleted_mesh && !current.topology.contains(&path)) {
+            if (kind == ActionKind::Delete && !(path.old || deleted_mesh)) || (!parked_old && !deleted_mesh && !current.topology.contains(&path.base())) {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
@@ -336,7 +341,7 @@ impl ControlPlane {
                 // A stopped birth at a `.old` path is admitted from the view, which reads a renamed
                 // birth by its node id through the node-row id index (R12).
                 let t = match self.view_now.get() {
-                    Some(project) => project(),
+                    Some(project) => project().await,
                     None => self.topology.read().await.clone(),
                 };
                 let held = t.node(&path).cloned();
@@ -413,7 +418,7 @@ impl ControlPlane {
     /// (mesh-delete.md steps 6-7).
     pub async fn of_deleted_mesh(&self, path: &PathName) -> bool {
         let t = match self.view_now.get() {
-            Some(project) => project(),
+            Some(project) => project().await,
             None => self.topology.read().await.clone(),
         };
         t.meshes.iter().any(|m| m.name == path.mesh && m.status == crate::model::ScopeStatus::Dead)

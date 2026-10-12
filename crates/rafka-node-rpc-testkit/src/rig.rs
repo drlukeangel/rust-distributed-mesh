@@ -17,9 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 /// Joined = the node's own digest for exactly this birth reached the admin's
-/// membership; ready = that digest says ReadyForTraffic (as the node-admin's own observer
-/// decides it) and a Ping is answered; drained =
-/// this birth's digest says `Draining` with nothing in flight, or `Leaving`;
+/// membership; ready = the admin side holds the birth ready-for-traffic, set from the node.started
+/// it reported (as the node-admin's own observer decides it), and a Ping is answered;
 /// admission closed = no Ping runs any more.
 pub struct LiveMesh {
     pub membership: Membership,
@@ -69,10 +68,11 @@ impl NodeObserver for LiveMesh {
 
     async fn ready(&self, node: &Node) -> Result<(), String> {
         // A joined node answers Ping while it is still Pending (its hook runs, it serves status and
-        // the lifecycle commands): ready is what its own digest says, never the Ping alone.
+        // the lifecycle commands): ready is the status this admin side set from its node.started,
+        // never the Ping alone and never its heartbeat.
         match self.membership.book.get(node.node_id.as_str()).filter(|(d, _)| node.incarnation_id.as_ref() == Some(&d.node.incarnation)) {
             Some((d, _)) if d.status == rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic => {}
-            Some((d, _)) => return Err(format!("{} reports {:?}", node.name, d.status)),
+            Some((d, _)) => return Err(format!("{} is held {:?}, not ready-for-traffic: the admin side has not taken its node.started", node.name, d.status)),
             None => return Err(format!("no digest from {} for this birth", node.name)),
         }
         let target = self.echo_target(node)?;
@@ -219,12 +219,27 @@ pub struct AdminSide {
     /// data dirs and the fabric's store root: stops every node launched under it, before the
     /// admin's endpoint closes.
     reap: ReapOnDrop,
-    /// Its publication rounds as its mesh's primary.
-    _rounds: AbortOnDrop,
-    /// Its own digest, published on the membership cadence.
-    _publisher: AbortOnDrop,
+    /// Its publication rounds as its mesh's primary (`None` for a silent admin side).
+    _rounds: Option<AbortOnDrop>,
+    /// Its own digest, published on the membership cadence (`None` for a silent admin side).
+    _publisher: Option<AbortOnDrop>,
     _router: Router,
 }
+
+/// How an admin side takes its place in its mesh.
+enum SideSeat {
+    /// Its mesh's primary: it says its own digest on the membership cadence and publishes its
+    /// member projection on its own mesh channel.
+    Primary,
+    /// A node-admin of the mesh that says nothing of itself: no digest on the mesh channel and no
+    /// member projection. It enters the channel through `seed` (its primary's gossip address), holds
+    /// the projection its primary publishes there and serves that topology.
+    Silent { seed: iroh::EndpointAddr },
+}
+
+/// An admin side's digest held in another admin side's book, re-heard on the membership cadence
+/// while this lives: the other's member projection carries it ([`AdminSide::carry_in_projection`]).
+pub struct Carried(AbortOnDrop);
 
 impl AdminSide {
     /// The data root every launch from this admin side's template uses: the nodes under it are
@@ -275,6 +290,26 @@ impl AdminSide {
     pub fn put_row(&self, row: rafka_node_admin_core::storage::NodeRow) {
         self.rows.lock().unwrap().insert(row.name.clone(), row);
     }
+
+    /// The digest this admin side holds of itself.
+    pub fn own_digest(&self) -> rafka_mesh_entity::digest::MeshDigest {
+        self.digest.lock().unwrap().clone()
+    }
+
+    /// Hold `other`'s digest in this admin side's book as heard, again on the membership cadence while
+    /// the answer lives: this admin side, its mesh's primary, carries `other` in the member projection
+    /// it publishes, while `other` itself says nothing on the mesh channel.
+    pub fn carry_in_projection(&self, other: &AdminSide) -> Carried {
+        let (book, mut digest) = (self.observer.membership.book.clone(), other.own_digest());
+        Carried(AbortOnDrop(tokio::spawn(async move {
+            loop {
+                digest.digest_seq += 1;
+                digest.emitted_at_rafka_ms += 1;
+                book.record(digest.clone());
+                tokio::time::sleep(rafka_mesh_transport::membership::gossip_interval()).await;
+            }
+        })))
+    }
 }
 
 pub async fn admin_side(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
@@ -297,7 +332,17 @@ pub async fn admin_side_serving(ip: std::net::IpAddr, fabric: &FabricId, status:
 /// [`admin_side_serving`] as the node-admin `name` of `mesh1` (`mesh1.admin.<n>`): a second admin
 /// side of the same fabric and mesh, for a cell where a seat moves between two node-admins.
 pub async fn admin_side_serving_as(ip: std::net::IpAddr, fabric: &FabricId, name: &str, status: rafka_mesh_entity::digest::MemberStatus, serve: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder) -> AdminSide {
-    admin_side_taking_joins(ip, fabric, name, true, None, serve, status, no_certs()).await
+    admin_side_taking_joins_seated(ip, fabric, name, true, None, serve, status, no_certs(), SideSeat::Primary).await
+}
+
+/// The node-admin `name` of `primary`'s mesh, taking joins and serving the topology it holds, that
+/// says nothing of itself on the mesh channel: no digest, so no node's heartbeat book holds it, and
+/// no member projection. A node holds it only where `primary` carries it in its member projection
+/// ([`AdminSide::carry_in_projection`]).
+pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, name: &str) -> AdminSide {
+    let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
+    let seed = iroh::EndpointAddr::new(key).with_ip_addr(primary.seed.1);
+    admin_side_taking_joins_seated(ip, &primary.fabric, name, true, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs(), SideSeat::Silent { seed }).await
 }
 
 /// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
@@ -317,6 +362,11 @@ pub async fn admin_side_issuing(ip: std::net::IpAddr, fabric: &FabricId, referen
 }
 
 async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder, status: rafka_mesh_entity::digest::MemberStatus, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>) -> AdminSide {
+    admin_side_taking_joins_seated(ip, fabric, name, takes_joins, reference_ms, serve_app, status, signer, SideSeat::Primary).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId, name: &str, takes_joins: bool, reference_ms: Option<u64>, serve_app: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder, status: rafka_mesh_entity::digest::MemberStatus, signer: Arc<dyn rafka_node_admin_core::certs::CertSigner>, seat: SideSeat) -> AdminSide {
     // The transport a node-admin binds (rafka-node-admin-core `admin.rs`): a dead path is closed
     // within the membership silence window, so gossip redials instead of holding it.
     let transport = iroh::endpoint::QuicTransportConfig::builder()
@@ -336,7 +386,14 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
             rafka_node_admin_core::rafka_time::adopt_own_clock(&tracing::Span::current(), &rafka_time, name, rafka_node_admin_core::rafka_time::OWN_CLOCK_DAY0_ROOT);
         }
     }
-    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), name, Arc::new(rafka_time.clone()), vec![]).await.unwrap();
+    let seeds = match &seat {
+        SideSeat::Primary => vec![],
+        SideSeat::Silent { seed } => {
+            rafka_mesh_transport::membership::learn_addresses(&admin_ep, std::slice::from_ref(seed)).unwrap();
+            vec![seed.clone()]
+        }
+    };
+    let membership = Membership::join(&gossip, &admin_ep, fabric, "mesh1", &MeshId::parse(TEST_MESH_ID).unwrap(), name, Arc::new(rafka_time.clone()), seeds).await.unwrap();
     // The join, as a node-admin serves it: a launched node reports its digest to the admin that
     // deployed it, which verifies it against the deployment and answers what it hears.
     let joins = Arc::new(rafka_node_admin_core::join::Joins::default());
@@ -392,7 +449,10 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
         in_flight: vec![],
         departed: vec![],
     };
-    assert!(matches!(membership.take_read_chunk(held, "peer"), rafka_mesh_transport::snapshot::Taken::Installed(_)));
+    // A silent admin side holds only what its primary publishes into the mesh.
+    if matches!(seat, SideSeat::Primary) {
+        assert!(matches!(membership.take_read_chunk(held, "peer"), rafka_mesh_transport::snapshot::Taken::Installed(_)));
+    }
     let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // The completion calls a commanded node makes back (`node-drained`, `node-left`) resolve the
     // open commands of this admin side.
@@ -401,18 +461,37 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
     // acknowledged; the admin side keeps no checklist.
     let check_ins = Arc::new(tokio::sync::watch::Sender::new(Vec::new()));
     let serve_commands = {
-        let (commands, check_ins, receiver) = (commands.clone(), check_ins.clone(), name.to_string());
+        let (commands, check_ins, receiver, book) = (commands.clone(), check_ins.clone(), name.to_string(), membership.book.clone());
         move |b: rafka_node_rpc::ServerBuilder| {
             b.serve::<rafka_node_rpc_contract::status::Status, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Product("rdm".into()), move |_peer: rafka_node_rpc::PeerContext, req: rafka_node_rpc_contract::status::StatusRequest| {
-                let (commands, check_ins, receiver) = (commands.clone(), check_ins.clone(), receiver.clone());
+                let (commands, check_ins, receiver, book) = (commands.clone(), check_ins.clone(), receiver.clone(), book.clone());
                 async move {
-                    use rafka_node_rpc_contract::status::StatusRequest as R;
+                    use rafka_node_rpc_contract::status::{NodeState, NotAuthority, StatusReply, StatusRequest as R};
                     if matches!(req, R::StateCommitted { .. } | R::TrafficOpened { .. }) {
                         check_ins.send_modify(|held| held.push(req));
-                        return Ok(rafka_node_rpc_contract::status::StatusReply::Applied);
+                        return Ok(StatusReply::Applied);
+                    }
+                    // A member's report to its mesh's primary sets its status (node-status.md "Status
+                    // report": "A node reports to its mesh's primary, which sets its status"), as a
+                    // node-admin's status authority applies it into its book: its node.started sets
+                    // it ready-for-traffic. A birth the book does not hold yet is not known here: the
+                    // member reports again.
+                    if let R::DeclareNodeState { node_id, incarnation, state } = &req {
+                        let held = book.get(node_id.as_str()).is_some_and(|(d, _)| d.node.incarnation == *incarnation);
+                        if !held {
+                            return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown });
+                        }
+                        use rafka_mesh_entity::MemberStatus as M;
+                        match state {
+                            NodeState::ReadyForTraffic => book.started(node_id, incarnation),
+                            NodeState::Pending => book.reported(node_id, incarnation, M::Pending),
+                            NodeState::Draining => book.reported(node_id, incarnation, M::Draining),
+                            NodeState::Leaving => book.reported(node_id, incarnation, M::Leaving),
+                        };
+                        return Ok(StatusReply::Applied);
                     }
                     let (R::NodeDrained { incarnation, .. } | R::NodeLeft { incarnation, .. }) = &req else {
-                        return Ok(rafka_node_rpc_contract::status::StatusReply::NotReady { reason: "the admin side serves completion calls only".into() });
+                        return Ok(StatusReply::NotReady { reason: "the admin side serves completion calls, round check-ins and declarations only".into() });
                     };
                     let incarnation = incarnation.clone();
                     Ok(rafka_node_admin_core::node_commands::accept_completion(&commands, &receiver, Some((Some(&incarnation), "the commanded birth")), "", &req))
@@ -440,6 +519,7 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
             runtime: None,
         },
         status,
+        node_state: Default::default(),
         admin_api_base: None,
         emitted_at_rafka_ms: now_ms,
         digest_seq: 1,
@@ -450,27 +530,33 @@ async fn admin_side_taking_joins(ip: std::net::IpAddr, fabric: &FabricId, name: 
         load: None,
         gossip: None,
     };
-    membership.publish(&admin_digest).await.expect("the admin's digest publishes");
+    let primary = matches!(seat, SideSeat::Primary);
+    if primary {
+        membership.publish(&admin_digest).await.expect("the admin's digest publishes");
+    }
     // The launcher is its mesh's primary, as a node-admin holding the seat is: it executes its
-    // members' lifecycle, authors their statuses from what they report to it, and publishes its
+    // members' lifecycle, sets each member's status from what it reports (its node.started, its Draining and
+    // Leaving), and publishes its
     // member projection on its own mesh channel each round and at once on a material change
     // (gossip.md §3.1 `Members`, the admin's publication round). Its members take every status
     // from that projection.
-    let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", name, admin_incarnation.clone(), vec![]).await.expect("the launcher joins the backbone");
-    backbone.set_mesh_primary(true);
-    let rounds = {
-        let (backbone, membership) = (backbone.clone(), membership.clone());
-        AbortOnDrop(tokio::spawn(async move {
-            loop {
-                backbone.publish(&membership, backbone.own_members(&membership)).await;
-                backbone.round_wake(&membership, tokio::time::Instant::now() + rafka_mesh_transport::membership::gossip_interval()).await;
-            }
-        }))
-    };
     let digest_cell = Arc::new(std::sync::Mutex::new(admin_digest.clone()));
-    let publisher = {
+    let (rounds, publisher) = if primary {
+        let backbone = Backbone::join(&gossip, &admin_ep, &membership, "mesh1", name, admin_incarnation.clone(), vec![]).await.expect("the launcher joins the backbone");
+        backbone.set_mesh_primary(true);
+        let rounds = {
+            let (backbone, membership) = (backbone.clone(), membership.clone());
+            AbortOnDrop(tokio::spawn(async move {
+                loop {
+                    backbone.publish(&membership, backbone.own_members(&membership)).await;
+                    backbone.round_wake(&membership, tokio::time::Instant::now() + rafka_mesh_transport::membership::gossip_interval()).await;
+                }
+            }))
+        };
         let cell = digest_cell.clone();
-        AbortOnDrop(membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone()))
+        (Some(rounds), Some(AbortOnDrop(membership.publish_every(rafka_mesh_transport::membership::gossip_interval(), move || cell.lock().unwrap().clone()))))
+    } else {
+        (None, None)
     };
     let _ = own_digest_slot.set(admin_digest.clone());
     let _ = topology_slot.set(Arc::new(rafka_node_admin_core::topology_read::TopologyDoor::new(membership.clone(), Arc::new(move || own_digest_slot.get().cloned().expect("the admin digest is set before a read is served")), rafka_time.clone())));

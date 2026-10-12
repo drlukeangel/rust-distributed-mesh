@@ -3,7 +3,9 @@
 //!
 //! Layout: `fabric/` (the fabric-primary's), `meshes/<mesh>` (each mesh's primary's Mesh row),
 //! `nodes/<mesh>/` (each mesh's primary's members' Node rows and contacts), `connections/<node>/`
-//! (each node its own) and `status/<mesh>/` (each mesh's primary's status rows). The writers are exactly the writer ladder
+//! (each node its own) and `status/<mesh>/` (each mesh's primary's status rows). Beside the
+//! per-fabric roots, `<store_dir>/fabrics/<name>` is the fabrics' name index (R-FN1): each fabric's
+//! claim of its name, written by its fabric-primary. The writers are exactly the writer ladder
 //! (fabric-node-lifecycle.md §4.3), so no two writers share a key. A node's data dir keeps only its
 //! own runtime material. A `store_dir` that is missing or unreadable fails the boot by name; nothing
 //! falls back to the data dir and nothing creates the `store_dir` (the provider supplies it).
@@ -26,10 +28,17 @@ pub use rafka_mesh_entity::launch::ENV_STORE_DIR;
 /// state-commit, so a root that holds it is a store that exists.
 const FABRIC_ROW: &str = "fabric/identity.json";
 
+/// The fabrics' name index, `<store_dir>/fabrics/`, beside the per-fabric roots (R-FN1).
+pub const FABRIC_NAMES: &str = "fabrics";
+
 /// The fabric's store root, `<store_dir>/<fabric_id>/`, checked at boot.
 #[derive(Clone)]
 pub struct StoreRoot {
     dir: PathBuf,
+    /// Where the fabrics' name index lives, `<this>/fabrics/`: the `store_dir` above the per-fabric
+    /// roots for a root opened on one ([`Self::open`]); the root's own directory for a root handed in
+    /// whole ([`Self::at`]), whose caller chose the fabric's directory and owns nothing above it.
+    store_dir: PathBuf,
     /// What this process holds before the fabric's first state-commit: `Some` when it opened the
     /// root before the Fabric row was published to it.
     scratchpad: Option<Arc<Scratchpad>>,
@@ -56,18 +65,19 @@ impl StoreRoot {
         let dir = store_dir.join(fabric_id.to_string());
         std::fs::create_dir_all(&dir).map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: format!("the fabric's store root could not be created: {e}") })?;
         let scratchpad = (!dir.join(FABRIC_ROW).exists()).then(Scratchpad::new);
-        Ok(Self { dir, scratchpad })
+        Ok(Self { dir, store_dir: store_dir.to_path_buf(), scratchpad })
     }
 
     /// The root at `dir` itself, the fabric's directory already chosen and created by the caller (a
-    /// cell's own directory, or a store an embedding app hands in), written directly.
+    /// cell's own directory, or a store an embedding app hands in), written directly. Nothing above
+    /// `dir` is the root's: the fabrics' name index is `<dir>/fabrics/`.
     pub fn at(dir: &Path) -> Self {
-        Self { dir: dir.to_path_buf(), scratchpad: None }
+        Self { dir: dir.to_path_buf(), store_dir: dir.to_path_buf(), scratchpad: None }
     }
 
     /// [`Self::at`], every store opened on it holding its rows in `scratchpad` until it is published.
     pub fn held_at(dir: &Path, scratchpad: Arc<Scratchpad>) -> Self {
-        Self { dir: dir.to_path_buf(), scratchpad: Some(scratchpad) }
+        Self { dir: dir.to_path_buf(), store_dir: dir.to_path_buf(), scratchpad: Some(scratchpad) }
     }
 
     /// What this process holds for the root before the fabric's first state-commit, when it opened
@@ -101,6 +111,17 @@ impl StoreRoot {
     /// `<store_dir>/<fabric_id>/`.
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Open `<store_dir>/fabrics/`, the fabrics' name index above the per-fabric roots (R-FN1: "The
+    /// fabric's (path, name) claim is an insert-and-fail at the path level, above the per-fabric store
+    /// roots"), written by the process born as `writer`: held in this root's scratchpad until it is
+    /// published, named `fabrics` in the publication, as every store opened on it.
+    pub async fn fabric_names(&self, writer: &IncarnationId) -> Result<FileRecords, StorageError> {
+        match &self.scratchpad {
+            Some(scratchpad) => FileRecords::open_held(&self.store_dir, FABRIC_NAMES, writer, scratchpad, FABRIC_NAMES.to_string()).await,
+            None => FileRecords::open(&self.store_dir, FABRIC_NAMES, writer).await,
+        }
     }
 
     /// `nodes/<mesh>/`: the mesh's members' Node rows and contacts.

@@ -145,7 +145,6 @@ impl BuildStateAdapter for Refuses {
 /// `AwaitNodeDrained` and `Complete` as if the step were committed.
 #[tokio::test]
 async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (spans_pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-3051-receipt-refusal", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
@@ -245,7 +244,6 @@ pub(crate) struct Capture {
 
 impl Capture {
     pub(crate) fn new(service: &'static str) -> (Self, tracing::subscriber::DefaultGuard) {
-        crate::enable_callsites();
         let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
         let (pipeline, layer) = rafka_mesh_telemetry::span_capture(service, exporter.clone());
         let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));

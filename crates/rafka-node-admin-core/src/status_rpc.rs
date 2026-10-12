@@ -269,13 +269,17 @@ pub struct StatusAuthority {
     /// This admin as the subject of `ApplyNodeName`: it takes the name holding no connection (R-CR1)
     /// and publishes its digest carrying it; filled once its digest exists.
     pub rename: Rename,
-    /// This admin's view taking a node's row its `node.update` moved (R13): the view lists the birth
-    /// at the row's name on every projection from now on. Filled with the view.
+    /// This admin's view taking a node's row its `node.update` moved (R13): the view is projected
+    /// again, reading the moved row. Filled with the view.
     pub row_moved: RowMoved,
     /// Each member's load and gossip stats, as its latest digest carries them: what `node.get`
     /// answers beside the view. `None` only where no admin owns a digest book; a view read there is
     /// refused `NotReady` by name.
     pub loads: Option<crate::views::Loads>,
+    /// This admin's digest book: as its mesh's primary it sets each member's status there from the
+    /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
+    /// otherwise). `None` only where no admin owns a digest book.
+    pub book: Option<rafka_mesh_transport::membership::DigestBook>,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -304,12 +308,10 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             let Some(subject) = view.births().find(|n| n.node_id == *node_id) else {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, None);
             };
-            // The receiver's seat: a node-admin declares to the fabric-primary, every other kind
-            // to its mesh's primary.
-            let needed = if subject.kind == NodeKind::NodeAdmin { me.is_fabric_primary } else { me.is_primary && me.mesh == subject.mesh };
-            if !needed {
-                let seat = if subject.kind == NodeKind::NodeAdmin { "fabric-primary" } else { "mesh-primary" };
-                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("{seat} of {}", subject.mesh) } }, None);
+            // The receiver's seat: every kind, a node-admin included, reports to its mesh's primary,
+            // which sets its status (node-status.md "Status report").
+            if !(me.is_primary && me.mesh == subject.mesh) {
+                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) } }, None);
             }
             // The exact birth: a declaration for an incarnation the view no longer holds is stale.
             match subject.incarnation_id.as_ref() {
@@ -761,6 +763,27 @@ impl StatusAuthority {
             }
         };
         if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
+            // The node's report, applied, sets its status (node-status.md "Status report": "A node
+            // reports to its mesh's primary, which sets its status"), carried by this primary's member
+            // projection. node.started, its ReadyForTraffic, also ends that exact birth's restart
+            // (gossip.md "NodeRestarting stays until node.started of the same (node.id, incarnation)
+            // arrives").
+            if let Some(book) = &self.book {
+                match row.state {
+                    NodeState::ReadyForTraffic => {
+                        book.started(&row.node_id, &row.incarnation_id);
+                    }
+                    NodeState::Pending => {
+                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Pending);
+                    }
+                    NodeState::Draining => {
+                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Draining);
+                    }
+                    NodeState::Leaving => {
+                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Leaving);
+                    }
+                }
+            }
             let mut t = self.topology.write().await;
             if let Some(n) = t.nodes.iter_mut().find(|n| n.node_id == row.node_id && n.incarnation_id.as_ref() == Some(&row.incarnation_id)) {
                 n.declared = Some(format!("{:?}", row.state));
@@ -1041,6 +1064,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1156,6 +1180,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         };
         let birth = rpc.incarnation_id.clone().unwrap();
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
@@ -1214,7 +1239,42 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         }
+    }
+
+    /// CONTRACT (node-status.md "Status report": "A node reports to its mesh's primary, which sets
+    /// its status"; states.md "Who sets each state": node ReadyForTraffic is set by "the node's
+    /// mesh-primary" from "the node's node.started report"): a node-admin's declaration is applied by
+    /// its own mesh's primary like every other kind's. mesh2's primary applies mesh2.admin.2's
+    /// ReadyForTraffic; the fabric-primary, of mesh1, refuses it naming the seat it needs, the
+    /// mesh-primary of mesh2. Must NOT happen: a node-admin's status set by the fabric-primary.
+    #[test]
+    fn a_node_admins_declaration_is_applied_by_its_own_mesh_primary_never_the_fabric_primary() {
+        let admin = |name: &str, mesh: &str, primary: bool, fabric_primary: bool| {
+            let mut n = node(name);
+            n.kind = NodeKind::NodeAdmin;
+            n.mesh = mesh.into();
+            n.status = crate::model::NodeStatus::ReadyForTraffic;
+            n.is_primary = primary;
+            n.is_fabric_primary = fabric_primary;
+            n
+        };
+        let fp = admin("mesh1.admin.1", "mesh1", true, true);
+        let m2p = admin("mesh2.admin.1", "mesh2", true, false);
+        let m2a = admin("mesh2.admin.2", "mesh2", false, false);
+        let view = Topology {
+            fabric: crate::model::Fabric { id: FabricId::mint(), name: "fabric1".into(), status: crate::model::ScopeStatus::ReadyForTraffic, provider: crate::model::ProviderKind::Process },
+            meshes: Vec::new(),
+            nodes: vec![fp.clone(), m2p.clone(), m2a.clone()],
+        };
+        let declare = StatusRequest::DeclareNodeState { node_id: m2a.node_id.clone(), incarnation: m2a.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
+        let (reply, effect) = decide(&authority_of(&m2p, view.clone()), &view, &Declared::default(), &declare);
+        assert_eq!(reply, R::Applied, "mesh2's primary applies its own mesh's admin's ReadyForTraffic");
+        assert!(matches!(effect, Some(Effect::Node(ref row, NodeState::ReadyForTraffic)) if row.node_id == m2a.node_id), "{effect:?}");
+        let (reply, effect) = decide(&authority_of(&fp, view.clone()), &view, &Declared::default(), &declare);
+        assert_eq!(reply, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } }, "the fabric-primary of mesh1 is not mesh2.admin.2's authority");
+        assert!(effect.is_none());
     }
 
     /// CONTRACT (fabric-node-lifecycle.md 4.3: "Once a node-admin is created in a mesh it is that
@@ -1406,6 +1466,7 @@ mod tests {
                 runtime: None,
             },
             status: rafka_mesh_entity::MemberStatus::ReadyForTraffic,
+            node_state: Default::default(),
             admin_api_base: None,
             emitted_at_rafka_ms: 0,
             digest_seq: 1,
@@ -1469,6 +1530,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         };
         for n in [&restarted, &deleted, &standing] {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1558,6 +1620,7 @@ mod tests {
             rename: Default::default(),
             row_moved: Default::default(),
             loads: None,
+            book: None,
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);

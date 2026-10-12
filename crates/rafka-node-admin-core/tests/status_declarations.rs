@@ -111,6 +111,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         rename: Default::default(),
         row_moved: Default::default(),
         loads: None,
+        book: None,
     });
     // The rig's view stands for the admin's projection: a moved row moves the birth's entry.
     let moved_view = topology.clone();
@@ -186,8 +187,8 @@ async fn a_node_declares_its_own_state_forward_only_and_applied_is_on_its_row_fi
 /// CONTRACT: the authority is the seat the subject's declaration needs, never the caller
 /// (node-rpc.md §14). rpc.2 sending rpc.1's declaration is decided for rpc.1, on rpc.1's row; a
 /// subject the view does not hold is `SubjectUnknown`; a birth the view no longer holds is stale; a
-/// subject of another mesh, or a node-admin's declaration once the fabric seat moved away, is
-/// refused naming the seat it needs.
+/// subject of another mesh, a node-admin included, is refused naming the seat it needs: its own
+/// mesh's primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn authority_is_the_seat_the_subject_needs_never_the_caller() {
     let (rig, b) = rig().await;
@@ -208,16 +209,12 @@ async fn authority_is_the_seat_the_subject_needs_never_the_caller() {
     rig.topology.write().await.nodes.push(foreign.node.clone());
     let r = reply(&call(&rig, &foreign, &declare(&foreign, NodeState::ReadyForTraffic)).await);
     assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
-    // A node-admin declares to the fabric-primary (this admin holds it): Applied.
+    // A node-admin declares to its own mesh's primary (this admin is mesh1's): Applied.
     assert_eq!(reply(&call(&rig, admin2, &declare(admin2, NodeState::ReadyForTraffic)).await), StatusReply::Applied);
-    // Once the fabric seat moves away, an admin's declaration here is refused by the seat.
-    rig.topology.write().await.nodes.iter_mut().for_each(|n| {
-        if n.name == rig.admin.node.name {
-            n.is_fabric_primary = false
-        }
-    });
+    // A node-admin of another mesh is refused by the seat it needs, its own mesh's primary, though
+    // this admin holds the fabric seat (node-status.md: "A node reports to its mesh's primary").
     let r = reply(&call(&rig, m2admin, &declare(m2admin, NodeState::ReadyForTraffic)).await);
-    assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "fabric-primary of mesh2".into() } });
+    assert_eq!(r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "mesh-primary of mesh2".into() } });
 }
 
 /// CONTRACT: nothing inside the mesh checks who is calling (node-rpc.md §14; node-rpc-envelope.md,
@@ -515,6 +512,12 @@ impl NodesStorage for RefusingRows {
     async fn node_row_at(&self, name: &rafka_node_admin_core::model::PathName) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
         self.0.node_row_at(name).await
     }
+    async fn node_row_name(&self, mesh: &str, node_id: &NodeId) -> Result<Option<rafka_node_admin_core::model::PathName>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.node_row_name(mesh, node_id).await
+    }
+    async fn hold_node_row(&self, name: &rafka_node_admin_core::model::PathName, _holder: &NodeId) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
+        Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the hold".into() })
+    }
     async fn release_node_row(&self, name: &rafka_node_admin_core::model::PathName, _holder: &rafka_node_admin_core::model::NodeId) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
     }
@@ -739,7 +742,6 @@ struct Capture {
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (capture, layer) = rafka_mesh_telemetry::span_capture("status-declarations", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }

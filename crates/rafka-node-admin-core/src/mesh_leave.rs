@@ -1522,8 +1522,6 @@ mod tests {
     #[tokio::test]
     async fn a_later_leave_mesh_joins_the_one_run_and_the_run_ends_naming_the_later_attempt() {
         use tracing_subscriber::layer::SubscriberExt;
-        static HELD: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
-        HELD.get_or_init(|| tracing::Dispatch::new(tracing_subscriber::registry()));
         let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
         let (capture, layer) = rafka_mesh_telemetry::span_capture("i143-s48-leave-admission", exporter.clone());
         let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));

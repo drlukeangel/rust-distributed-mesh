@@ -48,7 +48,6 @@ pub(crate) struct Capture {
 
 pub(crate) fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (capture, layer) = rafka_mesh_telemetry::span_capture("mesh2.admin.1", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }

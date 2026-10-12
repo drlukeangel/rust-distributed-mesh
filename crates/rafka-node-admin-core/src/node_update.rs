@@ -9,7 +9,7 @@
 //! nothing written) and the old key released, through the one writer of a row's move
 //! (`node_rows::move_row`); a node taking `<name>` from `<name>.new` carries the config of the
 //! `<name>.old` row (lifecycles/node-replace.md step 4: "the mesh-primary seeds the successor's config
-//! from the `<name>.old` row"); the view entry moves with the row; a live birth is
+//! from the `<name>.old` row"); the view is projected again and reads the moved row; a live birth is
 //! told `ApplyNodeName`, a stopped one nothing (its join answer hands it the name); `NodeUpdated`
 //! answers only after the apply answered.
 
@@ -139,7 +139,7 @@ async fn put(
             Err(RenameRefused::NameHeld(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
             Err(RenameRefused::Unwritten(why)) => return StatusReply::node_row_refused(&to.to_string(), &why),
         }
-        // The view lists the birth at the row's name from now on, on every projection.
+        // The view reads the moved row: a stopped birth is listed at the row's name from now on.
         moved(held.name.clone(), node_id.clone(), incarnation.clone(), to.clone()).await;
     }
     if held.parked {

@@ -24,7 +24,8 @@
 //! than in the other paths.
 //!
 //! The authority is a real Day-0 node-admin in this process; it launches the second admin and the rpc
-//! node, and commands their stops and starts. Its own process: the cell holds process-wide state (the
+//! node, and commands their stops and starts over Node RPC, so each start after a stop joins it back
+//! through its call (node-start.md step 2). Its own process: the cell holds process-wide state (the
 //! parking flag) and sets the gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
 
 use rafka_mesh_entity::launch::{Launch, Launcher};
@@ -126,6 +127,16 @@ fn stop(launch: &Launch) -> StatusRequest {
     StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_start_sequence".into(), attempt: 1, operation: format!("stop-node:{}", launch.name) }
 }
 
+/// `req` sent by `root` over Node RPC to the birth `launch` names, as a commanding node-admin sends
+/// it: the commanded node holds the call's endpoint key, which its start joins back through.
+async fn command(root: &Running, launch: &Launch, req: &StatusRequest) -> StatusReply {
+    let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: WRONG }, ..Default::default() };
+    match root.node_rpc.client.call::<rafka_node_rpc_contract::status::Status>(&rafka_node_rpc::NodeTarget::ExactNode(launch.node_id.clone()), req, &opts).await.0 {
+        rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.into_value(),
+        other => panic!("{} to {} did not end in a reply: {other:?}", req.op(), launch.name),
+    }
+}
+
 fn start(launch: &Launch) -> StatusRequest {
     StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_start_sequence".into(), attempt: 2, operation: format!("start-node:{}", launch.name) }
 }
@@ -173,7 +184,6 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-        let root_id = root.digest.lock().unwrap().node.node_id.clone();
 
         // A node-admin's first start: launched by the root.
         let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);
@@ -194,19 +204,18 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         })
         .await;
 
-        // The node-admin's stop and its start after the stop, commanded by the root.
-        let own = admin.node_self();
-        assert!(matches!(own.serve(Some(&root_id), None, &stop(&admin_launch)).await, Some(StatusReply::Stopped { .. })), "the launched admin stops");
+        // The node-admin's stop and its start after the stop, commanded by the root over Node RPC.
+        assert!(matches!(command(&root, &admin_launch, &stop(&admin_launch)).await, StatusReply::Stopped { .. }), "the launched admin stops");
         let _ = root.runner.joins.expect(deployed(&admin_launch, Some(&admin_launch.name)));
-        let started = tokio::time::timeout(WRONG, own.serve(Some(&root_id), None, &start(&admin_launch))).await.expect("the admin's start answers");
-        assert_eq!(started, Some(StatusReply::Started), "the launched admin starts after its stop");
+        let started = tokio::time::timeout(WRONG, command(&root, &admin_launch, &start(&admin_launch))).await.expect("the admin's start answers");
+        assert_eq!(started, StatusReply::Started, "the launched admin starts after its stop");
         until_ready("mesh1.admin.2 (start after stop)", || admin.digest.lock().unwrap().clone()).await;
 
-        // The rpc node's stop and its start after the stop, commanded by the root.
-        assert!(matches!(rpc.own.serve(Some(&root_id), None, &stop(&rpc_launch)).await, Some(StatusReply::Stopped { .. })), "the rpc node stops");
+        // The rpc node's stop and its start after the stop, commanded by the root over Node RPC.
+        assert!(matches!(command(&root, &rpc_launch, &stop(&rpc_launch)).await, StatusReply::Stopped { .. }), "the rpc node stops");
         let _ = root.runner.joins.expect(deployed(&rpc_launch, Some(&rpc_launch.name)));
-        let started = tokio::time::timeout(WRONG, rpc.own.serve(Some(&root_id), None, &start(&rpc_launch))).await.expect("the rpc node's start answers");
-        assert_eq!(started, Some(StatusReply::Started), "the rpc node starts after its stop");
+        let started = tokio::time::timeout(WRONG, command(&root, &rpc_launch, &start(&rpc_launch))).await.expect("the rpc node's start answers");
+        assert_eq!(started, StatusReply::Started, "the rpc node starts after its stop");
 
         let paths = [
             ("node-admin first start", steps_under(&spans, "mesh1.admin.2", FIRST_START)),

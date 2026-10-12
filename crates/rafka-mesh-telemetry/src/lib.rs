@@ -23,7 +23,7 @@ mod transport_diag;
 pub use transport_diag::{TRANSPORT_DIAG_FILE, TRANSPORT_DIAG_TARGET};
 pub mod watchdog;
 mod pipeline;
-pub use pipeline::{install_span_capture, span_capture, span_export_layer, span_processor, CountingBatchProcessor, SpanCapture, SpanLoss};
+pub use pipeline::{enable_callsites, install_span_capture, span_capture, span_export_layer, span_processor, CountingBatchProcessor, SpanCapture, SpanLoss};
 
 use export::{ExportRuntime, WatchedLogs, WatchedSpans};
 

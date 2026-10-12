@@ -152,7 +152,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
             let read = crate::topology_read::read_topology(client, &NodeTarget::ExactNode(node.node_id.clone()), membership.node(), None, None)
                 .await
                 .map_err(|e| format!("reading the topology of {}: {e}", node.name))?;
-            // Every topology read adopts the rafka-time it is served with, by the same rule as a join.
+            // An entering admin adopts the rafka-time its entry read is served with, by the same rule as a join.
             read.adopt_rafka_time(time, membership, &me.to_string(), &me.mesh, me_id, &node.name.to_string()).map_err(|e| format!("adopting rafka-time from {}: {e}", node.name))?;
             // The seats this node's mesh knows are held: an entering admin computes none before it has them.
             membership.learn_seats(&read.seats, "entry");

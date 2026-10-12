@@ -75,7 +75,6 @@ fn opened(facts: &[BuildFact]) -> usize {
 /// opened for a birth already recovered.
 #[tokio::test]
 async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recovery() {
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-3051-cell4", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
@@ -172,7 +171,6 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
 /// NodeDeleting failed: the inherited data dir .../mesh2.rpc.2-ekne99d5g23b does not exist`).
 #[tokio::test]
 async fn a_recovery_submit_for_a_birth_a_delete_deleted_is_answered_already_applied_by_the_delete() {
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-3016-deleted-birth", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
@@ -302,7 +300,6 @@ fn deletion_receipts(kind: &str, build: &rafka_node_admin_core::build::BuildId, 
 /// executor's own log alone holds it), or a second recovery attempt opened by the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovery_run_by_a_mesh_primary_that_is_not_the_fabric_primary_is_answered_already_applied_at_the_fabric_primary() {
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-3051-cross-mesh-dedup", exporter.clone());
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));

@@ -58,6 +58,7 @@ fn digest(name: &str, port: u16) -> MeshDigest {
             runtime: None,
         },
         status: MemberStatus::ReadyForTraffic,
+        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 1,
         emitted_at_rafka_ms: 1_000,

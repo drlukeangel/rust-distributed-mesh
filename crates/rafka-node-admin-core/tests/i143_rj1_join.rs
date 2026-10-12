@@ -102,6 +102,7 @@ fn digest_of(d: &Deployed, addr: &str) -> MeshDigest {
             runtime: Some(d.runtime.clone()),
         },
         status: MemberStatus::Pending,
+        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,
         emitted_at_rafka_ms: 0,
@@ -260,6 +261,58 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
     let spans = cap.spans();
     let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
     assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["config_keys"].as_str()), (Some("installed"), Some("1")), "{join}");
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
+
+/// CONTRACT (R-JN1 items 1, 2 and 4; node-start.md step 2): the real admin door holds a birth stopped
+/// as `mesh1.rpc.1` whose row its mesh-primary renamed `mesh1.rpc.1.old` while it was stopped. A join
+/// of that exact birth naming `mesh1.rpc.7`, neither the row's name nor the name the authority last
+/// accepted, is refused `JoinMismatch("name")` naming all three, installs nothing and completes no
+/// report (`via-join-mismatch`, field `name`). The join naming `mesh1.rpc.1`, the last accepted name,
+/// is admitted under the row's: the installed digest and the answer name `mesh1.rpc.1.old`. Not a
+/// scenario cell: a real node presents the name it holds, which is the name its authority last
+/// accepted (it publishes only that name, and `node.update` of a stopped node tells it nothing), so no
+/// sequence of operations makes a real node present a third name.
+#[test]
+fn a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refused_naming_all_three() {
+    let cell = "a_held_births_join_naming_neither_its_rows_nor_its_last_accepted_name_is_refused_naming_all_three";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cap = capture(cell);
+    let dep = Deployed { name: "mesh1.rpc.1.old".parse().unwrap(), last_accepted_name: Some("mesh1.rpc.1".parse().unwrap()), held: true, ..deployed() };
+    let result = cap.run(async {
+        let joins = Arc::new(Joins::default());
+        let installed: Arc<Mutex<Vec<std::net::SocketAddr>>> = Arc::default();
+        let row = rafka_node_admin_core::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rafka_node_admin_core::model::NodeStatus::Leaving, config: Default::default() };
+        let door = door_over(joins.clone(), installed.clone(), row);
+        let reported = joins.expect(dep.clone());
+        let mut third = digest_of(&dep, "127.0.0.1:34570");
+        third.node.name = "mesh1.rpc.7".parse().unwrap();
+        let refused = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&third).into() }).await;
+        match &refused {
+            JoinReply::JoinMismatch { field, deployed, reported } => {
+                assert_eq!(field, "name", "{refused:?}");
+                assert!(deployed.contains("mesh1.rpc.1.old") && deployed.contains("last accepted") && deployed.contains("\"mesh1.rpc.1\"") && reported.contains("mesh1.rpc.7"), "the refusal names the row's, the last accepted and the reported name: {refused:?}");
+            }
+            other => panic!("a third name is refused by name: {other:?}"),
+        }
+        assert!(installed.lock().unwrap().is_empty(), "a refused join installs nothing");
+        assert!(reported.borrow().is_none(), "a refused join completes no report");
+        let mut held = digest_of(&dep, "127.0.0.1:34570");
+        held.node.name = "mesh1.rpc.1".parse().unwrap();
+        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&held).into() }).await;
+        let JoinReply::Joined { answer } = &joined else { panic!("the last accepted name is admitted: {joined:?}") };
+        let answer = rafka_node_admin_core::wire::answer_from_wire(answer).expect("the answer decodes");
+        assert_eq!(answer.control.name.as_ref().map(|n| n.to_string()).as_deref(), Some("mesh1.rpc.1.old"), "the answer hands the row's name");
+        assert_eq!(reported.borrow().as_ref().map(|d| d.node.name.to_string()).as_deref(), Some("mesh1.rpc.1.old"), "the digest installed is canonicalized to the row's name");
+        json!({ "cell": cell, "refused": format!("{refused:?}"), "joined": format!("{joined:?}") })
+    });
+    let spans = cap.spans();
+    let refusal = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.reject.via-join-mismatch").expect("the refusal is a span of its own");
+    assert_eq!((refusal["attributes"]["field"].as_str(), refusal["attributes"]["node"].as_str()), (Some("name"), Some("mesh1.rpc.7")), "{refusal}");
+    let admitted = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join" && s["attributes"]["outcome"] == "installed").expect("the held name's join is installed");
+    assert_eq!((admitted["attributes"]["node"].as_str(), admitted["attributes"]["admitted_as"].as_str()), (Some("mesh1.rpc.1"), Some("mesh1.rpc.1.old")), "{admitted}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }

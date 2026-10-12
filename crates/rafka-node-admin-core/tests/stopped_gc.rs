@@ -66,7 +66,6 @@ impl Capture {
 }
 
 fn capture(cell: &str) -> (Capture, tracing::subscriber::DefaultGuard) {
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (pipeline, layer) = rafka_mesh_telemetry::span_capture(cell, exporter.clone());
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));

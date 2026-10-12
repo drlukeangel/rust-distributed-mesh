@@ -180,19 +180,35 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     assert!(continued >= 1, "the first attempt continues the request's trace");
     // node-identity-and-state.md §2.7: "The mesh's primary node-admin claims the mesh's name and writes
     // its row, at creation and at state-commit ... by insert-and-fail on the key `(path, name)`", the
-    // same MeshId re-claiming its own name accepted. mesh1's name is claimed by its Day-0 primary
-    // (held in its scratchpad until the fabric's state-commit), mesh2's by mesh2's own first admin,
-    // its only candidate; no claim is refused across creation and state-commit.
+    // same MeshId re-claiming its own name accepted; R13: the fabric-primary writes as the acting
+    // primary of a mesh with no primary; CLAUDE.md: the claim is the first durable write of a create,
+    // nothing is written for the entity until it wins. mesh1's name is claimed by its Day-0 primary
+    // (held in its scratchpad until the fabric's state-commit). mesh2's is claimed at CreateMesh by the
+    // fabric-primary that creates mesh2's first admin, before that admin's node row is claimed; mesh2's
+    // own primary re-claiming it finds its row. No claim is refused across creation and state-commit.
     let claims = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
-    for (mesh, id, writer) in [("mesh1", s(&m1["id"]), "mesh1.admin.1"), ("mesh2", mesh2_id.clone(), "mesh2.admin.1")] {
-        let c = claims
+    let written = |mesh: &str, id: &str| {
+        claims
             .iter()
-            .find(|c| c["attributes"]["mesh"] == mesh && s(&c["attributes"]["mesh_id"]) == id && c["attributes"]["moment"] == "claim")
-            .unwrap_or_else(|| panic!("{mesh}'s primary claims its name: {claims:?}"));
-        assert_eq!(c["attributes"]["outcome"], "row-written", "{c}");
-        assert_eq!(c["attributes"]["node"], writer, "{mesh}'s name is claimed by its primary: {c}");
-        eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh={mesh} mesh_id={id} node={writer} outcome=row-written", s(&c["trace_id"]));
-    }
+            .find(|c| c["attributes"]["mesh"] == mesh && s(&c["attributes"]["mesh_id"]) == id && c["attributes"]["moment"] == "claim" && c["attributes"]["outcome"] == "row-written")
+            .copied()
+            .unwrap_or_else(|| panic!("{mesh}'s name is claimed, its row written: {claims:?}"))
+    };
+    let m1_claim = written("mesh1", &s(&m1["id"]));
+    assert_eq!(m1_claim["attributes"]["node"], "mesh1.admin.1", "mesh1's name is claimed by its Day-0 primary: {m1_claim}");
+    let m2_claim = written("mesh2", &mesh2_id);
+    assert_eq!(s(&m2_claim["attributes"]["node"]), creator, "mesh2's name is claimed by the fabric-primary that creates its first admin, the acting primary of a mesh with none: {m2_claim}");
+    let admin_row = named(&spans, "rdm.node_admin.node.create.via-node-row")
+        .into_iter()
+        .find(|c| c["attributes"]["subject"] == "mesh2.admin.1" && c["attributes"]["moment"] == "claim")
+        .unwrap_or_else(|| panic!("mesh2.admin.1's name is claimed"));
+    assert!(
+        m2_claim["end_unix_nano"].as_u64().unwrap() <= admin_row["start_unix_nano"].as_u64().unwrap(),
+        "mesh2's name claim is its first durable write: it ends before mesh2.admin.1's row is claimed: {m2_claim} {admin_row}"
+    );
+    let reclaims: Vec<&&Value> = claims.iter().filter(|c| c["attributes"]["mesh"] == "mesh2" && s(&c["attributes"]["node"]).starts_with("mesh2.admin.")).collect();
+    assert!(!reclaims.is_empty() && reclaims.iter().all(|c| s(&c["attributes"]["mesh_id"]) == mesh2_id && c["attributes"]["outcome"] == "row-held-by-mesh"), "mesh2's own primary re-claims its name and finds the row the fabric-primary's claim wrote: {reclaims:?}");
+    eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={mesh2_id} node={creator} outcome=row-written before node.create.via-node-row subject=mesh2.admin.1", s(&m2_claim["trace_id"]));
     assert!(claims.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's claim is refused: {claims:?}");
     // node-identity-and-state.md §2.8: the fabric-primary claims the fabric's name by insert-and-fail at
     // Day 0, its first write of the fabric; a later fabric-primary's claim of the same FabricId finds its

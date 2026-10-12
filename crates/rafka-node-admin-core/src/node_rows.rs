@@ -483,7 +483,8 @@ pub enum RenameRefused {
 
 /// The node's row moves from `from` to `to` in `storage`: written at `to` from its held `record`
 /// with `config` (a put the store adapter refuses `NameHeld` when another node's live row holds
-/// `to`; a row the node holds there already is left as it is), then the node lets go of `from`
+/// `to`; a row the node holds there already is left as it is, its id index entry naming `to`,
+/// [`NodesStorage::hold_node_row`]), then the node lets go of `from`
 /// (only its own row there goes). The one writer of a rename (R13: `node.update` is one write
 /// path): `node.update` at the node's mesh-primary (`crate::node_update`) moves here. Answers what it did and the
 /// row written, if it wrote one.
@@ -491,8 +492,7 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
     if from == to {
         return Ok((Moved::Renamed, None));
     }
-    let there = storage.node_row_at(to).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read for the rename of {} from {from}: {e}", record.node_id)))?;
-    let held_there = there.is_some_and(|r| r.node_id == record.node_id);
+    let held_there = storage.hold_node_row(to, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read or named for the rename of {} from {from}: {e}", record.node_id)))?;
     let mut written = None;
     if !held_there {
         let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config };

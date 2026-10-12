@@ -27,13 +27,15 @@ type OpKey = (String, u32, String);
 /// CONTRACT (gossip.md §3.1 "DOES bump / DOES NOT bump"): the view KEEPS the birth (identity,
 /// incarnation and lineage, the one transport address, the runtime fact and its metadata), the
 /// status routing reads, the control API base, the mesh id, the data dir and the descriptive tags.
-/// It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp), `in_flight` (the
-/// draining work count), `load` (the process's CPU and RAM) and `gossip` (the channel's
-/// heard/neighbour/frame counts): the digest's load and gossip stats.
+/// It DROPS `digest_seq` and `emitted_at_rafka_ms` (heartbeat order and a stamp), `node_state` (the
+/// liveness the birth self-publishes on its heartbeat, which the bump list does not name),
+/// `in_flight` (the draining work count), `load` (the process's CPU and RAM) and `gossip` (the
+/// channel's heard/neighbour/frame counts): the digest's load and gossip stats.
 pub(crate) fn topology_view(d: &MeshDigest) -> MeshDigest {
     let mut v = without_load(d);
     v.digest_seq = 0;
     v.emitted_at_rafka_ms = 0;
+    v.node_state = rafka_mesh_entity::NodeState::default();
     v
 }
 
@@ -108,21 +110,31 @@ impl Full {
     /// never lists a stopped birth, and lists it again only after its `node.joined` cleared the
     /// stop ([`Full::apply`]). An expired departure is a local fact of the receiver's age.
     pub fn delta_to(&self, new: &Full) -> Delta {
+        // A birth whose restart ended (node.started at the source) is named even when its digest is
+        // the same: its entry is what ends the restart at the receiver.
+        let restart_ended = |d: &MeshDigest| self.in_flight.iter().any(|(k, o)| o.is_restart() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation && !new.in_flight.contains_key(k));
+        let changed: Vec<MeshDigest> = new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d)) || restart_ended(d)).map(|(_, d)| without_load(d)).collect();
+        // A changed birth's open restart travels again beside it: [`Full::apply`] clears a changed
+        // birth's restart, so one the source still holds open stays open, and one node.started
+        // ended there ends at the receiver too.
+        let restarting = |o: &LifecycleOp| o.is_restart() && changed.iter().any(|d| d.node.node_id == o.node_id && d.node.incarnation == o.incarnation);
         Delta {
-            changed: new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d))).map(|(_, d)| without_load(d)).collect(),
             removed: self.digests.keys().filter(|id| !new.digests.contains_key(*id)).cloned().collect(),
-            in_flight: new.in_flight.iter().filter(|(k, _)| !self.in_flight.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
+            in_flight: new.in_flight.iter().filter(|(k, o)| !self.in_flight.contains_key(*k) || restarting(o)).map(|(_, o)| o.clone()).collect(),
             departed: new.departed.iter().filter(|(k, _)| !self.departed.contains_key(*k)).map(|(_, o)| o.clone()).collect(),
+            changed,
         }
     }
 
-    /// This full moved by `delta`. A `changed` entry of a birth clears that exact birth's stop
-    /// overlay (`NodeStopped`, `stop-node:`), and only that overlay: the source lists the birth again
-    /// once its primary's `node.joined` ended the stop (gossip.md §3.1, `MembersDelta` carries
-    /// "overlay and departed changes"). A restart or deleting overlay keeps its own end.
+    /// This full moved by `delta` (gossip.md §3.1, `MembersDelta` carries "overlay and departed
+    /// changes"). A `changed` entry of a birth clears that exact birth's stop overlay
+    /// (`NodeStopped`, `stop-node:`): the source lists the birth again once its primary's
+    /// `node.joined` ended the stop. It clears that exact birth's restart overlay too, which the
+    /// delta carries again while the source holds it open ([`Full::delta_to`]): one node.started
+    /// ended at the source ends here. A deleting overlay ends with its departure.
     pub fn apply(&mut self, delta: &Delta) {
         for d in &delta.changed {
-            self.in_flight.retain(|_, o| !(o.is_stop() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
+            self.in_flight.retain(|_, o| !((o.is_stop() || o.is_restart()) && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
             self.digests.insert(d.node.node_id.to_string(), d.clone());
         }
         for id in &delta.removed {
@@ -334,8 +346,9 @@ pub enum Refusal {
         /// The version offered.
         offered_version: u64,
     },
-    /// The publisher's birth is one this receiver holds stopped or departed: a stopped birth
-    /// publishes nothing and a departed one has left, so its publication was delayed
+    /// A publication of another epoch than the one this receiver holds, whose publisher's birth this
+    /// receiver holds stopped or departed: a stopped birth publishes nothing and a departed one has
+    /// left, so its publication was delayed, and taking it would switch the receiver back
     /// (node-status-heartbeat-connections.md §A.3, §A.4). `reason` says which.
     PredecessorPublisher {
         /// `publisher-stopped` or `publisher-departed`.

@@ -18,4 +18,6 @@ pub mod iroh_obs;
 pub mod load;
 pub mod membership;
 pub mod snapshot;
+#[cfg(test)]
+mod span_capture;
 pub mod wire;

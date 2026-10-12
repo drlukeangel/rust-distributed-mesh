@@ -38,7 +38,6 @@ struct Capture {
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (capture, layer) = rafka_mesh_telemetry::span_capture("node-objects", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
@@ -372,6 +371,7 @@ impl Rig {
                     fabric_id: FabricId::mint(),
                     node: MeshNode { node_id, name: name.clone(), endpoint_id, transport_addr: "127.0.0.1:34567".parse().unwrap(), incarnation, supersedes: None, runtime: Some(runtime.clone()) },
                     status: MemberStatus::Pending,
+                    node_state: Default::default(),
                     admin_api_base: None,
                     digest_seq: 0,
                     emitted_at_rafka_ms: 0,

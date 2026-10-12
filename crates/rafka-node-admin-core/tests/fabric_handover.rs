@@ -138,6 +138,9 @@ impl FabricStorage for FailingStorage {
         self.check("claim_identity")?;
         self.inner.claim_identity(identity).await
     }
+    async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
+        self.inner.release_name(identity).await
+    }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
         self.check("put_pointer")?;
         self.inner.put_pointer(pointer).await

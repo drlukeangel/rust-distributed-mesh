@@ -86,7 +86,7 @@ struct Harness {
 /// observed topology: the one every change compiles against.
 async fn harness(runtime_routes: Router) -> Harness {
     let spans = SpanNames::default();
-    crate::enable_callsites();
+    rafka_mesh_telemetry::enable_callsites();
     let guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();
@@ -322,7 +322,7 @@ async fn only_the_fabric_primary_begins_a_fabric_shutdown() {
 #[tokio::test]
 async fn a_node_admin_that_is_not_the_fabric_primary_refuses_every_topology_change_by_name() {
     let spans = SpanNames::default();
-    crate::enable_callsites();
+    rafka_mesh_telemetry::enable_callsites();
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();
@@ -434,7 +434,7 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
 #[tokio::test]
 async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_status() {
     let fields = SpanFields::default();
-    crate::enable_callsites();
+    rafka_mesh_telemetry::enable_callsites();
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(fields.clone()));
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = mn();
@@ -572,7 +572,7 @@ async fn last_admin_plane(second: Option<NodeStatus>) -> (Arc<ControlPlane>, Arc
 #[tokio::test]
 async fn a_build_that_would_end_the_fabric_primarys_last_admin_is_refused_by_name_and_opens_nothing() {
     let spans = SpanNames::default();
-    crate::enable_callsites();
+    rafka_mesh_telemetry::enable_callsites();
     let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let refused = || spans.0.lock().unwrap().iter().filter(|(n, _)| n == "rdm.node_admin.build.reject.via-last-admin").count();
     let last_admin = |action: &str, s: StatusCode, v: &Value| {

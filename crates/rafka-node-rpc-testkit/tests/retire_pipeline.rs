@@ -8,7 +8,7 @@
 //! storage meta says.
 //!
 //! The span-asserting cell runs in its own process (`own_process`), and its capture enables every
-//! callsite before installing its dispatcher (`crate::enable_callsites`).
+//! callsite before installing its dispatcher (`rafka_mesh_telemetry::span_capture` calls `enable_callsites`).
 
 use crate::common;
 
@@ -85,7 +85,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let statuses: Vec<NodeStatus> = sink.nodes.lock().unwrap().iter().map(|n| n.status).collect();
         assert_eq!(statuses, vec![NodeStatus::Pending, NodeStatus::ReadyForTraffic, NodeStatus::Draining, NodeStatus::Leaving]);
         let (digest, _) = admin.observer.membership.book.get(first.node.node_id.as_str()).expect("the node's digest");
-        assert_eq!(digest.status, MemberStatus::Draining, "the node gossips nothing for its stop: its last word on the fabric is Draining");
+        assert_eq!(digest.status, MemberStatus::Leaving, "the admin side holds the status it set from the node's last report, its stop's Leaving (node-status.md \"Status report\"); the node's heartbeats carry none (gossip.md §3.1 `Digest`)");
         assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }));
         assert!(UdpSocket::bind(port).is_ok(), "the runtime released its port");
         // node-delete.md step 3: "Retain the data dir, node-identity.json and endpoint key." An

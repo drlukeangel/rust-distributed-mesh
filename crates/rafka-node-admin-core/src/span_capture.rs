@@ -1,7 +1,8 @@
 //! A unit cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`)
 //! into an in-memory exporter, behind a dispatcher the cell installs on its own thread (a
 //! `#[tokio::test]` runtime is that one thread), so the spans it reads are its own and carry the
-//! trace ids a cell reports.
+//! trace ids a cell reports. The pipeline enables every callsite before the dispatcher exists
+//! (`rafka_mesh_telemetry::enable_callsites`), so a callsite another thread hit first still reaches it.
 
 use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -27,7 +28,6 @@ pub(crate) struct Capture {
 impl Capture {
     /// A capture exporting under `service.name = cell`.
     pub(crate) fn new(cell: &str) -> Self {
-        interest_from_every_dispatcher();
         let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
         let (capture, layer) = rafka_mesh_telemetry::span_capture(cell, exporter.clone());
         Self { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
@@ -44,19 +44,6 @@ impl Capture {
             .map(|s| Captured { name: s.name.to_string(), trace_id: s.span_context.trace_id().to_string(), attributes: s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect() })
             .collect()
     }
-}
-
-/// Register, once for the whole test process, a dispatcher that is interested in every callsite and
-/// installed on no thread. tracing-core caches a callsite's interest for the whole process when the
-/// callsite is first hit; with one dispatcher registered it asks only the thread that hit it
-/// (tracing-core 0.1.36 callsite.rs, `Rebuilder::JustOne`), and a thread with no dispatcher of its
-/// own (another cell's) answers never, so a capture would lose every span of a callsite such a thread
-/// hit first. With this one registered beside every capture, a callsite's interest is taken from
-/// every registered dispatcher, and each span is then offered to the dispatcher of the thread that
-/// opens it.
-fn interest_from_every_dispatcher() {
-    static EVERY: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
-    EVERY.get_or_init(|| tracing::Dispatch::new(tracing_subscriber::registry()));
 }
 
 #[cfg(test)]

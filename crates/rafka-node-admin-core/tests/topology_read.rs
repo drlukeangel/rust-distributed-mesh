@@ -6,7 +6,7 @@ use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, PublisherId};
 use rafka_mesh_transport::membership::Membership;
 use rafka_mesh_transport::snapshot::{Chunk, SourceSnapshot, Taken};
-use rafka_node_admin_core::topology_read::{get_topology, snapshot_replies, TopologyDoor, TopologyFailure, TopologySlot};
+use rafka_node_admin_core::topology_read::{get_topology, snapshot_replies, top_up_fetch, TopologyDoor, TopologyFailure, TopologySlot};
 use rafka_node_rpc::{NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -27,6 +27,7 @@ fn member_of(fabric: &FabricId, mesh: &str, kind: &str, ordinal: u32) -> MeshDig
             runtime: None,
         },
         status: MemberStatus::ReadyForTraffic,
+        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,
         emitted_at_rafka_ms: 0,
@@ -668,4 +669,44 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
     let adopted = cap.named("rdm.mesh.entry.update.via-rafka-time-adopted");
     assert_eq!(adopted.len(), 1, "only the fabric-primary's answer was adopted: {adopted:?}");
     assert_eq!((adopted[0]["source"].as_str(), adopted[0]["via"].as_str(), adopted[0]["seat"].as_str(), adopted[0]["served_by"].as_str()), ("pull", "get-topology", "fabric-primary", "mesh2.rpc.1"));
+}
+
+// @feature: node-lifecycle
+/// CONTRACT (gossip.md §3.3: a desynchronized receiver "pulls the current full fabric topology from
+/// its own current mesh-primary with GetTopology, installs it atomically, records the publisher and
+/// version baseline, and resumes"; lifecycles/node-topology-get.md: the top-up "is a read/connection
+/// repair, not a stop, restart or new admission"; origin-ordering.md, rafka-time: adopted at every
+/// JoinNode, and "between pulls a node keeps its rafka-time disciplined from its own authority's
+/// heartbeats only"): a member that tops up a desynchronized source from its mesh's primary installs
+/// the complete snapshot and keeps the rafka-time it holds. Nothing is adopted, so its reading is not
+/// stalled and its discipline window and slew are not cleared. Must NOT happen: the top-up re-anchors
+/// the member to the served time (gate e588aaea, rafka_time_discipline: mesh1.rpc.1's version-gap
+/// top-up adopted mesh1.admin.1's served time with stalls_ms=1501, erasing the 1.5 s the cell set, so
+/// the discipline never slewed; trace 1074d9baac76f1c2e8088641cbbea279).
+#[test]
+fn a_member_topping_up_a_desynced_source_installs_it_and_keeps_its_rafka_time() {
+    let cap = capture("top-up-keeps-time");
+    cap.run(async {
+        let fabric = FabricId::mint();
+        let (server, caller) = (node(&fabric, "mesh1", "mesh1.admin.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await);
+        open(&server, &fabric);
+        hold(&server.membership, &snap("mesh2", &publisher("mesh2.admin.1"), 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
+        // The member stands far ahead of the primary's 5 000 000 ms: an adoption would stall it.
+        caller.time.adopt(9_000_000);
+        let _ = target_of(&caller, &server);
+        let mut primary = own_digest(&server, &fabric);
+        primary.node.name = server.resolved.name.clone();
+        let fetch = top_up_fetch(Arc::new(NodeRpcClient::new(caller.ep.clone(), caller.resolver.clone())));
+        let done = fetch(caller.membership.clone(), primary, vec!["mesh2".into()]).await.unwrap();
+        assert_eq!(done.installed, vec![("mesh2".to_string(), 7)], "the top-up installed the complete snapshot");
+        let before = caller.time.now_ms();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let after = caller.time.now_ms();
+        assert!(after >= before + 50, "the member's rafka-time runs on from what it held, unstalled: {before} -> {after}");
+        server.ep.close().await;
+        caller.ep.close().await;
+    });
+    assert!(cap.named("rdm.mesh.entry.update.via-rafka-time-adopted").is_empty(), "a top-up adopts no rafka-time: {:?}", cap.named("rdm.mesh.entry.update.via-rafka-time-adopted"));
+    let installed = cap.named("rdm.mesh.topology.update.via-read-install");
+    assert_eq!(installed.iter().map(|a| (a["node"].as_str(), a["mesh"].as_str(), a["topology_version"].as_str())).collect::<Vec<_>>(), vec![("mesh1.rpc.1", "mesh2", "7")], "{installed:?}");
 }

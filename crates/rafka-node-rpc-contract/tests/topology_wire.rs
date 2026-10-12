@@ -2,7 +2,7 @@
 //! fields independently of codec round trips; enums are append-only.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
-use rafka_mesh_entity::wire::WireDigest;
+use rafka_mesh_entity::wire::ProjectionEntry;
 use rafka_mesh_entity::{IncarnationId, LifecycleOp, PublisherId, Seat, SeatHolder};
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::{DecodeFailure, NodeProtocol};
@@ -32,6 +32,7 @@ fn digest() -> rafka_mesh_entity::MeshDigest {
             runtime: None,
         },
         status: MemberStatus::ReadyForTraffic,
+        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,
         emitted_at_rafka_ms: 0,
@@ -88,6 +89,48 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
     assert_eq!(Topology::decode_reply(&[14]), Err(DecodeFailure::UnknownVariant));
 }
 
+/// CONTRACT (gossip.md §3.1: the topology read serves the member projection a node holds): a
+/// `Snapshot` chunk (variant 0) carries each member as a projection entry, its digest (position 2 the
+/// self-published liveness `node_state`, `Alive` = 1) then the status held for it (`Draining` = 2).
+/// What must NOT happen: an entry without its status, or a status inside the digest.
+#[test]
+fn a_snapshot_chunk_carries_each_member_as_its_digest_then_its_status() {
+    use rafka_mesh_entity::*;
+    let d = MeshDigest {
+        fabric_id: FabricId::parse("1123456789ab").unwrap(),
+        node: MeshNode {
+            node_id: NodeId::parse("0123456789ab").unwrap(),
+            name: "mesh1.rpc.1".parse().unwrap(),
+            endpoint_id: EndpointId("k".into()),
+            transport_addr: "127.0.0.1:80".parse().unwrap(),
+            incarnation: IncarnationId("i".into()),
+            supersedes: None,
+            runtime: None,
+        },
+        status: MemberStatus::Draining,
+        node_state: NodeState::Alive,
+        admin_api_base: None,
+        digest_seq: 7,
+        emitted_at_rafka_ms: 9,
+        data_dir: None,
+        mesh_id: None,
+        in_flight: None,
+        config: Default::default(),
+        load: None,
+        gossip: None,
+    };
+    let r = TopologyReply::Snapshot { mesh: "mesh1".into(), publisher: publisher(), topology_version: 3, snapshot_id: 9, chunk_index: 0, chunk_count: 1, digests: vec![ProjectionEntry::from(&d)], in_flight: vec![], departed: vec![] };
+    let hex = "00 05 6d65736831 0161 0162 03 09 00 01 01 \
+        0c 313132333435363738396162 0c 303132333435363738396162 0b 6d657368312e7270632e31 01 6b 00 7f000001 50 01 69 00 00 \
+        01 00 07 09 00 00 00 00 00 00 \
+        02 \
+        00 00";
+    assert_eq!(Topology::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
+    let TopologyReply::Snapshot { digests, .. } = Topology::decode_reply(&bytes(hex)).unwrap() else { panic!("not a Snapshot") };
+    let back: Vec<MeshDigest> = digests.into_iter().map(MeshDigest::from).collect();
+    assert_eq!(back, vec![d], "the member decodes with its liveness and its status");
+}
+
 #[test]
 fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
     let d = digest();
@@ -107,7 +150,7 @@ fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
         snapshot_id: 9,
         chunk_index: 0,
         chunk_count: 1,
-        digests: vec![WireDigest::from(&d)],
+        digests: vec![ProjectionEntry::from(&d)],
         in_flight: vec![op.clone()],
         departed: vec![op],
     };

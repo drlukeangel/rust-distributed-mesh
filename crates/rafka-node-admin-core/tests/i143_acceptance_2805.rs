@@ -192,6 +192,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         rename: Default::default(),
         row_moved: Default::default(),
         loads: None,
+        book: None,
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
@@ -787,9 +788,9 @@ fn status_declaration_to_a_non_authority_is_refused_naming_the_seat() {
         let r = reply(&call(&rig, &rpc, &decl_node(&rpc), &CallOptions::default()).await);
         not_authority(&r, "receiver-not-primary");
         assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh1"), "{r:?}");
-        // A node-admin declares to a non-fabric-primary.
+        // A node-admin declares to an admin that is not its mesh's primary.
         let r = reply(&call(&rig, &other_admin, &decl_node(&other_admin), &CallOptions::default()).await);
-        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "fabric-primary of mesh2"), "{r:?}");
+        assert!(matches!(&r, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "mesh-primary of mesh2"), "{r:?}");
         // A Mesh primary declares its Mesh to a non-fabric-primary.
         let mesh2 = MeshId::mint();
         let r = reply(&call(&rig, &other_admin, &StatusRequest::DeclareMeshState { mesh_id: mesh2.clone(), state: MeshState::ReadyForTraffic }, &CallOptions::default()).await);
