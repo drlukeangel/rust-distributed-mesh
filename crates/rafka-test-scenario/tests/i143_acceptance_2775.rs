@@ -91,6 +91,8 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     landed_on(&before, &first, "get");
     assert_eq!(before["reply"]["result"], json!({"found": true, "value": "before-restart"}), "presence control: {before}");
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
     let restart_attempt = Estate::complete(&mut restart).await;
     let restart_build = restart_attempt.build_id.0.clone();
