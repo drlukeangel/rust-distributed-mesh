@@ -9073,7 +9073,7 @@ mod tests {
         record.status = NodeStatus::Leaving;
         let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default() };
         assert_eq!(crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap(), Ok(()));
-        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), &held.node.name, &to).await.unwrap();
+        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), &held.node.name, &to).await.unwrap();
         // This admin: the same book, its own store on the same root, no rename of its own.
         let records = Arc::new(Records::default());
         let _ = records.contacts.set(mine);
@@ -9088,7 +9088,7 @@ mod tests {
         // name): only the view names the birth by its row.
         assert_eq!(book.parked().iter().map(|d| d.node.name.clone()).collect::<Vec<_>>(), vec![held.node.name.clone()]);
         // The row moved back (node-replace.md Rollback): the next projection reads it there.
-        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), &to, &held.node.name).await.unwrap();
+        crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), &to, &held.node.name).await.unwrap();
         view_projector("mesh1.admin.1".parse().unwrap(), topology.clone(), "fabric1".into(), fabric1(), ProviderKind::Process, book.clone(), records.clone())().await;
         let t = topology.read().await.clone();
         assert!(t.node(&held.node.name).is_some_and(|n| n.node_id == held.node.node_id && n.parked) && t.node(&to).is_none(), "{:?}", t.nodes.iter().map(|n| n.name.to_string()).collect::<Vec<_>>());
@@ -9361,8 +9361,8 @@ mod tests {
         let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default() };
         assert_eq!(crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap(), Ok(()));
         let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), held.node.name.base());
-        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), &held.node.name, &base).await.unwrap();
-        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), &base, &base.renamed()).await.unwrap();
+        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), &held.node.name, &base).await.unwrap();
+        crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), &base, &base.renamed()).await.unwrap();
         let view = Arc::new(RwLock::new(project("fabric1", &fabric1(), ProviderKind::Process, &DigestBook::default(), &Records::default())));
         let probed = Arc::new(ProbedRows {
             inner: Arc::new(crate::storage::FileNodesStorage::open(&d.join("mesh1.admin.2"), &root, "mesh1", &IncarnationId::mint()).await.unwrap()),

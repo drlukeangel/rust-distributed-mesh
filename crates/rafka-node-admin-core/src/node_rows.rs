@@ -102,6 +102,32 @@ impl WrittenRows {
     pub fn config_of(&self, node_id: &NodeId) -> Option<BTreeMap<String, String>> {
         self.0.lock().unwrap().get(node_id).map(|r| r.config.clone())
     }
+
+    /// The row the writer holds for `node_id`, if it holds a record of it.
+    pub fn row_of(&self, node_id: &NodeId) -> Option<NodeRow> {
+        self.0.lock().unwrap().get(node_id).cloned()
+    }
+
+    /// The row of `node_id` of `mesh` as this writer knows it: its record, else the row the node
+    /// holds now, a point read through the node row's id index and then the row's own key (R13:
+    /// "Rebuild after a seat change reads the mesh's own rows", the same point read a claim or an
+    /// arrival makes), held as found. `None`: the node holds no row. A read that fails is named.
+    pub async fn known_row(&self, storage: &dyn NodesStorage, mesh: &str, node_id: &NodeId) -> Result<Option<NodeRow>, String> {
+        if let Some(row) = self.row_of(node_id) {
+            return Ok(Some(row));
+        }
+        let Some(name) = storage.node_row_name(mesh, node_id).await.map_err(|e| format!("the id index entry of {node_id} in {mesh} could not be read: {e}"))? else { return Ok(None) };
+        let row = storage.node_row_at(&name).await.map_err(|e| format!("the row of {node_id} at {name} could not be read: {e}"))?.filter(|r| r.node_id == *node_id);
+        if let Some(r) = &row {
+            self.hold(r);
+        }
+        Ok(row)
+    }
+}
+
+/// `tags` as a span carries them: the labels, comma-joined.
+pub(crate) fn labels(tags: &std::collections::BTreeSet<String>) -> String {
+    tags.iter().map(String::as_str).collect::<Vec<_>>().join(",")
 }
 
 /// Why the writer refused a row.
@@ -325,7 +351,8 @@ impl NodeRows {
                 self.writer_check(&name.mesh, &name).await?;
                 let parked = parked_record(record, &to);
                 let (config, _) = self.known_config(&parked);
-                let (moved, written) = move_row(&*self.storage, &self.me, &parked, config, &name, &to).await.map_err(|e| match e {
+                let tags = self.known_tags(&parked).await?;
+                let (moved, written) = move_row(&*self.storage, &self.me, &parked, config, tags, &name, &to).await.map_err(|e| match e {
                     RenameRefused::NameHeld(h) => RowRefused::NameHeld(h),
                     RenameRefused::Unwritten(why) => RowRefused::Unwritten(why),
                 })?;
@@ -357,7 +384,21 @@ impl NodeRows {
     /// and its config kept, a blind put. One `via-node-row` span.
     pub async fn deleted(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
         let (config, config_from) = self.known_config(record);
-        self.deleted_row(&record.name, &record.node_id, Some((config, config_from)), operation).await
+        let tags = match self.known_tags(record).await {
+            Ok(tags) => tags,
+            Err(e) => return self.deleted_row(&record.name, &record.node_id, Err(e), operation).await,
+        };
+        self.deleted_row(&record.name, &record.node_id, Ok(Some((config, tags, config_from))), operation).await
+    }
+
+    /// The tags of the row `record`'s node is written with: the ones this writer holds for it, else
+    /// those of the row the node holds now (a point read through the id index); none when it holds
+    /// no row. A node's tags are never in the executor's record: they are meta only its rows carry.
+    async fn known_tags(&self, record: &Node) -> Result<std::collections::BTreeSet<String>, RowRefused> {
+        match self.written.known_row(&*self.storage, &record.mesh, &record.node_id).await {
+            Ok(row) => Ok(row.map(|r| r.tags).unwrap_or_default()),
+            Err(why) => Err(RowRefused::Unwritten(format!("{}: {why}: the row of {} is not written without the tags it carries", self.me, record.name))),
+        }
     }
 
     /// The `Deleted` row of a birth the executor holds no record of any more (a mesh leave's
@@ -366,11 +407,14 @@ impl NodeRows {
     /// holds no record of the node's row refuses by name and writes nothing: a `Deleted` row is never
     /// written with a config the writer does not know. One `via-node-row` span.
     pub async fn deleted_birth(&self, name: &PathName, node_id: &NodeId, operation: &str) -> Result<(), RowRefused> {
-        let known = self.written.config_of(node_id).map(|c| (c, "writer-record"));
-        self.deleted_row(name, node_id, known, operation).await
+        let known = self.written.row_of(node_id).map(|r| (r.config, r.tags, "writer-record"));
+        self.deleted_row(name, node_id, Ok(known), operation).await
     }
 
-    async fn deleted_row(&self, name: &PathName, node_id: &NodeId, known: Option<(BTreeMap<String, String>, &'static str)>, operation: &str) -> Result<(), RowRefused> {
+    /// The `Deleted` row of `node_id` at `name`, written from what the writer knows of it: its
+    /// config and tags (the row keeps both, as it keeps the record), or the refusal that names why
+    /// it knows neither. The store tombstones every tags index row of its labels with the write.
+    async fn deleted_row(&self, name: &PathName, node_id: &NodeId, known: Result<Option<(BTreeMap<String, String>, std::collections::BTreeSet<String>, &'static str)>, RowRefused>, operation: &str) -> Result<(), RowRefused> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-node-row",
             node = %self.me,
@@ -379,20 +423,21 @@ impl NodeRows {
             node_id = %node_id,
             keys = tracing::field::Empty,
             config_from = tracing::field::Empty,
+            tags = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
-        if let Some((config, config_from)) = &known {
-            span.record("keys", config.len() as u64).record("config_from", *config_from);
+        if let Ok(Some((config, tags, config_from))) = &known {
+            span.record("keys", config.len() as u64).record("config_from", *config_from).record("tags", labels(tags).as_str());
         }
         let r = tracing::Instrument::instrument(
             async {
                 self.writer_check(&name.mesh, name).await?;
-                let Some((config, _)) = known else {
+                let Some((config, tags, _)) = known? else {
                     return Err(RowRefused::Unwritten(format!("{}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know", self.me)));
                 };
-                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags: Default::default() };
+                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags };
                 match self.storage.put_node_row(&row).await {
                     Ok(Ok(())) => {
                         self.written.hold(&row);
@@ -409,7 +454,7 @@ impl NodeRows {
             Ok(()) => span.record("outcome", "row-deleted"),
             Err(e) => span.record("outcome", e.outcome()).record("detail", e.to_string().as_str()),
         };
-        span.in_scope(|| tracing::info!("node.delete: the Deleted row decided; the record and its config stay"));
+        span.in_scope(|| tracing::info!("node.delete: the Deleted row decided; the record, its config and its tags stay, its labels leave the tags index"));
         r
     }
 
@@ -432,6 +477,8 @@ impl NodeRows {
             span.record("seeded_from", p.node_id.as_str());
         }
         span.record("keys", config.len() as u64);
+        // A new node carries no tags: they are its caller's meta, set through node.update (a
+        // recovery's copy of the caller-owned meta is its own step).
         let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags: Default::default() };
         match self.storage.put_node_row(&row).await {
             Ok(Ok(())) => {
@@ -598,21 +645,21 @@ pub enum RenameRefused {
 }
 
 /// The node's row moves from `from` to `to` in `storage`: written at `to` from its held `record`
-/// with `config` (a put the store adapter refuses `NameHeld` when another node's live row holds
+/// with `config` and `tags` (a put the store adapter refuses `NameHeld` when another node's live row holds
 /// `to`; a row the node holds there already is left as it is, its id index entry naming `to`,
 /// [`NodesStorage::hold_node_row`]), then the node lets go of `from`
 /// (only its own row there goes). The one writer of a rename (R13: `node.update` is one write
 /// path): `node.update` at the node's mesh-primary (`crate::node_update`) and a replace's
 /// `RenamePredecessor` ([`NodeRows::moved_to_old`]) both move here. Answers what it did and the
 /// row written, if it wrote one.
-pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, config: BTreeMap<String, String>, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
+pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
     if from == to {
         return Ok((Moved::Renamed, None));
     }
     let held_there = storage.hold_node_row(to, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read or named for the rename of {} from {from}: {e}", record.node_id)))?;
     let mut written = None;
     if !held_there {
-        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags: Default::default() };
+        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags };
         storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
         written = Some(row);
     }
