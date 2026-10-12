@@ -34,12 +34,10 @@ fn attr(sp: &Value, k: &str) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_birth_is_one_trace_of_its_boot_steps_and_its_heartbeat_is_marked() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let want = ["mesh1.admin.1", "mesh1.rpc.1"].iter().map(|n| n.to_string()).collect();
-    estate.settled(&want, Duration::from_secs(30)).await;
-    // The heartbeat is the 5 s cadence: wait out one period so the second mark carries a peer.
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
+    estate.settles_to(&[("mesh1", 1, 1)], Duration::from_secs(30)).await;
+    // The heartbeat is the 5 s cadence: wait out one period so the second mark carries a peer. No
+    // object reports a heartbeat mark: the span the node records is the only place the fact lives.
     wait_for("both nodes mark a heartbeat that counts the other", Duration::from_secs(30), || async {
         let spans = estate.spans();
         ["mesh1.admin.1", "mesh1.rpc.1"]

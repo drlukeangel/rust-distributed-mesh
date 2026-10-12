@@ -32,11 +32,9 @@ fn owner() -> Owner {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing_else() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 3}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    estate.settled_shape(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
-    let (b, c, p) = (estate.node("mesh1.rpc.1").await, estate.node("mesh1.rpc.2").await, estate.node("mesh1.rpc.3").await);
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await;
+    estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
+    let (b, c, p) = (estate.node_value("mesh1.rpc.1").await, estate.node_value("mesh1.rpc.2").await, estate.node_value("mesh1.rpc.3").await);
     let (b_id, c_id) = (b["node_id"].as_str().unwrap().to_string(), c["node_id"].as_str().unwrap().to_string());
     let exact_b = format!("exact:{b_id}");
 
@@ -49,7 +47,7 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     assert_eq!(direct["reply"]["result"], json!({"found": true, "value": "one"}));
 
     // 2. ViaPeer through P to the same B: P's one inner call reaches B, which served.
-    estate.witness_holds("path:mesh1.rpc.3", "mesh1.rpc.1").await;
+    estate.witness_holds_birth("mesh1.rpc.3", "mesh1.rpc.1").await;
     let carried = estate.probe(&["get", "--target", &exact_b, "--via", "path:mesh1.rpc.3", "--key", "d1"]);
     assert_eq!((carried["outcome"].as_str(), carried["route"].as_str()), (Some("Reply"), Some("via-peer")), "{carried}");
     assert_eq!(carried["reply"]["executing_node"], b["node_id"], "the carrier reached exactly B: {carried}");

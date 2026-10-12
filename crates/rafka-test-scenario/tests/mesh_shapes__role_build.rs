@@ -1,7 +1,7 @@
 //! i143.e11.s3 process E2E: the role binaries on the base are born by node-admin as
 //! `NodeKind::{Broker, Gateway, Compute}` path.names (PRD §13.1).
 //!
-//! One fresh fabric; one `POST /api/build` asks for `{node_admin: 1, broker: 1, gateway: 1,
+//! One fresh fabric; one `build.create` asks for `{node_admin: 1, broker: 1, gateway: 1,
 //! compute: 1}`; from public surfaces only:
 //! - the Build completes and every desired node is `ready-for-traffic` under its kind;
 //! - every role cohort has exactly one primary; the fabric exactly one fabric primary;
@@ -10,6 +10,8 @@
 //! - a second Build without the compute retires `mesh1.compute.1` under that Build, and the
 //!   other roles keep their birth.
 
+use crate::build_log;
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeView};
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,22 +28,25 @@ fn owner() -> Owner {
     }
 }
 
+fn kind_of(kind: &str) -> NodeKind {
+    match kind {
+        "broker" => NodeKind::Broker,
+        "gateway" => NodeKind::Gateway,
+        "compute" => NodeKind::Compute,
+        other => panic!("{other} is not a role kind"),
+    }
+}
+
 /// `(kind, count)` of mesh1 beside its one node-admin.
 async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, Vec<Value>) {
-    let mut mesh = json!({"name": "mesh1", "node_admin": 1});
-    for (kind, n) in roles {
-        mesh[*kind] = json!(n);
-    }
-    let (status, accepted) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh]})).await;
-    assert_eq!(status, 202, "{label}: {accepted}");
-    let build_id = accepted["build_id"].as_str().unwrap().to_string();
-    let build = estate.await_build(&build_id, Duration::from_secs(120)).await;
-    estate.artifact(&format!("build-{label}.json"), &build);
+    let mesh = MeshDesired::of("mesh1", std::iter::once((NodeKind::NodeAdmin, 1)).chain(roles.iter().map(|(kind, n)| (kind_of(kind), *n))));
+    let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh] }).await.build_id.to_string();
+    estate.artifact(&format!("build-{label}.json"), &build_log::build_value(&estate.carrier().await, &build_id).await);
     let mut want: BTreeSet<String> = ["mesh1.admin.1".to_string()].into();
     for (kind, n) in roles {
         want.extend((1..=*n).map(|i| format!("mesh1.{kind}.{i}")));
     }
-    let nodes = estate.settled(&want, Duration::from_secs(15)).await;
+    let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(15)).await);
     for n in &nodes {
         let name = n["name"].as_str().unwrap();
         let kind = name.split('.').nth(1).unwrap();
@@ -88,14 +93,9 @@ async fn roles_are_born_by_build_under_their_kind() {
     // The same digest carries the node's mesh-channel counts (R-L2): it has heard the members of
     // its mesh, holds a gossip neighbour, and has sent and decoded membership frames.
     // A digest is a periodic sample: the Build is ready on declarations, before every member has
-    // published a sample taken after the others joined. Read /api/nodes until the samples are in.
-    let sampled = |ns: &[Value]| ns.iter().all(|n| n["gossip"]["neighbours"].as_u64().is_some_and(|k| k >= 1) && n["gossip"]["frames_received"].as_u64().is_some_and(|f| f >= 1) && n["gossip"]["frames_sent"].as_u64().is_some_and(|f| f >= 1));
-    let mut gossip_nodes = estate.nodes().await;
-    let until = std::time::Instant::now() + Duration::from_secs(15);
-    while !sampled(&gossip_nodes) && std::time::Instant::now() < until {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        gossip_nodes = estate.nodes().await;
-    }
+    // published a sample taken after the others joined. Read `node.get` until the samples are in.
+    let sampled = |ns: &[NodeView]| ns.iter().all(|n| n.gossip.as_ref().is_some_and(|g| g.neighbours >= 1 && g.frames_received >= 1 && g.frames_sent >= 1));
+    let gossip_nodes = Estate::values(&estate.until_view("every node published a digest sampled after the others joined", Duration::from_secs(15), |views| sampled(views).then(|| views.to_vec())).await);
     estate.artifact("nodes-gossip.json", &json!(gossip_nodes));
     for n in &gossip_nodes {
         let g = &n["gossip"];
@@ -110,6 +110,8 @@ async fn roles_are_born_by_build_under_their_kind() {
         ns.iter().map(|n| (n["name"].as_str().unwrap().to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()
     };
     let before = births(&nodes);
+    // The initial fabric refuses a shrink until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let (second, after) = build(&estate, "without-compute", &[("broker", 1), ("gateway", 1)]).await;
     let after = births(&after);
     assert!(!after.contains_key("mesh1.compute.1"));
@@ -121,7 +123,7 @@ async fn roles_are_born_by_build_under_their_kind() {
     estate.stop().await;
     let spans = estate.spans();
     let accepted = |id: &str| {
-        named(&spans, "rdm.node_admin.build.create.via-rest")
+        named(&spans, "rdm.node_admin.build.create.via-node-rpc")
             .into_iter()
             .find(|s| s["attributes"]["build_id"] == id)
             .unwrap_or_else(|| panic!("no span accepted build {id}"))

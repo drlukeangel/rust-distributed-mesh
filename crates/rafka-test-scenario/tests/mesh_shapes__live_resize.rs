@@ -1,6 +1,6 @@
 //! i143.e3.s4 process E2E: live resize above and back to the floor (PRD §10).
 //!
-//! On running fabrics, each resize is one `POST /api/build`:
+//! On running fabrics, each resize is one `build.create`:
 //! - MN rpc cohort 3 -> 5 -> 4 -> 7 -> 3, then node-admin cohort 2 -> 3 -> 2;
 //! - MM: mesh1 and mesh2 grow and shrink independently.
 //!
@@ -43,16 +43,9 @@ struct Step {
 
 /// Submit `meshes` as the fabric's desired shape and check the step settled.
 async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], before: &[Value]) -> (Step, Vec<Value>) {
-    let desired = json!({
-        "fabric": "fabric1",
-        "meshes": meshes.iter().map(|(m, a, r)| json!({"name": m, "node_admin": a, "rpc_node": r})).collect::<Vec<_>>(),
-    });
-    let (status, accepted) = estate.post("/api/build", &desired).await;
-    assert_eq!(status, 202, "{label}: {accepted}");
-    let build_id = accepted["build_id"].as_str().unwrap().to_string();
-    estate.await_build(&build_id, Duration::from_secs(120)).await;
+    let build_id = estate.reconcile_shape("fabric1", meshes).await.build_id.to_string();
     // Exactly the desired nodes, all ready.
-    let nodes = estate.settled_shape(meshes, Duration::from_secs(15)).await;
+    let nodes = Estate::values(&estate.settles_to(meshes, Duration::from_secs(15)).await);
     // Every seat is a held one, and a holder that survived the step still holds it.
     if let Err(e) = seats_as_expected(&nodes).and_then(|()| seats_kept(before, &nodes)) {
         panic!("{label}: {e}: {nodes:#?}");
@@ -81,7 +74,7 @@ async fn resize(estate: &Estate, label: &str, meshes: &[(&str, u32, u32)], befor
 fn retirements_are_causal(estate: &Estate, steps: &[Step]) {
     let spans = estate.spans();
     for step in steps {
-        let accepted = named(&spans, "rdm.node_admin.build.create.via-rest")
+        let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc")
             .into_iter()
             .find(|s| s["attributes"]["build_id"] == step.build_id.as_str())
             .unwrap_or_else(|| panic!("no span accepted build {}", step.build_id))

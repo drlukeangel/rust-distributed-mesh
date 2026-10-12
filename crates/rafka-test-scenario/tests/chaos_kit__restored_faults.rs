@@ -7,12 +7,14 @@
 //! `LinkRefusal::Unavailable` and the cell skips by that reason, or fails with it when
 //! `RDM_REQUIRE_NETFAULT=1`.
 
+use rafka_mesh_entity::NodeId;
+use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_test_scenario::disk_faults::DiskFull;
 use rafka_test_scenario::elections::advertised_fabric_primaries;
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::link_faults::{flap_link, FirewallInbound, LinkRefusal, PartitionSubset};
 use rafka_test_scenario::process_faults::{burst_kill, gone, ExactRuntime};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::time::Duration;
 
 const SETTLE: Duration = Duration::from_secs(120);
@@ -28,8 +30,8 @@ fn owner(test: &str) -> Owner {
     }
 }
 
-fn ready(n: &Value) -> bool {
-    n["status"] == "ready-for-traffic"
+fn ready(n: &NodeView) -> bool {
+    n.status == NodeStatus::ReadyForTraffic
 }
 
 fn attr(sp: &Value, k: &str) -> String {
@@ -40,17 +42,15 @@ fn attr(sp: &Value, k: &str) -> String {
 /// estate's evidence dir beside the nodes' (and to OTLP when configured).
 async fn estate(test: &str) -> (Estate, Option<rafka_mesh_telemetry::TelemetryGuard>) {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), SETTLE).await;
-    wait_for("2 admins and 3 rpc nodes ready", SETTLE, || async { (estate.nodes().await.iter().filter(|n| ready(n)).count() == 5).then_some(()) }).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
+    estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
     std::env::set_var("RDM_EVIDENCE_DIR", &estate.evidence);
     let guard = rafka_mesh_telemetry::init_evidence_telemetry("rafka-chaos-kit");
     (estate, guard)
 }
 
 async fn published(estate: &Estate, node: &str) -> ExactRuntime {
-    let dir = estate.data_dir_of(node).await;
+    let dir = estate.data_dir(node).await;
     ExactRuntime::published(std::path::Path::new(&dir)).unwrap_or_else(|r| panic!("{node}: no exact runtime published in {dir}: {r:?}"))
 }
 
@@ -75,8 +75,8 @@ async fn finish(mut estate: Estate, guard: Option<rafka_mesh_telemetry::Telemetr
     estate.spans()
 }
 
-async fn back_ready(estate: &Estate, node: &str, node_id: &Value) -> Value {
-    wait_for(&format!("{node} ready again as the same node"), SETTLE, || async { estate.node_opt(node).await.filter(|n| ready(n) && n["node_id"] == *node_id) }).await
+async fn back_ready(estate: &Estate, node: &str, node_id: &NodeId) -> NodeView {
+    estate.until_node(node, &format!("{node} ready again as the same node"), SETTLE, |n| n.filter(|n| ready(n) && n.node_id == *node_id).cloned()).await
 }
 
 /// CONTRACT: a burst kill signals two rpc nodes' exact runtimes together, each acknowledged by its
@@ -89,11 +89,12 @@ async fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
         return;
     }
     let (estate, guard) = estate("burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest").await;
-    let nodes = estate.nodes().await;
+    let views = estate.node_views().await;
+    let nodes = Estate::values(&views);
     let fp = advertised_fabric_primaries(&nodes).into_iter().next().expect("a fabric primary is advertised");
     // The fabric primary's runtime: its published fact, or (the self-adopted bootstrap admin
     // publishes none) the OS's own record of the process this estate started.
-    let protected = match ExactRuntime::published(std::path::Path::new(&estate.data_dir_of(&fp).await)) {
+    let protected = match ExactRuntime::published(std::path::Path::new(&estate.data_dir(&fp).await)) {
         Ok(r) => r,
         Err(_) => {
             let pid = estate.bootstrap_pid().expect("the bootstrap admin runs");
@@ -101,7 +102,7 @@ async fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
         }
     };
     let (a, b, spared) = (published(&estate, "mesh1.rpc.1").await, published(&estate, "mesh1.rpc.2").await, published(&estate, "mesh1.rpc.3").await);
-    let births: Vec<Value> = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| nodes.iter().find(|x| x["name"] == *n).unwrap()["incarnation_id"].clone()).collect();
+    let births: Vec<_> = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| views.iter().find(|x| x.name.to_string() == *n).unwrap().incarnation_id.clone()).collect();
     let done = tokio::task::spawn_blocking({
         let (targets, protected) = (vec![a.clone(), b.clone()], vec![protected.clone()]);
         move || burst_kill(&targets, &protected)
@@ -113,7 +114,7 @@ async fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
     assert!(gone(a.pid) && gone(b.pid), "both victims exited");
     assert!(!gone(spared.pid) && !gone(protected.pid), "the spared rpc node and the protected fabric primary still run");
     for (name, birth) in [("mesh1.rpc.1", &births[0]), ("mesh1.rpc.2", &births[1])] {
-        wait_for(&format!("{name}'s birth no longer ready in the view"), SETTLE, || async { estate.node_opt(name).await.filter(|n| !ready(n) || n["incarnation_id"] != *birth).map(|_| ()).or_else(|| None) }).await;
+        estate.until_node(name, &format!("{name}'s birth no longer ready in the view"), SETTLE, |n| n.filter(|n| !ready(n) || n.incarnation_id != *birth).map(|_| ())).await;
     }
     let spans = finish(estate, guard).await;
     let burst: Vec<&Value> = named(&spans, "rdm.testkit.fault.update.via-process-burst");
@@ -130,13 +131,13 @@ async fn disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal() {
         return;
     }
     let (estate, guard) = estate("disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal").await;
-    let dir = std::path::PathBuf::from(estate.data_dir_of("mesh1.rpc.2").await);
-    let other = std::path::PathBuf::from(estate.data_dir_of("mesh1.rpc.1").await);
+    let dir = std::path::PathBuf::from(estate.data_dir("mesh1.rpc.2").await);
+    let other = std::path::PathBuf::from(estate.data_dir("mesh1.rpc.1").await);
     let fill = DiskFull::fill(&dir, 16 << 20).expect("16 MiB fits");
     assert!(fill.allocated >= 16 << 20, "{fill:?}");
     assert!(fill.path.starts_with(&dir) && !other.join(rafka_test_scenario::disk_faults::FILLER).exists(), "only the named node's dir holds a filler");
-    let held = estate.node("mesh1.rpc.2").await;
-    assert!(ready(&held), "a bounded filler leaves the node serving: {held}");
+    let held = estate.node_view("mesh1.rpc.2").await;
+    assert!(ready(&held), "a bounded filler leaves the node serving: {held:?}");
     let path = fill.path.clone();
     drop(fill);
     assert!(!path.exists(), "the heal removed the filler");
@@ -155,9 +156,10 @@ async fn partition_subset_cuts_a_node_set_from_the_rest_until_healed() {
         return;
     }
     let (estate, guard) = estate("partition_subset_cuts_a_node_set_from_the_rest_until_healed").await;
-    let nodes = estate.nodes().await;
+    let views = estate.node_views().await;
+    let nodes = Estate::values(&views);
     let fp = advertised_fabric_primaries(&nodes);
-    let ids: Vec<Value> = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| nodes.iter().find(|x| x["name"] == *n).unwrap()["node_id"].clone()).collect();
+    let ids: Vec<NodeId> = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| views.iter().find(|x| x.name.to_string() == *n).unwrap().node_id.clone()).collect();
     assert_eq!(PartitionSubset::start(&nodes, &fp, &fp).err(), Some(LinkRefusal::Protected { name: fp[0].clone() }), "the fabric primary is never a target");
     let cut = match PartitionSubset::start(&nodes, &names(&["mesh1.rpc.1", "mesh1.rpc.2"]), &fp) {
         Ok(c) => c,
@@ -168,7 +170,7 @@ async fn partition_subset_cuts_a_node_set_from_the_rest_until_healed() {
         }
     };
     for n in ["mesh1.rpc.1", "mesh1.rpc.2"] {
-        wait_for(&format!("{n} not ready in the view under the cut"), SETTLE, || async { estate.node_opt(n).await.filter(|x| !ready(x)).map(|_| ()) }).await;
+        estate.until_node(n, &format!("{n} not ready in the view under the cut"), SETTLE, |x| x.filter(|x| !ready(x)).map(|_| ())).await;
     }
     drop(cut);
     back_ready(&estate, "mesh1.rpc.1", &ids[0]).await;
@@ -187,11 +189,12 @@ async fn link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth() {
         return;
     }
     let (estate, guard) = estate("link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth").await;
-    let nodes = estate.nodes().await;
+    let views = estate.node_views().await;
+    let nodes = Estate::values(&views);
     let fp = advertised_fabric_primaries(&nodes);
     let victim = "mesh1.rpc.1";
     let rest: Vec<String> = nodes.iter().filter_map(|n| n["name"].as_str()).filter(|n| *n != victim).map(String::from).collect();
-    let before = nodes.iter().find(|n| n["name"] == victim).unwrap().clone();
+    let before = views.iter().find(|n| n.name.to_string() == victim).unwrap().clone();
     let out = tokio::task::spawn_blocking({
         let (nodes, rest) = (nodes.clone(), rest.clone());
         move || flap_link(&nodes, &names(&[victim]), &rest, &fp, 3, Duration::from_millis(1200), Duration::from_millis(800))
@@ -207,9 +210,9 @@ async fn link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth() {
         }
     };
     assert_eq!(flapped.cycles, 3);
-    let back = back_ready(&estate, victim, &before["node_id"]).await;
-    assert_eq!(back["incarnation_id"], before["incarnation_id"], "a flap shorter than the floor leaves the same birth");
-    assert_eq!(estate.nodes().await.len(), nodes.len(), "no ghost birth");
+    let back = back_ready(&estate, victim, &before.node_id).await;
+    assert_eq!(back.incarnation_id, before.incarnation_id, "a flap shorter than the floor leaves the same birth");
+    assert_eq!(estate.node_views().await.len(), nodes.len(), "no ghost birth");
     let spans = finish(estate, guard).await;
     assert_eq!(named(&spans, "rdm.testkit.fault.update.via-link-flap").len(), 1);
     assert_eq!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().filter(|sp| attr(sp, "fault") == "link-flap").count(), 3, "one heal per cycle");
@@ -223,10 +226,11 @@ async fn firewall_inbound_deafens_one_node_until_healed() {
         return;
     }
     let (estate, guard) = estate("firewall_inbound_deafens_one_node_until_healed").await;
-    let nodes = estate.nodes().await;
+    let views = estate.node_views().await;
+    let nodes = Estate::values(&views);
     let fp = advertised_fabric_primaries(&nodes);
     let victim = "mesh1.rpc.2";
-    let id = nodes.iter().find(|n| n["name"] == victim).unwrap()["node_id"].clone();
+    let id = views.iter().find(|n| n.name.to_string() == victim).unwrap().node_id.clone();
     let drop_in = match FirewallInbound::start(&nodes, victim, &fp) {
         Ok(f) => f,
         Err(why) => {
@@ -235,7 +239,7 @@ async fn firewall_inbound_deafens_one_node_until_healed() {
             return;
         }
     };
-    wait_for(&format!("{victim} not ready under the inbound drop"), SETTLE, || async { estate.node_opt(victim).await.filter(|x| !ready(x)).map(|_| ()) }).await;
+    estate.until_node(victim, &format!("{victim} not ready under the inbound drop"), SETTLE, |x| x.filter(|x| !ready(x)).map(|_| ())).await;
     drop(drop_in);
     back_ready(&estate, victim, &id).await;
     let spans = finish(estate, guard).await;

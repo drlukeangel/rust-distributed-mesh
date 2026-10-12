@@ -2,10 +2,13 @@
 //! so the chaos run starts from pieces known to work. Process provider; telemetry on through
 //! `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-use rafka_test_scenario::estate::{wait_for, Estate, Owner};
+use rafka_mesh_entity::NodeKind;
+use rafka_node_admin_client::{BuildSpec, FabricDesired, MeshDesired, NodeStatus};
+use rafka_node_rpc_contract::build::BuildPhase;
+use rafka_test_scenario::estate::{Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use rafka_test_scenario::process_faults::{ExactRuntime, Fault, Refusal};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -22,22 +25,15 @@ fn owner(test: &str) -> Owner {
     }
 }
 
-fn ready(n: &Value) -> bool {
-    n["status"] == "ready-for-traffic"
+fn ready(n: &rafka_node_admin_client::NodeView) -> bool {
+    n.status == NodeStatus::ReadyForTraffic
 }
 
 /// Bootstraps mesh1 and builds 1 more node-admin and 2 rpc nodes, all ready.
 async fn small_estate(test: &str) -> Estate {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    let shape = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 2}]});
-    let (status, accepted) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "POST /api/build: {accepted}");
-    estate.await_build(accepted["build_id"].as_str().unwrap(), SETTLE).await;
-    wait_for("2 admins + 2 rpc ready", SETTLE, || async {
-        let nodes = estate.nodes().await;
-        (nodes.iter().filter(|n| ready(n)).count() == 4).then_some(())
-    })
-    .await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.settles_to(&[("mesh1", 2, 2)], SETTLE).await;
     estate
 }
 
@@ -47,7 +43,7 @@ async fn small_estate(test: &str) -> Estate {
 #[tokio::test(flavor = "multi_thread")]
 async fn poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid() {
     let mut estate = small_estate("poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid").await;
-    let dir = PathBuf::from(estate.data_dir_of("mesh1.rpc.2").await);
+    let dir = PathBuf::from(estate.data_dir("mesh1.rpc.2").await);
     let rt = ExactRuntime::published(&dir).expect("rpc.2 published its runtime");
 
     // A recycled pid is refused by name, and nothing is signalled.
@@ -76,10 +72,10 @@ async fn poc_process_faults_hold_release_kill_and_refuse_a_recycled_pid() {
 #[tokio::test(flavor = "multi_thread")]
 async fn poc_netfault_cut_unhears_one_node_and_heal_restores_it() {
     let mut estate = small_estate("poc_netfault_cut_unhears_one_node_and_heal_restores_it").await;
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let victim = "mesh1.rpc.2".to_string();
     let rest: Vec<String> = nodes.iter().filter_map(|n| n["name"].as_str()).filter(|n| *n != victim).map(String::from).collect();
-    let id_before = estate.node(&victim).await["node_id"].clone();
+    let id_before = estate.node_view(&victim).await.node_id;
     let cut = match Partition::start(&udp_ports(&nodes, &[victim.clone()]), &udp_ports(&nodes, &rest)) {
         Ok(c) => c,
         Err(why) if std::env::var("RDM_REQUIRE_NETFAULT").is_err() => {
@@ -89,15 +85,11 @@ async fn poc_netfault_cut_unhears_one_node_and_heal_restores_it() {
         }
         Err(why) => panic!("netfault required: {why}"),
     };
-    let held = wait_for("the cut node is no longer ready in the admin's view", SETTLE, || async {
-        let n = estate.node_opt(&victim).await;
-        n.filter(|n| !ready(n)).map(|n| n["status"].clone())
-    })
-    .await;
-    eprintln!("poc: under the cut {victim} reads {held}");
+    let held = estate.until_node(&victim, "the cut node is no longer ready in the admin's view", SETTLE, |n| n.filter(|n| !ready(n)).map(|n| n.status)).await;
+    eprintln!("poc: under the cut {victim} reads {held:?}");
     drop(cut);
-    let back = wait_for("the healed node is ready again", SETTLE, || async { estate.node_opt(&victim).await.filter(ready) }).await;
-    assert_eq!(back["node_id"], id_before, "the heal brings back the same node: {back}");
+    let back = estate.until_node(&victim, "the healed node is ready again", SETTLE, |n| n.filter(|n| ready(n)).cloned()).await;
+    assert_eq!(back.node_id, id_before, "the heal brings back the same node: {back:?}");
     estate.stop().await;
 }
 
@@ -112,44 +104,33 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
     o.rung = "fault-door".into();
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(o, "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("faulted-admin binding set accepted");
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), SETTLE).await;
-    estate.settled(&["mesh1.admin.1", "mesh1.admin.2"].iter().map(|n| n.to_string()).collect(), Duration::from_secs(60)).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
+    estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
     // Either admin may execute: arm the same cut on both doors.
     let mut doors = Vec::new();
-    for n in estate.nodes().await.iter().filter(|n| n["kind"] == "node_admin") {
-        let name = n["name"].as_str().unwrap().to_string();
-        let api = n["admin_api_base"].as_str().unwrap().to_string();
-        doors.push(Door::open(&estate.root, &name, &api).await);
+    for n in estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
+        let api = n.admin_api_base.clone().expect("a node-admin advertises its control API");
+        doors.push(Door::open(&estate.root, &n.name.to_string(), &api).await);
     }
     let id = "poc:deploy-runtime";
     let spec = json!({"kind": "receipt", "step": "DeployRuntime", "operation": "create-node", "node": "mesh1.rpc.1"});
     for d in &doors {
         d.arm(id, spec.clone()).await;
     }
-    let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 1}]})).await;
-    assert_eq!(status, 202, "{b}");
-    let build = b["build_id"].as_str().unwrap().to_string();
-    let holder = wait_for("one admin's door holds the create", Duration::from_secs(90), || async {
-        for d in &doors {
-            let c = d.cut(id).await;
-            if c["held"] == true && !c["hit"].is_null() {
-                return Some((d.name.clone(), c));
-            }
-        }
-        None
-    })
-    .await;
-    eprintln!("poc: {} holds {}", holder.0, holder.1);
-    let (_, during) = estate.get(&format!("/api/builds?id={build}")).await;
-    assert_ne!(during["status"], "complete", "the Build cannot complete while its step is held: {during}");
+    let desired = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)])] };
+    let mut stream = estate.submit(&BuildSpec::Fabric(desired)).await;
+    let build = stream.build_id().to_string();
+    // The door of whichever admin executes the create reports the held call.
+    let holder = futures_lite::future::or(doors[0].wait_held(id), doors[1].wait_held(id)).await;
+    eprintln!("poc: a door holds {holder}");
+    let during = estate.builds_obj().await.get(stream.build_id()).await.unwrap_or_else(|e| panic!("build.get of {build}: {e}"));
+    assert_ne!(during.phase, BuildPhase::Complete, "the Build cannot complete while its step is held: {during:?}");
     for d in &doors {
         d.release(id).await;
     }
-    estate.await_build(&build, SETTLE).await;
-    wait_for("rpc.1 ready after the release", SETTLE, || async { estate.node_opt("mesh1.rpc.1").await.filter(ready) }).await;
+    Estate::until_complete(&mut stream).await;
+    estate.until_node("mesh1.rpc.1", "rpc.1 ready after the release", SETTLE, |n| n.filter(|n| ready(n)).map(|_| ())).await;
     estate.stop().await;
 }
 
@@ -159,7 +140,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn poc_probe_round_trips_and_a_cut_frame_is_not_sent() {
     let mut estate = small_estate("poc_probe_round_trips_and_a_cut_frame_is_not_sent").await;
-    let id = estate.node("mesh1.rpc.1").await["node_id"].as_str().unwrap().to_string();
+    let id = estate.node_value("mesh1.rpc.1").await["node_id"].as_str().unwrap().to_string();
     let exact = format!("exact:{id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "7", "--value", "poc"]);
     assert_eq!(put["outcome"], "Reply", "{put}");
