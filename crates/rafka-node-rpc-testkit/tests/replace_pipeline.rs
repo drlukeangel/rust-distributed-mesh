@@ -9,7 +9,7 @@
 //! NodeDeleted) before the successor is created (node-recovery.md: node.delete, then node.create).
 //!
 //! The span-asserting cell runs in its own process (`own_process`), and its capture enables every
-//! callsite before installing its dispatcher (`crate::enable_callsites`).
+//! callsite before installing its dispatcher (`rafka_mesh_telemetry::span_capture` calls `enable_callsites`).
 
 use crate::common;
 

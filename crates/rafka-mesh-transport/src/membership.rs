@@ -6255,9 +6255,8 @@ mod tests {
     /// refresh, or by a heartbeat; an own-mesh status taken from a heartbeat.
     #[test]
     fn a_non_primary_admin_ends_a_stop_only_when_its_primarys_projection_moves_past_it() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let view = View::new("mesh1", "mesh1.admin.2");
         let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
@@ -7234,9 +7233,8 @@ mod tests {
     /// 379b4094c48d8b852890734790b7b222).
     #[test]
     fn a_receiver_that_applied_mesh_left_refuses_every_later_aggregate_of_that_mesh_id() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
-        let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _guard = crate::span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let m1 = MeshId::mint();
         let last = born("mesh1", "admin.1", Some(&m1), 1);
@@ -7411,9 +7409,8 @@ mod tests {
     /// with no subscriber, and passed alone).
     #[test]
     fn a_capture_receives_its_own_span_at_a_callsite_another_thread_hit_first() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         std::thread::spawn(open_shared_callsite).join().unwrap();
         open_shared_callsite();
         assert_eq!(spans.named("capture.shared-callsite").len(), 1, "the capture's own span reached it");
@@ -7464,9 +7461,8 @@ mod tests {
     /// its mesh's status because its predecessor's name is held departed, then publishes a fresh one.
     #[test]
     fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_and_a_late_status_of_that_name_is_refused() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
         let departure = op_at("mesh2.admin.1", &x, &x_inc, "replace-node:mesh2.admin.1");
@@ -7516,9 +7512,8 @@ mod tests {
     /// is a copy, not a refusal.
     #[test]
     fn a_lifecycle_overlay_arriving_after_its_mesh_left_is_refused_by_the_departed_fence_by_name() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         let book = DigestBook::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let mesh_id = MeshId::mint();
@@ -7549,9 +7544,8 @@ mod tests {
     /// copy (canonical_ids: 44 refusals of one replace-node departure at one admin).
     #[test]
     fn a_departure_refused_by_the_departed_fence_is_refused_by_name_once_and_its_copies_silently() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         let book = DigestBook::default();
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         let mesh_id = MeshId::mint();
@@ -7608,9 +7602,8 @@ mod tests {
     /// epoch's, or a predecessor's delta read as a version gap.
     #[test]
     fn a_delayed_predecessor_publication_is_refused_by_name_and_never_switches_the_receiver_back() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let fp = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
         let held = |view: &View, side: Side, mesh: &str| view.receiver(side).lock().unwrap().held_version(mesh);
@@ -7777,9 +7770,8 @@ mod tests {
     /// `a_lost_mesh_recovers_as_itself_under_the_same_build`: mesh2.rpc.1-3 refused 35 frames each).
     #[test]
     fn a_publication_of_an_epoch_with_no_seat_evidence_on_the_mesh_channel_is_refused_and_marked_for_top_up() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = OpenedSpans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         let fabric = FabricId::parse("fab000000001").unwrap();
         let member = View::new("mesh2", "mesh2.rpc.1");
         let (lost, recovered, rpc) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.admin.1", 1), birth_at("mesh1.rpc.1", 1));
