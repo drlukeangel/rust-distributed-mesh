@@ -191,13 +191,18 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
         .expect("the drive stopped at the fence on the lost mesh");
     assert_eq!((attr(&fence, "rebirth_decided").as_str(), attr(&fence, "target")), ("false", format!("{lost}.admin.1")), "the fence held the lost mesh's first node-admin: {fence}");
     assert!(at(&fence) < at(&verdict), "the fence stood before the decision: {fence} {verdict}");
-    // The provider proved every node-admin of the lost mesh exited, read by the drive of the change.
+    // The provider proved every node of the lost mesh exited ("Every node of mesh-x, its node-admins included,
+    // has crashed"), read by the drive of the change.
     let proof = named(&spans, "rdm.node_admin.mesh.update.via-crash-proof")
         .into_iter()
         .find(|sp| attr(sp, "node") == new_primary && attr(sp, "mesh") == lost && attr(sp, "build_id") == change && attr(sp, "outcome") == "proven")
         .cloned()
-        .expect("the provider's exit proof of every node-admin of the lost mesh was read");
-    assert_eq!((attr(&proof, "proven"), attr(&proof, "unproven")), (format!("{lost}.admin.1,{lost}.admin.2"), String::new()), "both node-admins proven exited: {proof}");
+        .expect("the provider's exit proof of every node of the lost mesh was read");
+    assert_eq!(
+        (attr(&proof, "proven"), attr(&proof, "unproven")),
+        (format!("{lost}.admin.1,{lost}.admin.2,{lost}.rpc.1,{lost}.rpc.2,{lost}.rpc.3"), String::new()),
+        "every node of the lost mesh proven exited, its node-admins included: {proof}"
+    );
     // On that proof the new fabric primary ran the create of the lost mesh's first node-admin in
     // process; every other node of the lost mesh was made by the lost mesh's new primary.
     let executor_of = |attempt: &str| {
@@ -214,6 +219,20 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     assert!(at(first) > at(&proof), "the create followed the provider's proof: {first} {proof}");
     let others: Vec<(String, String)> = creates.iter().filter(|sp| attr(sp, "node") != first_admin).map(|sp| (attr(sp, "node"), executor_of(&attr(sp, "attempt")))).collect();
     assert!(!others.is_empty() && others.iter().all(|(_, executor)| *executor == first_admin), "the rest of the lost mesh was made by its new primary {first_admin}: {others:?}");
+    // R-DG1 (mesh-investigation.md steps 5-7): when it gave the lost mesh its node-admin the new fabric primary authored
+    // the fabric degraded, and it cleared it on the report of the lost mesh's new primary, after the opening.
+    let opening = named(&spans, "rdm.node_admin.build.update.via-proven-drift")
+        .into_iter()
+        .find(|sp| attr(sp, "authority") == new_primary && attr(sp, "scope") == first_admin)
+        .cloned()
+        .unwrap_or_else(|| panic!("the new fabric primary opened the create of {first_admin} on the proof"));
+    assert_eq!(attr(&opening, "fabric_status"), "degraded", "the opening authored the fabric degraded: {opening}");
+    let recovered = named(&spans, "rdm.node_admin.mesh.update.via-recovered")
+        .into_iter()
+        .find(|sp| attr(sp, "node") == new_primary && attr(sp, "mesh") == lost)
+        .cloned()
+        .unwrap_or_else(|| panic!("the lost mesh's new primary reported: the fabric is ready again"));
+    assert!(at(&recovered) > at(&opening), "the clear followed the opening: {recovered} {opening}");
     // The new holder is announced by a surviving admin: a vacancy first (the lost mesh's holder is
     // silent, then proven gone), then the lowest remaining mesh primary takes the seat.
     let recomputes = named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute");
