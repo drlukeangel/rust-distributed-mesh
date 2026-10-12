@@ -508,6 +508,27 @@ impl Fabrics {
         ended_read(&span, FabricOp::Get.name(), &r);
         r
     }
+
+    /// Await the typed fact `holds` of the fabric as the admin the carrier starts at reports it
+    /// (`fabric.get`), read at half the gossip interval so a fact that spreads by gossip is read as it
+    /// lands. `fact` names it. An admin that does not report it within `within` ends the call
+    /// `Indeterminate`, naming the fact, the admin and the last thing it reported or how its last read
+    /// ended.
+    pub async fn fact(&self, fact: &str, within: std::time::Duration, holds: impl Fn(&FabricView) -> bool) -> Result<FabricView, CallEnd> {
+        let started = std::time::Instant::now();
+        let every = rafka_mesh_entity::cadence::gossip_interval() / 2;
+        loop {
+            let last = match self.get().await {
+                Ok(view) if holds(&view) => return Ok(view),
+                Ok(view) => format!("status {:?}, fabric-primary {}, {} meshes", view.status, view.fabric_primary.as_ref().map(|p| p.to_string()).unwrap_or_else(|| "none".into()), view.meshes.len()),
+                Err(e) => e.to_string(),
+            };
+            if started.elapsed() >= within {
+                return Err(CallEnd::Indeterminate { reason: format!("{} never reported the fabric fact {fact} within {within:?}; its last report was: {last}", self.carrier.fabric_primary()) });
+            }
+            tokio::time::sleep(every).await;
+        }
+    }
 }
 
 /// The `build` objects: the calls of the fabric-primary's Build family.

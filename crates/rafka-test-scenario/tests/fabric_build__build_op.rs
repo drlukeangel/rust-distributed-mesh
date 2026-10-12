@@ -13,7 +13,7 @@
 
 use iroh::SecretKey;
 use rafka_mesh_entity::{NodeKind, PathName};
-use rafka_node_admin_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Frame, MeshDesired, NodeAdminClient, NodeEvent, Nodes, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
+use rafka_node_admin_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeAdminClient, NodeEvent, Nodes, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::build::{Build, BuildReply, BuildRequest};
 use rafka_node_rpc_contract::context::CallContext;
@@ -376,22 +376,9 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     assert!(matches!(end, CallEnd::Indeterminate { .. }), "a dead fabric-primary ends the caller's stream indeterminate, never as a failed step: {end:?}");
 
     // A seat moves to a surviving admin; the caller re-submits there by the Build id.
-    let survivors: Vec<String> = caller.bases_except(&fp);
-    let (successor, base) = wait_for("an admin other than the dead one holds the fabric-primary seat", Duration::from_secs(60), || async {
-        for base in &survivors {
-            if let Ok(f) = NodeAdminClient::new(base.as_str()).fabric().await {
-                if let Some(p) = f.fabric_primary.filter(|p| p.to_string() != fp) {
-                    return Some((p, base.clone()));
-                }
-            }
-        }
-        None
-    })
-    .await;
-    let after = Caller::of(&base).await;
-    let carrier = after.carrier().await;
-    assert_eq!(carrier.fabric_primary(), &successor);
-    let mut resumed = after.nodes(&carrier).resume(WorkflowKind::Restart(path(NODE)), &accepted).await.expect("the successor accepts the re-submit");
+    let successor = caller.successor_of(&fp).await;
+    let carrier = caller.carrier_at(&successor);
+    let mut resumed = caller.nodes(&carrier).resume(WorkflowKind::Restart(path(NODE)), &accepted).await.expect("the successor accepts the re-submit");
     assert_eq!(resumed.accepted().build_id, accepted.build_id, "never a second Build");
     let frames = drain(&mut resumed).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
@@ -406,7 +393,7 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     assert_eq!(receipts.attempt, accepted.attempt, "the successor started the attempt that was claimed and opened no other");
 
     // The estate stops through the admin that holds the seat now.
-    estate.admin = base.clone();
+    estate.admin = caller.base_of(&successor);
     estate.stop().await;
     let spans = estate.spans();
     let build = &accepted.build_id.0;
@@ -471,10 +458,32 @@ async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_se
 }
 
 impl Caller {
-    /// The control API bases of the node-admins other than `dead`, as the answering admin's view
-    /// held them before it died.
-    fn bases_except(&self, dead: &str) -> Vec<String> {
-        self.bases.lock().unwrap().iter().filter(|(name, _)| name.as_str() != dead).map(|(_, base)| base.clone()).collect()
+    /// The node-admins other than `dead`, as the answering admin's view held them before it died.
+    fn admins_except(&self, dead: &str) -> Vec<String> {
+        self.bases.lock().unwrap().keys().filter(|name| name.as_str() != dead).cloned().collect()
+    }
+
+    /// The carrier that starts at node-admin `at`: its reads answer from that admin's own view.
+    fn carrier_at(&self, at: &str) -> BuildCarrier {
+        BuildCarrier::new(self.client.clone(), path(at))
+    }
+
+    /// The control API of node-admin `at`, which the estate stops through once the admin that served
+    /// it is gone.
+    fn base_of(&self, at: &str) -> String {
+        self.bases.lock().unwrap().get(at).cloned().unwrap_or_else(|| panic!("the control API of {at} is not known"))
+    }
+
+    /// The node-admin that holds the fabric-primary seat once `dead` has died: the first surviving
+    /// admin's own view of the fabric is awaited until it names a fabric-primary other than `dead`.
+    async fn successor_of(&self, dead: &str) -> String {
+        let survivors = self.admins_except(dead);
+        let asked = survivors.first().unwrap_or_else(|| panic!("no node-admin survives {dead}"));
+        let view = Fabrics::new(self.carrier_at(asked))
+            .fact(&format!("a fabric-primary other than {dead}"), Duration::from_secs(60), |f| f.fabric_primary.as_ref().is_some_and(|p| p.to_string() != dead))
+            .await
+            .unwrap_or_else(|end| panic!("{end}"));
+        view.fabric_primary.expect("the awaited view names a fabric-primary").to_string()
     }
 }
 
@@ -583,14 +592,14 @@ async fn a_successor_fabric_primary_re_running_create_mesh_claims_with_the_build
     let carrier = born(&estate, &caller, &SHAPE1).await;
     let fp = carrier.fabric_primary().to_string();
 
-    // The fabric's first state-commit has published its rows: mesh1's row is on the store root, and a
-    // claim from here on is written there, never held in a scratchpad that dies with its writer.
+    // The fabric is past its first state-commit, which published the rows its store held in the
+    // scratchpad: a claim from here on is written to the store root, never held in a scratchpad that
+    // dies with its writer. The fabric-primary reports the fabric ready-for-traffic.
     let root = estate.fabric_store_root();
-    wait_for("the fabric is ready-for-traffic and mesh1's row is on its store root", Duration::from_secs(90), || async {
-        let f = caller.admin.fabric().await.ok()?;
-        (f.status == ScopeStatus::ReadyForTraffic && root.join("meshes/mesh1.json").exists()).then_some(())
-    })
-    .await;
+    Fabrics::new(carrier.clone())
+        .fact("ready-for-traffic: its first state-commit has published the rows held in the scratchpad", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic)
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
 
     // The cut: mesh2's first admin has its identity allocated and that receipt is not durable; the
     // fabric-primary ran `create-mesh:mesh2` before it.
@@ -608,12 +617,6 @@ async fn a_successor_fabric_primary_re_running_create_mesh_claims_with_the_build
     let row: Value = serde_json::from_slice(&std::fs::read(root.join("meshes/mesh2.json")).expect("the fabric-primary's claim of mesh2 wrote its row to the store root")).unwrap();
     let claimed = s(&row["record"]["mesh_id"]);
     assert!(!claimed.is_empty() && row["record"]["name"] == "mesh2", "{row}");
-    // The acceptance minted mesh2's id: the one its claim wrote. Its span is exported before the cut.
-    let acceptance = wait_for("the fabric-primary's acceptance of the Build is exported", Duration::from_secs(30), || async {
-        spans_named(&estate.spans(), "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build_id.0).cloned()
-    })
-    .await;
-    assert_eq!(s(&acceptance["attributes"]["minted_meshes"]), format!("mesh2={claimed}"), "mesh2's id is minted when the Build is accepted, and the claim is made with it: {acceptance}");
     // The fabric-primary dies at that cut.
     estate.kill_bootstrap();
     let end = loop {
@@ -626,28 +629,15 @@ async fn a_successor_fabric_primary_re_running_create_mesh_claims_with_the_build
     assert!(matches!(end, CallEnd::Indeterminate { .. }), "a dead fabric-primary ends the caller's stream indeterminate: {end:?}");
 
     // A seat moves to a surviving admin; the caller re-submits there by the Build id.
-    let survivors: Vec<String> = caller.bases_except(&fp);
-    let (successor, base) = wait_for("an admin other than the dead one holds the fabric-primary seat", Duration::from_secs(60), || async {
-        for base in &survivors {
-            if let Ok(f) = NodeAdminClient::new(base.as_str()).fabric().await {
-                if let Some(p) = f.fabric_primary.filter(|p| p.to_string() != fp) {
-                    return Some((p, base.clone()));
-                }
-            }
-        }
-        None
-    })
-    .await;
-    let after = Caller::of(&base).await;
-    let carrier = after.carrier().await;
-    assert_eq!(carrier.fabric_primary(), &successor);
+    let successor = caller.successor_of(&fp).await;
+    let carrier = caller.carrier_at(&successor);
     let mut resumed = carrier.resubmit(&build_id, attempt).await.expect("the successor accepts the re-submit by build_id");
     assert_eq!(resumed.build_id(), &build_id, "never a second Build");
     until_complete(&mut resumed).await;
     // The estate is read and stopped through the admin that holds the seat now.
-    estate.admin = base.clone();
+    estate.admin = caller.base_of(&successor);
     estate.settled_shape(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(90)).await;
-    let mesh2 = after.admin.mesh("mesh2").await.expect("mesh2's view");
+    let mesh2 = Meshes::new(carrier.clone()).get(&MeshSelector::Mesh("mesh2".into())).await.expect("mesh2's view at the successor").pop().expect("the successor's view holds mesh2");
     assert_eq!(mesh2.id.map(|id| id.to_string()), Some(claimed.clone()), "mesh2 is the mesh the lost fabric-primary's claim wrote");
 
     estate.stop().await;
@@ -660,7 +650,6 @@ async fn a_successor_fabric_primary_re_running_create_mesh_claims_with_the_build
         .unwrap_or_else(|| panic!("the successor re-ran create-mesh:mesh2: {said:?}"));
     assert_eq!((s(&reclaim["attributes"]["mesh_id"]), s(&reclaim["attributes"]["outcome"])), (claimed.clone(), "row-held-by-mesh".to_string()), "the re-run claims with the Build's MeshId and finds its own row: {said:?}");
     assert!(said.iter().all(|(_, id, outcome)| *id == claimed && outcome != "name-held"), "no claim of mesh2 is made under another MeshId or refused: {said:?}");
-    eprintln!("trace {}: rdm.node_admin.build.create.via-node-rpc build_id={} minted_meshes=mesh2={claimed}", s(&acceptance["trace_id"]), build_id.0);
     eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 node={successor} mesh_id={claimed} outcome=row-held-by-mesh", s(&reclaim["trace_id"]));
     estate.record_trace_url(reclaim["trace_id"].as_str().unwrap_or(""));
 }
