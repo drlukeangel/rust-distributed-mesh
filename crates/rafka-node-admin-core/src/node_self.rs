@@ -566,18 +566,21 @@ impl NodeSelf {
         let channels = if self.backbone.is_some() { "mesh,backbone" } else { "mesh" };
         tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.held_name(), round = key.kind.command(), hook = key.kind.completion(), subject_id = %self.node_id, incarnation_id = %self.incarnation.0, build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the check-in hook is published"));
-        match &self.backbone {
+        // What became of the hook is named on the call's span: handed to gossip, or why not.
+        let hook = match &self.backbone {
             Some(backbone) => backbone.publish_command_hook(&frame).await,
-            None => {
-                let _ = self.membership.publish_lifecycle(&frame).await;
-            }
-        }
+            None => self.membership.publish_lifecycle(&frame).await,
+        };
+        let hook = match hook {
+            Ok(()) => "published".to_string(),
+            Err(e) => format!("not-published: {e}"),
+        };
         let (out, _) = self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
         let answer = match &out {
             rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
             other => other.name().to_string(),
         };
-        tracing::info_span!("rdm.node_admin.status.update.via-completion-call", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, answer = %answer, "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.status.update.via-completion-call", node = %self.held_name(), completion = key.kind.completion(), build_id = %key.build_id, attempt = key.attempt, commander = %commander, hook = %hook, answer = %answer, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the completion call was made to the commanding primary"));
     }
 
@@ -1023,7 +1026,11 @@ impl NodeSelf {
         let frame = Frame::NodeDrained { op: op.clone(), forwarded_by: None };
         let req = StatusRequest::NodeDrained { node_id: op.node_id.clone(), incarnation: op.incarnation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
         let kind = "node-drained";
-        let _ = self.membership.publish_lifecycle(&frame).await;
+        // What became of the hook is named on the call's span: handed to gossip, or why not.
+        let hook = match self.membership.publish_lifecycle(&frame).await {
+            Ok(()) => "published".to_string(),
+            Err(e) => format!("not-published: {e}"),
+        };
         let target = commander.cloned().or_else(|| self.node_at_endpoint(endpoint));
         let answer = match &target {
             Some(commander) => match self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await.0 {
@@ -1035,7 +1042,7 @@ impl NodeSelf {
         tracing::info_span!(
             "rdm.node_admin.status.update.via-completion-call",
             node = %self.held_name(), completion = kind, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-            commander = %named(target.as_ref()), answer = %answer, "otel.kind" = "internal"
+            commander = %named(target.as_ref()), hook = %hook, answer = %answer, "otel.kind" = "internal"
         )
         .in_scope(|| tracing::info!("the completion call was made to the commanding admin"));
     }

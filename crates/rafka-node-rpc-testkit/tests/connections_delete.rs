@@ -50,6 +50,8 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         let root = std::env::temp_dir().join(format!("connections-delete-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
+        // The cell reads the node's kept log on the store root: its fabric is past its first state-commit.
+        crate::common::store_past_state_commit(&store, &fabric).await;
         let born: PathName = "mesh1.rpc.1".parse().unwrap();
                 let peer_name: PathName = "mesh1.rpc.2".parse().unwrap();
         let launch_of = |name: &PathName| {

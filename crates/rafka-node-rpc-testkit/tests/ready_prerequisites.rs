@@ -96,9 +96,7 @@ impl NodeObserver for Counting<'_> {
 async fn create_losing(lose: Option<&'static str>) -> u32 {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-    // A cell that fails before its own terminate leaves no node running.
-    let _reap = common::ReapOnDrop(template.data_root.clone());
+    let template = template(&admin);
     let inner = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&inner, add_node()).await;
     let builds = Losing { inner, lose };
@@ -208,9 +206,7 @@ fn ready_refuses_a_runtime_that_exited_without_waiting_out_the_deadline() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-        let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-        // A cell that fails before its own terminate leaves no node running.
-        let _reap = common::ReapOnDrop(template.data_root.clone());
+        let template = template(&admin);
         let builds = MemoryBuildStateAdapter::new();
         let build_id = publish_build(&builds, add_node()).await;
         let provider = ProcessDeploymentProvider::new();

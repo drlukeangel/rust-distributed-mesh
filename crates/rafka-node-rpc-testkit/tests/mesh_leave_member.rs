@@ -36,6 +36,9 @@ impl LifecycleEvents for Recorder {
         self.1.lock().unwrap().push(format!("NodeStopped:{}", op.operation));
         self.0.lock().unwrap().push(op.clone());
     }
+    async fn joined(&self, op: &LifecycleOp) {
+        self.1.lock().unwrap().push(format!("node.joined:{}", op.operation));
+    }
     async fn draining(&self, op: &LifecycleOp) {
         self.1.lock().unwrap().push(format!("NodeDraining:{}", op.operation));
     }
@@ -68,7 +71,7 @@ fn a_mesh_leave_member_shutdown_publishes_node_stopped_from_its_stopped_reply() 
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-        let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+        let template = template(&admin);
         let builds = MemoryBuildStateAdapter::new();
         let sink = Published::default();
         let provider = ProcessDeploymentProvider::new();

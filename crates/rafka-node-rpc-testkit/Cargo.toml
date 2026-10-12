@@ -27,10 +27,12 @@ hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { version = "0.13.3", features = ["json"] }
+# rig: the reap stops each node it launched by a pidfd.
+libc = { version = "0.2", optional = true }
 
 [features]
 # The launcher half of a functional fabric (`rig`), shared by test crates.
-rig = []
+rig = ["dep:libc"]
 # The OS-clock skew a testkit executable applies from its launch environment. Default for the
 # testkit's own executables; the product role binaries depend on the testkit without it.
 default = ["testkit-skew"]

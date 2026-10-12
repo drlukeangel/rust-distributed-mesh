@@ -145,6 +145,22 @@ impl Fixture {
         named(spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && attr(sp, "node") == self.fabric_primary).filter_map(|sp| attr(sp, "at").parse::<u64>().ok()).min()
     }
 
+    /// Stop the estate; the instant (unix ns) the cell's story ended, taken before the shutdown began.
+    /// The shutdown stops the peer mesh's members one by one, and a mesh it leaves unheard opens a new
+    /// unheard interval at the fabric primary (mesh-investigation.md step 4: "Direct backbone receipt
+    /// from mesh-x at any point cancels the investigation and resets the unheard interval"): what that
+    /// makes the fabric do is not the investigation the cell is about.
+    async fn stop(&mut self) -> u64 {
+        let end = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+        self.estate.stop().await;
+        end
+    }
+
+    /// The probes of the lost mesh the fabric primary made before `end` ([`Self::stop`]).
+    fn probes_before<'a>(&self, spans: &'a [Value], end: u64) -> Vec<&'a Value> {
+        self.probes(spans).into_iter().filter(|p| at_ns(p) < end).collect()
+    }
+
     fn probes<'a>(&self, spans: &'a [Value]) -> Vec<&'a Value> {
         let mut p: Vec<&Value> = named(spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "mesh") == self.lost && attr(sp, "node") == self.fabric_primary).collect();
         p.sort_by_key(|sp| at_ns(sp));
@@ -311,12 +327,12 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     let fp = f.fabric_primary.clone();
     let fabric_admin = f.estate.admin.clone();
     f.estate.admin = fabric_admin;
-    f.estate.stop().await;
+    let story_end = f.stop().await;
     let spans = f.estate.spans();
     let last_heard_ms = f.unheard_since_ms(&spans).unwrap_or_else(|| panic!("{fp} tracked {} as unheard (via-unheard names the last backbone receipt)", f.lost));
     let unheard = |sp: &Value| Duration::from_millis((at_ns(sp) / 1_000_000).saturating_sub(last_heard_ms));
 
-    let probes = f.probes(&spans);
+    let probes = f.probes_before(&spans, story_end);
     assert_eq!(probes.len(), 2, "two probes, no more: {probes:#?}");
     for (i, p) in probes.iter().enumerate() {
         assert_eq!(attr(p, "probe"), (i + 1).to_string(), "probes are numbered in order");
@@ -469,9 +485,9 @@ async fn alive_but_unheard_admin_answers_the_probe_and_is_not_reborn() {
     let fabric = f.fabric_status().await;
     drop(cut);
     let fp = f.fabric_primary.clone();
-    f.estate.stop().await;
+    let story_end = f.stop().await;
     let spans = f.estate.spans();
-    let probes = f.probes(&spans);
+    let probes = f.probes_before(&spans, story_end);
     assert_eq!(probes.len(), 1, "an answering node-admin stops the investigation after probe 1: {probes:#?}");
     assert!(f.rebirths(&spans).is_empty(), "no rebirth of a node-admin that answers");
     assert_eq!(fabric, "ready-for-traffic", "the fabric is never degraded for an admin that is alive");
@@ -523,9 +539,9 @@ async fn peer_mesh_heard_again_between_probes_cancels_the_investigation() {
     tokio::time::sleep(rungs().decide).await;
     let fabric = f.fabric_status().await;
     let fp = f.fabric_primary.clone();
-    f.estate.stop().await;
+    let story_end = f.stop().await;
     let spans = f.estate.spans();
-    assert_eq!(f.probes(&spans).len(), 1, "a mesh heard again is not probed a second time: {:#?}", f.probes(&spans));
+    assert_eq!(f.probes_before(&spans, story_end).len(), 1, "a mesh heard again is not probed a second time: {:#?}", f.probes(&spans));
     assert!(f.rebirths(&spans).is_empty(), "no rebirth of a mesh that is heard again");
     assert_eq!(fabric, "ready-for-traffic");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probes": f.probes(&spans).iter().map(|p| p["attributes"].clone()).collect::<Vec<_>>(), "verdict": verdict["attributes"]}));
@@ -559,9 +575,11 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
         signal(*pid, "-CONT");
     }
     let fp = f.fabric_primary.clone();
-    f.estate.stop().await;
+    let story_end = f.stop().await;
     let spans = f.estate.spans();
-    let probes = f.probes(&spans);
+    // The investigation the verdict closed made two probes (mesh-investigation.md: probe 1 "At 20 s",
+    // probe 2 "At 40 s", the decision "At 60 s").
+    let probes = f.probes_before(&spans, story_end);
     assert_eq!(probes.len(), 2, "two probes: {probes:#?}");
     for p in &probes {
         assert_eq!(attr(p, "outcome"), "unreachable", "{p:#?}");
@@ -626,7 +644,7 @@ async fn an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost(
     let fabric = f.fabric_status().await;
     drop(cut);
     let fp = f.fabric_primary.clone();
-    f.estate.stop().await;
+    let story_end = f.stop().await;
     let spans = f.estate.spans();
     // A frozen node-admin keeps its sockets, so a member's pooled connection to it closes only when the
     // connection idles out after the staleness floor. Probe 1 is made at two thirds of the floor
@@ -635,7 +653,7 @@ async fn an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost(
     assert_eq!(attr(&first, "outcome"), "unreachable", "a member still holds its pooled connection to the frozen node-admin at probe 1: {first:#?}");
     assert!(attr(&first, "detail").contains("Indeterminate"), "the probe committed over the pooled connection and lost its reply: {first:#?}");
     assert_eq!(attr(&second, "outcome"), "admin-alive", "continued, they answer the second probe: {second:#?}");
-    assert_eq!(f.probes(&spans).len(), 2, "no third probe");
+    assert_eq!(f.probes_before(&spans, story_end).len(), 2, "no third probe: {:#?}", f.probes(&spans));
     assert!(f.rebirths(&spans).is_empty(), "the latest probe decides: no rebirth");
     assert!(f.verdicts(&spans).iter().any(|v| attr(v, "outcome") == "admin-alive"));
     assert_eq!(fabric, "ready-for-traffic");

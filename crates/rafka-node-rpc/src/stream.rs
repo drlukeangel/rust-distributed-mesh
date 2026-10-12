@@ -206,8 +206,8 @@ where
     F: Fn(PeerContext, P::Request, ReplySink<P, NotStarted>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<P::Reply, HandlerFault>> + Send + 'static,
 {
-    fn call(&self, _peer: PeerContext, _payload: Vec<u8>) -> BoxFut<Result<Vec<u8>, HandlerFault>> {
-        Box::pin(async { Err(HandlerFault::invariant_broken("a streaming protocol is served through its stream path")) })
+    fn call(&self, _peer: PeerContext, _payload: Vec<u8>) -> (tracing::Span, BoxFut<Result<Vec<u8>, HandlerFault>>) {
+        (tracing::Span::none(), Box::pin(async { Err(HandlerFault::invariant_broken("a streaming protocol is served through its stream path")) }))
     }
 
     fn refusal(&self, r: Refusal) -> Vec<u8> {
@@ -228,39 +228,40 @@ where
         true
     }
 
-    fn stream(&self, peer: PeerContext, payload: Vec<u8>, out: StreamOut) -> Option<BoxFut<StreamEnd>> {
+    fn stream(&self, peer: PeerContext, payload: Vec<u8>, out: StreamOut) -> Option<(tracing::Span, BoxFut<StreamEnd>)> {
         let f = self.f.clone();
-        Some(Box::pin(async move {
-            let req = match P::decode_request(&payload) {
-                Ok(r) => r,
-                Err(d) => {
-                    let refusal = P::malformed(match d {
-                        rafka_node_rpc_contract::protocol::DecodeFailure::UnknownVariant => {
-                            rafka_node_rpc_contract::outcome::MalformedKind::UnknownVariant
-                        }
-                        rafka_node_rpc_contract::protocol::DecodeFailure::Corrupt => rafka_node_rpc_contract::outcome::MalformedKind::Corrupt,
-                    });
-                    return StreamEnd::Final { kind: P::frame_kind(&refusal), payload: P::encode_reply(&refusal).unwrap_or_default() };
-                }
-            };
-            let span = tracing::info_span!(
-                "rdm.node_rpc.stream.serve.via-direct",
-                protocol = P::NAME,
-                op = P::OP,
-                peer = %peer.endpoint_id,
-                caller_system = tracing::field::Empty,
-                context_dropped = tracing::field::Empty,
-                test_case = tracing::field::Empty,
-                scenario = tracing::field::Empty,
-                operation = tracing::field::Empty,
-            );
-            crate::server::apply_context(&span, &peer);
+        let req = match P::decode_request(&payload) {
+            Ok(r) => r,
+            Err(d) => {
+                let refusal = P::malformed(match d {
+                    rafka_node_rpc_contract::protocol::DecodeFailure::UnknownVariant => rafka_node_rpc_contract::outcome::MalformedKind::UnknownVariant,
+                    rafka_node_rpc_contract::protocol::DecodeFailure::Corrupt => rafka_node_rpc_contract::outcome::MalformedKind::Corrupt,
+                });
+                let end = StreamEnd::Final { kind: P::frame_kind(&refusal), payload: P::encode_reply(&refusal).unwrap_or_default() };
+                return Some((tracing::Span::none(), Box::pin(async move { end })));
+            }
+        };
+        let span = tracing::info_span!(
+            "rdm.node_rpc.stream.serve.via-direct",
+            protocol = P::NAME,
+            op = P::OP,
+            peer = %peer.endpoint_id,
+            caller_system = tracing::field::Empty,
+            context_dropped = tracing::field::Empty,
+            test_case = tracing::field::Empty,
+            scenario = tracing::field::Empty,
+            operation = tracing::field::Empty,
+        );
+        crate::server::apply_context(&span, &peer);
+        let serve = span.clone();
+        let handler = Box::pin(async move {
             let sink = ReplySink::<P, NotStarted> { out, _p: PhantomData };
-            match tracing::Instrument::instrument(f(peer, req, sink), span).await {
+            match tracing::Instrument::instrument(f(peer, req, sink), serve).await {
                 Ok(last) => StreamEnd::Final { kind: P::frame_kind(&last), payload: P::encode_reply(&last).unwrap_or_default() },
                 Err(fault) => StreamEnd::Fault(fault),
             }
-        }))
+        });
+        Some((span, handler))
     }
 }
 

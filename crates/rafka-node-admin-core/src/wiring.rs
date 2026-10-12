@@ -111,8 +111,9 @@ impl FabricHooks {
 pub struct Wiring {
     /// The application hooks the fabric-primary calls. `sync_state` must be chosen.
     pub fabric_hooks: FabricHooks,
-    /// The action a node completes before it checks in to a commit-state or open-traffic round.
-    /// `None` binds [`crate::fabric_rounds::NoScratchpad`], which publishes nothing and says so.
+    /// The embedding's own action a node completes before it checks in to a commit-state or
+    /// open-traffic round, run after RDM publishes the node's scratchpad to the fabric's store root
+    /// at commit-state ([`crate::fabric_rounds::StorePublication`]). `None`: RDM's publication alone.
     pub round_actions: Option<Arc<dyn crate::fabric_rounds::RoundActions>>,
     /// Asked by the Build topic's NeighborUp catch-up before it sends.
     pub catch_up_seam: Option<Arc<dyn CatchUpSeam>>,

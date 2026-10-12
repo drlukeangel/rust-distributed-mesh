@@ -65,7 +65,7 @@ impl DeploymentProvider for Killable {
     async fn signal_stop(&self, h: &DeploymentHandle) -> Result<(), DeployError> {
         self.inner.signal_stop(h).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Option<DeploymentHandle> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, rafka_node_admin_core::deployment::provider::DeployError> {
         self.inner.find(spec).await
     }
 }
@@ -107,9 +107,7 @@ fn runtimes_of(node_id: &NodeId) -> Vec<u32> {
 async fn killed_then_rerun(kill_at: KillAt) {
     let fabric = FabricId::mint();
     let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-    let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-    // A cell that fails before its own terminate leaves no node running.
-    let _reap = common::ReapOnDrop(template.data_root.clone());
+    let template = template(&admin);
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;
     let sink = Published::default();

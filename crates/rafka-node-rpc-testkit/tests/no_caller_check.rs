@@ -8,7 +8,8 @@
 //! the target node id and the op, never the caller. The direction refusals stay: a command naming
 //! another birth of the node is `RejectedStaleIncarnation`, and one naming another node is
 //! `ReceiverNotPrimary { needed: "the subject node itself" }`. What must NOT happen: a refusal that
-//! names the caller (`SenderNotSubject`, or a `ReceiverNotPrimary` decided by who sent it).
+//! names the caller (`SenderNotSubject`, or a `ReceiverNotPrimary` decided by who sent it). The
+//! node's decision span names the caller it holds no digest of by its endpoint.
 //!
 //! Its own process: the cell holds process-wide state (the parking flag).
 
@@ -88,6 +89,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
 
         // An admin the parked node never heard of: a fresh endpoint key, in no digest the node holds.
         let stranger_key = iroh::SecretKey::generate();
+        let stranger_endpoint = stranger_key.public().to_string();
         assert!(book.all().iter().all(|d| d.node.endpoint_id.0 != stranger_key.public().to_string()), "the stranger is in no digest");
         let resolver = Arc::new(StaticResolver::new());
         resolver.insert(resolved);
@@ -105,10 +107,11 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let reply = call(&stranger, &NodeTarget::ExactNode(node_id.clone()), &another).await;
         assert_eq!(reply, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, "{reply:?}");
 
-        // The node's own decision span names the stop it answered the stranger.
-        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_admin.status.update.via-command", |f| f.get("op").is_some_and(|o| o == "stop-node") && f.get("outcome").is_some_and(|o| o == "stopped") && f.get("sender").is_some_and(|s| s.is_empty())))
+        // The node's own decision span names the stop it answered the stranger, and names the
+        // stranger by the one fact the node holds of it: its endpoint.
+        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_admin.status.update.via-command", |f| f.get("op").is_some_and(|o| o == "stop-node") && f.get("outcome").is_some_and(|o| o == "stopped") && f.get("sender").is_some_and(|s| s.contains(&stranger_endpoint))))
             .await
-            .expect("the node decided the stranger's stop-node: Stopped, with no sender it holds");
+            .expect("the node decided the stranger's stop-node: Stopped, naming the sender it holds no digest of by its endpoint");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

@@ -390,12 +390,9 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     })
 }
 
-/// The probe's one endpoint. Its background tasks open spans of their own; bound under no span, they hang
-/// from no span of the call, so the probe's root span is closed (and exported) when the call ends, whatever
-/// those tasks are still winding down.
+/// The probe's one endpoint.
 async fn bind_endpoint() -> Result<iroh::Endpoint, String> {
-    use tracing::Instrument;
-    rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).instrument(tracing::Span::none()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))
+    rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))
 }
 
 /// Where the probe binds its one socket: `RDM_PROBE_BIND` (an address on the fabric's network,
