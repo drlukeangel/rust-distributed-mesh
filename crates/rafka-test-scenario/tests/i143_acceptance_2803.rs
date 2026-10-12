@@ -253,6 +253,9 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
     let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.0;
     let before = values(&estate.settled_views(&shape).await);
+    // The fault falls on an established fabric: the person's admin restarts from the Fabric record the
+    // fabric-primary writes at the state commit, so the fabric is ready-for-traffic first.
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let holder_mesh = holder.split('.').next().unwrap().to_string();
     let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&holder).await };
@@ -380,6 +383,7 @@ async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
     let shape = [("mesh1", 2, 1), ("mesh2", 2, 1)];
     estate.reconcile_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
+    estate.until_fabric_ready(Duration::from_secs(60)).await;
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1").display().to_string() } else { estate.data_dir(&holder).await };
 

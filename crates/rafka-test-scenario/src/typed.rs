@@ -8,7 +8,7 @@
 //! call after it goes over Node RPC (ops-naming step 0; the handover itself is finding 15).
 
 use crate::estate::Estate;
-use rafka_mesh_entity::{NodeKind, PathName};
+use rafka_node_admin_client::{LaunchKind as NodeKind, PathName};
 use rafka_node_admin_client::{
     Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshSelector, MeshView, Meshes, NodeAdminClient, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
@@ -90,6 +90,16 @@ impl Estate {
         Some(all)
     }
 
+    /// Forget the handover of the control base: the next call reads the admin's listing again. A wait on the
+    /// view does this when a read ends, because the admin the estate asks may have been reborn under the
+    /// base it advertises (a restarted node-admin takes its seat back with a new birth), and the listing
+    /// the control API gives is the only place the estate learns the new one.
+    async fn rehandover(&self) {
+        if let Some(w) = self.wire.lock().await.as_mut() {
+            w.base.clear();
+        }
+    }
+
     /// The admin the typed objects start at.
     pub async fn entry(&self) -> PathName {
         self.carrier().await;
@@ -128,6 +138,28 @@ impl Estate {
     /// control API's `GET /api/fabric` field (finding: the typed `FabricView` has no accepted-Build id).
     pub async fn accepted_build_id(&self) -> String {
         self.get("/api/fabric").await.1["build_id"].as_str().unwrap_or_default().to_string()
+    }
+
+    /// `fabric.get` at the admin the estate asks, or how the call ended.
+    pub async fn try_fabric_view(&self) -> Result<FabricView, CallEnd> {
+        self.fabrics_obj().await.get().await
+    }
+
+    /// `node.get` of every node of every mesh the admin holds, or how a call ended: a wait on the view reads
+    /// through this, because an admin that is recovering answers some calls `Indeterminate` and the wait
+    /// goes on until its own bound, naming the last ending.
+    pub async fn try_node_views(&self) -> Result<Vec<NodeView>, CallEnd> {
+        let nodes = self.nodes_obj().await;
+        let mut all = Vec::new();
+        for mesh in self.try_fabric_view().await?.meshes {
+            if mesh.nodes.is_empty() {
+                continue;
+            }
+            let views = nodes.get(&NodeSelector::Mesh(mesh.name.clone())).await?;
+            self.learn(&views).await;
+            all.extend(views);
+        }
+        Ok(all)
     }
 
     /// `fabric.get` at the admin the estate asks.
@@ -200,6 +232,13 @@ impl Estate {
         self.settles_to(meshes, std::time::Duration::from_secs(60)).await
     }
 
+    /// Wait until the fabric the admin holds is ready-for-traffic: the fabric climbs its states (sync, commit,
+    /// open traffic) after the nodes of a Build are ready, and writes its record at the commit. No stream
+    /// announces it; `fabric.get` carries the state.
+    pub async fn until_fabric_ready(&self, within: std::time::Duration) {
+        crate::estate::wait_for("the fabric is ready-for-traffic", within, || async { self.try_fabric_view().await.is_ok_and(|f| f.status == rafka_node_admin_client::ScopeStatus::ReadyForTraffic).then_some(()) }).await
+    }
+
     /// The view the Build left, by name: exactly `names`, every one ready-for-traffic, as one `node.get` per
     /// mesh reads it.
     pub async fn settled_named(&self, names: &std::collections::BTreeSet<String>) -> Vec<NodeView> {
@@ -251,11 +290,19 @@ impl Estate {
     pub async fn until_view<T>(&self, what: &str, within: std::time::Duration, mut check: impl FnMut(&[NodeView]) -> Option<T>) -> T {
         let deadline = tokio::time::Instant::now() + within;
         loop {
-            let views = self.node_views().await;
-            if let Some(v) = check(&views) {
-                return v;
-            }
-            assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what}; last view: {:?}", views.iter().map(|n| format!("{}={:?}/{}", n.name, n.status, n.node_id)).collect::<Vec<_>>());
+            let last = match self.try_node_views().await {
+                Ok(views) => {
+                    if let Some(v) = check(&views) {
+                        return v;
+                    }
+                    format!("{:?}", views.iter().map(|n| format!("{}={:?}/{}", n.name, n.status, n.node_id)).collect::<Vec<_>>())
+                }
+                Err(e) => {
+                    self.rehandover().await;
+                    format!("the read ended: {e}")
+                }
+            };
+            assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what}; last view: {last}");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
@@ -263,13 +310,30 @@ impl Estate {
     /// [`Self::until_view`] for the one node at `name`: `check` reads what `node.get` of its mesh lists
     /// at the path, `None` while it lists nothing there.
     pub async fn until_node<T>(&self, name: &str, what: &str, within: std::time::Duration, mut check: impl FnMut(Option<&NodeView>) -> Option<T>) -> T {
+        let path: PathName = name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"));
         let deadline = tokio::time::Instant::now() + within;
         loop {
-            let view = self.node_view_opt(name).await;
-            if let Some(v) = check(view.as_ref()) {
-                return v;
-            }
-            assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what}; {name} last read: {:?}", view.map(|n| format!("{:?}/{}", n.status, n.node_id)));
+            let last = match self.nodes_obj().await.get(&NodeSelector::Mesh(path.mesh.clone())).await {
+                Ok(views) => {
+                    self.learn(&views).await;
+                    let view = views.into_iter().find(|n| n.name == path);
+                    if let Some(v) = check(view.as_ref()) {
+                        return v;
+                    }
+                    format!("{:?}", view.map(|n| format!("{:?}/{}", n.status, n.node_id)))
+                }
+                Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-mesh" => {
+                    if let Some(v) = check(None) {
+                        return v;
+                    }
+                    "the admin holds no such mesh".to_string()
+                }
+                Err(e) => {
+                    self.rehandover().await;
+                    format!("the read ended: {e}")
+                }
+            };
+            assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what}; {name} last read: {last}");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
