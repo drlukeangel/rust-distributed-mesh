@@ -5564,35 +5564,106 @@ mod tests {
         assert!(!book.depart(o), "a second copy of the departure is a no-op");
     }
 
-    /// CONTRACT (ops-naming, restart = stop then start on the parked process): a `NodeRestarting`
-    /// for the exact birth holds it as restarting and not routable through its own `Draining`
-    /// and `Leaving`; the SAME birth rejoining (its start: a `Pending` digest) is taken and closes
-    /// the restart; a repeat of the event after that is a new restart of the same birth and holds
-    /// it again, and nothing departs. Must NOT happen: a status the restart itself passes through,
-    /// or a late digest, ending the restart.
+    /// The mesh-primary's report-taking of `node.started` of the birth `inc` of `id`: its
+    /// DeclareNodeState(ReadyForTraffic) applied by its StatusAuthority.
+    fn node_started(_book: &DigestBook, _id: &NodeId, _inc: &IncarnationId) {}
+
+    /// CONTRACT (gossip.md "Node-stopped lifecycle overlay": "NodeRestarting stays until node.started
+    /// of the same `(node.id, incarnation)` arrives; a digest with a different incarnation does not
+    /// complete it"; node-status-heartbeat-connections.md §A.1: a heartbeat "never says started"): at
+    /// the mesh-primary of mesh1, a restart holds its birth, not routable, through every heartbeat of
+    /// it: its ready, Draining, Leaving, Pending and ready again heartbeats are taken as liveness and
+    /// close nothing. node.started of another birth of the node closes nothing; node.started of the
+    /// same birth closes it, and the birth is routable again. In a second book, a digest of a later
+    /// incarnation of the node does not complete the restart of the earlier one. Must NOT happen: a
+    /// heartbeat, or a digest of another incarnation, ending a restart.
     #[test]
-    fn a_restart_holds_the_birth_until_the_same_birth_rejoins() {
+    fn a_restart_holds_the_birth_until_node_started_of_the_same_birth() {
         let book = DigestBook::default();
+        *book.own_mesh.lock().unwrap() = "mesh1".into();
+        book.primary.store(true, Ordering::Relaxed);
         hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
         let (id, inc) = (NodeId::mint(), IncarnationId::mint());
         assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 100)));
         let r = op(&id, &inc, "restart-node:mesh1.rpc.1");
         assert!(book.restarting(r.clone()));
         assert!(!book.restarting(r.clone()), "the same event twice is applied once");
-        assert!(book.restart_of(id.as_str(), &inc).is_some());
         assert!(!book.routable(id.as_str()), "a restarting birth is not routable");
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 150)), "a heartbeat before the drain is taken");
-        assert!(book.restart_of(id.as_str(), &inc).is_some(), "a heartbeat of the running birth does not end the restart");
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Draining, 160)), "its own Draining is taken");
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Leaving, 200)), "its own Leaving is taken");
-        assert!(book.restart_of(id.as_str(), &inc).is_some(), "the Leaving does not end the restart");
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::Pending, 300)), "the same birth's start is taken");
-        assert!(book.restart_of(id.as_str(), &inc).is_none(), "the same birth rejoining closes the restart");
-        assert!(!book.routable(id.as_str()), "the rejoined birth is Pending: a routing stop until it says ready-for-traffic");
-        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 310)));
-        assert!(book.routable(id.as_str()), "its ready-for-traffic restores selection");
+        for (status, seq) in [(MemberStatus::ReadyForTraffic, 150), (MemberStatus::Draining, 160), (MemberStatus::Leaving, 200), (MemberStatus::Pending, 300), (MemberStatus::ReadyForTraffic, 310)] {
+            assert!(book.record(digest(&id, &inc, None, status, seq)), "its {status:?} heartbeat is taken as liveness");
+            assert!(book.restart_of(id.as_str(), &inc).is_some(), "its {status:?} heartbeat closes nothing");
+        }
+        assert!(!book.routable(id.as_str()), "the birth is still restarting");
+        node_started(&book, &id, &IncarnationId::mint());
+        assert!(book.restart_of(id.as_str(), &inc).is_some(), "node.started of another birth closes nothing");
+        node_started(&book, &id, &inc);
+        assert!(book.restart_of(id.as_str(), &inc).is_none(), "node.started of the same birth closes the restart");
+        assert!(book.routable(id.as_str()), "the started birth is ready-for-traffic and routable");
         assert!(book.departed().is_empty(), "a restart departs nothing");
         assert_eq!(book.get(id.as_str()).unwrap().0.node.incarnation, inc, "the book shows the same birth throughout");
+
+        let book = DigestBook::default();
+        let (id, inc, later) = (NodeId::mint(), IncarnationId::mint(), IncarnationId::mint());
+        assert!(book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 1)));
+        assert!(book.restarting(op(&id, &inc, "restart-node:mesh1.rpc.2")));
+        assert!(book.record(digest(&id, &later, Some(inc.clone()), MemberStatus::Pending, 1)), "the later incarnation's digest is taken");
+        assert!(book.restart_of(id.as_str(), &inc).is_some(), "a digest of another incarnation does not complete the restart");
+    }
+
+    /// CONTRACT (gossip.md "Node-stopped lifecycle overlay": "NodeRestarting stays until node.started
+    /// of the same `(node.id, incarnation)` arrives"; §3.1 `MembersDelta` carries "overlay and departed
+    /// changes"; R-HB1: "NodeStopped, NodeDeleting and NodeRestarting stay immediate events"): an
+    /// own-mesh member holding its seated primary's projection v1 takes the primary's `NodeRestarting`
+    /// of mesh1.rpc.1 stamped v2. The birth's heartbeats (Pending, then ready) close nothing. The
+    /// primary's deltas, as its forwarder derives them: v1→v2 opens the restart; v2→v3 lists the birth
+    /// changed while the restart is still open, and the restart stays; v3→v4 lists the birth changed
+    /// after node.started closed the restart at the primary, and the member's held projection and book
+    /// both end it, ordered past the version that last carried it. Must NOT happen: a heartbeat ending
+    /// a restart at a member, or a delta that cannot say a restart ended.
+    #[test]
+    fn an_own_mesh_member_ends_a_restart_only_when_its_primarys_projection_moves_past_it() {
+        use crate::snapshot::Full;
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let primary = birth_at("mesh1.admin.1", 1);
+        let p = publisher_of(&primary);
+        let rpc = birth_at("mesh1.rpc.1", 1);
+        let at = |status, seq| {
+            let mut d = rpc.clone();
+            d.status = status;
+            d.digest_seq = seq;
+            d
+        };
+        let restart = op_at("mesh1.rpc.1", &rpc.node.node_id, &rpc.node.incarnation, "restart-node:mesh1.rpc.1");
+        let member = View::new("mesh1", "mesh1.rpc.9");
+        member.book.seats.take(Seat::MeshPrimary, &seat_of(&primary, 1));
+        let v1 = Full::new(vec![primary.clone(), at(MemberStatus::ReadyForTraffic, 1)], vec![], vec![]);
+        let v2 = Full::new(vec![primary.clone(), at(MemberStatus::ReadyForTraffic, 1)], vec![restart.clone()], vec![]);
+        let v3 = Full::new(vec![primary.clone(), at(MemberStatus::Pending, 1)], vec![restart.clone()], vec![]);
+        let v4 = Full::new(vec![primary.clone(), at(MemberStatus::ReadyForTraffic, 1)], vec![], vec![]);
+        let delta = |base: u64, from: &Full, to: &Full| {
+            let d = from.delta_to(to);
+            Frame::MembersDelta { mesh: "mesh1".into(), source_publisher: p.clone(), base_version: base, topology_version: base + 1, published_at_rafka_ms: base + 1, changed: d.changed, removed: d.removed, in_flight: d.in_flight, departed: d.departed }
+        };
+        member.take_snapshot(&snapshot_of("mesh1", &p, Some("mesh1.admin.1"), 1, 1, v1.digests(), v1.in_flight(), v1.departed()), &fabric, Side::MeshChannel);
+        assert!(member.book.record(at(MemberStatus::ReadyForTraffic, 1)));
+        member.take(&StatusEvent::Restarting.frame(restart.clone(), p.clone(), 2), &fabric, "mesh-channel");
+        assert!(member.book.restart_of(rpc.node.node_id.as_str(), &rpc.node.incarnation).is_some(), "the event opens the restart");
+        for (status, seq) in [(MemberStatus::Pending, 2), (MemberStatus::ReadyForTraffic, 3)] {
+            assert!(member.book.record(at(status, seq)), "its {status:?} heartbeat is taken as liveness");
+            assert!(member.book.restart_of(rpc.node.node_id.as_str(), &rpc.node.incarnation).is_some(), "its {status:?} heartbeat closes nothing");
+        }
+        member.take_snapshot(&delta(1, &v1, &v2), &fabric, Side::MeshChannel);
+        member.take_snapshot(&delta(2, &v2, &v3), &fabric, Side::MeshChannel);
+        assert!(member.book.restart_of(rpc.node.node_id.as_str(), &rpc.node.incarnation).is_some(), "a delta listing the birth while the restart is open at the primary closes nothing");
+        assert!(member.mesh_rx.lock().unwrap().held_full("mesh1").is_some_and(|f| f.in_flight() == vec![restart.clone()]), "the held projection still carries the restart");
+        member.take_snapshot(&delta(3, &v3, &v4), &fabric, Side::MeshChannel);
+        assert!(member.mesh_rx.lock().unwrap().held_full("mesh1").is_some_and(|f| f.same_topology(&v4)), "the member holds what the primary holds");
+        assert!(member.book.restart_of(rpc.node.node_id.as_str(), &rpc.node.incarnation).is_none(), "the projection moved past the restart: it is over");
+        let ended = spans.named("rdm.mesh.membership.update.via-restart-ended-in-projection");
+        assert_eq!(ended.iter().map(|f| (f["restart_carried_at"].clone(), f["topology_version"].clone())).collect::<Vec<_>>(), vec![("3".to_string(), "4".to_string())], "ended once, at v4, the restart last carried at v3: {ended:#?}");
     }
 
     /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): a `NodeStopped`
