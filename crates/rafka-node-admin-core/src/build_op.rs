@@ -208,7 +208,7 @@ impl BuildDoor {
                     match other {
                         BuildRequest::Create { submit } => self.create(submit, sink).await,
                         BuildRequest::Get { build_id } => self.get(BuildId(build_id), sink).await,
-                        BuildRequest::Delete { build_id } => self.delete(BuildId(build_id)).await,
+                        BuildRequest::Delete { build_id } => self.delete(BuildId(build_id), sink).await,
                         BuildRequest::AttemptRun { .. } => unreachable!("handled above"),
                     }
                 }
@@ -408,16 +408,25 @@ impl BuildDoor {
         })
     }
 
-    async fn delete(&self, id: BuildId) -> Result<BuildReply, HandlerFault> {
-        Ok(match self.control.forget_build(&id).await {
+    /// A delete stream is one refusal, or `Started` and its one terminal `Deleted` (node-rpc-envelope.md
+    /// "Build schema": "A stream is one refusal, or Started, then ... Deleted for Delete"). `Started` names the
+    /// Build's last attempt, read before the Build leaves history.
+    async fn delete(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+        let attempt = match self.control.builds.read_build(&id).await {
+            Ok(p) => p.attempt,
+            Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.0 }),
+            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: Build {id} could not be read: {e}", self.me) }),
+        };
+        match self.control.forget_build(&id).await {
             Ok(()) => {
                 self.drives.forget(&id);
-                BuildReply::Deleted { build_id: id.0 }
+                let _sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt, disposition: Disposition::Attached }).await?;
+                Ok(BuildReply::Deleted { build_id: id.0 })
             }
-            Err(Refusal::NotFound(_)) => BuildReply::UnknownBuild { build_id: id.0 },
-            Err(Refusal::Conflict(reason)) => BuildReply::CannotDelete { build_id: id.0, reason },
-            Err(other) => refusal_reply(other),
-        })
+            Err(Refusal::NotFound(_)) => Ok(BuildReply::UnknownBuild { build_id: id.0 }),
+            Err(Refusal::Conflict(reason)) => Ok(BuildReply::CannotDelete { build_id: id.0, reason }),
+            Err(other) => Ok(refusal_reply(other)),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
