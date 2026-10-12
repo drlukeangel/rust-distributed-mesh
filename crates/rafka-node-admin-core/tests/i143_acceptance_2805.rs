@@ -110,10 +110,21 @@ impl Capture {
     }
 }
 
-/// A birth in the fixture: its record and the key it speaks with.
+/// A birth in the fixture: its record, the key it speaks with, and its one endpoint of that key,
+/// bound on its first call and shared by every client it speaks through, so no two live endpoints
+/// of the cell ever hold the same key.
 struct Birth {
     node: Node,
     key: SecretKey,
+    endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
+    caller: tokio::sync::OnceCell<(NodeRpcClient, Arc<StaticResolver>)>,
+}
+
+impl Birth {
+    /// The birth's one endpoint.
+    async fn endpoint(&self) -> iroh::Endpoint {
+        self.endpoint.get_or_init(|| async { rafka_node_rpc::endpoint::bind(self.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap() }).await.clone()
+    }
 }
 
 fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_primary: bool) -> Birth {
@@ -129,7 +140,7 @@ fn birth(name: &str, kind: NodeKind, mesh: &str, is_primary: bool, is_fabric_pri
     node.is_primary = is_primary;
     node.is_fabric_primary = is_fabric_primary;
     node.transport_addr = Some("127.0.0.1:1".parse().unwrap());
-    Birth { node, key }
+    Birth { node, key, endpoint: tokio::sync::OnceCell::new(), caller: tokio::sync::OnceCell::new() }
 }
 
 /// One authority (`me`) serving Status (and core ping, so a non-status call can be refused while
@@ -193,7 +204,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         .with_ready_gate(ready.clone())
         .seal(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().0 })
         .unwrap();
-    let ep = rafka_node_rpc::endpoint::bind(me.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let ep = me.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode {
@@ -206,12 +217,17 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     Rig { me, server, _router: router, resolved, authority, ready }
 }
 
-/// `b`'s client to the rig's authority.
-async fn client_of(rig: &Rig, b: &Birth) -> NodeRpcClient {
-    let resolver = Arc::new(StaticResolver::new());
+/// `b`'s one client, over its one endpoint, resolving the rig's authority.
+async fn client_of<'a>(rig: &Rig, b: &'a Birth) -> &'a NodeRpcClient {
+    let (client, resolver) = b
+        .caller
+        .get_or_init(|| async {
+            let resolver = Arc::new(StaticResolver::new());
+            (NodeRpcClient::new(b.endpoint().await, resolver.clone()).with_caller_system("rdm"), resolver)
+        })
+        .await;
     resolver.insert(rig.resolved.clone());
-    let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-    NodeRpcClient::new(ep, resolver).with_caller_system("rdm")
+    client
 }
 
 async fn call(rig: &Rig, b: &Birth, req: &StatusRequest, opts: &CallOptions) -> RpcOutcome<StatusReply> {
@@ -921,8 +937,7 @@ fn status_route_loss_never_synthesizes_dead() {
         assert_eq!(reply(&call(&rig, &subject, &decl, &CallOptions::default()).await), StatusReply::Applied);
         let served_before = spans_where(&capture.spans(), DECLARATION, &[]).len();
         // No route: a client whose resolver holds nothing for the target.
-        let ep = rafka_node_rpc::endpoint::bind(subject.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let routeless = NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm");
+        let routeless = NodeRpcClient::new(subject.endpoint().await, Arc::new(StaticResolver::new())).with_caller_system("rdm");
         let to = NodeTarget::ExactNode(rig.me.node.node_id.clone());
         let again = StatusRequest::DeclareNodeState { node_id: subject.node.node_id.clone(), incarnation: subject.node.incarnation_id.clone().unwrap(), state: NodeState::Leaving };
         let (out, _) = routeless.call::<Status>(&to, &again, &CallOptions::default()).await;
@@ -958,9 +973,9 @@ fn pending_handoff_ends_ok_only_on_certainty_and_otherwise_stops_the_shape() {
         let fp = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
         let handoff = |rig: &Rig, mesh_id: MeshId, target: Node| {
             let (topology, me, me_id) = (rig.authority.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
-            let ep_key = fp.key.clone();
+            let fp = &fp;
             async move {
-                let ep = rafka_node_rpc::endpoint::bind(ep_key, "127.0.0.1:0".parse().unwrap()).await.unwrap();
+                let ep = fp.endpoint().await;
                 let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
                 let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
                 rafka_node_admin_core::admin::apply_mesh_state(&client, &resolver, &me, &me_id, &topology, "mesh2", &mesh_id.to_string(), rafka_node_rpc_contract::status::MeshState::Pending, &target).await
@@ -1054,9 +1069,8 @@ fn pending_handoff_waits_for_a_filled_authority_before_its_one_call() {
         let mut target = r.me.node.clone();
         target.transport_addr = Some(r.resolved.transport_addr);
         let (topology, me, me_id) = (r.authority.topology.clone(), fp.node.name.clone(), fp.node.node_id.clone());
-        let ep = rafka_node_rpc::endpoint::bind(fp.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());
-        let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
+        let client = NodeRpcClient::new(fp.endpoint().await, resolver.clone()).with_caller_system("rdm");
         let gate = r.ready.clone();
         let opener = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(1200)).await;
