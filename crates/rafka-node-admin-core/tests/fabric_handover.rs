@@ -9,7 +9,8 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, Seat, SeatHolde
 use rafka_mesh_transport::membership::{Backbone, Membership};
 use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::election::{resolve_with, Incumbency};
-use rafka_node_admin_core::build_facts_read::FetchFailure;
+use rafka_node_admin_core::build_facts_read::{BuildFactsDoor, BuildFactsSlot, FetchFailure};
+use rafka_node_admin_core::build_op::{BuildDoor, BuildSlot};
 use rafka_node_admin_core::fabric_handover::{won_claim_from_read, HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, SourceFailure, Stage, WonClaims, WriteCutOff};
 use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage, SeatRow, SeatTransferRow};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
@@ -82,6 +83,10 @@ struct Admin {
     drained: tokio::sync::watch::Sender<bool>,
     /// The admin's Node RPC server: a cell drains it as the admin's DrainNode does.
     server: rafka_node_rpc::NodeRpcServer,
+    /// The admin's `FetchBuildFacts` door (op `0x1F`): `NotReady` until a cell fills it.
+    facts_slot: BuildFactsSlot,
+    /// The admin's Build door (op `0x20`): `NotReady` until a cell fills it.
+    build_slot: BuildSlot,
     _router: Router,
 }
 
@@ -206,7 +211,9 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let resolver = Arc::new(StaticResolver::new());
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: HandoverSlot = Arc::new(OnceLock::new());
-    let server = rafka_node_admin_core::fabric_handover::serve(ServerBuilder::new(), slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }).expect("the catalog seals");
+    let (facts_slot, build_slot): (BuildFactsSlot, BuildSlot) = (Arc::new(OnceLock::new()), Arc::new(OnceLock::new()));
+    let served = rafka_node_admin_core::build_facts_read::serve(rafka_node_admin_core::fabric_handover::serve(ServerBuilder::new(), slot.clone()), facts_slot.clone());
+    let server = rafka_node_admin_core::build_op::serve(served, build_slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }).expect("the catalog seals");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
@@ -258,7 +265,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, slot, client, resolver, resolved, storage, claims, cut_offs, drained, server, _router: router }, ep)
+    (Admin { door, slot, client, resolver, resolved, storage, claims, cut_offs, drained, server, facts_slot, build_slot, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -283,10 +290,16 @@ fn holder_of(a: &Admin, epoch: u64) -> SeatHolder {
 /// mesh1's admin holds the fabric seat at epoch 7; mesh2's admin (`successor_status`) is the only
 /// other mesh-primary. `third` adds a mesh3 admin with a lower NodeId.
 async fn fabric(successor_status: NodeStatus, third: bool, serve_incumbent: bool) -> (Pair, Option<Admin>) {
+    fabric_with(successor_status, third, serve_incumbent, || Arc::new(MemoryFabricStorage::new())).await
+}
+
+/// [`fabric`], each admin born over the `fabric.storage` `storage` gives it (one store shared by
+/// every admin is the fabric's one store root, R14).
+async fn fabric_with(successor_status: NodeStatus, third: bool, serve_incumbent: bool, storage: impl Fn() -> Arc<dyn FabricStorage>) -> (Pair, Option<Admin>) {
     let fabric_id = FabricId::mint();
-    let (incumbent, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", serve_incumbent).await;
-    let (successor, _) = admin(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true).await;
-    let third = if third { Some(admin(&fabric_id, "mesh3", "mesh3.admin.1", "000000000001", true).await.0) } else { None };
+    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", serve_incumbent, storage()).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, storage()).await;
+    let third = if third { Some(admin_over(&fabric_id, "mesh3", "mesh3.admin.1", "000000000001", true, storage()).await.0) } else { None };
     let mut nodes = vec![node_of(&incumbent, NodeStatus::ReadyForTraffic, true), node_of(&successor, successor_status, false)];
     if let Some(t) = &third {
         nodes.push(node_of(t, NodeStatus::ReadyForTraffic, false));
@@ -426,6 +439,168 @@ async fn the_successor_answers_the_command_with_its_view_naming_it_the_fabric_pr
     assert_eq!(fabric_primary_of(&*f.successor.door.topology.read().await).as_deref(), Some("mesh2.admin.1"), "the successor's view names it once it answered the command");
     f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("the handover is confirmed");
     assert_eq!(fabric_primary_of(&*f.incumbent.door.topology.read().await).as_deref(), Some("mesh2.admin.1"), "the incumbent's view names the successor once it holds the committed record");
+}
+
+/// One finished span of a traced cell: its name, trace and attributes.
+struct Traced {
+    name: String,
+    trace_id: String,
+    attributes: BTreeMap<String, String>,
+}
+
+/// A cell's own span capture with trace ids: the product span pipeline
+/// (`rafka_mesh_telemetry::span_capture`) in front of an in-memory exporter, behind a dispatcher
+/// installed on every thread of the cell's own runtime, so the cell needs no process of its own.
+struct TraceCapture {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    capture: rafka_mesh_telemetry::SpanCapture,
+    dispatch: tracing::Dispatch,
+}
+
+fn trace_capture(service: &'static str) -> TraceCapture {
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (capture, layer) = rafka_mesh_telemetry::span_capture(service, exporter.clone());
+    TraceCapture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+}
+
+impl TraceCapture {
+    /// Run the cell's story under a root span named `root` on the capture's runtime; the runtime is
+    /// dropped when the story ends. Returns the root's trace id and what the story returned.
+    fn story<F: std::future::Future>(&self, root: &'static str, f: F) -> (String, F::Output) {
+        let d = self.dispatch.clone();
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
+        let _g = tracing::dispatcher::set_default(&self.dispatch);
+        rt.block_on(async {
+            let root = tracing::info_span!("rdm.test.fabric_handover", cell = root);
+            let traceparent = rafka_mesh_telemetry::traceparent_of(&root).expect("the cell's root span has a trace context");
+            let trace_id = traceparent.split('-').nth(1).expect("a traceparent names its trace").to_string();
+            (trace_id, tracing::Instrument::instrument(f, root).await)
+        })
+    }
+
+    fn spans(&self) -> Vec<Traced> {
+        self.capture.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
+        let all: Vec<Traced> = self
+            .exporter
+            .get_finished_spans()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| Traced { name: s.name.to_string(), trace_id: s.span_context.trace_id().to_string(), attributes: s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect() })
+            .collect();
+        crate::assert_own_story(all.iter().map(|s| s.name.as_str()));
+        all
+    }
+}
+
+/// A drive's executor call that never answers: the cell reads the re-submit's admission, not a run.
+struct Held;
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::build_drive::Dispatcher for Held {
+    async fn dispatch(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_node_admin_core::build::BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
+        std::future::pending().await
+    }
+}
+
+/// An executor that runs no operation: the cell's admins are called for no run.
+struct NoRuns;
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::executor::OperationRunner for NoRuns {
+    async fn run(&self, _: &rafka_node_admin_core::build::BuildId, _: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), String> {
+        Err(format!("the cell runs no operation, not {op:?}"))
+    }
+}
+
+/// `a`'s Build door over the Build log `builds` and the `Fabric.build_id` holder `accepted`: its
+/// control plane reads the view `a`'s handover door projects (so a committed seat names `a` the
+/// fabric-primary there too), its seat book is `a`'s, and the incumbent it reads an unheard
+/// re-submitted Build from is the one `a`'s committed transfer names.
+async fn build_door(a: &Admin, builds: Arc<rafka_node_admin_core::build_state::MemoryBuildStateAdapter>, accepted: Arc<rafka_node_admin_core::accepted::AcceptedStore>) -> Arc<BuildDoor> {
+    use rafka_node_admin_core::build_drive::{DriveEnv, Drives, OpenGate};
+    let me = a.resolved.name.clone();
+    let dyn_builds: Arc<dyn rafka_node_admin_core::build_state::BuildStateAdapter> = builds.clone();
+    let mut control = rafka_node_admin_core::http::ControlPlane::new(dyn_builds.clone(), accepted.clone(), me.clone(), a.door.topology.read().await.clone(), crate::adopted_time());
+    control.topology = a.door.topology.clone();
+    let control = Arc::new(control);
+    let exec = Arc::new(rafka_node_admin_core::executor::BuildExecutor { executor: me.to_string(), builds: dyn_builds.clone(), topology: control.topology.clone(), runner: Arc::new(NoRuns) });
+    let run = Arc::new(rafka_node_admin_core::build_run::RunDoor { me: me.clone(), builds: dyn_builds.clone(), exec, runs: Arc::default(), local: builds.clone() });
+    let env = Arc::new(DriveEnv {
+        me: me.clone(),
+        topology: control.topology.clone(),
+        accepted,
+        builds: dyn_builds.clone(),
+        door: Arc::new(rafka_node_admin_core::build_claim::ClaimDoor { me: me.clone(), node_id: a.resolved.node_id.clone(), topology: control.topology.clone(), builds: dyn_builds.clone(), contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()) }),
+        dispatcher: Arc::new(Held),
+        gate: Arc::new(OpenGate),
+        departure: Arc::new(crate::loopback::Proofs::default()),
+        verdicts: Arc::new(crate::loopback::NoVerdicts),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), a.resolved.node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+    });
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: a.door.membership.seats().clone(), incarnation: a.resolved.incarnation.clone(), incumbent: a.door.clone() })
+}
+
+const INCUMBENT_FACTS: &str = "rdm.node_admin.build.update.via-incumbent-facts";
+const FACTS_SERVED: &str = "rdm.node_admin.build.serve.via-fetch-facts";
+
+/// CONTRACT (node-rpc-envelope.md, "TakeSeats": "after the row P ends the caller's outer stream with
+/// the typed new-seat frame, the caller resubmits the same `build_id` to N, and N resumes the same
+/// attempt as the new fabric-primary. No new attempt is claimed and no receipt is re-run"; build.md
+/// §5.2: "the fabric-primary's claim log reaches every admin through the Build topic and
+/// FetchBuildFacts (`0x1F`)"): the incumbent P accepted Build B, claimed its attempt 1 on its own log
+/// and moved `Fabric.build_id` to it on the fabric's one store; the fabric seat moves to N by the
+/// handover (op `0x21`); N's own log has heard nothing of B (no Build topic runs between them, as
+/// when the re-submit outruns the gossip). The caller's re-submit of B to N is admitted: N reads B's
+/// facts once from P, the incumbent its committed handover names, absorbs them into its own log and
+/// attaches to the same attempt 1, claimed by the same executor. What must NOT happen: N answering
+/// `UnknownBuild` for a Build its incumbent holds.
+#[test]
+fn the_new_seat_resumes_a_resubmitted_build_it_has_not_heard_from_its_incumbents_facts() {
+    use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology};
+    use rafka_node_admin_core::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
+    let cap = trace_capture("fabric-handover");
+    let (trace, (resubmitted, held)) = cap.story("the_new_seat_resumes_a_resubmitted_build_it_has_not_heard_from_its_incumbents_facts", async {
+        let storage: Arc<dyn FabricStorage> = Arc::new(MemoryFabricStorage::new());
+        let (f, _) = fabric_with(NodeStatus::ReadyForTraffic, false, true, || storage.clone()).await;
+        storage.claim_identity(&FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
+        // P accepts B: the Build durable on its own log first, then the pointer moved on the store.
+        let b = rafka_node_admin_core::build::BuildId::mint();
+        let (p_log, n_log) = (Arc::new(MemoryBuildStateAdapter::new()), Arc::new(MemoryBuildStateAdapter::new()));
+        let p_accepted = Arc::new(AcceptedStore::new(storage.clone(), "mesh1.admin.1"));
+        p_log.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: FabricTopology::root("fabric1", "mesh1"), submitted_change: None, submitted_at_ms: 1 }).await.unwrap();
+        p_log.claim_attempt(&BuildAttemptClaim { build_id: b.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        p_accepted.point(&b, 1, "accepted").await.unwrap();
+        let _ = f.incumbent.facts_slot.set(Arc::new(BuildFactsDoor { me: f.incumbent.resolved.name.clone(), builds: p_log.clone(), accepted: p_accepted, floor: Arc::default() }));
+        let n_door = build_door(&f.successor, n_log.clone(), Arc::new(AcceptedStore::new(storage.clone(), "mesh2.admin.1"))).await;
+        let _ = f.successor.build_slot.set(n_door);
+        // The seat moves to N; N's own log still holds nothing of B.
+        f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("the handover is confirmed");
+        assert!(n_log.read_build(&b).await.is_err(), "N has heard nothing of B before the re-submit");
+        // The caller re-submits B at the seat P's new-seat frame names.
+        let at_new_seat = rafka_node_admin_client::BuildCarrier::new(f.incumbent.client.clone(), f.successor.resolved.name.clone());
+        let resubmitted = at_new_seat.resubmit(&rafka_node_admin_client::BuildId(b.0.clone()), 1).await.map(|s| (s.build_id().0.clone(), s.attempt(), s.disposition()));
+        let held = n_log.read_build(&b).await.map(|p| (p.attempt, p.executor));
+        (resubmitted.map(|r| (b.clone(), r)), held)
+    });
+    let (b, (build_id, attempt, disposition)) = resubmitted.expect("the new seat admits the re-submit by build_id from its incumbent's facts");
+    assert_eq!(build_id, b.0, "never a second Build");
+    assert_eq!((attempt, disposition), (1, rafka_node_rpc_contract::build::Disposition::Attached), "the re-submit attaches to the attempt it named");
+    let (held_attempt, held_executor) = held.expect("N's own log holds B once its incumbent's facts are absorbed");
+    assert_eq!((held_attempt, held_executor.as_deref()), (1, Some("mesh1.admin.1")), "no new attempt is claimed: the same attempt, by the same executor");
+    let spans = cap.spans();
+    let in_trace = |name: &str| spans.iter().filter(|s| s.name == name && s.trace_id == trace).collect::<Vec<_>>();
+    let absorbed = in_trace(INCUMBENT_FACTS);
+    assert_eq!(absorbed.len(), 1, "one read of the incumbent's facts, in the re-submit's own trace {trace}");
+    let a = &absorbed[0].attributes;
+    assert_eq!(a.get("outcome").map(String::as_str), Some("absorbed"), "{a:?}");
+    assert_eq!(a.get("node").map(String::as_str), Some("mesh2.admin.1"), "{a:?}");
+    assert!(a.get("incumbent").is_some_and(|i| i.starts_with("mesh1.admin.1 (000000000009")), "the incumbent the committed handover names: {a:?}");
+    assert_eq!(a.get("facts").map(String::as_str), Some("2"), "the acceptance and the claim: {a:?}");
+    let served = in_trace(FACTS_SERVED);
+    assert_eq!(served.len(), 1, "P served the one read, in the same trace");
+    let p = &served[0].attributes;
+    assert_eq!((p.get("node").map(String::as_str), p.get("outcome").map(String::as_str), p.get("complete").map(String::as_str)), (Some("mesh1.admin.1"), Some("served"), Some("true")), "{p:?}");
+    println!("trace {trace}");
 }
 
 /// CONTRACT (node-rpc-envelope.md "TakeSeats"; elections §4.4): the seat row is the resolver's

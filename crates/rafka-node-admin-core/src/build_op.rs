@@ -52,10 +52,50 @@ pub struct BuildDoor {
     pub seats: SeatBook,
     /// This admin's exact birth (with `env.door.node_id`): what the seat book is read against.
     pub incarnation: IncarnationId,
+    /// Where a re-submitted Build this admin's own log holds no fact of is read: the incumbent the
+    /// committed transfer of its fabric seat names.
+    pub incumbent: Arc<dyn IncumbentFacts>,
 }
 
 /// The door a running admin fills once it holds a view.
 pub type BuildSlot = Arc<OnceLock<Arc<BuildDoor>>>;
+
+/// The facts of a Build this admin's own log holds no fact of, read from the incumbent the committed
+/// transfer of its fabric seat names (node-rpc-envelope.md, "TakeSeats": "the caller resubmits the
+/// same `build_id` to N, and N resumes the same attempt as the new fabric-primary"; build.md §5.2:
+/// "the fabric-primary's claim log reaches every admin through the Build topic and FetchBuildFacts
+/// (`0x1F`)"). The incumbent keeps serving after the seat row, so one read reaches the admin that
+/// accepted the Build; no other admin is asked and nothing is read again.
+#[async_trait::async_trait]
+pub trait IncumbentFacts: Send + Sync {
+    /// One `FetchBuildFacts` of `build_id` to the incumbent.
+    async fn read(&self, build_id: &BuildId) -> IncumbentRead;
+}
+
+/// What [`IncumbentFacts::read`] found.
+#[derive(Debug)]
+pub enum IncumbentRead {
+    /// No committed transfer seated this birth in the fabric seat it holds (it holds no fabric seat,
+    /// or took it by election or at Day 0): its own log is the only one its Build door answers from.
+    NoTransfer,
+    /// The incumbent `incumbent` (its `path.name` and node id) was read: its facts, or why none came.
+    Read {
+        /// The incumbent, named.
+        incumbent: String,
+        /// The facts, or the read's own failure.
+        read: Result<crate::build_facts_read::Fetched, crate::build_facts_read::FetchFailure>,
+    },
+}
+
+/// A Build door that took no fabric seat by a transfer (an admin built without a seat transfer door).
+pub struct NoIncumbent;
+
+#[async_trait::async_trait]
+impl IncumbentFacts for NoIncumbent {
+    async fn read(&self, _: &BuildId) -> IncumbentRead {
+        IncumbentRead::NoTransfer
+    }
+}
 
 fn counts(m: &MeshCounts) -> MeshDesired {
     MeshDesired { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
