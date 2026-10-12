@@ -219,6 +219,42 @@ mod tests {
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&a, "stop-node"), acting, 2)), Ok(()), "the same publisher's fact of another mesh is another source");
     }
 
+    /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part C1 step 7:
+    /// "A late 'updating' never undoes an 'updated': the committed epoch, per cohort, is these two
+    /// frames' order key in the one gossip receive path (R-RX3), already in the body so no new field;
+    /// nothing orders inside a handler"): per cohort, "primary updating" at an epoch then "primary
+    /// updated" at the same epoch are taken; a "primary updating" received after the "primary updated"
+    /// of its epoch is ignored, naming the cohort and both keys; a copy of the held "updated" is taken;
+    /// the next update's "updating" is newer; an "updated" of an earlier epoch is ignored. A frame
+    /// naming both seats (Q1) is ignored when either cohort holds a newer key, and another mesh's cohort
+    /// is another source. Must NOT happen: a late "updating" reaching a handler after its "updated".
+    #[test]
+    fn a_primary_updating_received_after_its_primary_updated_is_ignored() {
+        use rafka_mesh_entity::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
+        let mut order = ReceiveOrder::default();
+        let (holder, successor) = (birth("mesh1.admin.1"), birth("mesh1.admin.2"));
+        let to = HandoverBirth { mesh: "mesh1".into(), node_id: successor.node.node_id.clone(), incarnation: successor.node.incarnation.clone() };
+        let mesh_seat = |mesh: &str, epoch: u64| CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: mesh.into() }, holder: to.clone(), epoch };
+        let fabric_seat = |epoch: u64| CommittedSeat { seat: TransferSeat::FabricPrimary, holder: to.clone(), epoch };
+        let updating = |seats: Vec<CommittedSeat>| Frame::PrimaryUpdating { op: op(&holder, "stop-node"), seats };
+        let updated = |seats: Vec<CommittedSeat>| Frame::PrimaryUpdated { op: op(&holder, "stop-node"), seats };
+        assert_eq!(order.admit(&updating(vec![mesh_seat("mesh1", 4)])), Ok(()));
+        assert_eq!(order.admit(&updated(vec![mesh_seat("mesh1", 4)])), Ok(()), "the updated of the same epoch follows its updating");
+        assert_eq!(
+            order.admit(&updating(vec![mesh_seat("mesh1", 4)])),
+            Err(Earlier { frame: "primary-updating", source: "mesh-primary mesh1".into(), held: "epoch=4 updated".into(), offered: "epoch=4 updating".into() }),
+            "a late updating never undoes an updated"
+        );
+        assert_eq!(order.admit(&updated(vec![mesh_seat("mesh1", 4)])), Ok(()), "a copy of the held updated is the handler's to absorb");
+        assert_eq!(order.admit(&updating(vec![mesh_seat("mesh1", 5)])), Ok(()), "the next update is newer");
+        assert_eq!(order.admit(&updated(vec![mesh_seat("mesh1", 3)])).map_err(|e| (e.frame, e.offered)), Err(("primary-updated", "epoch=3 updated".to_string())), "an earlier committed epoch is ignored");
+        // Both seats in one frame (Q1): the fabric cohort's newer key ignores the whole frame.
+        assert_eq!(order.admit(&updated(vec![fabric_seat(8)])), Ok(()));
+        let both = order.admit(&updating(vec![mesh_seat("mesh1", 6), fabric_seat(8)])).unwrap_err();
+        assert_eq!((both.frame, both.source.as_str(), both.held.as_str(), both.offered.as_str()), ("primary-updating", "fabric-primary", "epoch=8 updated", "epoch=8 updating"));
+        assert_eq!(order.admit(&updating(vec![mesh_seat("mesh2", 1)])), Ok(()), "another mesh's cohort is another source");
+    }
+
     /// CONTRACT (R-RX3 names three order keys; nothing else is ordered here): a frame with no order
     /// key (a seat record, a status, a NodeDeleted) is taken however often it arrives.
     #[test]
