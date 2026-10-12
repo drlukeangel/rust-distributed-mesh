@@ -335,3 +335,63 @@ pub struct BuildReceipts {
     /// The receipts of every attempt, in order.
     pub steps: Vec<StepReceipt>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rafka_mesh_entity::{IncarnationId, NodeId};
+    use rafka_node_rpc::{HandlerFault, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+    use rafka_node_rpc_contract::catalog::OpOwner;
+
+    /// CONTRACT (node-rpc-envelope.md "Build, op `0x20`": the caller "waits on the stream" of a
+    /// `build.create`, and a frame the server wrote reaches it): a Build stream is the whole of the
+    /// accepted call. The caller keeps only the stream and drops the carrier it opened it with (the
+    /// `node` objects, their Node RPC client and endpoint); every frame the fabric-primary writes
+    /// after that still reaches the caller, in order, up to the terminal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_stream_whose_carrier_was_dropped_still_delivers_every_frame_to_its_terminal() {
+        let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
+        let go = Arc::new(tokio::sync::Notify::new());
+        let g = go.clone();
+        let server = ServerBuilder::new()
+            .serve_stream::<Build, _, _>(OpOwner::Product("rdm".into()), move |_peer, _req: BuildRequest, sink| {
+                let g = g.clone();
+                async move {
+                    let gone = |e| HandlerFault::invariant_broken(format!("{e:?}"));
+                    let mut sink = sink.started(BuildReply::Started { build_id: "bld-1".into(), attempt: 3, disposition: Disposition::Created }).await.map_err(gone)?;
+                    // The frames after `Started` are written once the caller holds only the stream.
+                    g.notified().await;
+                    for step in ["AllocateIdentity", "WaitForMeshJoin", "Complete"] {
+                        sink.data(BuildReply::Step { build_id: "bld-1".into(), attempt: 3, operation: "create-node:mesh1.admin.1.new".into(), step: step.into() }).await.map_err(gone)?;
+                    }
+                    Ok(BuildReply::SeatMoved { build_id: "bld-1".into(), fabric_primary: Some("mesh1.admin.2".into()) })
+                }
+            })
+            .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+            .unwrap();
+        let key = iroh::SecretKey::generate();
+        let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+        let _router = iroh::protocol::Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
+        let fp: PathName = "mesh1.admin.1".parse().unwrap();
+        let resolver = Arc::new(StaticResolver::new());
+        resolver.insert(ResolvedNode { node_id, name: fp.clone(), endpoint_id: key.public(), transport_addr: addr, incarnation });
+        let cep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let carrier = BuildCarrier::new(Arc::new(NodeRpcClient::new(cep, resolver).with_caller_system("rdm")), fp);
+        let mut stream = carrier.create(BuildChange::Stop { node: "mesh1.admin.1".parse().unwrap() }).await.expect("the call was accepted");
+        assert_eq!((stream.build_id().0.as_str(), stream.attempt()), ("bld-1", 3));
+        drop(carrier);
+        go.notify_one();
+        // A loopback frame arrives in milliseconds; the bound only names what arrived if it never does.
+        let mut got = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(10), async {
+            while let Some(f) = stream.next().await {
+                got.push(f);
+            }
+        })
+        .await;
+        let step = |s: &str| Ok(BuildFrame::Step { attempt: 3, operation: "create-node:mesh1.admin.1.new".into(), step: s.into() });
+        assert!(read.is_ok(), "the stream delivered no terminal within 10 s; it delivered {got:?}");
+        assert_eq!(got, vec![step("AllocateIdentity"), step("WaitForMeshJoin"), step("Complete"), Ok(BuildFrame::SeatMoved { fabric_primary: Some("mesh1.admin.2".into()) })]);
+    }
+}
