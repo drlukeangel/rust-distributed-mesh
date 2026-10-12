@@ -412,8 +412,10 @@ impl Records {
         let _ = self.rows.set(rows);
     }
 
-    /// This admin's Node RPC door (set once, at start): the installed views open it.
-    pub fn set_door(&self, door: ServingDoor) {
+    /// This admin's Node RPC door (set once, at start): every view installed from now on opens it
+    /// once it holds the birth, and `installed`, the view in place when it is set, is checked at once.
+    pub fn set_door(&self, door: ServingDoor, installed: &Topology) {
+        door.open_if_held(installed);
         let _ = self.door.set(door);
     }
 
@@ -715,8 +717,12 @@ impl Records {
         self.install(held, t).await
     }
 
-    /// Install `t` over the view `held` (its write lock held).
+    /// Install `t` over the view `held` (its write lock held). The door opens here, before the lock is
+    /// released, so no reader of the installed view sees this admin's birth while its door refuses.
     async fn install(&self, mut held: tokio::sync::RwLockWriteGuard<'_, Topology>, t: Topology) -> Topology {
+        if let Some(door) = self.door.get() {
+            door.open_if_held(&t);
+        }
         if *held != t {
             // The seat of this admin's mesh taken with this view: its status rows are folded in
             // before the view is installed, so no decision reads the view against an empty record.
@@ -5595,6 +5601,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     book: Some(book.clone()),
                                 }));
                             }
+                            // The Node RPC door: opened by the first view installed that holds this admin's exact birth
+                            // once the authority above is filled, whichever task installs it.
+                            {
+                                let authority = authority.clone();
+                                let door = ServingDoor::new(rpc_ready.clone(), (node_id.clone(), incarnation.clone()), Box::new(move || authority.get().is_some()), name.clone());
+                                records.set_door(door, &*control.topology.read().await);
+                            }
                             // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
                             // a fabric round is owed through it.
                             let declarer = crate::status_declare::Declarer::new();
@@ -6807,8 +6820,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         let (topology, fabric, fabric_id, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
                                         let elections = ElectionLog::new(name.clone());
                                         let me = name.clone();
-                                        let birth = (node_id.clone(), incarnation.clone());
-                                        let (rpc_ready, authority) = (rpc_ready.clone(), authority.clone());
                                         // Not spawned behind the gate: the rebuild takes the view's lock, which every handler of a
                                         // parked admin reads (its start among them). It is held at its own wait instead
                                         // (`view_rebuild_due`), where it holds nothing.
@@ -6829,16 +6840,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                         .in_scope(|| tracing::info!("a name this admin's view held is excluded by the projection now"));
                                                 }
                                                 held = now;
-                                                // The router serves once the Status authority is filled and the view it decides
-                                                // from holds this admin's exact birth, under whatever name it holds now (its
-                                                // join answer hands it its row's name, R-JN1), never by the name it booted under.
-                                                if !rpc_ready.load(std::sync::atomic::Ordering::SeqCst) && authority.get().is_some() {
-                                                    if let Some(own) = t.births().find(|n| n.node_id == birth.0 && n.incarnation_id.as_ref() == Some(&birth.1)) {
-                                                        rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
-                                                        tracing::info_span!("rdm.node_admin.node.serve.via-view-holds-birth", node = %own.name, node_id = %birth.0, incarnation_id = %birth.1.0, held_name = %own.name, boot_name = %me)
-                                                            .in_scope(|| tracing::info!("the Status authority is filled and this admin's view holds its exact birth: the Node RPC router serves"));
-                                                    }
-                                                }
                                                 drop(turn);
                                                 turn = view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
                                             }
@@ -8649,8 +8650,8 @@ mod tests {
         let filled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let records = Records::default();
         let authority = filled.clone();
-        records.set_door(ServingDoor::new(ready.clone(), (me.node.node_id.clone(), me.node.incarnation.clone()), Box::new(move || authority.load(std::sync::atomic::Ordering::SeqCst)), me.node.name.clone()));
         let topology = RwLock::new(view(&[primary.clone()]));
+        records.set_door(ServingDoor::new(ready.clone(), (me.node.node_id.clone(), me.node.incarnation.clone()), Box::new(move || authority.load(std::sync::atomic::Ordering::SeqCst)), me.node.name.clone()), &*topology.read().await);
         let mut other = me.clone();
         other.node.incarnation = IncarnationId::mint();
         let opened = || ready.load(std::sync::atomic::Ordering::SeqCst);
