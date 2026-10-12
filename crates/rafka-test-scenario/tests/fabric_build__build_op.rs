@@ -576,8 +576,6 @@ struct Lost {
     build_id: BuildId,
     /// The attempt the lost fabric-primary's run executed.
     attempt: u32,
-    /// The MeshId on the row the lost fabric-primary's claim wrote to the store root.
-    claimed: String,
     /// The admin that holds the fabric-primary seat after it.
     successor: String,
     /// The carrier at that successor, after it streamed the Build to `Complete`.
@@ -634,7 +632,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     estate.settled_shape(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(90)).await;
     let mesh2 = Meshes::new(carrier.clone()).get(&MeshSelector::Mesh("mesh2".into())).await.expect("mesh2's view at the successor").pop().expect("the successor's view holds mesh2");
     assert_eq!(mesh2.id.map(|id| id.to_string()), Some(claimed.clone()), "mesh2 is the mesh the lost fabric-primary's claim wrote");
-    Lost { build_id, attempt, claimed, successor, carrier }
+    Lost { build_id, attempt, successor, carrier }
 }
 
 /// `create-mesh:mesh2`'s receipts in `lost`'s Build, as the successor reads them: `(attempt, step, complete)`.
