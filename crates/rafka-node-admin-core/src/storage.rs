@@ -528,6 +528,11 @@ const NODE_FORMAT: &str = "node-record/4";
 const RUNTIME_FORMAT: &str = "node-runtime/1";
 const ROW_FORMAT: &str = "node-row/1";
 const ROW_ID_FORMAT: &str = "node-row-id/1";
+/// The format of an exited node's own row, `nodes/<mesh>/exited/<node id>.json` of the fabric's store
+/// root: a key family one build writes (a `Deleted` row put) and a later build reads (a recovery's
+/// update). The `Deleted` row at the `path.name` key cannot carry the exited node's meta to that
+/// update: the new node's claim replaces the row at that key ([`claim_against`] treats a `Deleted`
+/// row as free), and a create that fails after its claim releases the key.
 const ROW_EXITED_FORMAT: &str = "node-row-exited/1";
 const TAG_FORMAT: &str = "node-tag/1";
 
