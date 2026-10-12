@@ -103,9 +103,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-        let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-        // A cell that fails before its own terminate leaves no node running.
-        let _reap = common::ReapOnDrop(template.data_root.clone());
+        let template = template(&admin);
         let builds = MemoryBuildStateAdapter::new();
         let sink = Published::default();
         let process = ProcessDeploymentProvider::new();
@@ -168,9 +166,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-        let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
-        // A cell that fails before its own terminate leaves no node running.
-        let _reap = common::ReapOnDrop(template.data_root.clone());
+        let template = template(&admin);
         let builds = MemoryBuildStateAdapter::new();
         let sink = Published::default();
         let process = ProcessDeploymentProvider::new();

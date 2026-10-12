@@ -34,7 +34,7 @@ fn a_rig_dropped_with_its_launched_node_running_leaves_no_node_running() {
     cap.run(common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
-        let template = template(&fabric, admin.seed.clone(), admin.launcher.clone());
+        let template = template(&admin);
         let builds = MemoryBuildStateAdapter::new();
         let sink = Published::default();
         let provider = ProcessDeploymentProvider::new();
