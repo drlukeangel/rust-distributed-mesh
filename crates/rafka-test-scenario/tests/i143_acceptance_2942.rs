@@ -97,6 +97,9 @@ async fn retire_mesh1(test: &str) -> Retired {
         .find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["status"] == "ready-for-traffic")
         .map(|n| s(&n["admin_api_base"]))
         .expect("a ready mesh2 admin");
+    // A Build that retires mesh1 is a mesh.delete, refused until the initial fabric has first reached
+    // ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.fabric_ready(Duration::from_secs(120)).await;
     let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh2")]})).await;
     assert_eq!(status, 202, "{b}");
     let b = s(&b["build_id"]);

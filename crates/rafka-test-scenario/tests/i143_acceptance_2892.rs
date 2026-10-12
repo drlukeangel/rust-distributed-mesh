@@ -150,13 +150,28 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         })
     };
 
-    // THE HAND-OFF, through the rectifier: one Build retiring the holder's mesh.
+    // THE HAND-OFF, through the rectifier: one Build retiring the holder's mesh. A mesh.delete is refused
+    // until the initial fabric has first reached ready-for-traffic (states.md "The initial fabric before
+    // ready-for-traffic").
+    estate.fabric_ready(Duration::from_secs(120)).await;
     let started = now_ns();
     let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh(&survivor_mesh)]})).await;
     assert_eq!(status, 202, "{b}");
     let build_id = s(&b["build_id"]);
     estate.await_build(&build_id, Duration::from_secs(240)).await;
     let build_complete = now_ns();
+    // mesh.delete ends at mesh.deleted (mesh-delete.md steps 6-7): the mesh's final primary lives on, publishing
+    // its aggregate, until a separate node.delete ends it. The Build's MeshDeleted receipt names it.
+    let (_, finished) = estate.get(&format!("/api/builds?id={build_id}")).await;
+    let final_primary = finished["steps"]
+        .as_array()
+        .and_then(|steps| steps.iter().find(|r| r["step"] == "MeshDeleted"))
+        .map(|r| s(&r["output"]["final_primary"]["node"]))
+        .unwrap_or_else(|| panic!("the Build holds a MeshDeleted receipt naming the final primary: {finished}"));
+    assert!(lost_pids.iter().any(|(n, _)| *n == final_primary), "the final primary {final_primary} is a birth of the lost mesh {lost_mesh}");
+    let (status, ended) = estate.delete(&format!("/api/nodes/{final_primary}")).await;
+    assert_eq!(status, 202, "{ended}");
+    estate.await_attempt(&s(&ended["build_id"]), Estate::attempt_of(&ended), Duration::from_secs(120)).await;
     // The former holder's runtimes: terminal, observed by the host.
     for (name, pid) in &lost_pids {
         wait_for(&format!("{name}'s runtime is gone"), Duration::from_secs(30), || async { (!alive(*pid)).then_some(()) }).await;
