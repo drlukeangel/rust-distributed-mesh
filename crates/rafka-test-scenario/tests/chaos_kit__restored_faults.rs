@@ -259,3 +259,86 @@ fn firewall_inbound_deafens_one_node_until_healed() {
         assert!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().any(|sp| attr(sp, "fault") == "inbound-drop"));
     });
 }
+
+/// Who owns the inbound drop in [`firewall_inbound_ends_with_the_process_that_installed_it`]: the
+/// copy of the cell that installs it. It writes this file once the drop stands.
+const OWNER_MARKER: &str = "RDM_FAULT_OWNER_MARKER";
+/// The loopback UDP port the owner drops inbound traffic to.
+const OWNER_PORT: &str = "RDM_FAULT_OWNER_PORT";
+
+/// Whether one datagram sent to `to` reaches `rx` within the probe window.
+fn delivered(rx: &std::net::UdpSocket, to: std::net::SocketAddr) -> bool {
+    let tx = std::net::UdpSocket::bind("127.0.0.1:0").expect("a loopback sender");
+    tx.send_to(b"fault-probe", to).expect("the probe is sent");
+    rx.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    rx.recv_from(&mut [0u8; 32]).is_ok()
+}
+
+/// Removes the owner and the chain the pre-fix kit left for it, so this cell never poisons the host.
+struct Owned {
+    child: std::process::Child,
+}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let chain = format!("RAFKA-INB-{}-0", self.child.id());
+        for args in [["-D", "INPUT", "-j", &chain], ["-F", &chain, "", ""], ["-X", &chain, "", ""]] {
+            let args: Vec<&str> = args.iter().copied().filter(|a| !a.is_empty()).collect();
+            let _ = std::process::Command::new("sudo").args(["-n", "iptables", "-w"]).args(&args).output();
+        }
+    }
+}
+
+/// CONTRACT: inbound UDP dropped to one node stops being dropped when the process that installed
+/// the drop dies, however it dies. A fault owner is killed with SIGKILL, so no destructor runs; a
+/// datagram to the port it was dropping then reaches the port's socket. What must NOT happen: a drop
+/// left on the host by a dead owner, deafening whichever process binds that port next.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn firewall_inbound_ends_with_the_process_that_installed_it() {
+    if crate::own_process::delegated(module_path!(), "firewall_inbound_ends_with_the_process_that_installed_it") {
+        return;
+    }
+    if let Ok(marker) = std::env::var(OWNER_MARKER) {
+        let port = std::env::var(OWNER_PORT).expect("the owner is told its port");
+        let nodes = vec![json!({"name": "mesh1.rpc.1", "transport_addr": format!("127.0.0.1:{port}")})];
+        let said = match FirewallInbound::start(&nodes, "mesh1.rpc.1", &[]) {
+            Ok(_fault) => {
+                std::fs::write(format!("{marker}.tmp"), "installed").unwrap();
+                std::fs::rename(format!("{marker}.tmp"), &marker).unwrap();
+                loop {
+                    std::thread::park();
+                }
+            }
+            Err(why) => format!("refused: {}", serde_json::to_string(&why).unwrap()),
+        };
+        std::fs::write(format!("{marker}.tmp"), said).unwrap();
+        std::fs::rename(format!("{marker}.tmp"), &marker).unwrap();
+        return;
+    }
+    let rx = std::net::UdpSocket::bind("127.0.0.1:0").expect("a loopback receiver");
+    let to = rx.local_addr().unwrap();
+    assert!(delivered(&rx, to), "control: with no fault a datagram to {to} is delivered");
+    let marker = std::env::temp_dir().join(format!("rdm-fault-owner-{}-{}", std::process::id(), to.port()));
+    let _ = std::fs::remove_file(&marker);
+    let full = format!("{}::firewall_inbound_ends_with_the_process_that_installed_it", module_path!().split_once("::").map(|(_, m)| m).unwrap_or(""));
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([full.as_str(), "--exact", "--nocapture", "--test-threads=1"])
+        .env(OWNER_MARKER, &marker)
+        .env(OWNER_PORT, to.port().to_string())
+        .spawn()
+        .expect("the fault owner starts");
+    let mut owned = Owned { child };
+    let said = wait_for("the owner installed the drop", Duration::from_secs(60), || async { std::fs::read_to_string(&marker).ok() }).await;
+    let _ = std::fs::remove_file(&marker);
+    if said != "installed" {
+        eprintln!("skip: {said}");
+        assert!(std::env::var("RDM_REQUIRE_NETFAULT").is_err(), "the fault was refused: {said}");
+        return;
+    }
+    assert!(!delivered(&rx, to), "control: while its owner lives the drop holds a datagram to {to} back");
+    owned.child.kill().expect("SIGKILL to the owner");
+    owned.child.wait().expect("the owner is reaped");
+    assert!(delivered(&rx, to), "the owner was killed with SIGKILL and a datagram to {to} is still dropped: the drop outlived the process that installed it");
+}
