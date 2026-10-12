@@ -210,7 +210,11 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
         .cloned()
         .unwrap_or_else(|| panic!("node recovery of {NODE} completed under the accepted Build"));
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
-    let stored = served.iter().find(|s| s["attributes"]["incarnation_id"] == first["incarnation_id"] && s["attributes"]["op"] == "put" && s["attributes"]["outcome"] == "stored").cloned().expect("the old birth stored the put");
+    // The old birth's own serve span of the put is not evidence here: the cell SIGKILLs that process,
+    // and spans still queued in its batch exporter die with it (rafka-mesh-telemetry init_telemetry:
+    // a batch provider). The put's reply named the old birth as executor (`landed_on` above); the
+    // caller's span is the put's trace.
+    let stored = named(&spans, "rdm.node_rpc.proof_store.resolve.via-probe").into_iter().find(|s| s["attributes"]["op"] == "put" && s["attributes"]["target"] == path.as_str()).cloned().expect("the probe's put call span");
     let inherited = served.iter().find(|s| s["attributes"]["node_id"] == replacement["node_id"] && s["attributes"]["op"] == "get" && s["attributes"]["outcome"] == "value").cloned().expect("the new node served the value the old birth stored");
     let replace_start = replace["start_unix_nano"].as_u64().unwrap_or(0);
     let old_after: Vec<&&Value> = served.iter().filter(|s| s["attributes"]["node_id"] == first["node_id"] && s["start_unix_nano"].as_u64().unwrap_or(0) > replace_start).collect();

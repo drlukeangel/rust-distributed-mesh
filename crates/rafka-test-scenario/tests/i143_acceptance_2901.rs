@@ -5,9 +5,10 @@
 //!
 //! CONTRACT: on a real fabric, an observer that joined the backbone and a mesh channel before a
 //! status change decodes the frames the fabric puts there. A quiet fabric carries heartbeats and
-//! aggregates and no status frame at all. A new mesh's primary sends each status of its mesh
-//! (pending, then ready-for-traffic: two status facts) five times, one per second, each as the SAME
-//! message (one `changed_at_rafka_ms`), and then nothing: the five
+//! aggregates and no status frame at all. A new mesh is pending, then ready-for-traffic: two status
+//! facts, each one message (one `changed_at_rafka_ms`). Its primary sends the pending fact at once and
+//! stops when ready-for-traffic supersedes it, and sends ready-for-traffic five times, one per second,
+//! as the SAME message, and then nothing: the five
 //! sends are proven at the SENDER by its `via-status-send` span for each send, never by counting
 //! frames at an observer, which already holds the first copy and drops the identical rest. A member
 //! that joins while the sends are running holds the status once, with the original publisher and
@@ -269,12 +270,14 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
         .map(|sp| (sp["start_unix_nano"].as_u64().unwrap(), s(&sp["attributes"]["changed_at_rafka_ms"]).parse::<u64>().unwrap()))
         .collect();
     every_send.sort();
-    for (status, at) in &facts {
-        let sends = every_send.iter().filter(|(_, a)| a == at).count();
-        assert_eq!(sends, 5, "mesh2's primary sent its {status} fact exactly five times: {every_send:?}");
-    }
-    assert_eq!(every_send.len(), 5 * facts.len(), "no send of mesh2's status but its two facts' five each: {every_send:?}");
-    let sender_sends: Vec<(u64, u64)> = every_send.into_iter().filter(|(_, at)| *at == instants[0]).collect();
+    // The current fact (ready-for-traffic) is sent five times. The pending fact before it was sent at
+    // once, and its reinforcement ended at the next change of the same mesh (the sends carry only the
+    // mesh's current status): none of its sends follows the first send of the change after it.
+    let sender_sends: Vec<(u64, u64)> = every_send.iter().filter(|(_, at)| *at == instants[0]).cloned().collect();
+    assert_eq!(sender_sends.len(), 5, "mesh2's primary sent its ready-for-traffic fact exactly five times: {every_send:?}");
+    let superseded: Vec<(u64, u64)> = every_send.iter().filter(|(_, at)| *at != instants[0]).cloned().collect();
+    assert!(!superseded.is_empty() && superseded.iter().all(|(_, at)| *at == facts[0].1), "the only other sends are of the pending fact: {every_send:?}");
+    assert!(superseded.iter().all(|(t, _)| *t < sender_sends[0].0), "no send of the pending fact follows the ready-for-traffic change: {every_send:?}");
     assert!(sender_sends.iter().all(|(_, at)| *at == instants[0]), "all five sends are the one message, changed_at_rafka_ms {}: {sender_sends:?}", instants[0]);
     let send_offsets_ms: Vec<u64> = sender_sends.iter().map(|(t, _)| (t - sender_sends[0].0) / 1_000_000).collect();
     for (k, o) in send_offsets_ms.iter().enumerate() {

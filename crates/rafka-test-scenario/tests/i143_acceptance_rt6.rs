@@ -73,6 +73,12 @@ fn kinds(frames: &[Value]) -> Vec<String> {
     frames.iter().map(|f| s(&f["frame"])).collect()
 }
 
+/// The frames of a read without the seat records and the rafka-time it also streams before `End`
+/// (node-rpc-envelope.md, Topology op 0x1E: `TopologyReply::Seats`, `TopologyReply::RafkaTime`).
+fn topology_frames(frames: &[Value]) -> Vec<Value> {
+    frames.iter().filter(|f| f["frame"] != "seats" && f["frame"] != "rafka-time").cloned().collect()
+}
+
 /// CONTRACT: an ordinary member (an rpc node, neither a primary nor a maker) answers
 /// `GetTopology` with the fabric topology it holds: its own mesh and the other mesh, each at its
 /// publisher and `topology_version`, as `Started`, one snapshot per mesh, the seat records and
@@ -111,7 +117,7 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     // The version it holds: Unchanged, no snapshot.
     let since = format!("{mesh2_pub}|{incarnation}|{mesh2_v}");
     let held = estate.probe(&["topology", "--target", &target, "--mesh", "mesh2", "--since", &since]);
-    let held_frames = held["frames"].as_array().unwrap().clone();
+    let held_frames = topology_frames(held["frames"].as_array().unwrap());
     assert_eq!(kinds(&held_frames), vec!["started", "unchanged", "end"], "{held_frames:?}");
     assert_eq!(held_frames[1]["topology_version"], mesh2_v);
     assert_eq!(held_frames[2]["meshes"], 1, "End counts Unchanged");
