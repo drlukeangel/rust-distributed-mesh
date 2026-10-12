@@ -50,8 +50,9 @@ fn ended_read<T>(span: &tracing::Span, op: &'static str, r: &Result<T, CallEnd>)
 /// spreads by gossip is read as it lands, until `holds`. `kind` and `fact` name the fact and `admin` the
 /// admin asked. An admin that does not report it within `within` ends the call `Indeterminate`, naming
 /// the fact, the admin and the last thing it reported (`report` of the last view read) or how its last
-/// read ended. Every `fact` awaiter of the objects is this body.
-pub(crate) async fn await_fact<T, Fut>(
+/// read ended. Every fact awaiter is this body: `Fabrics::fact`, and a caller that reads a fact over a typed
+/// call of the crate that owns its type (a node-admin's own Build log, `FetchBuildFacts`) supplies that read.
+pub async fn await_fact<T, Fut>(
     kind: &str,
     admin: &str,
     fact: &str,
@@ -600,20 +601,6 @@ impl Builds {
     /// `build.delete`: drop a finished Build from history.
     pub async fn delete(&self, id: &BuildId) -> Result<(), CallEnd> {
         self.call(BuildOp::Delete, self.carrier.delete(id)).await
-    }
-
-    /// Await the typed fact `holds` of Build `id` as the fabric-primary reports it (`build.get`), read at
-    /// half the gossip interval so a fact that spreads by gossip is read as it lands. `fact` names it. The
-    /// Build family is answered only by the fabric-primary (a node that is not it names it and the carrier
-    /// follows), so this is the fabric-primary's view of the Build, which is the view of the admin the
-    /// carrier starts at only when that admin is the fabric-primary. A fabric-primary that does not report it within `within` ends the call `Indeterminate`,
-    /// naming the fact, the admin the call started at and the last thing reported or how the last read ended.
-    pub async fn fact(&self, id: &BuildId, fact: &str, within: std::time::Duration, holds: impl Fn(&BuildReceipts) -> bool) -> Result<BuildReceipts, CallEnd> {
-        let report = |b: &BuildReceipts| {
-            let last = b.steps.last().map(|r| format!("{} {} of attempt {}", r.operation, r.step, r.attempt)).unwrap_or_else(|| "none".into());
-            format!("phase {:?}, attempt {}, {} receipts, the last {last}", b.phase, b.attempt, b.steps.len())
-        };
-        await_fact("build", &format!("the fabric-primary reached from {}", self.carrier.fabric_primary()), &format!("{fact} of Build {id}"), within, || self.get(id), holds, report).await
     }
 }
 

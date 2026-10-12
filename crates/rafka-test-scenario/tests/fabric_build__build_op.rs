@@ -4,8 +4,9 @@
 //! Build. Every cell drives the estate through the typed objects of `rafka-node-admin-client`
 //! (`Builds`, `Nodes`) over Node RPC and awaits their reply streams. The one exception is cell 6,
 //! which sends `build.attempt.run` itself because that call is the fabric-primary's own, never a
-//! caller's. The spans an estate exports are the flame of each cell; no cell asserts behaviour from
-//! them.
+//! caller's. The one read that is not a Build call is cell 8's precondition: the surviving admin's own
+//! Build log, read over `FetchBuildFacts` (op `0x1F`, `fetch_build_facts`). The spans an estate exports
+//! are the flame of each cell; no cell asserts behaviour from them.
 //!
 //! The estate: `mesh1` (two node-admins, one rpc node) holds the fabric-primary seat, and `mesh2`
 //! (two node-admins, two rpc nodes) is run by its own primary, so a node of `mesh2` is executed by
@@ -13,7 +14,9 @@
 
 use iroh::SecretKey;
 use rafka_mesh_entity::{NodeKind, PathName};
-use rafka_node_admin_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeAdminClient, NodeEvent, Nodes, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
+use rafka_node_admin_client::{await_fact, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeAdminClient, NodeEvent, Nodes, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
+use rafka_node_admin_core::build_facts_read::{fetch_build_facts, FetchFailure};
+use rafka_node_admin_core::build_state::{BuildFact, StepOutcome};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::build::{Build, BuildReply, BuildRequest, StepResult};
 use rafka_node_rpc_contract::context::CallContext;
@@ -479,11 +482,6 @@ impl Caller {
         self.admins_except(dead).into_iter().next().unwrap_or_else(|| panic!("no node-admin survives {dead}"))
     }
 
-    /// The control API client of node-admin `at`: it answers from `at`'s own view.
-    fn control_at(&self, at: &str) -> NodeAdminClient {
-        NodeAdminClient::new(self.base_of(at))
-    }
-
     /// The node-admin that holds the fabric-primary seat once `dead` has died: the first surviving
     /// admin's own view of the fabric is awaited until it names a fabric-primary other than `dead`.
     async fn successor_of(&self, dead: &str) -> String {
@@ -493,6 +491,33 @@ impl Caller {
             .await
             .unwrap_or_else(|end| panic!("{end}"));
         view.fabric_primary.expect("the awaited view names a fabric-primary").to_string()
+    }
+
+    /// Await the typed fact `holds` of Build `id` in node-admin `at`'s own Build log, read over
+    /// `FetchBuildFacts` (op `0x1F`), which every node-admin serves from its own log
+    /// (`BuildFactsDoor::serve`; build.md "Each node-admin keeps its own Build journal"). The Build family
+    /// (`build.get`) is the fabric-primary's alone, so `at`'s log is read through this op, one exact admin by
+    /// path. `fact` names it. The read is `await_fact`'s: an admin whose log does not hold it within `within`
+    /// ends the call `Indeterminate`, naming the fact, the admin and the last thing its log held or how the
+    /// last read ended.
+    async fn log_fact(&self, at: &str, id: &BuildId, fact: &str, within: Duration, holds: impl Fn(&[BuildFact]) -> bool) -> Result<Vec<BuildFact>, CallEnd> {
+        let (target, build) = (NodeTarget::CurrentPath(path(at)), rafka_node_admin_core::build::BuildId(id.0.clone()));
+        let read = || async { fetch_build_facts(&self.client, &target, &build).await.map(|fetched| fetched.facts).map_err(log_read_ended) };
+        let report = |facts: &Vec<BuildFact>| {
+            let last = facts.iter().rev().find_map(|f| if let BuildFact::Step(r) = f { Some(format!("{} {} of attempt {}", r.operation, r.step, r.attempt)) } else { None }).unwrap_or_else(|| "none".into());
+            format!("{} facts, the last step receipt {last}", facts.len())
+        };
+        await_fact("build log", at, &format!("{fact} of Build {id}"), within, read, |facts: &Vec<BuildFact>| holds(facts), report).await
+    }
+}
+
+/// How a read of a node-admin's Build log over `FetchBuildFacts` ended, as the call ends: a responder that
+/// refused by another name or does not serve the op is `Rejected`; any other failure is a read that proved
+/// nothing, `Indeterminate`, and carries the failure's own words.
+fn log_read_ended(failure: FetchFailure) -> CallEnd {
+    match failure {
+        FetchFailure::Refused(_) => CallEnd::Rejected { reason: failure.reason().into(), detail: failure.to_string() },
+        other => CallEnd::Indeterminate { reason: other.to_string() },
     }
 }
 
@@ -599,7 +624,7 @@ struct Lost {
 /// and follows it to `Complete`. mesh2 is then the mesh the lost fabric-primary's claim wrote.
 ///
 /// `survivor_holds` is a precondition of the cut: the operation whose `Complete` receipt, at the lost
-/// attempt, the surviving mesh1 admin's own view must hold before the fabric-primary is lost. The
+/// attempt, the surviving mesh1 admin's own Build log must hold before the fabric-primary is lost. The
 /// receipt reaches that admin by the Build topic's push; the loss comes within milliseconds of the
 /// receipt, so a cell that reads the receipt at its successor awaits the push first. A cell that
 /// cuts before the receipt exists passes `None`.
@@ -625,15 +650,14 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let row: Value = serde_json::from_slice(&std::fs::read(root.join("meshes/mesh2.json")).expect("the fabric-primary's claim of mesh2 wrote its row to the store root")).unwrap();
     let claimed = s(&row["record"]["mesh_id"]);
     assert!(!claimed.is_empty() && row["record"]["name"] == "mesh2", "{row}");
-    // The receipt reached the surviving admin before the fabric-primary is lost: its own view of the Build
-    // holds the operation's `Complete` receipt of the lost attempt. The Build family is the
-    // fabric-primary's alone, so the survivor is asked through its control API's build view.
+    // The receipt reached the surviving admin before the fabric-primary is lost: its own Build log holds the
+    // operation's `Complete` receipt of the lost attempt. The Build family is the fabric-primary's alone, so
+    // the survivor's log is read over `FetchBuildFacts`, which every node-admin serves from its own.
     if let Some(operation) = survivor_holds {
         let survivor = caller.survivor_of(&fp);
         caller
-            .control_at(&survivor)
-            .build_fact(&build_id, &format!("{operation} Complete at attempt {attempt}"), Duration::from_secs(60), |b| {
-                b.steps.iter().any(|r| r.operation == operation && r.step == "Complete" && r.attempt == attempt && r.outcome == json!("complete"))
+            .log_fact(&survivor, &build_id, &format!("{operation} Complete at attempt {attempt}"), Duration::from_secs(60), |facts| {
+                facts.iter().any(|f| matches!(f, BuildFact::Step(r) if r.operation == operation && r.step == "Complete" && r.attempt == attempt && r.outcome == StepOutcome::Complete))
             })
             .await
             .unwrap_or_else(|end| panic!("{end}"));
@@ -691,7 +715,7 @@ fn create_mesh_flame(spans: &[Value], lost: &Lost) -> Option<String> {
 /// accepts mesh2, minting mesh2's id at that acceptance, runs `create-mesh:mesh2` (the claim of mesh2's
 /// name writes its row, and the step is receipted `Complete`) and is lost before the next step's receipt is
 /// durable: the first admin's `AllocateIdentity`. The loss waits for the receipt to reach the surviving
-/// mesh1 admin: its own view of the Build holds `create-mesh:mesh2` `Complete` at the lost attempt. The
+/// mesh1 admin: its own Build log holds `create-mesh:mesh2` `Complete` at the lost attempt. The
 /// successor fabric-primary resumes the same Build: it
 /// reads the `create-mesh:mesh2` receipt and does not run the step again, and streams the Build to
 /// `Complete`. mesh2 is the mesh the lost fabric-primary's claim wrote. The Build holds exactly one
