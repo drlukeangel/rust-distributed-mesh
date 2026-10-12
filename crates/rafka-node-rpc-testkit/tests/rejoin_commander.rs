@@ -221,6 +221,88 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
     })
 }
 
+/// CONTRACT (node-start.md step 2: "A stopped node told to start joins back over the endpoint and
+/// path of the call that commanded it"; node-rpc-envelope.md "Status": a start's natural key is
+/// `(node_id, incarnation, Pending)`, so a later start of the birth joins the one under way): the rpc
+/// node is stopped, then commanded to start by an admin of its mesh (`mesh1.admin.3`) that is lost
+/// while the start joins it: its join door takes no join, then its endpoint closes, as an executor
+/// killed mid-restart. A second admin of the mesh (`mesh1.admin.2`, the successor) commands the start
+/// while the first start is still under way. The successor's start is answered `Started`: the start
+/// joined the successor over the successor's own call, and the node is the same birth,
+/// ReadyForTraffic again. Must NOT happen: the successor's start answering the lost commander's
+/// outcome (`StartFailed` at `node.join`, every join attempt aimed at the lost admin), or the
+/// successor's call cut before its answer.
+#[test]
+fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_commander_and_starts() {
+    let cell = "a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_commander_and_starts";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        let Rig { primary, commander: successor, _carried, running, launch, key, dir, target, node_id, incarnation, commander_key: successor_key, .. } = rig("rejoin-successor").await;
+        // The lost commander: an admin of the mesh, carried in the primary's projection, whose join
+        // door takes no join.
+        let lost = crate::common::admin_side_silent_deaf_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.3").await;
+        let _lost_carried = primary.carry_in_projection(&lost);
+        let lost_key = lost.seed.0.clone();
+        tokio::time::timeout(NEVER, async {
+            while running.membership.projected_member_at(&lost_key).is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the node never installed a projection of its primary carrying the lost commander");
+        let (born, _) = primary.observer.membership.book.get(node_id.as_str()).unwrap();
+        lost.observer.resolver.insert(ResolvedNode {
+            node_id: born.node.node_id.clone(),
+            name: born.node.name.clone(),
+            endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
+            incarnation: born.node.incarnation.clone(),
+            transport_addr: born.node.transport_addr,
+        });
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_successor".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_successor".into(), attempt, operation: "start-node:mesh1.rpc.1".into() };
+        let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        let left = call(&lost, &target, &stop).await;
+        assert!(matches!(left, StatusReply::Stopped { .. }), "the stop is answered Stopped: {left:?}");
+
+        // The lost commander's start: its join door answers no join, and once the start's first join
+        // attempt reached it, its endpoint closes.
+        let lost_short = lost_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
+        let first_req = start(2);
+        let first = async { lost.observer.client.call::<Status>(&target, &first_req, &CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..CallOptions::default() }).await.0 };
+        let rest = async {
+            let at_lost = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.rpc.1") && f.get("anchor") == Some(&lost_short);
+            if tokio::time::timeout(NEVER, spans.recorded("rdm.mesh.entry.update.via-pull-attempt", at_lost)).await.is_err() {
+                panic!("the start never made a join attempt at the commander that sent it");
+            }
+            lost.observer.client.endpoint().close().await;
+
+            // The successor commands the start while the first is under way.
+            successor.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+            let started = call(&successor, &target, &start(3)).await;
+            assert_eq!(started, StatusReply::Started, "the successor's start is answered Started: the start joined the successor over the successor's own call");
+            tokio::time::timeout(NEVER, async {
+                while !matches!(call(&successor, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .expect("the started node never answered ReadyForTraffic");
+            let successor_short = successor_key.parse::<iroh::PublicKey>().unwrap().fmt_short().to_string();
+            let joins = spans_of(&spans, "rdm.mesh.entry.update.via-pull-attempt", "mesh1.rpc.1");
+            assert!(
+                joins.iter().any(|f| f.get("outcome").map(String::as_str) == Some("answered") && f.get("anchor") == Some(&successor_short)),
+                "an answered join of the start names the successor's key {successor_short}: {joins:?}"
+            );
+        };
+        let (_lost_answer, ()) = tokio::join!(first, rest);
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
 /// CONTRACT (node-drain.md: the drain's completion is the node's `node-drained` call at the admin
 /// that commanded it; node-rpc.md §14: the call's endpoint key names that admin; gossip.md §3.1, R-HB1:
 /// which birth holds the key is the member projection the node installed, never the heartbeat book):

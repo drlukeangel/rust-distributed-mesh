@@ -345,6 +345,14 @@ pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, nam
     admin_side_taking_joins_seated(ip, &primary.fabric, name, true, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs(), SideSeat::Silent { seed }).await
 }
 
+/// [`admin_side_silent_as`] whose `JoinNode` door is never opened: a node that joins it is answered
+/// `NotReady` by name, always, so a join to it is never accepted.
+pub async fn admin_side_silent_deaf_as(ip: std::net::IpAddr, primary: &AdminSide, name: &str) -> AdminSide {
+    let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
+    let seed = iroh::EndpointAddr::new(key).with_ip_addr(primary.seed.1);
+    admin_side_taking_joins_seated(ip, &primary.fabric, name, false, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs(), SideSeat::Silent { seed }).await
+}
+
 /// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
 /// `NotReady` by name, always.
 pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
