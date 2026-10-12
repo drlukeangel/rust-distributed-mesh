@@ -36,6 +36,7 @@ mod transport_diag;
 mod connections_rename;
 mod rename_precondition;
 mod connections_delete;
+mod connections_all;
 mod no_caller_check;
 mod node_reads;
 mod node_start_sequence;
