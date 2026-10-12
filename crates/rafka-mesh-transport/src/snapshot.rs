@@ -104,7 +104,9 @@ impl Full {
     /// The complete difference from this full to `new`, loads omitted (gossip.md §3.3: one delta
     /// per move from a held version to a newer one, never a replay of the versions between).
     /// `in_flight` and `departed` carry the overlays and departures `new` holds that this one does
-    /// not; a cleared overlay or an expired departure is a local fact of the receiver's age.
+    /// not. A cleared stop overlay travels as its birth's own `changed` entry: a source's primary
+    /// never lists a stopped birth, and lists it again only after its `node.joined` cleared the
+    /// stop ([`Full::apply`]). An expired departure is a local fact of the receiver's age.
     pub fn delta_to(&self, new: &Full) -> Delta {
         Delta {
             changed: new.digests.iter().filter(|(id, d)| self.digests.get(*id).is_none_or(|o| topology_view(o) != topology_view(d))).map(|(_, d)| without_load(d)).collect(),
@@ -114,9 +116,13 @@ impl Full {
         }
     }
 
-    /// This full moved by `delta`.
+    /// This full moved by `delta`. A `changed` entry of a birth clears that exact birth's stop
+    /// overlay (`NodeStopped`, `stop-node:`), and only that overlay: the source lists the birth again
+    /// once its primary's `node.joined` ended the stop (gossip.md §3.1, `MembersDelta` carries
+    /// "overlay and departed changes"). A restart or deleting overlay keeps its own end.
     pub fn apply(&mut self, delta: &Delta) {
         for d in &delta.changed {
+            self.in_flight.retain(|_, o| !(o.is_stop() && o.node_id == d.node.node_id && o.incarnation == d.node.incarnation));
             self.digests.insert(d.node.node_id.to_string(), d.clone());
         }
         for id in &delta.removed {
@@ -328,6 +334,13 @@ pub enum Refusal {
         /// The version offered.
         offered_version: u64,
     },
+    /// The publisher's birth is one this receiver holds stopped or departed: a stopped birth
+    /// publishes nothing and a departed one has left, so its publication was delayed
+    /// (node-status-heartbeat-connections.md §A.3, §A.4). `reason` says which.
+    PredecessorPublisher {
+        /// `publisher-stopped` or `publisher-departed`.
+        reason: &'static str,
+    },
     /// A chunk of a snapshot older than the one being assembled from the same source.
     /// The chunk belongs to a snapshot older than the one being assembled from the same source.
     OlderThanPending {
@@ -380,6 +393,12 @@ pub enum Gap {
     },
     /// The source was already desynchronized: its deltas are not applied until a snapshot or a top-up.
     AlreadyDesynced,
+    /// A publication of the source by a publisher this node holds no seat evidence for: an unknown
+    /// source epoch, repaired by GetTopology (gossip.md §3.1).
+    UnknownEpoch {
+        /// The publisher of the refused publication.
+        offered: PublisherId,
+    },
 }
 
 impl std::fmt::Display for Gap {
@@ -389,6 +408,7 @@ impl std::fmt::Display for Gap {
             Gap::OtherEpoch { .. } => f.write_str("other-epoch"),
             Gap::Version { .. } => f.write_str("version-gap"),
             Gap::AlreadyDesynced => f.write_str("already-desynced"),
+            Gap::UnknownEpoch { .. } => f.write_str("unknown-epoch"),
         }
     }
 }
@@ -549,6 +569,22 @@ impl SnapshotReceiver {
         h.full.apply(delta);
         h.version = topology_version;
         Moved::Applied { mesh: mesh.to_string(), base_version, topology_version, delta: delta.clone() }
+    }
+
+    /// A publication of `mesh` by `offered`, a publisher this node holds no seat evidence for, was
+    /// refused: the source is desynchronized for GetTopology repair (gossip.md §3.1, "an unknown
+    /// source epoch"). Nothing of the publication is held. `true` when this desynchronized the
+    /// source, `false` when it already was.
+    pub fn unknown_epoch(&mut self, mesh: &str, offered: &PublisherId) -> bool {
+        let gap = Gap::UnknownEpoch { offered: offered.clone() };
+        match self.held.get_mut(mesh) {
+            Some(h) => matches!(Self::desync(mesh, h, gap), Moved::Desynced { gap: Gap::UnknownEpoch { .. }, .. }),
+            None => {
+                let new = !self.unbased.contains_key(mesh);
+                self.unbased.entry(mesh.to_string()).or_insert(gap);
+                new
+            }
+        }
     }
 
     fn desync(mesh: &str, h: &mut Held, gap: Gap) -> Moved {

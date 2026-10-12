@@ -232,6 +232,15 @@ pub enum BuildOperation {
         /// The birth started.
         from_incarnation: IncarnationId,
     },
+    /// Delete the parked exact birth `from_incarnation` a replacement left at `node`, a `.old` path
+    /// (node-decommission.md): its stop steps are done; `NodeDeleting`, the provider's exact Exited
+    /// proof, `NodeDeleted`, and `Complete` naming the birth. Storage is kept.
+    DeleteNode {
+        /// The parked node's `.old` path.
+        node: PathName,
+        /// The birth deleted.
+        from_incarnation: IncarnationId,
+    },
     /// Remove the logical node through the retire pipeline (node-delete.md): its storage stays.
     RetireNode {
         /// The node to retire.
@@ -265,7 +274,7 @@ impl BuildOperation {
     /// The node the operation acts on; `None` for a mesh operation.
     pub fn node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::ReplaceNode { node, .. } | Self::RestartNode { node } | Self::DrainNode { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::UpdateNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::ReplaceNode { node, .. } | Self::RestartNode { node } | Self::DrainNode { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::UpdateNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } => None,
         }
     }
@@ -281,6 +290,7 @@ impl BuildOperation {
             Self::StopNode { node, .. } => format!("stop-node:{node}"),
             Self::StartNode { node, .. } => format!("start-node:{node}"),
             Self::UpdateNode { node, .. } => format!("update-node:{node}"),
+            Self::DeleteNode { node, .. } => format!("delete-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
         }

@@ -356,6 +356,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                     &launch.name,
                     &launch.incarnation,
                 )
+                .await
                 .map_err(|e| anyhow!("connections storage: {e}"))?,
             ),
             fault.clone(),
@@ -495,23 +496,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                         Box::pin(async move {
                             // A delta that does not follow what this node holds desynchronizes that source; the node tops
                             // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
-                            {
-                                let (client, rafka_time, me, me_id) = (client.clone(), rafka_time.clone(), name.clone(), launch.node_id.clone());
-                                membership.spawn_top_up(Arc::new(move |membership: Membership, primary: MeshDigest, meshes: Vec<String>| {
-                                    let (client, rafka_time, me, me_id) = (client.clone(), rafka_time.clone(), me.clone(), me_id.clone());
-                                    Box::pin(async move {
-                                        let mut done = rafka_mesh_transport::membership::TopUpDone::default();
-                                        for mesh in meshes {
-                                            let read = rafka_node_admin_core::topology_read::get_topology(&client, &rafka_node_rpc::NodeTarget::ExactNode(primary.node.node_id.clone()), &primary.node.name.mesh, &membership, Some(&mesh), None)
-                                                .await
-                                                .map_err(|e| format!("{mesh}: {e}"))?;
-                                            read.adopt_rafka_time(&rafka_time, &membership, &me, &me.split('.').next().unwrap_or_default().to_string(), &me_id, &primary.node.name.to_string()).map_err(|e| format!("{mesh}: {e}"))?;
-                                            done.installed.extend(read.installed.iter().map(|m| (m.mesh.clone(), m.topology_version)));
-                                        }
-                                        Ok(done)
-                                    })
-                                }));
-                            }
+                            membership.spawn_top_up(rafka_node_admin_core::topology_read::top_up_fetch(client.clone(), rafka_time.clone(), name.clone(), launch.node_id.clone()));
                             // From here the node is on the mesh, Pending: it answers status, drain-node and stop-node, and
                             // says Pending on the membership cadence while its `hydrate_before_ready` hook runs. It is
                             // published ReadyForTraffic only once the hook has passed ("born full").
@@ -1027,8 +1012,9 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 /// Serve `Status` on an rpc node: the downward exact-node operations, answered once this node
 /// has joined (until then `NotReady`). An rpc node is never an authority: every upward
 /// declaration, every mesh or fabric operation and every view read (`node.get`, `mesh.get`,
-/// `fabric.get`, which a node-admin answers from its view) is refused by name. `node.connections.get`
-/// of this exact birth is answered with the connections it holds.
+/// `fabric.get`, which a node-admin answers from its view) is refused by name. A `NodeLeft`, never
+/// sent, is refused as every receiver refuses it ([`rafka_node_admin_core::node_commands::refuse_node_left`]).
+/// `node.connections.get` of this exact birth is answered with the connections it holds.
 ///
 /// The tickle: ask the exact birth to reassert itself. Protocol name: `ProbeNodeState`. The node
 /// hands its peers to its mesh channel again, publishes its digest, and answers its current
@@ -1049,7 +1035,8 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // birth (a hook blocked on its authority's word runs again on it).
             let blocker = me.hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
             let sender = me.membership.book.all().into_iter().find(|d| d.node.endpoint_id.0 == peer.endpoint_id.to_string());
-            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_default();
+            // A sender this node holds no digest of is named by the one fact it holds of it: its endpoint.
+            let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
             if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
                 me.addressed.note(&from.node.node_id);
             }
@@ -1071,6 +1058,11 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("a round command naming this node was decided"));
                 return Ok(reply);
+            }
+            // node-left is never sent: refused by name as a node-admin refuses it, never sent on to one.
+            if let StatusRequest::NodeLeft { node_id, .. } = &req {
+                let name = me.membership.book.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.name.to_string()).unwrap_or_default();
+                return Ok(rafka_node_admin_core::node_commands::refuse_node_left(&me.membership.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
             }
             let (node_id, incarnation) = match &req {
                 StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } | StatusRequest::GetConnections { node_id, incarnation } => (node_id, incarnation),
@@ -1139,7 +1131,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         }
                     };
                     tracing::info_span!("rdm.node_admin.node.update.via-apply-node-config", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, keys = config.len(), digest = published, outcome = "applied", "otel.kind" = "internal")
-                        .in_scope(|| tracing::info!("the fabric-primary's config is held and rides this birth's digest"));
+                        .in_scope(|| tracing::info!("the config its mesh-primary wrote is held and rides this birth's digest"));
                     Ok(StatusReply::Applied)
                 }
                 StatusRequest::ApplyNodeName { name, .. } => {

@@ -49,7 +49,7 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
     let other = (NodeId::mint(), IncarnationId::mint());
     // A, mesh1's primary, applied these as the mesh's authority: its rows on the shared root.
     let root = rafka_node_admin_core::store_root::StoreRoot::at(&dir);
-    let a = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).unwrap();
+    let a = FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap();
     a.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
     a.put_fabric_event(&FabricEventRow { fabric_id: fabric_id.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
     a.put_node_declared(&NodeDeclaredRow { node_id: rpc_birth.0.clone(), incarnation_id: rpc_birth.1.clone(), name: rpc.name.clone(), state: NodeState::ReadyForTraffic }).await.unwrap();
@@ -59,7 +59,7 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
     // B, the other admin of mesh1, with its own store instance over the same root.
     let b_id = before_view.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.2").unwrap().node_id.clone();
     let records = Records::default();
-    records.set_status(Arc::new(FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).unwrap()), "mesh1".into(), "mesh1.admin.2".parse().unwrap(), b_id.clone());
+    records.set_status(Arc::new(FileStatusStorage::open(&root, "mesh1", &IncarnationId::mint()).await.unwrap()), "mesh1".into(), "mesh1.admin.2".parse().unwrap(), b_id.clone());
     let topology = RwLock::new(Topology { nodes: Vec::new(), ..before_view.clone() });
     // B installs views naming A the primary: it holds no seat and folds none of A's rows.
     records.install_projected(&topology, || before_view.clone()).await;
@@ -79,7 +79,7 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
             n.is_fabric_primary = true;
         }
     }
-    records.install_projected(&topology, || after_view).await;
+    records.install_projected(&topology, || after_view.clone()).await;
     let after = records.declared.lock().unwrap().clone();
     let _ = std::fs::remove_dir_all(&dir);
     Taken { before, after, rpc: rpc_birth, other, mesh_id, fabric_id, trace_id }

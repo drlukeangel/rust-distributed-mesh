@@ -388,13 +388,13 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
 
     // ---- an output with no wire shape is refused naming Build, attempt and step; neighbours travel ----
     let good = step(CreateStep::WaitForBind.name(), Some(to_json(&Bound { transport: "127.0.0.1:41000".parse().unwrap(), listeners: vec![] })));
-    let stray = step(CreateStep::Complete.name(), Some(json!({ "anything": 1 })));
+    let stray = step(CreateStep::PrepareNetwork.name(), Some(json!({ "anything": 1 })));
     let mistyped = step(CreateStep::AllocateIdentity.name(), Some(json!({ "pid": 7 })));
     let (messages, refused) = encode_chunks(vec![good.clone(), stray, mistyped, good.clone()]);
     let named: Vec<String> = refused.iter().map(|e| e.to_string()).collect();
     assert_eq!(named.len(), 2, "{named:?}");
     assert!(refused.iter().all(|e| matches!(e, BuildStateError::Unencodable(_))), "{named:?}");
-    assert!(named[0].contains("step Complete (Build bld-1, attempt 2)") && named[0].contains("commits no output"), "{}", named[0]);
+    assert!(named[0].contains("step PrepareNetwork (Build bld-1, attempt 2)") && named[0].contains("commits no output"), "{}", named[0]);
     assert!(named[1].contains("step AllocateIdentity (Build bld-1, attempt 2)"), "{}", named[1]);
     let sent: usize = messages.iter().map(|m| BuildMessage::from_bytes(m).unwrap().facts.len()).sum();
     assert_eq!(sent, 2, "the facts around a refused one still travel");

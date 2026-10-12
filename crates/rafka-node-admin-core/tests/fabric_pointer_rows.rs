@@ -96,8 +96,8 @@ async fn a_pointer_move_held_mid_write_never_moves_the_pointer_back_past_a_newer
 }
 
 /// A file `fabric.storage` on `root` whose committed fabric seat record answers `seat`.
-fn file_writer(root: &rafka_node_admin_core::store_root::StoreRoot, seat: Option<rafka_node_admin_core::fabric_builds::SeatRecord>) -> rafka_node_admin_core::fabric_storage::FileFabricStorage {
-    let s = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(root, &rafka_node_admin_core::model::IncarnationId::mint()).unwrap();
+async fn file_writer(root: &rafka_node_admin_core::store_root::StoreRoot, seat: Option<rafka_node_admin_core::fabric_builds::SeatRecord>) -> rafka_node_admin_core::fabric_storage::FileFabricStorage {
+    let s = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(root, &rafka_node_admin_core::model::IncarnationId::mint()).await.unwrap();
     if let Some(seat) = seat {
         s.set_seat_source(rafka_node_admin_core::fabric_builds::SeatSource { read: Arc::new(move || seat.clone()), changed: None });
     }
@@ -117,7 +117,7 @@ async fn only_the_fabric_seat_holder_puts_a_pointer_on_the_store_root() {
     let root = rafka_node_admin_core::store_root::StoreRoot::at(&d);
     let fabric_id = FabricId::mint();
     let moved = SeatRecord::Moved { by: "the fabric seat record names mesh1 000000000001 (birth p) at epoch 3".into(), to: Some("mesh1.admin.1".into()) };
-    let (n, unset, p) = (file_writer(&root, Some(moved)), file_writer(&root, None), file_writer(&root, Some(SeatRecord::Open { holder: Some("mesh1.admin.1".into()) })));
+    let (n, unset, p) = (file_writer(&root, Some(moved)).await, file_writer(&root, None).await, file_writer(&root, Some(SeatRecord::Open { holder: Some("mesh1.admin.1".into()) })).await);
     p.put_identity(&FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() }).await.unwrap();
     let pointer = |b: &str, at: u64| FabricPointer { build_id: BuildId(b.into()), submitted_at_ms: at };
     match n.put_pointer(&pointer("bld-n", 10)).await {

@@ -304,7 +304,7 @@ pub(crate) async fn adopt_from_reachable(
                         endpoint_id: d.node.endpoint_id.clone(),
                         transport_addr: d.node.transport_addr,
                         incarnation: d.node.incarnation.clone(),
-                        settled: true,
+                        transition: None,
                         ready: false,
                         data_dir: None,
                         admin_api_base: None,

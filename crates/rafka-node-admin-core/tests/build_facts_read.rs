@@ -149,6 +149,7 @@ const FETCH_INCOMPLETE: &str = "rdm.node_admin.build.reject.via-fetch-incomplete
 const FETCH_FAILED: &str = "rdm.node_admin.build.reject.via-fetch-failed";
 const ENTRY_REPEAT: &str = "rdm.node_admin.fabric.update.via-entry-repeat";
 const CALL: &str = "rdm.node_rpc.request.update.via-call";
+const DIAL: &str = "rdm.node_rpc.connection.create.via-dial";
 
 /// One finished span as the cell's capture exported it.
 struct Seen {
@@ -185,6 +186,8 @@ struct Capture {
     exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
     capture: rafka_mesh_telemetry::SpanCapture,
     dispatch: tracing::Dispatch,
+    /// True when the runtime's worker threads hold no dispatcher: only the thread that runs the story does.
+    bare_workers: bool,
 }
 
 fn capture() -> Capture {
@@ -192,7 +195,14 @@ fn capture() -> Capture {
     crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (capture, layer) = rafka_mesh_telemetry::span_capture("build-facts-read", exporter.clone());
-    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }
+    Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)), bare_workers: false }
+}
+
+/// A capture whose runtime's workers hold no dispatcher, as a `#[tokio::test(flavor = "multi_thread")]` runtime's do.
+fn capture_with_bare_workers() -> Capture {
+    let mut cap = capture();
+    cap.bare_workers = true;
+    cap
 }
 
 /// Runs the cell's story as a child of a root span named `$name`, on the capture's runtime, and gives back the root's
@@ -214,10 +224,15 @@ impl Capture {
     /// and every span it opened has ended when `spans` reads.
     fn run<F: std::future::Future>(&self, f: F) -> F::Output {
         let d = self.dispatch.clone();
+        let bare = self.bare_workers;
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
             .enable_all()
-            .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+            .on_thread_start(move || {
+                if !bare {
+                    std::mem::forget(tracing::dispatcher::set_default(&d));
+                }
+            })
             .build()
             .unwrap();
         let _g = tracing::dispatcher::set_default(&self.dispatch);
@@ -599,6 +614,45 @@ fn a_restart_that_lost_the_builds_facts_fetches_them() {
     let fetches = spans.children(FETCH);
     assert_eq!(fetches.len(), 1, "one fetch;\n{}", spans.render());
     assert_fetch(&spans, fetches[0], "mesh1.admin.2", &id, "unreadable-build", "mesh1.admin.1", Some(6));
+}
+
+// @feature: node-lifecycle
+/// CONTRACT: a Hydrator turn that runs on a runtime whose worker threads hold no dispatcher (the runtime a
+/// `#[tokio::test(flavor = "multi_thread")]` cell gets: only the thread that called `block_on` holds the
+/// capture) still has its whole story captured and ended when the story ends: the fetch it spawns runs on
+/// the dispatcher of the turn that started it, the dial its call starts ends on the call's dispatcher, and
+/// the endpoints the story bound hold none of its spans. Must NOT happen: a span of the story lost because
+/// a worker thread picked its task up, or held open past the story by a task of the transport. Its trace:
+/// the cell's root ended; the one fetch span is its child, naming the blocker and the six facts it read;
+/// the fetch holds its one call and the call holds its one dial.
+#[test]
+fn a_fetch_spawned_onto_a_worker_that_holds_no_dispatcher_is_still_captured() {
+    let cap = capture_with_bare_workers();
+    let (story, id) = story!(cap, "rdm.test.build.update.via-worker-without-dispatcher", async {
+        let fabric = FabricId::mint();
+        let id = BuildId::mint();
+        let full = admin("mesh1.admin.1", &fabric).await;
+        holds(&full, &id, 2, true).await;
+        let responder = node_of(&full).await;
+        let restarted = caller("mesh1.admin.2", &fabric, &[&responder]).await;
+        restarted.0.accepted.point(&id, 0, "restart").await.unwrap();
+        let mut h = hydrator(&restarted, responders(vec![&responder]), None);
+        drive(&restarted.0, &mut h, Duration::from_secs(10)).await.expect("hydrates");
+        assert_eq!(restarted.0.log.read_build(&id).await.unwrap().attempt, 2);
+        for n in [&responder, &restarted.1] {
+            n.ep.close().await;
+        }
+        id
+    });
+    let spans = cap.spans(story);
+    let fetches = spans.children(FETCH);
+    assert_eq!(fetches.len(), 1, "the fetch ran on a worker that holds no dispatcher and was still captured;\n{}", spans.render());
+    assert_fetch(&spans, fetches[0], "mesh1.admin.2", &id, "unreadable-build", "mesh1.admin.1", Some(6));
+    let call = spans.calls_of(fetches[0])[0];
+    let dials: Vec<&Seen> = spans.named(DIAL).into_iter().filter(|d| d.parent_span_id == call.span_id && d.trace_id == call.trace_id).collect();
+    assert_eq!(dials.len(), 1, "the call's one dial is its child;\n{}", spans.render());
+    let roots: Vec<&Seen> = spans.named("rdm.test.build.update.via-worker-without-dispatcher").into_iter().filter(|r| r.span_id == spans.story.span_id).collect();
+    assert_eq!(roots.len(), 1, "the cell's root ended with its story: nothing outlived the story holding it;\n{}", spans.render());
 }
 
 // @feature: node-lifecycle

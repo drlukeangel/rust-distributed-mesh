@@ -24,7 +24,6 @@ use rafka_node_admin_core::deployment::pipeline::{
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentStatus, FabricPolicy, TerminationMode};
 use rafka_node_admin_core::model::{Node, NodeStatus, PathName};
 use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
@@ -235,28 +234,29 @@ impl TopologySink for Published {
 
 pub use rafka_node_rpc_testkit::rig::*;
 
-/// A launch template for `rafka-rpc-node` with a fresh data root.
 /// The fabric `fabric`'s store under `store`, as its first state-commit left it: the fabric-primary
 /// published the Fabric row, so a node of the fabric opened on it writes to it directly
 /// (`StoreRoot::open`; states.md, Rounds). A cell that reads a node's rows from the store root runs
 /// its node in a fabric past its first state-commit.
 pub async fn store_past_state_commit(store: &std::path::Path, fabric: &FabricId) {
     let root = rafka_node_admin_core::store_root::StoreRoot::at(&store.join(fabric.to_string()));
-    let fabric_store = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &rafka_mesh_entity::IncarnationId::mint()).expect("the fabric store opens");
+    let fabric_store = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &rafka_mesh_entity::IncarnationId::mint()).await.expect("the fabric store opens");
     rafka_node_admin_core::fabric_storage::FabricStorage::put_identity(&fabric_store, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.expect("the Fabric row is published");
 }
 
-pub fn template(fabric: &FabricId, seed: (String, SocketAddr), launcher: rafka_mesh_entity::launch::Launcher) -> LaunchTemplate {
-    let data_root = std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint()));
+/// A launch template for `rafka-rpc-node` whose launcher is `admin`: its seed, its fabric and its
+/// data root, so every node launched from it is stopped when `admin` drops.
+pub fn template(admin: &AdminSide) -> LaunchTemplate {
+    let data_root = admin.data_root().to_path_buf();
     // The fabric's one store root, handed to every launch (R14).
     let store_dir = data_root.join("store");
     std::fs::create_dir_all(&store_dir).expect("the store root");
     LaunchTemplate {
         fabric: "fabric1".into(),
-        fabric_id: fabric.clone(),
+        fabric_id: admin.fabric.clone(),
         executable: env!("CARGO_BIN_EXE_rafka-rpc-node").into(),
-        seeds: vec![seed],
-        launcher,
+        seeds: vec![admin.seed.clone()],
+        launcher: admin.launcher.clone(),
         env: [(rafka_mesh_entity::launch::ENV_MESH_ID.to_string(), TEST_MESH_ID.to_string())]
             .into_iter()
             .chain(ARTIFACT_DIR.with(|a| a.borrow().clone()).map(|d| ("RDM_EVIDENCE_DIR".to_string(), d.display().to_string())))
@@ -331,9 +331,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     // The admin side, on the address the provider's runtimes can reach.
     let admin = admin_side(prepared.admin_ip, &fabric_id).await;
     let observer = &admin.observer;
-    let template = template(&fabric_id, admin.seed.clone(), admin.launcher.clone());
-    // A cell that fails before its own terminate leaves no node running.
-    let _reap = ReapOnDrop(template.data_root.clone());
+    let template = template(&admin);
     let data_root = template.data_root.clone();
     let builds = MemoryBuildStateAdapter::new();
     let build_id = publish_build(&builds, add_node()).await;

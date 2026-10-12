@@ -283,8 +283,10 @@ impl FabricRounds {
         let kind = if up { key.kind.completion() } else { key.kind.command() };
         let span = tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.env.me, round = key.kind.command(), hook = kind, subject_id = %node_id, incarnation_id = %incarnation.0, build_id = %key.build_id, attempt = key.attempt, channels = "mesh,backbone", bound = true, "otel.kind" = "internal");
         async {
-            gossip.backbone.publish_command_hook(&frame).await;
-            tracing::info!("the round hook was published on the mesh channel and the backbone");
+            match gossip.backbone.publish_command_hook(&frame).await {
+                Ok(()) => tracing::info!("the round hook was published on the mesh channel and the backbone"),
+                Err(e) => tracing::info!(error = %e, "the round hook was not handed to every channel"),
+            }
         }
         .instrument(span)
         .await;
