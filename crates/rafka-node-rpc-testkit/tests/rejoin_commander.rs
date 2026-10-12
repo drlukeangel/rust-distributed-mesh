@@ -1,22 +1,16 @@
-//! A start after a stop joins back the admin that commanded it (node-start.md step 2: "Join the
-//! accepting authority"; the stopped node is reached by a fresh Node RPC dial to its still-bound
-//! endpoint, states.md "stopped nodes"). The commander reached the stopped node, so its key is the
-//! call's own, proved by the transport (node-rpc.md §14), and the path the call came in on is a path
-//! back. Which birth holds that key is the member record the node installed from its mesh-primary's
-//! projection (gossip.md §3.1, the authoritative member record; R-HB1): never the heartbeat book,
-//! which holds a member only once its own digest reached this node.
+//! A start after a stop joins back the admin that commanded it (node-start.md step 2: "A stopped
+//! node told to start joins back over the endpoint and path of the call that commanded it; it holds
+//! no record of the commander and never refuses for lacking one, and learns who answered from the
+//! join answer"; the stopped node is reached by a fresh Node RPC dial to its still-bound endpoint,
+//! states.md "stopped nodes"). The commander reached the stopped node, so its key is the call's own,
+//! proved by the transport (node-rpc.md §14), and the path the call came in on is a path back: the
+//! join is a call to that endpoint at that path, whose fence names no node (R-UC1a: no receiver
+//! refuses a call for the node id it names). No projection, heartbeat book or resolver record of
+//! the commander is read.
 //!
-//! CONTRACT: an rpc node launched by its mesh's primary is stopped and started by another node-admin
-//! of its mesh that has never said anything on the mesh channel, so the node's heartbeat book holds
-//! no digest of it, while the primary's member projection, which the node installed, carries it. The
-//! stop is answered `Stopped` and the start `Started`: the start joined the commander through the
-//! call's key, and the node is the same birth, ReadyForTraffic again. Must NOT happen: a start
-//! refused because the commander is not in the heartbeat book, or a start that joins anyone but the
-//! admin that commanded it.
-//!
-//! The same lookup names the commander of every command the node serves and of the completion it
-//! owes: the drain's `node-drained` call goes back to the admin whose call commanded the drain,
-//! reached through that call, and the stop and start spans name that admin.
+//! The drain's `node-drained` call goes back the same way, to the admin whose call commanded the
+//! drain, over that call; the stop and start spans name the commander by the node id the node's
+//! member projection gives its endpoint, when one does.
 //!
 //! Each cell runs in its own process: the cells hold process-wide state (the parking flag).
 
@@ -344,35 +338,30 @@ fn a_node_drained_by_a_commander_its_heartbeat_book_lacks_calls_its_completion_b
     })
 }
 
-/// CONTRACT (node-start.md step 2, "Join the accepting authority": the start joins the admin that
-/// commanded it through its call; error canon: a refusal names what failed): the node's resolver
-/// holds the commander departed (a departed node never returns, so the resolver refuses to hold it at
-/// the call's path). The start is answered `StartFailed` at `node.join`, naming the commander, its key
-/// and the resolver's refusal. Must NOT happen: the refusal dropped, and the start failing later as a
-/// join that reached no one.
+/// CONTRACT (node-start.md step 2: the stopped node "holds no record of the commander and never
+/// refuses for lacking one"; R-UC1a): the node's resolver holds the commander departed (a record
+/// that says it never returns), yet the commander's call reached the node. The start is answered
+/// `Started`: the join went back over the call's endpoint and path, and no record of the commander,
+/// the resolver's included, was read. Must NOT happen: the start refused at `node.join` naming the
+/// resolver's record (`commander-refused`, `Departed`).
 #[test]
-fn a_start_whose_commander_the_resolver_refuses_is_failed_naming_the_refusal() {
-    let cell = "a_start_whose_commander_the_resolver_refuses_is_failed_naming_the_refusal";
+fn a_start_whose_commander_the_resolver_holds_departed_joins_it_over_its_call() {
+    let cell = "a_start_whose_commander_the_resolver_holds_departed_joins_it_over_its_call";
     let cap = crate::common::capture(cell);
     cap.run(crate::common::Threads::Workers(4), async move {
         if crate::own_process::delegated(module_path!(), cell) {
             return;
         }
-        let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_id, .. } = rig("refused-commander").await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_refused".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_refused".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_id, .. } = rig("departed-commander").await;
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_departed".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_departed".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
         let held = running.membership.projected_member_at(&commander.seed.0).expect("the projection carries the commander");
         running.node_rpc.resolver.depart(&commander_id, &held.node.incarnation, &held.node.name);
         commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
-        match call(&commander, &target, &start).await {
-            StatusReply::StartFailed { step, reason } => {
-                assert_eq!(step, "node.join", "{reason}");
-                assert!(reason.contains("commander-refused") && reason.contains("mesh1.admin.2") && reason.contains("Departed"), "the refusal names the commander and the resolver's refusal: {reason}");
-            }
-            other => panic!("a start whose commander the resolver refuses fails at its join naming the refusal: {other:?}"),
-        }
+        let started = call(&commander, &target, &start).await;
+        assert_eq!(started, StatusReply::Started, "the start joins the commander over its call, whatever the resolver holds of it");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

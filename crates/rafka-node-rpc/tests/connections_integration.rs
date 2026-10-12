@@ -59,7 +59,7 @@ async fn an_active_proxy_is_reused_without_a_fresh_direct_dial_ladder() {
     assert_eq!(first.leg, RouteLeg::ViaPeer { carrier: "mesh1.rpc.3".into() });
     assert!(first.retire.is_none(), "a valid Proxy is reused, not retired");
     let ev = first.evidence.expect("one leg ran");
-    assert_eq!(ev.node_id, r.p.resolved.node_id, "the one leg the origin ran went to the carrier");
+    assert_eq!(ev.node_id, Some(r.p.resolved.node_id.clone()), "the one leg the origin ran went to the carrier");
     assert!(!ev.reused, "the first call dialled the carrier");
     assert!(!pooled_to(&r, &r.p).is_empty(), "the carrier's connection is pooled");
     assert!(pooled_to(&r, &r.b).is_empty(), "no direct dial to B was paid: the Proxy was used as recorded");
@@ -119,7 +119,7 @@ async fn a_direct_connected_creates_the_retirement_obligation_and_new_calls_cut_
     assert_eq!(served_by(&cut.outcome).map(|s| s.0).as_deref(), Some("mesh1.rpc.1"), "{:?}", cut.outcome);
     assert_eq!(cut.leg, RouteLeg::Direct);
     assert_eq!(cut.route, EffectiveRoute::Direct { known: true });
-    assert_eq!(cut.evidence.expect("one leg ran").node_id, r.b.resolved.node_id);
+    assert_eq!(cut.evidence.expect("one leg ran").node_id, Some(r.b.resolved.node_id.clone()));
     assert!(!pooled_to(&r, &r.b).is_empty(), "the direct connection to B is pooled now");
     assert_eq!(r.c.handled.load(Ordering::SeqCst), 0);
 }

@@ -505,7 +505,7 @@ async fn supersession(seed: u64) -> Report {
     assert_eq!(r.saw("sibling", &o), "Reply(Success)");
     let ev = ev.unwrap();
     assert!(!ev.reused && ev.connection != first.connection, "the sibling rode a connection of the current birth");
-    assert!(c.client.pooled().iter().all(|k| k.incarnation == third.incarnation), "{:?}", c.client.pooled());
+    assert!(c.client.pooled().iter().all(|k| k.incarnation.as_ref() == Some(&third.incarnation)), "{:?}", c.client.pooled());
     let handled = n.hooks.handled();
     assert!(!handled.iter().any(|h| h == "stale"), "the superseded birth never ran the call: {handled:?}");
     r.s.record("pool", "current_birth_only");

@@ -1,7 +1,7 @@
 //! The Node RPC server (node-rpc.md §12–§19, §26–§32; ownership §6.3).
 //!
-//! Per bi-stream: read the fence (an unserved op → `421`; another node → `425`),
-//! the context, the declared length
+//! Per bi-stream: read the fence (an unserved op → `421`; the node id it names is
+//! never a reason to refuse, R-UC1a), the context, the declared length
 //! (oversize → typed `Malformed(TooLarge)`), take admission (full → typed
 //! `Busy`), read the body, and dispatch only after the request direction
 //! finished cleanly. A request the sender reset (`499`) or left unfinished is
@@ -22,7 +22,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rafka_node_rpc_contract::context::{dropped_as_str, CallContext};
-use rafka_node_rpc_contract::framing::Fence;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -175,8 +174,6 @@ pub struct ServerStats {
     pub not_ready: AtomicU64,
     /// Requests reset as protocol violations.
     pub violations: AtomicU64,
-    /// Requests refused `425 STALE_TARGET` (another node).
-    pub stale: AtomicU64,
     /// Handlers that failed or panicked.
     pub faults: AtomicU64,
     /// Handlers dispatched and not yet finished (a drained node waits for it to reach zero).
@@ -431,29 +428,13 @@ impl ReplyWithhold {
     }
 }
 
-/// The exact birth a server is: what every request's fence is checked against.
+/// The exact birth a server is, named in its spans.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServedBirth {
     /// The served node's id.
     pub node_id: String,
     /// The served node's incarnation id.
     pub incarnation: String,
-}
-
-/// Which part of a request's fence this node is not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FenceMismatch {
-    /// The request named another node.
-    NodeId,
-}
-
-impl FenceMismatch {
-    /// The mismatch's name as it appears in spans and refusals.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::NodeId => "node_id",
-        }
-    }
 }
 
 struct Inner {
@@ -489,20 +470,6 @@ fn code(c: ResetCode) -> VarInt {
 }
 
 impl NodeRpcServer {
-    /// Is `fence` this node? `Err` names what is not. The op is the catalog's
-    /// to check.
-    pub(crate) fn check_fence(&self, fence: &Fence) -> Result<(), FenceMismatch> {
-        if fence.target_node_id != self.inner.birth.node_id {
-            return Err(FenceMismatch::NodeId);
-        }
-        Ok(())
-    }
-
-    /// Whether `fence` names this node.
-    pub fn is_current(&self, fence: &Fence) -> bool {
-        self.check_fence(fence).is_ok()
-    }
-
     /// The one sealed effective catalog of this process: what every dispatcher in it serves.
     pub fn catalog(&self) -> &SealedCatalog {
         &self.inner.catalog
@@ -532,13 +499,13 @@ impl NodeRpcServer {
     }
 
     /// Hard-cut the connections this server accepted (`node.connections.delete`), closing each with
-    /// `reason`, except those from `spare` (the peer whose call is in flight and answered on its
-    /// connection). The endpoint stays bound and fresh dials are accepted. Returns how many were
+    /// `reason`, except those from `spare` (the peers whose calls are in flight and answered on their
+    /// connections). The endpoint stays bound and fresh dials are accepted. Returns how many were
     /// closed.
-    pub fn close_connections_except(&self, spare: Option<iroh::PublicKey>, reason: &'static str) -> usize {
+    pub fn close_connections_except(&self, spare: &[iroh::PublicKey], reason: &'static str) -> usize {
         let cut: Vec<Connection> = {
             let held = self.inner.connections.lock().unwrap();
-            held.values().filter(|c| Some(c.remote_id()) != spare).cloned().collect()
+            held.values().filter(|c| !spare.contains(&c.remote_id())).cloned().collect()
         };
         for c in &cut {
             tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %c.remote_id().fmt_short(), connection = c.stable_id(), direction = "accepted")
@@ -588,9 +555,7 @@ impl NodeRpcServer {
 
     async fn invocation(self, peer: iroh::PublicKey, mut send: SendStream, mut recv: RecvStream) {
         let stats = self.inner.stats.clone();
-        let me = self.clone();
-        let current = move |f: &Fence| me.is_current(f);
-        let mut asm = RequestAssembly::new(&self.inner.catalog, &current);
+        let mut asm = RequestAssembly::new(&self.inner.catalog);
         let mut buf = vec![0u8; 16 * 1024];
         let mut permit: Option<Permit> = None;
         let action = loop {
@@ -638,25 +603,6 @@ impl NodeRpcServer {
                     .in_scope(|| tracing::info!(op, "unserved op: 421"));
                 let _ = send.reset(code(ResetCode::UnservedOp));
                 let _ = recv.stop(code(ResetCode::UnservedOp));
-            }
-            ServerAction::ResetStale { op, fence } => {
-                stats.stale.fetch_add(1, Ordering::SeqCst);
-                let mismatch = self.check_fence(&fence).err().map(FenceMismatch::as_str).unwrap_or("");
-                let span = tracing::info_span!(
-                    "rdm.node_rpc.connection.reject.via-stale-target",
-                    decided_by = "target",
-                    op,
-                    peer = %peer,
-                    node_id = %fence.target_node_id,
-                    op = fence.op,
-                    mismatch,
-                    receiver_node_id = %self.inner.birth.node_id,
-                );
-                // Decided on the fence alone: the context was never read, so the refusal carries
-                // no caller trace and no caller_system (node-rpc-envelope.md, the fence checks).
-                span.in_scope(|| tracing::info!("the request's fence is not this node: 425"));
-                let _ = send.reset(code(ResetCode::StaleTarget));
-                let _ = recv.stop(code(ResetCode::StaleTarget));
             }
             ServerAction::RefuseMalformed { op, kind } => {
                 stats.too_large.fetch_add(1, Ordering::SeqCst);

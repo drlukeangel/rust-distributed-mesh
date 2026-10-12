@@ -145,17 +145,17 @@ pub trait Session: Send + Sync {
         TasksParked::default()
     }
     /// Hard-cut the mesh connections: leave the gossip topics, close the pooled peer connections and
-    /// the connections peers made, sparing `spare` (the commander, whose call is in flight). The
-    /// endpoint stays bound.
-    async fn cut(&self, spare: Option<iroh::PublicKey>) -> CutReport;
+    /// the connections peers made, sparing the connections from `spare` (the commanders whose calls
+    /// are in flight and answered on their connections). The endpoint stays bound.
+    async fn cut(&self, spare: &[iroh::PublicKey]) -> CutReport;
     /// Rejoin as the same birth: join the authority, rejoin the mesh channel, take the topology and
     /// run the hydrate hook with `AfterStop` in its context under `retire`, the new cycle's token.
-    /// `commander` is the endpoint key of the call that commanded the start: the admin that holds it
-    /// answers the join and is the hook's accepting authority
-    /// ([`crate::workflows::node_start::join_back`]). `rows` is the start's hold on this birth's connections rows: the
-    /// session drops it once it holds the name its join answer handed, and no earlier, so the join's
-    /// connection is recorded under that name (node-start.md step 2).
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: iroh::PublicKey, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), StartFailed>;
+    /// `commander` holds the endpoint key of the call that commanded the start last: each join
+    /// attempt goes back over that call ([`crate::workflows::node_start::JoinTo::Commander`]), and
+    /// the admin that answers is the hook's accepting authority. `rows` is the start's hold on this
+    /// birth's connections rows: the session drops it once it holds the name its join answer handed,
+    /// and no earlier, so the join's connection is recorded under that name (node-start.md step 2).
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), StartFailed>;
 }
 
 /// Declares a state this birth entered to its authority.
@@ -192,6 +192,13 @@ enum Cycle {
     Starting {
         /// The outcome of the start under way, once it ends.
         outcome: tokio::sync::watch::Receiver<Option<StatusReply>>,
+        /// The endpoint key of the call that commanded the start last: the start's join goes back
+        /// over it (node-start.md step 2). A later start's call hands its own key here. `None` for a
+        /// start that came on no Node RPC call.
+        commander: Option<tokio::sync::watch::Sender<iroh::PublicKey>>,
+        /// The endpoint keys of every call commanding the start, each awaiting its answer: a failed
+        /// start that parks the birth again spares their connections, so each call is answered.
+        calls: Vec<iroh::PublicKey>,
     },
 }
 
@@ -369,7 +376,7 @@ impl NodeSelf {
             ConnectionScope::All => {
                 let session = self.session.lock().unwrap().clone();
                 let report = match session {
-                    Some(session) => session.cut(spare).await,
+                    Some(session) => session.cut(spare.as_slice()).await,
                     None => CutReport::default(),
                 };
                 // What the cut leaves open in the log is dropped too, the commander's spared stream
@@ -479,9 +486,9 @@ impl NodeSelf {
     /// otherwise once it is. That is how a new primary's checklist rebuilds itself.
     fn serve_round(self: &Arc<Self>, commander: &NodeId, req: &StatusRequest) -> StatusReply {
         let op = crate::fabric_state::RoundOp::of(req).expect("a round op");
-        if *op.node_id != self.node_id {
-            return StatusReply::RejectedNotAuthority { why: rafka_node_rpc_contract::status::NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } };
-        }
+        // Answered by the birth the call reached (R-RX5: no receiver refuses a downward call for the
+        // node id it names); the exact birth it names is checked, so a call that reached another
+        // birth is refused naming the one held.
         if *op.incarnation != self.incarnation {
             return StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() };
         }
@@ -601,25 +608,22 @@ impl NodeSelf {
                 None => StatusReply::NotReady { reason: format!("{}: no primary of its mesh is known to check {} in to", self.held_name(), req.op()) },
             });
         }
-        if let StatusRequest::DeleteConnections { node_id, incarnation, .. } = req {
-            if *node_id != self.node_id {
-                return Some(StatusReply::RejectedNotAuthority { why: rafka_node_rpc_contract::status::NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } });
-            }
+        if let StatusRequest::DeleteConnections { incarnation, .. } = req {
             if *incarnation != self.incarnation {
                 return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
             }
             let StatusRequest::DeleteConnections { scope, .. } = req else { unreachable!("matched above") };
             return Some(self.serve_delete_connections(commander, spare, scope).await);
         }
-        let (node_id, incarnation, build_id, attempt, operation) = match req {
-            StatusRequest::DrainNode { node_id, incarnation, build_id, attempt, operation }
-            | StatusRequest::StopNode { node_id, incarnation, build_id, attempt, operation }
-            | StatusRequest::StartNode { node_id, incarnation, build_id, attempt, operation } => (node_id, incarnation, build_id, attempt, operation),
+        let (incarnation, build_id, attempt, operation) = match req {
+            StatusRequest::DrainNode { incarnation, build_id, attempt, operation, .. }
+            | StatusRequest::StopNode { incarnation, build_id, attempt, operation, .. }
+            | StatusRequest::StartNode { incarnation, build_id, attempt, operation, .. } => (incarnation, build_id, attempt, operation),
             _ => return None,
         };
-        if *node_id != self.node_id {
-            return Some(StatusReply::RejectedNotAuthority { why: rafka_node_rpc_contract::status::NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } });
-        }
+        // The birth the call reached obeys it (R-RX5: no receiver refuses a downward call for the
+        // node id it names); the exact birth it names is checked, so a call that reached another
+        // birth is refused naming the one held.
         if *incarnation != self.incarnation {
             return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
         }
@@ -921,7 +925,9 @@ impl NodeSelf {
     /// The start: a parked birth rejoins as itself through its session. A birth that is not parked
     /// refuses it, naming the state it is in. A start that reaches the birth while another start of
     /// it is under way is the same natural key `(node_id, incarnation, Pending)`: it runs no rejoin
-    /// of its own and answers that start's outcome.
+    /// of its own and answers that start's outcome, and its call is the one the start's join goes
+    /// back over from then on (node-start.md step 2: the start joins back over the call that
+    /// commanded it, and this call commanded it last).
     async fn start(self: &Arc<Self>, commander: Option<NodeId>, spare: Option<iroh::PublicKey>, op: LifecycleOp, parent: tracing::Span) -> StatusReply {
         use tracing::Instrument;
         let span = tracing::info_span!(
@@ -932,29 +938,44 @@ impl NodeSelf {
         );
         let reply = async {
             enum Next {
-                Run(tokio::sync::watch::Sender<Option<StatusReply>>, DrainReceipt, Arc<dyn Session>),
+                Run(tokio::sync::watch::Sender<Option<StatusReply>>, DrainReceipt, Arc<dyn Session>, Option<tokio::sync::watch::Receiver<iroh::PublicKey>>),
                 Join(tokio::sync::watch::Receiver<Option<StatusReply>>),
             }
             let next = {
                 let mut cycle = self.cycle.lock().unwrap();
-                match &*cycle {
+                match &mut *cycle {
                     Cycle::Parked(r) => {
                         let receipt = *r;
                         let Some(session) = self.session.lock().unwrap().clone() else {
                             return StatusReply::NotReady { reason: format!("{}: this process holds no session to rejoin its mesh with", self.held_name()) };
                         };
                         let (tx, rx) = tokio::sync::watch::channel(None);
-                        *cycle = Cycle::Starting { outcome: rx };
-                        Next::Run(tx, receipt, session)
+                        let (commander, commanded) = match spare {
+                            Some(key) => {
+                                let (tx, rx) = tokio::sync::watch::channel(key);
+                                (Some(tx), Some(rx))
+                            }
+                            None => (None, None),
+                        };
+                        *cycle = Cycle::Starting { outcome: rx, commander, calls: spare.into_iter().collect() };
+                        Next::Run(tx, receipt, session, commanded)
                     }
-                    Cycle::Starting { outcome, .. } => Next::Join(outcome.clone()),
+                    Cycle::Starting { outcome, commander, calls } => {
+                        // This call commanded the start last: its join goes back over this call from
+                        // its next attempt on.
+                        if let (Some(key), Some(commander)) = (spare, commander.as_ref()) {
+                            commander.send_replace(key);
+                            calls.push(key);
+                        }
+                        Next::Join(outcome.clone())
+                    }
                     Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
                     Cycle::Live => {
                         return StatusReply::RejectedInvalidNodeTransition { current: crate::status_rpc::declared_of_member((self.status)()) };
                     }
                 }
             };
-            let (outcome, receipt, session) = match next {
+            let (outcome, receipt, session, commanded) = match next {
                 Next::Join(mut rx) => {
                     tracing::Span::current().record("joined", true);
                     return match rx.wait_for(|r| r.is_some()).await {
@@ -962,7 +983,7 @@ impl NodeSelf {
                         Err(_) => StatusReply::NotReady { reason: format!("{}: the start that was under way ended without an outcome", self.held_name()) },
                     };
                 }
-                Next::Run(tx, receipt, session) => (tx, receipt, session),
+                Next::Run(tx, receipt, session, commanded) => (tx, receipt, session, commanded),
             };
             let retire = match &self.retire {
                 Some(r) => r.renew(),
@@ -977,10 +998,10 @@ impl NodeSelf {
             };
             let _ = (self.set_status)(MemberStatus::Pending);
             self.server.resume();
-            // The admin that commanded the start answers its join, reached back through its own call:
-            // the call's endpoint key names it (node-start.md step 2).
-            let joined = match spare {
-                Some(key) => session.rejoin(retire, key, rows).await,
+            // The admin that commanded the start answers its join, reached back over its own call:
+            // the call's endpoint key and path (node-start.md step 2).
+            let joined = match commanded {
+                Some(commander) => session.rejoin(retire, commander, rows).await,
                 None => Err(StartFailed { step: "node.join", reason: format!("{}: commander-uncalled: the start came on no Node RPC call, so no endpoint names the admin to join back", self.held_name()) }),
             };
             let reply = match joined {
@@ -995,11 +1016,16 @@ impl NodeSelf {
                 }
                 Err(failed) => {
                     // The start stopped at its step: the node is parked again, as it was: its tasks
-                    // held (a turn its rejoin let begin runs to its end), then its connections cut.
+                    // held (a turn its rejoin let begin runs to its end), then its connections cut,
+                    // sparing every call commanding the start so each is answered.
                     let _ = (self.set_status)(MemberStatus::Leaving);
                     self.server.drain();
                     let _ = session.park_tasks().await;
-                    let _ = session.cut(spare).await;
+                    let calls = match &*self.cycle.lock().unwrap() {
+                        Cycle::Starting { calls, .. } => calls.clone(),
+                        _ => spare.into_iter().collect(),
+                    };
+                    let _ = session.cut(&calls).await;
                     *self.cycle.lock().unwrap() = Cycle::Parked(receipt);
                     tracing::Span::current().record("failed_step", failed.step);
                     StatusReply::StartFailed { step: failed.step.to_string(), reason: failed.reason }
@@ -1016,10 +1042,11 @@ impl NodeSelf {
 
     /// The drain's completion: the node's own gossip hook on its mesh channel, then the call at the
     /// commanding admin, while this endpoint is open. The commander is the admin whose call commanded
-    /// the drain, reached back through that call by its endpoint key `endpoint`
-    /// ([`crate::workflows::node_start::reached_back`]: its identity from the member projection this
-    /// birth installed, its path the call's); with no call, the caller as its command resolved it.
-    /// When none is reached the hook is all that goes out, and the span names why no call was made.
+    /// the drain, reached back over that call by its endpoint key `endpoint` and the call's path
+    /// ([`crate::workflows::node_start::reached_back`]: no record of it is read); with no call, the
+    /// caller as its command resolved it. When none is reached the hook is all that goes out, and the
+    /// span names why no call was made. The span names the commander by the node id its command
+    /// resolved, when it resolved one.
     async fn complete(&self, commander: Option<&NodeId>, endpoint: Option<iroh::PublicKey>, op: &LifecycleOp) {
         let frame = Frame::NodeDrained { op: op.clone(), forwarded_by: None };
         let req = StatusRequest::NodeDrained { node_id: op.node_id.clone(), incarnation: op.incarnation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone() };
@@ -1029,12 +1056,13 @@ impl NodeSelf {
             Ok(()) => "published".to_string(),
             Err(e) => format!("not-published: {e}"),
         };
-        let target = match endpoint {
-            Some(key) => crate::workflows::node_start::reached_back(&self.held_name().to_string(), &self.membership, &self.client, &self.resolver, &key).await.map(|t| t.node_id),
-            None => commander.cloned().ok_or_else(|| format!("{}: commander-uncalled: the drain came on no Node RPC call, so no endpoint names the admin to call back", self.held_name())),
+        let target = match (endpoint, commander) {
+            (Some(key), _) => crate::workflows::node_start::reached_back(&self.held_name().to_string(), &self.client, &key).await,
+            (None, Some(commander)) => Ok(NodeTarget::ExactNode(commander.clone())),
+            (None, None) => Err(format!("{}: commander-uncalled: the drain came on no Node RPC call, so no endpoint names the admin to call back", self.held_name())),
         };
         let answer = match &target {
-            Ok(commander) => match self.client.call::<Status>(&NodeTarget::ExactNode(commander.clone()), &req, &rafka_node_rpc::CallOptions::default()).await.0 {
+            Ok(target) => match self.client.call::<Status>(target, &req, &rafka_node_rpc::CallOptions::default()).await.0 {
                 rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.value().name().to_string(),
                 other => other.name().to_string(),
             },
@@ -1043,7 +1071,7 @@ impl NodeSelf {
         tracing::info_span!(
             "rdm.node_admin.status.update.via-completion-call",
             node = %self.held_name(), completion = kind, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
-            commander = %named(target.as_ref().ok()), hook = %hook, answer = %answer, "otel.kind" = "internal"
+            commander = %named(commander), endpoint = %endpoint.map(|k| k.to_string()).unwrap_or_default(), hook = %hook, answer = %answer, "otel.kind" = "internal"
         )
         .in_scope(|| tracing::info!("the completion call was made to the commanding admin"));
     }

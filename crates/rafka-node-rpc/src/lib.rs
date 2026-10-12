@@ -31,4 +31,4 @@ pub use live::{Applied, LiveNodeResolver, Refusal, DEPARTED_RETENTION};
 pub use pool::{Failpoint, PoolKey};
 pub use resolve::{NodeResolver, NodeTarget, ResolvedNode, StaticResolver};
 pub use route::{ConnectedCall, RouteChoice, RouteLeg};
-pub use server::{FenceMismatch, HandlerFault, LateReply, NodeRpcServer, PeerContext, ReplyWithhold, ServedBirth, ServerBuilder, ServerStats};
+pub use server::{HandlerFault, LateReply, NodeRpcServer, PeerContext, ReplyWithhold, ServedBirth, ServerBuilder, ServerStats};

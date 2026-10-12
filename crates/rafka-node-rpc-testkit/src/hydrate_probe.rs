@@ -8,7 +8,7 @@
 //! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
 
 use rafka_node_admin_core::app_hydration::{HookOutcome, HydrateBeforeReady, HydrateCtx, RetryOn};
-use rafka_node_rpc::{CallOptions, HydrationGate, NodeTarget, PeerContext, ServerBuilder};
+use rafka_node_rpc::{CallOptions, HydrationGate, PeerContext, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -317,7 +317,7 @@ impl HydrateBeforeReady for TestHydrator {
                 };
                 self.pulls_started.fetch_add(1, Ordering::SeqCst);
                 let mut guard = InFlight(self, false);
-                let (out, _) = ctx.client.call::<HydratePull>(&NodeTarget::ExactNode(authority.node_id.clone()), &PullRequest::Pull, &CallOptions::default()).await;
+                let (out, _) = ctx.client.call::<HydratePull>(&authority.target, &PullRequest::Pull, &CallOptions::default()).await;
                 guard.1 = true;
                 self.pulls_answered.fetch_add(1, Ordering::SeqCst);
                 match out {

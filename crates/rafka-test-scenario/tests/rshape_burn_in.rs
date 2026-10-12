@@ -6614,8 +6614,6 @@ async fn soak_run(cell: &str, story: Story) {
     // The path RAN.
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").len();
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile").len();
-    let stale: Vec<&Value> = named(&spans, "rdm.node_rpc.connection.reject.via-stale-target").into_iter().filter(|sp| sp["attributes"].get("receiver_node_id").is_some()).collect();
-    let stale_served: Vec<&&Value> = stale.iter().filter(|sp| spans.iter().any(|x| x["trace_id"] == sp["trace_id"] && x["name"] == "rdm.node_rpc.request.serve.via-direct")).collect();
     let routes = route_rows(&spans);
     let mut route_classes: BTreeMap<String, usize> = BTreeMap::new();
     for r in &routes {
@@ -6675,7 +6673,6 @@ async fn soak_run(cell: &str, story: Story) {
             "exported_spans": spans.len(),
             "proof_store_serve_spans": served,
             "build_attempt_spans": reconciles,
-            "stale_target_refusals": stale.len(),
         },
         "provider_after_stop": left,
         "spans": index,
@@ -6705,7 +6702,6 @@ async fn soak_run(cell: &str, story: Story) {
     inv.holds("checkpointed invariants: every round carries the invariants that held after it (or names the cut that defers them to its Heal row)", judged + deferred == rows.len() && judged > 0, json!({"rounds": rows.len(), "judged": judged, "deferred_during_cut": deferred, "invariants": ["one-current-birth-per-path", "live-admin-answers", "fabric-build-id-held", "no-peer-mesh-permanently-unheard", "one-fabric-primary", "seats-equal-the-public-candidates", "every-rpc-node-reachable-on-its-current-birth"]}));
     inv.holds("continuous traffic: operations were issued, each classified once from its typed outcome", report.ledger.issued > 0, json!({"issued": report.ledger.issued, "buckets": report.ledger.buckets, "details": report.ledger.details, "applied_mutations": report.ledger.applied_mutations, "stores_reconciled": report.ledger.stores_reconciled}));
     inv.holds("the path RAN: the brokers served the operations and the topology actions ran as Build attempts", served > 0 && reconciles > 0, json!({"proof_store_serve_spans": served, "build_attempt_spans": reconciles}));
-    inv.holds("no stale-slot dispatch: a request a 425 refused was never served in its trace", stale_served.is_empty(), json!({"stale_target_refusals": stale.len(), "served_after_refusal": stale_served.len()}));
     if story.id == "S1" {
         inv.holds("S1 routes: exact-node calls reached their node directly and carried calls went through a gateway", route_classes.get("direct").copied().unwrap_or(0) > 0, json!({"route_classes": route_classes}));
     }

@@ -21,7 +21,8 @@
 //! [`AfterReady`] is for optional work only: nothing required may live there.
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rafka_mesh_entity::MemberStatus;
+use rafka_mesh_entity::{MemberStatus, MeshDigest};
+use std::time::Duration;
 use rafka_mesh_transport::membership::{DigestBook, Membership};
 use rafka_node_rpc::{CancelToken, HydrationGate, NodeRpcClient};
 use std::collections::BTreeMap;
@@ -46,15 +47,20 @@ pub struct Birth {
     pub kind: NodeKind,
 }
 
-/// The admin that accepted this birth's `JoinNode`: the authority the hook pulls from.
+/// The admin that accepted this birth's `JoinNode`: the authority the hook pulls from. A start after
+/// a stop reached it back over the call that commanded the start, holding no record of it
+/// (node-start.md step 2): it is known by the name its join answer gave and the endpoint it answered
+/// on, and the hook calls it through `target`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptingAuthority {
-    /// The admin's `path.name`.
+    /// The admin's `path.name`, as the join answer's `served_by` (or, at a first start, the
+    /// launcher's record) names it.
     pub name: PathName,
-    /// Its node id.
-    pub node_id: NodeId,
-    /// The incarnation that accepted the join.
-    pub incarnation: IncarnationId,
+    /// Its endpoint key.
+    pub endpoint: iroh::PublicKey,
+    /// Where a call to it goes: the launcher's birth at a first start; after a stop, the endpoint
+    /// and path of the call the join went back over.
+    pub target: rafka_node_rpc::NodeTarget,
 }
 
 /// Why a birth has no authority to pull from.
@@ -277,10 +283,18 @@ impl Events {
     /// The counts now, for `authority`.
     pub fn mark(&self, authority: &Authority) -> Mark {
         let heard = *self.book.heard_changes().borrow();
-        match authority.accepted() {
-            Some(a) => Mark { heard, addressed: self.addressed.count(&a.node_id), authority_incarnation: self.book.get(a.node_id.as_str()).map(|(d, _)| d.node.incarnation) },
+        match authority.accepted().and_then(|a| self.birth_of(a)) {
+            Some((d, _)) => Mark { heard, addressed: self.addressed.count(&d.node.node_id), authority_incarnation: Some(d.node.incarnation) },
             None => Mark { heard, addressed: 0, authority_incarnation: None },
         }
+    }
+
+    /// The birth this node's book holds at the authority's endpoint, and how long it has been silent:
+    /// the authority is known by its endpoint, which names one process.
+    fn birth_of(&self, authority: &AcceptingAuthority) -> Option<(MeshDigest, Duration)> {
+        let key = authority.endpoint.to_string();
+        let held = self.book.all().into_iter().find(|d| d.node.endpoint_id.0 == key)?;
+        self.book.get(held.node.node_id.as_str())
     }
 
     fn holds(&self, on: &RetryOn, authority: Option<&AcceptingAuthority>, mark: &Mark) -> bool {
@@ -291,13 +305,15 @@ impl Events {
         // An authority event of a birth with no authority never happens; the attempt refuses such a
         // request by name before any wait begins.
         let Some(authority) = authority else { return false };
+        let birth = self.birth_of(authority);
         match on {
-            RetryOn::AuthorityChanged => {
-                self.book.is_departed(authority.node_id.as_str()) || self.book.get(authority.node_id.as_str()).map(|(d, _)| d.node.incarnation) != mark.authority_incarnation
-            }
-            RetryOn::AuthorityReady => moved && self.book.get(authority.node_id.as_str()).is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),
+            RetryOn::AuthorityChanged => match &birth {
+                Some((d, _)) => self.book.is_departed(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.authority_incarnation.as_ref(),
+                None => mark.authority_incarnation.is_some(),
+            },
+            RetryOn::AuthorityReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),
             RetryOn::TargetReachable { .. } => unreachable!("answered above"),
-            RetryOn::AuthorityAddressed => self.addressed.count(&authority.node_id) > mark.addressed,
+            RetryOn::AuthorityAddressed => birth.is_some_and(|(d, _)| self.addressed.count(&d.node.node_id) > mark.addressed),
         }
     }
 

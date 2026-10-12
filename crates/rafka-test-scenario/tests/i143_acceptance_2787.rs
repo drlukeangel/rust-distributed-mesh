@@ -139,13 +139,6 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
         }
     }
     let mut violations: Vec<String> = Vec::new();
-    // No stale-slot dispatch: a request a 425 refused was never served in its trace.
-    let stale: Vec<&Value> = named(&spans, "rdm.node_rpc.connection.reject.via-stale-target").into_iter().filter(|sp| sp["attributes"].get("receiver_node_id").is_some()).collect();
-    for sp in &stale {
-        if spans.iter().any(|x| x["trace_id"] == sp["trace_id"] && x["name"] == "rdm.node_rpc.request.serve.via-direct") {
-            violations.push(format!("a stale fence was dispatched: {sp}"));
-        }
-    }
     // The path RAN: the operations reached handlers, the topology actions ran as Build attempts.
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").len();
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile").len();
@@ -185,7 +178,6 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
             "exported_spans": spans.len(),
             "proof_store_serve_spans": served,
             "build_attempt_spans": reconciles,
-            "stale_target_refusals": stale.len(),
             "fault_backend_spans": fault_spans.len(),
             "wedge_verdict_spans": verdicts.len(),
         },

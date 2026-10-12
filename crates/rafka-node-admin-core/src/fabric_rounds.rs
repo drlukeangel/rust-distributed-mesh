@@ -881,9 +881,9 @@ impl FabricRounds {
         let Some(me) = view.own(&self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
-        if *op.node_id != me.node_id {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } };
-        }
+        // Answered by the admin the call reached (R-RX5: no receiver refuses a downward call for the
+        // node id it names); the exact birth it names is checked, so a call that reached another
+        // birth is refused naming the one held.
         if let Some(held) = me.incarnation_id.as_ref().filter(|h| *h != op.incarnation) {
             return StatusReply::RejectedStaleIncarnation { held: held.clone() };
         }

@@ -2935,7 +2935,6 @@ struct AdminSession {
     membership: Membership,
     backbone: Backbone,
     client: Arc<rafka_node_rpc::NodeRpcClient>,
-    resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
     server: rafka_node_rpc::NodeRpcServer,
     digest: Arc<Mutex<MeshDigest>>,
     rafka_time: rafka_mesh_transport::clock::RafkaTime,
@@ -2965,7 +2964,7 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::TasksParked { turns_in_progress: at.in_progress(), waited_for: at.named() }
     }
 
-    async fn cut(&self, spare: Option<iroh::PublicKey>) -> crate::node_self::CutReport {
+    async fn cut(&self, spare: &[iroh::PublicKey]) -> crate::node_self::CutReport {
         // The stop held this admin's tasks before it (`park_tasks`): nothing it was doing goes out on
         // the connections cut below.
         let turns_in_progress = self.gate.state().borrow().in_progress();
@@ -2981,7 +2980,7 @@ impl crate::node_self::Session for AdminSession {
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
     }
 
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: iroh::PublicKey, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), crate::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), crate::node_self::StartFailed> {
         // The name this admin holds (its row's, as its last join or apply handed it): what its join
         // presents and what it is named by until the join answer hands it the row's (R12).
         let held = self.digest.lock().unwrap().node.name.clone();
@@ -2997,9 +2996,9 @@ impl crate::node_self::Session for AdminSession {
 struct AdminAfterStop<'a> {
     session: &'a AdminSession,
     root: tracing::Span,
-    /// The endpoint key of the call that commanded the start: the admin holding it answers the join
-    /// and is the hook's accepting authority.
-    commander: iroh::PublicKey,
+    /// The endpoint key of the call that commanded the start last: the join goes back over that
+    /// call, and the admin that answers is the hook's accepting authority.
+    commander: tokio::sync::watch::Receiver<iroh::PublicKey>,
     /// The new cycle's token: the hook runs under it.
     retire: Option<rafka_node_rpc::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
@@ -3017,13 +3016,11 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
     }
 
     fn joining(&self) -> crate::workflows::node_start::Joining {
-        crate::workflows::node_start::Joining::Authority { label: self.commander.fmt_short().to_string() }
+        crate::workflows::node_start::Joining::Authority { label: self.commander.borrow().fmt_short().to_string() }
     }
 
-    async fn resolve_authority(&mut self) -> Result<crate::workflows::node_start::JoinThrough, crate::node_self::StartFailed> {
-        let s = self.session;
-        let name = s.digest.lock().unwrap().node.name.to_string();
-        crate::workflows::node_start::join_back(&name, &s.membership, &s.client, &s.resolver, &self.commander).await
+    async fn resolve_authority(&mut self) -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> {
+        Ok(crate::workflows::node_start::JoinTo::Commander(self.commander.clone()))
     }
 
     fn join_digest(&self) -> MeshDigest {
@@ -3083,7 +3080,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         let entry = through.map(|t| {
             let mut digest = pending.clone();
             digest.status = MemberStatus::Pending;
-            entry_repeat(s.client.clone(), rafka_node_rpc::NodeTarget::ExactNode(t.node_id.clone()), t.anchor.clone(), digest, s.accepted.clone(), s.builds.clone(), s.entry_floor.clone(), s.shutdown.clone(), s.rafka_time.clone())
+            entry_repeat(s.client.clone(), t.target.clone(), t.anchor.clone(), digest, s.accepted.clone(), s.builds.clone(), s.entry_floor.clone(), s.shutdown.clone(), s.rafka_time.clone())
         });
         let after = AdminAfterStopTail {
             name: me.clone(),
@@ -5215,7 +5212,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         None if cfg.mesh_primary || cfg.fabric_primary => crate::workflows::node_start::Joining::None(crate::app_hydration::NoAuthority::Recovery),
         None => crate::workflows::node_start::Joining::None(crate::app_hydration::NoAuthority::Day0Root),
     };
-    let resolve: Box<dyn FnOnce() -> Result<crate::workflows::node_start::JoinThrough, crate::node_self::StartFailed> + Send> = {
+    let resolve: Box<dyn FnOnce() -> Result<crate::workflows::node_start::JoinTo, crate::node_self::StartFailed> + Send> = {
         let (resolver, through) = (node_rpc_resolver.clone(), joins_through.clone());
         Box::new(move || {
             let (anchor, launcher, _) = through.expect("a start that joins has its launching admin");
@@ -5229,7 +5226,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 },
                 None,
             );
-            Ok(crate::workflows::node_start::JoinThrough { node_id: launcher.node_id.clone(), name: launcher.name.clone(), incarnation: launcher.incarnation.clone(), anchor: anchor.id.fmt_short().to_string() })
+            Ok(crate::workflows::node_start::JoinTo::Launcher { target: rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), endpoint: anchor.id, name: launcher.name.clone() })
         })
     };
     // What a repeat of the control entry calls: the join to the launching admin, as first made.
@@ -6257,7 +6254,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             membership: membership.clone(),
                                             backbone: backbone.clone(),
                                             client: node_rpc.client.clone(),
-                                            resolver: node_rpc_resolver.clone(),
                                             server: rpc_server.clone(),
                                             digest: digest.clone(),
                                             rafka_time: rafka_time.clone(),

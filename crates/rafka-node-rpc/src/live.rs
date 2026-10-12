@@ -283,6 +283,8 @@ impl LiveNodeResolver {
                 Some(n) => current(n),
                 None => Err(ResolveFailure::Unknown),
             },
+            // An endpoint target names a process no record holds: the client dials it as named.
+            NodeTarget::Endpoint { .. } => Err(ResolveFailure::Unknown),
         }
     }
 }

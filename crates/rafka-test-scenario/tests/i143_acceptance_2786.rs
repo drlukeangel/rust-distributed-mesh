@@ -62,10 +62,10 @@ fn outcome(pick: u64) -> RpcOutcome<PingReply> {
         4 => pre().cut_before_finish().1,
         5 => pre().unserved_before_finish(),
         6 => pre().stale_before_finish(&fence()),
-        7 => committed().reset(425, &fence()),
+        7 => committed().reset(421),
         8 => committed().indeterminate(IndeterminateReason::ReplyDeadline),
         9 => committed().indeterminate(IndeterminateReason::ReplyLost("stream lost".into())),
-        _ => committed().reset(7, &fence()),
+        _ => committed().reset(7),
     }
 }
 

@@ -3,8 +3,9 @@
 //!
 //! A pooled connection is keyed by `(scope, peer, incarnation)`: the caller's
 //! execution scope, the peer's authenticated Iroh key and the process birth it
-//! was dialled to. A connection is to a process: the fence in each request's
-//! framing names the node, and every op of a birth shares the connection.
+//! was dialled to, or no birth for a call to an endpoint the caller holds no
+//! record of (`NodeTarget::Endpoint`). A connection is to a process, and every
+//! op of a birth shares the connection.
 //!
 //! Supersession is per birth:
 //! - a dial in flight whose incarnation the resolver no longer names is
@@ -45,14 +46,24 @@ pub struct PoolKey {
     pub scope: Option<String>,
     /// The peer's Iroh public key.
     pub peer: iroh::PublicKey,
-    /// The incarnation of the peer's birth the connection reached.
-    pub incarnation: IncarnationId,
+    /// The incarnation of the peer's birth the connection reached; `None` for a call to an endpoint
+    /// the caller holds no record of, which nothing supersedes.
+    pub incarnation: Option<IncarnationId>,
 }
 
 impl PoolKey {
-    /// Does `node` (the resolver's answer now) still name this exact birth?
+    /// Does `node` (the resolver's answer now) still name this exact birth? A key of no birth is
+    /// the process at its endpoint, whatever a resolver says.
     pub(crate) fn is_current(&self, node: Option<&ResolvedNode>) -> bool {
-        node.is_some_and(|n| n.endpoint_id == self.peer && n.incarnation == self.incarnation)
+        match &self.incarnation {
+            None => true,
+            Some(held) => node.is_some_and(|n| n.endpoint_id == self.peer && &n.incarnation == held),
+        }
+    }
+
+    /// The birth the key names, as a span field: empty for a key of no birth.
+    pub fn birth(&self) -> &str {
+        self.incarnation.as_ref().map(|i| i.0.as_str()).unwrap_or_default()
     }
 
     fn superseded_by(&self, _node: Option<&ResolvedNode>) -> &'static str {
@@ -109,7 +120,9 @@ pub struct Pool {
 pub(crate) struct DialSpec {
     pub endpoint: Endpoint,
     pub resolver: Arc<dyn NodeResolver>,
-    pub target: NodeTarget,
+    /// What the resolver is asked about the dial while it runs and before it pools: `None` for an
+    /// endpoint target, which no resolver answers and nothing supersedes.
+    pub target: Option<NodeTarget>,
     pub addr: SocketAddr,
     pub failpoint: Option<Arc<Failpoint>>,
     /// Told once, when the dial's connection enters the pool, whoever is or is not waiting for it.
@@ -119,7 +132,7 @@ pub(crate) struct DialSpec {
 fn evict_span(_reason: &'static str, key: &PoolKey, outcome: &str, elapsed_ms: u128) {
     tracing::info_span!(
         "rdm.node_rpc.connection.evict.via-incarnation-superseded",
-        peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0, outcome, elapsed_ms = elapsed_ms as u64
+        peer = %key.peer.fmt_short(), incarnation_id = %key.birth(), outcome, elapsed_ms = elapsed_ms as u64
     )
     .in_scope(|| tracing::info!("superseded birth: {outcome}"));
 }
@@ -132,8 +145,8 @@ fn diag_connect<E: std::error::Error>(key: &PoolKey, spec: &DialSpec, r: &Result
     let (peer, addr, local, elapsed_ms) = (&key.peer, spec.addr, spec.endpoint.bound_sockets(), started.elapsed().as_millis() as u64);
     let me = spec.endpoint.id();
     match r {
-        Ok(c) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "connect-completed", %me, %peer, %addr, ?local, incarnation = %key.incarnation.0, connection = c.stable_id(), elapsed_ms, %trace, "the dial's handshake completed"),
-        Err(e) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "connect-failed", %me, %peer, %addr, ?local, incarnation = %key.incarnation.0, elapsed_ms, %trace, error = %format_args!("{e:#}"), error_debug = ?e, "the dial's handshake failed"),
+        Ok(c) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "connect-completed", %me, %peer, %addr, ?local, incarnation = %key.birth(), connection = c.stable_id(), elapsed_ms, %trace, "the dial's handshake completed"),
+        Err(e) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "connect-failed", %me, %peer, %addr, ?local, incarnation = %key.birth(), elapsed_ms, %trace, error = %format_args!("{e:#}"), error_debug = ?e, "the dial's handshake failed"),
     }
 }
 
@@ -178,7 +191,7 @@ impl Pool {
         let closed: Vec<(PoolKey, Connection)> = self.inner.conns.lock().unwrap().drain().collect();
         for (key, conn) in &closed {
             conn.close(0u32.into(), reason);
-            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0)
+            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.birth())
                 .in_scope(|| tracing::info!("a pooled connection was closed"));
         }
         closed.len()
@@ -199,7 +212,7 @@ impl Pool {
         };
         for (key, conn) in &closed {
             conn.close(0u32.into(), reason);
-            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.incarnation.0)
+            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.birth())
                 .in_scope(|| tracing::info!("a pooled connection was closed"));
         }
         closed.len()
@@ -250,7 +263,7 @@ impl Pool {
                     let span = tracing::info_span!(
                         "rdm.node_rpc.connection.create.via-dial",
                         peer = %key.peer.fmt_short(),
-                        incarnation_id = %key.incarnation.0,
+                        incarnation_id = %key.birth(),
                         addr = %spec.addr,
                         local = ?spec.endpoint.bound_sockets(),
                         outcome = tracing::field::Empty,
@@ -290,9 +303,9 @@ impl Pool {
         // Released the moment the resolver stops naming this exact target: subscribed first, then
         // checked, so a move between the dial's registration and this subscription is seen too.
         let moved = async {
-            let Some(mut changes) = resolver.changes() else { return std::future::pending::<()>().await };
+            let (Some(target), Some(mut changes)) = (target.as_ref(), resolver.changes()) else { return std::future::pending::<()>().await };
             loop {
-                if !key.is_current(resolver.resolve(&target).ok().as_ref()) {
+                if !key.is_current(resolver.resolve(target).ok().as_ref()) {
                     return;
                 }
                 if changes.changed().await.is_err() {
@@ -318,7 +331,7 @@ impl Pool {
             r = connect => Some(r),
         };
         let Some(res) = res else {
-            let now = resolver.resolve(&target).ok();
+            let now = target.as_ref().and_then(|t| resolver.resolve(t).ok());
             span.in_scope(|| evict_span(key.superseded_by(now.as_ref()), key, "cancelled", started.elapsed().as_millis()));
             return Err(DialError::Superseded);
         };
@@ -332,7 +345,7 @@ impl Pool {
         }
         // A connection to a target the resolver no longer names is evidence
         // about nothing current: it is never pooled.
-        let now = resolver.resolve(&target).ok();
+        let now = target.as_ref().and_then(|t| resolver.resolve(t).ok());
         if !key.is_current(now.as_ref()) {
             conn.close(0u32.into(), b"superseded");
             span.in_scope(|| evict_span(key.superseded_by(now.as_ref()), key, "late-connect-dropped", started.elapsed().as_millis()));

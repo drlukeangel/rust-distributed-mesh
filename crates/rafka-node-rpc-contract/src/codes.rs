@@ -13,21 +13,19 @@ pub enum ResetCode {
     InternalRpcFailure = 423,
     /// A framing/order/runtime contract violation.
     ProtocolViolation = 424,
-    /// The request's fence names another node than the receiver, or a port it
-    /// does not serve; proves no protocol dispatch.
-    StaleTarget = 425,
     /// The sender reset an unfinished request; proves pre-dispatch `NotSent`.
     FrameNotSent = 499,
 }
 
-/// Historical pre-Node-RPC codes: reserved forever, never emitted, never reassigned.
+/// Historical codes: reserved forever, never emitted, never reassigned. `425` was the receiver's
+/// refusal of a fence naming another node; no receiver refuses a call for the node id it names
+/// (R-UC1a), so a `425` a caller reads proves nothing.
 #[cfg(test)]
-pub(crate) const RETIRED_CODES: [u32; 3] = [413, 501, 503];
+pub(crate) const RETIRED_CODES: [u32; 4] = [413, 425, 501, 503];
 
 impl ResetCode {
     /// Every code Node RPC emits.
-    pub const ALL: [ResetCode; 6] =
-        [Self::UnservedOp, Self::RequestStop, Self::InternalRpcFailure, Self::ProtocolViolation, Self::StaleTarget, Self::FrameNotSent];
+    pub const ALL: [ResetCode; 5] = [Self::UnservedOp, Self::RequestStop, Self::InternalRpcFailure, Self::ProtocolViolation, Self::FrameNotSent];
 
     /// The numeric code.
     pub fn code(self) -> u32 {
@@ -41,7 +39,6 @@ impl ResetCode {
             Self::RequestStop => "REQUEST_STOP",
             Self::InternalRpcFailure => "INTERNAL_RPC_FAILURE",
             Self::ProtocolViolation => "PROTOCOL_VIOLATION",
-            Self::StaleTarget => "STALE_TARGET",
             Self::FrameNotSent => "FRAME_NOT_SENT",
         }
     }
@@ -58,10 +55,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn namespace_is_421_to_425_plus_499() {
+    fn namespace_is_421_to_424_plus_499() {
         let codes: Vec<u32> = ResetCode::ALL.iter().map(|c| c.code()).collect();
-        assert_eq!(codes, vec![421, 422, 423, 424, 425, 499]);
-        assert_eq!(ResetCode::StaleTarget.name(), "STALE_TARGET", "425 is pinned to STALE_TARGET");
+        assert_eq!(codes, vec![421, 422, 423, 424, 499]);
         for c in ResetCode::ALL {
             assert_eq!(ResetCode::from_code(c.code().into()), Some(c));
         }

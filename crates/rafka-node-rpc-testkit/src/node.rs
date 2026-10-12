@@ -432,7 +432,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // holds. A node whose join is not accepted ends by name, whether the admin refused the digest
     // or could not take the join within the attempts: it is never ready for traffic.
     let launcher = launcher.clone();
-    let resolve: Box<dyn FnOnce() -> Result<rafka_node_admin_core::workflows::node_start::JoinThrough, rafka_node_admin_core::node_self::StartFailed> + Send> = {
+    let resolve: Box<dyn FnOnce() -> Result<rafka_node_admin_core::workflows::node_start::JoinTo, rafka_node_admin_core::node_self::StartFailed> + Send> = {
         let (resolver, launch_name, launcher, seed) = (resolver.clone(), launch.name.clone(), launcher.clone(), seeds.first().cloned());
         Box::new(move || {
             use rafka_node_admin_core::node_self::StartFailed;
@@ -445,7 +445,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                 incarnation: launcher.incarnation.clone(),
             };
             resolver.apply(launcher_ref, None);
-            Ok(rafka_node_admin_core::workflows::node_start::JoinThrough { node_id: launcher.node_id.clone(), name: launcher.name.clone(), incarnation: launcher.incarnation.clone(), anchor: seed.id.fmt_short().to_string() })
+            Ok(rafka_node_admin_core::workflows::node_start::JoinTo::Launcher { target: rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), endpoint: seed.id, name: launcher.name.clone() })
         })
     };
     // What the start brought up, once it did: handed to the caller, or ended if the hook fails.
@@ -542,7 +542,6 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                 runtime: runtime.clone(),
                                 membership: membership.clone(),
                                 client: client.clone(),
-                                resolver: resolver.clone(),
                                 server: server.clone(),
                                 digest: digest.clone(),
                                 status: status.clone(),
@@ -675,7 +674,6 @@ struct NodeSession {
     runtime: rafka_mesh_entity::runtime::RuntimeFact,
     membership: Membership,
     client: Arc<rafka_node_rpc::NodeRpcClient>,
-    resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
     server: NodeRpcServer,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,
@@ -690,7 +688,7 @@ struct NodeSession {
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::node_self::Session for NodeSession {
-    async fn cut(&self, spare: Option<iroh::PublicKey>) -> rafka_node_admin_core::node_self::CutReport {
+    async fn cut(&self, spare: &[iroh::PublicKey]) -> rafka_node_admin_core::node_self::CutReport {
         if let Some(p) = self.publisher.lock().unwrap().take() {
             p.abort();
         }
@@ -706,7 +704,7 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: iroh::PublicKey, rows: Option<rafka_node_admin_core::connections_writer::RowsHeld>) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<rafka_node_admin_core::connections_writer::RowsHeld>) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
         let held = self.membership.with_config(&self.digest);
@@ -726,9 +724,9 @@ struct AfterStop<'a> {
     name: String,
     /// The digest the birth holds: the one its join presents.
     held: MeshDigest,
-    /// The endpoint key of the call that commanded the start: the admin holding it answers the join
-    /// and is the hook's accepting authority.
-    commander: iroh::PublicKey,
+    /// The endpoint key of the call that commanded the start last: the join goes back over that call,
+    /// and the admin that answers is the hook's accepting authority.
+    commander: tokio::sync::watch::Receiver<iroh::PublicKey>,
     /// The new cycle's token: the hook runs under it.
     retire: Option<rafka_node_rpc::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
@@ -745,12 +743,11 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
     }
 
     fn joining(&self) -> rafka_node_admin_core::workflows::node_start::Joining {
-        rafka_node_admin_core::workflows::node_start::Joining::Authority { label: self.commander.fmt_short().to_string() }
+        rafka_node_admin_core::workflows::node_start::Joining::Authority { label: self.commander.borrow().fmt_short().to_string() }
     }
 
-    async fn resolve_authority(&mut self) -> Result<rafka_node_admin_core::workflows::node_start::JoinThrough, rafka_node_admin_core::node_self::StartFailed> {
-        let s = self.session;
-        rafka_node_admin_core::workflows::node_start::join_back(&self.name, &s.membership, &s.client, &s.resolver, &self.commander).await
+    async fn resolve_authority(&mut self) -> Result<rafka_node_admin_core::workflows::node_start::JoinTo, rafka_node_admin_core::node_self::StartFailed> {
+        Ok(rafka_node_admin_core::workflows::node_start::JoinTo::Commander(self.commander.clone()))
     }
 
     fn join_digest(&self) -> MeshDigest {
@@ -1023,8 +1020,8 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 /// state; no transition. While its `hydrate_before_ready` hook is Blocked it answers `Blocked` with
 /// the hook's blocker and republishes nothing. `DrainNode`, `StopNode` and `StartNode` are obeyed by
 /// `rafka_node_admin_core::node_self`. A stale incarnation is refused with the one held. Nothing
-/// checks who is calling (node-rpc.md §14): every request is decided on the target node id, the op
-/// and the exact birth it names; the caller, the birth holding the call's endpoint key in the member
+/// checks who is calling (node-rpc.md §14) or the node id a call names (R-RX5): every request is
+/// decided on the op and the exact birth it names; the caller, the birth holding the call's endpoint key in the member
 /// projection this node installed, is named in spans and is the authority a blocked hook was addressed by.
 fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
     use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
@@ -1073,13 +1070,13 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let name = me.membership.book.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.name.to_string()).unwrap_or_default();
                 return Ok(rafka_node_admin_core::node_commands::refuse_node_left(&me.membership.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
             }
-            let (node_id, incarnation) = match &req {
-                StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } | StatusRequest::GetConnections { node_id, incarnation } => (node_id, incarnation),
+            let incarnation = match &req {
+                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::GetConnections { incarnation, .. } => incarnation,
                 _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             };
-            if *node_id != me.digest.node.node_id {
-                return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } });
-            }
+            // The birth the call reached answers it, whatever node id it names (R-RX5); the exact
+            // birth it names is checked, so a call that reached another birth is refused naming the
+            // one held.
             if *incarnation != me.digest.node.incarnation {
                 return Ok(StatusReply::RejectedStaleIncarnation { held: me.digest.node.incarnation.clone() });
             }
