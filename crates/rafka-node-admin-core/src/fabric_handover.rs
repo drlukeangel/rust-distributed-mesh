@@ -147,6 +147,11 @@ impl HandoverBook {
     pub fn get(&self, operation: &str) -> Option<(Payload, Stage)> {
         self.entries.lock().unwrap().get(operation).map(|e| (e.payload.clone(), e.stage))
     }
+    /// The handover that committed the fabric seat to `successor` at `epoch`: the payload whose
+    /// commit (confirmed or not) is that record, naming the incumbent the seat moved from.
+    pub fn committed_to(&self, successor: &HandoverBirth, epoch: u64) -> Option<Payload> {
+        self.entries.lock().unwrap().values().find(|e| &e.payload.successor == successor && matches!(e.stage, Stage::Committed(c) | Stage::Confirmed(c) if c == epoch)).map(|e| e.payload.clone())
+    }
 }
 
 /// What a receiver had to read or write to decide or commit a call, and why it failed: the fields a
@@ -542,6 +547,25 @@ impl HandoverDoor {
 
     fn me_birth(&self) -> HandoverBirth {
         HandoverBirth { mesh: self.me.mesh.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }
+    }
+
+    /// The incumbent the committed transfer of the fabric seat this birth holds names: the handover
+    /// this admin committed as the successor at the held epoch (op `0x21` TakeFabricPrimary, recorded
+    /// in its handover book and restored from its rows), else the seat transfer held together whose
+    /// fabric seat is the held record (TakeSeats: its lifecycle op names the former holder). `None`
+    /// when this birth holds no fabric seat or took it by no transfer.
+    fn fabric_seat_incumbent(&self) -> Option<HandoverBirth> {
+        let book = self.membership.seats();
+        let held = book.fabric().filter(|h| h.is_birth(&self.node_id, &self.incarnation))?;
+        if let Some(p) = self.handovers.committed_to(&self.me_birth(), held.epoch) {
+            return Some(p.incumbent);
+        }
+        book.held_frames().into_iter().find_map(|f| match f {
+            rafka_mesh_transport::membership::Frame::SeatedTogether { op, seats, .. } if seats.iter().any(|c| c.seat.kind() == Seat::FabricPrimary && c.record() == held) => {
+                Some(HandoverBirth { mesh: op.name.mesh.clone(), node_id: op.node_id, incarnation: op.incarnation })
+            }
+            _ => None,
+        })
     }
 
     /// The refusal of a handover call (`call`, at `side`) whose decision needs the fabric seat record
@@ -1175,6 +1199,19 @@ fn refusal_reason(r: &Reply) -> (&'static str, String) {
 
 /// The door a running admin fills once it holds a view.
 pub type HandoverSlot = Arc<OnceLock<Arc<HandoverDoor>>>;
+
+/// The new seat reads a re-submitted Build it has not heard yet from the incumbent its committed
+/// transfer names, which keeps serving after the seat row (node-rpc-envelope.md, "TakeSeats": "P keeps
+/// serving TakeSeats and Status after the row"): one `FetchBuildFacts` to that exact node.
+#[async_trait::async_trait]
+impl crate::build_op::IncumbentFacts for HandoverDoor {
+    async fn read(&self, build_id: &crate::build::BuildId) -> crate::build_op::IncumbentRead {
+        let Some(incumbent) = self.fabric_seat_incumbent() else { return crate::build_op::IncumbentRead::NoTransfer };
+        let name = self.topology.read().await.births().find(|n| n.node_id == incumbent.node_id).map(|n| n.name.to_string()).unwrap_or_else(|| format!("the {} admin", incumbent.mesh));
+        let read = crate::build_facts_read::fetch_build_facts(&self.client, &NodeTarget::ExactNode(incumbent.node_id.clone()), build_id).await;
+        crate::build_op::IncumbentRead::Read { incumbent: format!("{name} ({}, birth {})", incumbent.node_id, incumbent.incarnation.0), read }
+    }
+}
 
 /// Serve the fabric-primary handover on this admin. Until `slot` is filled a call is `NotReady`.
 pub fn serve(b: ServerBuilder, slot: HandoverSlot) -> ServerBuilder {

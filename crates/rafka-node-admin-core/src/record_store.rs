@@ -426,6 +426,15 @@ impl FileRecords {
         .await
     }
 
+    /// A read of the record standing on the disk at `key` of this store, for a held claim of another
+    /// store whose decision at the publication follows this store's row (the publication runs it on
+    /// the blocking pool): `None` when no row is there; a file this build does not recognise is
+    /// refused by name, never read as no row.
+    pub(crate) fn disk_read<T: DeserializeOwned>(&self, key: &str, format: &str) -> impl Fn() -> Result<Option<T>, StorageError> + Send + Sync + 'static {
+        let (path, format) = (self.path(key), format.to_string());
+        move || read_standing(&path)?.map(|b| Self::decode::<T>(&path, &b, &format)).transpose()
+    }
+
     /// `decide`, over a typed record, as a decision over the bytes standing at the key: a standing
     /// file this build does not recognise is refused by name, never decided as no row.
     fn decision<T: DeserializeOwned + 'static>(path: &Path, format: &str, decide: impl Fn(Option<&T>) -> Result<bool, String> + Send + Sync + 'static) -> ClaimDecision {
@@ -759,7 +768,7 @@ pub async fn cut_off_and_drain(stores: &[&FileRecords], reason: &str) {
     }
 }
 
-fn write_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+pub(crate) fn write_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     use std::io::Write as _;
     let io = |e: std::io::Error| StorageError::Io { file: path.display().to_string(), reason: e.to_string() };
     let mut f = std::fs::File::create(tmp).map_err(io)?;

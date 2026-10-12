@@ -388,11 +388,11 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     assert!(statuses.last().is_some_and(|(st, _)| st == "ready-for-traffic"), "the fabric is ready again: {statuses:?}");
 
     // The mark sends nothing and the fabric primary never authors the peer mesh's status; the
-    // fabric's two changes are five identical sends each. The marks counted are the investigation's,
-    // made before the shutdown began ([`Fixture::stop`]): a mark of the unheard interval the shutdown
-    // opens, once it stopped the peer mesh's last admin, is not one of them.
+    // fabric's two changes are five identical sends each.
+    // The marks of the story: the estate shutdown that follows it (`Fixture::stop`) stops the members of the
+    // reborn mesh one by one and leaves it unheard, which opens a new interval and a new mark at the fabric primary.
     let marks: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-unheard").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "mesh") == f.lost && attr(sp, "mark") == "true" && at_ns(sp) < story_end).collect();
-    assert_eq!(marks.len(), 1, "the silent mark is made once: {marks:#?}");
+    assert_eq!(marks.len(), 1, "the silent mark is made once before the story ends: {marks:#?}");
     assert!(unheard(marks[0]) >= rungs().mark, "the mark is at {:?} unheard, not before: {:?}", rungs().mark, unheard(marks[0]));
     // A probe in flight never holds the ladder (R-CK1: a delayed tick never moves a threshold):
     // the mark is stepped at its rung, before probe 2's, however long probe 1 runs.

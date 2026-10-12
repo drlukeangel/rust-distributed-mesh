@@ -151,7 +151,7 @@ async fn put(
     span.record("tags_arrived", crate::node_rows::labels(&tags.difference(&was).cloned().collect()).as_str());
     span.record("tags_left", crate::node_rows::labels(&was.difference(tags).cloned().collect()).as_str());
     if to == held.name {
-        let row = NodeRow { name: held.name.clone(), node_id: node_id.clone(), status: held.status, config, tags: tags.clone() };
+        let row = NodeRow { name: held.name.clone(), node_id: node_id.clone(), status: held.status, config, tags: tags.clone(), allocated: None };
         match storage.put_node_row(&row).await {
             Ok(Ok(())) => door.written().hold(&row),
             Ok(Err(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },

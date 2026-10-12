@@ -89,11 +89,13 @@ impl NodeConfigs {
         if let Err(over) = rafka_mesh_entity::check_config(config) {
             return StatusReply::RejectedConfig { over };
         }
-        // A subject this receiver does not hold is the receiver's own fact (node-rpc-envelope.md:
-        // "`SubjectUnknown` when the receiver does not hold the subject at all"), never a peer that
-        // did not resolve.
-        let Some(subject) = view.members().find(|n| n.node_id == *node_id) else {
-            span.record("detail", format!("{me}: node {node_id} is not a member of this admin's view; its config cannot be put").as_str());
+        // The subject is the exact birth the call names, wherever its row stands: a node whose row its
+        // mesh-primary moved to `<path>.old` is still that birth (never found by path.name, its shape
+        // included: `Topology::own`). A subject this receiver does not hold is the receiver's own fact
+        // (node-rpc-envelope.md: "`SubjectUnknown` when the receiver does not hold the subject at all"),
+        // never a peer that did not resolve.
+        let Some(subject) = view.own(node_id) else {
+            span.record("detail", format!("{me}: node {node_id} holds no birth in this admin's view; its config cannot be put").as_str());
             return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
         };
         span.record("subject", subject.name.to_string().as_str());
@@ -125,7 +127,7 @@ impl NodeConfigs {
             }
         };
         span.record("tags", crate::node_rows::labels(&tags).as_str());
-        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags };
+        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None };
         let refused = match storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);

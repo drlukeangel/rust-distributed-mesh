@@ -504,7 +504,7 @@ impl DeploymentProvider for FaultedProvider {
     async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
         self.inner.signal_stop(handle).await
     }
-    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+    async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
         self.inner.find(spec).await
     }
     async fn bind_ip(&self, node: &rafka_node_admin_core::model::PathName) -> Result<std::net::IpAddr, DeployError> {
