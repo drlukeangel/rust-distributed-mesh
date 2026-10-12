@@ -587,7 +587,10 @@ impl NodesStorage for FileNodesStorage {
         let rows = self.mesh(&name.mesh).await?;
         let held = rows.rows.read::<NodeRow>(&key, ROW_FORMAT).await?.is_some_and(|r| &r.node_id == holder);
         if held {
-            rows.rows.remove(&key).await?;
+            // Held before the fabric's first state-commit, the release removes the row standing at
+            // the key at the publication only while it is still the holder's.
+            let holder = holder.clone();
+            rows.rows.remove_released(&key, ROW_FORMAT, move |r: &NodeRow| r.node_id == holder).await?;
         }
         Ok(held)
     }
