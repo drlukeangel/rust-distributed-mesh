@@ -14,7 +14,7 @@
 
 use iroh::protocol::Router;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
-use rafka_mesh_transport::membership::{learn_addresses, Backbone, DigestBook, Frame, Membership};
+use rafka_mesh_transport::membership::{learn_addresses, Backbone, DigestBook, Frame, Membership, StatusEvent};
 use rafka_mesh_transport::snapshot::{chunks_of, Chunk, PublisherId};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -102,8 +102,8 @@ fn hold_mesh_ready(book: &DigestBook) {
 
 /// The mesh-primary `p` (publishing on `bb`) publishes `NodeStopped` for `stop` from the stop's
 /// matching stopped reply, on its own mesh channel.
-async fn publish_stopped(p: &Membership, _bb: &Backbone, stop: &LifecycleOp) {
-    p.publish_lifecycle(&Frame::NodeStopped { op: stop.clone(), forwarded_by: None }).await.unwrap();
+async fn publish_stopped(_p: &Membership, bb: &Backbone, stop: &LifecycleOp) {
+    bb.publish_status_event(StatusEvent::Stopped, stop).await;
 }
 
 /// `m` holds `holder` as its mesh's seat record, as its entry read named it.

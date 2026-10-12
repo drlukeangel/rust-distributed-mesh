@@ -394,6 +394,11 @@ pub enum Frame {
         op: LifecycleOp,
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
+        /// The exact birth that published the fact: the epoch of `topology_version`. A receiver
+        /// takes it only from a publisher it holds seated for the subject's mesh.
+        publisher: PublisherId,
+        /// The publisher's `topology_version` of the subject's mesh at which the subject changed.
+        topology_version: u64,
     },
     /// The provider proved `op`'s exact birth terminal: it has left. Same
     /// channel as `NodeDeleting`; retained afterwards in `Members.departed`.
@@ -413,6 +418,11 @@ pub enum Frame {
         op: LifecycleOp,
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
+        /// The exact birth that published the fact: the epoch of `topology_version`, as on
+        /// [`Frame::NodeDeleting`].
+        publisher: PublisherId,
+        /// The publisher's `topology_version` of the subject's mesh at which the subject changed.
+        topology_version: u64,
     },
     /// A mesh's status, authored by that mesh's primary alone, on its own mesh channel and the
     /// backbone; a peer mesh's primary forwards it onto its own channel (`forwarded_by`) and never
@@ -629,6 +639,12 @@ pub enum Frame {
         op: LifecycleOp,
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
+        /// The exact birth that published the fact: the epoch of `topology_version`, as on
+        /// [`Frame::NodeDeleting`].
+        publisher: PublisherId,
+        /// The publisher's `topology_version` of the subject's mesh at which the subject changed: a
+        /// projection of that publisher newer than it, listing the birth, moved past the stop.
+        topology_version: u64,
     },
     /// A seat holder committed a Build-driven seat transfer (gossip.md, "Seated-together seat
     /// transfer"): its one seat row moved every seat in `seats` to `successor`, the executor of the
@@ -654,6 +670,39 @@ impl Frame {
     /// The frame `bytes` carry, or why they are not one.
     pub fn decode(bytes: &[u8]) -> Result<Self, crate::wire::WireError> {
         crate::wire::decode(bytes)
+    }
+}
+
+/// The status events (node-status-heartbeat-connections.md R-HB1, "Events vs statuses": "NodeStopped,
+/// NodeDeleting and NodeRestarting stay immediate events"): each carries its publisher and the
+/// `topology_version` at which its subject changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusEvent {
+    /// `NodeDeleting`: the executor started removing the exact birth.
+    Deleting,
+    /// `NodeRestarting`: the executor is restarting the exact birth.
+    Restarting,
+    /// `NodeStopped`: the executor holds the exact birth's matching stopped reply.
+    Stopped,
+}
+
+impl StatusEvent {
+    /// The frame's name in spans.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Deleting => "node-deleting",
+            Self::Restarting => "node-restarting",
+            Self::Stopped => "node-stopped",
+        }
+    }
+
+    /// The frame of this event for `op`, published by `publisher` at `topology_version`.
+    pub fn frame(self, op: LifecycleOp, publisher: PublisherId, topology_version: u64) -> Frame {
+        match self {
+            Self::Deleting => Frame::NodeDeleting { op, forwarded_by: None, publisher, topology_version },
+            Self::Restarting => Frame::NodeRestarting { op, forwarded_by: None, publisher, topology_version },
+            Self::Stopped => Frame::NodeStopped { op, forwarded_by: None, publisher, topology_version },
+        }
     }
 }
 
@@ -1236,10 +1285,10 @@ fn publisher_mesh(publisher: &str) -> &str {
 /// own, and forwards only what its author sent (a replay by a holder is for the backbone only).
 pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
     match frame {
-        Frame::NodeDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeDeleting { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleting { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
         Frame::NodeDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDeleted { op, forwarded_by: Some(me.to_string()) }),
-        Frame::NodeRestarting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()) }),
-        Frame::NodeStopped { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeRestarting { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
+        Frame::NodeStopped { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
         Frame::SeatedTogether { op, successor, seats } if op.name.mesh != own_mesh => Some(Frame::SeatedTogether { op, successor, seats }),
         Frame::NodeDraining { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDraining { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeaving { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeaving { op, forwarded_by: Some(me.to_string()) }),
@@ -1938,23 +1987,19 @@ impl View {
 
     fn take_other(&self, f: &Frame, fabric: &FabricId, via: &'static str) -> Vec<MeshDigest> {
         match f {
-            Frame::NodeDeleting { op, .. } => {
-                self.book.deleting(op.clone());
+            Frame::NodeDeleting { op, publisher, topology_version, .. } | Frame::NodeRestarting { op, publisher, topology_version, .. } | Frame::NodeStopped { op, publisher, topology_version, .. } => {
+                let kind = match f {
+                    Frame::NodeDeleting { .. } => StatusEvent::Deleting,
+                    Frame::NodeRestarting { .. } => StatusEvent::Restarting,
+                    _ => StatusEvent::Stopped,
+                };
+                if !self.refuses_status_event(kind, op, publisher, *topology_version, via) {
+                    self.apply_status_event(kind, op, Some((publisher.to_string(), *topology_version)), via);
+                }
                 Vec::new()
             }
             Frame::NodeDeleted { op, .. } => {
                 self.book.depart(op.clone());
-                Vec::new()
-            }
-            Frame::NodeRestarting { op, .. } => {
-                self.book.restarting(op.clone());
-                Vec::new()
-            }
-            Frame::NodeStopped { op, .. } => {
-                let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
-                if self.book.stopped(op.clone()) {
-                    self.note_member_parked(op, prior, via);
-                }
                 Vec::new()
             }
             Frame::NodeDraining { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeDrained { op, forwarded_by } => {
@@ -2107,6 +2152,118 @@ impl View {
                 Vec::new()
             }
             _ => Vec::new(),
+        }
+    }
+
+    /// Whether the status event `kind` of `op`'s birth, published by `publisher` at
+    /// `topology_version` and heard through `via`, is refused (node-status-heartbeat-connections.md
+    /// §C "status before seat evidence": "a status fact from a publisher the receiver does not yet
+    /// hold as seated is refused by name (nothing is held for later); the top-up supplies the full").
+    /// The publisher is seated when the held seat record of the subject's mesh names its exact birth,
+    /// or it is the held fabric-primary (the acting primary of a mesh with no primary, R-NS1). A
+    /// publisher held stopped or departed publishes nothing, so its event was delayed. A
+    /// `NodeStopped` older than a held projection of the same publisher that lists the exact birth
+    /// without the stop is refused too (§C "late stopped after starting"): a receiver orders a fact
+    /// only against facts of the same publisher epoch.
+    fn refuses_status_event(&self, kind: StatusEvent, op: &LifecycleOp, publisher: &PublisherId, topology_version: u64, via: &'static str) -> bool {
+        let mesh = op.name.mesh.as_str();
+        let side = if via == "mesh-channel" { Side::MeshChannel } else { Side::Backbone };
+        let unseated = if let Some(reason) = self.book.publisher_left(&publisher.incarnation) {
+            Some((reason, None))
+        } else if self.book.seats.fabric().is_some_and(|f| f.incarnation == publisher.incarnation) {
+            None
+        } else {
+            match self.book.seats.mesh(mesh) {
+                Some(h) if h.incarnation == publisher.incarnation => None,
+                Some(h) => Some(("not-seated", Some(h))),
+                None => Some(("no-seat-record", None)),
+            }
+        };
+        if let Some((reason, seat)) = unseated {
+            // On the mesh channel, a seat record naming another birth is the evidence an unknown
+            // source epoch is (gossip.md §3.1): the source is marked for GetTopology repair, exactly as
+            // a projection of that publisher is ([`View::refuse_predecessor`]). With no seat record the
+            // node has not read its topology yet: that read is its top-up, and supplies the full.
+            let repair = if side == Side::MeshChannel && reason == "not-seated" {
+                self.mesh_rx.lock().unwrap().unknown_epoch(mesh, publisher);
+                self.desync.notify_one();
+                "get-topology"
+            } else {
+                "none"
+            };
+            tracing::info_span!(
+                "rdm.mesh.membership.reject.via-unseated-publisher",
+                node = %self.node,
+                frame = kind.name(),
+                subject = %op.name,
+                subject_id = %op.node_id,
+                incarnation_id = %op.incarnation.0,
+                build_id = %op.build_id,
+                attempt = op.attempt,
+                operation = %op.operation,
+                publisher = %publisher,
+                topology_version,
+                channel = side.name(),
+                reason,
+                seat_holder = %seat.map(|s| s.to_string()).unwrap_or_default(),
+                fabric_primary = %self.book.seats.fabric().map(|s| s.to_string()).unwrap_or_default(),
+                repair,
+            )
+            .in_scope(|| tracing::info!("a status event from a publisher this node does not hold seated for the subject's mesh: refused, nothing is held for later"));
+            return true;
+        }
+        if kind != StatusEvent::Stopped {
+            return false;
+        }
+        let key = (op.node_id.to_string(), op.incarnation.0.clone());
+        for (channel, rx) in [("mesh-channel", &self.mesh_rx), ("backbone", &self.backbone_rx)] {
+            let rx = rx.lock().unwrap();
+            let Some((held_publisher, held_version)) = rx.held_version(mesh) else { continue };
+            if held_publisher != *publisher || held_version < topology_version {
+                continue;
+            }
+            let Some(full) = rx.held_full(mesh) else { continue };
+            let listed = full.digests().iter().any(|d| d.node.node_id == op.node_id && d.node.incarnation == op.incarnation);
+            if !listed || Fence::stops_of(Some(full)).contains(&key) {
+                continue;
+            }
+            drop(rx);
+            tracing::info_span!(
+                "rdm.mesh.membership.reject.via-stop-older-than-projection",
+                node = %self.node,
+                subject = %op.name,
+                subject_id = %op.node_id,
+                incarnation_id = %op.incarnation.0,
+                build_id = %op.build_id,
+                attempt = op.attempt,
+                operation = %op.operation,
+                publisher = %publisher,
+                topology_version,
+                held_version,
+                held_channel = channel,
+                via,
+            )
+            .in_scope(|| tracing::info!("a NodeStopped older than the held projection of its publisher, which lists the birth without the stop: refused, the birth started after it"));
+            return true;
+        }
+        false
+    }
+
+    /// Apply the status event `kind` of `op`'s birth to the book: the frame a seated publisher sent
+    /// (`carried`: its publisher and the version at which the subject changed), or the event the
+    /// executor itself publishes (`carried: None`; it authors the projection).
+    fn apply_status_event(&self, kind: StatusEvent, op: &LifecycleOp, carried: Option<(String, u64)>, via: &str) -> bool {
+        match kind {
+            StatusEvent::Deleting => self.book.deleting(op.clone()),
+            StatusEvent::Restarting => self.book.restarting(op.clone()),
+            StatusEvent::Stopped => {
+                let prior = self.book.get(op.node_id.as_str()).map(|(h, _)| h.status);
+                let taken = self.book.stopped_carried(op.clone(), carried);
+                if taken {
+                    self.note_member_parked(op, prior, via);
+                }
+                taken
+            }
         }
     }
 
@@ -3392,12 +3549,14 @@ impl Backbone {
         if !self.publishing.load(Ordering::Relaxed) {
             return false;
         }
-        let full = self.own_full(membership, members);
-        let (version, snapshot_id, bumped) = {
+        // The projection is read and versioned under one hold of the version: a status event stamped
+        // in between ([`Backbone::publish_status_event`]) is either wholly before it or wholly after.
+        let (full, version, snapshot_id, bumped) = {
             let mut v = self.version.lock().unwrap();
+            let full = self.own_full(membership, members);
             let before = v.version();
             let version = v.observe(&full);
-            (version, v.next_snapshot_id(), version != before)
+            (full, version, v.next_snapshot_id(), version != before)
         };
         if bumped {
             tracing::info_span!("rdm.mesh.backbone.update.via-topology-version", node = %self.node, mesh = %self.mesh, publisher = %self.publisher, topology_version = version, members = full.member_count())
@@ -3524,9 +3683,12 @@ impl Backbone {
             }
             if self.publishing.load(Ordering::Relaxed) {
                 let full = self.own_full(membership, self.own_members(membership));
+                let published = self.own.lock().unwrap().as_ref().map(|(v, _)| *v).unwrap_or(0);
                 let (moved, held) = {
                     let v = self.version.lock().unwrap();
-                    (v.would_bump(&full), v.version())
+                    // A status event stamped a version no round has published yet: the projection
+                    // carrying it goes out at once.
+                    (v.would_bump(&full) || published != v.version(), v.version())
                 };
                 if moved {
                     tracing::info_span!("rdm.mesh.backbone.update.via-material-change", node = %self.node, mesh = %self.mesh, held_topology_version = held, members = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
@@ -3558,6 +3720,66 @@ impl Backbone {
         }
         let now = self.membership.clock.now_rafka_ms();
         self.membership.forward_path.fulls(&self.node, &self.mesh, "full-due", &held, now);
+    }
+
+    /// Publish the status event `kind` of `op`'s birth, which this admin executed (R-HB1 "The version
+    /// field": "Each status fact carries its subject's `topology_version`"; §A.2: "A status fact
+    /// carries the `topology_version` at which its subject changed"). The event is applied to this
+    /// admin's own book, then stamped with its publisher and the version at which the subject changed,
+    /// then broadcast on its own mesh channel only (the backbone carries it as the overlay of its
+    /// mesh's aggregate):
+    /// - this mesh's primary, for its own mesh: the version its projection takes with the event
+    ///   applied, observed and versioned under one hold, so its next round publishes exactly that
+    ///   version, carrying the event;
+    /// - the fabric-primary as the acting primary of a mesh with no primary (R-NS1): the version of
+    ///   that mesh's aggregate over the stops and deletes it executed;
+    /// - otherwise: this admin's own publisher at the version it holds, and the span names the role.
+    ///
+    /// Returns the publisher and version stamped.
+    pub async fn publish_status_event(&self, kind: StatusEvent, op: &LifecycleOp) -> (PublisherId, u64) {
+        let membership = &self.membership;
+        let (role, version) = if op.name.mesh == self.mesh && self.publishing.load(Ordering::Relaxed) {
+            let mut v = self.version.lock().unwrap();
+            membership.view.apply_status_event(kind, op, None, "executed");
+            if kind == StatusEvent::Stopped {
+                membership.book.executed_stop(op);
+            }
+            let full = self.own_full(membership, self.own_members(membership));
+            ("mesh-primary", v.observe(&full))
+        } else if op.name.mesh != self.mesh && self.status_publishing.load(Ordering::Relaxed) {
+            let mut acting = self.acting.lock().unwrap();
+            membership.view.apply_status_event(kind, op, None, "executed");
+            if kind == StatusEvent::Stopped {
+                membership.book.executed_stop(op);
+            }
+            let (in_flight, departed) = membership.book.executed_overlays_beyond(&self.mesh).remove(&op.name.mesh).unwrap_or_default();
+            ("acting-fabric-primary", acting.entry(op.name.mesh.clone()).or_default().observe(&Full::new(Vec::new(), in_flight, departed)))
+        } else {
+            membership.view.apply_status_event(kind, op, None, "executed");
+            if kind == StatusEvent::Stopped {
+                membership.book.executed_stop(op);
+            }
+            ("executor", self.version.lock().unwrap().version())
+        };
+        tracing::info_span!(
+            "rdm.mesh.membership.update.via-status-event",
+            node = %self.node,
+            frame = kind.name(),
+            subject = %op.name,
+            subject_id = %op.node_id,
+            incarnation_id = %op.incarnation.0,
+            build_id = %op.build_id,
+            attempt = op.attempt,
+            operation = %op.operation,
+            publisher = %self.publisher,
+            topology_version = version,
+            role,
+        )
+        .in_scope(|| tracing::info!("a status event this admin executed: applied to its own book, stamped with the version at which its subject changed, broadcast on its mesh channel"));
+        if let Err(e) = membership.mesh.broadcast(&kind.frame(op.clone(), self.publisher.clone(), version)).await {
+            tracing::info!(error = %e, frame = kind.name(), "the status event was not sent on the mesh channel");
+        }
+        (self.publisher.clone(), version)
     }
 
     /// Publish a hook (`node-draining`, `node-leaving`, or a fabric round hook) this admin authored: the backbone,
@@ -4195,6 +4417,14 @@ impl DigestBook {
     /// an older birth), or when the birth is this book's own holder: a node's own book holds itself,
     /// and its own stop is its own state (a start's topology read carries it before `node.joined`).
     pub fn stopped(&self, op: LifecycleOp) -> bool {
+        self.stopped_carried(op, None)
+    }
+
+    /// [`Self::stopped`], from a `NodeStopped` whose seated publisher changed the subject at
+    /// `carried`'s version (`(publisher, topology_version)`): the stop is held as carried there, so a
+    /// later projection of that publisher listing the birth moves past it even when no projection
+    /// carrying the stop reached this book.
+    fn stopped_carried(&self, op: LifecycleOp, carried: Option<(String, u64)>) -> bool {
         if self.is_departed(op.node_id.as_str()) {
             reject_departed_overlay(&self.holder.lock().unwrap(), &op, "node-stopped");
             return false;
@@ -4216,7 +4446,7 @@ impl DigestBook {
         }
         self.overlays_moved();
         let seq = held.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
-        self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), StopMark { incarnation: op.incarnation.clone(), held_seq: seq, held: held_digest, latest: None, carried: None });
+        self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), StopMark { incarnation: op.incarnation.clone(), held_seq: seq, held: held_digest, latest: None, carried: carried.clone() });
         // A stopped birth's status is the overlay: the status held for it ends with it.
         self.member_statuses.lock().unwrap().remove(op.node_id.as_str());
         let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
@@ -4232,6 +4462,8 @@ impl DigestBook {
             held_status = held.as_ref().map(|(_, _, st)| format!("{st:?}")).unwrap_or_default(),
             held_digest_seq = seq,
             holder = %self.holder.lock().unwrap(),
+            publisher = %carried.as_ref().map(|(p, _)| p.as_str()).unwrap_or(""),
+            topology_version = carried.as_ref().map(|(_, v)| *v as i64).unwrap_or(-1),
         )
         .in_scope(|| tracing::info!("the exact birth is stopped: dropped from the view; no heartbeat of it is taken until its mesh-primary's node.joined ends the stop"));
         self.births.send_modify(|v| *v += 1);
@@ -5409,7 +5641,8 @@ mod tests {
 
     /// CONTRACT (gossip.md §3.1 `Members`; R-HB1): a non-primary node-admin of mesh1 takes its own
     /// mesh's statuses from its primary's backbone aggregate, and a stop's end only when that
-    /// projection moves, in order, past the stop. Holding mesh1.rpc.1 stopped from the event: v1
+    /// projection moves, in order, past the stop. Holding mesh1.rpc.1 stopped from the seated
+    /// primary's event, which carries v2 (the version its stop changed the birth at): v1
     /// again (a refresh at the version held, built before the stop) is refused by name; v2 carries
     /// the stop; v3 lists neither (the primary's stop cleared before it held the birth again) and
     /// ends nothing; v2 again (older than the version held) installs nothing; v4
@@ -5450,7 +5683,9 @@ mod tests {
         assert!(view.book.record(b(MemberStatus::Draining, 2)));
         assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "a heartbeat moves no status");
 
-        view.take(&Frame::NodeStopped { op: stop.clone(), forwarded_by: None }, &fabric, "mesh-channel");
+        // The event from the seated primary, carrying the version its stop changed the birth at (v2).
+        view.book.seats.take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), epoch: 1 });
+        view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher.clone(), 2), &fabric, "mesh-channel");
         assert!(view.book.get(id.as_str()).is_none() && view.book.in_flight() == vec![stop.clone()]);
         view.take_snapshot(&members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
         assert_eq!(view.book.in_flight(), vec![stop.clone()], "a refresh at the version held, built before the stop, ends nothing");
@@ -5469,7 +5704,7 @@ mod tests {
 
         let refused = spans.named("rdm.mesh.membership.reject.via-stopped-birth");
         let projection: Vec<(String, String, String)> = refused.iter().filter(|f| f["door"] == "projection").map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect();
-        assert_eq!(projection, vec![("1".into(), "1".into(), "-1".into())], "only the refresh before the stop listed the birth: {refused:?}");
+        assert_eq!(projection, vec![("1".into(), "1".into(), "2".into())], "only the refresh before the stop listed the birth, older than the version the event carried: {refused:?}");
         assert!(refused.iter().any(|f| f["door"] == "heartbeat" && f["digest_seq"] == "3"), "{refused:?}");
         let ended = spans.named("rdm.mesh.membership.update.via-stop-ended-in-projection");
         assert_eq!(ended.iter().map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect::<Vec<_>>(), vec![("3".to_string(), "4".to_string(), "2".to_string())], "ended once, at v4 over the v3 held, the stop carried at v2: {ended:?}");
@@ -6622,5 +6857,112 @@ mod tests {
         assert_eq!(desynced.iter().map(|(m, g)| (m.clone(), g.to_string())).collect::<Vec<_>>(), vec![("mesh1".to_string(), "unknown-epoch".to_string())], "the unknown epoch marks the source for GetTopology repair");
         let refused = spans.named("rdm.mesh.membership.reject.via-predecessor-publisher");
         assert_eq!(refused.iter().map(|f| (f["frame"].clone(), f["reason"].clone(), f["repair"].clone())).collect::<Vec<_>>(), vec![("members".to_string(), "not-seated".to_string(), "get-topology".to_string()), ("members-delta".to_string(), "not-seated".to_string(), "get-topology".to_string())], "{refused:#?}");
+    }
+
+    /// CONTRACT (node-status-heartbeat-connections.md §C "status before seat evidence": "a status fact
+    /// from a publisher the receiver does not yet hold as seated is refused by name (nothing is held
+    /// for later); the top-up supplies the full"; R-HB1 G1): a `NodeStopped`, `NodeRestarting` or
+    /// `NodeDeleting` is taken only from the birth the held seat record of the subject's mesh names, or
+    /// from the held fabric-primary (the acting primary of a mesh with no primary). On an own-mesh
+    /// member's mesh channel: a publisher the seat record does not name is refused naming the holder,
+    /// and the source is marked for GetTopology repair (an unknown source epoch, gossip.md §3.1); with no
+    /// seat record held the event is refused naming that, and nothing is marked (the node's first
+    /// topology read is its top-up). A publisher held stopped is refused naming it stopped. The seated
+    /// primary's event, and the fabric-primary's, are taken. Must NOT happen: a status event of a
+    /// publisher without seat evidence applied, or held for later.
+    #[test]
+    fn a_status_event_from_a_publisher_the_receiver_does_not_hold_seated_is_refused_by_name() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let (primary, other, fabric_primary, stopped_admin) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.admin.2", 1), birth_at("mesh2.admin.1", 1), birth_at("mesh1.admin.3", 1));
+        let subject = |path: &str| birth_at(path, 1);
+        let event = |kind: StatusEvent, s: &MeshDigest, operation: &str, by: &MeshDigest| kind.frame(op_at(&s.node.name.to_string(), &s.node.node_id, &s.node.incarnation, operation), publisher_of(by), 4);
+
+        // No seat record held: refused, nothing marked.
+        let member = View::new("mesh1", "mesh1.rpc.9");
+        let s1 = subject("mesh1.rpc.1");
+        member.take(&event(StatusEvent::Stopped, &s1, "stop-node:mesh1.rpc.1", &primary), &fabric, "mesh-channel");
+        assert!(member.book.in_flight().is_empty(), "no seat evidence: the stop is not held");
+        assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "no seat record: nothing is marked for repair");
+
+        // The seat record names mesh1.admin.1: mesh1.admin.2's events are refused and mark the source.
+        assert!(matches!(member.book.seats.take(Seat::MeshPrimary, &seat_of(&primary, 1)), SeatTaken::Held { .. }));
+        member.take_snapshot(&snapshot_of("mesh1", &publisher_of(&primary), Some("mesh1.admin.1"), 3, 1, vec![primary.clone(), s1.clone()], vec![], vec![]), &fabric, Side::MeshChannel);
+        for kind in [StatusEvent::Stopped, StatusEvent::Restarting, StatusEvent::Deleting] {
+            member.take(&event(kind, &s1, "x-node:mesh1.rpc.1", &other), &fabric, "mesh-channel");
+        }
+        assert!(member.book.in_flight().is_empty(), "a publisher the seat record does not name moves nothing");
+        assert_eq!(member.mesh_rx.lock().unwrap().desynced().iter().map(|(m, g)| (m.clone(), g.to_string())).collect::<Vec<_>>(), vec![("mesh1".to_string(), "unknown-epoch".to_string())], "the unknown epoch marks the source for GetTopology repair");
+
+        // A publisher held stopped publishes nothing: its delayed event is refused.
+        let mesh2_member = View::new("mesh1", "mesh1.rpc.8");
+        mesh2_member.book.seats.take(Seat::MeshPrimary, &seat_of(&stopped_admin, 1));
+        assert!(mesh2_member.book.stopped(op_at("mesh1.admin.3", &stopped_admin.node.node_id, &stopped_admin.node.incarnation, "stop-node:mesh1.admin.3")));
+        let s2 = subject("mesh1.rpc.2");
+        mesh2_member.take(&event(StatusEvent::Deleting, &s2, "delete-node:mesh1.rpc.2", &stopped_admin), &fabric, "mesh-channel");
+        assert_eq!(mesh2_member.book.in_flight().len(), 1, "only the publisher's own stop is held");
+
+        // The seated primary's event is taken; the held fabric-primary's (acting for the mesh) too.
+        let taker = View::new("mesh1", "mesh1.rpc.7");
+        taker.book.seats.take(Seat::MeshPrimary, &seat_of(&primary, 1));
+        taker.book.seats.take(Seat::FabricPrimary, &seat_of(&fabric_primary, 1));
+        let (s3, s4) = (subject("mesh1.rpc.3"), subject("mesh1.rpc.4"));
+        taker.take(&event(StatusEvent::Stopped, &s3, "stop-node:mesh1.rpc.3", &primary), &fabric, "mesh-channel");
+        taker.take(&event(StatusEvent::Restarting, &s4, "restart-node:mesh1.rpc.4", &fabric_primary), &fabric, "mesh-channel");
+        assert_eq!(taker.book.in_flight().len(), 2, "the seated primary's and the fabric-primary's events are taken: {:?}", taker.book.in_flight());
+
+        let refused: Vec<(String, String, String, String)> = spans.named("rdm.mesh.membership.reject.via-unseated-publisher").iter().map(|f| (f["frame"].clone(), f["reason"].clone(), f["repair"].clone(), f["seat_holder"].clone())).collect();
+        let holder = seat_of(&primary, 1).to_string();
+        assert_eq!(
+            refused,
+            vec![
+                ("node-stopped".to_string(), "no-seat-record".to_string(), "none".to_string(), String::new()),
+                ("node-stopped".to_string(), "not-seated".to_string(), "get-topology".to_string(), holder.clone()),
+                ("node-restarting".to_string(), "not-seated".to_string(), "get-topology".to_string(), holder.clone()),
+                ("node-deleting".to_string(), "not-seated".to_string(), "get-topology".to_string(), holder),
+                ("node-deleting".to_string(), "publisher-stopped".to_string(), "none".to_string(), String::new()),
+            ],
+            "each refusal names its reason"
+        );
+    }
+
+    /// CONTRACT (node-status-heartbeat-connections.md §C "late stopped after starting": "a NodeStopped
+    /// older than the starting fact (lower `topology_version`) is refused"; §A.2 "Receivers compare per
+    /// subject"; R-HB1 G1: "A receiver orders a fact only against facts of the same publisher epoch"):
+    /// a member holds its seated primary's projection v5 listing mesh1.rpc.1 again after its start. The
+    /// primary's `NodeStopped` of that birth stamped v4 arrives late: it is refused by name, naming the
+    /// held version, and the birth stays held. The same event stamped v6 (after the held projection) is
+    /// taken; so is a v4 stop from another seated publisher's epoch (the fabric-primary's), which is
+    /// never ordered against this projection. Must NOT happen: a late stop dropping a started birth.
+    #[test]
+    fn a_node_stopped_older_than_the_held_projection_of_its_publisher_listing_the_birth_is_refused_by_name() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let (primary, fabric_primary) = (birth_at("mesh1.admin.1", 1), birth_at("mesh2.admin.1", 1));
+        let rpc = birth_at("mesh1.rpc.1", 3);
+        let stop = op_at("mesh1.rpc.1", &rpc.node.node_id, &rpc.node.incarnation, "stop-node:mesh1.rpc.1");
+        let member = |name: &str| {
+            let v = View::new("mesh1", name);
+            v.book.seats.take(Seat::MeshPrimary, &seat_of(&primary, 1));
+            v.book.seats.take(Seat::FabricPrimary, &seat_of(&fabric_primary, 1));
+            v.take_snapshot(&snapshot_of("mesh1", &publisher_of(&primary), Some("mesh1.admin.1"), 5, 1, vec![primary.clone(), rpc.clone()], vec![], vec![]), &fabric, Side::MeshChannel);
+            assert!(v.book.record(rpc.clone()));
+            v
+        };
+        let late = member("mesh1.rpc.7");
+        late.take(&StatusEvent::Stopped.frame(stop.clone(), publisher_of(&primary), 4), &fabric, "mesh-channel");
+        assert!(late.book.in_flight().is_empty() && late.book.get(rpc.node.node_id.as_str()).is_some(), "a stop older than the projection listing the birth is refused; the birth stays held");
+        let newer = member("mesh1.rpc.8");
+        newer.take(&StatusEvent::Stopped.frame(stop.clone(), publisher_of(&primary), 6), &fabric, "mesh-channel");
+        assert_eq!(newer.book.in_flight(), vec![stop.clone()], "a stop newer than the held projection is taken");
+        let other_epoch = member("mesh1.rpc.9");
+        other_epoch.take(&StatusEvent::Stopped.frame(stop.clone(), publisher_of(&fabric_primary), 4), &fabric, "mesh-channel");
+        assert_eq!(other_epoch.book.in_flight(), vec![stop.clone()], "another publisher's epoch is never ordered against this projection");
+        let refused = spans.named("rdm.mesh.membership.reject.via-stop-older-than-projection");
+        assert_eq!(refused.iter().map(|f| (f["node"].clone(), f["topology_version"].clone(), f["held_version"].clone(), f["held_channel"].clone())).collect::<Vec<_>>(), vec![("mesh1.rpc.7".to_string(), "4".to_string(), "5".to_string(), "mesh-channel".to_string())], "{refused:#?}");
     }
 }

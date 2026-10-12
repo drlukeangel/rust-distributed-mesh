@@ -2481,39 +2481,30 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         self.membership.clock().now_rafka_ms()
     }
     async fn deleting(&self, op: &rafka_mesh_entity::LifecycleOp) {
-        let f = rafka_mesh_transport::membership::Frame::NodeDeleting { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-deleting", node = %op.name, node_id = %op.node_id, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            if let Err(e) = self.membership.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeDeleting not sent on the mesh channel");
-            }
+            self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Deleting, op).await;
             tracing::info!("the node is being removed: every mesh hears it is not routable");
         }
         .instrument(span)
         .await
     }
     async fn restarting(&self, op: &rafka_mesh_entity::LifecycleOp) {
-        let f = rafka_mesh_transport::membership::Frame::NodeRestarting { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-restarting", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            if let Err(e) = self.membership.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeRestarting not sent on the mesh channel");
-            }
+            self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Restarting, op).await;
             tracing::info!("the node is being restarted: every mesh holds it through its Leaving");
         }
         .instrument(span)
         .await
     }
     async fn stopped(&self, op: &rafka_mesh_entity::LifecycleOp) {
-        let f = rafka_mesh_transport::membership::Frame::NodeStopped { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            if let Err(e) = self.membership.publish_lifecycle(&f).await {
-                tracing::info!(error = %e, "NodeStopped not sent on the mesh channel");
-            }
             // This admin executed the stop and holds its matching stopped reply: the overlay its own
-            // view just took rides an aggregate it publishes for a mesh with no primary (R-NS1).
-            self.membership.book.executed_stop(op);
+            // book takes rides an aggregate it publishes for a mesh with no primary (R-NS1), and the
+            // event carries the version at which its stop changed the birth.
+            self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Stopped, op).await;
             tracing::info!("the node is stopped: every mesh drops it from its book; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
         }
         .instrument(span)

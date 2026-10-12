@@ -5,7 +5,7 @@
 
 use iroh::protocol::Router;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
-use rafka_mesh_transport::membership::{learn_addresses, Backbone, Frame, Membership};
+use rafka_mesh_transport::membership::{learn_addresses, Backbone, Membership, StatusEvent};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -158,7 +158,7 @@ async fn a_member_stop_overlay_between_two_rounds_reaches_the_backbone_at_once()
         event_at_rafka_ms: 2_000,
     };
     let stopped_at = std::time::Instant::now();
-    src_m.publish_lifecycle(&Frame::NodeStopped { op: op.clone(), forwarded_by: None }).await.unwrap();
+    src_bb.publish_status_event(StatusEvent::Stopped, &op).await;
 
     let held = loop {
         let parked = peer_m.book.in_flight().iter().any(|o| o.key() == op.key());
