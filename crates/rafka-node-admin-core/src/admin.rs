@@ -328,6 +328,9 @@ pub struct Records {
     /// executor's claims, moves and Deleted rows, and a birth its view holds for the first time
     /// that no create of it claimed. Set once at start.
     rows: std::sync::OnceLock<Arc<crate::node_rows::NodeRows>>,
+    /// What the provider holds recorded at a path (`crate::fence::PathProbe`), asked for a node the
+    /// accepted topology names that no view and no durable runtime row holds a birth of. Set once at start.
+    path_probe: std::sync::OnceLock<Arc<dyn crate::fence::PathProbe>>,
     /// Where this admin's mesh's status rows live, read when this admin takes its mesh's seat
     /// (`crate::status_rpc::SeatFold`). Set once at start.
     status: std::sync::OnceLock<crate::status_rpc::SeatFold>,
@@ -410,6 +413,16 @@ impl Records {
     /// The writer of node rows the installed views feed (set once, at start).
     pub fn set_rows(&self, rows: Arc<crate::node_rows::NodeRows>) {
         let _ = self.rows.set(rows);
+    }
+
+    /// The probe of what the provider holds recorded at a path (set once, at start).
+    pub fn set_path_probe(&self, probe: Arc<dyn crate::fence::PathProbe>) {
+        let _ = self.path_probe.set(probe);
+    }
+
+    /// The probe of what the provider holds recorded at a path, once set.
+    pub fn path_probe(&self) -> Option<Arc<dyn crate::fence::PathProbe>> {
+        self.path_probe.get().cloned()
     }
 
     /// This admin's Node RPC door (set once, at start): every view installed from now on opens it
@@ -2382,7 +2395,7 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
         let view = self.topology.read().await.clone();
         let mut map = view.clone();
         map.nodes.extend(durable_births(&view, &durable, &|p| nodes.contains(p), &|id| self.book.is_departed(id)));
-        nodes_exit_proof(nodes, &map, &self.book, &durable, &*self.provider).await
+        nodes_exit_proof(nodes, &map, &self.book, &durable, self.records.path_probe().as_deref(), &*self.provider).await
     }
 
     /// Whether the exit of the exact birth the view names for `executor` is recorded: a point read
@@ -2417,9 +2430,10 @@ pub async fn nodes_exit_proof(
     t: &Topology,
     book: &DigestBook,
     durable: &[crate::storage::RuntimeRow],
+    probe: Option<&dyn crate::fence::PathProbe>,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
 ) -> crate::build_drive::ExitProofs {
-    read_node_exits(nodes, t, book, durable, provider).await.0
+    read_node_exits(nodes, t, book, durable, probe, provider).await.0
 }
 
 /// [`nodes_exit_proof`], with each proven node's exited birth: what the fabric authority's pass opens
@@ -2429,6 +2443,7 @@ async fn read_node_exits(
     t: &Topology,
     book: &DigestBook,
     durable: &[crate::storage::RuntimeRow],
+    _probe: Option<&dyn crate::fence::PathProbe>,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
 ) -> (crate::build_drive::ExitProofs, Vec<(PathName, crate::drift::ExitedBirth)>) {
     let (mut proven, mut unproven) = (Vec::new(), Vec::new());
@@ -2468,6 +2483,7 @@ async fn crashed_peer_mesh(
     t: &Topology,
     book: &DigestBook,
     durable: &[crate::storage::RuntimeRow],
+    probe: Option<&dyn crate::fence::PathProbe>,
     provider: &dyn crate::deployment::provider::DeploymentProvider,
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     unreachable: &(dyn Fn(&str) -> bool + Sync),
@@ -2475,7 +2491,7 @@ async fn crashed_peer_mesh(
     for m in current.topology.meshes.values().filter(|m| m.name != me.mesh && unreachable(&m.name)) {
         let Some(first) = m.cohort(NodeKind::NodeAdmin).min() else { continue };
         let nodes: Vec<PathName> = m.nodes.iter().cloned().collect();
-        let (proofs, proven) = read_node_exits(&nodes, t, book, durable, provider).await;
+        let (proofs, proven) = read_node_exits(&nodes, t, book, durable, probe, provider).await;
         if started.insert((current.build_id.clone(), 0u32, vec!["crash-proof".to_string(), m.name.clone(), proofs.proven.join(","), proofs.unproven.join("; ")])) {
             crate::build_drive::crash_proof_span(me, &current.build_id, &m.name, nodes.len(), &proofs);
         }
@@ -2597,7 +2613,7 @@ pub async fn reconcile_drift(
     });
     // The fully crashed mesh (mesh-investigation.md step 5): a peer mesh the investigation found
     // unreachable, every node of which the provider proves exited, is owed the same create.
-    let crashed = if verdict.is_none() { crashed_peer_mesh(me, &current, t, book, durable, provider, started, unreachable).await } else { None };
+    let crashed = if verdict.is_none() { crashed_peer_mesh(me, &current, t, book, durable, exits.path_probe().as_deref(), provider, started, unreachable).await } else { None };
     // The births this authority may have to prove: the ones it no longer hears.
     let candidates = crate::drift::unheard(t);
     let mut held_now: HashSet<(NodeId, IncarnationId)> = HashSet::new();

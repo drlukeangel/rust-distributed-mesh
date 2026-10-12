@@ -52,6 +52,8 @@ struct Runtime {
 struct World {
     runtimes: Mutex<BTreeMap<u32, Runtime>>,
     next_pid: Mutex<u32>,
+    /// The runtimes recorded at a path cannot be read: why.
+    unreadable: Mutex<Option<String>>,
 }
 
 impl World {
@@ -107,7 +109,7 @@ impl rafka_node_admin_core::build_drive::DepartureProof for WorldProofs {
     }
     async fn exits_of(&self, nodes: &[PathName]) -> rafka_node_admin_core::build_drive::ExitProofs {
         let view = self.view.read().await.clone();
-        rafka_node_admin_core::admin::nodes_exit_proof(nodes, &view, &self.book, &[], &self.provider).await
+        rafka_node_admin_core::admin::nodes_exit_proof(nodes, &view, &self.book, &[], Some(&Probe(self.provider.0.clone())), &self.provider).await
     }
 }
 
@@ -148,6 +150,9 @@ impl PathProbe for Probe {
         self.0.of(node.node_id.as_str()).map(|r| r.status).ok_or_else(|| format!("{} has no runtime in this world", node.name))
     }
     async fn recorded(&self, path: &PathName) -> Result<Vec<(String, DeploymentStatus)>, String> {
+        if let Some(why) = self.0.unreadable.lock().unwrap().clone() {
+            return Err(why);
+        }
         Ok(self.0.runtimes.lock().unwrap().values().filter(|r| r.path == path.to_string()).map(|r| (format!("pid {}", r.pid), r.status.clone())).collect())
     }
 }
@@ -1694,6 +1699,71 @@ mod fully_crashed_mesh {
         println!("trace_id={} opening={} cleared={}", drift[0]["trace_id"].as_str().unwrap_or_default(), drift[0]["attributes"], recovered[0]["attributes"]);
     }
 
+    /// CONTRACT (mesh-investigation.md step 5, "Fully crashed"; node-create.md: "Runtime exit requires
+    /// independent exact provider proof, even for a deployment that never joined"): a node the accepted
+    /// topology names that no view and no durable runtime row holds a birth of (a Build's growth, not
+    /// yet created) is asked of the provider the way the create's own fence asks it for a path the view
+    /// holds nothing at (`PathProbe::recorded`): a runtime recorded at its path that runs holds the mesh
+    /// and the proof names it; a record that cannot be read holds it, naming why; nothing recorded that
+    /// runs, and the mesh is proven. Every other node of the mesh has exited throughout. Must NOT
+    /// happen: a growth Build over a fully crashed mesh held for ever because its new node has no birth,
+    /// or the unborn path taken for free over a runtime recorded there that runs.
+    #[tokio::test]
+    async fn a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read() {
+        if crate::own_process::delegated(module_path!(), "a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read") {
+            return;
+        }
+        let dir = evidence_dir("a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s56");
+        let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-unborn");
+        use tracing::Instrument as _;
+        let unborn = async {
+            let e = estate().await;
+            let (peer_mesh, admins) = crash_the_peer_mesh(&e, &[]).await;
+            // The accepted topology names `rpc.3`; the view holds no birth of it.
+            let unborn = format!("{peer_mesh}.rpc.3");
+            e.view.write().await.nodes.retain(|n| n.name.to_string() != unborn);
+            let before = e.accepted.current(&*e.builds).await.unwrap();
+            let (mut held, mut started) = (Held::new(), HashSet::new());
+            let peer = peer_mesh.clone();
+            let decided = move |m: &str| (m == peer).then_some(DECIDED_UNREACHABLE).flatten();
+            // A runtime recorded at the path still runs.
+            for r in e.world.runtimes.lock().unwrap().values_mut().filter(|r| r.path == unborn) {
+                r.status = DeploymentStatus::Running;
+            }
+            assert_eq!(pass(&e, &mut started, &mut held, &decided).await, None, "a runtime recorded at {unborn} runs: the mesh is held");
+            // The records at the path cannot be read.
+            e.world.runtimes.lock().unwrap().retain(|_, r| r.path != unborn);
+            *e.world.unreadable.lock().unwrap() = Some("the data root cannot be read: Permission denied".into());
+            assert_eq!(pass(&e, &mut started, &mut held, &decided).await, None, "the records at {unborn} cannot be read: the mesh is held");
+            // Nothing is recorded at the path.
+            *e.world.unreadable.lock().unwrap() = None;
+            assert_eq!(pass(&e, &mut started, &mut held, &decided).await, Some((before.build_id.clone(), before.attempt + 1)), "nothing recorded at {unborn} runs: every node is proven and the create of {} opens", admins[0]);
+            unborn
+        }
+        .instrument(root.clone())
+        .await;
+        drop(root);
+        drop(telemetry);
+        let spans = collect_spans(&dir);
+        let mut proofs: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-crash-proof").collect();
+        proofs.sort_by_key(|p| p["end_unix_nano"].as_u64().unwrap_or_default());
+        assert_eq!(proofs.len(), 3, "one proof read per distinct result: {proofs:?}");
+        let runs = &proofs[0]["attributes"];
+        assert_eq!(runs["outcome"], "held", "{runs}");
+        assert!(runs["unproven"].as_str().unwrap_or_default().contains(&unborn) && runs["unproven"].as_str().unwrap_or_default().contains("still runs"), "the hold names the unborn path and the runtime recorded there that runs: {runs}");
+        let unreadable = &proofs[1]["attributes"];
+        assert_eq!(unreadable["outcome"], "held", "{unreadable}");
+        assert!(unreadable["unproven"].as_str().unwrap_or_default().contains(&unborn) && unreadable["unproven"].as_str().unwrap_or_default().contains("Permission denied"), "the hold names the unborn path and why its records cannot be read: {unreadable}");
+        let proven = &proofs[2]["attributes"];
+        assert_eq!((proven["outcome"].as_str(), proven["unproven"].as_str()), (Some("proven"), Some("")), "{proven}");
+        assert!(proven["proven"].as_str().unwrap_or_default().contains(&unborn), "the proof lists the unborn path: {proven}");
+        println!("trace_id={} runs={runs} unreadable={unreadable} proven={proven}", proofs[0]["trace_id"].as_str().unwrap_or_default());
+    }
+
     /// CONTRACT: the proof is read for a mesh whose ladder decision came out `unreachable`, not
     /// before: with every node of the mesh proven exited and the ladder at 30 s (silent-marked, probes
     /// outstanding, no decision), nothing opens, and once the mesh is heard again (no hold) the exits
@@ -1793,6 +1863,8 @@ mod unheard_mesh_hold {
     pub(super) async fn pass_with(e: &Estate, started: &mut HashSet<(BuildId, u32, Vec<String>)>, held: &mut Held, peer: &(dyn Fn(&str) -> Option<PeerMesh> + Sync), records: &rafka_node_admin_core::admin::Records) -> Option<(BuildId, u32)> {
         let me: PathName = e.fabric_primary().await.parse().expect("a fabric-primary");
         let t = e.view.read().await.clone();
+        // The provider's probe of what is recorded at a path, as the running admin's runner is (set once).
+        records.set_path_probe(Arc::new(Probe(e.world.clone())));
         rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.accepted, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided), records).await
     }
 
