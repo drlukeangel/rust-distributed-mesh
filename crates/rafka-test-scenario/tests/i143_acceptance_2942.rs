@@ -165,7 +165,7 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     // The stopped node's own legs: its stop's cut, then nothing said by it on any channel, no
     // Draining and no Leaving announcement; its transport closes.
     let mine = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node"] == last.as_str()).collect() };
-    let cut = mine("rdm.node_admin.node.connections.delete.via-stop-cut");
+    let cut = mine("rdm.node_admin.node.update.via-stop-transport-cut");
     assert_eq!(cut.len(), 1, "{last}'s stop cut its connections once: {cut:?}");
     let cut_at = start(cut[0]);
     let announced: Vec<&Value> = mine("rdm.mesh.node.update.via-leave-announcement");

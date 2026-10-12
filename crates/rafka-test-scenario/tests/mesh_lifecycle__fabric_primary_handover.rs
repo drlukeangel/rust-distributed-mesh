@@ -467,7 +467,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // R-NS1 item 2: "Its last aggregate before a stop carries itself Leaving": after its drain and
     // before its stop's cut, the last admin publishes mesh1's aggregate once more, itself the only
     // member and Leaving; after the cut it publishes nothing (node-stop.md step 4, R-ON1).
-    let final_cut = named(&spans, "rdm.node_admin.node.connections.delete.via-stop-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's connections were cut by its stop");
+    let final_cut = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's transport was cut by its stop");
     let final_drain = drain_start(&final_name, true);
     let leaving_aggregate: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-leaving-aggregate").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).collect();
     assert!(

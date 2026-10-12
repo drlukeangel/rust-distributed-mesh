@@ -135,7 +135,8 @@ async fn stop_then_start(test: &str, node: &str) {
     let of_node = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node"] == node).collect() };
     let stop_span = of_node("rdm.node_admin.status.update.via-stop-node");
     assert_eq!(stop_span.len(), 1, "{stop_span:?}");
-    assert_eq!(of_node("rdm.node_admin.node.connections.delete.via-stop-cut").len(), 1);
+    assert_eq!(of_node("rdm.node_admin.node.connections.delete.via-stop").len(), 1, "the stop runs its node.connections.delete {{ All }} once");
+    assert_eq!(of_node("rdm.node_admin.node.update.via-stop-transport-cut").len(), 1, "then cuts its transport once");
     assert_eq!(of_node("rdm.node_admin.node.update.via-node-stopped").len(), 1, "the mesh primary publishes NodeStopped once");
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == node).count(), 0, "the node gossiped no node-left");
     let served = of_node("rdm.node_admin.status.update.via-start-node");

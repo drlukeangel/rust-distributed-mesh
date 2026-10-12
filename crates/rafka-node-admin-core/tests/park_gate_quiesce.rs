@@ -182,7 +182,7 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
     assert_eq!(leaving["attributes"]["published"], "true", "the admin's last aggregate went out on the backbone: {leaving}");
     assert!(quiesce["end_ns"].as_u64().unwrap() <= leaving["start_ns"].as_u64().unwrap(), "the last aggregate went out before the hold ended (stop trace {stop_trace}): {leaving}");
     assert!(leaving["end_ns"].as_u64().unwrap() <= cut_began, "the cut began before the last aggregate went out (stop trace {stop_trace}): {leaving}");
-    let cut_report = named("rdm.node_admin.node.connections.delete.via-stop-cut");
+    let cut_report = named("rdm.node_admin.node.update.via-stop-transport-cut");
     assert_eq!(cut_report.len(), 1, "{cut_report:?}");
     assert_eq!(cut_report[0]["attributes"]["turns_in_progress"], "0", "the cut found a turn in progress (stop trace {stop_trace}): {}", cut_report[0]);
     // Nothing of a turn follows the cut: no aggregate of the admin's mesh is published after it began.

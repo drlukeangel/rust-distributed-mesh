@@ -239,7 +239,7 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     assert_eq!(fences.len(), 1, "the exited birth is fenced once: {fences:?}");
     assert!(start(create) <= start(fences[0]) && end(fences[0]) <= end(create), "the fence runs inside the create operation: {} vs {create}", fences[0]);
     assert!(end(fences[0]) <= start(boot), "the fence is done before the new node with the same key boots: {} vs {boot}", fences[0]);
-    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor"] {
+    for step in ["StopNode", "AwaitNodeLeft", "RenamePredecessor"] {
         assert!(step_span(&spans, &birth_build, &attempt, node_path, step).is_none(), "no RPC to the exited process and no .old rename: {step} ran");
     }
     assert!(!named(&spans, "rdm.mesh.node.delete.via-transport-stopped").is_empty(), "the exiting runtime's own span names the reason");
@@ -315,7 +315,7 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
         assert!(start(sp) >= last, "{step} runs after the step before it");
         last = start(sp);
     }
-    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor", "HandoffStorage"] {
+    for step in ["StopNode", "AwaitNodeLeft", "RenamePredecessor", "HandoffStorage"] {
         assert!(step_span(&spans, &birth_build, &attempt, NODE, step).is_none(), "no RPC to the exited process, no .old rename, no storage hand-over: {step} ran");
     }
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
@@ -579,12 +579,10 @@ fn end(sp: &Value) -> u64 {
 }
 
 /// The steps of a planned replace of a live birth, in the order node-replace.md numbers them: the old
-/// birth drains (drain-node, node-drained) and stops (stop-node, node-left, its NodeStopped) and is
+/// birth stops (stop-node, its node.connections.delete { All } inside it, node-left, its NodeStopped) and is
 /// parked (1), is renamed `<path>.old` while parked (2), and node.create starts the successor at the
 /// freed name (3). The predecessor stays parked with its data.
-const REPLACE_ORDER: [&str; 11] = [
-    "DrainNode",
-    "AwaitNodeDrained",
+const REPLACE_ORDER: [&str; 9] = [
     "StopNode",
     "AwaitNodeLeft",
     "RenamePredecessor",
@@ -635,7 +633,7 @@ fn alive(pid: u64) -> bool {
 
 /// CONTRACT: `POST /api/nodes/{name}/replace` replaces a live node as the next attempt of the
 /// accepted Build (reason replace, no Build minted) by Rafka's recipe (node-replace.md 1-3): one
-/// operation `replace-node:<path>`; the old birth drains and stops, its NodeStopped drops it from
+/// operation `replace-node:<path>`; the old birth stops (its connections deleted inside the stop), its NodeStopped drops it from
 /// every admin's book, and it is renamed `<path>.old` while parked; node.create then starts the
 /// successor at the freed name, a new NodeId with a new transport key and its own directory. No
 /// admin's view holds two live births at the path at any step. The predecessor stays parked with its
@@ -897,7 +895,7 @@ async fn delete_parked_and_assert(estate: &Estate, birth_build: &str, parked: &P
         assert!(start(sp) >= last, "step {step} starts before the step it follows: {sp}");
         last = start(sp);
     }
-    for step in ["DrainNode", "StopNode", "ReleaseStorage"] {
+    for step in ["DeleteConnections", "StopNode", "ReleaseStorage"] {
         assert!(step_span(&spans, birth_build, &attempt, &old_name, step).is_none(), "the parked birth's delete runs no {step}");
     }
     // The provider's Exited is the proof, and it precedes the NodeDeleted the executor publishes.
@@ -1110,11 +1108,11 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
 /// CONTRACT (node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that
 /// workflow: its Build ends Failed, and the mesh-primary's next tick finds the member still proven
 /// exited and submits the recovery"): a member of the mesh that does not hold the fabric-primary is
-/// held (SIGSTOP) and a drain of it is requested at once, attempt N of the accepted Build
-/// (`drain-node:<path>`, run by its mesh-primary). While that drain waits on the held process, the
-/// process is killed. The held, then exited, birth never admits the drain-node command, so no
-/// node-drained can follow: attempt N ends Failed at AwaitNodeDrained, named as not admitted
-/// (node-drain.md "Admission is not drain completion"), never Complete. Which transport outcome the
+/// held (SIGSTOP) and a `node.connections.delete { All }` of it is requested at once, attempt N of the
+/// accepted Build (`node.connections.delete:<path>`, carried by its mesh-primary). While that call
+/// waits on the held process, the process is killed. The held, then exited, birth never answers
+/// node.connections.deleted: attempt N ends Failed at DeleteConnections, named by how the call ended
+/// (node-connections-delete.md "Admission is not completion"), never Complete. Which transport outcome the
 /// lost command had (never sent, or sent and its reply lost) is not the contract; the workflow's
 /// Failed end is. Then the mesh-primary proves the
 /// exit and submits the recovery, a later attempt of the same Build, which completes: a new node.id
@@ -1127,23 +1125,23 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     let before = estate.node(&node).await;
     let rt = exact_runtime(&estate, &node).await;
     assert_eq!(rt.apply(Fault::Stop).expect("the exact runtime is held").state_after, Some('T'));
-    let (status, r) = estate.post(&format!("/api/nodes/{node}/drain"), &json!({})).await;
+    let (status, r) = estate.post(&format!("/api/nodes/{node}/connections/delete"), &json!({})).await;
     assert_eq!(status, 202, "the view still holds the member ready: {r}");
     assert_eq!(s(&r["build_id"]), birth_build, "{r}");
-    let drain_attempt = Estate::attempt_of(&r);
+    let delete_attempt = Estate::attempt_of(&r);
     let killed = rt.apply(Fault::Kill).expect("the held runtime is killed");
     assert!(killed.exited, "{killed:?}");
 
-    let operation = format!("drain-node:{node}");
-    let failed = wait_for("the drain attempt ends Failed", SETTLE, || async {
+    let operation = format!("node.connections.delete:{node}");
+    let failed = wait_for("the node.connections.delete attempt ends Failed", SETTLE, || async {
         let (_, b) = estate.http_get(&fp_api, &format!("/api/builds?id={birth_build}")).await;
-        b["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| r["operation"] == operation.as_str() && r["attempt"] == json!(drain_attempt) && r["outcome"]["failed"].is_object())
+        b["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| r["operation"] == operation.as_str() && r["attempt"] == json!(delete_attempt) && r["outcome"]["failed"].is_object())
     })
     .await;
-    // The exit belongs to the drain: the held, then exited, birth never admitted the drain-node
-    // command, so no node-drained can follow and the attempt ends Failed, never Complete.
-    assert_eq!(s(&failed["step"]), "AwaitNodeDrained", "the drain is not complete: {failed}");
-    assert!(s(&failed["outcome"]["failed"]["reason"]).contains("drain-node was not admitted ("), "the failure names the unadmitted drain: {failed}");
+    // The exit belongs to the node.connections.delete: the held, then exited, birth never answered
+    // node.connections.deleted, and the attempt ends Failed, never Complete.
+    assert_eq!(s(&failed["step"]), "DeleteConnections", "the node.connections.delete is not complete: {failed}");
+    assert!(s(&failed["outcome"]["failed"]["reason"]).contains("node.connections.delete { All } ended"), "the failure names how the call ended: {failed}");
 
     let after = wait_for(&format!("{node} ready as a new node"), SETTLE, || async {
         let n = estate.node_opt(&node).await?;
@@ -1159,7 +1157,7 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     assert_eq!(s(&recovery["attributes"]["submitter"]), mesh_primary, "{recovery}");
     assert_eq!(s(&recovery["attributes"]["build_id"]), birth_build, "{recovery}");
     let attempt: u64 = s(&recovery["attributes"]["attempt"]).parse().expect("an attempt");
-    assert!(attempt > drain_attempt, "the recovery is a later attempt than the failed drain: {recovery}");
+    assert!(attempt > delete_attempt, "the recovery is a later attempt than the failed node.connections.delete: {recovery}");
     assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{recovery}");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
@@ -1307,7 +1305,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 }
 
 /// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary; R-EL1a point 7):
-/// in a fabric whose fabric-primary is its mesh's only node-admin, a replace, restart, drain or stop
+/// in a fabric whose fabric-primary is its mesh's only node-admin, a replace, restart, node.connections.delete or stop
 /// of the fabric-primary is refused by name, 422 `last-admin` with
 /// `rdm.node_admin.build.reject.via-last-admin` naming the route: TakeSeats moves seats inside the
 /// holder's mesh only, and the fabric seat leaves that mesh only through TakeFabricPrimary inside a
@@ -1322,7 +1320,7 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     assert_eq!(before.iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh.as_str()).count(), 1, "the fabric-primary is its mesh's only admin: {before:#?}");
     let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
     let attempt = b["attempt"].clone();
-    for action in ["replace", "restart", "drain", "stop"] {
+    for action in ["replace", "restart", "connections/delete", "stop"] {
         let (status, r) = estate.post(&format!("/api/nodes/{fp}/{action}"), &json!({})).await;
         assert_eq!((status, r["error"].as_str()), (422, Some("last-admin")), "{action}: {r}");
         assert!(s(&r["detail"]).contains(&fp) && s(&r["detail"]).contains("mesh-leave"), "{action}: the refusal names the node and the one way its seat leaves the mesh: {r}");
