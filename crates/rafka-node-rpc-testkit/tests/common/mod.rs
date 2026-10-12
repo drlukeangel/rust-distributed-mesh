@@ -28,10 +28,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
 
-/// Every span: name, parent name, and its recorded fields; the third part ticks whenever a span is
-/// created or a field recorded, so a cell awaits a span fact instead of looking again and again.
+/// Every span: name, parent name, and its recorded fields, keyed by the sequence number of its
+/// creation; the third part ticks whenever a span is created or a field recorded, so a cell awaits a
+/// span fact instead of looking again and again; the fourth holds, per span key, the sequence number
+/// of its close, from the same counter, so a cell reads whether one span closed before another began.
 #[derive(Clone, Default)]
-pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>, Arc<Mutex<(u64, HashMap<u64, u64>)>>, Arc<tokio::sync::watch::Sender<u64>>);
+pub struct Spans(pub Arc<Mutex<HashMap<u64, (String, Option<String>, BTreeMap<String, String>)>>>, Arc<Mutex<(u64, HashMap<u64, u64>)>>, Arc<tokio::sync::watch::Sender<u64>>, pub Arc<Mutex<HashMap<u64, u64>>>);
 
 impl Spans {
     /// Resolves once a span named `name` holds fields `wanted` says yes to.
@@ -90,6 +92,18 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
                 values.record(&mut Fields(fields));
             }
             self.2.send_modify(|t| *t += 1);
+        }
+    }
+    fn on_close(&self, id: tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
+        let closed = {
+            let mut live = self.1.lock().unwrap();
+            live.1.remove(&id.into_u64()).map(|key| {
+                live.0 += 1;
+                (key, live.0)
+            })
+        };
+        if let Some((key, at)) = closed {
+            self.3.lock().unwrap().insert(key, at);
         }
     }
 }
