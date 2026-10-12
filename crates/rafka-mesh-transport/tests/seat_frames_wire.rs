@@ -119,6 +119,23 @@ fn seated_together_matches_the_frozen_wire_schema() {
     assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
 }
 
+/// CONTRACT (R-MT1: NA1 "gossips that the primary is updating to NA2"): `PrimaryUpdating` is variant
+/// 24, the next after `SeatedTogether` (23): the update's lifecycle op (its subject is the current
+/// holder), the seat (`MeshPrimary` 0, `FabricPrimary` 1) and the successor at the epoch the seat
+/// would take. What must NOT happen: a field moved, a variant inserted before the end.
+#[test]
+fn primary_updating_matches_the_frozen_wire_schema() {
+    use rafka_mesh_entity::LifecycleOp;
+    let node_hex = "0c 303472616a303970337a7037";
+    let op = LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId("i".into()), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
+    let frame = Frame::PrimaryUpdating { op, seat: Seat::MeshPrimary, successor: holder(5) };
+    // 18 = variant 24; op: 0162 01 016f {node} 0169 09"m.admin.1" 01; seat 00 = MeshPrimary; successor 016d {node} 0169 05.
+    let hex = format!("18 0162 01 016f {node_hex} 0169 09 6d2e61646d696e2e31 01  00  016d {node_hex} 0169 05");
+    assert_eq!(frame.encode(), bytes(&hex));
+    assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
+    assert_eq!(seated_together(1, 1).encode()[0], 23, "SeatedTogether keeps its position");
+}
+
 /// CONTRACT (R-EL1a): the seats a transfer committed are held together under one lock, so no reader
 /// sees one moved and the other not; a stale transfer moves neither; and a primary replays them as
 /// the one `SeatedTogether` while both are still the records it holds (two `Seated` frames would

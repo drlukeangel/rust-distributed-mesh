@@ -671,7 +671,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_ten_variant_wire_schema"], ratchet, &mut out);
             require(root, HANDOVER_SOURCE, &["rdm.node_admin.fabric.update.via-handover-committed", "rdm.node_admin.fabric.update.via-handover-confirmed", "rdm.node_admin.fabric.reject.via-handover", "announce_new_fabric_primary", "put_seat"], ratchet, &mut out);
-            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_three_variant_wire_schema", "fn replies_match_the_frozen_nineteen_variant_wire_schema"], ratchet, &mut out);
+            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_four_variant_wire_schema", "fn replies_match_the_frozen_nineteen_variant_wire_schema"], ratchet, &mut out);
             require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }

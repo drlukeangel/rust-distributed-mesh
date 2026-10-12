@@ -87,9 +87,6 @@ impl NodeObserver for StopsThenStarts {
         }
         Completion::Received
     }
-    async fn transfer_seats(&self, node: &Node, _: &CommandContext) -> Result<rafka_node_admin_core::fabric_handover::SeatTransferOutcome, String> {
-        Err(format!("{} is an rpc node: it holds no seat", node.name))
-    }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
         None
     }
@@ -507,9 +504,6 @@ impl NodeObserver for StartsWhole<'_> {
     }
     async fn await_completion(&self, _: &Node, _: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
         Completion::Received
-    }
-    async fn transfer_seats(&self, node: &Node, _: &CommandContext) -> Result<rafka_node_admin_core::fabric_handover::SeatTransferOutcome, String> {
-        Err(format!("{} is an rpc node: it holds no seat", node.name))
     }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
         None

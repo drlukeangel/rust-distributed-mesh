@@ -284,43 +284,7 @@ pub(crate) enum WireOutput {
     Storage(WireStorageDisposition),
     Terminal(TerminalReceipt),
     ExitManifest(ExitManifest),
-    SeatTransfer(WireSeatTransfer),
     RosterAmended(RosterAmended),
-}
-
-/// The SeatTransfer step's receipt (`fabric_handover::SeatTransferOutcome`), positional.
-#[derive(Serialize, Deserialize)]
-pub(crate) enum WireSeatTransfer {
-    NotAHolder,
-    Committed { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
-    CommittedRow { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
-    NoTransfer,
-    OtherMesh { holder_mesh: String },
-}
-
-impl From<&crate::fabric_handover::SeatTransferOutcome> for WireSeatTransfer {
-    fn from(o: &crate::fabric_handover::SeatTransferOutcome) -> Self {
-        use crate::fabric_handover::SeatTransferOutcome as O;
-        match o {
-            O::NotAHolder => Self::NotAHolder,
-            O::Committed { seats } => Self::Committed { seats: seats.clone() },
-            O::CommittedRow { seats } => Self::CommittedRow { seats: seats.clone() },
-            O::NoTransfer => Self::NoTransfer,
-            O::OtherMesh { holder_mesh } => Self::OtherMesh { holder_mesh: holder_mesh.clone() },
-        }
-    }
-}
-
-impl From<WireSeatTransfer> for crate::fabric_handover::SeatTransferOutcome {
-    fn from(o: WireSeatTransfer) -> Self {
-        match o {
-            WireSeatTransfer::NotAHolder => Self::NotAHolder,
-            WireSeatTransfer::Committed { seats } => Self::Committed { seats },
-            WireSeatTransfer::CommittedRow { seats } => Self::CommittedRow { seats },
-            WireSeatTransfer::NoTransfer => Self::NoTransfer,
-            WireSeatTransfer::OtherMesh { holder_mesh } => Self::OtherMesh { holder_mesh },
-        }
-    }
 }
 
 /// A runtime step's receipt: the runtime by fingerprint.
@@ -460,7 +424,6 @@ enum Produces {
     Storage,
     Terminal,
     ExitManifest,
-    SeatTransfer,
     RosterAmended,
 }
 
@@ -499,8 +462,6 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::Storage
     } else if ret(RetireStep::TerminateRuntime) {
         Produces::Terminal
-    } else if ret(RetireStep::SeatTransfer) {
-        Produces::SeatTransfer
     } else if [crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED, crate::mesh_leave::STEP_MESH_DELETED, crate::mesh_leave::STEP_MESH_LEFT, crate::mesh_leave::STEP_ACCEPTED_ROSTER, crate::mesh_leave::STEP_LEAVING_ROSTER].contains(&step) {
         // The accepted roster rides the exit-manifest shape: an exit manifest with no receipts yet.
         Produces::ExitManifest
@@ -571,7 +532,6 @@ fn output_to_wire(operation: &str, step: &str, v: &serde_json::Value) -> Result<
         Produces::Storage => WireOutput::Storage((&typed::<StorageDisposition>(v)?).into()),
         Produces::Terminal => WireOutput::Terminal(typed(v)?),
         Produces::ExitManifest => WireOutput::ExitManifest(typed(v)?),
-        Produces::SeatTransfer => WireOutput::SeatTransfer((&typed::<crate::fabric_handover::SeatTransferOutcome>(v)?).into()),
         Produces::RosterAmended => WireOutput::RosterAmended(typed(v)?),
     })
 }
@@ -608,7 +568,6 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
         WireOutput::Storage(s) => json(&StorageDisposition::from(s)),
         WireOutput::Terminal(t) => json(&t),
         WireOutput::ExitManifest(m) => json(&m),
-        WireOutput::SeatTransfer(o) => json(&crate::fabric_handover::SeatTransferOutcome::from(o)),
         WireOutput::RosterAmended(a) => json(&a),
     }
 }

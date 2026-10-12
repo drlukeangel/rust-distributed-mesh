@@ -71,10 +71,6 @@ impl NodeObserver for Recorded {
         self.sent.lock().unwrap().push(format!("await {cmd:?} from {}", node.name));
         Completion::Received
     }
-    async fn transfer_seats(&self, node: &Node, _: &CommandContext) -> Result<rafka_node_admin_core::fabric_handover::SeatTransferOutcome, String> {
-        self.sent.lock().unwrap().push(format!("transfer seats of {}", node.name));
-        Err("a stopped birth holds no seat".into())
-    }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
         None
     }
@@ -95,8 +91,8 @@ impl TopologySink for Discard {
 /// control"; node-stop.md 6: "Delete proceeds to external exact runtime exit proof instead"): the
 /// delete of a stopped birth (Leaving, parked) records `NodeDeleting`, then `TerminateRuntime` (the
 /// provider's stop and its `Exited` inspection of the exact runtime), then `NodeDeleted`, and
-/// `Complete`. Must NOT happen: a drain, a stop or a seat transfer sent again to the stopped birth,
-/// or any of their receipts (`SeatTransfer`, `DrainNode`, `AwaitNodeDrained`, `StopNode`,
+/// `Complete`. Must NOT happen: a drain or a stop sent again to the stopped birth,
+/// or any of their receipts (`DrainNode`, `AwaitNodeDrained`, `StopNode`,
 /// `AwaitNodeLeft`), or a step that releases storage (`ReleaseStorage`: node-delete.md step 3,
 /// "Retain the data dir, node-identity.json and endpoint key").
 #[tokio::test]

@@ -232,8 +232,8 @@ impl ControlPlane {
             }) {
                 self.admit_once_ready(route, workflow, &outer).await?;
             }
-            // A Build whose plan would end the fabric-primary while no live admin of its mesh can take
-            // its seats is refused before it exists (node-rpc-envelope.md, "TakeSeats", Boundary).
+            // A Build whose plan would end a seat holder while no other node-admin of its mesh can take
+            // its seat is refused before it exists: node.primary.update has no other node of its type (R-MT1).
             if let Some(reject) = operations.iter().find_map(|op| {
                 let (node, action) = match op {
                     crate::build::BuildOperation::RetireNode { node, .. } => (node, "retire"),
@@ -428,8 +428,8 @@ impl ControlPlane {
                         return Err(Refusal::Reject(reject));
                     }
                 }
-                // The fabric-primary's own seats move by TakeSeats to a same-mesh successor; with none,
-                // only mesh-leave moves the fabric seat out of its mesh (node-rpc-envelope.md, Boundary).
+                // A seat holder's seat moves by node.primary.update to another node-admin of its mesh;
+                // with none, the update has no other node of its type and the action is refused (R-MT1).
                 if kind != ActionKind::Start {
                     if let Some(reject) = last_admin(&path, kind.name(), &t) {
                         outer.in_scope(|| reject_span(route, &reject));
@@ -580,15 +580,25 @@ impl ActionKind {
     }
 }
 
-/// The refusal of a `action` of `node` when `node` holds the fabric-primary seat in `t` and no other
-/// live node-admin of its mesh can take its seats (the same-mesh successor the election seats once its
-/// birth is gone, `executor::seat_successor`): TakeSeats moves seats inside the holder's mesh only, and
-/// the fabric seat leaves a mesh whose last admin holds it only through TakeFabricPrimary inside
-/// mesh-leave (node-rpc-envelope.md, "TakeSeats: Build-driven seat transfer", Boundary).
+/// The refusal of a `action` of `node` when `node` holds its mesh's primary seat or the fabric seat in
+/// `t` and no other node-admin of its mesh is ReadyForTraffic to take it (R-MT1, Luke 2026-10-12:
+/// node.primary.update "should be rejected if it's the only NA in the mesh"): the update has no other
+/// node of its type, so nothing is admitted and no attempt opens.
 fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject> {
-    let holder = t.fabric_primary()?;
     let target = t.node(node)?;
-    (holder.node_id == target.node_id && crate::executor::seat_successor(node, t).is_none()).then(|| BuildReject::LastAdmin { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string() })
+    let fabric_seat = t.fabric_primary().is_some_and(|fp| fp.node_id == target.node_id);
+    let mesh_seat = t.cohort_primary(&node.mesh, crate::model::NodeKind::NodeAdmin).is_some_and(|p| p.node_id == target.node_id);
+    if !fabric_seat && !mesh_seat {
+        return None;
+    }
+    // The delete of a mesh's only node moves no seat (R-MT1: "delete is skipped if it's the only node
+    // on the mesh").
+    if action == "retire" && t.members().filter(|n| n.mesh == node.mesh).all(|n| n.node_id == target.node_id) {
+        return None;
+    }
+    let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
+    let admin = crate::model::Node { kind: crate::model::NodeKind::NodeAdmin, ..target.clone() };
+    crate::election::cohort_successor(&nodes, &crate::election::Incumbency::default(), &admin).is_none().then(|| BuildReject::LastAdmin { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), fabric_seat })
 }
 
 /// The restart/replace refusal `node-not-live`, spanned beside the request with the node, the

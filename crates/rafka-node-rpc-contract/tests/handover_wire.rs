@@ -48,7 +48,7 @@ const INCUMBENT: &str = "01 6d  0c 303132333435363738396162  0c 79727a34396a3330
 const SUCCESSOR: &str = "01 6e  0c 303132333435363738396364  0c 79727a37396a3330337a7378";
 
 #[test]
-fn requests_match_the_frozen_three_variant_wire_schema() {
+fn requests_match_the_frozen_four_variant_wire_schema() {
     let take = |epoch: u64| FabricPrimaryHandoverRequest::TakeFabricPrimary { fabric: "f".into(), incumbent: incumbent(), successor: successor(), expected_epoch: epoch, operation: "o".into() };
     let taken = FabricPrimaryHandoverRequest::FabricPrimaryTaken { fabric: "f".into(), incumbent: incumbent(), successor: successor(), expected_epoch: 7, committed_epoch: 8, operation: "o".into() };
     let fixtures = [
@@ -61,13 +61,19 @@ fn requests_match_the_frozen_three_variant_wire_schema() {
         // variant 2 | fabric | holder | successor | seats (len 2: MeshPrimary=1 { mesh "m" } epoch 3,
         // FabricPrimary=0 epoch 7) | build_id | attempt | operation
         (take_seats(), format!("02 0166 {INCUMBENT} {SUCCESSOR} 02 01 016d 03 00 07 0162 02 016f")),
+        // variant 3 (R-MT1, node.primary.update commanded from above) | fabric | holder | seats (len 1:
+        // MeshPrimary=1 { mesh "m" } epoch 3) | build_id | attempt | operation
+        (
+            FabricPrimaryHandoverRequest::UpdatePrimary { fabric: "f".into(), holder: incumbent(), seats: vec![SeatEpoch { seat: Seat::MeshPrimary { mesh: "m".into() }, expected_epoch: 3 }], build_id: "b".into(), attempt: 2, operation: "o".into() },
+            format!("03 0166 {INCUMBENT} 01 01 016d 03 0162 02 016f"),
+        ),
     ];
     for (q, hex) in fixtures {
         assert_eq!(FabricPrimaryHandover::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");
         assert_eq!(FabricPrimaryHandover::decode_request(&bytes(&hex)).unwrap(), q);
     }
-    assert_eq!(FabricPrimaryHandover::REQUEST_VARIANTS, 3);
-    assert_eq!(FabricPrimaryHandover::decode_request(&[3]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(FabricPrimaryHandover::REQUEST_VARIANTS, 4);
+    assert_eq!(FabricPrimaryHandover::decode_request(&[4]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]

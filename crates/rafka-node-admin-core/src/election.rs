@@ -207,6 +207,32 @@ pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) 
     hypothetical.into_iter().find(|n| n.is_fabric_primary)
 }
 
+/// The successor a yielding holder computes for its cohort seat (R-MT1, node.primary.update: "the MP
+/// determines who is the next MP"; fabric-node-lifecycle-elections.md §4.1 and §5: "a holder that yields
+/// ... hands the seat to the lowest ReadyForTraffic NodeId of its own mesh"): the lowest Ready node of
+/// `holder`'s (mesh, kind) cohort other than `holder`, not proven gone. `None` when no other node of
+/// its type can take the seat.
+pub fn cohort_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Option<Node> {
+    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == holder.mesh && n.kind == holder.kind && n.node_id != holder.node_id).map(|(i, _)| i).collect();
+    lowest_ready(nodes, &members, inc).map(|i| nodes[i].clone())
+}
+
+/// The fabric-primary a yielding holder hands the fabric seat to (R-MT1, node.fabric-primary.update;
+/// fabric-node-lifecycle-elections.md §4.3: "The fabric seat stays in its holder's mesh: when its holder
+/// yields ... the lowest ReadyForTraffic node-admin NodeId of the same mesh fills it ... It leaves that
+/// mesh only when every node-admin birth of the mesh is proven gone or has left; then the lowest NodeId
+/// among the remaining mesh primaries wins"). The holder's mesh seat moves first (its successor is then
+/// that mesh's primary, a fabric candidate); its own mesh's successor otherwise; another mesh's lowest
+/// Ready primary only when no node-admin of the holder's mesh can take it.
+pub fn fabric_successor_yielding(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Option<Node> {
+    let ready = |n: &&Node| n.status == NodeStatus::ReadyForTraffic && !inc.is_lost(n);
+    if let Some(p) = nodes.iter().filter(ready).find(|n| n.mesh == holder.mesh && n.kind == NodeKind::NodeAdmin && n.is_primary && n.node_id != holder.node_id) {
+        return Some(p.clone());
+    }
+    let admin = Node { kind: NodeKind::NodeAdmin, ..holder.clone() };
+    cohort_successor(nodes, inc, &admin).or_else(|| fabric_successor_excluding(nodes, inc, &holder.mesh))
+}
+
 /// A seat's holder as a span names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Seat {

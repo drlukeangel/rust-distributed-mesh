@@ -65,6 +65,15 @@ pub trait Gate: Send + Sync {
     fn peer_mesh(&self, _mesh: &str) -> Option<crate::investigate::PeerMesh> {
         None
     }
+    /// node.primary.update before an operation on a seat holder runs (R-MT1, Luke 2026-10-12: "only a
+    /// FP should issue commands to a MP"; "this same primitive should be called on MP stop or
+    /// delete"): this fabric-primary commands the holder's mesh seat to move, or moves its own seats
+    /// (its mesh seat, then the fabric seat), so the operation's executor is the holder's successor.
+    /// `operation` names the update's own operation. `Err` names why the seat did not move. A gate
+    /// with no seats moves nothing.
+    async fn move_seats(&self, _m: &crate::executor::SeatMove, _build_id: &BuildId, _attempt: u32, _operation: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// A gate that is always open: a fixture with no membership and no seat fence.
@@ -790,6 +799,11 @@ impl DriveEnv {
                 if let Some(end) = self.idle_until_moved(drive, &p).await {
                     return end;
                 }
+                match self.seats_first(drive, &p).await {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(end) => return end,
+                }
                 match self.claim_next(drive, &p, handed_to.take()).await {
                     Ok(c) => c,
                     Err(end) => return end,
@@ -913,6 +927,29 @@ impl DriveEnv {
                 }
             }
         }
+    }
+
+    /// The seats the first operation left moves before it is claimed (R-MT1, [`crate::executor::seat_move`]):
+    /// node.primary.update through the gate, commanded from here. `Ok(true)` once a seat moved (the
+    /// loop passes the gates again: a moved fabric seat ends this drive there), `Ok(false)` when no seat
+    /// is owed, and the end, named, when the seat did not move.
+    async fn seats_first(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Result<bool, DriveEnd> {
+        let t = self.topology.read().await.clone();
+        let Some(op) = left(drive, p, &t).into_iter().next() else { return Ok(false) };
+        let Some(m) = crate::executor::seat_move(&op, &t) else { return Ok(false) };
+        let attempt = p.attempt + 1;
+        if let Err(why) = self.gate.move_seats(&m, &drive.build_id, attempt, &op.key()).await {
+            let why = format!("{}: the seat of {} did not move before {}: {why}", self.me, m.holder.name, op.key());
+            self.blocked(drive, attempt, &op.key(), "primary-update", &why);
+            return Err(self.stalled(drive, why));
+        }
+        let after = self.topology.read().await.clone();
+        if crate::executor::seat_move(&op, &after).is_some_and(|still| still.holder.node_id == m.holder.node_id && still.mesh_seat == m.mesh_seat && still.fabric_seat == m.fabric_seat) {
+            let why = format!("{}: node.primary.update of {} answered, and this view still names it the holder of the seat {} moves", self.me, m.holder.name, op.key());
+            self.blocked(drive, attempt, &op.key(), "primary-update", &why);
+            return Err(self.stalled(drive, why));
+        }
+        Ok(true)
     }
 
     /// The drive waits, named, while the attempt it handed back to itself with nothing moved has not

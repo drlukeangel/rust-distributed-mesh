@@ -662,6 +662,19 @@ pub enum Frame {
         /// Every seat the row moved, at its committed epoch.
         seats: Vec<CommittedSeat>,
     },
+    /// The current primary of a cohort says that its seat is updating to `successor` (R-MT1, Luke
+    /// 2026-10-12: NA1 "gossips that the primary is updating to NA2"): published by the holder on
+    /// its own mesh channel and the backbone after its write cut-off and drain, before it calls
+    /// node.primary.update on the successor. It announces an update in progress and moves no seat:
+    /// the successor's committed row does, and `SeatedTogether` says so.
+    PrimaryUpdating {
+        /// The operation the update precedes; its subject is the current holder.
+        op: LifecycleOp,
+        /// The seat that is updating.
+        seat: Seat,
+        /// The successor the holder computed, at the epoch the seat would take.
+        successor: SeatHolder,
+    },
 }
 
 impl Frame {
@@ -1292,6 +1305,7 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeRestarting { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeRestarting { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
         Frame::NodeStopped { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
         Frame::SeatedTogether { op, successor, seats } if op.name.mesh != own_mesh => Some(Frame::SeatedTogether { op, successor, seats }),
+        Frame::PrimaryUpdating { op, seat, successor } if op.name.mesh != own_mesh => Some(Frame::PrimaryUpdating { op, seat, successor }),
         Frame::NodeDraining { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDraining { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeaving { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeaving { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeft { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeft { op, forwarded_by: Some(me.to_string()) }),
@@ -2204,6 +2218,11 @@ impl View {
             }
             Frame::SeatedTogether { op, successor, seats } => {
                 self.note_seats_together(op, successor, seats, via);
+                Vec::new()
+            }
+            Frame::PrimaryUpdating { op, seat, successor } => {
+                tracing::info_span!("rdm.mesh.seat.update.via-primary-updating", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, seat = seat.name(), successor = %successor, via)
+                    .in_scope(|| tracing::info!("a seat holder said its seat is updating: no seat moves until the successor's committed row"));
                 Vec::new()
             }
             Frame::NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base } => {
@@ -3980,6 +3999,28 @@ impl Backbone {
             let mesh_channel = outcome("mesh channel", self.membership.forward(&frame).await);
             tracing::Span::current().record("mesh_channel", mesh_channel.as_str());
             let _ = self.membership.view.take(&frame, &self.fabric, "own");
+        };
+        tracing::Instrument::instrument(send, span).await
+    }
+
+    /// The current holder of `seat` says, once, that the seat is updating to `successor` (R-MT1):
+    /// the backbone, its own mesh channel and its own view, after its write cut-off and drain and
+    /// before it calls node.primary.update on the successor.
+    pub async fn announce_primary_updating(&self, op: LifecycleOp, seat: Seat, successor: SeatHolder) {
+        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-primary-updating", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, seat = seat.name(), successor = %successor, backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
+        let frame = Frame::PrimaryUpdating { op, seat, successor };
+        let send = async {
+            let outcome = |channel: &'static str, r: Result<()>| match r {
+                Ok(()) => "sent".to_string(),
+                Err(e) => {
+                    tracing::info!(channel, error = %e, "PrimaryUpdating not sent on the {channel}");
+                    format!("failed: {e}")
+                }
+            };
+            let backbone = outcome("backbone", self.channel.broadcast(&frame).await);
+            tracing::Span::current().record("backbone", backbone.as_str());
+            let mesh_channel = outcome("mesh channel", self.membership.forward(&frame).await);
+            tracing::Span::current().record("mesh_channel", mesh_channel.as_str());
         };
         tracing::Instrument::instrument(send, span).await
     }

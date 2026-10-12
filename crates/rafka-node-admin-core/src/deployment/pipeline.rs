@@ -231,10 +231,6 @@ pub enum RetireStep {
     /// The pre-event of a restart: the executor holds `restart-node:<path>`; the birth is held
     /// through its Leaving until its later birth is heard.
     NodeRestarting,
-    /// A node-admin target only, before its drain or stop: when it holds a seat, TakeSeats to it
-    /// and the committed seats installed (node-drain.md step 0; node-rpc-envelope.md "TakeSeats").
-    /// Not in [`Self::ORDER`]: no other target runs it.
-    SeatTransfer,
     /// Remove the node from the local topology.
     RemoveTopologyMembership,
     /// The node is retired.
@@ -259,7 +255,6 @@ impl RetireStep {
             Self::NodeDeleting => "NodeDeleting",
             Self::NodeDeleted => "NodeDeleted",
             Self::NodeRestarting => "NodeRestarting",
-            Self::SeatTransfer => "SeatTransfer",
             Self::DeleteConnections => "DeleteConnections",
             Self::StopNode => "StopNode",
             Self::AwaitNodeLeft => "AwaitNodeLeft",
@@ -494,12 +489,6 @@ pub trait NodeObserver: Send + Sync {
     /// admission, not completion.
     async fn send_command(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext) -> CommandAdmission {
         CommandAdmission::NotSent { reason: format!("this observer holds no Node RPC client to command {}", node.name) }
-    }
-    /// The SeatTransfer step of a drain, stop, restart or replace of the node-admin `node`: TakeSeats
-    /// to it for every seat this admin's records say it holds, the committed seats installed from
-    /// the reply. A target that holds no seat transfers nothing.
-    async fn transfer_seats(&self, _node: &Node, _ctx: &CommandContext) -> Result<crate::fabric_handover::SeatTransferOutcome, String> {
-        Ok(crate::fabric_handover::SeatTransferOutcome::NotAHolder)
     }
     /// Wait up to `within` for the commanded birth's completion at this admin: its `node-drained`
     /// call, or node-left, which is the `Stopped` reply of its `stop-node` call.
@@ -1771,9 +1760,10 @@ impl DeploymentPipeline<'_> {
     }
 
     /// A standalone `node.connections.delete { All }` (node-connections-delete.md):
-    /// `node.connections.delete:<path>`. A node-admin target's seats move to this executor first
-    /// (step 0); then the exact birth's mesh-primary sets connections-deleting at admission and holds
-    /// the birth's `node.connections.deleted` with its receipt. The process keeps running; nothing
+    /// `node.connections.delete:<path>`. A node-admin target that held a seat had it moved by
+    /// node.primary.update before this runs (the fabric-primary's drive, `crate::executor::seat_move`);
+    /// the exact birth's mesh-primary sets connections-deleting at admission and holds the birth's
+    /// `node.connections.deleted` with its receipt. The process keeps running; nothing
     /// stops it and nothing is deleted.
     pub async fn delete_connections(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
@@ -1782,7 +1772,6 @@ impl DeploymentPipeline<'_> {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.connections.delete:{name}")).await?;
             let node = req.node.clone();
-            self.seat_transfer_step(&mut run, &node).await?;
             let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
             let _: CommandAdmission = self
                 .step(&mut run, RetireStep::DeleteConnections.name(), async {
@@ -1812,7 +1801,6 @@ impl DeploymentPipeline<'_> {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await?;
             let mut node = req.node.clone();
-            self.seat_transfer_step(&mut run, &node).await?;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
             // The `Complete` receipt opens the birth's stopped period: it commits the stop's
             // lifecycle op, the exact birth and the rafka-time it stopped at, which the stopped-node
@@ -1871,7 +1859,6 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.restarting(&op).await;
             // The stop of the live process: it parks and stays, and its `stopped` is the stop's
             // completion. `NodeRestarting` holds it, so no `NodeStopped` is published for it.
-            self.seat_transfer_step(&mut run, &node).await?;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: false }).await?;
             // The start of the same process.
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
@@ -2083,7 +2070,6 @@ impl DeploymentPipeline<'_> {
             // The two halves of the shutdown leg are separate operations (node-drain.md, node-stop.md):
             // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
             // terminal proof. A caller that puts other work between them (a replace) calls the halves.
-            self.seat_transfer_step(&mut run, &node).await?;
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
@@ -2166,22 +2152,6 @@ impl DeploymentPipeline<'_> {
         while !matches!(self.provider.inspect(handle).await, DeploymentStatus::Exited { .. }) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    }
-
-    /// SeatTransfer (node-drain.md step 0, node-stop.md "Seat holder"): before a node-admin target
-    /// drains, the seats it holds move to this executor by TakeSeats, once per run and under the
-    /// run's own operation, so an identical retry of the run sends the identical call.
-    /// A refusal fails the step by name and nothing is drained, a fabric seat included: it is never
-    /// taken by an executor of another mesh (`HandoverDoor::take_seats` refuses it). `OtherMesh` is a
-    /// holder of its own mesh's seat alone with no other admin in that mesh: the seat stays with it
-    /// until its birth is gone and the ordinary election seats the next.
-    async fn seat_transfer_step(&self, run: &mut Run<'_>, node: &Node) -> Result<(), PipelineError> {
-        if node.kind != crate::model::NodeKind::NodeAdmin {
-            return Ok(());
-        }
-        let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
-        let _: crate::fabric_handover::SeatTransferOutcome = self.step(run, RetireStep::SeatTransfer.name(), self.observer.transfer_seats(node, &ctx)).await?;
-        Ok(())
     }
 
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
@@ -2402,7 +2372,6 @@ impl DeploymentPipeline<'_> {
             // The recipe's first step (node-replace.md 1): the complete stop leaves the predecessor
             // parked, and the stop's departure (`NodeStopped`) drops it from every book, before it
             // gives up its name and before anything of the successor exists.
-            self.seat_transfer_step(&mut run, &old).await?;
             // The complete stop (node-stop.md): stop-node admitted and `stopped` received, or the
             // step fails by name; a predecessor that is not stopped keeps its path.name, and a birth
             // that does not answer goes to node recovery (node-recovery.md).

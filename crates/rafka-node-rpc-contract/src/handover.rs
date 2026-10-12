@@ -7,14 +7,15 @@
 //! the incumbent. `Applied` acknowledges a call; only the matched `FabricPrimaryTaken` confirms
 //! the transfer. Both calls are unary and not forwardable; only node-admins serve the family.
 //!
-//! A Build's executor N calls [`FabricPrimaryHandoverRequest::TakeSeats`] on the exact seat holder
-//! P it is about to drain, inside P's mesh ("TakeSeats: Build-driven seat transfer"): P commits one
-//! durable row holding every seat it transfers at each seat's next epoch and answers
-//! [`FabricPrimaryHandoverReply::SeatsCommitted`]; a seat epoch that is not P's is
-//! [`FabricPrimaryHandoverReply::RejectedStaleSeat`], and a seat P holds that the call leaves out is
-//! [`FabricPrimaryHandoverReply::RejectedSeatOmitted`]. [`Seat`], [`CommittedSeat`] and
-//! [`HandoverBirth`] are the doc's shapes (`rafka_mesh_entity::seat::transfer`, which the
-//! `SeatedTogether` gossip frame carries too).
+//! node.primary.update (R-MT1, Luke 2026-10-12): commands only go down. The fabric-primary calls
+//! [`FabricPrimaryHandoverRequest::UpdatePrimary`] on the exact primary NA1 of a (mesh, node type)
+//! cohort; NA1 computes its successor NA2 in its cohort and calls
+//! [`FabricPrimaryHandoverRequest::TakeSeats`] (node.primary.update) on NA2; NA2 writes its own seat
+//! row at each seat's next epoch and answers [`FabricPrimaryHandoverReply::SeatsCommitted`]
+//! (node.primary.updated), which NA1 hands back up as its own answer. A seat epoch that is not the
+//! one NA2 holds for NA1 is [`FabricPrimaryHandoverReply::RejectedStaleSeat`]. [`Seat`],
+//! [`CommittedSeat`] and [`HandoverBirth`] are the doc's shapes (`rafka_mesh_entity::seat::transfer`,
+//! which the `SeatedTogether` gossip frame carries too).
 //!
 //! The doc's reply enum holds nine variants. The family sits on the framework's six outcomes, so
 //! `PeerUnresolved`, `Busy`, `Draining` and `Unauthorized` are appended after the doc's nine;
@@ -73,23 +74,40 @@ pub enum FabricPrimaryHandoverRequest {
         /// The handover's operation identity.
         operation: String,
     },
-    /// A Build's executor to the seat holder it is about to drain: commit every seat named to the
-    /// executor at its next epoch.
+    /// node.primary.update, the current primary NA1 to the successor NA2 it computed (R-MT1): take
+    /// every seat named at its next epoch, writing the seat row as the cohort's new writer.
     TakeSeats {
         /// The fabric.
         fabric: String,
-        /// The exact birth that holds the seats.
+        /// The exact birth that holds the seats: the caller, NA1.
         holder: HandoverBirth,
-        /// The executor of the SeatTransfer step: the admin the election seats once the holder's
-        /// birth is gone.
+        /// The successor NA1 computed in its cohort: the receiver, NA2.
         successor: HandoverBirth,
-        /// Every seat the holder holds, each with its current epoch.
+        /// Every seat that moves, each with the epoch NA1 holds it at.
         seats: Vec<SeatEpoch>,
-        /// The Build whose attempt the executor won.
+        /// The Build whose stop, delete, restart, replace or connections delete moves the seats.
         build_id: String,
-        /// The attempt the executor won.
+        /// That Build's attempt.
         attempt: u32,
-        /// The drain, stop, restart or replace operation the transfer precedes.
+        /// The operation the update precedes.
+        operation: String,
+    },
+    /// node.primary.update commanded from above (R-MT1: "only a FP should issue commands to a MP"):
+    /// the fabric-primary to the exact primary `holder` of a cohort. The holder computes its
+    /// successor, moves the seats named by [`Self::TakeSeats`] and answers the successor's
+    /// `SeatsCommitted`.
+    UpdatePrimary {
+        /// The fabric.
+        fabric: String,
+        /// The exact birth that holds the seats: the receiver.
+        holder: HandoverBirth,
+        /// Every seat that moves, each with the epoch the commander holds it at.
+        seats: Vec<SeatEpoch>,
+        /// The Build whose stop, delete, restart, replace or connections delete moves the seats.
+        build_id: String,
+        /// That Build's attempt.
+        attempt: u32,
+        /// The operation the update precedes.
         operation: String,
     },
 }
@@ -101,6 +119,7 @@ impl FabricPrimaryHandoverRequest {
             Self::TakeFabricPrimary { .. } => "take-fabric-primary",
             Self::FabricPrimaryTaken { .. } => "fabric-primary-taken",
             Self::TakeSeats { .. } => "take-seats",
+            Self::UpdatePrimary { .. } => "update-primary",
         }
     }
 }
@@ -166,7 +185,7 @@ pub enum FabricPrimaryHandoverReply {
         /// Why.
         reason: String,
     },
-    /// The seat holder committed the transfer: every seat it moved, at its committed epoch.
+    /// node.primary.updated: the successor committed the seats, every one at its committed epoch.
     SeatsCommitted {
         /// The committed seats.
         seats: Vec<CommittedSeat>,
@@ -288,10 +307,10 @@ impl NodeProtocol for FabricPrimaryHandover {
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
     /// A handover is decided by the two exact births themselves; a carried call is decided by no one.
     const FORWARDABLE: bool = false;
-    /// The holder keeps serving TakeSeats after its seat row, through its own drain: a lost reply's
-    /// identical retry is answered from the row.
+    /// A successor keeps serving TakeSeats after its seat row, and a former holder UpdatePrimary,
+    /// through a drain: a lost reply's identical retry is answered from the row.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 3;
+    const REQUEST_VARIANTS: u32 = 4;
     const REPLY_VARIANTS: u32 = 19;
 
     type Request = FabricPrimaryHandoverRequest;

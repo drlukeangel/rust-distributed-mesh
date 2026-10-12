@@ -2298,6 +2298,8 @@ struct SeatGate {
     /// The control plane whose peer-mesh reader the investigation installs once its ladder runs
     /// (after the drive is built): read when asked, as the Build door reads it.
     control: Arc<ControlPlane>,
+    /// The 0x21 door node.primary.update is commanded and run through.
+    handover: Arc<crate::fabric_handover::HandoverDoor>,
 }
 
 #[async_trait::async_trait]
@@ -2316,6 +2318,28 @@ impl crate::build_drive::Gate for SeatGate {
     }
     fn peer_mesh(&self, mesh: &str) -> Option<crate::investigate::PeerMesh> {
         self.control.peer_mesh.get().and_then(|f| f(mesh))
+    }
+    /// R-MT1: a mesh-primary's seat moves by node.primary.update commanded from here; the
+    /// fabric-primary's own seats it moves itself, having nothing above it. When it holds both, its
+    /// mesh seat moves first: the fabric seat's candidates are the mesh primaries and it stays in its
+    /// holder's mesh (elections §4.3), so the successor must hold the mesh seat to take it, and this
+    /// admin keeps its authority to command until the fabric seat moves.
+    async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<(), String> {
+        let door = &self.handover;
+        let refused = |r: rafka_node_rpc_contract::handover::FabricPrimaryHandoverReply| format!("{}: {r:?}", r.name());
+        if m.holder.node_id != door.node_id {
+            if m.mesh_seat {
+                door.command_update_primary(&m.holder, &build_id.0, attempt, &format!("node.primary.update:{operation}")).await?;
+            }
+            return Ok(());
+        }
+        if m.mesh_seat {
+            door.update_primary(rafka_mesh_entity::Seat::MeshPrimary, None, &build_id.0, attempt, &format!("node.primary.update:{operation}")).await.map_err(refused)?;
+        }
+        if m.fabric_seat {
+            door.update_primary(rafka_mesh_entity::Seat::FabricPrimary, None, &build_id.0, attempt, &format!("node.fabric-primary.update:{operation}")).await.map_err(refused)?;
+        }
+        Ok(())
     }
 }
 
@@ -2854,12 +2878,6 @@ pub async fn probed_ready_blocker(client: &rafka_node_rpc::NodeRpcClient, book: 
 
 #[async_trait::async_trait]
 impl NodeObserver for MembershipObserver {
-    async fn transfer_seats(&self, node: &Node, ctx: &crate::deployment::pipeline::CommandContext) -> Result<crate::fabric_handover::SeatTransferOutcome, String> {
-        let Some(door) = self.handover.get().cloned() else {
-            return Err(format!("this admin holds no 0x21 door yet: the seats of {} cannot be transferred", node.name));
-        };
-        door.take_seats(node, &ctx.build_id, ctx.attempt, &ctx.operation).await
-    }
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
         self.book
             .get(node_id.as_str())
@@ -5708,7 +5726,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     builds: builds_dyn.clone(),
                                     door: claim_door.clone(),
                                     dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
-                                    gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone(), control: control.clone() }),
+                                    gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone(), control: control.clone(), handover: handover.clone() }),
                                     departure: Arc::new(ProviderDeparture {
                                         me: name.clone(),
                                         topology: control.topology.clone(),

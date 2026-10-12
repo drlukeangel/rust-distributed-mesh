@@ -520,11 +520,17 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
         assert_eq!(primary, vec![na2_name.clone()], "{who} names {na2_name} mesh2's primary once the stop is complete: {view:#?}");
     }
 
-    let spans = wait_for("the stop's last step and the fabric-primary's command are exported", Duration::from_secs(60), || async {
+    // Each process exports its own spans: the story is read once the fabric-primary's, P's and NA2's
+    // parts of it are all exported.
+    let spans = wait_for("the stop's last step, the fabric-primary's command, P's update and NA2's row are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         let stopped = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().any(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p_name && attr(sp, "step") == "Complete");
         let commanded = named(&spans, "rdm.node_admin.seat.update.via-primary-update").into_iter().any(|sp| attr(sp, "holder") == p_name);
-        (stopped && commanded).then_some(spans)
+        let updated = named(&spans, "rdm.node_admin.seat.update.via-primary-updating").into_iter().any(|sp| attr(sp, "node") == p_name);
+        let committed = named(&spans, "rdm.node_admin.seat.update.via-seats-committed").into_iter().any(|sp| attr(sp, "node") == na2_name);
+        // The dispatch span closes when the run's terminal reaches the fabric-primary, after the stop's last step.
+        let dispatched = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().any(|sp| attr(sp, "build_id") == build && attr(sp, "executor") == na2_name);
+        (stopped && commanded && updated && committed && dispatched).then_some(spans)
     })
     .await;
     let one = |name: &str, f: &dyn Fn(&Value) -> bool| -> Value {
@@ -550,14 +556,14 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
     assert!(start_ns(&updating) <= start_ns(&committed), "P said the primary is updating before NA2 committed");
     assert!(end_ns(&committed) <= start_ns(&updated), "P said the primary updated only after NA2 committed");
     // The stop ran after the seat moved, executed by NA2 as mesh2's primary.
-    let attempt = attempt_no.to_string();
     let dispatches: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "attempt").parse::<u64>().is_ok_and(|a| a >= attempt_no)).collect();
     let stop_run = dispatches.iter().find(|sp| attr(sp, "executor") == na2_name).unwrap_or_else(|| panic!("NA2 executed the stop: {dispatches:#?}"));
     assert!(end_ns(&installed) <= start_ns(stop_run), "the fabric-primary installed the committed seat before it dispatched the stop");
-    let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p_name).collect();
+    // The stop is an attempt of the accepted Build: its steps are those of the attempts it opened, never P's birth.
+    let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p_name && attr(sp, "attempt").parse::<u64>().is_ok_and(|a| a >= attempt_no)).collect();
+    assert!(steps.iter().any(|sp| attr(sp, "step") == "StopNode"), "the stop's steps are read: {steps:#?}");
     assert!(steps.iter().all(|sp| start_ns(sp) >= end_ns(&committed)), "no stop step ran before the seat moved: {steps:#?}");
     assert!(steps.iter().all(|sp| attr(sp, "step") != "SeatTransfer"), "the stop takes no executor-side seat transfer: {steps:#?}");
-    let _ = attempt;
     // Commands only go down: every 0x21 call to P is the fabric-primary's command, every one to NA2 P's.
     for call in named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr(sp, "op") == "33") {
         let target = attr(call, "target");

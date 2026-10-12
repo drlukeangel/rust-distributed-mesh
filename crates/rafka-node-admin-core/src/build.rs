@@ -326,18 +326,19 @@ pub enum BuildReject {
         /// The node-admin named.
         node: String,
     },
-    /// The Build would drain, stop, restart, replace or retire the fabric-primary while no other
-    /// live node-admin of its mesh can take its seats: TakeSeats moves seats inside the holder's
-    /// mesh only, and the fabric seat leaves a mesh whose last admin holds it only through the
-    /// holder-initiated TakeFabricPrimary inside mesh-leave (node-rpc-envelope.md, "TakeSeats:
-    /// Build-driven seat transfer", Boundary).
+    /// The Build would drain, stop, restart, replace or retire a seat holder (its mesh's primary, or
+    /// the fabric-primary) while no other node-admin of its mesh can take its seat: node.primary.update
+    /// has no other node of its type (R-MT1). The fabric seat leaves a mesh whose last admin holds it
+    /// only through fabric.primary.update inside mesh-leave.
     LastAdmin {
-        /// The fabric-primary the Build would end.
+        /// The seat holder the Build would end.
         node: String,
         /// Its mesh.
         mesh: String,
         /// What the Build would do to it (`restart`, `replace`, `drain`, `stop`, `retire`).
         action: String,
+        /// It holds the fabric seat as well.
+        fabric_seat: bool,
     },
     /// The stopped-node garbage collector's delete of a birth that is no longer the one stopped
     /// past the ttl at its admission (fabric-node-lifecycle.md §6.9 Recheck): started, replaced, or
@@ -423,10 +424,13 @@ impl fmt::Display for BuildReject {
                 f,
                 "{workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit its rows live only in their holders' scratchpads, so nothing that moves a seat or writes caller state runs"
             ),
-            Self::LastAdmin { node, mesh, action } => write!(
-                f,
-                "node `{node}` holds the fabric-primary seat and no other live node-admin of mesh `{mesh}` can take its seats: a {action} of it is refused; TakeSeats moves seats inside the holder's mesh only, and the fabric seat leaves mesh `{mesh}` only through TakeFabricPrimary inside a mesh-leave"
-            ),
+            Self::LastAdmin { node, mesh, action, fabric_seat } => {
+                write!(f, "node `{node}` holds the mesh-primary seat of mesh `{mesh}` and is its only node-admin: node.primary.update has no other node of its type to take the seat, so a {action} of it is refused")?;
+                if *fabric_seat {
+                    write!(f, "; it holds the fabric-primary seat too, which leaves mesh `{mesh}` only through fabric.primary.update inside a mesh-leave")?;
+                }
+                Ok(())
+            }
             Self::NodeMetaMismatch { mesh, missing, extra } => write!(
                 f,
                 "mesh `{mesh}`: every materialized path carries exactly one NodeMeta; missing [{}], without a node [{}]",
