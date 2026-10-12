@@ -771,8 +771,9 @@ impl AcceptedStore {
     pub async fn seeded(builds: &dyn BuildStateAdapter, fabric_id: crate::model::FabricId, topology: FabricTopology, me: &str) -> Result<Arc<Self>, BuildStateError> {
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         storage
-            .put_identity(&FabricIdentity { fabric_id, name: topology.fabric.clone() })
-            .await.map_err(|e| BuildStateError::Io(e.to_string()))?;
+            .claim_identity(&FabricIdentity { fabric_id, name: topology.fabric.clone() })
+            .await.map_err(|e| BuildStateError::Io(e.to_string()))?
+            .map_err(|held| BuildStateError::Io(held.to_string()))?;
         let store = Arc::new(Self::new(storage, me));
         let build_id = BuildId::mint();
         builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology, submitted_change: None, submitted_at_ms: 0 }).await?;

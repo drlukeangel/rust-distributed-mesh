@@ -1302,11 +1302,41 @@ impl MeshRowsWriter {
     }
 }
 
+/// fabric.create's claim of the fabric's name (node-identity-and-state.md §2.8), by the fabric store's
+/// insert-and-fail ([`crate::fabric_storage::FabricStorage::claim_identity`]): Day 0's first write of
+/// the fabric, and the fabric-primary's row writer's before it writes anything else to `fabric/`. One
+/// `rdm.node_admin.fabric.create.via-fabric-row` span, `moment` `claim`, names the outcome
+/// (`row-written`, `row-held-by-fabric`, `name-held` with the holder, `row-refused`).
+pub(crate) async fn claim_fabric_name(storage: &dyn crate::fabric_storage::FabricStorage, identity: &crate::fabric_storage::FabricIdentity, node_id: &NodeId) -> Result<Result<crate::fabric_storage::FabricClaim, crate::fabric_storage::FabricNameHeld>, String> {
+    let span = tracing::info_span!(
+        "rdm.node_admin.fabric.create.via-fabric-row",
+        node_id = %node_id,
+        fabric = %identity.name,
+        fabric_id = %identity.fabric_id,
+        moment = "claim",
+        outcome = tracing::field::Empty,
+        holder = tracing::field::Empty,
+        detail = tracing::field::Empty,
+        "otel.kind" = "internal",
+    );
+    let claimed = storage.claim_identity(identity).await.map_err(|e| format!("fabric.storage did not answer the claim of the fabric name {} for Fabric {}: {e}", identity.name, identity.fabric_id));
+    match &claimed {
+        Ok(Ok(crate::fabric_storage::FabricClaim::Written)) => span.record("outcome", "row-written"),
+        Ok(Ok(crate::fabric_storage::FabricClaim::Held)) => span.record("outcome", "row-held-by-fabric"),
+        Ok(Err(held)) => span.record("outcome", "name-held").record("holder", tracing::field::display(&held.by)).record("detail", held.to_string().as_str()),
+        Err(e) => span.record("outcome", "row-refused").record("detail", e.as_str()),
+    };
+    span.in_scope(|| tracing::info!("fabric.create: the fabric's name is claimed by insert-and-fail at its key; nothing else of the fabric is written until the claim wins"));
+    claimed
+}
+
 /// `fabric/` on the fabric's store root, written by the fabric-primary alone (R14 item 2): while this
 /// birth holds the fabric seat it writes the Fabric record it holds (the identity it is configured
 /// for, and the pointer it learned while another admin held the seat), so a seat that came to it
 /// before the fabric's first state-commit, from a holder whose held rows were dropped, still leaves
-/// the Fabric row on the store root, and every seat record it holds as its own row. While it does not
+/// the Fabric row on the store root, and every seat record it holds as its own row. The claim of the
+/// fabric's name comes first: nothing else is written to `fabric/` until it wins, and a name another
+/// Fabric's identity holds leaves `fabric/` unwritten by this writer, named once. While it does not
 /// hold the seat it writes nothing to `fabric/`.
 pub(crate) struct FabricRowsWriter {
     /// This admin's exact birth: it writes only while the fabric seat names it.
@@ -1316,12 +1346,16 @@ pub(crate) struct FabricRowsWriter {
     accepted: Arc<AcceptedStore>,
     /// The seat records written (or held durable by a seat transfer's own row).
     written: HashSet<(rafka_mesh_entity::Seat, String, u64)>,
-    fabric_row_written: bool,
+    /// The claim of the fabric's name: `None` before the store answered it; `Some(Ok)` once it won;
+    /// `Some(Err)` when another Fabric's identity holds the key (a held identity is never rewritten).
+    claim: Option<Result<(), crate::fabric_storage::FabricNameHeld>>,
+    /// The learned pointer is on the store root (or there was none to write).
+    pointer_written: bool,
 }
 
 impl FabricRowsWriter {
     pub(crate) fn new(me: (NodeId, IncarnationId), identity: crate::fabric_storage::FabricIdentity, storage: Arc<dyn crate::fabric_storage::FabricStorage>, accepted: Arc<AcceptedStore>) -> Self {
-        Self { me, identity, storage, accepted, written: HashSet::new(), fabric_row_written: false }
+        Self { me, identity, storage, accepted, written: HashSet::new(), claim: None, pointer_written: false }
     }
 
     /// One round over the seat records `seats` holds.
@@ -1330,19 +1364,15 @@ impl FabricRowsWriter {
             return;
         }
         let (storage, identity) = (&self.storage, &self.identity);
-        if !self.fabric_row_written {
-            let identity_held = match storage.put_identity(identity).await {
-                Ok(held) if held.fabric_id == identity.fabric_id => true,
-                Ok(held) => {
-                    tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, held = %held.fabric_id).in_scope(|| tracing::info!("fabric.storage holds another Fabric's identity"));
-                    false
-                }
-                Err(e) => {
-                    tracing::info_span!("rdm.node_admin.fabric.reject.via-storage", fabric_id = %identity.fabric_id, error = %e).in_scope(|| tracing::info!("the Fabric identity could not be written to fabric.storage"));
-                    false
-                }
-            };
-            let pointer_held = match self.accepted.learned_pointer() {
+        if self.claim.is_none() {
+            // A store that did not answer decides nothing: the next round asks again.
+            self.claim = claim_fabric_name(&**storage, identity, &self.me.0).await.ok().map(|c| c.map(|_| ()));
+        }
+        if !matches!(self.claim, Some(Ok(()))) {
+            return;
+        }
+        if !self.pointer_written {
+            self.pointer_written = match self.accepted.learned_pointer() {
                 None => true,
                 Some(p) => match storage.put_pointer(&p).await {
                     Ok(()) => true,
@@ -1352,7 +1382,6 @@ impl FabricRowsWriter {
                     }
                 },
             };
-            self.fabric_row_written = identity_held && pointer_held;
         }
         let mut rows: Vec<crate::fabric_storage::SeatRow> = seats.meshes().into_values().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::MeshPrimary, holder }).collect();
         rows.extend(seats.fabric().map(|holder| crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder }));
@@ -5004,9 +5033,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         };
                                         // The fabric-primary claims the Fabric's identity at Day 0, into its scratchpad until
                                         // the fabric's first state-commit (node-identity-and-state.md §2.8; fabric-create.md).
-                                        let held = fabric_storage.put_identity(&fabric_identity).await.map_err(|e| e.to_string())?;
-                                        if held.fabric_id != cfg.fabric_id {
-                                            return Err(format!("fabric.storage holds the identity of Fabric {} ({}), this admin is configured for Fabric {}", held.fabric_id, held.name, cfg.fabric_id));
+                                        if let Err(held) = claim_fabric_name(&*fabric_storage, &fabric_identity, &node_id).await? {
+                                            return Err(format!("refusing to start: this admin is configured for Fabric {}: {held}", cfg.fabric_id));
                                         }
                                         attempt_contexts.put(&b0.build_id, 1, &crate::build_claim::current_context()).await.map_err(|e| format!("attempt-context: {e}"))?;
                                         builds.publish_accepted(&b0).await.map_err(|e| e.to_string())?;
@@ -8403,7 +8431,7 @@ mod tests {
         let me: PathName = "mesh1.admin.2".parse().unwrap();
         use crate::fabric_storage::FabricStorage as _;
         let storage = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
-        storage.put_identity(&crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap();
+        storage.claim_identity(&crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().unwrap();
         let store = AcceptedStore::new(storage.clone(), "mesh1.admin.2");
         let builds = MemoryBuildStateAdapter::new();
         let blocked = hydration_blocker(&me, &store, &builds, None).await.expect("blocked while unhydrated").to_string();

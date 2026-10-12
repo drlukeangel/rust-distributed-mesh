@@ -31,7 +31,7 @@ struct Admin {
 
 async fn admin(name: &str, fabric: &FabricId) -> Admin {
     let storage = Arc::new(MemoryFabricStorage::new());
-    storage.put_identity(&FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.unwrap();
+    storage.claim_identity(&FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.unwrap().unwrap();
     Admin { name: name.parse().unwrap(), log: Arc::new(MemoryBuildStateAdapter::new()), accepted: Arc::new(AcceptedStore::new(storage, name)), floor: Arc::default() }
 }
 

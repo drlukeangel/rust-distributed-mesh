@@ -1169,7 +1169,7 @@ fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
         };
         stores.mesh.claim_mesh(&rafka_node_admin_core::storage::MeshRecord { mesh_id: rafka_node_admin_core::model::MeshId::mint(), name: "mesh1".into(), dead: false }).await.unwrap().unwrap();
         stores.status.put_mesh_status(&MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::ReadyForTraffic }).await.unwrap();
-        stores.fabric.put_identity(&rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap();
+        stores.fabric.claim_identity(&rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
         assert!(stores.mesh.mesh("mesh1").await.unwrap().is_some(), "the holder reads the Mesh row it holds");
         let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by take-seats:b1";
         stores.apply(WriteCutOff::Set { reason: reason.into(), fabric_seat: true }).await;
