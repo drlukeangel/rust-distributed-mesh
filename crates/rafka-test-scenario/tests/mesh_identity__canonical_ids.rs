@@ -216,22 +216,25 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_eq!(claim["attributes"]["outcome"], "row-seeded", "{claim}");
     assert_eq!(s(&claim["attributes"]["seeded_from"]), s(&old_admin["node_id"]), "seeded from the old mesh2.admin.1's Deleted row: {claim}");
     assert_eq!(s(&new_admin["mesh"]), "mesh2");
-    // node-identity-and-state.md §2.7 + R-MN1 change 4: a mesh's primary claims the mesh's name by
-    // insert-and-fail on its key, before it writes anything else of the mesh; the removed mesh2's Mesh
-    // row is written Dead, which releases the name; the recreated mesh2's primary claims the name over
-    // that Dead row under its new MeshId. No mesh's claim conflicts with itself across creation and
-    // the fabric's state-commit.
+    // node-identity-and-state.md §2.7 + R-MN1 change 4: a mesh's name is claimed by insert-and-fail on
+    // its key, before anything else of the mesh is written (CLAUDE.md), at CreateMesh by the
+    // fabric-primary as the acting primary of a mesh with none (R13); the removed mesh2's Mesh row is
+    // written Dead, which releases the name; the recreated mesh2's claim takes the name over that Dead
+    // row under its new MeshId, before the recreated mesh2.admin.1's row is claimed, by the same
+    // writer. No mesh's claim conflicts with itself across creation and the fabric's state-commit.
     let claims = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
-    let claim_of = |id: &str| claims.iter().find(|sp| sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["mesh_id"]) == id && sp["attributes"]["moment"] == "claim").copied();
-    let old_claim = claim_of(&mesh_ids["mesh2"]).unwrap_or_else(|| panic!("the removed mesh2's primary claimed its name: {claims:?}"));
+    let claim_of = |id: &str| claims.iter().find(|sp| sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["mesh_id"]) == id && sp["attributes"]["moment"] == "claim" && sp["attributes"]["outcome"] == "row-written").copied();
+    let old_claim = claim_of(&mesh_ids["mesh2"]).unwrap_or_else(|| panic!("the removed mesh2's name was claimed: {claims:?}"));
     assert_eq!(old_claim["attributes"]["outcome"], "row-written", "{old_claim}");
     assert!(
         dead.iter().any(|sp| s(&sp["attributes"]["mesh_id"]) == mesh_ids["mesh2"] && sp["attributes"]["mesh_row"] == "dead-written"),
         "the removed mesh2's Mesh row is written Dead, releasing its name: {dead:?}"
     );
-    let new_claim = claim_of(&s(&m2["id"])).unwrap_or_else(|| panic!("the recreated mesh2's primary claims its name: {claims:?}"));
+    let new_claim = claim_of(&s(&m2["id"])).unwrap_or_else(|| panic!("the recreated mesh2's name is claimed: {claims:?}"));
     assert_eq!(new_claim["attributes"]["outcome"], "row-written", "{new_claim}");
     assert_eq!(s(&new_claim["attributes"]["over"]), mesh_ids["mesh2"], "the recreated mesh2 claims over the removed mesh2's Dead row: {new_claim}");
+    assert_eq!(new_claim["attributes"]["node"], claim["attributes"]["node"], "the recreated mesh2's name is claimed by the writer of its first admin's row, the fabric-primary: {new_claim} {claim}");
+    assert!(new_claim["end_unix_nano"].as_u64().unwrap() <= claim["start_unix_nano"].as_u64().unwrap(), "the recreated mesh2's name claim ends before mesh2.admin.1's row is claimed: {new_claim} {claim}");
     assert!(claims.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's claim is refused: {claims:?}");
     eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={} outcome=row-written over={}", s(&new_claim["trace_id"]), s(&m2["id"]), mesh_ids["mesh2"]);
     let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["incarnation_id"] == new_admin["incarnation_id"]).expect("the recreated mesh2.admin.1 reports ready");
