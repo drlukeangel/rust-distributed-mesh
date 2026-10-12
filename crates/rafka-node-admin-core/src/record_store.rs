@@ -62,9 +62,11 @@ struct Stored<T> {
 }
 
 /// A held claim's decision, made again at the publication against the row then standing on the
-/// disk at its key (its bytes; `None`: no row): `Ok(true)` the claim is written, `Ok(false)` the
-/// same row stands and nothing is written, `Err` the claim is refused, why named (its holder).
-pub type ClaimDecision = std::sync::Arc<dyn Fn(Option<&[u8]>) -> Result<bool, String> + Send + Sync>;
+/// disk at its key (its bytes; `None`: no row): `Ok(Ok(true))` the claim is written, `Ok(Ok(false))`
+/// the same row stands and nothing is written, `Ok(Err)` the claim is refused, why named (its
+/// holder). `Err`: the standing row is not a record this build recognises, refused by name and never
+/// decided as no row.
+pub type ClaimDecision = std::sync::Arc<dyn Fn(Option<&[u8]>) -> Result<Result<bool, String>, StorageError> + Send + Sync>;
 
 /// One row a store holds in its process's scratchpad.
 #[derive(Clone)]
@@ -429,8 +431,8 @@ impl FileRecords {
     fn decision<T: DeserializeOwned + 'static>(path: &Path, format: &str, decide: impl Fn(Option<&T>) -> Result<bool, String> + Send + Sync + 'static) -> ClaimDecision {
         let (path, format) = (path.to_path_buf(), format.to_string());
         std::sync::Arc::new(move |standing: Option<&[u8]>| {
-            let standing = standing.map(|b| Self::decode::<T>(&path, b, &format)).transpose().map_err(|e| e.to_string())?;
-            decide(standing.as_ref())
+            let standing = standing.map(|b| Self::decode::<T>(&path, b, &format)).transpose()?;
+            Ok(decide(standing.as_ref()))
         })
     }
 
@@ -537,10 +539,10 @@ impl FileRecords {
             return Ok(done);
         }
         let this = self.clone();
-        let (written, refused) = blocking_io(move || {
+        let (written, stands, refused) = blocking_io(move || {
             let _held = guard;
             let h = this.held().expect("a held store");
-            let (mut written, mut refused) = (0, Vec::new());
+            let (mut written, mut stands, mut refused) = (0, 0, Vec::new());
             for (key, row) in rows {
                 let (path, tmp) = (this.path(&key), this.tmp_path(&key));
                 match row {
@@ -557,7 +559,7 @@ impl FileRecords {
                     // row standing, or refused, named, and nothing written.
                     HeldRow::Claim { bytes, decide, insert } => match publish_claim(&this.0.dir, &tmp, &path, &bytes, &decide, insert)? {
                         ClaimPublished::Written => written += 1,
-                        ClaimPublished::Stands => {}
+                        ClaimPublished::Stands => stands += 1,
                         ClaimPublished::Refused(why) => refused.push(format!("{key}: {why}")),
                     },
                     HeldRow::Removed => {
@@ -566,7 +568,7 @@ impl FileRecords {
                     }
                     // A release removes the row standing at its key only while it is the holder's.
                     HeldRow::Released(holder) => {
-                        if holder(read_standing(&path)?.as_deref()).unwrap_or(false) {
+                        if let Ok(true) = holder(read_standing(&path)?.as_deref())? {
                             remove_file(&this.0.dir, &path)?;
                             written += 1;
                         }
@@ -575,10 +577,11 @@ impl FileRecords {
                 h.rows.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
             }
             *h.holding.lock().unwrap_or_else(|e| e.into_inner()) = false;
-            Ok::<(usize, Vec<String>), StorageError>((written, refused))
+            Ok::<(usize, usize, Vec<String>), StorageError>((written, stands, refused))
         })
         .await?;
         done.written = written;
+        done.stands = stands;
         done.refused = refused;
         Ok(done)
     }
@@ -600,6 +603,9 @@ pub struct StorePublished {
     pub held: usize,
     /// Why the rows are still held.
     pub why_held: Option<String>,
+    /// The held claims whose row the publication found standing at their key (the same row, put by
+    /// another writer of the same identity): nothing written for them.
+    pub stands: usize,
     /// The held claims the publication refused against the row standing at their key, each
     /// `<key>: <why>` naming the holder: none of them was written.
     pub refused: Vec<String>,
@@ -660,14 +666,20 @@ impl Publication {
         self.stores.iter().map(|s| s.held).sum()
     }
 
+    /// The held claims whose row stood at their key already, nothing written for them.
+    pub fn stands(&self) -> usize {
+        self.stores.iter().map(|s| s.stands).sum()
+    }
+
     /// The held claims refused against the row standing at their key, never written.
     pub fn refused(&self) -> usize {
         self.stores.iter().map(|s| s.refused.len()).sum()
     }
 
     /// `<store>=<written>` for each store that wrote rows, `<store> dropped <n>: <why>` for each that
-    /// dropped them, `<store> held <n>: <why>` for each still holding them and `<store> refused <n>:
-    /// <key>: <why>; ...` for each whose held claims were refused, comma-separated.
+    /// dropped them, `<store> held <n>: <why>` for each still holding them, `<store> stands <n>` for
+    /// each whose held claims found their row standing and `<store> refused <n>: <key>: <why>; ...` for
+    /// each whose held claims were refused, comma-separated.
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
         for s in &self.stores {
@@ -679,6 +691,9 @@ impl Publication {
             }
             if s.held > 0 {
                 parts.push(format!("{} held {}: {}", s.store, s.held, s.why_held.as_deref().unwrap_or("")));
+            }
+            if s.stands > 0 {
+                parts.push(format!("{} stands {}", s.store, s.stands));
             }
             if !s.refused.is_empty() {
                 parts.push(format!("{} refused {}: {}", s.store, s.refused.len(), s.refused.join("; ")));
@@ -725,7 +740,7 @@ impl Scratchpad {
         let mut out = Publication::default();
         for store in stores {
             let done = store.publish().await?;
-            if done.written > 0 || done.dropped > 0 || done.held > 0 || !done.refused.is_empty() {
+            if done.written > 0 || done.dropped > 0 || done.held > 0 || done.stands > 0 || !done.refused.is_empty() {
                 out.stores.push(done);
             }
         }
@@ -786,7 +801,7 @@ fn publish_claim(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8], decide: &Cla
     if insert && insert_file(dir, tmp, path, bytes)? {
         return Ok(ClaimPublished::Written);
     }
-    match decide(read_standing(path)?.as_deref()) {
+    match decide(read_standing(path)?.as_deref())? {
         Ok(true) => write_file(dir, tmp, path, bytes).map(|()| ClaimPublished::Written),
         Ok(false) => Ok(ClaimPublished::Stands),
         Err(why) => Ok(ClaimPublished::Refused(why)),
@@ -1054,6 +1069,36 @@ mod tests {
         let later = FileRecords::open_held(&d, "later", &w, &pad, "later".into()).await.unwrap();
         assert!(!later.holding(), "a store opened after the publication writes to the disk from its open");
         assert_eq!(pad.publish().await.unwrap().written(), 0, "a second publication finds nothing held");
+    }
+
+    /// CONTRACT (this module: "a file this build does not recognise ... is refused by name, never read
+    /// as a value"; CLAUDE.md: a reader that does not recognise a value refuses with a named reason):
+    /// a held claim, and a held release, whose key holds at the publication a file this build does not
+    /// recognise end the publication by name, naming the file: neither is decided as if no row stood
+    /// there, and the file stands. Must NOT happen: an unrecognised row overwritten by a claim, or a
+    /// release falling through to "not the holder's".
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_held_claim_or_release_over_an_unrecognised_row_ends_the_publication_by_name() {
+        let d = tempdir("records-unrecognised-claim");
+        let w = crate::model::IncarnationId("held".into());
+        let foreign = br#"{"format":"thing/9","record":"theirs"}"#;
+        for (key, release) in [("claimed", false), ("released", true)] {
+            let pad = Scratchpad::new();
+            let r = FileRecords::open_held(&d, "things", &w, &pad, "things".into()).await.unwrap();
+            if release {
+                r.remove_released::<String>(key, "thing/1", |_| true).await.unwrap();
+            } else {
+                r.write_claimed(key, "thing/1", &"mine".to_string(), |standing: Option<&String>| Ok(standing.is_none())).await.unwrap();
+            }
+            let file = d.join("things").join(format!("{key}.json"));
+            std::fs::write(&file, foreign).unwrap();
+            match pad.publish().await {
+                Err(StorageError::Unrecognised { file: named, reason }) => assert!(named.ends_with(&format!("{key}.json")) && reason.contains("thing/9"), "{key}: {named}: {reason}"),
+                other => panic!("{key}: the publication over an unrecognised row answered {other:?}"),
+            }
+            assert_eq!(std::fs::read(&file).unwrap(), foreign, "{key}: the unrecognised row stands");
+        }
     }
 
     /// CONTRACT (R14 items 2 and 4): at its scratchpad's publication a store whose gate says its
