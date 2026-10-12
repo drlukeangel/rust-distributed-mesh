@@ -1813,3 +1813,44 @@ fn a_handoff_held_ends_the_owners_wait_with_its_manifest_before_a_later_proven_e
     });
     assert_eq!(end.ok(), Some(manifest), "the handoff held ends the wait with its manifest");
 }
+
+/// CONTRACT: the owner's wait for the leaving mesh's handoff has no timer (node-rpc-envelope.md,
+/// "Caller execution and certainty": a lost step leaves the workflow incomplete and "a later attempt
+/// resumes from the recorded receipts"; mesh-delete.md, "Forbidden proof": "a timeout never proves a
+/// member exited"). With no handoff, no proof and no change of the view, the wait is still open an
+/// hour later; it ends on the event that comes next, here the handoff. Must NOT happen: the wait
+/// ending by itself after 120 s (the leave stems' attempt 1, trace b84c9abc66ec8a8cee045c1e871514cb).
+#[test]
+fn the_owners_wait_is_still_open_an_hour_after_it_began_and_ends_on_the_handoff_that_arrives() {
+    let cap = capture();
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let book = LeaveBook::default();
+    let (key, handoff, final_primary) = open_leave(&book, &records);
+    let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: live_roster(&records).unwrap(), final_primary: final_primary.clone(), final_runtime: None, receipts: Vec::new() };
+    let (open_after_an_hour, end, trace_id) = run_paused(&cap, async {
+        let root = tracing::info_span!("cell.owner-wait-no-timer", operation = %key.operation);
+        let trace_id = trace_id(&root);
+        let (_view_tx, view_rx) = tokio::sync::watch::channel(0u64);
+        let (k, primary) = (key.clone(), format!("{} {}", final_primary.node, final_primary.incarnation_id));
+        let wait = tokio::spawn(tracing::Instrument::instrument(async move { await_handoff(&k, &primary, handoff, view_rx, || std::future::ready(None)).await }, root.clone()));
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(std::time::Duration::from_secs(3600)).await;
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        let open_after_an_hour = !wait.is_finished();
+        if open_after_an_hour {
+            assert!(book.resolve(&key, manifest.clone()), "the first outcome of the leave");
+        }
+        (open_after_an_hour, wait.await.unwrap(), trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("owner-wait-no-timer");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    assert!(open_after_an_hour, "no event ended the wait, so no timer may: it ended on its own with {end:?}");
+    assert_eq!(end.ok(), Some(manifest), "the handoff that arrives ends the wait with its manifest");
+}
