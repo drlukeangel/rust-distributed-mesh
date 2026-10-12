@@ -380,6 +380,14 @@ fn at_ns(sp: &Value) -> u64 {
 async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     let cell = "a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts";
     let (mut estate, nodes) = fabric(cell).await;
+    // The rows a mesh-primary writes live in its scratchpad until the fabric's state-commit publishes them
+    // (node-identity-and-state.md, "Day zero"): a mesh-primary changed before then hands its successor no
+    // row to read. This cell changes the fabric-primary's mesh-primary seat twice, so the fabric commits first.
+    wait_for("the fabric is ready-for-traffic: state-commit has published every writer's rows", Duration::from_secs(60), || async {
+        let (_, f) = estate.get("/api/fabric").await;
+        (f["status"] == "ready-for-traffic").then_some(())
+    })
+    .await;
     let p = fabric_primary(&nodes).expect("one fabric primary");
     let p_node = node(&nodes, &p).clone();
     let p_id = s(&p_node["node_id"]);
