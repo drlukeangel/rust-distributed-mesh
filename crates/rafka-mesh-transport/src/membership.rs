@@ -1917,6 +1917,9 @@ struct View {
     /// what mesh-left names the mesh by when the projection it holds states no MeshId any more (the
     /// fabric-primary's aggregate of a deleted mesh has no digests, R-NS1 item 2).
     mesh_names: Arc<Mutex<HashMap<MeshId, String>>>,
+    /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12), shared with its
+    /// membership; `None` while the birth holds its launch name (`node`).
+    held_name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>,
 }
 
 /// A mesh this node applied mesh-left for (R-MD1 item 3: "MeshLeft applies Gone and the terminal
@@ -1952,9 +1955,31 @@ impl View {
         view
     }
 
+    /// The name this birth holds now: the one its row gave it, else its launch name.
+    fn own_name(&self) -> String {
+        self.held_name.lock().unwrap().as_ref().map(|n| n.to_string()).unwrap_or_else(|| self.node.clone())
+    }
+
+    /// The departure a mesh status's `publisher` resolves to, if any. The departed fence is the
+    /// NodeId (gossip.md §3.1 receiver rules), and a status names its publisher by path.name only, so
+    /// the name resolves to the exact birth that holds it here now: this birth, when the name is its
+    /// own; else a live birth this node holds under it. A departure held under the name is then a
+    /// predecessor's and refuses nothing (a node-admin joining a live mesh at a departed birth's
+    /// path.name adopts the mesh's held status, fabric-authority.md §7). Only a name no live birth
+    /// holds resolves to its departed holder: that departure is the answer.
+    fn departed_publisher(&self, publisher: &str) -> Option<LifecycleOp> {
+        if self.own_name() == publisher {
+            return None;
+        }
+        if self.book.all().iter().any(|d| d.node.name.to_string() == publisher && !self.book.is_departed(d.node.node_id.as_str())) {
+            return None;
+        }
+        self.book.departed().into_iter().find(|op| op.name.to_string() == publisher)
+    }
+
     /// Hold a status frame if it is newer than the one held: the one door for a status heard on a
-    /// channel, replayed or answered by an entry pull. A mesh status whose publisher's birth is held
-    /// departed (its mesh's MeshLeft, or its own NodeDeleted), with no live birth holding that name,
+    /// channel, replayed or answered by an entry pull. A mesh status whose publisher resolves to a
+    /// departed birth ([`View::departed_publisher`]: its mesh's MeshLeft, or its own NodeDeleted)
     /// arrived after the publisher left and is refused by name: nothing of a mesh that left is held
     /// again or replayed. Every other mesh status heard opens one span saying whether it was taken
     /// (gossip.md: "the held status, until the next change"; a repeat of the change held, or an
@@ -1965,11 +1990,9 @@ impl View {
             self.book.statuses.take(f, fabric);
             return;
         };
-        if let Some(op) = self.book.departed().into_iter().find(|op| op.name.to_string() == *publisher) {
-            if !self.book.all().iter().any(|d| d.node.name.to_string() == *publisher) {
-                reject_departed_overlay(&self.node, &op, "mesh-status");
-                return;
-            }
+        if let Some(op) = self.departed_publisher(publisher) {
+            reject_departed_status(&self.node, &op, f, via);
+            return;
         }
         let span = tracing::info_span!(
             "rdm.mesh.membership.update.via-mesh-status",
@@ -2934,7 +2957,8 @@ impl Membership {
             Box::pin(async move { channel.broadcast(&f).await })
         });
         let forward_path = ForwardPath::new(view.forwarder.clone(), Arc::default(), sink);
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name: Arc::default() };
+        let name = view.held_name.clone();
+        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
         me.watch_meshes(node.to_string());
         Ok(me)
     }
@@ -4336,6 +4360,32 @@ fn reject_departed_overlay(holder: &str, op: &LifecycleOp, frame: &'static str) 
         operation = %op.operation,
     )
     .in_scope(|| tracing::info!("a lifecycle overlay of a departed birth: refused, the departure stands"));
+}
+
+/// Why a mesh status was not taken: its publisher's name resolves to the departed birth `op`
+/// ([`View::departed_publisher`]). The span names the departure and the status refused.
+fn reject_departed_status(holder: &str, op: &LifecycleOp, f: &Frame, via: &'static str) {
+    let Frame::MeshStatus { mesh, status, publisher, forwarded_by, changed_at_rafka_ms } = f else {
+        return;
+    };
+    tracing::info_span!(
+        "rdm.mesh.membership.reject.via-departed-birth",
+        holder,
+        node = %op.name,
+        node_id = %op.node_id,
+        incarnation_id = %op.incarnation.0,
+        frame = "mesh-status",
+        build_id = %op.build_id,
+        attempt = op.attempt,
+        operation = %op.operation,
+        mesh = %mesh,
+        status = %status,
+        publisher = %publisher,
+        forwarded_by = forwarded_by.as_deref().unwrap_or(""),
+        changed_at_rafka_ms = *changed_at_rafka_ms,
+        via,
+    )
+    .in_scope(|| tracing::info!("a mesh status whose publisher name no live birth holds, and whose last holder departed: refused, the departure stands"));
 }
 
 /// Why a digest was not taken.
@@ -7414,6 +7464,14 @@ mod tests {
         assert_eq!(refused.len(), 1, "{refused:?}");
         assert_eq!((refused[0]["frame"].as_str(), refused[0]["holder"].as_str(), refused[0]["node_id"].as_str(), refused[0]["incarnation_id"].as_str()), ("mesh-status", "mesh2.rpc.1", x.as_str(), x_inc.0.as_str()));
 
+        // A birth its row renamed off the name (launched at it, now `.old`) holds the name no more.
+        let renamed = View::new("mesh2", "mesh2.admin.1");
+        *renamed.held_name.lock().unwrap() = Some("mesh2.admin.1.old".parse().unwrap());
+        assert!(renamed.book.depart(departure.clone()));
+        renamed.take(&status, &fabric, "mesh-channel");
+        assert_eq!(renamed.book.statuses.mesh("mesh2"), None, "its own name is the one its row gave it, not its launch name");
+        assert_eq!(spans.named("rdm.mesh.membership.reject.via-departed-birth").len(), 2, "refused by name at the renamed birth too");
+
         // A node that holds Y's live birth under the name takes it.
         let (y, y_inc) = (NodeId::mint(), IncarnationId::mint());
         let mut y_birth = digest(&y, &y_inc, None, MemberStatus::Pending, 100);
@@ -7423,7 +7481,7 @@ mod tests {
         assert!(peer.book.record(y_birth));
         peer.take(&status, &fabric, "mesh-channel");
         assert_eq!(peer.book.statuses.mesh("mesh2"), held, "the name resolves to Y's live birth: taken");
-        assert_eq!(spans.named("rdm.mesh.membership.reject.via-departed-birth").len(), 1, "no second refusal");
+        assert_eq!(spans.named("rdm.mesh.membership.reject.via-departed-birth").len(), 2, "no refusal where Y lives");
     }
 
     /// CONTRACT (R-NS1 change 3): a NodeStopped arriving after its birth's mesh left, and a
