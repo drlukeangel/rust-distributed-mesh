@@ -1174,6 +1174,54 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         }
         nodes.entry(name).or_insert(n);
     }
+    // An own-mesh birth this admin holds only from its mesh-primary's projection (gossip.md §3.1
+    // `Members`: what every node-admin holds of every Mesh; the member's own Digest never reached this
+    // admin): listed as the projection carried it, never routable, its status the projection's while
+    // it is within the staleness floor of this admin first holding it, and past the floor marked
+    // `PendingReconnect` by this admin's own pruner (node-recovery.md "Detection and proof" step 1),
+    // so the window it keeps runs from that first hold, whichever admin takes the seat.
+    for (d, age) in book.projected_unheard_at(now) {
+        if &d.fabric_id != fabric_id {
+            continue;
+        }
+        heard.insert(d.node.incarnation.clone());
+        let Some(name) = rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.name) else { continue };
+        if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
+            continue;
+        }
+        if let Some(id) = d.mesh_id.clone() {
+            mesh_ids.entry(name.mesh.clone()).or_insert(id);
+        }
+        let mut n = Node::allocated(name.clone());
+        n.node_id = d.node.node_id.clone();
+        n.endpoint_id = Some(d.node.endpoint_id.clone());
+        n.incarnation_id = Some(d.node.incarnation.clone());
+        n.provider = Some(provider);
+        n.status = if records.is_exited(&d.node.node_id, &d.node.incarnation) {
+            NodeStatus::Dead
+        } else if age <= book.staleness_floor() {
+            node_status(d.status)
+        } else if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
+            NodeStatus::Dead
+        } else {
+            NodeStatus::PendingReconnect
+        };
+        n.routable = false;
+        n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
+        n.admin_api_base = d.admin_api_base.clone();
+        n.config = d.config.clone();
+        if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
+            n.listeners = vec![("control".to_string(), addr)];
+        }
+        n.transport_addr = Some(d.node.transport_addr);
+        n.data_dir = d.data_dir.clone();
+        n.deployment_id = d.node.runtime.as_ref().map(|f| DeploymentId(f.deployment_id.clone()));
+        if let Some(r) = launched(&recorded, &n.incarnation_id) {
+            n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
+            n.data_dir = r.data_dir.clone();
+        }
+        nodes.entry(name).or_insert(n);
+    }
     // Births this admin started that have not reported yet. A launch record
     // stands in for a birth only until membership speaks for it: once heard,
     // it never revives the birth (another admin may have retired it since). A
@@ -1713,7 +1761,10 @@ impl RecoverySubmitter {
     /// birth carries, else the birth's own durable runtime row (a point read by its key).
     pub(crate) async fn inspect(&self, node: &Node) -> Inspected {
         let Some(incarnation) = node.incarnation_id.clone() else { return Inspected::NotExited(format!("{} holds no incarnation to inspect", node.name)) };
-        let held_row = self.book.get(node.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
+        // The birth's own digest, else the birth as its mesh-primary's projection carried it to this
+        // admin (gossip.md §3: the projection preserves the RuntimeFact an authority-bearing admin
+        // needs to manage the birth).
+        let held_row = self.book.get(node.node_id.as_str()).or_else(|| self.book.projected_at(node.node_id.as_str(), std::time::Instant::now())).filter(|(dg, _)| dg.node.incarnation == incarnation);
         let row = if held_row.as_ref().is_some_and(|(dg, _)| dg.node.runtime.is_some()) {
             None
         } else {

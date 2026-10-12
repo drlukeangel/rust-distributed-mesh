@@ -4273,6 +4273,14 @@ pub struct DigestBook {
     /// The status this book holds for each own-mesh birth, by NodeId: what the mesh-primary's
     /// projection said, or, while this book's holder is the primary, what it authored.
     member_statuses: Arc<Mutex<HashMap<String, (IncarnationId, rafka_mesh_entity::MemberStatus)>>>,
+    /// The own-mesh births this book holds only from its mesh-primary's projection, by NodeId: the
+    /// birth as the projection carried it (its identity, endpoint and runtime fact: gossip.md §3,
+    /// "needed by an authority-bearing admin to manage that birth"), and the instant this book first
+    /// held it. The member's own Digest never reached this book, so it is unheard since that instant
+    /// (node-recovery.md "Detection and proof" step 1). A projection carries no liveness: a later
+    /// entry of the same birth moves nothing of it, and a version that no longer lists it is no
+    /// departure. The member's own digest supersedes it; its departure or stop removes it.
+    projected: Arc<Mutex<HashMap<String, (MeshDigest, Instant)>>>,
     /// The stop and restart overlays that ended here (their birth rejoined), by operation key: a
     /// later copy of the same overlay (a snapshot built before the rejoin, the primary's round
     /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
@@ -4466,6 +4474,7 @@ impl DigestBook {
             own_mesh: Arc::default(),
             own: Arc::default(),
             member_statuses: Arc::default(),
+            projected: Arc::default(),
             ended_overlays: Arc::default(),
             executed: Arc::default(),
             holder: Arc::default(),
@@ -4535,6 +4544,7 @@ impl DigestBook {
         self.in_flight.lock().unwrap().remove(&op.key());
         self.overlays_moved();
         self.member_statuses.lock().unwrap().remove(&id);
+        self.projected.lock().unwrap().remove(&id);
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-deleted",
@@ -4859,6 +4869,7 @@ impl DigestBook {
         self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), StopMark { incarnation: op.incarnation.clone(), held_seq: seq, held: held_digest, latest: None, carried: carried.clone() });
         // A stopped birth's status is the overlay: the status held for it ends with it.
         self.member_statuses.lock().unwrap().remove(op.node_id.as_str());
+        self.projected.lock().unwrap().remove(op.node_id.as_str());
         let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-stopped",
@@ -5216,6 +5227,8 @@ impl DigestBook {
         if !self.own_mesh_member(d) || self.is_departed(d.node.node_id.as_str()) || self.is_stopped(d) {
             return false;
         }
+        // The birth itself, as the projection carries it, when this book holds no digest of it.
+        self.hold_projected_at(d, Instant::now());
         let prior = {
             let mut statuses = self.member_statuses.lock().unwrap();
             let prior = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s);
@@ -5263,23 +5276,40 @@ impl DigestBook {
     }
 
     /// Hold the own-mesh birth `d` its mesh-primary's projection lists, received at `now`, when this
-    /// book holds no digest of it.
+    /// book holds no digest of it ([`DigestBook::projected`]): first held at `now`, or kept as first
+    /// held when this exact birth is held already (a projection is no liveness); a later birth of
+    /// the node replaces an earlier one, first held at `now`.
     pub fn hold_projected_at(&self, d: &MeshDigest, now: Instant) {
-        let _ = (d, now);
+        if self.inner.lock().unwrap().contains_key(d.node.node_id.as_str()) {
+            return;
+        }
+        let mut projected = self.projected.lock().unwrap();
+        match projected.get_mut(d.node.node_id.as_str()) {
+            Some((held, _)) if held.node.incarnation == d.node.incarnation => {}
+            Some((held, _)) if held.node.supersedes.as_ref() == Some(&d.node.incarnation) => {}
+            _ => {
+                projected.insert(d.node.node_id.to_string(), (d.clone(), now));
+            }
+        }
     }
 
     /// The own-mesh birth of `node_id` this book holds only from its mesh-primary's projection, and
-    /// how long it has gone unheard at `now`.
+    /// how long it has gone unheard at `now`: since this book first held it. `None` once the
+    /// member's own digest is held, or the node departed or stopped.
     pub fn projected_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
-        let _ = (node_id, now);
-        None
+        let heard = self.inner.lock().unwrap().contains_key(node_id);
+        let stopped = self.stopped_marks.lock().unwrap().contains_key(node_id);
+        if heard || stopped || self.is_departed_at(node_id, now) {
+            return None;
+        }
+        self.projected.lock().unwrap().get(node_id).map(|(d, at)| (d.clone(), now.saturating_duration_since(*at)))
     }
 
-    /// Every own-mesh birth this book holds only from its mesh-primary's projection, each with how
-    /// long it has gone unheard at `now`.
+    /// Every own-mesh birth this book holds only from its mesh-primary's projection
+    /// ([`DigestBook::projected_at`]), each with how long it has gone unheard at `now`.
     pub fn projected_unheard_at(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
-        let _ = now;
-        Vec::new()
+        let ids: Vec<String> = self.projected.lock().unwrap().keys().cloned().collect();
+        ids.iter().filter_map(|id| self.projected_at(id, now)).collect()
     }
 
     /// The open stop overlays of stopped births this book never held a digest of (an admin that
@@ -5432,6 +5462,7 @@ impl DigestBook {
         self.in_flight.lock().unwrap().retain(|_, o| o.node_id != op.node_id);
         self.overlays_moved();
         self.member_statuses.lock().unwrap().remove(&id);
+        self.projected.lock().unwrap().remove(&id);
         self.inner.lock().unwrap().remove(&id);
         true
     }
