@@ -750,29 +750,6 @@ impl TopologySink for Records {
     }
 }
 
-/// The executor an attempt's Won claim names: the claim fact this admin's Build log holds, else the
-/// one the fabric-primary's log holds (a claim the Build topic has not delivered here yet is read
-/// from the admin that decided it, `FetchBuildFacts`).
-struct AdminClaims {
-    me: PathName,
-    builds: Arc<dyn BuildStateAdapter>,
-    topology: Arc<RwLock<Topology>>,
-    client: Arc<rafka_node_rpc::NodeRpcClient>,
-}
-
-#[async_trait::async_trait]
-impl crate::fabric_handover::WonClaims for AdminClaims {
-    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, crate::fabric_handover::SourceFailure> {
-        let local = self.builds.facts().await.map_err(|e| crate::fabric_handover::SourceFailure { source: format!("the Build log of {}", self.me), op: format!("read the claim of attempt {attempt} of Build {build_id}"), cause: e.to_string() })?;
-        if let Some(e) = crate::fabric_handover::won_claim_in(&local, build_id, attempt) {
-            return Ok(Some(e));
-        }
-        let Some(fp) = self.topology.read().await.fabric_primary().cloned() else { return Ok(None) };
-        let read = crate::build_facts_read::fetch_build_facts(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(fp.node_id.clone()), &crate::build::BuildId(build_id.to_string())).await.map(|f| f.facts);
-        crate::fabric_handover::won_claim_from_read(read, build_id, attempt, &format!("{} ({})", fp.name, fp.node_id))
-    }
-}
-
 /// What an election takes beside the nodes: the seat records this admin holds, and the births
 /// proven gone. A birth is proven gone when its runtime was found exited, when its departure was
 /// heard, or when a later birth announced that it replaced it (`supersedes`). Silence, an
@@ -5571,7 +5548,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 contacts: crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) },
                                 handovers: Default::default(),
                                 decisions: builds.decisions(),
-                                claims: Arc::new(AdminClaims { me: name.clone(), builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
                                 cut_off_writes: Arc::new(crate::fabric_handover::SeatStores { mesh: mesh_files.clone(), nodes: nodes_files.clone(), fabric: fabric_files.clone(), status: status_files.clone() }).cut_off_writes(),
                             });
