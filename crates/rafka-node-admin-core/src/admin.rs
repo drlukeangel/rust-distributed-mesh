@@ -2864,7 +2864,7 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
         }
         // node.joined begins this birth's next cycle: the node.started it reports is owed afresh to its
         // mesh's primary, before its declarer runs again.
-        s.declarer.begin_own_cycle(&s.name, &s.incarnation.0);
+        s.declarer.begin_own_cycle(&me, &s.incarnation.0);
         // Back on the topic means a neighbour: only then does this admin say it is back, once, as
         // Pending, so every node that held it parked or restarting hears the rejoin.
         membership.wait_for_neighbour().await;
