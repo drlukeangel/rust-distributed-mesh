@@ -76,6 +76,10 @@ pub struct ControlPlane {
     /// reconciling to the durable write that makes the next one, by every path that starts work
     /// (a submitted change, an opened attempt, the drift check).
     pub admission: Arc<tokio::sync::Mutex<()>>,
+    /// Whether the initial fabric has first reached ready-for-traffic: until it has, a workflow that
+    /// moves a seat or writes a caller's row is refused `fabric-not-ready` (states.md, "The initial
+    /// fabric before ready-for-traffic").
+    pub first_ready: crate::fabric_state::FirstReady,
 }
 
 /// What `/api/shutdown` and `/api/fabric` need of this admin's fabric shutdown state.
@@ -111,7 +115,15 @@ impl ControlPlane {
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
             time,
             admission: Arc::new(tokio::sync::Mutex::new(())),
+            first_ready: crate::fabric_state::FirstReady::new(),
         }
+    }
+
+    /// This control plane reading whether the initial fabric first reached ready-for-traffic from
+    /// `first_ready`, the handle its admin's fabric state sets.
+    pub fn with_first_ready(mut self, first_ready: crate::fabric_state::FirstReady) -> Self {
+        self.first_ready = first_ready;
+        self
     }
 
     /// This control plane keeping attempt contexts in `contexts` (the admin's own data dir).

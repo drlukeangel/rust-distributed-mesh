@@ -280,6 +280,9 @@ pub struct StatusAuthority {
     /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
     /// otherwise). `None` only where no admin owns a digest book.
     pub book: Option<rafka_mesh_transport::membership::DigestBook>,
+    /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
+    /// `UpdateNode` is refused `RejectedFabricNotReady` and nothing is written.
+    pub first_ready: crate::fabric_state::FirstReady,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -1068,6 +1071,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1184,6 +1188,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
         };
         let birth = rpc.incarnation_id.clone().unwrap();
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
@@ -1243,6 +1248,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
         }
     }
 
@@ -1534,6 +1540,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
         };
         for n in [&restarted, &deleted, &standing] {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1624,6 +1631,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);

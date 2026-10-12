@@ -63,6 +63,30 @@ impl FabricState {
     }
 }
 
+/// Whether the initial fabric has first reached ready-for-traffic (states.md, "The initial fabric
+/// before ready-for-traffic"). Once true it stays true: a resize or roll puts the fabric back to
+/// pending, and the rows it already published to the store root stay there. One handle is shared by
+/// everything on an admin that refuses a workflow until it is true.
+#[derive(Debug, Clone, Default)]
+pub struct FirstReady(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl FirstReady {
+    /// A fabric that has not reached ready-for-traffic.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that the fabric is ready-for-traffic.
+    pub fn reach(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the fabric has reached ready-for-traffic at some time, or holds it `now`.
+    pub fn reached(&self, now: crate::model::ScopeStatus) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst) || matches!(now, crate::model::ScopeStatus::ReadyForTraffic | crate::model::ScopeStatus::Degraded)
+    }
+}
+
 /// Which of the two rounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RoundKind {

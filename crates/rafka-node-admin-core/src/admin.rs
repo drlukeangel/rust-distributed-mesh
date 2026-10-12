@@ -296,6 +296,10 @@ pub struct Records {
     /// The fabric state this admin projects: authoritative on the fabric-primary, the last
     /// published state on every other admin (`crate::fabric_rounds`).
     fabric_state: Mutex<crate::fabric_state::FabricState>,
+    /// Whether the fabric this admin projects has first reached ready-for-traffic: set by the first
+    /// `set_fabric_state(ReadyForTraffic)` and never cleared (states.md, "The initial fabric before
+    /// ready-for-traffic"). The control plane and the status authority read this one handle.
+    pub first_ready: crate::fabric_state::FirstReady,
     /// What keeps the fabric in its state, named (`None`: nothing, or not the fabric-primary).
     fabric_blocker: Mutex<Option<String>>,
     /// The fabric state the fabric-primary last put in a FabricStatus frame. The climb enters the
@@ -5599,6 +5603,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     },
                                     loads: control.loads.get().cloned(),
                                     book: Some(book.clone()),
+                                    first_ready: records.first_ready.clone(),
                                 }));
                             }
                             // The Node RPC door: opened by the first view installed that holds this admin's exact birth
@@ -9462,6 +9467,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            first_ready: Default::default(),
         };
         let _ = Declared::default();
 

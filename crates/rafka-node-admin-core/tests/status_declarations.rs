@@ -112,6 +112,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         row_moved: Default::default(),
         loads: None,
         book: None,
+        first_ready: Default::default(),
     });
     // The rig's view stands for the admin's projection: a moved row moves the birth's entry.
     let moved_view = topology.clone();
@@ -1283,6 +1284,47 @@ fn labels(l: &[&str]) -> std::collections::BTreeSet<String> {
 
 fn update_node_tagged(b: &Birth, name: &str, tags: &[&str]) -> StatusRequest {
     StatusRequest::UpdateNode { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), name: name.into(), tags: labels(tags) }
+}
+
+/// CONTRACT (R-PC1, states.md "The initial fabric before ready-for-traffic"; node-rpc-envelope.md Status
+/// 0x1B): until the initial fabric has first reached ready-for-traffic, a caller's `UpdateNode` at the
+/// node's mesh-primary is refused `RejectedFabricNotReady`, naming the workflow with its node and the
+/// fabric's status (state-sync). Nothing is written: no row at `mesh1.rpc.1`, no tags index entry, and the
+/// birth is told nothing. One `rdm.node_admin.node.reject.via-fabric-not-ready` span says the same, and
+/// the update span ends `rejected-fabric-not-ready`. Once the fabric has first reached ready-for-traffic
+/// the same put ends `NodeUpdated`, and it still does when a resize has put the fabric back to pending.
+/// What must NOT happen: a row written to a scratchpad the successor of this mesh-primary cannot read.
+#[test]
+fn a_node_update_before_the_fabric_first_reaches_ready_for_traffic_is_refused_by_name_and_writes_nothing() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let rpc1 = &b["rpc1"];
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        rig.topology.write().await.fabric.status = ScopeStatus::StateSync;
+
+        let refused = reply(&call(&rig, &b["admin2"], &update_node_tagged(rpc1, "mesh1.rpc.1", &["rabbit"])).await);
+        assert_eq!(refused, StatusReply::RejectedFabricNotReady { workflow: "node.update mesh1.rpc.1".into(), status: "state-sync".into() });
+        assert_eq!(rig.nodes.node_row_at(&rpc1.node.name).await.unwrap(), None, "no row is written");
+        assert!(rig.nodes.tagged("rabbit").await.unwrap().is_empty(), "no tags index entry is written");
+        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+
+        // The fabric reaches ready-for-traffic: the same put is admitted.
+        rig.authority.first_ready.reach();
+        rig.topology.write().await.fabric.status = ScopeStatus::Pending;
+        let put = reply(&call(&rig, &b["admin2"], &update_node_tagged(rpc1, "mesh1.rpc.1", &["rabbit"])).await);
+        assert_eq!(put, StatusReply::NodeUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() }, "admitted once the fabric has first been ready-for-traffic, a resize notwithstanding");
+        assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [rpc1.node.node_id.clone()].into());
+    });
+    let rejects = cap.spans("rdm.node_admin.node.reject.via-fabric-not-ready");
+    assert_eq!(rejects.len(), 1, "{rejects:?}");
+    let (trace_id, attrs) = &rejects[0];
+    assert_eq!((attrs.get("workflow").map(String::as_str), attrs.get("status").map(String::as_str)), (Some("node.update mesh1.rpc.1"), Some("state-sync")), "{attrs:?}");
+    let updates = cap.spans("rdm.node_admin.node.update.via-update-node");
+    let outcomes: Vec<_> = updates.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect();
+    assert_eq!(outcomes, vec!["rejected-fabric-not-ready".to_string(), "node-updated".to_string()], "{updates:?}");
+    eprintln!("trace {trace_id}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.update mesh1.rpc.1 status=state-sync; update outcome=rejected-fabric-not-ready");
 }
 
 /// CONTRACT (R-TG1, Luke 2026-10-12: tags are labels in the node's meta, set through node.update;
