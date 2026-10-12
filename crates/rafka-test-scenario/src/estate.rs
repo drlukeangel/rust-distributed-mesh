@@ -795,6 +795,13 @@ impl Estate {
         }
     }
 
+    /// Wait until the entry admin reports the fabric ready-for-traffic: the state a caller's node
+    /// workflow needs, and the one a cell reaches before it faults a node or moves a seat (states.md
+    /// "The initial fabric before ready-for-traffic").
+    pub async fn fabric_ready(&self, within: Duration) {
+        wait_for("the fabric is ready-for-traffic", within, || async { matches!(self.get("/api/fabric").await.1["status"].as_str(), Some("ready-for-traffic" | "degraded")).then_some(()) }).await;
+    }
+
     /// Whether the initial fabric refuses this request until it is ready-for-traffic: a node restart,
     /// replace, drain or stop, a node delete or a mesh delete.
     fn needs_ready_fabric(method: &str, path: &str) -> bool {
