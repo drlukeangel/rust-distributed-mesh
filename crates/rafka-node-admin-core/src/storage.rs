@@ -1662,4 +1662,40 @@ mod tests {
         let reader = FileNodesStorage::open(&d.join("r"), &crate::store_root::StoreRoot::at(&dir), "mesh2", &IncarnationId::mint()).await.unwrap();
         assert_eq!(reader.node_row_at(&row_b.name).await.unwrap(), Some(row_b), "A's held release left B's row standing at mesh2.rpc.1");
     }
+
+    /// CONTRACT (`NodesStorage::node_row_name`: "names exactly the row the node holds"; R14 item 3: the
+    /// name claim is the sole writer's conditional write, decided again at publication; CLAUDE.md read
+    /// rule: an `id` index entry is a lookup structure over the rows, never a fact of its own): before
+    /// the fabric's first state-commit writers A and B each hold a claim of mesh2.rpc.1 for their own
+    /// node; B publishes first, so A's publication refuses A's row claim against B's standing row. A's
+    /// id index entry follows its row's publication: it is decided again at A's publication against
+    /// the row then standing at the key it names, and is not written, so no reader finds A's node at
+    /// mesh2.rpc.1. And an entry naming a key whose row another node holds (one a write left between
+    /// its two files) answers nothing. Must NOT happen: A's entry published blindly beside its refused
+    /// claim, and `node_row_name` naming B's row as A's node's.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_held_id_entry_follows_its_rows_publication_and_names_only_a_row_its_node_holds() {
+        let d = crate::record_store::tempdir("held-id-entry");
+        let dir = d.join("root");
+        let (pad_a, pad_b) = (crate::record_store::Scratchpad::new(), crate::record_store::Scratchpad::new());
+        let nodes_a = FileNodesStorage::open(&d.join("a"), &crate::store_root::StoreRoot::held_at(&dir, pad_a.clone()), "mesh2", &IncarnationId::mint()).await.unwrap();
+        let nodes_b = FileNodesStorage::open(&d.join("b"), &crate::store_root::StoreRoot::held_at(&dir, pad_b.clone()), "mesh2", &IncarnationId::mint()).await.unwrap();
+        let (row_a, row_b) = (row("mesh2.rpc.1"), row("mesh2.rpc.1"));
+        assert_eq!(nodes_a.put_node_row(&row_a).await, Ok(Ok(())), "A's claim wins against its scratchpad and the disk");
+        assert_eq!(nodes_b.put_node_row(&row_b).await, Ok(Ok(())), "B's claim wins against its scratchpad and the disk");
+        pad_b.publish().await.unwrap();
+        let published = pad_a.publish().await.unwrap();
+        let reader_root = crate::store_root::StoreRoot::at(&dir);
+        let reader = FileNodesStorage::open(&d.join("r"), &reader_root, "mesh2", &IncarnationId::mint()).await.unwrap();
+        assert_eq!(reader.node_row_at(&row_a.name).await.unwrap(), Some(row_b.clone()), "A's refused claim wrote nothing: mesh2.rpc.1's row is B's");
+        let ids = reader_root.nodes("mesh2").join("ids");
+        assert!(!ids.join(format!("{}.json", row_a.node_id)).exists(), "A's id entry is not published beside its refused claim: {published:?}");
+        assert_eq!(reader.node_row_name("mesh2", &row_a.node_id).await.unwrap(), None, "no reader finds A's node at mesh2.rpc.1");
+        assert_eq!(reader.node_row_name("mesh2", &row_b.node_id).await.unwrap(), Some(row_b.name.clone()), "B's entry names B's row");
+        // An entry naming a key whose row another node holds: a write that ended between its two files.
+        let torn = NodeId::mint();
+        std::fs::write(ids.join(format!("{torn}.json")), serde_json::to_vec(&serde_json::json!({ "format": ROW_ID_FORMAT, "record": { "node_id": torn, "name": row_b.name } })).unwrap()).unwrap();
+        assert_eq!(reader.node_row_name("mesh2", &torn).await.unwrap(), None, "an entry naming B's row answers nothing for another node");
+    }
 }
