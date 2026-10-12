@@ -51,9 +51,10 @@ pub(crate) struct Run {
 }
 
 /// Build {mesh1, mesh2 with `mesh2_admins` admins}, arm mesh2's primary's door at rpc.2's DrainNode
-/// receipt, submit {mesh1}, kill the held primary by exact pid, and wait for the Build to complete
-/// on a later attempt.
-pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32) -> Run {
+/// receipt (and, with `rpc1_stopped`, at rpc.1's StopNode receipt: rpc.1 stopped, its process
+/// alive, no Exited receipt, and its NodeStopped not yet published), submit {mesh1}, kill the held
+/// primary by exact pid once every cut holds, and wait for the Build to complete on a later attempt.
+pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1_stopped: bool) -> Run {
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let root = estate.root.clone();
@@ -75,11 +76,22 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32) -> Run
     let cut = "leave:rpc2-DrainNode";
     // A member's workflow runs under `<outer>/<path>` (`mesh_leave::member_operation`): the operation prefix names rpc.2's.
     door.arm(cut, json!({"kind": "receipt", "step": "DrainNode", "operation": format!("shutdown-mesh:{mesh2_id}/mesh2.rpc.2")})).await;
+    // rpc.1's stop completed (its stop-node answered stopped: drained, its mesh connections cut,
+    // its process alive) and its workflow held at that receipt: its NodeStopped, published at the
+    // next step, is never published, and it has no Exited receipt. Nothing any admin holds names it.
+    let stopped = "leave:rpc1-StopNode";
+    if rpc1_stopped {
+        door.arm(stopped, json!({"kind": "receipt", "step": "StopNode", "operation": format!("shutdown-mesh:{mesh2_id}/mesh2.rpc.1")})).await;
+    }
     let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh1]})).await;
     assert_eq!(status, 202, "{b}");
     let b = s(&b["build_id"]);
     let held = door.wait_held(cut).await;
     assert_eq!(held["hit"]["build_id"], b.as_str(), "the held receipt is the leave's: {held}");
+    if rpc1_stopped {
+        let held = door.wait_held(stopped).await;
+        assert_eq!(held["hit"]["build_id"], b.as_str(), "the held receipt is the leave's: {held}");
+    }
     // The door dies with the process: it is never released.
     let pid = estate.pid_of(&lost.0).await;
     estate.kill_pid(u32::try_from(pid).unwrap());
@@ -167,7 +179,7 @@ pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
 /// roster, which already holds the survivor, both primaries included.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_admin() {
-    let run = primary_lost_mid_leave("a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_admin", 2).await;
+    let run = primary_lost_mid_leave("a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_admin", 2, false).await;
     let survivor = if run.lost.0 == "mesh2.admin.1" { "mesh2.admin.2" } else { "mesh2.admin.1" };
     assert_resumed(&run, survivor, 4);
     // The survivor admits the leave from the accepted roster plus the amendment, from its own

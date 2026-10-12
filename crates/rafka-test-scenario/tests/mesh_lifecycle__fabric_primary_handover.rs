@@ -150,13 +150,22 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
             .await;
         }
     }
-    // The durable Node rows are not deleted: mesh1's admin still holds its own row in its data dir,
-    // and the fabric's store root holds the contact row mesh1's primary wrote for every mesh1 birth
-    // (R14: `nodes/<mesh>/` on the shared root, written by that mesh's primary).
+    // R-MN1 (mesh-delete.md "Rows", steps 3 and 7): the removal deletes every roster birth and removes
+    // no row. Each mesh1 birth's Node row stays on the fabric's store root at its path.name
+    // (`nodes/mesh1/rows/<path.name>`, R14), written Deleted under its node id: the members' by
+    // mesh1's primary, the final primary's by the fabric-primary at mesh-left. mesh1's admin still
+    // holds its own row in its data dir. A contact is a hint for a birth that may still answer
+    // (node-admin-lifecycle.md rule 5: the stored map locates live nodes); a departed birth never
+    // answers, so mesh-left drops the contact of every birth its proof set names
+    // (`via-mesh-left-contact`, read below).
     assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.admin.1's own Node row remains in {mesh1_dir}");
-    let contacts = estate.fabric_store_root().join("nodes").join("mesh1").join("contacts");
+    let shared = estate.fabric_store_root().join("nodes").join("mesh1");
     for (name, id) in mesh1_ids.iter() {
-        assert!(contacts.join(format!("{id}.json")).exists(), "the contact row of {name} ({id}) remains in {}", contacts.display());
+        let at = shared.join("rows").join(format!("{name}.json"));
+        let row: Value = std::fs::read(&at).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("the Node row of {name} ({id}) remains at {}", at.display()));
+        assert_eq!((s(&row["record"]["node_id"]), s(&row["record"]["status"])), (id.clone(), "deleted".to_string()), "{name}'s Node row is written Deleted by mesh1's removal: {row}");
+        let contact = shared.join("contacts").join(format!("{id}.json"));
+        assert!(!contact.exists(), "mesh-left dropped the contact of departed {name} ({id}): {} remains", contact.display());
     }
     // states.md: the mesh's `leaving` is entered by the leave-mesh down op, and "one commit stores
     // the row, applies it, gossips it and answers the op"; fabric-node-lifecycle.md (2.7): the mesh's
@@ -190,6 +199,17 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!(left_receipts[0]["outcome"], json!("complete"), "{}", left_receipts[0]);
     assert_eq!(left_receipts[0]["operation"], format!("shutdown-mesh:{mesh1_id}"), "keyed by the mesh's minted id");
     assert_eq!(left_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(4), "a terminal receipt for every birth of mesh1, the final primary included: {}", left_receipts[0]);
+    // mesh-left drops the contacts of the births its proof set names, the final primary included,
+    // written by the fabric-primary that records MeshLeft (mesh_leave.rs drop_departed_contacts).
+    let dropped = named(&spans, "rdm.node_admin.node.remove.via-mesh-left-contact")
+        .into_iter()
+        .find(|sp| sp["attributes"]["operation"] == format!("shutdown-mesh:{mesh1_bare}").as_str() && sp["attributes"]["error"].is_null())
+        .cloned()
+        .unwrap_or_else(|| panic!("mesh-left dropped mesh1's contacts under shutdown-mesh:{mesh1_bare}"));
+    for (name, id) in mesh1_ids.iter() {
+        assert!(s(&dropped["attributes"]["dropped"]).split(", ").any(|d| d == format!("{name} {id}")), "mesh-left dropped the contact of {name} ({id}): {dropped}");
+    }
+    eprintln!("mesh-left contacts dropped: trace {} by {} ({})", s(&dropped["trace_id"]), s(&dropped["attributes"]["node"]), s(&dropped["attributes"]["dropped"]));
 
     // mesh1 left through the mesh-leave workflow under B: every member drained, stopped and proven
     // exited in the documented order, and none of the node-removal steps ran (the Node rows stay).

@@ -205,8 +205,9 @@ fn a_node_blocked_on_its_authority_is_never_ready_until_the_authority_is() {
 
 /// CONTRACT: a retry armed AFTER the event it waits on already happened still completes. The
 /// authority becomes Ready while the first attempt is still running; when the attempt then returns
-/// `Blocked { AuthorityReady }` the node runs the hook again at once, with no further event.
-/// What must NOT happen: the node waits for an event that already went by.
+/// `Blocked { AuthorityReady }` the node runs the hook again at once, with no further event, and
+/// then runs the rest of its start to ReadyForTraffic. What must NOT happen: the node waits for an
+/// event that already went by.
 #[test]
 fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
@@ -235,6 +236,9 @@ fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
         let settled = tokio::time::timeout(WRONG, running.hydration().expect("handle").settled()).await.expect("the retry completes");
         assert_eq!(settled, HydrationState::Passed);
         assert_eq!(attempts(&spans), vec![("blocked".to_string(), "authority-ready".to_string()), ("ok".to_string(), String::new())]);
+        // node.started follows the hook's pass by the start's topology, Build-floor and rafka-time steps
+        // (node-start.md steps 4-5): the node is Ready once its authority hears it so.
+        until(&b.admin.observer.membership.book, "the authority heard the node Ready", |book| book.get(b.launch.node_id.as_str()).is_some_and(|(d, _)| d.status == MemberStatus::ReadyForTraffic)).await;
         assert_eq!(*running.status.lock().unwrap(), MemberStatus::ReadyForTraffic);
         running.stop(Duration::ZERO).await;
         let _ = std::fs::remove_dir_all(&b.dir);

@@ -4,6 +4,7 @@ use anyhow::Result;
 use iroh::endpoint::presets;
 use iroh::{Endpoint, RelayMode, SecretKey};
 use std::net::SocketAddr;
+use tracing::instrument::WithSubscriber;
 
 /// The one QUIC transport configuration every node kind binds with (node-admin, rpc nodes, the
 /// probe, role binaries): a connection idles out after `staleness_floor()` (`RDM_STALENESS_MS`,
@@ -38,17 +39,41 @@ pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
         .transport_config(transport_config())
         .clear_ip_transports()
         .bind_addr(addr)?;
-    bound(addr, builder.bind().await)
+    bound(addr, bind_under_no_span(builder).await)
+}
+
+/// Iroh's bind, run where no span is current. Iroh opens its `endpoint` span at the bind under whatever
+/// span is current and hangs the endpoint's tasks (its socket actor and the rest) from it for as long as
+/// the endpoint lives, so a span current at the bind would be held open by the transport until the
+/// endpoint ends, and on a worker thread that holds another dispatcher never end at all. On a task of its
+/// own nothing is current: the endpoint's spans are a root of their own, on the caller's dispatcher.
+/// Dropping the returned future cancels the bind, as awaiting it in place would.
+async fn bind_under_no_span(builder: iroh::endpoint::Builder) -> Result<Endpoint> {
+    struct CancelOnDrop(tokio::task::AbortHandle);
+    impl Drop for CancelOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let task = tokio::spawn(builder.bind().with_current_subscriber());
+    let _cancel = CancelOnDrop(task.abort_handle());
+    match task.await {
+        Ok(r) => Ok(r?),
+        Err(e) => match e.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            Err(e) => Err(anyhow::anyhow!("the endpoint's bind task ended before it bound: {e}")),
+        },
+    }
 }
 
 /// The bind's outcome in the transport diagnostic file (R-QH1): the endpoint's identity and the
 /// UDP sockets it holds, or the full error chain. Observation only; the outcome is returned as is.
-fn bound<E: std::error::Error + Send + Sync + 'static>(requested: SocketAddr, r: Result<Endpoint, E>) -> Result<Endpoint> {
+fn bound(requested: SocketAddr, r: Result<Endpoint>) -> Result<Endpoint> {
     match &r {
         Ok(ep) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "endpoint-bound", endpoint_id = %ep.id(), %requested, bound = ?ep.bound_sockets(), "the endpoint is bound"),
         Err(e) => tracing::info!(target: rafka_mesh_telemetry::TRANSPORT_DIAG_TARGET, step = "endpoint-bind-failed", %requested, error = %format_args!("{e:#}"), error_debug = ?e, "the endpoint did not bind"),
     }
-    Ok(r?)
+    r
 }
 
 /// Bind an endpoint holding exactly one socket, at `addr`. Iroh's builder
@@ -68,7 +93,7 @@ pub async fn bind_exact(secret: SecretKey, addr: SocketAddr, alpns: Vec<Vec<u8>>
         .transport_config(transport)
         .clear_ip_transports()
         .bind_addr(addr)?;
-    bound(addr, builder.bind().await)
+    bound(addr, bind_under_no_span(builder).await)
 }
 
 #[cfg(test)]

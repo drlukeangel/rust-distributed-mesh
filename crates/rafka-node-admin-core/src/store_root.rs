@@ -87,14 +87,14 @@ impl StoreRoot {
 
     /// Open the store `dir` under `base` (a directory of this root), written by the process born as
     /// `writer`: held in this root's scratchpad until it is published.
-    pub fn records(&self, base: &Path, dir: &str, writer: &IncarnationId) -> Result<FileRecords, StorageError> {
+    pub async fn records(&self, base: &Path, dir: &str, writer: &IncarnationId) -> Result<FileRecords, StorageError> {
         match &self.scratchpad {
             Some(scratchpad) => {
                 let store = base.join(dir);
                 let store = store.strip_prefix(&self.dir).unwrap_or(&store).display().to_string().trim_end_matches('/').to_string();
-                FileRecords::open_held(base, dir, writer, scratchpad, store)
+                FileRecords::open_held(base, dir, writer, scratchpad, store).await
             }
-            None => FileRecords::open(base, dir, writer),
+            None => FileRecords::open(base, dir, writer).await,
         }
     }
 

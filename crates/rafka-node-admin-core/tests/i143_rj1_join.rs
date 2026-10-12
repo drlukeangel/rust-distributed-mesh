@@ -267,10 +267,10 @@ fn a_held_births_join_with_no_last_accepted_name_is_handed_its_rows_config() {
 /// CONTRACT (R-JN1 item 6; node-create.md step 4; node-recovery.md steps 3-4): a first start (a
 /// birth this authority does not hold: no last accepted name) is admitted under its create spec's
 /// name whatever row stands at that `path.name`. A recovery creates the new node at the exited
-/// node's `path.name`, where the predecessor's row still stands (its `Deleted` row, the seed of the
-/// new node's config, which the new birth's own claim takes over after the join): the join
-/// installs the reported address and answers `Joined`, never `JoinMismatch` naming the
-/// predecessor's row. Only a held birth's join reads the row it is reconciled to.
+/// node's `path.name`; where another node's row stands there at the join (a create that wrote no
+/// claim over the predecessor's `Deleted` row), the join installs the reported address and answers
+/// `Joined` with no config handed, never `JoinMismatch` naming the predecessor's row. Only a held
+/// birth's join is refused over another node's row.
 #[test]
 fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitted_under_its_create_spec_name() {
     let cell = "a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitted_under_its_create_spec_name";
@@ -317,7 +317,9 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
         let reported = joins.expect(dep.clone());
         let good = digest_of(&dep, "127.0.0.1:34568");
         let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into() }).await;
-        assert!(matches!(joined, JoinReply::Joined { .. }), "a first start is admitted under its create spec's name over its predecessor's row: {joined:?}");
+        let JoinReply::Joined { answer } = &joined else { panic!("a first start is admitted under its create spec's name over its predecessor's row: {joined:?}") };
+        let answer = rafka_node_admin_core::wire::answer_from_wire(answer).expect("the answer decodes");
+        assert_eq!(answer.control.config, None, "another node's row hands the first start no config: {answer:?}");
         assert_eq!(*installed.lock().unwrap(), vec![good.node.transport_addr], "the reported address is installed for the key");
         assert_eq!(reported.borrow().as_ref().map(|d| d.node.node_id.clone()), Some(dep.node_id.clone()), "WaitForBind receives the new node's own report");
         json!({ "cell": cell, "joined": format!("{joined:?}"), "predecessor": predecessor.as_str() })
@@ -326,6 +328,47 @@ fn a_first_start_at_a_path_name_whose_row_names_its_exited_predecessor_is_admitt
     let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
     assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["admitted_as"].as_str()), (Some("installed"), Some("mesh1.rpc.1")), "{join}");
     assert_eq!(spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.reject.via-join-mismatch").count(), 0, "no refusal names the predecessor's row");
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
+}
+
+/// CONTRACT (node-recovery.md step 4: "Its config is seeded from the Deleted row at that
+/// path.name"; node-create.md step 1: the claim is written before anything is launched; node-start.md
+/// step 2: the join answer hands the row's config, which the node installs before it publishes
+/// anything or declares readiness): a first start whose row at its create spec's name is its own
+/// (the create's claim, seeded from the exited predecessor's Deleted row) is handed that row's
+/// config in its join answer, and the digest the authority installs for it carries that config, so
+/// the writer's arrival finds the birth already carrying its row's config and tells it nothing (no
+/// config call racing the node's start, which a node whose authority is not filled answers
+/// NotReady and never applies: gate 7fd59dec, node_replace, via-config config-not-applied).
+#[test]
+fn a_first_start_whose_row_is_its_own_seeded_claim_is_handed_and_installed_with_the_rows_config() {
+    let cell = "a_first_start_whose_row_is_its_own_seeded_claim_is_handed_and_installed_with_the_rows_config";
+    let dir = acceptance_dir(cell);
+    std::fs::create_dir_all(&dir).unwrap();
+    let cap = capture(cell);
+    let dep = deployed();
+    let gold: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into_iter().collect();
+    let result = cap.run(async {
+        let joins = Arc::new(Joins::default());
+        let installed: Arc<Mutex<Vec<std::collections::BTreeMap<String, String>>>> = Arc::default();
+        let log = installed.clone();
+        let row = rafka_node_admin_core::storage::NodeRow { name: dep.name.clone(), node_id: dep.node_id.clone(), status: rafka_node_admin_core::model::NodeStatus::Pending, config: gold.clone() };
+        let mut door = door_over(joins.clone(), Arc::default(), row);
+        door.install = Arc::new(move |d| log.lock().unwrap().push(d.config.clone()));
+        let _reported = joins.expect(dep.clone());
+        let good = digest_of(&dep, "127.0.0.1:34570");
+        assert!(good.config.is_empty(), "the first start reports no config of its own");
+        let joined = door.serve(dep.endpoint_id.clone(), JoinRequest::JoinNode { digest: (&good).into() }).await;
+        let JoinReply::Joined { answer } = &joined else { panic!("{joined:?}") };
+        let answer = rafka_node_admin_core::wire::answer_from_wire(answer).expect("the answer decodes");
+        assert_eq!(answer.control.config.as_ref(), Some(&gold), "the first start is handed its own row's config: {answer:?}");
+        assert_eq!(*installed.lock().unwrap(), vec![gold.clone()], "the installed digest carries the row's config");
+        json!({ "cell": cell, "joined": format!("{joined:?}") })
+    });
+    let spans = cap.spans();
+    let join = spans.iter().find(|s| s["name"] == "rdm.node_admin.node.update.via-join").expect("the join is spanned");
+    assert_eq!((join["attributes"]["outcome"].as_str(), join["attributes"]["config_keys"].as_str()), (Some("installed"), Some("1")), "{join}");
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }

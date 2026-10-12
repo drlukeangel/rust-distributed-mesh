@@ -67,7 +67,7 @@ pub struct MeshDigest {
     /// While `Draining`: the work still in flight at this birth; the drain's own evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_flight: Option<u64>,
-    /// The node's config: the application's own key/values, written by the fabric-primary. Opaque to RDM: nothing reads it to decide. Capped (`MAX_CONFIG_KEYS`, `MAX_CONFIG_BYTES`).
+    /// The node's config: the application's own key/values, written to the node's row by its mesh's primary. Opaque to RDM: nothing reads it to decide. Capped (`MAX_CONFIG_KEYS`, `MAX_CONFIG_BYTES`).
     #[serde(default)]
     pub config: BTreeMap<String, String>,
     /// The process's CPU and RAM at the moment the digest was published (the publishing node

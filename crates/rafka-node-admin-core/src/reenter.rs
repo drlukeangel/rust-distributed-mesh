@@ -34,9 +34,10 @@ pub(crate) struct MapNode {
     pub endpoint_id: EndpointId,
     pub transport_addr: SocketAddr,
     pub incarnation: IncarnationId,
-    /// The birth is not in a lifecycle transition (being born, restarted, drained or leaving):
-    /// only a settled birth is expected to answer a Ping.
-    pub settled: bool,
+    /// The lifecycle transition the source held the birth in (being born, drained or leaving), or
+    /// `None` for a settled birth. Every birth of the own mesh is pinged on entry; the status is
+    /// what the view learns of a birth in transition that answers, never `ReadyForTraffic`.
+    pub transition: Option<crate::model::NodeStatus>,
     /// What the source knew: a birth the source holds ready is ready, anything else settled is
     /// not yet reached.
     pub ready: bool,
@@ -57,8 +58,9 @@ impl MapNode {
     }
 
     /// The birth as the view holds it until membership speaks for it: `status` is what the map
-    /// knows (`ReadyForTraffic` for a birth that answered a Ping, `PendingReconnect` for one not
-    /// yet reached; never `Dead`).
+    /// knows (`ReadyForTraffic` for a settled birth that answered a Ping, the transition its source
+    /// held for one in transition that answered, `PendingReconnect` for a settled one not yet
+    /// reached; never `Dead`).
     pub(crate) fn as_node(&self, status: crate::model::NodeStatus, provider: crate::model::ProviderKind) -> crate::model::Node {
         let mut node = crate::model::Node::allocated(self.name.clone());
         node.node_id = self.node_id.clone();
@@ -86,11 +88,11 @@ pub(crate) fn map_of_read(read: &crate::topology_read::TopologyRead, fabric: &ra
         .filter(|d| &d.fabric_id == fabric)
         .map(|d| {
             // A digest says what the node last reported, not that it is alive: whoever answered
-            // heard it at an age the digest does not carry. Every settled birth is therefore not
-            // yet reached (the sweep's ping, or its own digest, says more), never ready.
-            let settled = d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic;
+            // heard it at an age the digest does not carry. Every birth is therefore not yet
+            // reached (the sweep's ping, or its own digest, says more), never ready.
+            let transition = (d.status != rafka_mesh_entity::MemberStatus::ReadyForTraffic).then(|| crate::admin::node_status(d.status));
             MapNode {
-                settled,
+                transition,
                 ready: false,
                 data_dir: d.data_dir.clone(),
                 admin_api_base: d.admin_api_base.clone(),
@@ -113,7 +115,7 @@ pub(crate) fn map_of_stored(read: &crate::topology_read::TopologyRead) -> Vec<Ma
         .flat_map(|m| m.nodes.iter())
         .filter_map(|n| {
             Some(MapNode {
-                settled: true,
+                transition: None,
                 ready: false,
                 data_dir: None,
                 admin_api_base: None,
@@ -143,7 +145,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
     match source {
         TopologySource::DurableMap(rows) => Ok(rows
             .iter()
-            .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), settled: true, ready: false, data_dir: None, admin_api_base: None })
+            .map(|r| MapNode { node_id: r.node_id.clone(), name: r.name.clone(), endpoint_id: r.endpoint_id.clone(), transport_addr: r.transport_addr, incarnation: r.incarnation_id.clone(), transition: None, ready: false, data_dir: None, admin_api_base: None })
             .collect()),
         TopologySource::LocalNode { node, client, membership, me, me_id, time } => {
             let addr = node.gossip_addr().ok_or_else(|| format!("{}: its endpoint id {} is not an iroh key", node.name, node.endpoint_id.0))?;
@@ -165,6 +167,7 @@ pub async fn get_topology(source: TopologySource<'_>) -> Result<Vec<MapNode>, St
 }
 
 /// What the entering admin has.
+#[derive(Clone)]
 pub(crate) struct EntryCtx {
     pub me: PathName,
     pub me_id: NodeId,
@@ -199,6 +202,22 @@ async fn ping(ctx: &EntryCtx, n: &MapNode) -> Result<(), String> {
     }
 }
 
+/// The births of the own-mesh map the entry pings, in path order: the candidates for the local
+/// node and the sweep's targets (node-admin-lifecycle.md §4.2).
+pub(crate) fn sweep_targets(map: &[MapNode]) -> Vec<MapNode> {
+    map.to_vec()
+}
+
+/// The candidates for the local node a current topology is read from (node-admin-lifecycle.md
+/// §4.1 step 5), in the order they are tried: settled births first, then births in transition, each
+/// in path order. A draining node refuses `GetTopology` (node-rpc-envelope.md: "A draining node
+/// refuses new non-status calls"), so a settled node that answers is the one to read from.
+pub(crate) fn local_candidates(map: &[MapNode]) -> Vec<MapNode> {
+    let mut v = map.to_vec();
+    v.sort_by_key(|n| (n.transition.is_some(), n.name.to_string()));
+    v
+}
+
 /// Enter the existing mesh of `ctx.me` from `held`, the topology its source gave: connect to a
 /// local node, read the current topology from it, then sweep the own mesh once.
 pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, held: Vec<MapNode>) -> SweepReport {
@@ -213,8 +232,8 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
     let mut map = own(&held);
     // A local node of the own mesh: the first of the map, in path order, that answers.
     let mut local = None;
-    for n in map.iter().filter(|n| n.settled) {
-        if ping(ctx, n).await.is_ok() {
+    for n in local_candidates(&map) {
+        if ping(ctx, &n).await.is_ok() {
             local = Some(n.clone());
             break;
         }
@@ -238,7 +257,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
     // The sweep: one bounded Ping to every own-mesh node, SWEEP_CONCURRENCY at a time.
     let mut reached = Vec::new();
     let mut not_reached = Vec::new();
-    let swept: Vec<MapNode> = map.iter().filter(|n| n.settled).cloned().collect();
+    let swept: Vec<MapNode> = sweep_targets(&map);
     for chunk in swept.chunks(SWEEP_CONCURRENCY) {
         let answers = futures_util::future::join_all(chunk.iter().map(|n| async move { (n, ping(ctx, n).await) })).await;
         for (n, a) in answers {
@@ -276,4 +295,59 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
         tracing::info!("the own-mesh sweep on entering the mesh");
     });
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rafka_mesh_entity::MemberStatus;
+
+    /// An own-mesh birth of the map as a topology read gives it: the status its source held.
+    fn birth(name: &str, status: MemberStatus) -> MapNode {
+        MapNode {
+            node_id: NodeId::mint(),
+            name: name.parse().unwrap(),
+            endpoint_id: EndpointId("k".into()),
+            transport_addr: "127.0.0.1:1".parse().unwrap(),
+            incarnation: IncarnationId::mint(),
+            transition: (status != MemberStatus::ReadyForTraffic).then(|| crate::admin::node_status(status)),
+            ready: false,
+            data_dir: None,
+            admin_api_base: None,
+        }
+    }
+
+    /// CONTRACT (node-admin-lifecycle.md §4.2: "The new primary sends one bounded Ping, once, to
+    /// every node IN ITS OWN MESH"): the entry pings every birth of the own-mesh map, whatever the
+    /// status its source held. A member in a lifecycle transition (Pending, Draining, Leaving) is a
+    /// node of the mesh: in a leaving mesh every member is, and an entry that pings only the
+    /// ReadyForTraffic ones reads no local topology and sweeps none of them.
+    #[test]
+    fn the_entry_pings_every_own_mesh_birth_whatever_its_status() {
+        let map = vec![
+            birth("mesh2.rpc.1", MemberStatus::Leaving),
+            birth("mesh2.rpc.2", MemberStatus::ReadyForTraffic),
+            birth("mesh2.rpc.3", MemberStatus::Draining),
+            birth("mesh2.rpc.4", MemberStatus::Pending),
+        ];
+        let pinged: Vec<String> = sweep_targets(&map).iter().map(|n| n.name.to_string()).collect();
+        assert_eq!(pinged, vec!["mesh2.rpc.1", "mesh2.rpc.2", "mesh2.rpc.3", "mesh2.rpc.4"]);
+    }
+
+    /// CONTRACT (node-admin-lifecycle.md §4.1 step 5: "Read GetTopology from a LOCAL node of the
+    /// recovering admin's own mesh"; node-rpc-envelope.md: "A draining node refuses new non-status
+    /// calls"): the local node is tried settled births first, then births in transition, each in
+    /// path order, so a Draining node ahead of a ReadyForTraffic one in path order is never the one
+    /// the current topology is read from while the ready one answers.
+    #[test]
+    fn the_local_node_is_tried_settled_births_first() {
+        let map = vec![
+            birth("mesh2.rpc.1", MemberStatus::Draining),
+            birth("mesh2.rpc.2", MemberStatus::Leaving),
+            birth("mesh2.rpc.3", MemberStatus::ReadyForTraffic),
+            birth("mesh2.rpc.4", MemberStatus::ReadyForTraffic),
+        ];
+        let tried: Vec<String> = local_candidates(&map).iter().map(|n| n.name.to_string()).collect();
+        assert_eq!(tried, vec!["mesh2.rpc.3", "mesh2.rpc.4", "mesh2.rpc.1", "mesh2.rpc.2"]);
+    }
 }

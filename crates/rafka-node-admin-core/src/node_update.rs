@@ -115,7 +115,7 @@ async fn put(
         let Some(moved) = moved.get() else {
             return StatusReply::NotReady { reason: format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name) };
         };
-        match crate::node_rows::move_row(storage, me, &held, &held.name, &to).await {
+        match crate::node_rows::move_row(storage, me, &held, held.config.clone(), &held.name, &to).await {
             Ok(_) => {}
             Err(RenameRefused::NameHeld(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
             Err(RenameRefused::Unwritten(why)) => return StatusReply::node_row_refused(&to.to_string(), &why),

@@ -2433,7 +2433,7 @@ impl View {
                         .in_scope(|| tracing::info!("a delta applied at exactly its base version"));
                         let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.departed.clone());
                         let fence = prior.fence(source_publisher, side, *topology_version, rx.held_full(mesh));
-                        let carried = self.apply_full(mesh, &full, fabric, side, &fence);
+                        let carried = self.apply_full(mesh, &full, fabric, side, &fence, source_publisher.node.split('.').next() == Some(mesh.as_str()));
                         drop(rx);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
@@ -2520,12 +2520,16 @@ impl View {
             refreshed = i.refreshed,
         )
         .in_scope(|| tracing::debug!("a complete snapshot installed"));
+        // The publisher is a node of the mesh it publishes (its primary), or of another mesh: the
+        // fabric primary as the acting primary of a mesh with no primary. Only the first hears the
+        // members it publishes.
+        let publishers_own = i.publisher.node.split('.').next() == Some(i.mesh.as_str());
         let fence = prior.fence(&i.publisher, side, i.topology_version, Some(&i.full));
-        let carried = self.apply_full(&i.mesh, &i.full, fabric, side, &fence);
+        let carried = self.apply_full(&i.mesh, &i.full, fabric, side, &fence, publishers_own);
         let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.publisher.clone(), i.topology_version, i.full.clone()));
         // The fabric primary's clock is sampled from its own mesh's aggregate, never from one it
-        // publishes as the publisher of record of a mesh with no primary (no digests, R-NS1).
-        let publishers_own = i.publisher.node.split('.').next() == Some(i.mesh.as_str());
+        // publishes as the acting primary of a mesh with no primary: that publisher is a node of
+        // another mesh.
         let publication = (side == Side::Backbone && publishers_own).then(|| Publication {
             publisher: i.publisher.clone(),
             published_at_rafka_ms,
@@ -2539,8 +2543,11 @@ impl View {
     /// holds stopped ends its stop only when the source moved, in order, from a version carrying the
     /// stop to this one (`fence`); any other entry of it is refused by name. An own-mesh birth's
     /// entry gives its status and nothing else (gossip.md §3.1: liveness, endpoints and the runtime
-    /// fact come from its Digest), unless this node is the primary that authors it.
-    fn apply_full(&self, mesh: &str, full: &Full, fabric: &FabricId, side: Side, fence: &Fence) -> Vec<MeshDigest> {
+    /// fact come from its Digest), unless this node is the primary that authors it. `publishers_own`:
+    /// the publisher is a node of the mesh it publishes, its primary, which carries only members it
+    /// hears; a peer mesh's births in an acting primary's aggregate (the fabric primary for a mesh
+    /// with no primary, a node of another mesh) are topology, never liveness.
+    fn apply_full(&self, mesh: &str, full: &Full, fabric: &FabricId, side: Side, fence: &Fence, publishers_own: bool) -> Vec<MeshDigest> {
         for op in full.departed() {
             self.book.depart(op);
         }
@@ -2583,12 +2590,17 @@ impl View {
             }
             let prior = self.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
-                // An own-mesh member's status from its primary's projection: nothing else of it.
+                // An own-mesh member's status from its primary's projection, or its acting primary's
+                // (gossip.md §3.1 `Members` author): nothing else of it, so no liveness from either.
                 (Side::Backbone, true) | (Side::MeshChannel, true) => {
                     self.book.take_projected_status(&d, fence);
                     continue;
                 }
-                (Side::Backbone, false) => self.book.record_forwarded(d.clone()),
+                (Side::Backbone, false) if publishers_own => self.book.record_forwarded(d.clone()),
+                // The acting primary of a mesh with no primary (the fabric primary, a node of another
+                // mesh) hears none of that mesh's members: what it carries of them is topology, and
+                // their liveness comes from their own word or their own primary's aggregate alone.
+                (Side::Backbone, false) => self.book.record_topology(d.clone()),
                 (Side::MeshChannel, false) => self.book.record_topology(d.clone()),
                 // A read installs what an entry answer installed, by the rule `learn` applies
                 // (R-G2): a peer mesh's member is topology and refreshes no liveness; a member of
@@ -2728,7 +2740,7 @@ pub struct Membership {
     load: Arc<crate::load::LoadSampler>,
     /// What the forwarder decides and where it goes: this mesh's channel.
     forward_path: ForwardPath,
-    /// The config the fabric-primary last told this birth (`ApplyNodeConfig`; ops-naming "Node data"):
+    /// The config this birth's mesh-primary last told it (`ApplyNodeConfig`; ops-naming "Node data"):
     /// carried in every digest this membership publishes from then on. `None` until it is told.
     config: Arc<Mutex<Option<std::collections::BTreeMap<String, String>>>>,
     /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12): carried in every
@@ -3596,14 +3608,18 @@ impl Backbone {
         true
     }
 
-    /// R-NS1 (gossip.md, mesh-leave section): while this admin is the fabric primary it is the
-    /// publisher of record of a mesh with no primary (`primaryless`) whose births it stopped or
-    /// deleted. For each such mesh it publishes the mesh's own Members aggregate on the backbone,
-    /// publisher itself, `digests` empty, the stops it executed in `in_flight` (each from the
-    /// matching stopped reply it holds) and the deletes in `departed` (each from the exit proof it
-    /// holds), and puts the same source into its own Mesh. A birth it did not stop or delete is never
-    /// listed; the aggregate carries no liveness. A start ends the stop and a departure past
-    /// retention lists nothing: then nothing is published for the mesh. Returns the meshes published.
+    /// While this admin is the fabric primary it is the acting primary of a mesh with no primary
+    /// (gossip.md §3) whose births it stopped or deleted. For each such mesh it publishes the mesh's
+    /// own Members aggregate on the backbone, publisher itself: `digests` as held (gossip.md §3.1),
+    /// the members of the aggregate it holds of that mesh from the backbone but the births it stopped
+    /// or deleted; the stops it executed in `in_flight` (each from the matching stopped reply it
+    /// holds) and the deletes in `departed` (each from the exit proof it holds). It puts the same
+    /// source into its own Mesh. A living mesh keeps its members (a recovering admin that reads this
+    /// topology finds a local node of its own mesh, mesh-recovery.md steps 3-4); R-NS1's dead mesh,
+    /// whose last aggregate held only its last admin, which this admin stopped, has no digests. A
+    /// birth it did not stop or delete is never listed in `in_flight` or `departed`. A start ends the
+    /// stop and a departure past retention lists nothing: then nothing is published for the mesh.
+    /// Returns the meshes published.
     pub async fn publish_for_primaryless(&self, membership: &Membership, primary_of: impl Fn(&str) -> Option<String>) -> Vec<String> {
         let executed = if self.status_publishing.load(Ordering::Relaxed) { membership.book.executed_overlays_beyond(&self.mesh) } else { BTreeMap::new() };
         let seen = std::mem::replace(&mut *self.acting_seen.lock().unwrap(), executed.clone());
@@ -3619,7 +3635,7 @@ impl Backbone {
                 continue;
             }
             let sent = membership.clock.now_rafka_ms();
-            let full = Full::new(Vec::new(), in_flight, departed);
+            let full = Self::acting_full(membership, &mesh, in_flight, departed);
             let (version, snapshot_id, bumped) = {
                 let mut acting = self.acting.lock().unwrap();
                 let v = acting.entry(mesh.clone()).or_default();
@@ -3628,8 +3644,8 @@ impl Backbone {
                 (version, v.next_snapshot_id(), version != before)
             };
             if bumped {
-                tracing::info_span!("rdm.mesh.backbone.update.via-acting-primary", node = %self.node, mesh = %mesh, publisher = %self.publisher, topology_version = version, in_flight = full.in_flight().len(), departed = full.departed().len())
-                    .in_scope(|| tracing::info!("a mesh with no primary: the fabric primary publishes its aggregate, the births it stopped or deleted and no digests"));
+                tracing::info_span!("rdm.mesh.backbone.update.via-acting-primary", node = %self.node, mesh = %mesh, publisher = %self.publisher, topology_version = version, digests = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
+                    .in_scope(|| tracing::info!("a mesh with no primary: the fabric primary publishes its aggregate, the members it holds of the mesh and the births it stopped or deleted"));
             }
             for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
                 mesh: mesh.clone(),
@@ -3650,6 +3666,17 @@ impl Backbone {
             published.push(mesh);
         }
         published
+    }
+
+    /// The aggregate this fabric primary publishes as the acting primary of `mesh`, a mesh with no
+    /// primary: the members held of the mesh, but the births this admin stopped or deleted: those are
+    /// in the aggregate's own `in_flight` and `departed`, never among its digests. The acting round
+    /// and the version a status event it executed is stamped with read the same aggregate.
+    fn acting_full(membership: &Membership, mesh: &str, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>) -> Full {
+        let gone: BTreeSet<(String, String)> = in_flight.iter().chain(departed.iter()).map(|op| (op.node_id.to_string(), op.incarnation.0.clone())).collect();
+        let held: Vec<MeshDigest> = membership.view.backbone_rx.lock().unwrap().held_full(mesh).map(Full::digests).unwrap_or_default();
+        let digests: Vec<MeshDigest> = held.into_iter().filter(|d| !gone.contains(&(d.node.node_id.to_string(), d.node.incarnation.0.clone()))).collect();
+        Full::new(digests, in_flight, departed)
     }
 
     /// This Mesh's members as a publication round puts them into its aggregate: every member of
@@ -3757,7 +3784,7 @@ impl Backbone {
                 membership.book.executed_stop(op);
             }
             let (in_flight, departed) = membership.book.executed_overlays_beyond(&self.mesh).remove(&op.name.mesh).unwrap_or_default();
-            ("acting-fabric-primary", acting.entry(op.name.mesh.clone()).or_default().observe(&Full::new(Vec::new(), in_flight, departed)))
+            ("acting-fabric-primary", acting.entry(op.name.mesh.clone()).or_default().observe(&Self::acting_full(membership, &op.name.mesh, in_flight, departed)))
         } else {
             membership.view.apply_status_event(kind, op, None, "executed");
             if kind == StatusEvent::Stopped {
@@ -3788,11 +3815,17 @@ impl Backbone {
 
     /// Publish a hook (`node-draining`, `node-leaving`, or a fabric round hook) this admin authored: the backbone,
     /// its own mesh channel and its own view, once. The accepted command's hook, never a separately
-    /// coordinated publication.
-    pub async fn publish_command_hook(&self, f: &Frame) {
-        let _ = self.channel.broadcast(f).await;
-        let _ = self.membership.forward(f).await;
-        let _ = self.membership.view.take(f, &self.fabric, "mesh-channel");
+    /// coordinated publication. An error names each channel the frame was not handed to, and why.
+    pub async fn publish_command_hook(&self, f: &Frame) -> Result<()> {
+        let backbone = self.channel.broadcast(f).await;
+        let mesh = self.membership.forward(f).await;
+        self.membership.view.take(f, &self.fabric, "mesh-channel");
+        let failed: Vec<String> = [("backbone", backbone), ("mesh channel", mesh)].into_iter().filter_map(|(channel, r)| r.err().map(|e| format!("{channel}: {e}"))).collect();
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("{} not handed to {}", self.node, failed.join("; ")))
+        }
     }
 
     /// Carry a node's own completion frame (`node-drained`, `node-left`) onto the backbone,
@@ -4477,6 +4510,55 @@ impl DigestBook {
         }
     }
 
+    /// The removal overlays (`NodeDeleting`) the Build facts ended, closed: an overlay is keyed by its
+    /// attempt (gossip.md: `(kind, build_id, attempt, operation)`, riding `Members.in_flight` while
+    /// the operation is claimed and has no completed receipt), so it closes when its attempt's verdict
+    /// is terminal (`ended`, by Build and attempt, each named `attempt-converged` or `attempt-failed`
+    /// by `failed`) or its Build is forgotten (`forgotten`). A copy of a closed overlay opens nothing
+    /// again. Restarts and stops are not removals: their own facts end them.
+    pub fn deletions_from_facts(&self, converged: &BTreeSet<(String, u32)>, failed: &BTreeSet<(String, u32)>, forgotten: &BTreeSet<String>) {
+        let mut cleared = Vec::new();
+        {
+            let mut in_flight = self.in_flight.lock().unwrap();
+            let mut ended = self.ended_overlays.lock().unwrap();
+            in_flight.retain(|k, o| {
+                if o.is_restart() || o.is_stop() {
+                    return true;
+                }
+                let attempt = (o.build_id.clone(), o.attempt);
+                let by = if failed.contains(&attempt) {
+                    "attempt-failed"
+                } else if converged.contains(&attempt) {
+                    "attempt-converged"
+                } else if forgotten.contains(&o.build_id) {
+                    "build-forgotten"
+                } else {
+                    return true;
+                };
+                ended.insert(k.clone());
+                cleared.push((o.clone(), by));
+                false
+            });
+        }
+        if !cleared.is_empty() {
+            self.overlays_moved();
+            self.births.send_modify(|v| *v += 1);
+        }
+        for (op, by) in cleared {
+            tracing::info_span!(
+                "rdm.mesh.membership.update.via-deleting-closed-by-facts",
+                node = %op.name,
+                node_id = %op.node_id,
+                incarnation_id = %op.incarnation.0,
+                build_id = %op.build_id,
+                attempt = op.attempt,
+                operation = %op.operation,
+                by,
+            )
+            .in_scope(|| tracing::info!("the Build facts end the removal's attempt: its overlay closes and the node is held as its digests say"));
+        }
+    }
+
     /// The open restart of `node_id`'s birth `incarnation`, if any.
     pub fn restart_of(&self, node_id: &str, incarnation: &rafka_mesh_entity::IncarnationId) -> Option<LifecycleOp> {
         self.in_flight.lock().unwrap().values().find(|op| op.is_restart() && op.node_id.as_str() == node_id && &op.incarnation == incarnation).cloned()
@@ -4935,6 +5017,11 @@ impl DigestBook {
     /// already departed.
     pub fn deleting(&self, op: LifecycleOp) -> bool {
         if self.is_departed(op.node_id.as_str()) {
+            return false;
+        }
+        // Applied once however many copies arrive (gossip.md `NodeDeleting`): a copy of an overlay
+        // the Build facts ended opens nothing again.
+        if self.ended_overlays.lock().unwrap().contains(&op.key()) {
             return false;
         }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
