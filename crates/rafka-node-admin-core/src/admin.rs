@@ -6814,6 +6814,49 @@ mod tests {
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
     }
 
+    /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
+    /// insert-and-fail on its `(path, name)` ... idempotent for the same FabricId and `NameHeld` naming a
+    /// different one"; CLAUDE.md: the claim is the first durable write of a create, nothing is written
+    /// for the entity until it wins): `fabric/` holds another Fabric's identity and its fabric-primary's
+    /// seat record (a root an embedding app handed in). This fabric-primary's rounds claim the
+    /// fabric's name, are refused naming the holder, and write nothing of the fabric: the standing seat
+    /// record stays the holder's, and the claim is made once, one
+    /// `rdm.node_admin.fabric.create.via-fabric-row` span `name-held` naming the holder. Must NOT happen:
+    /// a seat record written into another Fabric's `fabric/` beside a refused claim.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_fabric_primarys_refused_fabric_claim_writes_nothing_of_the_fabric() {
+        let storage: Arc<dyn crate::fabric_storage::FabricStorage> = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
+        let accepted = Arc::new(AcceptedStore::new(storage.clone(), "mesh1.admin.1"));
+        let (holder, ours) = (crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }, crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() });
+        let birth = |epoch: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch };
+        let (h_birth, o_birth) = (birth(1), birth(2));
+        let capture = crate::span_capture::Capture::new("i143-3089-fabric-name-held");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let h_seats = rafka_mesh_transport::membership::SeatBook::default();
+        h_seats.take(rafka_mesh_entity::Seat::FabricPrimary, &h_birth);
+        let mut hw = FabricRowsWriter::new((h_birth.node_id.clone(), h_birth.incarnation.clone()), holder.clone(), storage.clone(), accepted.clone());
+        hw.round(&h_seats).await;
+        let held_seat = vec![crate::fabric_storage::SeatRow { seat: rafka_mesh_entity::Seat::FabricPrimary, holder: h_birth.clone() }];
+        assert_eq!(storage.seats().await.unwrap(), held_seat, "the holder's fabric-primary writes its seat record once its claim won");
+        let o_seats = rafka_mesh_transport::membership::SeatBook::default();
+        o_seats.take(rafka_mesh_entity::Seat::FabricPrimary, &o_birth);
+        let mut ow = FabricRowsWriter::new((o_birth.node_id.clone(), o_birth.incarnation.clone()), ours.clone(), storage.clone(), accepted.clone());
+        for _round in 0..2 {
+            ow.round(&o_seats).await;
+        }
+        assert_eq!(storage.fabric().await.unwrap().map(|f| f.fabric_id), Some(holder.fabric_id.clone()), "the held identity stands");
+        assert_eq!(storage.seats().await.unwrap(), held_seat, "a refused fabric claim writes no seat record into another Fabric's fabric/");
+        let spans = capture.named("rdm.node_admin.fabric.create.via-fabric-row");
+        let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("fabric_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("holder").cloned().unwrap_or_default())).collect();
+        assert_eq!(
+            said,
+            vec![(holder.fabric_id.to_string(), "row-written".to_string(), String::new()), (ours.fabric_id.to_string(), "name-held".to_string(), holder.fabric_id.to_string())],
+            "one claim per writer, the refusal naming the holder: {spans:?}"
+        );
+        eprintln!("span rdm.node_admin.fabric.create.via-fabric-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
+    }
+
     /// CONTRACT (R-MN1: a mesh's name is released only by its removal, the row Dead, and "a mesh created
     /// again under the same name is a new mesh with a new id"; change 4: "the mesh-name claim treats a
     /// Dead mesh row as released"; states.md: dead is final, a mesh id is never reissued): mesh A's
