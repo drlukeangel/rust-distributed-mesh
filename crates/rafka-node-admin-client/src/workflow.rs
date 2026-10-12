@@ -283,6 +283,10 @@ impl WorkflowKind {
                 rows.extend(start_rows!("restart-node", &[NodeEvent::Restarted], NodeStep::Restart));
                 rows
             }
+            // node.delete of a `<path>.old` path acts only on the stopped predecessor a rename left
+            // there, or one whose exit is proven (the fabric-primary admits nothing else there): its
+            // stop half is already done and is no row of its workflow.
+            Self::Delete(n) if n.old => delete_rows(n).into_iter().filter(|r| !r.stop_half).collect(),
             Self::Delete(n) => delete_rows(n),
             // A recipe's rows are its steps' own, each keyed to its exact operation; only the last
             // row of the last step ends the workflow.
@@ -387,8 +391,11 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
     for (i, r) in rows.iter().enumerate() {
         let held = latest.iter().find(|(op, st, ..)| r.matches(kind, op) && *st == r.step);
         // A stop-half row a stopped birth's node.delete never runs: passed once a later row of the
-        // same operation is receipted.
-        if held.is_none() && r.stop_half && rows[i + 1..].iter().any(|later| latest.iter().any(|(op, st, ..)| later.matches(kind, op) && r.matches(kind, op) && *st == later.step)) {
+        // same operation is receipted and no row of its stop half is (that delete ran none of it). A
+        // delete whose stop half ran has every row of it receipted: none is inferred from its absence.
+        let receipted = |row: &Row| latest.iter().any(|(op, st, ..)| row.matches(kind, op) && r.matches(kind, op) && *st == row.step);
+        let same_op = |row: &Row| row.operation == r.operation && row.key == r.key;
+        if held.is_none() && r.stop_half && !rows.iter().any(|o| o.stop_half && same_op(o) && receipted(o)) && rows[i + 1..].iter().any(|later| same_op(later) && receipted(later)) {
             continue;
         }
         match held {
