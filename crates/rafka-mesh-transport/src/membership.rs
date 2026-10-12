@@ -1411,7 +1411,7 @@ impl RepairSchedule {
 }
 
 /// The held members of `book` that `pick` selects, each with how long it has gone unheard; a
-/// terminal `Leaving` is a graceful departure, never a repair target.
+/// member held `Leaving` is never a repair target.
 pub(crate) fn held_targets(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool) -> Vec<RepairTarget> {
     let now = Instant::now();
     // A member under an open restart or removal is held through it, but its address is a birth's
@@ -4420,12 +4420,11 @@ fn reject_departed(d: &MeshDigest, via: &'static str) {
 }
 
 /// How long a member has gone unheard at `now`: the time since its receipt, a member heard directly
-/// or on the backbone alike. A member known only from forwarded topology never ages (R-G2:
-/// forwarded topology carries topology, never liveness); a terminal `Leaving` is a proven
-/// departure, not silence, so it ages from its receipt however it was heard.
-fn unheard(d: &MeshDigest, at: &Instant, heard: Heard, now: Instant) -> Duration {
+/// or on the backbone alike. A member known only from forwarded topology never ages, whatever status
+/// it is listed with (R-G2: forwarded topology carries topology, never liveness).
+fn unheard(at: &Instant, heard: Heard, now: Instant) -> Duration {
     match heard {
-        Heard::Topology if d.status != rafka_mesh_entity::MemberStatus::Leaving => Duration::ZERO,
+        Heard::Topology => Duration::ZERO,
         _ => now.saturating_duration_since(*at),
     }
 }
@@ -5773,18 +5772,11 @@ impl DigestBook {
         self.current_at(fresh, Instant::now())
     }
 
-    /// Digests heard within `fresh` of `now`. A graceful departure (a terminal `Leaving`, then
-    /// nothing for one gossip interval) is gone within that tick (fabric-node-lifecycle.md §6): it
-    /// is not current, so no view and no aggregate carries it on.
+    /// Digests heard within `fresh` of `now`, whatever status each holds: a member held `Leaving`
+    /// is current like any member (gossip.md §6.1: a stopped status by itself and silence are not
+    /// departure proof), and every aggregate carries it as held.
     pub(crate) fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
-        self.inner
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|(d, at, fw)| unheard(d, at, *fw, now) <= fresh)
-            .filter(|(d, at, _)| !(d.status == rafka_mesh_entity::MemberStatus::Leaving && now.saturating_duration_since(*at) > gossip_interval()))
-            .map(|(d, _, _)| d.clone())
-            .collect()
+        self.inner.lock().unwrap().values().filter(|(_, at, fw)| unheard(at, *fw, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
     }
 
     /// The digests this node received straight from their members (their own word, on the channel
@@ -5801,7 +5793,7 @@ impl DigestBook {
 
     /// The member's latest digest and how long it has gone unheard at `now`.
     pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, now)))
+        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)))
     }
 
     /// Every digest held.
@@ -5846,7 +5838,7 @@ impl DigestBook {
 
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
     pub(crate) fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, now))).collect()
+        self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect()
     }
 }
 
@@ -6802,6 +6794,28 @@ mod tests {
         assert!(after >= Duration::from_secs(10), "the member stays as old as its last direct receipt");
     }
 
+    /// CONTRACT (R-G2: forwarded topology carries topology, never liveness; gossip.md §6.1: a stopped
+    /// status by itself and silence are not departure proof): a member known only from topology never
+    /// ages, whatever status the topology lists it with. One listed `Leaving` is held and current as
+    /// long as the topology holds it, like one listed ready. Must NOT happen: a topology-known member
+    /// that is `Leaving` and an hour old, silent past the staleness floor and absent from `current_at`
+    /// while a ready one of the same age stays.
+    #[test]
+    fn a_member_known_only_from_topology_never_ages_whatever_status_it_is_listed_with() {
+        let book = DigestBook::default();
+        let t0 = Instant::now();
+        let listed: Vec<(NodeId, MemberStatus)> = [MemberStatus::ReadyForTraffic, MemberStatus::Draining, MemberStatus::Leaving].into_iter().map(|s| (NodeId::mint(), s)).collect();
+        for (id, status) in &listed {
+            assert!(book.record_topology_at(digest(id, &IncarnationId::mint(), None, *status, 10), t0));
+        }
+        let far = t0 + Duration::from_secs(3600);
+        for (id, status) in &listed {
+            assert_eq!(book.get_at(id.as_str(), far).unwrap().1, Duration::ZERO, "a topology member listed {status:?} never ages");
+        }
+        let current = book.current_at(book.staleness_floor(), far);
+        assert!(listed.iter().all(|(id, _)| current.iter().any(|d| &d.node.node_id == id)), "every topology member stays current: {current:?}");
+    }
+
     #[test]
     fn a_forwarded_copy_keeps_a_member_heard_and_never_reverts_it() {
         let book = DigestBook::default();
@@ -6885,17 +6899,25 @@ mod tests {
         assert_eq!(silent, vec![floor + Duration::from_millis(1); 2], "every held member's silence is measured from its receipt");
     }
 
-    /// A graceful departure is not current one gossip interval after its last `Leaving`, whether
-    /// it was heard directly or forwarded: no aggregate carries a departed member on.
+    /// CONTRACT (gossip.md §6.1: a stopped status by itself and silence are not departure proof;
+    /// node-identity-and-state.md §4.1: `Leaving` is a status the routing rule reads; gossip.md §3.1:
+    /// `Members.digests` are the digests as held): a member held `Leaving` stays current, and so in
+    /// every aggregate, for as long as any member does: until it has been silent past the staleness
+    /// floor. One gossip interval and a millisecond after its last heartbeat it is current, heard
+    /// directly or forwarded. Must NOT happen: a member whose status is `Leaving` and whose heartbeat is
+    /// one interval old absent from `Members`, so a live node declared Leaving oscillates in and out of
+    /// every peer's list with its own heartbeat.
     #[test]
-    fn a_departed_member_is_not_current_one_gossip_interval_after_its_leaving() {
+    fn a_member_held_leaving_is_current_until_it_is_silent_past_the_staleness_floor() {
         let book = DigestBook::default();
         let (direct, forwarded) = (NodeId::mint(), NodeId::mint());
         let t0 = Instant::now();
         book.record_at(digest(&direct, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
         book.record_forwarded_at(digest(&forwarded, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
-        assert_eq!(book.current_at(book.staleness_floor(), t0 + gossip_interval()).len(), 2, "within the tick it is still saying Leaving");
-        assert!(book.current_at(book.staleness_floor(), t0 + gossip_interval() + Duration::from_millis(1)).is_empty());
+        let floor = book.staleness_floor();
+        assert_eq!(book.current_at(floor, t0 + gossip_interval()).len(), 2, "within the interval it is current");
+        assert_eq!(book.current_at(floor, t0 + gossip_interval() + Duration::from_millis(1)).len(), 2, "a Leaving status is not a departure: one interval on it is still current");
+        assert!(book.current_at(floor, t0 + floor + Duration::from_millis(1)).is_empty(), "silent past the staleness floor it is no longer current, as any member");
     }
 
     /// The documented defaults: a 30 s staleness floor and 2 s gossip intervals.
