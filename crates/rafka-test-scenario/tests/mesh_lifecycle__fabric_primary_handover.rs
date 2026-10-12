@@ -134,13 +134,27 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let b = s(&b["build_id"]);
     estate.await_build(&b, Duration::from_secs(240)).await;
     let survivors_named = names(&["mesh2", "mesh3"]);
-    let after_b = wait_for("the view settles on mesh2 and mesh3 ready, and at most one mesh1 node", Duration::from_secs(60), || async {
+    // Every member of mesh1 but its final primary is deleted by mesh1's primary (mesh-delete.md step
+    // 3, the whole node.delete: NodeDeleted from its exact exit proof), so the view settles on mesh2,
+    // mesh3 and at most mesh1's final primary.
+    let settle_by = std::time::Instant::now() + Duration::from_secs(60);
+    let after_b = loop {
         let nodes = estate.nodes().await;
         let ours: BTreeSet<String> = nodes.iter().filter(|n| n["mesh"] != "mesh1").filter_map(|n| n["name"].as_str().map(str::to_string)).collect();
         let ready = nodes.iter().filter(|n| n["mesh"] != "mesh1").all(|n| n["status"] == "ready-for-traffic");
-        (ours == survivors_named && ready && nodes.iter().filter(|n| n["mesh"] == "mesh1").count() <= 1).then_some(nodes)
-    })
-    .await;
+        if ours == survivors_named && ready && nodes.iter().filter(|n| n["mesh"] == "mesh1").count() <= 1 {
+            break nodes;
+        }
+        if std::time::Instant::now() >= settle_by {
+            let held: Vec<String> = nodes.iter().map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
+            estate.stop().await;
+            let spans = estate.spans();
+            let deleted: Vec<String> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["build_id"] == b.as_str()).map(|sp| s(&sp["attributes"]["node"])).collect();
+            let recoveries: Vec<String> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();
+            panic!("the view never settled on mesh2, mesh3 and at most mesh1's final primary within 60 s after build {b}: {held:?}; NodeDeleted published under {b}: {deleted:?}; recovery submissions ({}): {:?}", recoveries.len(), recoveries.iter().take(3).collect::<Vec<_>>());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     // mesh.deleted leaves mesh1's final primary alive: the one mesh1 node the view still holds.
     let Some(last) = after_b.iter().find(|n| n["mesh"] == "mesh1").cloned() else {
         estate.stop().await;
@@ -276,11 +290,27 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         v.iter().map(|sp| (s(&sp["attributes"]["step"]), sp["start_unix_nano"].as_u64().unwrap_or(0), sp["end_unix_nano"].as_u64().unwrap_or(0))).collect()
     };
     let members: Vec<String> = mesh1_pids.iter().map(|(n, _)| n.clone()).filter(|n| *n != final_name).collect();
+    // mesh-delete.md step 3: each member's end is the whole node.delete, its node-admin's with the
+    // SeatTransfer step a node-admin target takes (it holds no seat: NotAHolder).
     for name in &members {
         let order = order_in(name, &b);
         let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(got, ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime"], "{name}: drain-node, node-drained, stop-node, node-left, then the provider's exit proof; no node-removal step");
+        let want: &[&str] = if name.contains(".admin.") {
+            &["NodeDeleting", "SeatTransfer", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
+        } else {
+            &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
+        };
+        assert_eq!(got, want, "{name}: the ordinary node.delete under {b}, node.stop first, then the exit proof and NodeDeleted");
     }
+    // Each member's NodeDeleted is mesh1's primary's, before mesh.deleted; the deleted mesh's last
+    // admin then holds no exited member to recover (node-recovery.md: recovery is for a member that
+    // exits outside any workflow).
+    let deleted_member: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["build_id"] == b.as_str()).collect();
+    for name in &members {
+        assert!(deleted_member.iter().any(|sp| sp["attributes"]["node"] == name.as_str() && s(&sp["attributes"]["operation"]) == format!("retire-node:{name}")), "mesh1's primary published NodeDeleted for {name} under {b}: {deleted_member:?}");
+    }
+    let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| s(&sp["attributes"]["submitter"]) == final_name).collect();
+    assert!(recoveries.is_empty(), "the deleted mesh's last admin {final_name} submits no recovery of its deleted members: {} submissions, first {:?}", recoveries.len(), recoveries.first());
     // 1. mesh.deleted ends the mesh.delete: nothing of the final primary is stopped under B.
     assert!(order_in(&final_name, &b).is_empty(), "the mesh.delete runs no step on its final primary {final_name}: {:?}", order_in(&final_name, &b));
     let inside: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-shutdown-member").into_iter().filter(|sp| sp["attributes"]["node"] == final_name.as_str()).collect();
@@ -411,10 +441,15 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
 
     // 3. Gone after mesh-left, and nothing resurrects it: once a node of a surviving mesh applied
     // mesh-left, no mesh1 birth is held by it again.
-    let mesh_left_at: Vec<(String, u64)> = named(&spans, "rdm.mesh.membership.update.via-mesh-left").into_iter().filter(|sp| survivors.iter().any(|m| s(&sp["attributes"]["node"]).starts_with(&format!("{m}."))) && attr_u(sp, "births_departed") > 0).map(|sp| (s(&sp["attributes"]["node"]), start_ns(sp))).collect();
+    // Every birth of mesh1 is already departed by its NodeDeleted when mesh-left arrives (the members'
+    // from mesh1's primary, the final primary's from the fabric-primary), so a receiver's mesh-left
+    // departs nothing new; it is the terminal topology removal: the mesh's projections and held status
+    // dropped.
+    let receivers_left: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-mesh-left").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare && survivors.iter().any(|m| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.")))).collect();
+    let mesh_left_at: Vec<(String, u64)> = receivers_left.iter().map(|sp| (s(&sp["attributes"]["node"]), start_ns(sp))).collect();
     for m in survivors {
-        assert!(mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{m}.admin."))) && mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{m}.rpc."))), "an admin and an ordinary node of {m} departed mesh1's births on mesh-left: {mesh_left_at:?}");
-        let dropped: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-mesh-left").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.admin.")) && attr_u(sp, "births_departed") > 0).collect();
+        assert!(mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{m}.admin."))) && mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{m}.rpc."))), "an admin and an ordinary node of {m} applied mesh-left for mesh1: {mesh_left_at:?}");
+        let dropped: Vec<&&Value> = receivers_left.iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.admin."))).collect();
         assert!(dropped.iter().any(|sp| !s(&sp["attributes"]["status_dropped"]).is_empty()), "an admin of {m} dropped mesh1's held status on mesh-left: {dropped:?}");
     }
     let resurrected: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]).starts_with("mesh1.") && mesh_left_at.iter().any(|(n, at)| s(&sp["attributes"]["node"]) == *n && start_ns(sp) > *at)).collect();
