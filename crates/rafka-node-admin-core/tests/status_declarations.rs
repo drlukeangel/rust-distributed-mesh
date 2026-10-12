@@ -1443,3 +1443,34 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
     assert!(cap.spans("rdm.node_admin.status.update.via-completion-accepted").is_empty(), "no completion is accepted");
     eprintln!("trace {trace_id}: rdm.node_admin.status.reject.via-node-left field=command reported=node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)");
 }
+
+/// CONTRACT (node-rpc-envelope.md Status: "`RejectedNotAuthority` says the receiver is not the
+/// authority for the call: ... `SubjectUnknown` when the receiver does not hold the subject at all.
+/// ... a caller-side `PeerUnresolved` likewise [keeps its codec position and a mesh receiver never
+/// sends it]"; node-rpc.md §14): mesh1's primary asked to put the config of, put the record of, or
+/// delete the connections of a node its view does not hold, or of a node whose birth it does not
+/// know, answers `RejectedNotAuthority { SubjectUnknown }` each time: the fact is the receiver's own.
+/// Must NOT happen: `PeerUnresolved`, which names a peer the caller could not resolve.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_never_peer_unresolved() {
+    let (rig, others) = rig().await;
+    quiet_door(&rig).await;
+    let rpc2 = &others["rpc2"];
+    if let Some(n) = rig.topology.write().await.nodes.iter_mut().find(|n| n.node_id == rpc2.node.node_id) {
+        n.incarnation_id = None;
+    }
+    let caller = &others["rpc1"];
+    let unknown = (NodeId::mint(), IncarnationId::mint());
+    let no_birth = (rpc2.node.node_id.clone(), IncarnationId::mint());
+    for (case, (node_id, incarnation)) in [("not in the view", unknown), ("no known birth", no_birth)] {
+        let requests = [
+            StatusRequest::UpdateNodeConfig { node_id: node_id.clone(), incarnation: incarnation.clone(), config: [("zone".to_string(), "a".to_string())].into() },
+            StatusRequest::UpdateNode { node_id: node_id.clone(), incarnation: incarnation.clone(), name: "mesh1.rpc.2".into(), tags: Default::default() },
+            StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All },
+        ];
+        for req in requests {
+            let got = reply(&call(&rig, caller, &req).await);
+            assert_eq!(got, StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "{case}: {} answers the receiver's own fact", req.op());
+        }
+    }
+}
