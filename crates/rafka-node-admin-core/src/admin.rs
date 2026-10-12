@@ -499,6 +499,9 @@ impl Records {
 
     /// Hold the fabric state; the view follows at its next projection.
     pub fn set_fabric_state(&self, state: crate::fabric_state::FabricState) {
+        if state == crate::fabric_state::FabricState::ReadyForTraffic {
+            self.first_ready.reach();
+        }
         let changed = std::mem::replace(&mut *self.fabric_state.lock().unwrap(), state) != state;
         if changed {
             self.wake.poke();
@@ -5528,7 +5531,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             let book = membership.book.clone();
                             let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
                             let control = Arc::new(
-                                ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records), rafka_time.clone()).with_contexts(attempt_contexts.clone()),
+                                ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records), rafka_time.clone()).with_contexts(attempt_contexts.clone()).with_first_ready(records.first_ready.clone()),
                             );
                             // The claim door: this admin decides a claim only while it holds the fabric-primary seat.
                             let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), node_id: node_id.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone() });

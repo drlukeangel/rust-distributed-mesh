@@ -143,6 +143,24 @@ impl ControlPlane {
         Ok(())
     }
 
+    /// The one admission rule before the initial fabric is ready-for-traffic (states.md, "The initial
+    /// fabric before ready-for-traffic"; R-PB1, R-PC1): `workflow` moves a seat or writes a caller's
+    /// row, so it is refused `fabric-not-ready` until the fabric has first reached ready-for-traffic,
+    /// naming the workflow and the fabric's status. It runs before anything is read, claimed or
+    /// written: a refused workflow opens no attempt and accepts no Build.
+    async fn admit_once_ready(&self, route: &'static str, workflow: String, outer: &tracing::Span) -> Result<(), Refusal> {
+        let status = self.topology.read().await.fabric.status;
+        if self.first_ready.reached(status) {
+            return Ok(());
+        }
+        let reject = BuildReject::FabricNotReady { workflow: workflow.clone(), status: status.name().to_string() };
+        outer.in_scope(|| {
+            tracing::info_span!("rdm.node_admin.build.reject.via-fabric-not-ready", route, workflow = %workflow, status = status.name(), detail = %reject)
+                .in_scope(|| tracing::info!(%reject, "build refused: the initial fabric has not first reached ready-for-traffic"))
+        });
+        Err(Refusal::Reject(reject))
+    }
+
     /// The accepted Build, and the refusal when another Build is still reconciling.
     /// The admission is taken first and returned with the Build: the caller holds it through its write.
     async fn current_settled(&self) -> Result<(tokio::sync::OwnedMutexGuard<()>, crate::build_state::BuildProjection), Refusal> {
@@ -201,9 +219,19 @@ impl ControlPlane {
                     return Err(Refusal::Reject(reject));
                 }
             };
+            let operations = crate::accepted::plan(&topology, &observed, None).operations;
+            // A Build that deletes a node or a mesh writes caller state: it waits for the initial fabric
+            // to first reach ready-for-traffic (R-PC1).
+            if let Some(workflow) = operations.iter().find_map(|op| match op {
+                crate::build::BuildOperation::RetireNode { node, exited: None } => Some(format!("node.delete {node}")),
+                crate::build::BuildOperation::ShutdownMesh { mesh, .. } => Some(format!("mesh.delete {mesh}")),
+                _ => None,
+            }) {
+                self.admit_once_ready(route, workflow, &outer).await?;
+            }
             // A Build whose plan would end the fabric-primary while no live admin of its mesh can take
             // its seats is refused before it exists (node-rpc-envelope.md, "TakeSeats", Boundary).
-            if let Some(reject) = crate::accepted::plan(&topology, &observed, None).operations.iter().find_map(|op| {
+            if let Some(reject) = operations.iter().find_map(|op| {
                 let (node, action) = match op {
                     crate::build::BuildOperation::RetireNode { node, .. } => (node, "retire"),
                     crate::build::BuildOperation::RestartNode { node } => (node, "restart"),
@@ -299,6 +327,20 @@ impl ControlPlane {
         let outer = tracing::Span::current();
         async {
             self.authority(route).await?;
+            // A caller's node workflow writes a row, and a drain of a seat holder moves its seats: both
+            // wait for the initial fabric to first reach ready-for-traffic (R-PB1, R-PC1).
+            let holds_a_seat = || async {
+                let t = self.topology.read().await;
+                t.node(&path).is_some_and(|n| t.holds_fabric_seat(&n.node_id) || t.holds_mesh_seat(&n.mesh, &n.node_id))
+            };
+            let workflow = match kind {
+                ActionKind::Drain if holds_a_seat().await => Some(format!("node.drain {path} (a seat holder)")),
+                ActionKind::Drain => None,
+                _ => Some(format!("node.{} {path}", kind.name())),
+            };
+            if let Some(workflow) = workflow {
+                self.admit_once_ready(route, workflow, &outer).await?;
+            }
             let (_admitted, current) = self.current_settled().await?;
             // A delete acts only on a `.old` path: the parked predecessor a replacement left there, found
             // in the record the fabric-primary holds of it (below), and only a delete acts on it from that

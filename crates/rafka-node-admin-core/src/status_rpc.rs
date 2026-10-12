@@ -480,7 +480,7 @@ impl StatusAuthority {
                 // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
                 let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
                 let doors = crate::node_update::UpdateDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
-                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), req).await;
+                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), &self.first_ready, req).await;
             }
             StatusRequest::UpdateNodeConfig { .. } => {
                 return match self.configs.get() {

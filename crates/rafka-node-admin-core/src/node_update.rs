@@ -40,7 +40,8 @@ pub struct UpdateDoors<'a> {
 }
 
 /// Serve an `UpdateNode` at the admin `me` (born `me_id`): one span holds the whole put.
-pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: UpdateDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, req: &StatusRequest) -> StatusReply {
+#[allow(clippy::too_many_arguments)]
+pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: UpdateDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, first_ready: &crate::fabric_state::FirstReady, req: &StatusRequest) -> StatusReply {
     let StatusRequest::UpdateNode { node_id, incarnation, name, tags } = req else { unreachable!("update is called for UpdateNode only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
@@ -48,10 +49,38 @@ pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwL
         tags_arrived = tracing::field::Empty, tags_left = tracing::field::Empty, traffic = tracing::field::Empty, connections = tracing::field::Empty, apply = tracing::field::Empty,
         outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
-    let reply = tracing::Instrument::instrument(put(me, me_id, view, storage, doors, deleted, node_id, incarnation, name, tags, &span), span.clone()).await;
+    let reply = tracing::Instrument::instrument(
+        async {
+            match refused_before_first_ready(me, view, first_ready, node_id, &span).await {
+                Some(refused) => refused,
+                None => put(me, me_id, view, storage, doors, deleted, node_id, incarnation, name, tags, &span).await,
+            }
+        },
+        span.clone(),
+    )
+    .await;
     span.record("outcome", reply.name());
     span.in_scope(|| tracing::info!("node.update decided"));
     reply
+}
+
+/// The refusal of a caller's `node.update` while the initial fabric has not first reached
+/// ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"; R-PC1): before
+/// state-commit the node's row would live only in this mesh-primary's scratchpad. Nothing is read of
+/// the node, claimed or written.
+async fn refused_before_first_ready(me: &PathName, view: &RwLock<Topology>, first_ready: &crate::fabric_state::FirstReady, node_id: &rafka_mesh_entity::NodeId, span: &tracing::Span) -> Option<StatusReply> {
+    let now = view.read().await;
+    if first_ready.reached(now.fabric.status) {
+        return None;
+    }
+    let status = now.fabric.status.name();
+    let subject = now.nodes.iter().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_else(|| node_id.to_string());
+    let workflow = format!("node.update {subject}");
+    let refused = StatusReply::rejected_fabric_not_ready(&workflow, status);
+    span.record("detail", format!("{me}: {workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit the row would live only in this mesh-primary's scratchpad; nothing is claimed or written").as_str());
+    tracing::info_span!("rdm.node_admin.node.reject.via-fabric-not-ready", node = %me, workflow = %workflow, status, "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("node.update is refused until the initial fabric has first reached ready-for-traffic"));
+    Some(refused)
 }
 
 /// Whether the held node is quiet for a rename (R-CR1a, R-CR2), from what this mesh-primary holds:
