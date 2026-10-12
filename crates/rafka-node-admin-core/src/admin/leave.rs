@@ -74,7 +74,7 @@ impl AdminRunner {
     }
 
     /// The owner's outer workflow `shutdown-mesh:<mesh_id>`.
-    pub(super) async fn shutdown_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), String> {
+    pub(super) async fn shutdown_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), crate::executor::RunEnd> {
         let outer = crate::mesh_leave::operation(mesh_id);
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-shutdown", mesh = %mesh, mesh_id = %mesh_id, build_id = %build_id, attempt, operation = %outer, outcome = tracing::field::Empty);
         let result = self.shutdown_mesh_in(build_id, attempt, mesh, mesh_id, &outer).instrument(span.clone()).await;
@@ -82,7 +82,7 @@ impl AdminRunner {
         result
     }
 
-    async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), String> {
+    async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), crate::executor::RunEnd> {
         // Where this owner resumes, from its own Build facts, before it calls anything.
         let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
@@ -142,10 +142,11 @@ impl AdminRunner {
                     return Err(format!(
                         "{outer} is refused: {mesh}'s primary is {} {}, not the final primary {} {} admitted or amended; a resumed leave hands its workflow to no other birth",
                         final_primary.node, final_primary.incarnation_id, adm.final_primary.node, adm.final_primary.incarnation_id
-                    ));
+                    )
+                    .into());
                 }
                 if adm.final_runtime != final_runtime {
-                    return Err(format!("{outer} is refused before {mesh} is dismantled further: the final primary {}'s runtime is {final_runtime:?}, not the one admitted or amended for it {:?}", primary.name, adm.final_runtime));
+                    return Err(format!("{outer} is refused before {mesh} is dismantled further: the final primary {}'s runtime is {final_runtime:?}, not the one admitted or amended for it {:?}", primary.name, adm.final_runtime).into());
                 }
                 adm
             }
@@ -155,7 +156,7 @@ impl AdminRunner {
             }
         };
         if !admitted.roster.contains(&admitted.final_primary) {
-            return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id));
+            return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id).into());
         }
         let handoff = self.leaves.open(key.clone(), admitted.clone());
         let result = self.lead_leave(build_id, attempt, mesh_id, outer, node_rpc, &primary, &key, handoff).await;
@@ -163,7 +164,7 @@ impl AdminRunner {
             // This attempt's open leave ends with it; the receipts are the record a resumed attempt reads.
             self.leaves.close(&key);
         }
-        result
+        result.map_err(crate::executor::RunEnd::Failed)
     }
 
     /// The leaving mesh holds no node-admin primary. Before admission that refuses the leave; after

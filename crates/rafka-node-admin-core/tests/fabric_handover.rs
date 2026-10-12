@@ -523,8 +523,8 @@ struct NoRuns;
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::executor::OperationRunner for NoRuns {
-    async fn run(&self, _: &rafka_node_admin_core::build::BuildId, _: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), String> {
-        Err(format!("the cell runs no operation, not {op:?}"))
+    async fn run(&self, _: &rafka_node_admin_core::build::BuildId, _: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        Err(format!("the cell runs no operation, not {op:?}").into())
     }
 }
 

@@ -237,7 +237,7 @@ struct Runner {
 
 #[async_trait::async_trait]
 impl OperationRunner for Runner {
-    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         // A node recovery's three operations (node-recovery.md "Steps"), each writing the receipts its
         // workflow writes: the delete's NodeDeleted naming the exited birth and its Complete, the
         // create's Complete, the update's Complete. The fabric-primary's planning and recovery dedup
@@ -260,7 +260,7 @@ impl OperationRunner for Runner {
                 self.recovering.lock().unwrap().push(op.key());
                 if let Some(r) = self.world.runtimes.lock().unwrap().values().find(|r| r.node_id == from.node_id.as_str()) {
                     if matches!(r.status, DeploymentStatus::Running) {
-                        return Err(format!("{path}'s birth {} at {} still runs: not proven exited", from.node_id, from.incarnation.0));
+                        return Err(format!("{path}'s birth {} at {} still runs: not proven exited", from.node_id, from.incarnation.0).into());
                     }
                 }
                 self.builds.append_step_receipt(&receipt(op.key(), "NodeDeleted", Some(serde_json::json!({"node_id": from.node_id, "incarnation": from.incarnation})))).await.map_err(|e| e.to_string())?;
@@ -272,7 +272,7 @@ impl OperationRunner for Runner {
             BuildOperation::CreateNode { node: path, over: Some(_) } => {
                 self.recovering.lock().unwrap().push(op.key());
                 if self.fail_recovery_create.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                    return Err(format!("{path}: the recovered node's launch never came up"));
+                    return Err(format!("{path}: the recovered node's launch never came up").into());
                 }
                 let n = birth(&self.world, &self.book, &self.fabric_id, &path.to_string(), None);
                 let mut v = self.view.write().await;
@@ -293,7 +293,7 @@ impl OperationRunner for Runner {
         }
         // A replacement is realised like a creation at a path whose exact birth the provider's proof
         // clears: the fence stands for the exact terminal proof the replace's stop step obtains.
-        let (BuildOperation::CreateNode { node: path, over: None } | BuildOperation::ReplaceNode { node: path, .. }) = op else { return Err(format!("unexpected {op:?}")) };
+        let (BuildOperation::CreateNode { node: path, over: None } | BuildOperation::ReplaceNode { node: path, .. }) = op else { return Err(format!("unexpected {op:?}").into()) };
         let prev = self.view.read().await.node(path).cloned();
         let out = fence(path, prev.clone(), &Probe(self.world.clone())).await;
         self.ran.lock().unwrap().push((path.to_string(), op.clone(), out.clone()));

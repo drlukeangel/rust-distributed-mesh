@@ -108,9 +108,9 @@ struct Runner {
 
 #[async_trait::async_trait]
 impl OperationRunner for Runner {
-    async fn run(&self, _: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, _: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.ran.lock().unwrap().push((attempt, op.clone()));
-        let BuildOperation::CreateNode { node: name, .. } = op else { return Err(format!("unexpected {op:?}")) };
+        let BuildOperation::CreateNode { node: name, .. } = op else { return Err(format!("unexpected {op:?}").into()) };
         if self.die_at.as_ref() == Some(name) {
             self.died.notify_one();
             std::future::pending::<()>().await;

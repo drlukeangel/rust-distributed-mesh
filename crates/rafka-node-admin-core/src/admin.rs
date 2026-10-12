@@ -4404,7 +4404,7 @@ impl crate::fence::PathProbe for AdminRunner {
 
 #[async_trait::async_trait]
 impl OperationRunner for AdminRunner {
-    async fn run(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
         let r = self.run_op(build_id, attempt, op).await;
         self.refresh_view().await;
         r
@@ -4427,9 +4427,9 @@ impl OperationRunner for AdminRunner {
 }
 
 impl AdminRunner {
-    async fn run_op(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run_op(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
-        match op {
+        let ended: Result<(), String> = match op {
             BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor(), &self.me.to_string(), build_id, attempt, op).await,
             BuildOperation::CreateNode { node, over: Some(from) } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
@@ -4489,8 +4489,9 @@ impl AdminRunner {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.0);
                 self.update_from(build_id, attempt, node, from).instrument(span).await
             }
-            BuildOperation::ShutdownMesh { mesh, mesh_id } => self.shutdown_mesh(build_id, attempt, mesh, mesh_id).await,
-        }
+            BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.shutdown_mesh(build_id, attempt, mesh, mesh_id).await,
+        };
+        ended.map_err(crate::executor::RunEnd::Failed)
     }
 }
 

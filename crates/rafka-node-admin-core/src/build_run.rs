@@ -698,7 +698,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::executor::OperationRunner for Nothing {
-        async fn run(&self, _: &BuildId, _: u32, _: &crate::build::BuildOperation) -> Result<(), String> {
+        async fn run(&self, _: &BuildId, _: u32, _: &crate::build::BuildOperation) -> Result<(), crate::executor::RunEnd> {
             Ok(())
         }
     }

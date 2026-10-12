@@ -88,10 +88,10 @@ struct Creates(Mutex<Vec<String>>, Arc<MemoryBuildStateAdapter>);
 
 #[async_trait::async_trait]
 impl OperationRunner for Creates {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.0.lock().unwrap().push(op.key());
         let receipt = BuildStepReceipt { build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
-        self.1.append_step_receipt(&receipt).await.map_err(|e| e.to_string())
+        self.1.append_step_receipt(&receipt).await.map_err(|e| e.to_string().into())
     }
 }
 
@@ -397,7 +397,7 @@ struct Reborn {
 
 #[async_trait::async_trait]
 impl OperationRunner for Reborn {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.ran.run(build, attempt, op).await?;
         if op.key() == "create-node:mesh2.admin.1" {
             let mut v = self.topology.write().await;
@@ -539,7 +539,7 @@ struct Lands {
 
 #[async_trait::async_trait]
 impl OperationRunner for Lands {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.ran.run(build, attempt, op).await?;
         if let (true, BuildOperation::CreateNode { node: p, .. }) = (self.lands, op) {
             self.topology.write().await.nodes.push(node(&p.to_string(), false, false));
@@ -617,7 +617,7 @@ struct Records(Arc<Creates>);
 
 #[async_trait::async_trait]
 impl OperationRunner for Records {
-    async fn run(&self, _: &BuildId, _: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, _: &BuildId, _: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.0 .0.lock().unwrap().push(op.key());
         Ok(())
     }
@@ -688,7 +688,7 @@ struct LandsAndSeats {
 
 #[async_trait::async_trait]
 impl OperationRunner for LandsAndSeats {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.ran.run(build, attempt, op).await?;
         if let BuildOperation::CreateNode { node: p, .. } = op {
             let mut v = self.topology.write().await;
@@ -794,7 +794,7 @@ struct SeatMover {
 
 #[async_trait::async_trait]
 impl OperationRunner for SeatMover {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.ran.run(build, attempt, op).await
     }
     async fn prepare(&self, _: &BuildId, _: u32, op: &BuildOperation) -> Result<(), String> {
@@ -856,7 +856,7 @@ struct MeshBirth {
 
 #[async_trait::async_trait]
 impl OperationRunner for MeshBirth {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.ran.run(build, attempt, op).await?;
         if op.key() == "create-node:mesh2.admin.1" {
             self.topology.write().await.nodes.push(node("mesh2.admin.1", true, false));
@@ -888,7 +888,7 @@ struct HeldOpen {
 
 #[async_trait::async_trait]
 impl OperationRunner for HeldOpen {
-    async fn run(&self, _: &BuildId, _: u32, _: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, _: &BuildId, _: u32, _: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.began.notify_one();
         std::future::pending().await
     }

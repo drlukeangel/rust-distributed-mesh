@@ -14,11 +14,47 @@ use crate::topology::Topology;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// How a run of one operation ended short of complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunEnd {
+    /// The operation's own logic ended it with a named failure. The attempt ends `Failed`, and a
+    /// Build whose attempt ended so is failed: the current-Build read skips it and a caller
+    /// resubmits it (R-BI3, R-BI4).
+    Failed(String),
+    /// A participant of the operation was lost, or the proof its resume needs is not in yet: the
+    /// operation is incomplete and its receipts stand. The attempt ends handed back to the
+    /// fabric-primary, no terminal verdict is recorded, the Build stays in progress and the next
+    /// attempt resumes from the receipts (R-BI4; mesh-delete.md, "Failure and receipts").
+    Incomplete(String),
+}
+
+impl RunEnd {
+    /// Why the run ended short of complete.
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Failed(r) | Self::Incomplete(r) => r,
+        }
+    }
+}
+
+impl From<String> for RunEnd {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+impl std::fmt::Display for RunEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason())
+    }
+}
+
 /// Realises one planned operation (the deployment and lifecycle pipelines).
 #[async_trait::async_trait]
 pub trait OperationRunner: Send + Sync {
-    /// Realise `op` of `attempt` of `build_id`; `Err` names why it failed.
-    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String>;
+    /// Realise `op` of `attempt` of `build_id`; `Err` names how it ended short of complete
+    /// ([`RunEnd`]).
+    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), RunEnd>;
 
     /// What `op` owes before its executor is decided, once its turn comes: a mesh retire whose
     /// fabric-primary sits inside the leaving mesh hands the fabric seat to an outside
@@ -349,7 +385,7 @@ impl BuildExecutor {
                 }
             }
             if let Err(e) = self.runner.run(&build.build_id, attempt, op).await {
-                return self.finish(&build, attempt, Err((op.key(), e))).await;
+                return self.finish(&build, attempt, Err((op.key(), e.reason().to_string()))).await;
             }
         }
         match &plan.hand_off_to {
