@@ -1081,6 +1081,168 @@ mod writer {
         eprintln!("trace {trace}: via-node-row claims of mesh1.rpc.5 {rpc5:?}; mesh1.rpc.6 {:?}", of("mesh1.rpc.6"));
     }
 
+    /// A provider that never answers `find`: the executor that runs on it stops inside
+    /// `DeployRuntime` before anything is launched, its claim written, and is lost there. `entered`
+    /// fires when it gets that far.
+    struct LostBeforeLaunch {
+        entered: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for LostBeforeLaunch {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            "node-rows".into()
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+            Err(DeployError::Spawn { node: spec.node.to_string(), reason: "the lost executor launches nothing".into() })
+        }
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+            DeploymentStatus::Unknown
+        }
+        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    /// Launches nothing, and records the deployment of every `find` (the exact provider proof that
+    /// no runtime of it exists) and every spawn it is asked for.
+    #[derive(Default)]
+    struct Proving {
+        found: Mutex<Vec<DeploymentId>>,
+        spawned: Mutex<Vec<DeploymentId>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DeploymentProvider for Proving {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Process
+        }
+        fn control_domain(&self) -> String {
+            "node-rows".into()
+        }
+        async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+            self.spawned.lock().unwrap().push(spec.deployment_id.clone());
+            Err(DeployError::Spawn { node: spec.node.to_string(), reason: "this provider launches nothing".into() })
+        }
+        async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
+            DeploymentStatus::Unknown
+        }
+        async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+            Ok(())
+        }
+        async fn find(&self, spec: &ResolvedNodeLaunch) -> Result<Option<DeploymentHandle>, DeployError> {
+            self.found.lock().unwrap().push(spec.deployment_id.clone());
+            Ok(None)
+        }
+    }
+
+    /// Attempt `attempt` of `create-node:<name>` in the Build `build`, its receipts in `builds`, run by
+    /// the executor whose rows writer `records` feeds, over `provider`, its births' data dirs under
+    /// `data_root`: its error.
+    async fn create_attempt_over(records: &Records, provider: &dyn DeploymentProvider, builds: &dyn rafka_node_admin_core::build_state::BuildStateAdapter, build: &BuildId, name: &str, attempt: u32, data_root: &std::path::Path) -> Result<(), String> {
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: FabricId::mint(),
+            executable: "/nonexistent/node-rows".into(),
+            seeds: vec![],
+            launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.2".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            env: Default::default(),
+            data_root: data_root.to_path_buf(),
+            store_dir: data_root.join("store"),
+            mesh_issuer: None,
+        };
+        let joins = Joins::default();
+        let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
+        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
+        pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// CONTRACT (build.md §5.2: a step receipt is not committed until it is durable in storage that
+    /// survives the loss of the admin that wrote it, and the Build journal is never copied into the
+    /// shared store root; node-rpc-envelope.md Build carrier: "Completed steps are not rerun", an
+    /// idempotent uncertain step is settled by its natural key; lifecycles/node-create.md step 1: the
+    /// claim precedes the launch, and "Runtime exit requires independent exact provider proof, even for
+    /// a deployment that never joined"): attempt 1 of `create-node:mesh1.rpc.7` runs on executor A
+    /// through its name claim and A is lost inside `DeployRuntime`, before anything is launched. A's
+    /// receipts are in A's own journal only and never reach B's. B runs attempt 2 holding only what
+    /// the shared store holds: A's claim row. B's create takes the identity A's claim was made with
+    /// (the same node id, incarnation and deployment), the provider proving no runtime of that exact
+    /// deployment exists, its claim finds the row that birth holds (`row-held-by-node`) and it reaches
+    /// `DeployRuntime` with A's deployment. Must NOT happen: B minting a new birth that the name claim
+    /// refuses `name-held` by A's birth that never launched, attempt after attempt (gate
+    /// gate-gates-e6s4-d7fcc329 node_replace: "name-held: mesh2.rpc.1 is held by node nrsm925mnyf8",
+    /// 200 attempts, the path never recreated).
+    #[test]
+    fn a_create_whose_executor_is_lost_after_its_claim_is_continued_under_the_claimed_identity_by_an_executor_that_never_heard_its_receipts() {
+        use rafka_node_admin_core::build_state::{BuildAccepted, BuildFact, BuildStateAdapter, StepOutcome};
+        let cap = capture();
+        let (a_identity, b_err, found, spawned, row) = cap.run(async {
+            let storage = Arc::new(MemoryNodesStorage::default());
+            let data_root = std::env::temp_dir().join(format!("node-rows-lost-after-claim-{}", NodeId::mint()));
+            let build = BuildId("build-node-rows-7".into());
+            let (a_builds, b_builds) = (Arc::new(MemoryBuildStateAdapter::new()), MemoryBuildStateAdapter::new());
+            for builds in [&*a_builds, &b_builds] {
+                let accepted = BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
+                builds.publish_accepted(&accepted).await.unwrap();
+            }
+            // Executor A: attempt 1 through its claim, lost before it launches anything.
+            let (a_records, _a_view) = writer_of("mesh1.admin.2", &view(), &storage);
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let a = {
+                let (a_builds, data_root, build, entered) = (a_builds.clone(), data_root.clone(), build.clone(), entered.clone());
+                tokio::spawn(async move {
+                    let lost = LostBeforeLaunch { entered };
+                    create_attempt_over(&a_records, &lost, &*a_builds, &build, "mesh1.rpc.7", 1, &data_root).await
+                })
+            };
+            entered.notified().await;
+            a.abort();
+            let _ = a.await;
+            let a_identity = a_builds
+                .facts()
+                .await
+                .unwrap()
+                .into_iter()
+                .find_map(|f| match f {
+                    BuildFact::Step(r) if r.step == "AllocateIdentity" && r.outcome == StepOutcome::Complete => r.output,
+                    _ => None,
+                })
+                .expect("A's journal holds its AllocateIdentity receipt");
+            // Executor B: attempt 2, its journal holding none of A's receipts.
+            let (b_records, _b_view) = writer_of("mesh1.admin.2", &view(), &storage);
+            let proving = Proving::default();
+            let b_err = create_attempt_over(&b_records, &proving, &b_builds, &build, "mesh1.rpc.7", 2, &data_root).await;
+            let row = storage.node_row_at(&"mesh1.rpc.7".parse().unwrap()).await.unwrap();
+            let _ = std::fs::remove_dir_all(&data_root);
+            (a_identity, b_err, proving.found.into_inner().unwrap(), proving.spawned.into_inner().unwrap(), row)
+        });
+        let x = a_identity["node_id"].as_str().expect("A's identity names its node id").to_string();
+        let deployment = a_identity["deployment_id"].as_str().expect("A's identity names its deployment").to_string();
+        let b_err = b_err.expect_err("B's attempt fails where this provider launches nothing");
+        assert!(b_err.contains("DeployRuntime") && !b_err.contains("name-held"), "B continues A's create past its claim and reaches DeployRuntime: {b_err}");
+        assert_eq!(spawned.iter().map(|d| d.0.clone()).collect::<Vec<_>>(), vec![deployment.clone()], "B launches A's exact deployment, never a new one");
+        assert!(found.iter().any(|d| d.0 == deployment), "the provider was asked for A's exact deployment before anything was launched: {found:?}");
+        assert_eq!(row.as_ref().map(|r| r.node_id.to_string()), Some(x.clone()), "A's birth holds the row: {row:?}");
+        let claims = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+        let rpc7: Vec<(String, String)> = claims.iter().filter(|s| s["attributes"]["subject"] == "mesh1.rpc.7" && s["attributes"]["moment"] == "claim").map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
+        assert_eq!(rpc7, vec![(x.clone(), "row-written".to_string()), (x.clone(), "row-held-by-node".to_string())], "A's claim is written and B's holds that same birth's row: {rpc7:?}");
+        let trace = claims.iter().find(|s| s["attributes"]["subject"] == "mesh1.rpc.7").and_then(|s| s["trace_id"].as_str()).unwrap_or("");
+        eprintln!("trace {trace}: via-node-row claims of mesh1.rpc.7 {rpc7:?}; B launched deployment {deployment}");
+    }
+
     /// CONTRACT: another mesh's primary never writes a row of a mesh with no primary; the
     /// fabric-primary does, as that mesh's acting primary (R13). `mesh1` has no node-admin: a create
     /// of `mesh1.rpc.2` executed by `mesh3`'s primary is refused at its claim `not-mesh-primary`,
