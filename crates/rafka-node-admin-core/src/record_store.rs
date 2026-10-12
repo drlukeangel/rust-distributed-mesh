@@ -1025,6 +1025,23 @@ mod tests {
         assert_eq!(opened, Ok(()));
     }
 
+    /// CONTRACT: a held insert's look at whether its key is live (the store holding its writes before
+    /// the fabric's first state-commit, the key absent from the rows it holds, so the disk answers)
+    /// never waits on the disk on a runtime worker: it runs on the blocking pool, as `holds` and a
+    /// point read do. Every node-admin store on the store root is held from the admin's boot.
+    #[test]
+    fn a_held_inserts_look_at_the_disk_waits_off_the_runtime_thread() {
+        let d = tempdir("records-held-insert");
+        let setup = Box::pin(async move {
+            let pad = Scratchpad::new();
+            let r = FileRecords::open_held(&d, "things", &crate::model::IncarnationId("test".into()), &pad, "things".into()).await.unwrap();
+            (pad, r)
+        });
+        let (waited, inserted) = op_waits_on_the_blocking_pool(setup, |(_pad, r)| Box::pin(async move { r.insert("a", "thing/1", &"one".to_string()).await }));
+        assert!(waited, "the held insert's look at the disk ran on the blocking pool, not the runtime's thread");
+        assert_eq!(inserted, Ok(true));
+    }
+
     /// CONTRACT: `holds`, a look at whether a key's file is on the disk, never waits on the disk on
     /// a runtime worker: it runs on the blocking pool, as a point read does. The fabric store's
     /// open asks it (the retired whole-record file) inside the admin's boot.
