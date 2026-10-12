@@ -151,14 +151,15 @@ impl HandoverBook {
 
 /// What a receiver had to read or write to decide or commit a call, and why it failed: the fields a
 /// `RejectedSourceFailed` reply names. A runtime fact of the receiver, never `NotReady`, which is the
-/// readiness door's answer (node-rpc-envelope.md, "Node RPC readiness gate").
+/// readiness door's answer (node-rpc-envelope.md, "Node RPC readiness gate"). A record never written
+/// is not a failure of what was read: it is `RejectedRecordAbsent`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceFailure {
     /// What failed, named with its owner and row.
     pub source: String,
     /// The operation on it that failed, with its subject.
     pub op: String,
-    /// Why it failed: the store's or the peer's own error, or what was absent.
+    /// Why it failed: the store's or the peer's own error.
     pub cause: String,
 }
 
@@ -382,16 +383,25 @@ fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
 }
 
 fn reject(call: &'static str, side: &'static str, reason: &'static str, detail: &str, p: &Payload) {
-    reject_span(call, side, reason, detail, p, None);
+    reject_span(call, side, reason, detail, p, Refused::Nothing);
 }
 
 /// The reject span of a handover call refused because `failed` failed: reason `source-failed` and
 /// the three fields the reply names.
 fn reject_failed(call: &'static str, side: &'static str, failed: &SourceFailure, p: &Payload) {
-    reject_span(call, side, "source-failed", &failed.to_string(), p, Some(failed));
+    reject_span(call, side, "source-failed", &failed.to_string(), p, Refused::Failed(failed));
 }
 
-fn reject_span(call: &'static str, side: &'static str, reason: &'static str, detail: &str, p: &Payload, failed: Option<&SourceFailure>) {
+/// What a handover call's reject span names beside its reason.
+enum Refused<'a> {
+    Nothing,
+    /// What failed, the operation and the cause.
+    Failed(&'a SourceFailure),
+    /// The record never written and the admin whose records hold none.
+    Absent { record: &'a str, holder: &'a str },
+}
+
+fn reject_span(call: &'static str, side: &'static str, reason: &'static str, detail: &str, p: &Payload, named: Refused<'_>) {
     let span = tracing::info_span!(
         "rdm.node_admin.fabric.reject.via-handover",
         call,
@@ -406,11 +416,20 @@ fn reject_span(call: &'static str, side: &'static str, reason: &'static str, det
         source = tracing::field::Empty,
         op = tracing::field::Empty,
         cause = tracing::field::Empty,
+        record = tracing::field::Empty,
+        holder = tracing::field::Empty,
     );
-    if let Some(f) = failed {
-        span.record("source", f.source.as_str());
-        span.record("op", f.op.as_str());
-        span.record("cause", f.cause.as_str());
+    match named {
+        Refused::Nothing => {}
+        Refused::Failed(f) => {
+            span.record("source", f.source.as_str());
+            span.record("op", f.op.as_str());
+            span.record("cause", f.cause.as_str());
+        }
+        Refused::Absent { record, holder } => {
+            span.record("record", record);
+            span.record("holder", holder);
+        }
     }
     span.in_scope(|| tracing::info!("a fabric-primary handover call was refused"));
 }
@@ -506,6 +525,19 @@ impl HandoverDoor {
 
     fn me_birth(&self) -> HandoverBirth {
         HandoverBirth { mesh: self.me.mesh.clone(), node_id: self.node_id.clone(), incarnation: self.incarnation.clone() }
+    }
+
+    /// The refusal of a handover call (`call`, at `side`) whose decision needs the fabric seat record
+    /// this admin holds, when none was ever written to its seat records: `RejectedRecordAbsent` naming
+    /// the record and this admin, under the reject span with reason `record-absent`. `uncompared` says
+    /// what the call names that cannot be compared without it. Never a failed read
+    /// (`RejectedSourceFailed`) and never a record naming another holder (`RejectedNotAuthority`).
+    fn refuse_fabric_record_absent(&self, call: &'static str, side: &'static str, uncompared: &str, p: &Payload) -> Reply {
+        let record = format!("the fabric-primary seat record of {}", self.fabric);
+        let holder = self.me.to_string();
+        let detail = format!("{record} was never written to the seat records of {holder}, so {uncompared}");
+        reject_span(call, side, "record-absent", &detail, p, Refused::Absent { record: &record, holder: &holder });
+        Reply::record_absent(&record, &holder)
     }
 
     /// The birth a payload names as `role`, checked against the birth of that node this admin's view
@@ -664,12 +696,8 @@ impl HandoverDoor {
         };
         let held = self.membership.seats().fabric();
         let Some(held) = held else {
-            // Never written here, which is not a read that failed: named as absent.
-            return refuse_failed(SourceFailure {
-                source: format!("the seat records of {}", self.me),
-                op: "read the fabric seat".into(),
-                cause: format!("no fabric seat record is held: none was ever written to this admin's seat records, so the epoch {} the command names cannot be compared", payload.expected_epoch),
-            });
+            // Never written here, which is not a read that failed.
+            return self.refuse_fabric_record_absent("take", side, &format!("the epoch {} the command names cannot be compared with it", payload.expected_epoch), &payload);
         };
         if !held.is_birth(&payload.incumbent.node_id, &payload.incumbent.incarnation) {
             return refuse("not-authority", format!("the fabric seat is held by {held}, not the caller"), Reply::RejectedNotAuthority);
@@ -829,10 +857,13 @@ impl HandoverDoor {
         let holder = SeatHolder { mesh: payload.successor.mesh.clone(), node_id: payload.successor.node_id.clone(), incarnation: payload.successor.incarnation.clone(), epoch: committed };
         // A completion nothing recorded (a restarted incumbent) must still match the seat it held.
         if recorded.is_none() {
-            let held = self.membership.seats().fabric();
-            let consistent = held.as_ref().is_some_and(|h| (h.is_birth(&payload.incumbent.node_id, &payload.incumbent.incarnation) && h.epoch == payload.expected_epoch) || h == &holder);
+            // Never written here, which is not a seat record naming another holder.
+            let Some(held) = self.membership.seats().fabric() else {
+                return self.refuse_fabric_record_absent("taken", side, &format!("the seat it held cannot be compared with the completion's epoch {} (committed {committed})", payload.expected_epoch), &payload);
+            };
+            let consistent = (held.is_birth(&payload.incumbent.node_id, &payload.incumbent.incarnation) && held.epoch == payload.expected_epoch) || held == holder;
             if !consistent {
-                return refuse("not-authority", format!("this admin's fabric seat record is {}", held.map(|h| h.to_string()).unwrap_or_else(|| "absent".into())), Reply::RejectedNotAuthority);
+                return refuse("not-authority", format!("this admin's fabric seat record is {held}"), Reply::RejectedNotAuthority);
             }
         }
         // The committed transfer fences this admin's fabric writes: its seat record moves, under the

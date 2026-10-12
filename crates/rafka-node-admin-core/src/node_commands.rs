@@ -219,8 +219,44 @@ pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeComm
     }
 }
 
+/// What a receiver of a `NodeLeft` call holds instead of a command it could complete: nothing, by
+/// design (node-rpc-envelope.md, "Node stop command pair").
+pub const NODE_LEFT_IS_NEVER_A_CALL: &str = "no command: node-left is never a call; a stopped birth reports left on the reply of its stop-node call";
+
+/// The refusal of a `NodeLeft` call at any receiver, a node-admin or an rpc node (node-rpc-envelope.md,
+/// "Node stop command pair": "NodeLeft keeps its position and is never sent; a receiver refuses it by
+/// name"). A stop's completion is its `Stopped` reply, so no command is open that a node-left call
+/// completes: it is `RejectedUnmatchedCompletion { field: "command" }`, `expected` what the receiver
+/// holds instead ([`NODE_LEFT_IS_NEVER_A_CALL`]) and `reported` what the call named. Nothing is
+/// completed, whatever command is open for the birth. `name` is the subject's path.name as the
+/// receiver holds it (empty when it holds none) and `caller` who called, both for the reject span
+/// only; nothing checks who is calling (node-rpc.md §14). Never `NotReady`, the readiness gate's
+/// answer (R-NR1).
+pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRequest) -> StatusReply {
+    let StatusRequest::NodeLeft { node_id, incarnation, build_id, attempt, operation } = req else { unreachable!("refuse_node_left is called for node-left only") };
+    let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
+    tracing::info_span!(
+        "rdm.node_admin.status.reject.via-node-left",
+        node = %receiver,
+        op = req.op(),
+        operation = %operation,
+        build_id = %build_id,
+        attempt = *attempt,
+        subject = %node_id,
+        incarnation_id = %incarnation.0,
+        name = %name,
+        caller = %caller,
+        field = "command",
+        expected = NODE_LEFT_IS_NEVER_A_CALL,
+        reported = %reported,
+        "otel.kind" = "internal"
+    )
+    .in_scope(|| tracing::info!("a node-left call was refused by name: it is never a call, and it completes no command"));
+    StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_IS_NEVER_A_CALL.into(), reported }
+}
+
 /// A birth's `node-drained` completion call at the admin `receiver` that commanded it (node-left
-/// is the reply of `stop-node`, never a call; a `NodeLeft` request is refused by name before it
+/// is the reply of `stop-node`, never a call; a `NodeLeft` request is [`refuse_node_left`] before it
 /// reaches here): it resolves the open command it names. `subject` is the birth the request names
 /// as the receiver holds it `(incarnation, path.name)`, `None` when the receiver holds no such
 /// node; `caller` names who called, for the span only. Nothing checks who is calling (node-rpc.md
@@ -228,8 +264,8 @@ pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeComm
 /// another operation.
 pub fn accept_completion(commands: &CommandBook, receiver: &str, subject: Option<(Option<&IncarnationId>, &str)>, caller: &str, req: &StatusRequest) -> StatusReply {
     let (node_id, incarnation, build_id, attempt, operation) = match req {
-        StatusRequest::NodeDrained { node_id, incarnation, build_id, attempt, operation } | StatusRequest::NodeLeft { node_id, incarnation, build_id, attempt, operation } => (node_id, incarnation, build_id, attempt, operation),
-        _ => unreachable!("accept_completion is called for completions only"),
+        StatusRequest::NodeDrained { node_id, incarnation, build_id, attempt, operation } => (node_id, incarnation, build_id, attempt, operation),
+        _ => unreachable!("accept_completion is called for node-drained only"),
     };
     let reply = match subject.and_then(|(held, _)| held) {
         Some(held) if held != incarnation => StatusReply::RejectedStaleIncarnation { held: held.clone() },
