@@ -70,6 +70,7 @@ fn digest(name: &str, node_id: &NodeId, incarnation: &IncarnationId, port: u16) 
             runtime: None,
         },
         status: MemberStatus::Pending,
+        node_state: Default::default(),
         admin_api_base: None,
         digest_seq: 0,
         emitted_at_rafka_ms: 0,
