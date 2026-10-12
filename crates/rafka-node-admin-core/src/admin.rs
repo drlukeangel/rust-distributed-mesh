@@ -263,9 +263,10 @@ pub struct Records {
     /// The exact births the mesh primary's offline tickle holds TRUE OFFLINE (`offline`): shown
     /// `Dead` while they stay silent.
     pub offline: Mutex<std::collections::HashSet<(NodeId, IncarnationId)>>,
-    /// The peer mesh the fabric primary's investigation decided to rebirth: the fabric is
-    /// `degraded` from the decision until the mesh has a ready primary of a later birth.
-    peer_recovery: Mutex<Option<PeerRecovery>>,
+    /// Per peer mesh the fabric primary gave a new node-admin (the investigation's carrier-edge-lost
+    /// verdict, or the fully crashed mesh's proof): the fabric is `degraded` from that moment until
+    /// each such mesh's new primary has reported its round.
+    peer_recovery: Mutex<BTreeMap<String, PeerRecovery>>,
     /// The fabric-primary role was taken while the fabric was `degraded`: the new holder adopted
     /// the status and keeps it until every mesh primary reports for its round (`crate::round`).
     adopted_degraded: std::sync::atomic::AtomicBool,
@@ -373,7 +374,8 @@ impl ServingDoor {
     }
 }
 
-/// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
+/// A peer mesh the fabric primary gave a new node-admin: its carrier-edge-lost verdict's rebirth
+/// (`crate::investigate`), or a fully crashed mesh's create on the provider's proof of every node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRecovery {
     /// The mesh's name.
@@ -537,35 +539,33 @@ impl Records {
 
     /// Every peer mesh the fabric primary gave a new node-admin that has not yet reported its round.
     pub fn peer_recoveries(&self) -> Vec<PeerRecovery> {
-        self.peer_recovery.lock().unwrap().iter().cloned().collect()
+        self.peer_recovery.lock().unwrap().values().cloned().collect()
     }
 
     /// The recovery open for `mesh`, if one is.
     pub fn peer_recovery_of(&self, mesh: &str) -> Option<PeerRecovery> {
-        self.peer_recovery.lock().unwrap().clone().filter(|r| r.mesh == mesh)
+        self.peer_recovery.lock().unwrap().get(mesh).cloned()
     }
 
     /// Whether any peer mesh is being reborn: the fabric is `degraded` while one is.
     pub fn peer_recovering(&self) -> bool {
-        self.peer_recovery.lock().unwrap().is_some()
+        !self.peer_recovery.lock().unwrap().is_empty()
     }
 
-    /// Open the recovery of `recovery.mesh`: the fabric primary gave it a new node-admin.
+    /// Open the recovery of `recovery.mesh`: the fabric primary gave it a new node-admin. A recovery
+    /// already open for that mesh is replaced by this one; another mesh's is left as it is.
     pub fn open_peer_recovery(&self, recovery: PeerRecovery) {
-        *self.peer_recovery.lock().unwrap() = Some(recovery);
+        self.peer_recovery.lock().unwrap().insert(recovery.mesh.clone(), recovery);
     }
 
     /// Close the recovery of `mesh`: its new primary reported its round.
     pub fn close_peer_recovery(&self, mesh: &str) {
-        let mut open = self.peer_recovery.lock().unwrap();
-        if open.as_ref().is_some_and(|r| r.mesh == mesh) {
-            *open = None;
-        }
+        self.peer_recovery.lock().unwrap().remove(mesh);
     }
 
     /// Close every recovery: this admin no longer holds the fabric-primary role.
     pub fn clear_peer_recoveries(&self) {
-        *self.peer_recovery.lock().unwrap() = None;
+        self.peer_recovery.lock().unwrap().clear();
     }
 
     /// The fabric is `degraded` because this admin took the fabric-primary role while it was.
@@ -2581,7 +2581,9 @@ fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], re
 /// - a peer mesh whose investigation decided `unreachable` (`unreachable`) and whose every node the
 ///   provider proves exited (mesh-investigation.md step 5, "Fully crashed": a mesh whose every node is gone is
 ///   unheard by construction and no member can answer): the same recipe, for the mesh's first node-admin
-///   ([`crashed_peer_mesh`]). A node whose exit is not proven holds the mesh, and the hold names it;
+///   ([`crashed_peer_mesh`]), and the fabric `degraded` from the attempt's opening (R-DG1), as the verdict
+///   authors it, until that mesh's new primary reports. A node whose exit is not proven holds the mesh,
+///   and the hold names it;
 /// - a mesh this authority hears (it is not held unheard) that lost its mesh-primary, whose node-admin the
 ///   provider proves exited (exact exit proof, never silence): the same recipe, for that admin. A peer mesh
 ///   held unheard is otherwise evidence only (R-D1);
