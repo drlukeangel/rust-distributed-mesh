@@ -103,19 +103,27 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
         let heard = of_op(&spans_of(&estate, pids[n]), "rdm.mesh.membership.update.via-node-restarting");
         assert_eq!(heard.len(), 1, "{n} (mesh {away}) hears NodeRestarting once on its own mesh channel: {heard:?}");
     }
-    // The backbone carries it as the target mesh's aggregate: the primary bumps its topology_version after publishing.
+    // The backbone carries it as the target mesh's aggregate. The order is the doc's (gossip.md NodeRestarting: `topology_version`
+    // is "the version of the subject's mesh at which the subject changed"): the restart step's receipt puts the hold into the
+    // primary's book, the aggregate takes the version at which the subject changed and forwards, and the frame is published
+    // carrying that version. The version bump therefore precedes the publisher's span, so every later check anchors on the
+    // frame's version, never on wall-clock order against the publisher's span.
     let away_spans = spans_of(&estate, pids[&away_primary]);
-    let bumped: Vec<&Value> = named(&away_spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|x| x["attributes"]["mesh"] == away && start(x) >= start(publish)).collect();
-    assert!(!bumped.is_empty(), "{away_primary} bumps {away}'s topology_version after publishing NodeRestarting (the open overlay is in its aggregate)");
+    let frames: Vec<&Value> = named(&away_spans, "rdm.mesh.membership.update.via-status-event").into_iter().filter(|x| x["attributes"]["frame"] == "node-restarting" && x["attributes"]["operation"] == operation.as_str()).collect();
+    assert_eq!(frames.len(), 1, "{away_primary} publishes the NodeRestarting frame of {operation} once: {frames:?}");
+    let version = s(&frames[0]["attributes"]["topology_version"]);
+    assert!(!version.is_empty(), "the NodeRestarting frame carries the version of {away}'s aggregate at which {target} changed: {}", frames[0]);
+    let bumped: Vec<&Value> = named(&away_spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["topology_version"] == version.as_str()).collect();
+    assert!(!bumped.is_empty(), "{away_primary} takes {away}'s topology_version {version}, the version the frame carries (the open overlay is in its aggregate)");
     // The other mesh's primary installs that aggregate from the backbone and forwards it onto its own mesh.
     let home_spans = spans_of(&estate, pids[&home_primary]);
     let installed: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-snapshot-installed")
         .into_iter()
-        .filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["channel"] == "backbone" && start(x) >= start(publish))
+        .filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["channel"] == "backbone" && x["attributes"]["topology_version"] == version.as_str())
         .collect();
-    assert!(!installed.is_empty(), "{home_primary} installs {away}'s aggregate from the backbone after the publication");
-    let forwarded: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|x| x["attributes"]["mesh"] == away && start(x) >= start(publish)).collect();
-    assert!(!forwarded.is_empty(), "{home_primary} forwards {away}'s delta onto {home}'s channel after the publication");
+    assert!(!installed.is_empty(), "{home_primary} installs {away}'s aggregate at version {version} from the backbone");
+    let forwarded: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["topology_version"] == version.as_str()).collect();
+    assert!(!forwarded.is_empty(), "{home_primary} forwards {away}'s delta at version {version} onto {home}'s channel");
     // Its members hear the same operation, after the forward.
     for n in names.iter().filter(|n| n.starts_with(home) && n.contains(".rpc.")) {
         let heard = of_op(&spans_of(&estate, pids[n]), "rdm.mesh.membership.update.via-node-restarting");
