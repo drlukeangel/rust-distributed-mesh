@@ -333,3 +333,81 @@ async fn a_leave_whose_primary_is_lost_after_a_members_exit_proof_finishes_that_
     assert!(!heard.is_empty(), "a peer applies rpc.1's NodeDeleted");
     eprintln!("trace {} rpc.1 TerminateRuntime reused, NodeDeleted complete + published; amendment trace {}", s(&deleted[0]["trace_id"]), s(&eprint_trace["trace_id"]));
 }
+
+/// CONTRACT: the leaving mesh's primary has committed its mesh row Dead and its handoff is owed and
+/// not sent (the testkit cut `mesh-leave` parks every `hand_off` before mesh-leave is published or
+/// `MeshLeave` called). The owner, whose view holds mesh2 Dead with no handoff held, reissues
+/// `LeaveMesh` once (node-rpc-envelope.md, "Caller execution and certainty": "Reissuing a naturally
+/// idempotent uncertain step can settle it with AlreadyApplied"); the mesh-primary admits it as a
+/// repeat (its held manifest, `AlreadyApplied`, no second Leaving over the Dead row) and its second
+/// `hand_off` reaches the cut too. The owner's attempt 1 stays open: no timer ends it and no attempt 2
+/// is claimed. The release lets both handoffs through; the first completes the leave on attempt 1
+/// and the second is answered `AlreadyApplied`. Nothing is killed or stopped, and the fabric-primary
+/// (mesh1) is never touched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leave_whose_handoff_is_owed_and_not_sent_completes_on_one_reissued_leave_mesh() {
+    let test = "a_leave_whose_handoff_is_owed_and_not_sent_completes_on_one_reissued_leave_mesh";
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let root = estate.root.clone();
+    let mesh1 = json!({"name": "mesh1", "node_admin": 2, "rpc_node": 0});
+    let mesh2 = json!({"name": "mesh2", "node_admin": 1, "rpc_node": 2});
+    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh1.clone(), mesh2]})).await;
+    assert_eq!(status, 202, "{a}");
+    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
+    let want: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh2.admin.1", "mesh2.rpc.1", "mesh2.rpc.2"].iter().map(|n| n.to_string()).collect();
+    let before = estate.settled(&want, Duration::from_secs(60)).await;
+    wait_for("the fabric is ready-for-traffic: its state-commit published every node's rows", Duration::from_secs(90), || async {
+        (estate.get("/api/fabric").await.1["status"] == "ready-for-traffic").then_some(())
+    })
+    .await;
+    let (_, m2) = estate.get("/api/meshes/mesh2").await;
+    let mesh2_id = s(&m2["id"]);
+    let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
+    assert!(primary["is_fabric_primary"] != true, "the cut sits on mesh2's primary, never on the fabric-primary: {primary}");
+    let door = Door::open(&root, &s(&primary["name"]), &s(&primary["admin_api_base"])).await;
+    let cut = "leave:mesh-leave";
+    door.arm(cut, json!({"kind": "mesh-leave", "operation": "shutdown-mesh:"})).await;
+    let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh1]})).await;
+    assert_eq!(status, 202, "{b}");
+    let b = s(&b["build_id"]);
+    let held = door.wait_held(cut).await;
+    assert_eq!(held["hit"]["build_id"], b.as_str(), "the held hand-off is the leave's: {held}");
+    // The owner reissues leave-mesh; the mesh-primary admits the repeat and its second hand-off reaches the cut.
+    wait_for("a second hand-off reaches the cut: the owner reissued leave-mesh and the mesh-primary resent the handoff", Duration::from_secs(90), || async {
+        (door.cut(cut).await["seen_while_held"].as_u64().unwrap_or(0) >= 1).then_some(())
+    })
+    .await;
+    let (_, open) = estate.get(&format!("/api/builds?id={b}")).await;
+    let still_open = open["state"] != "complete" && open["attempt"].as_u64().unwrap_or(0) <= 1;
+    door.release(cut).await;
+    let released_at = std::time::Instant::now();
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    let mut build = Value::Null;
+    while std::time::Instant::now() < deadline {
+        let (_, v) = estate.get(&format!("/api/builds?id={b}")).await;
+        build = v;
+        if build["state"] == "complete" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let completed_after = released_at.elapsed();
+    estate.stop().await;
+    let spans = estate.spans();
+    assert!(still_open, "attempt 1 stays open while the handoff is owed: no timer ends it and no attempt 2 is claimed: {open}");
+    assert!(build["state"] == "complete" && build["attempt"].as_u64() == Some(1), "build {b} completes on attempt 1 after the release: {build}");
+    let outer = format!("shutdown-mesh:{mesh2_id}");
+    let of_leave = |name: &str| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str()).cloned().collect() };
+    let reissued = of_leave("rdm.node_admin.mesh.update.via-leave-mesh-reissued");
+    assert_eq!(reissued.len(), 1, "the owner reissued leave-mesh once for the wait: {reissued:?}");
+    assert_eq!(attr_u(&reissued[0], "attempt"), 1, "{}", reissued[0]);
+    let leaving_rows = of_leave("rdm.node_admin.mesh.update.via-leaving-row");
+    assert_eq!(leaving_rows.len(), 1, "only the first leave-mesh wrote the Leaving row: the repeat is admitted on the run held, with no second Leaving over the Dead row: {leaving_rows:?}");
+    let validated: Vec<String> = of_leave("rdm.node_admin.mesh.update.via-handoff-validated").iter().map(|sp| s(&sp["attributes"]["outcome"])).collect();
+    assert_eq!(validated.iter().filter(|o| *o == "applied").count(), 1, "one handoff completed the leave: {validated:?}");
+    assert!(validated.iter().all(|o| o == "applied" || o == "already-applied"), "the other handoff was answered AlreadyApplied, never refused: {validated:?}");
+    assert!(of_leave("rdm.node_admin.mesh.update.via-final-primary-exited").is_empty(), "nobody was lost: the wait did not end on a proven exit");
+    assert!(of_leave("rdm.node_admin.mesh.update.via-handoff-refused").is_empty(), "no handoff was refused");
+    eprintln!("a_leave_whose_handoff_is_owed trace {} build {b} reissue->complete {completed_after:?} after the release", s(&reissued[0]["trace_id"]));
+}

@@ -100,6 +100,17 @@ pub enum CutSpec {
     /// The testkit application took the fabric's `sync_state` round and has not answered it: the
     /// fabric stays in state-sync until the release (`test_app` mode `hold`).
     StateSync,
+    /// A leaving mesh's primary has committed its mesh row Dead and refreshed its view, and has not
+    /// yet published mesh-leave or called `MeshLeave` up to the owner (mesh-delete.md step 5): the
+    /// handoff is owed and not sent. Every `hand_off` that reaches the cut parks until the release.
+    /// `operation` is a prefix of the leave's operation (`shutdown-mesh:`); `attempt` narrows the cut
+    /// to one attempt number.
+    MeshLeave {
+        /// A prefix of the leave's operation key.
+        #[serde(default)] operation: Option<String>,
+        /// The attempt, when the cut is for one.
+        #[serde(default)] attempt: Option<u32>,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -171,6 +182,15 @@ pub enum Probe {
         /// The round's attempt.
         attempt: u32,
     },
+    /// A leaving mesh's primary about to publish mesh-leave and call `MeshLeave` up to the owner.
+    MeshLeave {
+        /// The leave's operation key.
+        operation: String,
+        /// The leave's Build.
+        build_id: String,
+        /// The attempt.
+        attempt: u32,
+    },
 }
 
 impl CutSpec {
@@ -188,6 +208,7 @@ impl CutSpec {
             (CutSpec::LeaveAnnouncement { announcements, channel }, Probe::LeaveAnnouncement { announcement, channel: c, .. }) => announcements.contains(announcement) && (channel == "any" || channel == c),
             (CutSpec::CatchUp, Probe::CatchUp { .. }) => true,
             (CutSpec::StateSync, Probe::StateSync { .. }) => true,
+            (CutSpec::MeshLeave { operation, attempt }, Probe::MeshLeave { operation: o, attempt: a, .. }) => operation.as_deref().is_none_or(|prefix| o.starts_with(prefix)) && attempt.is_none_or(|w| w == *a),
             _ => false,
         }
     }
@@ -205,6 +226,7 @@ impl Probe {
             Probe::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Probe::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
             Probe::StateSync { build_id, attempt } => json!({"build_id": build_id, "attempt": attempt}),
+            Probe::MeshLeave { operation, build_id, attempt } => json!({"operation": operation, "build_id": build_id, "attempt": attempt}),
         }
     }
 }
@@ -496,6 +518,7 @@ impl LifecycleEvents for FaultedEvents {
         self.inner.mesh_leaving(event).await
     }
     async fn mesh_leave(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
+        self.faults.hold(Probe::MeshLeave { operation: event.operation.clone(), build_id: event.build_id.clone(), attempt: event.attempt }).await;
         self.inner.mesh_leave(event).await
     }
     async fn mesh_left(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
