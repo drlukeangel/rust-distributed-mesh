@@ -138,7 +138,7 @@ fn own_id(t: &rafka_node_admin_core::topology::Topology, me: &PathName) -> rafka
 }
 
 fn fact(pid: u32) -> RuntimeFact {
-    RuntimeFact { deployment_id: format!("dep-{pid}"), provider: RuntimeProvider::Process, control_domain: DOMAIN.into(), locator: RuntimeLocator::Process { pid, start: 1 } }
+    RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60(&format!("dep-{pid}")), provider: RuntimeProvider::Process, control_domain: DOMAIN.into(), locator: RuntimeLocator::Process { pid, start: 1 } }
 }
 
 /// The estate: the world, the accepted Build, the admins' shared view and membership.
@@ -260,7 +260,7 @@ impl OperationRunner for Runner {
                 self.recovering.lock().unwrap().push(op.key());
                 if let Some(r) = self.world.runtimes.lock().unwrap().values().find(|r| r.node_id == from.node_id.as_str()) {
                     if matches!(r.status, DeploymentStatus::Running) {
-                        return Err(format!("{path}'s birth {} at {} still runs: not proven exited", from.node_id, from.incarnation.0).into());
+                        return Err(format!("{path}'s birth {} at {} still runs: not proven exited", from.node_id, from.incarnation.as_str()).into());
                     }
                 }
                 self.builds.append_step_receipt(&receipt(op.key(), "NodeDeleted", Some(serde_json::json!({"node_id": from.node_id, "incarnation": from.incarnation})))).await.map_err(|e| e.to_string())?;
@@ -1228,8 +1228,8 @@ mod one_attempt_number {
         assert_eq!(refused[0]["trace_id"], created["trace_id"], "the refusal and the admitted Build are one story");
         let a = &refused[0]["attributes"];
         assert_eq!(a["route"], "proven-drift", "{a}");
-        assert_eq!(a["build_id"], before.build_id.0.as_str(), "{a}");
-        assert!(a["accepted_now"].as_str().unwrap_or_default().contains(admitted.0.as_str()), "the refusal names the Build admitted first: {a}");
+        assert_eq!(a["build_id"], before.build_id.as_str(), "{a}");
+        assert!(a["accepted_now"].as_str().unwrap_or_default().contains(admitted.as_str()), "the refusal names the Build admitted first: {a}");
         println!("trace_id={} admitted={admitted} refused_drift_on={}", refused[0]["trace_id"].as_str().unwrap_or_default(), before.build_id);
     }
 

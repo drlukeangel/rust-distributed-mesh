@@ -138,7 +138,7 @@ impl Run {
 
     /// The Build a workflow call opened or joined.
     fn id_of(stream: &WorkflowStream) -> String {
-        stream.accepted().build_id.0.clone()
+        stream.accepted().build_id.to_string()
     }
 
     /// The workflow's stream to its `Complete`.
@@ -381,7 +381,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     let run = Run { estate, root, doors: Default::default(), rows: Default::default(), builds: Default::default(), span_checks: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: the mesh holds two
     // admins before any cut is armed, and either may hold the seats.
-    let shape = run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await.build_id.0;
+    let shape = run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await.build_id.to_string();
     // The initial fabric refuses a node delete and a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
@@ -800,7 +800,7 @@ async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
     let door = run.fabric_door().await;
     let ack = door.arm(id, spec.clone()).await;
     let stream = run.estate.submit(&BuildSpec::CreateMesh(MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)]))).await;
-    let build_id = stream.build_id().0.clone();
+    let build_id = stream.build_id().to_string();
     let at = index_of(create_order, step);
     let h = run.hold(&door, id, ack, &build_id, &format!("create-node:{admin}"), Some(create_order[..at].to_vec()), Some((admin, 1))).await;
     let rel = door.release(id).await;

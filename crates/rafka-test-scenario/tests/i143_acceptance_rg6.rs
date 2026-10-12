@@ -48,7 +48,7 @@ async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_comp
         arm_at_birth(&estate, joiner, "catch-up-withheld", json!({"kind": "catch-up"}));
     }
 
-    let build = estate.reconcile_shape("fabric1", &[("mesh1", 3, 0)]).await.build_id.0;
+    let build = estate.reconcile_shape("fabric1", &[("mesh1", 3, 0)]).await.build_id.to_string();
     estate.stop().await;
 
     let spans = estate.spans();

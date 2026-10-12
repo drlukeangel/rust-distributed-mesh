@@ -108,7 +108,7 @@ pub fn refusal_reply(r: Refusal) -> BuildReply {
         Refusal::BadRequest(d) => BuildReply::Rejected { reason: "invalid-request".into(), detail: d },
         Refusal::NotFound(d) => BuildReply::Rejected { reason: "not-found".into(), detail: d },
         Refusal::Conflict(d) => BuildReply::Rejected { reason: "conflict".into(), detail: d },
-        Refusal::BuildInProgress(id) => BuildReply::BuildInProgress { current_build_id: id.0 },
+        Refusal::BuildInProgress(id) => BuildReply::BuildInProgress { current_build_id: id.to_string() },
         Refusal::NotAuthority(p) => BuildReply::NotFabricPrimary { fabric_primary: p },
         Refusal::AttemptTaken(d) => BuildReply::AttemptTaken { detail: d },
         Refusal::Unavailable(d) => BuildReply::NotReady { reason: d },
@@ -200,15 +200,24 @@ impl BuildDoor {
         let call = req.op();
         let reply = async {
             match req {
-                BuildRequest::AttemptRun { build_id, attempt, executor, context, intent, operations, hand_off_to } => self.attempt_run(BuildId(build_id), attempt, executor, context, intent, operations, hand_off_to, sink).await,
+                BuildRequest::AttemptRun { build_id, attempt, executor, context, intent, operations, hand_off_to } => match build_id_of(&build_id) {
+                    Ok(id) => self.attempt_run(id, attempt, executor, context, intent, operations, hand_off_to, sink).await,
+                    Err(refused) => Ok(refused),
+                },
                 other => {
                     if let Some(refusal) = self.not_fabric_primary().await {
                         return Ok(refusal);
                     }
                     match other {
                         BuildRequest::Create { submit } => self.create(submit, sink).await,
-                        BuildRequest::Get { build_id } => self.get(BuildId(build_id), sink).await,
-                        BuildRequest::Delete { build_id } => self.delete(BuildId(build_id), sink).await,
+                        BuildRequest::Get { build_id } => match build_id_of(&build_id) {
+                            Ok(id) => self.get(id, sink).await,
+                            Err(refused) => Ok(refused),
+                        },
+                        BuildRequest::Delete { build_id } => match build_id_of(&build_id) {
+                            Ok(id) => self.delete(id, sink).await,
+                            Err(refused) => Ok(refused),
+                        },
                         BuildRequest::AttemptRun { .. } => unreachable!("handled above"),
                     }
                 }
@@ -234,16 +243,19 @@ impl BuildDoor {
                     // Build would claim its next attempt); the terminal names the attempt whose
                     // receipts applied it.
                     Ok(Admitted::AlreadyApplied(o)) => {
-                        let _sink = started(sink, BuildReply::Started { build_id: o.build_id.0.clone(), attempt: o.attempt, disposition: Disposition::AlreadyApplied }).await?;
-                        return Ok(BuildReply::Complete { build_id: o.build_id.0, attempt: o.attempt });
+                        let _sink = started(sink, BuildReply::Started { build_id: o.build_id.to_string(), attempt: o.attempt, disposition: Disposition::AlreadyApplied }).await?;
+                        return Ok(BuildReply::Complete { build_id: o.build_id.to_string(), attempt: o.attempt });
                     }
                     Err(refusal) => return Ok(refusal),
                 };
                 let drive = self.drives.ensure(&self.env, &opened.build_id, opened.attempt);
-                let sink = started(sink, BuildReply::Started { build_id: opened.build_id.0.clone(), attempt: opened.attempt, disposition: Disposition::Created }).await?;
+                let sink = started(sink, BuildReply::Started { build_id: opened.build_id.to_string(), attempt: opened.attempt, disposition: Disposition::Created }).await?;
                 stream_frames(sink, drive.reader(opened.attempt)).await
             }
-            BuildSubmit::Resubmit { build_id, from_attempt } => self.resubmit(BuildId(build_id), from_attempt, sink).await,
+            BuildSubmit::Resubmit { build_id, from_attempt } => match build_id_of(&build_id) {
+                Ok(id) => self.resubmit(id, from_attempt, sink).await,
+                Err(refused) => Ok(refused),
+            },
         }
     }
 
@@ -266,7 +278,7 @@ impl BuildDoor {
         let held = self.drives.get(&id);
         if p.state == BuildState::Complete && held.as_ref().map(|d| d.ended()).unwrap_or(true) {
             let drive = self.drives.replay_of(&self.env, &id, p.attempt);
-            let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition: Disposition::AlreadyApplied }).await?;
+            let sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt: from_attempt, disposition: Disposition::AlreadyApplied }).await?;
             return stream_frames(sink, drive.reader(from_attempt)).await;
         }
         match crate::build_state::drivable(&*self.control.builds, &p).await {
@@ -278,7 +290,7 @@ impl BuildDoor {
         // The drive is the one reader of the receipts: a drive this admin took up after a seat move
         // reads every earlier attempt's receipts at its first dispatch, in its own task.
         let drive = self.drives.ensure(&self.env, &id, p.attempt_to_drive());
-        let sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: from_attempt, disposition }).await?;
+        let sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt: from_attempt, disposition }).await?;
         stream_frames(sink, drive.reader(from_attempt)).await
     }
 
@@ -309,7 +321,7 @@ impl BuildDoor {
                 IncumbentRead::NoTransfer => {
                     span.record("outcome", "no-transfer");
                     span.in_scope(|| tracing::info!("this admin took its fabric seat by no transfer: its own log is the one it answers from"));
-                    return Err(BuildReply::UnknownBuild { build_id: id.0.clone() });
+                    return Err(BuildReply::UnknownBuild { build_id: id.to_string() });
                 }
                 IncumbentRead::Read { incumbent, read } => (incumbent, read),
             };
@@ -325,7 +337,7 @@ impl BuildDoor {
                 Err(crate::build_facts_read::FetchFailure::UnknownBuild(_)) => {
                     span.record("outcome", "unknown-build");
                     span.in_scope(|| tracing::info!("the incumbent holds no fact of the Build either"));
-                    return Err(BuildReply::UnknownBuild { build_id: id.0.clone() });
+                    return Err(BuildReply::UnknownBuild { build_id: id.to_string() });
                 }
                 Err(e) => {
                     span.record("outcome", e.reason());
@@ -355,7 +367,7 @@ impl BuildDoor {
     async fn get(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let p = match self.control.builds.read_build(&id).await {
             Ok(p) => p,
-            Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.0 }),
+            Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.to_string() }),
             Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: Build {id} could not be read: {e}", self.me) }),
         };
         let steps: Vec<StepReceipt> = p
@@ -387,12 +399,12 @@ impl BuildDoor {
             chunks.last_mut().expect("a chunk").push(s);
         }
         let count = chunks.len() as u32;
-        let mut sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt: p.attempt, disposition: Disposition::Attached }).await?;
+        let mut sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt: p.attempt, disposition: Disposition::Attached }).await?;
         for (i, chunk) in chunks.into_iter().enumerate() {
-            sink.data(BuildReply::Steps { build_id: id.0.clone(), chunk_index: i as u32, chunk_count: count, steps: chunk }).await.map_err(gone)?;
+            sink.data(BuildReply::Steps { build_id: id.to_string(), chunk_index: i as u32, chunk_count: count, steps: chunk }).await.map_err(gone)?;
         }
         Ok(BuildReply::Got {
-            build_id: id.0,
+            build_id: id.to_string(),
             phase: match p.state {
                 BuildState::Pending => BuildPhase::Pending,
                 BuildState::Running => BuildPhase::Running,
@@ -414,17 +426,17 @@ impl BuildDoor {
     async fn delete(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
         let attempt = match self.control.builds.read_build(&id).await {
             Ok(p) => p.attempt,
-            Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.0 }),
+            Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.to_string() }),
             Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: Build {id} could not be read: {e}", self.me) }),
         };
         match self.control.forget_build(&id).await {
             Ok(()) => {
                 self.drives.forget(&id);
-                let _sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt, disposition: Disposition::Attached }).await?;
-                Ok(BuildReply::Deleted { build_id: id.0 })
+                let _sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt, disposition: Disposition::Attached }).await?;
+                Ok(BuildReply::Deleted { build_id: id.to_string() })
             }
-            Err(Refusal::NotFound(_)) => Ok(BuildReply::UnknownBuild { build_id: id.0 }),
-            Err(Refusal::Conflict(reason)) => Ok(BuildReply::CannotDelete { build_id: id.0, reason }),
+            Err(Refusal::NotFound(_)) => Ok(BuildReply::UnknownBuild { build_id: id.to_string() }),
+            Err(Refusal::Conflict(reason)) => Ok(BuildReply::CannotDelete { build_id: id.to_string(), reason }),
             Err(other) => Ok(refusal_reply(other)),
         }
     }
@@ -448,14 +460,14 @@ impl BuildDoor {
         match self.run.attempt_run(&id, attempt, &executor, &context, &intent, &plan).await {
             Attached::Refused(r) => Ok(r),
             Attached::Ended { replay, terminal } => {
-                let mut sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt, disposition: Disposition::Reattached }).await?;
+                let mut sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt, disposition: Disposition::Reattached }).await?;
                 for f in replay {
                     sink.data(f).await.map_err(gone)?;
                 }
                 Ok(terminal)
             }
             Attached::Live { disposition, replay, mut reader } => {
-                let mut sink = started(sink, BuildReply::Started { build_id: id.0.clone(), attempt, disposition }).await?;
+                let mut sink = started(sink, BuildReply::Started { build_id: id.to_string(), attempt, disposition }).await?;
                 for f in replay {
                     sink.data(f).await.map_err(gone)?;
                 }
@@ -464,7 +476,7 @@ impl BuildDoor {
                     if !held_at_start && self.holds_fabric_seat() {
                         tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %id, attempt, node = %self.me, to = %self.me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
                             .in_scope(|| tracing::info!("the inner stream ends with the new seat"));
-                        return Ok(BuildReply::SeatMoved { build_id: id.0.clone(), fabric_primary: Some(self.me.to_string()) });
+                        return Ok(BuildReply::SeatMoved { build_id: id.to_string(), fabric_primary: Some(self.me.to_string()) });
                     }
                     match f {
                         BuildReply::Step { .. } | BuildReply::Blocked { .. } => sink.data(f).await.map_err(gone)?,
@@ -494,7 +506,7 @@ async fn stream_frames(mut sink: ReplySink<Build, rafka_node_rpc::stream::Stream
             Read::Terminal(t) => return Ok(t),
             Read::SeatLost(loss) => {
                 tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %reader.build_id(), to = loss.to.as_deref().unwrap_or("none"), detail = %loss.why).in_scope(|| tracing::info!("the outer stream ends with the new seat"));
-                return Ok(BuildReply::SeatMoved { build_id: reader.build_id().0.clone(), fabric_primary: loss.to });
+                return Ok(BuildReply::SeatMoved { build_id: reader.build_id().to_string(), fabric_primary: loss.to });
             }
         }
     }
@@ -604,7 +616,7 @@ impl Dispatcher for RpcDispatcher {
                 Err(e) => return Dispatched::Unreached(format!("the operation {} does not encode: {e}", op.key())),
             }
         }
-        let req = BuildRequest::AttemptRun { build_id: build_id.0.clone(), attempt, executor: executor.to_string(), context: context.clone(), intent, operations, hand_off_to: plan.hand_off_to };
+        let req = BuildRequest::AttemptRun { build_id: build_id.to_string(), attempt, executor: executor.to_string(), context: context.clone(), intent, operations, hand_off_to: plan.hand_off_to };
         let opts = CallOptions { budget: Budget::Stream { send: DISPATCH_SEND }, context: Some(context), ..CallOptions::default() };
         match self.client.call_stream::<Build>(&NodeTarget::ExactNode(node_id), &req, &opts).await {
             Ok((stream, _)) => Dispatched::Stream(Box::new(RemoteStream { stream })),
@@ -646,4 +658,10 @@ pub async fn ensure_active(drives: &Arc<Drives>, env: &Arc<DriveEnv>) -> Vec<Arc
             Vec::new()
         }
     }
+}
+
+/// The Build id a request names, or the refusal that names the id and why it is none: every Build id
+/// is a Crockford id (R-BI5), so an id of any other form (a stored `bld-` id, hex) is refused here by name.
+fn build_id_of(id: &str) -> Result<BuildId, BuildReply> {
+    BuildId::parse(id).map_err(|e| BuildReply::Rejected { reason: "invalid-request".into(), detail: format!("the request names a Build id that is not a Crockford id: {e}") })
 }

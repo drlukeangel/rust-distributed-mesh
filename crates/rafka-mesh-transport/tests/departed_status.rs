@@ -149,7 +149,7 @@ async fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_fro
 
     // X's replace-node: its executor publishes NodeDeleted on mesh2's channel.
     let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
-    let departure = LifecycleOp { build_id: "bld-s41".into(), attempt: 1, operation: "replace-node:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
+    let departure = LifecycleOp { build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "replace-node:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
     p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
     until("Y and the member to hold X departed", || y.book.is_departed(x.as_str()) && m.book.is_departed(x.as_str())).await;
     assert!(y.book.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's book");

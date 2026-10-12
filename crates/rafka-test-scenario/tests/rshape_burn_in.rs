@@ -541,7 +541,7 @@ async fn converge_connections_inner(f: &Formed, inv: &mut Invariants, strict: bo
 /// the per-node create under it and the deployment pipeline and steps under that. Returns the
 /// per-node chain records; asserts the relationships the spans actually carry.
 fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> Vec<Value> {
-    let bid = f.build_id.as_str();
+    let bid = f.build_id.to_string();
     let rest = named(spans, "rdm.node_admin.build.create.via-rest").into_iter().find(|sp| sp["attributes"]["build_id"] == bid).cloned().expect("the formation Build's REST request span");
     let reconciles: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == bid).collect();
     assert!(!reconciles.is_empty(), "the formation Build was reconciled");
@@ -5052,7 +5052,7 @@ async fn control_run(cell: &str, shape: Shape) {
         let mut status_frames = 0usize;
         for (_, fr) in &seen {
             match fr {
-                Frame::Digest { digest } => digests.entry((digest.node.name.to_string(), digest.node.incarnation.0.clone())).or_default().push(digest.digest_seq),
+                Frame::Digest { digest } => digests.entry((digest.node.name.to_string(), digest.node.incarnation.to_string())).or_default().push(digest.digest_seq),
                 Frame::Members { publisher, topology_version, .. } => members_versions.entry(format!("{publisher:?}")).or_default().push(*topology_version),
                 Frame::MeshStatus { .. } | Frame::FabricStatus { .. } => status_frames += 1,
                 _ => {}

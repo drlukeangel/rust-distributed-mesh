@@ -17,7 +17,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 /// default (`Joining`), and the status `status`.
 fn digest(status: &str) -> MeshDigest {
     serde_json::from_str(&format!(
-        r#"{{"fabric_id":"1123456789ab","node":{{"node_id":"0123456789ab","name":"mesh1.rpc.1","endpoint_id":"k","transport_addr":"127.0.0.1:80","incarnation":"i","supersedes":null}},"status":"{status}","admin_api_base":null,"digest_seq":7,"emitted_at_rafka_ms":9}}"#
+        r#"{{"fabric_id":"1123456789ab","node":{{"node_id":"0123456789ab","name":"mesh1.rpc.1","endpoint_id":"k","transport_addr":"127.0.0.1:80","incarnation":"yrz49j303yh4","supersedes":null}},"status":"{status}","admin_api_base":null,"digest_seq":7,"emitted_at_rafka_ms":9}}"#
     ))
     .unwrap()
 }
@@ -27,7 +27,7 @@ fn digest(status: &str) -> MeshDigest {
 /// position 2 (`Joining` = 0), admin API base, digest_seq, emitted_at, data dir, mesh id, in flight,
 /// config, load, gossip.
 const WIRE_DIGEST: &str = "0c 313132333435363738396162 \
-    0c 303132333435363738396162 0b 6d657368312e7270632e31 01 6b 00 7f000001 50 01 69 00 00 \
+    0c 303132333435363738396162 0b 6d657368312e7270632e31 01 6b 00 7f000001 50 0c 79727a34396a333033796834 00 00 \
     00 \
     00 07 09 00 00 00 00 00 00";
 
@@ -44,7 +44,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         assert_eq!(Frame::Digest { digest: digest(status) }.encode(), bytes(&heartbeat), "a {status} heartbeat");
     }
 
-    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId("p".into()) };
+    let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p")).unwrap() };
     let members = Frame::Members {
         mesh: "mesh1".into(),
         publisher: publisher.clone(),
@@ -58,7 +58,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         in_flight: vec![],
         departed: vec![],
     };
-    let members_hex = format!("01 05 6d65736831 0d 6d657368312e61646d696e2e31 01 70 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
+    let members_hex = format!("01 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 00 03 05 09 00 01 01 {WIRE_DIGEST} 01 00 00");
     assert_eq!(members.encode(), bytes(&members_hex), "Members: one projection entry, digest then status");
     let Frame::Members { digests, .. } = Frame::decode(&bytes(&members_hex)).expect("the Members frame decodes") else { panic!("not Members") };
     assert_eq!(digests.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::ReadyForTraffic], "the entry's status is the projection's");
@@ -74,7 +74,7 @@ fn a_heartbeat_carries_no_status_and_a_projection_entry_carries_its_digest_then_
         in_flight: vec![],
         departed: vec![],
     };
-    let delta_hex = format!("02 05 6d65736831 0d 6d657368312e61646d696e2e31 01 70 02 03 05 01 {WIRE_DIGEST} 01 00 00 00");
+    let delta_hex = format!("02 05 6d65736831 0d 6d657368312e61646d696e2e31 0c 79727a64396a333034326266 02 03 05 01 {WIRE_DIGEST} 01 00 00 00");
     assert_eq!(delta.encode(), bytes(&delta_hex), "MembersDelta: one changed projection entry, digest then status");
     let Frame::MembersDelta { changed, .. } = Frame::decode(&bytes(&delta_hex)).expect("the MembersDelta frame decodes") else { panic!("not MembersDelta") };
     assert_eq!(changed.iter().map(|d| d.status).collect::<Vec<_>>(), vec![MemberStatus::ReadyForTraffic], "the entry's status is the projection's");

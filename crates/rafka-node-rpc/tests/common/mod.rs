@@ -108,7 +108,7 @@ pub async fn node(name: &str, carrier_client: Option<Arc<NodeRpcClient>>, key: S
     if let Some(c) = carrier_client {
         b = b.carry::<Probe>().serve_forward(c);
     }
-    let server = b.seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }).unwrap();
+    let server = b.seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };

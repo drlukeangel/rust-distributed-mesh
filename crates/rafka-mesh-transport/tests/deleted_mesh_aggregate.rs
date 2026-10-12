@@ -208,7 +208,7 @@ async fn a_peer_holds_a_deleted_meshs_last_admin_stopped_then_deleted_from_the_f
     let stop = op("stop-node", &admin3);
     let (publisher, stamped) = fp_bb.publish_status_event(StatusEvent::Stopped, &stop).await;
     assert_eq!(publisher.node, "mesh1.admin.1");
-    let fp_publisher = format!("mesh1.admin.1@{}", fp_own.node.incarnation.0);
+    let fp_publisher = format!("mesh1.admin.1@{}", fp_own.node.incarnation.as_str());
     rounds_until(&fp_bb, &fp_m, "the peer never held mesh3 from the fabric-primary with the stopped admin in in_flight", || {
         peer_bb.held_source("mesh3").is_some_and(|(p, _)| p.node == "mesh1.admin.1")
     })

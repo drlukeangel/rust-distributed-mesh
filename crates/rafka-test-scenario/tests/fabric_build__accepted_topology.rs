@@ -81,10 +81,10 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
 
     // 2. A change: the next complete Build; one in flight at a time.
     let stream = estate.submit(&BuildSpec::Fabric(fabric_of(&[("mesh1", 2, 3)]))).await;
-    let a = stream.build_id().0.clone();
+    let a = stream.build_id().to_string();
     assert_eq!(current_build(&estate).await, a, "the Build is current on acceptance, before it converges");
     let refused = estate.builds_obj().await.create(&BuildSpec::Fabric(fabric_of(&[("mesh1", 2, 4)]))).await;
-    assert!(matches!(&refused, Err(CallEnd::BuildInProgress { current }) if current.0 == a), "a second change while {a} reconciles is refused build-in-progress, naming it: {:?}", refused.as_ref().err());
+    assert!(matches!(&refused, Err(CallEnd::BuildInProgress { current }) if current.as_str() == a), "a second change while {a} reconciles is refused build-in-progress, naming it: {:?}", refused.as_ref().err());
     estate.follow(stream).await;
     estate.settled_views(&[("mesh1", 2, 3)]).await;
     let built = build_log::build_value(&estate.carrier().await, &a).await;
@@ -92,16 +92,16 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     assert_eq!(built["submitted_change"]["kind"], "reconcile_fabric", "the change is kept as history: {built}");
 
     // 3. The accepted Build is never history; Day 0's is.
-    let refused = estate.builds_obj().await.delete(&BuildId(a.clone())).await;
+    let refused = estate.builds_obj().await.delete(&BuildId::parse(&a).unwrap()).await;
     assert!(matches!(&refused, Err(CallEnd::Rejected { reason, .. }) if reason == "cannot-delete"), "the accepted Build {a} stays in history: {refused:?}");
-    estate.builds_obj().await.delete(&BuildId(b0.clone())).await.unwrap_or_else(|e| panic!("Day 0's Build {b0} leaves history: {e}"));
+    estate.builds_obj().await.delete(&BuildId::parse(&b0).unwrap()).await.unwrap_or_else(|e| panic!("Day 0's Build {b0} leaves history: {e}"));
     let facts = build_log::log_read(&estate.carrier().await, &b0).await.unwrap_or_else(|end| panic!("the fabric-primary's log answers the read of the forgotten Build {b0}: {end}"));
     assert!(build_log::projection(&facts, &b0).is_none(), "the forgotten Build {b0} is no Build of the fabric-primary's log: {facts:?}");
     assert_eq!(current_build(&estate).await, a, "forget is history administration only");
 
     // 4. An admin born later hydrates the current Build, not the history.
     let mut spawn = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a node-admin in mesh1: {e}"));
-    let c = Estate::complete(&mut spawn).await.build_id.0;
+    let c = Estate::complete(&mut spawn).await.build_id.to_string();
     let nodes = Estate::values(&estate.settled_views(&[("mesh1", 3, 3)]).await);
     let late = nodes.iter().find(|n| n["name"] == "mesh1.admin.3").cloned().unwrap();
     let late_path = late["name"].as_str().unwrap().parse().unwrap();
@@ -130,7 +130,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let quiet_name = quiet["name"].as_str().unwrap().to_string();
     let stopped = estate.pid_of(&quiet_name).await;
     signal(stopped, "-STOP");
-    let r4 = estate.reconcile(&fabric_of(&[("mesh1", 3, 4)])).await.build_id.0;
+    let r4 = estate.reconcile(&fabric_of(&[("mesh1", 3, 4)])).await.build_id.to_string();
     assert_eq!(current_build(&estate).await, r4);
     let resumed_at = now_ns();
     signal(stopped, "-CONT");
@@ -166,7 +166,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let restarted_from = estate.node_value("mesh1.rpc.1").await;
     let mut restart = estate.nodes_obj().await.restart(&"mesh1.rpc.1".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of mesh1.rpc.1: {e}"));
     let r = Estate::complete(&mut restart).await;
-    assert_eq!(r.build_id.0, r4, "a restart opens an attempt of the accepted Build: {r:?}");
+    assert_eq!(r.build_id.to_string(), r4, "a restart opens an attempt of the accepted Build: {r:?}");
     assert_eq!(u64::from(r.attempt), attempts_before + 2, "the restart opens the attempt after the repair's: {r:?}");
     estate
         .until_node("mesh1.rpc.1", "mesh1.rpc.1 is ready again as the same birth", Duration::from_secs(60), |n| {

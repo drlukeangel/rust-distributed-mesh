@@ -519,7 +519,7 @@ async fn an_application_that_never_answers_keeps_the_fabric_in_state_sync_with_a
     assert_eq!(fabric["status"], "state-sync", "{fabric}");
     let blocked: Vec<&Value> = named(&spans, "rdm.node_admin.fabric.update.via-blocked").into_iter().filter(|b| b["attributes"]["state"] == "state-sync").collect();
     assert!(
-        blocked.iter().any(|b| b["attributes"]["blockers"] == "application(no-state-synced)" && s(&b["attributes"]["what"]).starts_with("sync_state awaits the application's state-synced for build bld-")),
+        blocked.iter().any(|b| b["attributes"]["blockers"] == "application(no-state-synced)" && s(&b["attributes"]["what"]).starts_with("sync_state awaits the application's state-synced for build pd8zej7xtjyr")),
         "the blocker is named: {:?}",
         blocked.iter().map(|b| &b["attributes"]).collect::<Vec<_>>()
     );
@@ -584,7 +584,7 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     let mut estate = estate_with(test, "hold").await;
     let door = Door::open(&estate.root, "mesh1.admin.1", "").await;
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
-    let first = estate.reconcile_shape("fabric1", &shape).await.build_id.0;
+    let first = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
     estate.settled_views(&shape).await;
     let path = |n: &str| -> PathName { n.parse().unwrap() };
     let held_in_state_sync = |f: &FabricView| f.status == ScopeStatus::StateSync && f.build_id.as_deref() == Some(first.as_str()) && f.meshes.len() == 2 && f.meshes.iter().all(|m| m.status == ScopeStatus::ReadyForTraffic);
@@ -656,7 +656,7 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     estate.fabrics_obj().await.fact("ready-for-traffic under the initial Build", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic && f.build_id.as_deref() == Some(first.as_str())).await.unwrap_or_else(|end| panic!("{end}"));
     let mut admitted = estate.nodes_obj().await.restart(&path("mesh2.rpc.1")).await.unwrap_or_else(|end| panic!("once the fabric is ready-for-traffic a restart is accepted: {end}"));
     let accepted = Estate::complete(&mut admitted).await;
-    assert_eq!((accepted.build_id.0.as_str(), accepted.attempt), (first.as_str(), log_before["attempt"].as_u64().unwrap() as u32 + 1), "the admitted restart is the next attempt of the initial Build");
+    assert_eq!((accepted.build_id.as_str(), accepted.attempt), (first.as_str(), log_before["attempt"].as_u64().unwrap() as u32 + 1), "the admitted restart is the next attempt of the initial Build");
     let log_end = build_log::build_value(&carrier, &first).await;
     assert_eq!(log_end["attempt"].as_u64(), Some(u64::from(accepted.attempt)), "the admitted restart is the only attempt the Build gained: {log_end}");
     estate.stop().await;

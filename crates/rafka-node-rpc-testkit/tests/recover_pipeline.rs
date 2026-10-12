@@ -246,13 +246,13 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     // Spans: one pipeline per workflow, and node.deleted published from the exit proof.
     let all = spans.0.lock().unwrap().clone();
     for kind in ["retire", "create", "update"] {
-        assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some(kind) && f.get("build_id") == Some(&recover_build.0)), "the {kind} workflow ran as its pipeline");
+        assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some(kind) && f.get("build_id") == Some(&recover_build.to_string())), "the {kind} workflow ran as its pipeline");
     }
     assert!(!all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("recover")), "no recovery pipeline of its own");
     let (_, parent, proof) = all.values().find(|(n, _, _)| n == "rdm.node_admin.node.delete.via-exit-proof").expect("node.deleted is published from the exit proof, spanned");
     assert_eq!(parent.as_deref(), Some("rdm.node_admin.deployment.update.via-step"));
     assert_eq!(proof.get("node_id"), Some(&old));
-    assert_eq!(proof.get("incarnation_id"), Some(&old_inc.0));
+    assert_eq!(proof.get("incarnation_id"), Some(&old_inc.to_string()));
     assert_eq!(proof.get("proof").map(String::as_str), Some("provider"));
     rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
     assert!(matches!(rig.provider.inspect(&second.handle).await, DeploymentStatus::Exited { .. }), "the new node was stopped");
@@ -285,7 +285,7 @@ async fn a_crashed_target_delete_on_another_births_exit_proof_is_refused_by_name
         .await
         .expect_err("another birth's exit proof deletes nothing");
     assert_eq!(err.step, "NodeDeleting");
-    assert!(err.reason.contains(&other.incarnation_id.0) && err.reason.contains(&first.node.incarnation_id.clone().unwrap().0), "the refusal names both births: {err}");
+    assert!(err.reason.contains(&other.incarnation_id.as_str()) && err.reason.contains(&first.node.incarnation_id.clone().unwrap().as_str()), "the refusal names both births: {err}");
     let view = rig.builds.read_build(&build).await.unwrap();
     assert!(view.steps.is_empty(), "no receipt: {:?}", view.steps);
     assert!(rig.log.lock().unwrap().is_empty(), "nothing published or sent");
@@ -338,6 +338,6 @@ async fn a_create_over_an_inherited_data_dir_with_no_endpoint_key_fails_by_name_
     let completed: Vec<&str> = view.steps.iter().filter(|r| r.outcome == StepOutcome::Complete).map(|r| r.step.as_str()).collect();
     assert_eq!(completed, vec!["AllocateIdentity"], "nothing after the identity completed: {completed:?}");
     let all = spans.0.lock().unwrap().clone();
-    assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("create") && f.get("build_id") == Some(&recover_build.0)), "the create ran as its pipeline");
+    assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("create") && f.get("build_id") == Some(&recover_build.to_string())), "the create ran as its pipeline");
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }

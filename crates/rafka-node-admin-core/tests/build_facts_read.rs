@@ -76,7 +76,7 @@ where
             counted.fetch_add(1, Ordering::SeqCst);
             serve(req, sink)
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .expect("the catalog seals");
     let router = Router::builder(ep.clone()).accept(rafka_node_rpc::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -338,7 +338,7 @@ impl Spans {
 fn assert_fetch(spans: &Spans, fetch: &Seen, node: &str, id: &BuildId, blocker: &str, target: &str, facts: Option<u32>) {
     let held = (fetch.attr("node"), fetch.attr("build_id"), fetch.attr("blocker"), fetch.attr("target"), fetch.attr("facts"));
     let facts = facts.map_or("<absent>".to_string(), |n| n.to_string());
-    assert_eq!(held, (node, id.0.as_str(), blocker, target, facts.as_str()), "the fetch span's story;\n{}", spans.render());
+    assert_eq!(held, (node, id.as_str(), blocker, target, facts.as_str()), "the fetch span's story;\n{}", spans.render());
     let calls = spans.calls_of(fetch);
     assert_eq!(calls.len(), 1, "the fetch made one call, the child of its span;\n{}", spans.render());
 }
@@ -458,7 +458,7 @@ fn an_incomplete_responder_is_passed_over_and_only_full_holdings_count() {
     assert_fetch(&spans, fetches[1], "mesh1.admin.3", &id, "no-current-build-wanted", "mesh1.admin.2", Some(6));
     let incomplete = spans.children(FETCH_INCOMPLETE);
     assert_eq!(incomplete.len(), 1, "one rejection;\n{}", spans.render());
-    assert_eq!((incomplete[0].attr("target"), incomplete[0].attr("build_id")), ("mesh1.admin.1", id.0.as_str()));
+    assert_eq!((incomplete[0].attr("target"), incomplete[0].attr("build_id")), ("mesh1.admin.1", id.as_str()));
 }
 
 // @feature: node-lifecycle

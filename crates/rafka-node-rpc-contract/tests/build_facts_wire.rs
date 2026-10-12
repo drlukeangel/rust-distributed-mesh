@@ -16,7 +16,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 fn requests_match_the_frozen_wire_schema() {
     let fixtures = [
         (BuildFactsRequest::FetchBuildFacts { build_id: "b".into() }, "00 01 62"),
-        (BuildFactsRequest::FetchBuildFacts { build_id: "bld-1".into() }, "00 05 626c642d31"),
+        (BuildFactsRequest::FetchBuildFacts { build_id: "3qcfk1kq47m9".into() }, "00 0c 337163666b316b7134376d39"),
     ];
     for (q, hex) in fixtures {
         assert_eq!(BuildFacts::encode_request(&q).unwrap(), bytes(hex), "{q:?}");
@@ -63,7 +63,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
 
 #[test]
 fn a_full_chunk_fits_the_reply_frame_ceiling() {
-    let r = BuildFactsReply::Facts { build_id: "bld-0123456789abcdef01234567".into(), chunk_index: u32::MAX, chunk_count: u32::MAX, facts: vec![0u8; rafka_mesh_transport_bound()] };
+    let r = BuildFactsReply::Facts { build_id: "cq2tyb03krac".into(), chunk_index: u32::MAX, chunk_count: u32::MAX, facts: vec![0u8; rafka_mesh_transport_bound()] };
     assert!(BuildFacts::encode_reply(&r).unwrap().len() <= BuildFacts::MAX_REPLY_FRAME_BYTES);
 }
 

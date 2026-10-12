@@ -38,7 +38,7 @@ fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &str, ste
 async fn a_standalone_connections_delete_completes_on_connections_deleted_and_leaves_the_process_running() {
     let test = "a_standalone_connections_delete_completes_on_connections_deleted_and_leaves_the_process_running";
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    let birth_build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await.build_id.0;
+    let birth_build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await.build_id.to_string();
     estate.settled_views(&[("mesh1", 2, 3)]).await;
 
     const NODE: &str = "mesh1.rpc.1";
@@ -46,7 +46,7 @@ async fn a_standalone_connections_delete_completes_on_connections_deleted_and_le
     let pid = estate.pid_of(NODE).await;
     let mut deleting = estate.nodes_obj().await.delete_connections(&NODE.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.connections.delete of {NODE}: {e}"));
     let r = deleting.accepted().clone();
-    assert_eq!(r.build_id.0, birth_build, "no Build is minted: {r:?}");
+    assert_eq!(r.build_id.to_string(), birth_build, "no Build is minted: {r:?}");
     let attempt_no = u64::from(r.attempt);
     let opened = build_log::build_fact(&estate.carrier().await, &birth_build, "the node.connections.delete attempt is the Build's current attempt", Duration::from_secs(30), |b| serde_json::to_value(b).is_ok_and(|b| b["reason"] == "delete-connections")).await.unwrap_or_else(|end| panic!("{end}"));
     let opened = serde_json::to_value(opened).expect("a Build view serializes");

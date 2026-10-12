@@ -38,7 +38,7 @@ impl DeploymentProvider for Running {
         Err(DeployError::Spawn { node: format!("{launch:?}").chars().take(80).collect(), reason: "this cell launches nothing".into() })
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
-        Err(DeployError::Terminate { deployment: h.deployment_id.0.clone(), reason: "this cell terminates nothing".into() })
+        Err(DeployError::Terminate { deployment: h.deployment_id.to_string(), reason: "this cell terminates nothing".into() })
     }
     async fn inspect(&self, _: &DeploymentHandle) -> DeploymentStatus {
         DeploymentStatus::Running
@@ -136,7 +136,7 @@ fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<
             mesh_issuer: None,
         };
         let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
-        let handle = DeploymentHandle { deployment_id: DeploymentId(format!("dep-{HOLDER}")), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
+        let handle = DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("dep-{HOLDER}"))).unwrap(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
         let root = tracing::info_span!("cell.seat-transfer-step", build_id = %build_id, node = HOLDER);
         let trace_id = crate::mesh_leave_resume::trace_id(&root);
         let r = {

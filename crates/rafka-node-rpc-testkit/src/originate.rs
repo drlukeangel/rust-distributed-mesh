@@ -465,7 +465,7 @@ mod tests {
     use rafka_mesh_entity::{IncarnationId, NodeId};
 
     fn end(kind: NodeKind, ordinal: u32, inc: &str) -> ConnectionEnd {
-        ConnectionEnd { name: PathName { mesh: "mesh1".into(), kind, ordinal, old: false, new: false }, node_id: NodeId::mint(), incarnation: Some(IncarnationId(inc.into())) }
+        ConnectionEnd { name: PathName { mesh: "mesh1".into(), kind, ordinal, old: false, new: false }, node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap()) }
     }
 
     fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {

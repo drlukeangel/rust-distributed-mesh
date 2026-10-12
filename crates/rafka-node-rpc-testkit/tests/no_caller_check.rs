@@ -81,7 +81,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         admin.observer.resolver.insert(resolved.clone());
         let target = NodeTarget::ExactNode(born.node.node_id.clone());
         let (node_id, incarnation) = (born.node.node_id.clone(), born.node.incarnation.clone());
-        let stop = |attempt: u32, incarnation: &IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_stranger".into(), attempt, operation: "stop-node:mesh1.rpc.1".into() };
+        let stop = |attempt: u32, incarnation: &IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), attempt, operation: "stop-node:mesh1.rpc.1".into() };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
 
         // The admin the node knows stops it: the node parks, and hears no digest from now on.
@@ -105,7 +105,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let stale = IncarnationId::mint();
         assert_eq!(call(&stranger, &target, &stop(3, &stale)).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() });
         // The node id the request names is never a reason to refuse: the birth the call reached answers it.
-        let another = StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: incarnation.clone(), build_id: "bld_stranger".into(), attempt: 4, operation: "stop-node:mesh1.rpc.9".into() };
+        let another = StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), attempt: 4, operation: "stop-node:mesh1.rpc.9".into() };
         let reply = call(&stranger, &NodeTarget::ExactNode(node_id.clone()), &another).await;
         assert_eq!(reply, stopped, "a stop naming another node id is answered by the birth it reached, as the stop of a stopped birth: {reply:?}");
 

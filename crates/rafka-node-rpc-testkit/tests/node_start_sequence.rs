@@ -124,7 +124,7 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 }
 
 fn stop(launch: &Launch) -> StatusRequest {
-    StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_start_sequence".into(), attempt: 1, operation: format!("stop-node:{}", launch.name) }
+    StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 1, operation: format!("stop-node:{}", launch.name) }
 }
 
 /// `req` sent by `root` over Node RPC to the birth `launch` names, as a commanding node-admin sends
@@ -138,7 +138,7 @@ async fn command(root: &Running, launch: &Launch, req: &StatusRequest) -> Status
 }
 
 fn start(launch: &Launch) -> StatusRequest {
-    StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_start_sequence".into(), attempt: 2, operation: format!("start-node:{}", launch.name) }
+    StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 2, operation: format!("start-node:{}", launch.name) }
 }
 
 /// The start steps of `node` that are children of a span named `root`, in the order they began:

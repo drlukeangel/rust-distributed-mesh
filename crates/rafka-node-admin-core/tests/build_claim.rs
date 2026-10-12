@@ -67,7 +67,7 @@ async fn seat(b: &Birth, topology: Arc<RwLock<Topology>>, builds: Arc<dyn BuildS
     let slot: build_claim::ClaimSlot = Arc::new(OnceLock::new());
     let _ = slot.set(door.clone());
     let server = build_claim::serve(ServerBuilder::new(), slot)
-        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().0 })
+        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -195,7 +195,7 @@ async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
     resolver.insert(p_seat.resolved.clone());
     let ep = rafka_node_rpc::endpoint::bind(reborn_birth.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep, resolver);
-    let req = BuildClaimRequest::ClaimAttempt { build_id: id.0.clone(), attempt: 2, executor_node_id: reborn_birth.node.node_id.clone(), executor_incarnation: IncarnationId::mint() };
+    let req = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: reborn_birth.node.node_id.clone(), executor_incarnation: IncarnationId::mint() };
     let (out, _) = client.call::<BuildClaim>(&rafka_node_rpc::NodeTarget::ExactNode(p.node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
     match out {
         rafka_node_rpc_contract::outcome::RpcOutcome::Reply(reply) => match reply.value() {
@@ -236,14 +236,14 @@ async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_f
         }
     };
     // A birth of the executor the view does not hold: refused about the subject, nothing claimed.
-    let other_birth = BuildClaimRequest::ClaimAttempt { build_id: id.0.clone(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: IncarnationId::mint() };
+    let other_birth = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: IncarnationId::mint() };
     match call(other_birth).await {
         BuildClaimReply::PeerUnresolved { reason } => assert!(reason.contains("names birth") && reason.contains("mesh1.admin.2"), "{reason}"),
         other => panic!("a birth the view does not hold is refused about the subject: {other:?}"),
     }
     assert_eq!(p_builds.read_build(&id).await.unwrap().attempt, 1, "nothing was claimed");
     // The executor's exact birth: Won, the attempt claimed for that executor.
-    let exact = BuildClaimRequest::ClaimAttempt { build_id: id.0.clone(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: executor.node.incarnation_id.clone().unwrap() };
+    let exact = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: executor.node.incarnation_id.clone().unwrap() };
     assert!(matches!(call(exact).await, BuildClaimReply::Won { .. }), "the claim is decided for the executor the request names");
     let build = p_builds.read_build(&id).await.unwrap();
     assert_eq!((build.attempt, build.executor.as_deref()), (2, Some("mesh1.admin.2")), "attempt 2 is claimed for the executor the request names");

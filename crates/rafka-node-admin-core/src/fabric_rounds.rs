@@ -69,13 +69,13 @@ impl RoundActions for NoScratchpad {
 /// "names the accepted Build's PLANNED births"). `key_build` is the round's own Build as this admin's
 /// log holds it, read only when it is another Build than the accepted one.
 pub(crate) fn superseded_by(key: &RoundKey, accepted: &crate::build_state::BuildProjection, key_build: Option<&crate::build_state::BuildProjection>) -> Option<String> {
-    if accepted.build_id.0 == key.build_id {
+    if accepted.build_id.as_str() == key.build_id {
         return (accepted.attempt > key.attempt).then(|| format!("the accepted Build {} is at attempt {}, past this round's attempt {}", key.build_id, accepted.attempt, key.attempt));
     }
     // Another Build: superseded only by one accepted after the round's own. A round of a Build this
     // admin's log has not learned, or of one accepted after the Build it holds, came ahead of this admin's log.
     let own = key_build?;
-    (own.submitted_at_ms < accepted.submitted_at_ms).then(|| format!("Build {} (accepted at {} ms) was accepted after this round's Build {} (accepted at {} ms)", accepted.build_id.0, accepted.submitted_at_ms, key.build_id, own.submitted_at_ms))
+    (own.submitted_at_ms < accepted.submitted_at_ms).then(|| format!("Build {} (accepted at {} ms) was accepted after this round's Build {} (accepted at {} ms)", accepted.build_id.as_str(), accepted.submitted_at_ms, key.build_id, own.submitted_at_ms))
 }
 
 /// Withdraw from `declarer` every round completion `accepted` (the Build this admin holds accepted)
@@ -94,14 +94,21 @@ pub(crate) async fn withdraw_superseded_completions(declarer: &Declarer, me: &Pa
 /// pointer (the same answer [`superseded_by`] gives it). A Build that cannot be read leaves the
 /// question open, and says so by name: it is neither superseded nor known to be current.
 async fn round_superseded_by(round: &RoundKey, accepted: &crate::build_state::BuildProjection, builds: &dyn BuildStateAdapter, node: &str) -> Option<String> {
-    if accepted.build_id.0 == round.build_id {
+    if accepted.build_id.as_str() == round.build_id {
         return superseded_by(round, accepted, None);
     }
-    let own = match builds.read_build(&crate::build::BuildId(round.build_id.clone())).await {
-        Ok(own) => Some(own),
-        Err(crate::build_state::BuildStateError::UnknownBuild(_)) => None,
-        Err(e) => {
-            tracing::info_span!("rdm.node_admin.fabric.reject.via-round-build-unreadable", node, round = round.kind.command(), build_id = %round.build_id, attempt = round.attempt, accepted_build_id = %accepted.build_id, error = %e)
+    let read = match crate::build::BuildId::parse(&round.build_id) {
+        Err(e) => Err(format!("the round names Build {:?}, which is not a Crockford id: {e}", round.build_id)),
+        Ok(id) => match builds.read_build(&id).await {
+            Ok(own) => Ok(Some(own)),
+            Err(crate::build_state::BuildStateError::UnknownBuild(_)) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        },
+    };
+    let own = match read {
+        Ok(own) => own,
+        Err(error) => {
+            tracing::info_span!("rdm.node_admin.fabric.reject.via-round-build-unreadable", node, round = round.kind.command(), build_id = %round.build_id, attempt = round.attempt, accepted_build_id = %accepted.build_id, error = %error)
                 .in_scope(|| tracing::info!("the round's Build cannot be read: whether the accepted Build moved past the round is not known"));
             None
         }
@@ -329,7 +336,7 @@ impl FabricRounds {
         };
         let frame = crate::fabric_state::hook_frame(key, up, node_id.clone(), incarnation.clone(), &self.env.me.to_string(), gossip.membership.clock().now_rafka_ms());
         let kind = if up { key.kind.completion() } else { key.kind.command() };
-        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.env.me, round = key.kind.command(), hook = kind, subject_id = %node_id, incarnation_id = %incarnation.0, build_id = %key.build_id, attempt = key.attempt, channels = "mesh,backbone", bound = true, "otel.kind" = "internal");
+        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.env.me, round = key.kind.command(), hook = kind, subject_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels = "mesh,backbone", bound = true, "otel.kind" = "internal");
         async {
             match gossip.backbone.publish_command_hook(&frame).await {
                 Ok(()) => tracing::info!("the round hook was published on the mesh channel and the backbone"),
@@ -703,8 +710,13 @@ impl FabricRounds {
                     tracing::info!("no traffic_opened notice is registered");
                     return;
                 };
-                let build = crate::build::BuildId(round.1.clone());
-                let context = contexts.get(&build, round.2).await.ok().flatten().unwrap_or_default();
+                let context = match crate::build::BuildId::parse(&round.1) {
+                    Ok(build) => contexts.get(&build, round.2).await.ok().flatten().unwrap_or_default(),
+                    Err(e) => {
+                        tracing::info!(build_id = %round.1, error = %e, "the round's Build id is not a Crockford id: no call context is held for it");
+                        Default::default()
+                    }
+                };
                 hook(StateSyncRound { fabric_id: round.0.clone(), build_id: round.1.clone(), attempt: round.2, operation: RoundKind::OpenTraffic.operation(&round.0), context }).await;
                 tracing::info!("the application was told the fabric opened traffic");
             }
@@ -1070,20 +1082,20 @@ mod tests {
         use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
         let builds = MemoryBuildStateAdapter::new();
         let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
-        let (one, two) = (crate::build::BuildId("bld-one".into()), crate::build::BuildId("bld-two".into()));
+        let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
         for (b, at) in [(&one, 1_000), (&two, 2_000)] {
             builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
         }
         let (b1, b2) = (builds.read_build(&one).await.unwrap(), builds.read_build(&two).await.unwrap());
         let fabric = FabricId::mint();
-        let key = |b: &crate::build::BuildId, attempt: u32| RoundKey { kind: RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: b.0.clone(), attempt };
+        let key = |b: &crate::build::BuildId, attempt: u32| RoundKey { kind: RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: b.to_string(), attempt };
         let (one_at_1, one_at_2, two_at_1) = (BuildProjection { attempt: 1, ..b1.clone() }, BuildProjection { attempt: 2, ..b1.clone() }, BuildProjection { attempt: 1, ..b2.clone() });
         assert_eq!(superseded_by(&key(&one, 1), &one_at_1, None), None, "the accepted Build and attempt: current");
         assert!(superseded_by(&key(&one, 1), &one_at_2, None).is_some(), "a later attempt of the same Build supersedes the round");
         assert_eq!(superseded_by(&key(&one, 3), &one_at_2, None), None, "an attempt ahead of the one this admin holds: its command came first");
         assert!(superseded_by(&key(&one, 1), &two_at_1, Some(&one_at_1)).is_some(), "a Build accepted after the round's own supersedes it");
         assert_eq!(superseded_by(&key(&two, 1), &one_at_1, Some(&two_at_1)), None, "a round of a Build accepted after the one this admin holds: its log lags");
-        assert_eq!(superseded_by(&key(&crate::build::BuildId("bld-unlearned".into()), 1), &two_at_1, None), None, "a round of a Build this admin's log has not learned: its command came ahead");
+        assert_eq!(superseded_by(&key(&crate::build::BuildId::parse("wvwg5gsy0868").unwrap(), 1), &two_at_1, None), None, "a round of a Build this admin's log has not learned: its command came ahead");
     }
 
     /// CONTRACT (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to the accepted
@@ -1100,7 +1112,7 @@ mod tests {
         use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
         let builds = MemoryBuildStateAdapter::new();
         let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
-        let (one, two) = (crate::build::BuildId("bld-one".into()), crate::build::BuildId("bld-two".into()));
+        let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
         for (b, at) in [(&one, 1_000), (&two, 2_000)] {
             builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
         }
@@ -1110,11 +1122,11 @@ mod tests {
         let declarer = Declarer::new();
         let owe = |build: &str, attempt: u32| {
             let round = RoundKey { kind: RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: build.to_string(), attempt };
-            declarer.owe_in(Key::round(&round), Authority::FabricPrimary, round.kind.up(&round, NodeId::mint(), IncarnationId("inc".into())), None);
+            declarer.owe_in(Key::round(&round), Authority::FabricPrimary, round.kind.up(&round, NodeId::mint(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc")).unwrap()), None);
             Key::round(&round)
         };
-        let (earlier_attempt, earlier_build) = (owe("bld-two", 1), owe("bld-one", 2));
-        let (current, ahead, unlearned) = (owe("bld-two", 2), owe("bld-two", 3), owe("bld-unlearned", 1));
+        let (earlier_attempt, earlier_build) = (owe("amrrv6tggykq", 1), owe("vm0khprh5mtj", 2));
+        let (current, ahead, unlearned) = (owe("amrrv6tggykq", 2), owe("amrrv6tggykq", 3), owe("wvwg5gsy0868", 1));
         assert_eq!(declarer.owed(), 5);
 
         let capture = crate::span_capture::Capture::new("i143-s42-round-superseded");
@@ -1128,7 +1140,7 @@ mod tests {
         // Each withdrawal is one span naming the completion and why the round is superseded.
         let spans = capture.named("rdm.node_admin.status.remove.via-round-superseded");
         assert_eq!(spans.len(), 2, "one span per withdrawn completion: {spans:?}");
-        for (key, why) in [(&earlier_attempt, "is at attempt 2, past this round's attempt 1"), (&earlier_build, "was accepted after this round's Build bld-one")] {
+        for (key, why) in [(&earlier_attempt, "is at attempt 2, past this round's attempt 1"), (&earlier_build, "was accepted after this round's Build vm0khprh5mtj")] {
             let span = spans.iter().find(|s| s.attributes.get("key") == Some(&format!("{key:?}"))).unwrap_or_else(|| panic!("no span names {key:?}: {spans:?}"));
             assert!(span.attributes.get("superseded_by").is_some_and(|a| a.contains(why)), "{key:?} is withdrawn because {why}: {span:?}");
             eprintln!("span {} trace_id={} {:?}", span.name, span.trace_id, span.attributes);

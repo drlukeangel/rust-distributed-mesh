@@ -129,7 +129,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
     let _ = slot.set(authority.clone());
     let withhold = Arc::new(ReplyWithhold::default());
     let server = rafka_node_admin_core::status_rpc::serve(ServerBuilder::new().withhold_replies(withhold.clone()), slot)
-        .seal(ServedBirth { node_id: admin.node.node_id.to_string(), incarnation: admin.node.incarnation_id.clone().unwrap().0 })
+        .seal(ServedBirth { node_id: admin.node.node_id.to_string(), incarnation: admin.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(admin.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -401,7 +401,7 @@ async fn serve_node_with(b: &Birth, answer: impl Fn(&StatusRequest) -> StatusRep
                 Ok(reply)
             }
         })
-        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().0 })
+        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(b.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -850,7 +850,7 @@ async fn carrier_admin(b: &Birth, target: &ResolvedNode) -> (ResolvedNode, Route
     connections.hydrate().await.unwrap();
     let node_rpc = rafka_node_admin_core::node_rpc::ProcessNodeRpc::new(live.clone(), ep.clone());
     let server = rafka_node_admin_core::admin::rpc_server(connections, node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
-        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().0 })
+        .seal(ServedBirth { node_id: b.node.node_id.to_string(), incarnation: b.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     (resolved, Router::builder(ep).accept(rafka_node_rpc::ALPN, server).spawn())
 }
@@ -1492,16 +1492,16 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
         let (rig, b) = rig().await;
         let rpc1 = &b["rpc1"];
         let incarnation = rpc1.node.incarnation_id.clone().unwrap();
-        let key = rafka_node_admin_core::node_commands::CommandKey { build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into(), node_id: rpc1.node.node_id.clone(), incarnation: incarnation.clone() };
+        let key = rafka_node_admin_core::node_commands::CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into(), node_id: rpc1.node.node_id.clone(), incarnation: incarnation.clone() };
         let completed = rig.authority.commands.open(key);
-        let left = StatusRequest::NodeLeft { node_id: rpc1.node.node_id.clone(), incarnation, build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let left = StatusRequest::NodeLeft { node_id: rpc1.node.node_id.clone(), incarnation, build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
         let reply = reply(&call(&rig, rpc1, &left).await);
         let stop_open = !*completed.borrow();
         (stop_open, reply)
     });
     assert_eq!(
         reply,
-        StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_EXPECTED.into(), reported: "node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)".into() },
+        StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_EXPECTED.into(), reported: "node-left stop-node:mesh1.rpc.1 (build 66h8qrqvaajk, attempt 1)".into() },
         "a node-left call is refused by name"
     );
     assert!(stop_open, "the open stop-node of the birth is not completed by a node-left call");
@@ -1511,11 +1511,11 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
     let a = |k: &str| attrs.get(k).cloned().unwrap_or_default();
     assert_eq!(
         (a("node"), a("op"), a("field"), a("expected"), a("reported"), a("name"), a("caller"), a("operation"), a("build_id"), a("attempt")),
-        ("mesh1.admin.1".to_string(), "node-left".to_string(), "command".to_string(), NODE_LEFT_EXPECTED.to_string(), "node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)".to_string(), "mesh1.rpc.1".to_string(), "mesh1.rpc.1".to_string(), "stop-node:mesh1.rpc.1".to_string(), "bld_1".to_string(), "1".to_string()),
+        ("mesh1.admin.1".to_string(), "node-left".to_string(), "command".to_string(), NODE_LEFT_EXPECTED.to_string(), "node-left stop-node:mesh1.rpc.1 (build 66h8qrqvaajk, attempt 1)".to_string(), "mesh1.rpc.1".to_string(), "mesh1.rpc.1".to_string(), "stop-node:mesh1.rpc.1".to_string(), "66h8qrqvaajk".to_string(), "1".to_string()),
         "{attrs:?}"
     );
     assert!(cap.spans("rdm.node_admin.status.update.via-completion-accepted").is_empty(), "no completion is accepted");
-    eprintln!("trace {trace_id}: rdm.node_admin.status.reject.via-node-left field=command reported=node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)");
+    eprintln!("trace {trace_id}: rdm.node_admin.status.reject.via-node-left field=command reported=node-left stop-node:mesh1.rpc.1 (build 66h8qrqvaajk, attempt 1)");
 }
 
 /// CONTRACT (build.md §4: the current Build is the first in progress or completed, read last in,
@@ -1538,7 +1538,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
     };
     let builds = Arc::new(MemoryBuildStateAdapter::default());
     AcceptedStore::seeded(&*builds, view.fabric.id.clone(), FabricTopology::of_observed(&view), "mesh1.admin.1").await.unwrap();
-    let held = builds.current_build().await.unwrap().into_build_id().expect("the seeded Build is current").0;
+    let held = builds.current_build().await.unwrap().into_build_id().expect("the seeded Build is current").to_string();
     let empty = Arc::new(MemoryBuildStateAdapter::default());
     let answer = |builds: Arc<dyn BuildStateAdapter>| {
         let view = view.clone();
@@ -1576,14 +1576,14 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
             }
         }
     };
-    assert_eq!(answer(builds.clone()).await.build_id, Some(held.clone()), "fabric.get answers the current Build the admin's builds store returns");
+    assert_eq!(answer(builds.clone()).await.build_id, Some(held.to_string()), "fabric.get answers the current Build the admin's builds store returns");
     // A newer Build that failed is skipped: the older completed one is still the current Build.
     let newer = rafka_node_admin_core::build::BuildId::mint();
     builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), submitted_change: None, submitted_at_ms: u64::MAX - 1 }).await.unwrap();
     builds.claim_attempt(&BuildAttemptClaim { build_id: newer.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    assert_eq!(answer(builds.clone()).await.build_id, Some(newer.0.clone()), "the newer Build in progress is the current Build");
+    assert_eq!(answer(builds.clone()).await.build_id, Some(newer.to_string()), "the newer Build in progress is the current Build");
     builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }).await.unwrap();
-    assert_eq!(answer(builds).await.build_id, Some(held), "a failed Build is skipped: fabric.get answers the Build before it");
+    assert_eq!(answer(builds).await.build_id, Some(held.to_string()), "a failed Build is skipped: fabric.get answers the Build before it");
     assert_eq!(answer(empty).await.build_id, None, "an admin whose builds store holds no Build in progress or completed answers none");
 }
 

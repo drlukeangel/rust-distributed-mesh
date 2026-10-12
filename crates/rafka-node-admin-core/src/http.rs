@@ -249,8 +249,8 @@ impl ControlPlane {
                 return Err(Refusal::Reject(reject));
             }
             let build_id = BuildId::mint();
-            span.record("build_id", build_id.0.as_str());
-            span.record("previous_build_id", current.build_id.0.as_str());
+            span.record("build_id", build_id.as_str());
+            span.record("previous_build_id", current.build_id.as_str());
             // The meshes this Build brings into the accepted topology, each under the id `compile`
             // minted for it now, once (node-identity-and-state.md §2.7, "Who mints it"): every run of
             // the mesh's create-mesh, by any executor and any attempt, claims with that id.
@@ -297,7 +297,7 @@ impl ControlPlane {
             opened_by: self.me.to_string(),
             opened_at_ms: self.time.now_ms(),
         };
-        span.record("build_id", current.build_id.0.as_str());
+        span.record("build_id", current.build_id.as_str());
         span.record("attempt", opened.attempt);
         // The context is on this fabric-primary before the attempt is open to be claimed.
         self.contexts
@@ -379,7 +379,7 @@ impl ControlPlane {
                     if let (true, Some(birth)) = (replace, named_birth) {
                         drop(t);
                         outer.in_scope(|| {
-                            tracing::info_span!("rdm.node_admin.build.update.via-named-birth", route, node = %path, incarnation_id = %birth.0)
+                            tracing::info_span!("rdm.node_admin.build.update.via-named-birth", route, node = %path, incarnation_id = %birth.as_str())
                                 .in_scope(|| tracing::info!("the node is in the accepted Build and silent in the view: the caller's named birth is fenced"))
                         });
                         let named_path = path.to_string();
@@ -480,7 +480,7 @@ impl ControlPlane {
     /// [`Recovery::AlreadyApplied`] naming that workflow's attempt, and nothing is opened. A node-admin is node-recovered only while its mesh holds
     /// another live admin to recover it (mesh-recovery.md:8-9); otherwise it is mesh recovery.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path, node_id = %node_id, incarnation_id = %incarnation.0, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), outcome = tracing::field::Empty);
         let outer = tracing::Span::current();
         let r = async {
             self.authority(route).await?;
@@ -491,7 +491,7 @@ impl ControlPlane {
             // receipts), and nothing is opened.
             if let Some((build_id, attempt, operation)) = self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)? {
                 outer.in_scope(|| {
-                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id, attempt, operation = %operation, node = %path, node_id = %node_id, incarnation_id = %incarnation.0)
+                    tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id, attempt, operation = %operation, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str())
                         .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by {operation} and its workflow completed at this attempt: its exit belongs to that workflow, nothing is opened"))
                 });
                 return Ok(Recovery::AlreadyApplied(Opened { build_id, attempt }));
@@ -499,7 +499,7 @@ impl ControlPlane {
             let (_admitted, current) = match self.current_settled().await {
                 Err(Refusal::BuildInProgress(held)) => {
                     outer.in_scope(|| {
-                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, node = %path, node_id = %node_id, incarnation_id = %incarnation.0, current_build_id = %held)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", route, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), current_build_id = %held)
                             .in_scope(|| tracing::info!("recovery refused: one Build in flight, and {held} is still reconciling"))
                     });
                     return Err(Refusal::BuildInProgress(held));
@@ -745,7 +745,8 @@ async fn post_build(State(cp): State<Shared>, raw: String) -> Result<Response, R
 }
 
 async fn get_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> Result<Response, Refusal> {
-    match cp.builds.read_build(&BuildId(q.id.clone())).await {
+    let id = BuildId::parse(&q.id).map_err(|e| Refusal::BadRequest(e.to_string()))?;
+    match cp.builds.read_build(&id).await {
         Ok(p) => Ok(Json(p).into_response()),
         Err(BuildStateError::UnknownBuild(id)) => Err(Refusal::NotFound(format!("no Build {id}"))),
         Err(e) => Err(Refusal::State(e)),
@@ -753,7 +754,8 @@ async fn get_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> Res
 }
 
 async fn delete_build(State(cp): State<Shared>, Query(q): Query<BuildQuery>) -> Result<Response, Refusal> {
-    cp.forget_build(&BuildId(q.id)).await?;
+    let id = BuildId::parse(&q.id).map_err(|e| Refusal::BadRequest(e.to_string()))?;
+    cp.forget_build(&id).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -797,7 +799,7 @@ struct ReplaceQuery {
 
 async fn replace_node(State(cp): State<Shared>, Path(name): Path<String>, Query(q): Query<ReplaceQuery>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    let birth = q.incarnation.map(crate::model::IncarnationId);
+    let birth = q.incarnation.as_deref().map(crate::model::IncarnationId::parse).transpose().map_err(|e| Refusal::BadRequest(e.to_string()))?;
     Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/replace", AttemptReason::Replace, node, ActionKind::Replace, birth).await?))
 }
 

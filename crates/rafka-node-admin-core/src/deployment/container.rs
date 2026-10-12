@@ -91,7 +91,7 @@ async fn docker(args: &[&str]) -> Result<String, String> {
 
 /// One launch's container: fixed by node and deployment id, so a re-run finds it.
 fn container_name(spec: &ResolvedNodeLaunch) -> String {
-    format!("rafka-{}-{}", docker_safe(&spec.node.to_string()), docker_safe(&spec.deployment_id.0))
+    format!("rafka-{}-{}", docker_safe(&spec.node.to_string()), docker_safe(&spec.deployment_id.as_str()))
 }
 
 /// Every address a container holds on `network` right now (`docker network inspect`). `Err`
@@ -118,7 +118,7 @@ const LAUNCH_FILE: &str = "container-launch.json";
 /// Write the launch record of `deployment` in `data_dir`. A blocking call: run it on the blocking
 /// pool.
 fn record_launch(data_dir: &Path, deployment: &crate::model::DeploymentId) -> Result<(), String> {
-    super::provider::write_launch_record(data_dir, LAUNCH_FILE, &serde_json::json!({ "deployment_id": deployment.0 }))
+    super::provider::write_launch_record(data_dir, LAUNCH_FILE, &serde_json::json!({ "deployment_id": deployment.as_str() }))
 }
 
 /// Whether the launch record in `data_dir` names `deployment`: `false` when none was written or it
@@ -132,7 +132,7 @@ fn recorded_launch(data_dir: &Path, deployment: &crate::model::DeploymentId) -> 
         Err(e) => return Err(format!("{}: {e}", file.display())),
     };
     let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", file.display()))?;
-    Ok(v.get("deployment_id").and_then(|d| d.as_str()) == Some(deployment.0.as_str()))
+    Ok(v.get("deployment_id").and_then(|d| d.as_str()) == Some(deployment.as_str()))
 }
 
 /// What a container's Docker status says of its launch ([`ContainerDeploymentProvider::find`]).
@@ -506,7 +506,7 @@ impl ContainerDeploymentProvider {
 
     fn container_of<'a>(&self, handle: &'a DeploymentHandle) -> Result<&'a str, DeployError> {
         handle.container.as_deref().ok_or_else(|| DeployError::Terminate {
-            deployment: handle.deployment_id.0.clone(),
+            deployment: handle.deployment_id.to_string(),
             reason: "the handle names no container".into(),
         })
     }
@@ -619,7 +619,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
 
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
         let name = self.container_of(handle)?;
-        let err = |reason: String| DeployError::Terminate { deployment: handle.deployment_id.0.clone(), reason };
+        let err = |reason: String| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason };
         let grace = match mode {
             TerminationMode::Graceful { grace } => grace.as_secs().max(1),
             TerminationMode::Immediate => 0,
@@ -668,7 +668,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         if self.inspect(handle).await == DeploymentStatus::Running {
             docker(&["kill", "--signal", "TERM", name])
                 .await
-                .map_err(|reason| DeployError::Terminate { deployment: handle.deployment_id.0.clone(), reason })?;
+                .map_err(|reason| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason })?;
         }
         Ok(())
     }
@@ -861,7 +861,7 @@ mod tests {
     /// relaunch a birth that ran.
     #[test]
     fn a_launch_record_says_a_launch_ran_only_when_it_names_it_and_an_unreadable_one_is_refused() {
-        let dir = std::env::temp_dir().join(format!("container-launch-record-{}", crate::model::DeploymentId::mint().0));
+        let dir = std::env::temp_dir().join(format!("container-launch-record-{}", crate::model::DeploymentId::mint().as_str()));
         std::fs::create_dir_all(&dir).unwrap();
         let (this, other) = (crate::model::DeploymentId::mint(), crate::model::DeploymentId::mint());
         assert_eq!(recorded_launch(&dir, &this), Ok(false), "no record: never launched");

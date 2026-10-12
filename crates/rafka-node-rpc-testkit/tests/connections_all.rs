@@ -155,7 +155,7 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let retired = StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_retired".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1.new".into() };
+        let retired = StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1.new".into() };
         let reply = call_on(&admin, &target, &retired, None).await;
         assert!(matches!(&reply, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name: {reply:?}");
         let all = StatusRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };

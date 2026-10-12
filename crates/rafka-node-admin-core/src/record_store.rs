@@ -201,7 +201,7 @@ impl FileRecords {
         let dir = base.join(dir);
         let made = dir.clone();
         blocking_io(move || std::fs::create_dir_all(&made)).await.map_err(|e| StorageError::Io { file: dir.display().to_string(), reason: e.to_string() })?;
-        Ok(Self(std::sync::Arc::new(Records { dir, write: std::sync::Arc::new(tokio::sync::Mutex::new(())), cut_off: std::sync::Mutex::new(None), writer: writer.0.clone(), held })))
+        Ok(Self(std::sync::Arc::new(Records { dir, write: std::sync::Arc::new(tokio::sync::Mutex::new(())), cut_off: std::sync::Mutex::new(None), writer: writer.to_string(), held })))
     }
 
     fn held(&self) -> Option<&Held> {
@@ -978,7 +978,7 @@ mod tests {
     fn a_cancelled_writer_holds_the_store_lock_until_its_disk_job_finishes() {
         one_blocking_thread().block_on(async {
             let d = tempdir("records-cancel");
-            let r = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.unwrap();
+            let r = FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
             let release = park_the_blocking_pool();
             assert!(!cancel_after_issue(r.write("a", "thing/1", &"one".to_string())).await, "the write finished while the blocking pool was parked");
             assert!(r.0.write.try_lock().is_err(), "the cancelled caller released the store's write lock while its disk job was still issued");
@@ -994,7 +994,7 @@ mod tests {
     fn a_write_queued_before_the_cut_off_and_granted_after_it_is_refused_by_name() {
         one_blocking_thread().block_on(async {
             let d = tempdir("records-cut-off");
-            let r = std::sync::Arc::new(FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.unwrap());
+            let r = std::sync::Arc::new(FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap());
             let release = park_the_blocking_pool();
             // The first write holds the lock across its (parked) disk job.
             let first = tokio::spawn({
@@ -1028,7 +1028,7 @@ mod tests {
     async fn a_directory_fsync_failure_fails_the_write_the_insert_and_the_delete_by_name() {
         use std::os::unix::fs::PermissionsExt as _;
         let d = tempdir("records-dir-fsync");
-        let r = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.unwrap();
+        let r = FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         r.write("gone", "thing/1", &"x".to_string()).await.unwrap();
         let dir = d.join("things");
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o300)).unwrap();
@@ -1057,7 +1057,7 @@ mod tests {
     #[tokio::test]
     async fn a_held_store_writes_nothing_until_its_scratchpad_is_published_then_writes_to_the_disk() {
         let d = tempdir("records-held");
-        let w = crate::model::IncarnationId("held".into());
+        let w = crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("held")).unwrap();
         // Another writer's row, already on the disk.
         FileRecords::open(&d, "things", &w).await.unwrap().write("theirs", "thing/1", &"t".to_string()).await.unwrap();
         let pad = Scratchpad::new();
@@ -1095,7 +1095,7 @@ mod tests {
     #[tokio::test]
     async fn a_held_claim_or_release_over_an_unrecognised_row_ends_the_publication_by_name() {
         let d = tempdir("records-unrecognised-claim");
-        let w = crate::model::IncarnationId("held".into());
+        let w = crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("held")).unwrap();
         let foreign = br#"{"format":"thing/9","record":"theirs"}"#;
         for (key, release) in [("claimed", false), ("released", true)] {
             let pad = Scratchpad::new();
@@ -1124,7 +1124,7 @@ mod tests {
     #[tokio::test]
     async fn a_moved_writer_drops_its_held_rows_and_a_cut_off_store_holds_them_until_the_transfer_decides() {
         let d = tempdir("records-decided");
-        let w = crate::model::IncarnationId("held".into());
+        let w = crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("held")).unwrap();
         let pad = Scratchpad::new();
         let gated = FileRecords::open_held(&d, "gated", &w, &pad, "gated".into()).await.unwrap();
         let lifted = FileRecords::open_held(&d, "lifted", &w, &pad, "lifted".into()).await.unwrap();
@@ -1164,15 +1164,15 @@ mod tests {
     async fn a_row_held_by_a_writer_that_does_not_own_its_key_is_never_read_in_place_of_the_disk() {
         let d = tempdir("records-shadow");
         let pad = Scratchpad::new();
-        let other = FileRecords::open_held(&d, "fabric", &crate::model::IncarnationId("mesh2-admin-1".into()), &pad, "fabric".into()).await.unwrap();
+        let other = FileRecords::open_held(&d, "fabric", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("mesh2-admin-1")).unwrap(), &pad, "fabric".into()).await.unwrap();
         other.set_publish_gate(std::sync::Arc::new(|| Err("fabric-primary seat: held by mesh1.admin.1".to_string())));
-        other.write("pointer", "thing/1", &"bld-1".to_string()).await.unwrap();
+        other.write("pointer", "thing/1", &"3qcfk1kq47m9".to_string()).await.unwrap();
         pad.publish().await.unwrap();
         assert!(!other.holding(), "the publication ended the store's holding");
         // The key's one writer puts its row on the disk after the publication.
-        FileRecords::open(&d, "fabric", &crate::model::IncarnationId("mesh1-admin-1".into())).await.unwrap().write("pointer", "thing/1", &"bld-2".to_string()).await.unwrap();
-        assert_eq!(other.read::<String>("pointer", "thing/1").await.unwrap().as_deref(), Some("bld-2"), "a row held at the publication was read in place of the row the key's writer put on the disk");
-        assert_eq!(other.list::<String>("thing/1").await.unwrap(), vec!["bld-2"], "a row held at the publication hid the disk's row from a list");
+        FileRecords::open(&d, "fabric", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("mesh1-admin-1")).unwrap()).await.unwrap().write("pointer", "thing/1", &"h3t6eck82y1w".to_string()).await.unwrap();
+        assert_eq!(other.read::<String>("pointer", "thing/1").await.unwrap().as_deref(), Some("h3t6eck82y1w"), "a row held at the publication was read in place of the row the key's writer put on the disk");
+        assert_eq!(other.list::<String>("thing/1").await.unwrap(), vec!["h3t6eck82y1w"], "a row held at the publication hid the disk's row from a list");
         assert!(other.holds("pointer").await.unwrap(), "the disk holds the key");
     }
 
@@ -1182,23 +1182,23 @@ mod tests {
     #[tokio::test]
     async fn a_temp_file_is_named_by_its_key_and_its_writers_incarnation() {
         let d = tempdir("record-store-tmp");
-        let writer = crate::model::IncarnationId("inc-7".into());
+        let writer = crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-7")).unwrap();
         let r = FileRecords::open(&d, "things", &writer).await.unwrap();
         std::fs::create_dir_all(d.join("things").join("k.json").join("blocker")).unwrap();
         assert!(r.write("k", "thing/1", &1u32).await.is_err(), "a rename onto a non-empty directory fails");
-        assert!(d.join("things").join(".k.inc-7.json.tmp").exists(), "{:?}", std::fs::read_dir(d.join("things")).unwrap().map(|e| e.unwrap().file_name()).collect::<Vec<_>>());
-        let other = FileRecords::open(&d, "things", &crate::model::IncarnationId("inc-8".into())).await.unwrap();
+        assert!(d.join("things").join(format!(".k.{writer}.json.tmp")).exists(), "{:?}", std::fs::read_dir(d.join("things")).unwrap().map(|e| e.unwrap().file_name()).collect::<Vec<_>>());
+        let other = FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-8")).unwrap()).await.unwrap();
         assert_ne!(r.tmp_path("k"), other.tmp_path("k"));
     }
 
     #[tokio::test]
     async fn a_record_survives_reopening_and_an_unknown_format_is_refused_by_name() {
         let d = tempdir("records");
-        let r = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.unwrap();
+        let r = FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(r.read::<String>("a", "thing/1").await.unwrap(), None);
         r.write("a", "thing/1", &"one".to_string()).await.unwrap();
         r.write("b", "thing/1", &"two".to_string()).await.unwrap();
-        let again = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.unwrap();
+        let again = FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(again.read::<String>("a", "thing/1").await.unwrap().as_deref(), Some("one"));
         assert_eq!(again.list::<String>("thing/1").await.unwrap(), ["one", "two"]);
         assert!(matches!(again.read::<String>("a", "thing/2").await, Err(StorageError::Unrecognised { .. })));
@@ -1215,7 +1215,7 @@ mod tests {
     #[tokio::test]
     async fn a_list_racing_a_removal_answers_the_records_that_remain() {
         let d = tempdir("records-race");
-        let r = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.unwrap();
+        let r = FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         r.write("k001", "thing/1", &1u32).await.unwrap();
         r.write("k003", "thing/1", &3u32).await.unwrap();
         let dir = d.join("things");
@@ -1231,7 +1231,7 @@ mod tests {
     #[test]
     fn opening_a_store_waits_on_the_disk_off_the_runtime_thread() {
         let d = tempdir("records-open");
-        let (waited, opened) = op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.map(|_| ()) }));
+        let (waited, opened) = op_waits_on_the_blocking_pool(Box::pin(async {}), move |()| Box::pin(async move { FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.map(|_| ()) }));
         assert!(waited, "the open's mkdir ran on the blocking pool, not the runtime's thread");
         assert_eq!(opened, Ok(()));
     }
@@ -1245,7 +1245,7 @@ mod tests {
         let d = tempdir("records-held-insert");
         let setup = Box::pin(async move {
             let pad = Scratchpad::new();
-            let r = FileRecords::open_held(&d, "things", &crate::model::IncarnationId("test".into()), &pad, "things".into()).await.unwrap();
+            let r = FileRecords::open_held(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap(), &pad, "things".into()).await.unwrap();
             (pad, r)
         });
         let (waited, inserted) = op_waits_on_the_blocking_pool(setup, |(_pad, r)| Box::pin(async move { r.insert("a", "thing/1", &"one".to_string()).await }));
@@ -1260,7 +1260,7 @@ mod tests {
     fn a_look_at_whether_a_key_is_held_waits_on_the_disk_off_the_runtime_thread() {
         let d = tempdir("records-holds");
         let setup = Box::pin(async move {
-            let r = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.unwrap();
+            let r = FileRecords::open(&d, "things", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
             r.write("a", "thing/1", &"one".to_string()).await.unwrap();
             r
         });

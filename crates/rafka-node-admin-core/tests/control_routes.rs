@@ -115,7 +115,7 @@ impl Harness {
     }
     /// Run the Build's open attempt to convergence, as its executor would.
     async fn settle(&self, id: &str) {
-        let bid = BuildId(id.into());
+        let bid = BuildId::parse(id).unwrap();
         let attempt = self.builds.read_build(&bid).await.unwrap().attempt + 1;
         self.builds.claim_attempt(&BuildAttemptClaim { build_id: bid.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
         self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: bid, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
@@ -132,7 +132,7 @@ impl Harness {
 async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_an_attempt() {
     let h = harness(Router::new()).await;
     let before = h.cp.topology.read().await.clone();
-    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().0;
+    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().to_string();
     let seed = h.facts().await.len();
 
     // A change: the next complete Build, and the current build_id names it.
@@ -143,7 +143,7 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     assert_ne!(b1, b0);
     let facts = h.facts().await;
     assert_eq!(facts.len(), seed + 1, "exactly one fact per accepted change: {facts:?}");
-    assert!(matches!(&facts[seed], BuildFact::Accepted(f) if f.build_id.0 == b1), "the fact is the accepted Build");
+    assert!(matches!(&facts[seed], BuildFact::Accepted(f) if f.build_id.as_str() == b1), "the fact is the accepted Build");
     let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b1}"), None).await;
     assert_eq!(b["submitted_change"]["kind"], "add_node", "{b}");
     assert_eq!(b["state"], "pending");
@@ -175,7 +175,7 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     assert_eq!(v["attempt"], 2, "the restart answers the attempt it opened: {v}");
     let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b2}"), None).await;
     assert_eq!((b["state"].as_str(), b["reason"].as_str(), b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("pending"), Some("restart"), Some("restart"), Some("mesh1.rpc.2")), "{b}");
-    assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.0 == b2 && o.attempt == 2));
+    assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.as_str() == b2 && o.attempt == 2));
     assert!(h.span_with_build("rdm.node_admin.build.update.via-rest", &b2));
     let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
     assert_eq!(f["build_id"], b2.as_str(), "the current build_id is unchanged by a restart");
@@ -188,7 +188,7 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
 #[tokio::test]
 async fn a_replace_opens_the_next_attempt_of_the_accepted_build_fenced_to_the_live_birth() {
     let h = harness(Router::new()).await;
-    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().0;
+    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().to_string();
     let seed = h.facts().await.len();
     let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.9/replace", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "{v}");
@@ -201,7 +201,7 @@ async fn a_replace_opens_the_next_attempt_of_the_accepted_build_fenced_to_the_li
     assert_eq!((b["state"].as_str(), b["reason"].as_str(), b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("pending"), Some("replace"), Some("replace"), Some("mesh1.rpc.2")), "{b}");
     assert_eq!(b["action"]["from_incarnation"], serde_json::to_value(&birth).unwrap(), "fenced to the held birth: {b}");
     assert_eq!(h.facts().await.len(), seed + 1, "exactly one fact: the opened attempt");
-    assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.0 == b0 && o.attempt == 2));
+    assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.as_str() == b0 && o.attempt == 2));
     assert!(h.span_with_build("rdm.node_admin.build.update.via-rest", &b0));
     let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
     assert_eq!(f["build_id"], b0.as_str(), "the current build_id is unchanged by a replace");
@@ -252,7 +252,7 @@ async fn refusals_are_named_and_publish_nothing() {
 #[tokio::test]
 async fn build_history_is_readable_and_only_finished_builds_that_are_not_current_can_be_forgotten() {
     let h = harness(Router::new()).await;
-    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().0;
+    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().to_string();
     // A restart opens an attempt of the accepted Build: it is in flight, not history.
     let (_, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.1/restart", None).await;
     assert_eq!(v["build_id"], b0.as_str(), "{v}");
@@ -376,7 +376,7 @@ struct RefusingAccept(Arc<MemoryBuildStateAdapter>);
 #[async_trait::async_trait]
 impl rafka_node_admin_core::build_state::BuildStateAdapter for RefusingAccept {
     async fn publish_accepted(&self, accepted: &rafka_node_admin_core::build_state::BuildAccepted) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
-        Err(rafka_node_admin_core::build_state::BuildStateError::Io(format!("builds.storage refused Build {}", accepted.build_id.0)))
+        Err(rafka_node_admin_core::build_state::BuildStateError::Io(format!("builds.storage refused Build {}", accepted.build_id.as_str())))
     }
     async fn open_attempt(&self, o: &rafka_node_admin_core::build_state::AttemptOpened) -> Result<(), rafka_node_admin_core::build_state::BuildStateError> {
         self.0.open_attempt(o).await
@@ -505,14 +505,14 @@ async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_st
 #[tokio::test]
 async fn a_silent_node_absent_from_the_view_is_replaced_by_the_birth_the_caller_names() {
     let h = harness(Router::new()).await;
-    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().0;
+    let b0 = h.cp.builds.current_build().await.unwrap().into_build_id().unwrap().to_string();
     let birth = h.cp.topology.read().await.node(&"mesh1.rpc.3".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
     h.cp.topology.write().await.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.3");
     let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.3/replace", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "no birth named: {v}");
-    let (s, v) = call(&h.app, "POST", &format!("/api/nodes/mesh1.rpc.9/replace?incarnation={}", birth.0), None).await;
+    let (s, v) = call(&h.app, "POST", &format!("/api/nodes/mesh1.rpc.9/replace?incarnation={}", birth.as_str()), None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "not in the Build: {v}");
-    let (status, v) = call(&h.app, "POST", &format!("/api/nodes/mesh1.rpc.3/replace?incarnation={}", birth.0), None).await;
+    let (status, v) = call(&h.app, "POST", &format!("/api/nodes/mesh1.rpc.3/replace?incarnation={}", birth.as_str()), None).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b0}"), None).await;
     assert_eq!((b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("replace"), Some("mesh1.rpc.3")), "{b}");

@@ -209,7 +209,7 @@ impl Probe {
     fn detail(&self) -> Value {
         match self {
             Probe::Receipt { step, operation, build_id, attempt } => json!({"step": step, "operation": operation, "build_id": build_id, "attempt": attempt}),
-            Probe::Event { event, op } => json!({"event": event, "operation": op.operation, "build_id": op.build_id, "attempt": op.attempt, "node": op.name.to_string(), "incarnation_id": op.incarnation.0}),
+            Probe::Event { event, op } => json!({"event": event, "operation": op.operation, "build_id": op.build_id, "attempt": op.attempt, "node": op.name.to_string(), "incarnation_id": op.incarnation.as_str()}),
             Probe::Hook { phase, target, transition_id } => json!({"phase": phase, "target": target, "transition_id": transition_id}),
             Probe::Accepted { build_id } => json!({"build_id": build_id}),
             Probe::Claimed { build_id, attempt, executor } => json!({"build_id": build_id, "attempt": attempt, "executor": executor}),

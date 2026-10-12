@@ -112,7 +112,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
         let cert = TestMemberCert::decode(&bytes).expect("the root's signer wrote it");
         assert_eq!(
             (cert.node_id.as_str(), cert.incarnation.as_str(), cert.name.as_str(), cert.mesh.as_str(), cert.endpoint_key.as_str()),
-            (launch.node_id.to_string().as_str(), launch.incarnation.0.as_str(), "mesh1.admin.2", "mesh1", key.public().to_string().as_str()),
+            (launch.node_id.to_string().as_str(), launch.incarnation.as_str(), "mesh1.admin.2", "mesh1", key.public().to_string().as_str()),
             "issued for exactly this birth"
         );
         assert!((before..=after).contains(&cert.issued_at_ms), "issued on the root's rafka-time: {before} <= {} <= {after}", cert.issued_at_ms);

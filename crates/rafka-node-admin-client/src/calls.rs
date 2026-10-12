@@ -266,7 +266,7 @@ impl<'a> NodeRpc<'a> {
         let req = StatusRequest::StopNode {
             node_id: birth.node_id.clone(),
             incarnation: birth.incarnation.clone(),
-            build_id: ctx.build_id.0.clone(),
+            build_id: ctx.build_id.to_string(),
             attempt: ctx.attempt,
             operation: ctx.operation(),
         };
@@ -279,7 +279,7 @@ impl<'a> NodeRpc<'a> {
         let req = StatusRequest::StartNode {
             node_id: birth.node_id.clone(),
             incarnation: birth.incarnation.clone(),
-            build_id: ctx.build_id.0.clone(),
+            build_id: ctx.build_id.to_string(),
             attempt: ctx.attempt,
             operation: ctx.operation(),
         };

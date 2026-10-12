@@ -1077,7 +1077,7 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
     };
     let mut repeat = caller.carrier().await.create(change).await.expect("the fabric-primary answers the repeat");
     assert_eq!(repeat.disposition(), Disposition::AlreadyApplied, "the repeat is answered, never run");
-    assert_eq!(repeat.build_id().0, birth_build, "the accepted Build");
+    assert_eq!(repeat.build_id().as_str(), birth_build, "the accepted Build");
     assert_eq!(repeat.attempt().to_string(), attempt, "naming the attempt that recovered the birth");
     match repeat.next().await {
         Some(Ok(BuildFrame::Complete { attempt: a })) => assert_eq!(a.to_string(), attempt, "its terminal names the same attempt"),
@@ -1359,7 +1359,7 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClie
         name: s(&admin["name"]).parse().unwrap(),
         endpoint_id: s(&admin["endpoint_id"]).parse().expect("an iroh key"),
         transport_addr: s(&admin["transport_addr"]).parse().expect("a transport address"),
-        incarnation: rafka_mesh_entity::IncarnationId(s(&admin["incarnation_id"])),
+        incarnation: rafka_mesh_entity::IncarnationId::parse(&s(&admin["incarnation_id"])).unwrap(),
     });
     (std::sync::Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), node_id)
 }
@@ -1383,7 +1383,7 @@ async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor
     let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rafka_mesh_entity::NodeId = s(&before["node_id"]).parse().unwrap();
-    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rafka_mesh_entity::IncarnationId(s(&before["incarnation_id"])) };
+    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rafka_mesh_entity::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
     let reply = rafka_node_admin_client::NodeRpc::new(&client)
         .config_update(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
         .await

@@ -426,7 +426,7 @@ impl SeatSlot {
     /// not.
     fn open(&self, writer: &crate::model::IncarnationId) -> Result<(), String> {
         match self.0.get().map(|s| (s.read)()) {
-            None => Err(format!("fabric-primary seat: this writer ({}) has no fabric seat record to read, so it cannot show it holds the seat", writer.0)),
+            None => Err(format!("fabric-primary seat: this writer ({}) has no fabric seat record to read, so it cannot show it holds the seat", writer.as_str())),
             Some(crate::fabric_builds::SeatRecord::Moved { by, to }) => Err(format!("fabric-primary seat: {by}; the holder is {}", to.as_deref().unwrap_or("a birth whose path.name is not known here"))),
             Some(crate::fabric_builds::SeatRecord::Open { .. }) => Ok(()),
         }
@@ -631,7 +631,7 @@ mod tests {
     async fn a_held_shutdown_is_never_replaced_or_removed() {
         for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, {
             let d = tempdir();
-            Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap())
+            Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())
         }] {
             assert_eq!(s.shutdown().await.unwrap(), None);
             assert_eq!(s.put_shutdown(&shutdown()).await.unwrap(), shutdown());
@@ -643,7 +643,7 @@ mod tests {
     fn seat_row(seat: rafka_mesh_entity::Seat, mesh: &str, node: &str, epoch: u64) -> SeatRow {
         SeatRow {
             seat,
-            holder: rafka_mesh_entity::SeatHolder { mesh: mesh.into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId(format!("i{epoch}")), epoch },
+            holder: rafka_mesh_entity::SeatHolder { mesh: mesh.into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("i{epoch}"))).unwrap(), epoch },
         }
     }
 
@@ -653,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn the_seat_records_that_stand_are_the_superseding_ones_whatever_the_write_order() {
         use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::model::IncarnationId("test".into())).await.unwrap())] {
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())] {
             assert!(s.seats().await.unwrap().is_empty());
             for row in [
                 seat_row(FabricPrimary, "mesh1", "100000000000", 3),
@@ -671,12 +671,12 @@ mod tests {
             assert!(standing.contains(&seat_row(MeshPrimary, "mesh2", "200000000000", 2)));
         }
         let d = tempdir();
-        FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap().put_seat(&seat_row(FabricPrimary, "mesh1", "100000000000", 7)).await.unwrap();
-        assert_eq!(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap().seats().await.unwrap(), vec![seat_row(FabricPrimary, "mesh1", "100000000000", 7)]);
+        FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap().put_seat(&seat_row(FabricPrimary, "mesh1", "100000000000", 7)).await.unwrap();
+        assert_eq!(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap().seats().await.unwrap(), vec![seat_row(FabricPrimary, "mesh1", "100000000000", 7)]);
     }
 
     fn handover_row(operation: &str, stage: HandoverStage) -> HandoverRow {
-        let birth = |mesh: &str, node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: mesh.into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId(inc.into()) };
+        let birth = |mesh: &str, node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: mesh.into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap() };
         HandoverRow { operation: operation.into(), fabric: "fabric1".into(), incumbent: birth("mesh1", "100000000000", "i1"), successor: birth("mesh2", "200000000000", "i2"), expected_epoch: 7, stage }
     }
 
@@ -687,7 +687,7 @@ mod tests {
     #[tokio::test]
     async fn the_handover_rows_that_stand_are_the_furthest_stage_whatever_the_write_order() {
         let d = tempdir();
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap())] {
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())] {
             assert!(s.handovers().await.unwrap().is_empty());
             for row in [
                 handover_row("fabric-primary-handover:a", HandoverStage::Confirmed { committed_epoch: 8 }),
@@ -703,10 +703,10 @@ mod tests {
                 vec![handover_row("fabric-primary-handover:a", HandoverStage::Confirmed { committed_epoch: 8 }), handover_row("fabric-primary-handover:b", HandoverStage::Committed { committed_epoch: 8 })]
             );
         }
-        assert_eq!(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap().handovers().await.unwrap().len(), 2, "a reopened store reads the rows back");
+        assert_eq!(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap().handovers().await.unwrap().len(), 2, "a reopened store reads the rows back");
         let f = d.join(FABRIC_DIR).join("handovers").join("fabric-primary-handover_a-sent.json");
         std::fs::write(&f, br#"{"format":"fabric-handover/9","record":{}}"#).unwrap();
-        assert!(matches!(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap().handovers().await, Err(FabricStorageError::Unrecognised { .. })), "an unknown format is refused by name");
+        assert!(matches!(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap().handovers().await, Err(FabricStorageError::Unrecognised { .. })), "an unknown format is refused by name");
     }
 
     /// CONTRACT: the committed-stage row of a handover is stored in this exact shape (format
@@ -714,10 +714,10 @@ mod tests {
     #[tokio::test]
     async fn a_handover_row_is_stored_in_the_fabric_handover_one_shape() {
         let d = tempdir();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
+        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         s.put_handover(&handover_row("fabric-primary-handover:m1", HandoverStage::Committed { committed_epoch: 8 })).await.unwrap();
         let text = std::fs::read_to_string(d.join(FABRIC_DIR).join("handovers").join("fabric-primary-handover_m1-committed.json")).unwrap();
-        let expected = r#"{"format":"fabric-handover/1","record":{"operation":"fabric-primary-handover:m1","fabric":"fabric1","incumbent":{"mesh":"mesh1","node_id":"100000000000","incarnation":"i1"},"successor":{"mesh":"mesh2","node_id":"200000000000","incarnation":"i2"},"expected_epoch":7,"stage":{"Committed":{"committed_epoch":8}}}}"#;
+        let expected = r#"{"format":"fabric-handover/1","record":{"operation":"fabric-primary-handover:m1","fabric":"fabric1","incumbent":{"mesh":"mesh1","node_id":"100000000000","incarnation":"hdr30ytnqwdf"},"successor":{"mesh":"mesh2","node_id":"200000000000","incarnation":"hdr40ytnqwv2"},"expected_epoch":7,"stage":{"Committed":{"committed_epoch":8}}}}"#;
         assert_eq!(text, expected);
     }
 
@@ -727,8 +727,8 @@ mod tests {
     #[tokio::test]
     async fn a_seat_transfer_is_one_row_the_standing_seats_fold() {
         use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
-        let birth = |node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId(inc.into()) };
-        let n = |epoch: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse("200000000000").unwrap(), incarnation: rafka_mesh_entity::IncarnationId("n".into()), epoch };
+        let birth = |node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap() };
+        let n = |epoch: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse("200000000000").unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n")).unwrap(), epoch };
         let row = SeatTransferRow {
             operation: "drain-node:mesh1.admin.1".into(),
             fabric: "fabric1".into(),
@@ -740,10 +740,10 @@ mod tests {
             seats: vec![rafka_mesh_entity::seat::transfer::CommittedSeat::of(MeshPrimary, &n(4)), rafka_mesh_entity::seat::transfer::CommittedSeat::of(FabricPrimary, &n(8))],
         };
         let d = tempdir();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
+        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         s.put_seat(&seat_row(MeshPrimary, "mesh1", "100000000000", 3)).await.unwrap();
         s.put_seat_transfer(&row).await.unwrap();
-        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
+        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(reopened.seat_transfers().await.unwrap(), vec![row.clone()]);
         let standing = reopened.seats().await.unwrap();
         assert!(standing.contains(&SeatRow { seat: MeshPrimary, holder: n(4) }) && standing.contains(&SeatRow { seat: FabricPrimary, holder: n(8) }), "{standing:?}");
@@ -762,13 +762,13 @@ mod tests {
     #[tokio::test]
     async fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name() {
         let d = tempdir();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
+        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         // The fabric seat holder: no seat record governs this fixture's writer.
         s.set_seat_source(crate::fabric_builds::SeatSource::unrecorded());
         let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
         assert_eq!(s.claim_identity(&fabric).await.unwrap(), Ok(FabricClaim::Written));
         s.put_shutdown(&shutdown()).await.unwrap();
-        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
+        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(reopened.fabric().await.unwrap(), Some(fabric));
         assert_eq!(reopened.shutdown().await.unwrap(), Some(shutdown()));
         std::fs::write(d.join(FABRIC_DIR).join("shutdown.json"), br#"{"format":"fabric-shutdown/9","record":{}}"#).unwrap();
@@ -782,7 +782,7 @@ mod tests {
         let d = tempdir();
         std::fs::create_dir_all(d.join(FABRIC_DIR)).unwrap();
         std::fs::write(d.join(FABRIC_DIR).join("fabric.json"), br#"{"format":"fabric-record/1","record":{}}"#).unwrap();
-        let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap_err();
+        let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap_err();
         assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("fabric.json") && reason.contains("fabric-record/1")), "{err}");
     }
 
@@ -794,8 +794,8 @@ mod tests {
     async fn the_file_storage_refuses_a_retired_pointer_row_by_name() {
         let d = tempdir();
         std::fs::create_dir_all(d.join(FABRIC_DIR).join("pointers")).unwrap();
-        std::fs::write(d.join(FABRIC_DIR).join("pointers").join("00000000000000000010-bld-1.json"), br#"{"format":"fabric-pointer/1","record":{"build_id":"bld-1","submitted_at_ms":10}}"#).unwrap();
-        let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap_err();
+        std::fs::write(d.join(FABRIC_DIR).join("pointers").join("00000000000000000010-bld-1.json"), br#"{"format":"fabric-pointer/1","record":{"build_id":"3qcfk1kq47m9","submitted_at_ms":10}}"#).unwrap();
+        let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap_err();
         assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("00000000000000000010-bld-1.json") && reason.contains("fabric-pointer/1")), "{err}");
     }
 
@@ -806,7 +806,7 @@ mod tests {
     /// The memory store and the file store each run their own check.
     #[tokio::test]
     async fn the_fabric_name_is_claimed_once_in_the_adapter_for_both_stores() {
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::model::IncarnationId("test".into())).await.unwrap())] {
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())] {
             let first = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             let other = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             assert_eq!(s.claim_identity(&first).await.unwrap(), Ok(FabricClaim::Written));

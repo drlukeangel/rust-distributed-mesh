@@ -82,7 +82,7 @@ fn deployed() -> Deployed {
         incarnation: IncarnationId::mint(),
         supersedes: None,
         endpoint_id: EndpointId("node-key".into()),
-        runtime: RuntimeFact::of_this_process("dep-rj1").unwrap(),
+        runtime: RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-rj1")).unwrap(),
         data_dir: "/data/mesh1.rpc.1".into(),
         last_accepted_name: None,
         held: false,
@@ -166,7 +166,7 @@ fn join_refuses_a_digest_that_disagrees_with_the_deployment_and_installs_the_rep
         match &mismatch {
             JoinReply::JoinMismatch { field, deployed, reported } => {
                 assert_eq!(field, "incarnation");
-                assert!(deployed.contains(&dep.incarnation.0) && reported.contains(&wrong_incarnation.node.incarnation.0), "{mismatch:?}");
+                assert!(deployed.contains(&dep.incarnation.as_str()) && reported.contains(&wrong_incarnation.node.incarnation.as_str()), "{mismatch:?}");
             }
             other => panic!("{other:?}"),
         }

@@ -374,7 +374,7 @@ impl WorkflowStream {
     /// was submitted and closed with the stream.
     pub(crate) fn new(inner: BuildStream, kind: WorkflowKind, span: tracing::Span) -> Self {
         let accepted = Accepted { build_id: inner.build_id().clone(), attempt: inner.attempt() };
-        span.record("build_id", accepted.build_id.0.as_str());
+        span.record("build_id", accepted.build_id.as_str());
         span.record("attempt", accepted.attempt);
         Self { inner, kind, accepted, span, started: false, ended: false, queued: Default::default(), delivered: Default::default() }
     }

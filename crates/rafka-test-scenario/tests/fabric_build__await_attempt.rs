@@ -44,7 +44,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let mut spawn = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
     let created = Estate::complete(&mut spawn).await;
     assert_eq!(created.attempt, 1, "{created:?}");
-    let build_id = created.build_id.0.clone();
+    let build_id = created.build_id.to_string();
     estate.until_node(node, &format!("{node} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
 
     let primary = estate.node_views().await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == "mesh1" && n.is_primary).expect("mesh1 has an admin primary");
@@ -56,7 +56,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mut restart = estate.nodes_obj().await.restart(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));
     let opened = restart.accepted().clone();
-    assert_eq!(opened.build_id.0, build_id, "a restart opens an attempt of the accepted Build: {opened:?}");
+    assert_eq!(opened.build_id.to_string(), build_id, "a restart opens an attempt of the accepted Build: {opened:?}");
     assert_eq!(opened.attempt, 2, "the restart answers the attempt it opened: {opened:?}");
     door.wait_held(cut).await;
 
@@ -78,7 +78,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
 
     door.release(cut).await;
     let finished = Estate::complete(&mut restart).await;
-    assert_eq!((finished.build_id.0.as_str(), finished.attempt), (build_id.as_str(), 2), "{finished:?}");
+    assert_eq!((finished.build_id.as_str(), finished.attempt), (build_id.as_str(), 2), "{finished:?}");
     let done = build_log::build_fact(&estate.carrier().await, &build_id, "attempt 2 complete", Duration::from_secs(120), |b| b.attempt == 2 && b.state == rafka_node_admin_core::build_state::BuildState::Complete).await.unwrap_or_else(|end| panic!("{end}"));
     assert!(done.attempt == 2 && done.state == rafka_node_admin_core::build_state::BuildState::Complete, "{done:?}");
     estate.stop().await;

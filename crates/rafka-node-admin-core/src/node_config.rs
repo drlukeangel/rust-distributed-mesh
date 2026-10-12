@@ -68,7 +68,7 @@ impl NodeConfigs {
             node = %me,
             subject = tracing::field::Empty,
             node_id = %node_id,
-            incarnation_id = %incarnation.0,
+            incarnation_id = %incarnation.as_str(),
             keys = config.len(),
             tags = tracing::field::Empty,
             row_status = tracing::field::Empty,

@@ -101,7 +101,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
             .await
             .unwrap_or_else(|e| panic!("the member's node.delete: {e}"));
         assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the member's runtime is proven exited");
-        assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (first.node.node_id.as_str(), first.node.incarnation_id.as_ref().map(|i| i.0.as_str())), "the terminal receipt names the member's exact birth");
+        assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (first.node.node_id.as_str(), first.node.incarnation_id.as_ref().map(|i| i.as_str())), "the terminal receipt names the member's exact birth");
 
         let events = recorder.1.lock().unwrap().clone();
         assert_eq!(
@@ -118,7 +118,7 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
         assert_eq!(stopped.len(), 1, "NodeStopped once: {stopped:?}");
         let op = &stopped[0];
         assert!(op.is_stop(), "a stop overlay, told from a restart or a removal by its operation: {op:?}");
-        assert_eq!((op.build_id.as_str(), op.attempt), (leave_build.0.as_str(), 1), "the leave's Build and attempt");
+        assert_eq!((op.build_id.as_str(), op.attempt), (leave_build.as_str(), 1), "the leave's Build and attempt");
         assert_eq!(op.node_id, first.node.node_id, "the exact member");
         assert_eq!(Some(&op.incarnation), first.node.incarnation_id.as_ref(), "the exact birth");
         assert_eq!(op.name, first.node.name);

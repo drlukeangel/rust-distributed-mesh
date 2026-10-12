@@ -178,7 +178,7 @@ impl DeploymentHandle {
             ProviderKind::Container => RuntimeLocator::Container { id: self.container.clone()? },
         };
         let fact = RuntimeFact {
-            deployment_id: self.deployment_id.0.clone(),
+            deployment_id: self.deployment_id.to_string(),
             provider: match self.provider {
                 ProviderKind::Process => RuntimeProvider::Process,
                 ProviderKind::Container => RuntimeProvider::Container,
@@ -259,7 +259,8 @@ pub fn adopt(provider: &dyn DeploymentProvider, fact: &RuntimeFact) -> Result<De
         RuntimeLocator::Process { pid, start } => (Some(*pid), Some(*start), None),
         RuntimeLocator::Container { id } => (None, None, Some(id.clone())),
     };
-    Ok(DeploymentHandle { deployment_id: DeploymentId(fact.deployment_id.clone()), provider: kind, pid, start, container, domain: Some(here) })
+    let deployment_id = fact.deployment().map_err(|e| AdoptRefusal::Invalid { reason: e.to_string() })?;
+    Ok(DeploymentHandle { deployment_id, provider: kind, pid, start, container, domain: Some(here) })
 }
 
 /// How a runtime is stopped.
@@ -450,7 +451,7 @@ mod tests {
 
     fn fact(domain: &str) -> RuntimeFact {
         RuntimeFact {
-            deployment_id: "dep-1".into(),
+            deployment_id: rafka_mesh_entity::fixture_crockford60("dep-1"),
             provider: RuntimeProvider::Process,
             control_domain: domain.into(),
             locator: RuntimeLocator::Process { pid: 4242, start: 17 },
@@ -521,7 +522,7 @@ mod tests {
     fn the_failure_detail_is_read_on_the_blocking_pool() {
         let dir = crate::record_store::tempdir("failure-detail-fifo");
         let fifo = dir.join("stderr.log");
-        let h = DeploymentHandle { deployment_id: DeploymentId("dep-a".into()), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
+        let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
         let (heard, detail) = crate::record_store::runtime_runs_while_a_fifo_is_read(fifo, b"boom\n".to_vec(), Box::pin(async move { RemotePool("d").failure_detail(&h, &dir).await }));
         assert!(heard, "the runtime stopped while stderr.log was read");
         assert_eq!(detail, "boom");
@@ -532,7 +533,7 @@ mod tests {
     async fn an_unreadable_stderr_log_is_named_in_the_failure_detail() {
         let dir = crate::record_store::tempdir("failure-detail-unreadable");
         std::fs::create_dir_all(dir.join("stderr.log")).unwrap();
-        let h = DeploymentHandle { deployment_id: DeploymentId("dep-a".into()), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
+        let h = DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60("dep-a")).unwrap(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: None };
         let detail = RemotePool("d").failure_detail(&h, &dir).await;
         assert!(detail.contains("stderr.log"), "{detail:?}");
     }

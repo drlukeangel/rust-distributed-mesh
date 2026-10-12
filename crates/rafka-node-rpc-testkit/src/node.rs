@@ -289,7 +289,7 @@ async fn start_with_rafka_time(launch: &Launch, rafka_time: rafka_mesh_transport
 async fn start_with_rafka_time_hydrating(launch: &Launch, rafka_time: rafka_mesh_transport::clock::RafkaTime, hydration: rafka_node_admin_core::app_hydration::Hydration, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step below is a child that lives exactly as long as the step, and `via-ready` closes it.
-    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.0, kind = launch.name.kind.name());
+    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.name.kind.name());
     let started = crate::taskdump::watched("start", start_booted(launch, rafka_time, hydration, register, &boot)).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
@@ -322,7 +322,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {
         data_dir: launch.data_dir.clone(),
         deployment_id: runtime.deployment_id.clone(),
-        incarnation: launch.incarnation.0.clone(),
+        incarnation: launch.incarnation.to_string(),
     });
     // One endpoint, one socket for the process: Node RPC and gossip share it by ALPN. A request
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node = %launch.name, requested = %launch.bind_addr, bound = tracing::field::Empty);
@@ -389,7 +389,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
         .with_ready_gate(ready.clone())
-        .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() })
+        .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
     drop(step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node = %launch.name);
@@ -598,7 +598,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                 boot: boot.clone(),
                                 name: name.clone(),
                                 kind: launch.name.kind.name(),
-                                incarnation_id: launch.incarnation.0.clone(),
+                                incarnation_id: launch.incarnation.to_string(),
                                 node_id: launch.node_id.clone(),
                                 mesh_id: mesh_id.to_string(),
                                 fabric_id: launch.fabric_id.to_string(),
@@ -713,7 +713,7 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         // rides it, never the birth's frozen name (R-JN1).
         let held = self.membership.with_config(&self.digest);
         let name = held.node.name.to_string();
-        let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
+        let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows };
         rafka_node_admin_core::workflows::node_start::node_start(&mut start, rafka_node_admin_core::app_hydration::StartKind::AfterStop).await
     }
@@ -793,7 +793,7 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
             boot: self.root.clone(),
             name: me.to_string(),
             kind: s.name.kind.name(),
-            incarnation_id: s.incarnation.0.clone(),
+            incarnation_id: s.incarnation.to_string(),
             node_id: s.node_id.clone(),
             mesh_id: s.mesh_id.to_string(),
             fabric_id: s.fabric_id.to_string(),

@@ -76,7 +76,7 @@ async fn pending_contract(cell: &str) {
     estate.reconcile_shape("fabric1", &[mesh("mesh1")]).await;
     // {mesh1} -> {mesh1, mesh2}, through the rectifier.
     let created = estate.reconcile_shape("fabric1", &[mesh("mesh1"), mesh("mesh2")]).await;
-    let create = created.build_id.0.clone();
+    let create = created.build_id.to_string();
     let build = estate.builds_obj().await.get(&created.build_id).await.expect("build.get of the creation Build");
     let nodes = estate.settled_views(&[mesh("mesh1"), mesh("mesh2")]).await;
     let mesh2_primary = nodes.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).expect("mesh2 elects a primary");
@@ -232,7 +232,7 @@ async fn sole_peer_admin_restarts_ready_from_its_durable_pending() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The restart, through the rectifier: an attempt of the accepted Build.
     let mut restart = estate.nodes_obj().await.restart(&target.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
-    let restart_build = Estate::complete(&mut restart).await.build_id.0;
+    let restart_build = Estate::complete(&mut restart).await.build_id.to_string();
     let after = estate.settled_views(&shape).await;
     let after = after.iter().find(|n| n.name.to_string() == target).cloned().expect("the restarted admin in the view");
     let mesh_name = target.split('.').next().unwrap().to_string();
@@ -280,7 +280,7 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
     let mesh = |m: &'static str, admins: u32| (m, admins, 1);
     let shape = [mesh("mesh1", 2), mesh("mesh2", 1), mesh("mesh3", 1)];
     let built = estate.reconcile_shape("fabric1", &shape).await;
-    let accepted = built.build_id.0.clone();
+    let accepted = built.build_id.to_string();
     let before = estate.settled_views(&shape).await;
     let fabric_holder = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.to_string()).expect("one fabric primary");
     // The lost mesh is a sole-admin mesh that does not hold the fabric seat.

@@ -286,7 +286,7 @@ pub(crate) async fn enter_existing_mesh(ctx: &EntryCtx, source: &'static str, he
                 "rdm.node_admin.node.reject.via-entry-sweep-no-reply",
                 node = %n.name,
                 node_id = %n.node_id,
-                incarnation_id = %n.incarnation.0,
+                incarnation_id = %n.incarnation.as_str(),
                 outcome = %outcome,
                 sweeper = %ctx.me,
             )

@@ -284,7 +284,7 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     let slot: BuildSlot = Arc::new(OnceLock::new());
     let _ = slot.set(door);
     let server = rafka_node_admin_core::build_op::serve(ServerBuilder::new(), slot)
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -363,7 +363,7 @@ impl Rig {
             if let (Some(identity), Some(storage), Some(_)) = (done("AllocateIdentity"), done("PrepareStorage"), done("MakeRuntimeFactAvailableToBirth")) {
                 let id = identity.output.clone().unwrap();
                 let node_id = NodeId::parse(id["node_id"].as_str().unwrap()).unwrap();
-                let incarnation = IncarnationId(id["incarnation"].as_str().unwrap().to_string());
+                let incarnation = IncarnationId::parse(id["incarnation"].as_str().unwrap()).unwrap();
                 let endpoint_id = EndpointId(storage.output.clone().unwrap().as_str().unwrap().to_string());
                 let data_dir = self.data_root.join(format!("{name}-{node_id}"));
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
@@ -436,7 +436,7 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
         let served = serve(door(&rig, Duration::from_millis(300)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
@@ -488,7 +488,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
@@ -532,7 +532,7 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
@@ -562,7 +562,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let served = serve(door.clone()).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         // The birth reports its bind; the join is not heard yet.
         tokio::spawn({
@@ -651,7 +651,7 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         let nodes = nodes_over(&served.carrier);
         rig.membership.joined.store(true, Ordering::SeqCst);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
@@ -690,7 +690,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         let nodes = nodes_over(&served.carrier);
         rig.membership.joined.store(true, Ordering::SeqCst);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
@@ -714,7 +714,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
     assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
     let spans = cap.spans();
-    let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.0.as_str()).collect();
+    let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.as_str()).collect();
     assert_eq!(dispatches.len(), 1, "one build.attempt.run, from the drive that made the calls: {dispatches:?}");
     eprintln!("span rdm.node_admin.build.update.via-dispatch {}", dispatches[0]);
 }
@@ -763,7 +763,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let opened_before = opened(rig.builds.facts().await.unwrap());
         let served = serve(door.clone()).await;
         let mut stream = served.carrier.create(rafka_node_rpc_contract::build::BuildChange::Recover { node: path.clone(), node_id: node_id.clone(), incarnation: birth.clone() }).await.expect("the repeat is answered with a stream");
-        let head = (stream.build_id().0.clone(), stream.attempt(), stream.disposition());
+        let head = (stream.build_id().to_string(), stream.attempt(), stream.disposition());
         let mut frames = Vec::new();
         while let Some(f) = tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the answer ends") {
             frames.push(f);
@@ -772,7 +772,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let drive = door.drives.get(&b0).is_some();
         (opened_before, opened_after, b0, recovering, head, frames, drive)
     });
-    assert_eq!(stream, (b0.0.clone(), recovering.attempt, rafka_node_rpc_contract::build::Disposition::AlreadyApplied), "Started names the Build and attempt that recovered the birth");
+    assert_eq!(stream, (b0.to_string(), recovering.attempt, rafka_node_rpc_contract::build::Disposition::AlreadyApplied), "Started names the Build and attempt that recovered the birth");
     assert_eq!(frames.len(), 1, "one terminal and nothing else: {frames:?}");
     assert!(matches!(&frames[0], Ok(rafka_node_admin_client::BuildFrame::Complete { attempt }) if *attempt == recovering.attempt), "{frames:?}");
     assert_eq!(opened_after, opened_before, "no attempt is opened");
@@ -797,7 +797,7 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let served = serve(before.clone()).await;
         rig.membership.joined.store(true, Ordering::SeqCst);
         let mut stream = nodes_over(&served.carrier).create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
@@ -884,7 +884,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     use rafka_node_admin_core::deployment::pipeline::{CreateStep, RetireStep};
     let view = |op: &str, steps: Vec<&str>| -> rafka_node_admin_client::BuildView {
         serde_json::from_value(json!({
-            "build_id": "bld-1", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
+            "build_id": "3qcfk1kq47m9", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
             "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": op, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
             "last_failure": null, "reason": "requested"
         }))
@@ -995,7 +995,7 @@ struct LostAfterStopNode {
 impl Dispatcher for LostAfterStopNode {
     async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         use rafka_node_rpc_contract::build::BuildReply;
-        let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.0.clone(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
+        let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.to_string(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
         let run = {
             let mut runs = self.runs.lock().unwrap();
             *runs += 1;
@@ -1011,7 +1011,7 @@ impl Dispatcher for LostAfterStopNode {
                 step("restart-node", "StartNode"),
                 step("restart-node", "WaitForNodeReady"),
                 step("restart-node", "Complete"),
-                InnerItem::Frame(BuildReply::Complete { build_id: build_id.0.clone(), attempt }),
+                InnerItem::Frame(BuildReply::Complete { build_id: build_id.to_string(), attempt }),
             ]
         };
         Dispatched::Stream(Box::new(Script(items.into())))

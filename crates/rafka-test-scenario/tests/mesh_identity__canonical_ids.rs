@@ -109,7 +109,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .await;
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
-    let restart_build = again.build_id.0.clone();
+    let restart_build = again.build_id.to_string();
 
     // Replacement of a node: removed, then created again at the same path.
     let replaced = node_ids["mesh1.rpc.2"].clone();

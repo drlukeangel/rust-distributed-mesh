@@ -67,7 +67,7 @@ pub async fn fence(path: &PathName, prev: Option<Node>, probe: &dyn PathProbe) -
             .in_scope(|| tracing::info!("the view holds no birth at this path and no recorded runtime there runs: nothing to fence"));
         return FenceOutcome::Clear { gone: None };
     };
-    let incarnation = prev.incarnation_id.clone().map(|i| i.0).unwrap_or_default();
+    let incarnation = prev.incarnation_id.clone().map(|i| i.to_string()).unwrap_or_default();
     if prev.incarnation_id.is_none() {
         tracing::info_span!("rdm.node_admin.deployment.delete.via-fence", node = %path, incarnation = "", outcome = "no-birth-held")
             .in_scope(|| tracing::info!("the view holds a path with no birth at it: nothing to fence"));
@@ -161,7 +161,7 @@ mod tests {
     fn the_runtime_record_is_read_on_the_blocking_pool() {
         let dir = tempdir("fence-record");
         let fact = rafka_mesh_entity::RuntimeFact {
-            deployment_id: "dep-1".into(),
+            deployment_id: rafka_mesh_entity::fixture_crockford60("dep-1"),
             provider: rafka_mesh_entity::runtime::RuntimeProvider::Process,
             control_domain: "process:test".into(),
             locator: rafka_mesh_entity::runtime::RuntimeLocator::Process { pid: 1, start: 1 },

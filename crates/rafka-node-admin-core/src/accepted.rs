@@ -1139,7 +1139,7 @@ mod tests {
         assert_eq!(op[0].key(), "delete-node:mesh1.rpc.2.old");
         // The Complete commits no output: the attempt's fenced action names the birth.
         let step = |attempt: u32, step: &str| BuildStepReceipt {
-            build_id: crate::build::BuildId("b1".into()),
+            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("delete-node:{path}"),
             step: step.into(),
@@ -1149,7 +1149,7 @@ mod tests {
         };
         let other = IncarnationId::mint();
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
-            build_id: crate::build::BuildId("b1".into()),
+            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
             submitted_change: None,
             submitted_at_ms: 0,
@@ -1185,7 +1185,7 @@ mod tests {
         let from = IncarnationId::mint();
         // The Complete commits no output: the attempt's fenced action names the birth.
         let step = |attempt: u32, step: &str| BuildStepReceipt {
-            build_id: crate::build::BuildId("b1".into()),
+            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("stop-node:{path}"),
             step: step.into(),
@@ -1195,7 +1195,7 @@ mod tests {
         };
         let other = IncarnationId::mint();
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
-            build_id: crate::build::BuildId("b1".into()),
+            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
             submitted_change: None,
             submitted_at_ms: 0,
@@ -1235,7 +1235,7 @@ mod tests {
         let path: PathName = "mesh1.rpc.3".parse().unwrap();
         let from = IncarnationId::mint();
         let step = |attempt: u32, step: &str, birth: Option<&IncarnationId>| BuildStepReceipt {
-            build_id: crate::build::BuildId("b1".into()),
+            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("replace-node:{path}"),
             step: step.into(),
@@ -1244,7 +1244,7 @@ mod tests {
             executor: None,
         };
         let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
-            build_id: crate::build::BuildId("b1".into()),
+            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
             submitted_change: None,
             submitted_at_ms: 0,
@@ -1311,7 +1311,7 @@ mod tests {
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
         let (node_id, from) = (NodeId::mint(), IncarnationId::mint());
         let receipt = |attempt: u32, operation: &str, step: &str, output: Option<serde_json::Value>| BuildStepReceipt {
-            build_id: crate::build::BuildId("b1".into()),
+            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("{operation}:{path}"),
             step: step.into(),
@@ -1325,7 +1325,7 @@ mod tests {
         };
         let complete = |attempt: u32, operation: &str| receipt(attempt, operation, "Complete", None);
         let build = |path: &PathName, node_id: &NodeId, steps: Vec<BuildStepReceipt>| BuildProjection {
-            build_id: crate::build::BuildId("b1".into()),
+            build_id: crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             topology: cur.clone(),
             submitted_change: None,
             submitted_at_ms: 0,

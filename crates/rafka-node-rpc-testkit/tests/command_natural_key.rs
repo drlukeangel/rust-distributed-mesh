@@ -27,7 +27,7 @@ use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, Mode, PullRequest, Pull
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
 
-const BUILD: &str = "bld_natural_key";
+const BUILD: &str = "d9efmj2jpt75";
 const NODE: &str = "mesh1.rpc.1";
 
 /// A node of the admin side's mesh serving one held op (a call into it stays in flight until the

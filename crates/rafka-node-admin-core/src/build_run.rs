@@ -69,7 +69,7 @@ pub struct RunLog {
 
 impl RunLog {
     fn new(build_id: &BuildId, attempt: u32) -> Arc<Self> {
-        Arc::new(Self { build_id: build_id.0.clone(), attempt, state: Mutex::new(RunState::default()), wake: Notify::new() })
+        Arc::new(Self { build_id: build_id.to_string(), attempt, state: Mutex::new(RunState::default()), wake: Notify::new() })
     }
 
     /// A step's `Complete` receipt is durable: its frame. A repeat of a step already framed is
@@ -186,24 +186,24 @@ pub struct AttemptRuns {
 impl AttemptRuns {
     /// The run of `attempt` of `build_id`, when this admin is running it.
     pub fn get(&self, build_id: &BuildId, attempt: u32) -> Option<Arc<RunLog>> {
-        self.runs.lock().unwrap().get(&(build_id.0.clone(), attempt)).cloned()
+        self.runs.lock().unwrap().get(&(build_id.to_string(), attempt)).cloned()
     }
 
     /// The run of `attempt`: the one held, or a new one (`true`).
     fn begin(&self, build_id: &BuildId, attempt: u32) -> (Arc<RunLog>, bool) {
         let mut runs = self.runs.lock().unwrap();
-        match runs.get(&(build_id.0.clone(), attempt)) {
+        match runs.get(&(build_id.to_string(), attempt)) {
             Some(log) => (log.clone(), false),
             None => {
                 let log = RunLog::new(build_id, attempt);
-                runs.insert((build_id.0.clone(), attempt), log.clone());
+                runs.insert((build_id.to_string(), attempt), log.clone());
                 (log, true)
             }
         }
     }
 
     fn end(&self, build_id: &BuildId, attempt: u32) {
-        self.runs.lock().unwrap().remove(&(build_id.0.clone(), attempt));
+        self.runs.lock().unwrap().remove(&(build_id.to_string(), attempt));
     }
 
     fn track(&self, task: tokio::task::AbortHandle) {
@@ -390,7 +390,7 @@ impl RunDoor {
         self.local.absorb_facts(&facts).await;
         let p = match self.builds.read_build(build_id).await {
             Ok(p) => p,
-            Err(BuildStateError::UnknownBuild(_)) => return Attached::Refused(BuildReply::UnknownBuild { build_id: build_id.0.clone() }),
+            Err(BuildStateError::UnknownBuild(_)) => return Attached::Refused(BuildReply::UnknownBuild { build_id: build_id.to_string() }),
             Err(e) => return Attached::Refused(BuildReply::NotReady { reason: format!("{}: Build {build_id} could not be read: {e}", self.me) }),
         };
         let held = p.attempt == attempt && p.executor.as_deref() == Some(executor);
@@ -439,7 +439,7 @@ impl RunDoor {
             match f {
                 BuildFact::Step(s) if s.attempt == attempt => match &s.outcome {
                     StepOutcome::Complete => {
-                        let frame = BuildReply::Step { build_id: build_id.0.clone(), attempt, operation: s.operation.clone(), step: s.step.clone() };
+                        let frame = BuildReply::Step { build_id: build_id.to_string(), attempt, operation: s.operation.clone(), step: s.step.clone() };
                         if !replay.contains(&frame) {
                             replay.push(frame);
                         }
@@ -451,11 +451,11 @@ impl RunDoor {
             }
         }
         let terminal = match verdict {
-            Some(AttemptOutcome::Converged) => BuildReply::Complete { build_id: build_id.0.clone(), attempt },
-            Some(AttemptOutcome::HandedOff { to }) => BuildReply::HandedOff { build_id: build_id.0.clone(), attempt, to },
+            Some(AttemptOutcome::Converged) => BuildReply::Complete { build_id: build_id.to_string(), attempt },
+            Some(AttemptOutcome::HandedOff { to }) => BuildReply::HandedOff { build_id: build_id.to_string(), attempt, to },
             Some(AttemptOutcome::Failed { reason }) => {
                 let (operation, step, _) = failed.unwrap_or_else(|| (String::new(), "attempt".into(), String::new()));
-                BuildReply::Failed { build_id: build_id.0.clone(), attempt, operation, step, reason: bounded_reason(reason) }
+                BuildReply::Failed { build_id: build_id.to_string(), attempt, operation, step, reason: bounded_reason(reason) }
             }
             None => {
                 return Attached::Refused(BuildReply::NotReady { reason: format!("{}: attempt {attempt} of Build {build_id} is {:?} with no verdict receipt and no run here", self.me, p.state) });
@@ -468,8 +468,8 @@ impl RunDoor {
 /// The terminal frame an attempt's end is: `Complete`, `Failed` naming the step, or `HandedOff`.
 pub fn terminal_of(build_id: &BuildId, r: &Reconciled, failed: Option<(String, String, String)>) -> BuildReply {
     match r {
-        Reconciled::Converged { attempt, .. } => BuildReply::Complete { build_id: build_id.0.clone(), attempt: *attempt },
-        Reconciled::HandedOff { attempt, to, .. } => BuildReply::HandedOff { build_id: build_id.0.clone(), attempt: *attempt, to: to.clone() },
+        Reconciled::Converged { attempt, .. } => BuildReply::Complete { build_id: build_id.to_string(), attempt: *attempt },
+        Reconciled::HandedOff { attempt, to, .. } => BuildReply::HandedOff { build_id: build_id.to_string(), attempt: *attempt, to: to.clone() },
         Reconciled::Failed { attempt, operation, reason } => {
             // The step a receipt names is the one that failed when its operation is the attempt's.
             // The reason is the attempt's own, word for word the verdict receipt's.
@@ -477,7 +477,7 @@ pub fn terminal_of(build_id: &BuildId, r: &Reconciled, failed: Option<(String, S
                 Some((op, step, _)) if operation.is_empty() || op == *operation => step,
                 _ => "attempt".to_string(),
             };
-            BuildReply::Failed { build_id: build_id.0.clone(), attempt: *attempt, operation: operation.clone(), step, reason: bounded_reason(reason.clone()) }
+            BuildReply::Failed { build_id: build_id.to_string(), attempt: *attempt, operation: operation.clone(), step, reason: bounded_reason(reason.clone()) }
         }
     }
 }
@@ -487,7 +487,7 @@ mod tests {
     use super::*;
 
     fn id() -> BuildId {
-        BuildId("bld-run".into())
+        BuildId::parse("vhpqxdbt5w2g").unwrap()
     }
 
     fn names(frames: &[BuildReply]) -> Vec<&'static str> {
@@ -522,7 +522,7 @@ mod tests {
         let (replay, _) = log.attach();
         assert_eq!(names(&replay), vec!["step", "step"], "the step that completed cleared its blocker");
 
-        log.finish(BuildReply::Complete { build_id: id().0, attempt: 3 });
+        log.finish(BuildReply::Complete { build_id: id().to_string(), attempt: 3 });
         assert_eq!(reader.next().await.unwrap().name(), "complete");
         assert!(reader.next().await.is_none(), "nothing follows the terminal");
     }
@@ -535,7 +535,7 @@ mod tests {
         let failed = Some(("create-node:mesh1.rpc.2".to_string(), "WaitForMeshJoin".to_string(), "no join".to_string()));
         assert_eq!(
             terminal_of(&id(), &r, failed),
-            BuildReply::Failed { build_id: "bld-run".into(), attempt: 2, operation: "create-node:mesh1.rpc.2".into(), step: "WaitForMeshJoin".into(), reason: "create-node:mesh1.rpc.2: WaitForMeshJoin failed: no join".into() }
+            BuildReply::Failed { build_id: "vhpqxdbt5w2g".into(), attempt: 2, operation: "create-node:mesh1.rpc.2".into(), step: "WaitForMeshJoin".into(), reason: "create-node:mesh1.rpc.2: WaitForMeshJoin failed: no join".into() }
         );
         let other = Some(("create-node:mesh1.rpc.9".to_string(), "DeployRuntime".to_string(), "other".to_string()));
         assert!(matches!(terminal_of(&id(), &r, other), BuildReply::Failed { step, .. } if step == "attempt"), "a failed receipt of another operation is not this attempt's step");
@@ -689,7 +689,7 @@ mod tests {
         let failing = FramedBuilds::new(Arc::new(FailingAppend(memory.clone())), runs.clone());
         assert!(failing.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::Complete)).await.is_err());
         ok.append_step_receipt(&receipt(1, "PrepareNetwork", StepOutcome::Failed { reason: "no port".into() })).await.unwrap();
-        log.finish(BuildReply::Complete { build_id: id().0, attempt: 1 });
+        log.finish(BuildReply::Complete { build_id: id().to_string(), attempt: 1 });
         assert_eq!(reader.next().await.unwrap().name(), "complete", "an append that failed and a failed step made no step frame");
         assert_eq!(log.last_failed_step(), Some(("create-node:mesh1.rpc.2".into(), "PrepareNetwork".into(), "no port".into())), "the failed step is kept for the terminal to name");
     }

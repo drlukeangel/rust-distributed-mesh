@@ -154,8 +154,8 @@ async fn a_heartbeat_of_a_stopped_birth_after_node_stopped_is_refused_by_name_an
     let spans = spans_of(&dir);
     let refused: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-stopped-birth").into_iter().filter(|s| attr(s, "node_id") == id.as_str()).collect();
     assert_eq!(refused.iter().map(|s| attr(s, "digest_seq")).collect::<Vec<_>>(), vec!["14".to_string(), "15".to_string()], "each refused heartbeat is named with its digest_seq: {refused:#?}");
-    assert!(refused.iter().all(|s| attr(s, "incarnation_id") == inc.0 && attr(s, "held_digest_seq") == "13"), "{refused:#?}");
-    let started: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-node-started").into_iter().filter(|s| attr(s, "incarnation_id") == inc.0).collect();
+    assert!(refused.iter().all(|s| attr(s, "incarnation_id") == inc.as_str() && attr(s, "held_digest_seq") == "13"), "{refused:#?}");
+    let started: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-node-started").into_iter().filter(|s| attr(s, "incarnation_id") == inc.as_str()).collect();
     assert!(started.is_empty(), "no heartbeat of the stopped birth ended its stop: {started:#?}");
     std::fs::write(dir.join("trace-ids.txt"), refused.iter().map(|s| format!("{} {} digest_seq={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "digest_seq"))).collect::<String>()).unwrap();
 }

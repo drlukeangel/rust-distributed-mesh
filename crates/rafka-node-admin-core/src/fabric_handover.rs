@@ -432,8 +432,8 @@ fn reject_span(call: &'static str, side: &'static str, reason: &'static str, det
         detail,
         fabric = %p.fabric,
         operation = %p.operation,
-        incumbent = %format!("{}:{}:{}", p.incumbent.mesh, p.incumbent.node_id, p.incumbent.incarnation.0),
-        successor = %format!("{}:{}:{}", p.successor.mesh, p.successor.node_id, p.successor.incarnation.0),
+        incumbent = %format!("{}:{}:{}", p.incumbent.mesh, p.incumbent.node_id, p.incumbent.incarnation.as_str()),
+        successor = %format!("{}:{}:{}", p.successor.mesh, p.successor.node_id, p.successor.incarnation.as_str()),
         expected_epoch = p.expected_epoch,
         source = tracing::field::Empty,
         op = tracing::field::Empty,
@@ -487,7 +487,7 @@ fn overflow_detail(me: &PathName, seat: &WireSeat, epoch: u64) -> String {
 }
 
 fn births(b: &HandoverBirth) -> String {
-    format!("{}:{}:{}", b.mesh, b.node_id, b.incarnation.0)
+    format!("{}:{}:{}", b.mesh, b.node_id, b.incarnation.as_str())
 }
 
 fn epoch_of(seats: &[CommittedSeat], seat: Seat) -> String {
@@ -703,7 +703,7 @@ impl HandoverDoor {
             return refuse("conflict", format!("the command names fabric {}, this admin is in {}", payload.fabric, self.fabric), Reply::RejectedConflict { operation: payload.operation.clone() });
         }
         if payload.successor != self.me_birth() {
-            return refuse("wrong-birth", format!("the command names successor {}:{}:{}, this admin is {}:{}:{}", payload.successor.mesh, payload.successor.node_id, payload.successor.incarnation.0, self.me.mesh, self.node_id, self.incarnation.0), Reply::RejectedWrongBirth { role: "successor".into() });
+            return refuse("wrong-birth", format!("the command names successor {}:{}:{}, this admin is {}:{}:{}", payload.successor.mesh, payload.successor.node_id, payload.successor.incarnation.as_str(), self.me.mesh, self.node_id, self.incarnation.as_str()), Reply::RejectedWrongBirth { role: "successor".into() });
         }
         // The incumbent the command names is data, never checked as the caller (R-RX1, node-rpc.md
         // §14): the command is judged by this admin's own birth and the epoch it names.
@@ -762,8 +762,8 @@ impl HandoverDoor {
             "rdm.node_admin.fabric.update.via-handover-committed",
             fabric = %payload.fabric,
             operation = %payload.operation,
-            incumbent = %format!("{}:{}:{}", payload.incumbent.mesh, payload.incumbent.node_id, payload.incumbent.incarnation.0),
-            successor = %format!("{}:{}:{}", payload.successor.mesh, payload.successor.node_id, payload.successor.incarnation.0),
+            incumbent = %format!("{}:{}:{}", payload.incumbent.mesh, payload.incumbent.node_id, payload.incumbent.incarnation.as_str()),
+            successor = %format!("{}:{}:{}", payload.successor.mesh, payload.successor.node_id, payload.successor.incarnation.as_str()),
             expected_epoch = payload.expected_epoch,
             committed_epoch = committed,
         )
@@ -857,7 +857,7 @@ impl HandoverDoor {
             return refuse("conflict", format!("the completion names fabric {}, this admin is in {}", payload.fabric, self.fabric), Reply::RejectedConflict { operation: payload.operation.clone() });
         }
         if payload.incumbent != self.me_birth() {
-            return refuse("wrong-birth", format!("the completion names incumbent {}:{}:{}, this admin is {}:{}:{}", payload.incumbent.mesh, payload.incumbent.node_id, payload.incumbent.incarnation.0, self.me.mesh, self.node_id, self.incarnation.0), Reply::RejectedWrongBirth { role: "incumbent".into() });
+            return refuse("wrong-birth", format!("the completion names incumbent {}:{}:{}, this admin is {}:{}:{}", payload.incumbent.mesh, payload.incumbent.node_id, payload.incumbent.incarnation.as_str(), self.me.mesh, self.node_id, self.incarnation.as_str()), Reply::RejectedWrongBirth { role: "incumbent".into() });
         }
         // The successor the completion names is data, never checked as the caller (R-RX1).
         let recorded = self.handovers.get(&payload.operation);
@@ -907,8 +907,8 @@ impl HandoverDoor {
             "rdm.node_admin.fabric.update.via-handover-confirmed",
             fabric = %payload.fabric,
             operation = %payload.operation,
-            incumbent = %format!("{}:{}:{}", payload.incumbent.mesh, payload.incumbent.node_id, payload.incumbent.incarnation.0),
-            successor = %format!("{}:{}:{}", payload.successor.mesh, payload.successor.node_id, payload.successor.incarnation.0),
+            incumbent = %format!("{}:{}:{}", payload.incumbent.mesh, payload.incumbent.node_id, payload.incumbent.incarnation.as_str()),
+            successor = %format!("{}:{}:{}", payload.successor.mesh, payload.successor.node_id, payload.successor.incarnation.as_str()),
             expected_epoch = payload.expected_epoch,
             committed_epoch = committed,
         )
@@ -1209,7 +1209,7 @@ impl crate::build_op::IncumbentFacts for HandoverDoor {
         let Some(incumbent) = self.fabric_seat_incumbent() else { return crate::build_op::IncumbentRead::NoTransfer };
         let name = self.topology.read().await.births().find(|n| n.node_id == incumbent.node_id).map(|n| n.name.to_string()).unwrap_or_else(|| format!("the {} admin", incumbent.mesh));
         let read = crate::build_facts_read::fetch_build_facts(&self.client, &NodeTarget::ExactNode(incumbent.node_id.clone()), build_id).await;
-        crate::build_op::IncumbentRead::Read { incumbent: format!("{name} ({}, birth {})", incumbent.node_id, incumbent.incarnation.0), read }
+        crate::build_op::IncumbentRead::Read { incumbent: format!("{name} ({}, birth {})", incumbent.node_id, incumbent.incarnation.as_str()), read }
     }
 }
 

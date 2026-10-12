@@ -401,14 +401,14 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     // One child span per step under the pipeline span, each fully attributed.
     let all = spans.0.lock().unwrap().clone();
     assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
-        && f.get("build_id") == Some(&build_id.0)));
+        && f.get("build_id") == Some(&build_id.to_string())));
     for step in CreateStep::ORDER {
         let (_, parent, f) = all
             .values()
             .find(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-step" && f.get("step").map(String::as_str) == Some(step.name()))
             .unwrap_or_else(|| panic!("no span for step {}", step.name()));
         assert_eq!(parent.as_deref(), Some("rdm.node_admin.deployment.update.via-pipeline"), "{}", step.name());
-        assert_eq!(f.get("build_id"), Some(&build_id.0), "{}", step.name());
+        assert_eq!(f.get("build_id"), Some(&build_id.to_string()), "{}", step.name());
         assert_eq!(f.get("provider").map(String::as_str), Some(expected_provider.as_str()), "{}", step.name());
         assert_eq!(f.get("outcome").map(String::as_str), Some("complete"), "{}", step.name());
         assert_eq!(f.get("attempt").map(String::as_str), Some("1"), "{}", step.name());

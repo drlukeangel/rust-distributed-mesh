@@ -466,7 +466,7 @@ where
     let follow = gate.until_parked(follow);
     tokio::spawn(async move {
         if follow.await.is_none() {
-            tracing::info!(node_id = %birth.0, incarnation = %birth.1 .0, "the recovery follower was cancelled at the stop's park: the next tick that finds the birth due submits it again");
+            tracing::info!(node_id = %birth.0, incarnation = %birth.1 .as_str(), "the recovery follower was cancelled at the stop's park: the next tick that finds the birth due submits it again");
         }
         in_flight.lock().unwrap().remove(&birth);
     })
@@ -493,9 +493,9 @@ pub(crate) async fn put_silence_status(store: &dyn crate::status_storage::Status
     };
     let row = crate::status_storage::NodeSilenceRow { node_id: node.node_id.clone(), name: node.name.clone(), incarnation_id: incarnation_id.clone(), status };
     if let Err(e) = store.put_node_silence(&row).await {
-        tracing::info_span!("rdm.node_admin.node.reject.via-status-storage", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation_id.0, status = written, store = "status.storage", error = %e)
+        tracing::info_span!("rdm.node_admin.node.reject.via-status-storage", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation_id.as_str(), status = written, store = "status.storage", error = %e)
             .in_scope(|| tracing::info!("status.storage refused the birth's silence row"));
-        return Err(format!("status.storage put of {} ({}) silence row at {} ({written}): {e}", node.name, node.node_id, incarnation_id.0));
+        return Err(format!("status.storage put of {} ({}) silence row at {} ({written}): {e}", node.name, node.node_id, incarnation_id.as_str()));
     }
     Ok(true)
 }
@@ -685,7 +685,7 @@ pub(crate) mod tests {
         const INTERVAL: Duration = Duration::from_millis(500);
 
         fn marked(id: &str) -> SilentNode {
-            SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), incarnation: Some(crate::model::IncarnationId(format!("inc-of-{id}"))), marked_at_ms: Some(0) }
+            SilentNode { node_id: id.into(), path: format!("mesh1.rpc.{id}"), incarnation: Some(crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("inc-of-{id}"))).unwrap()), marked_at_ms: Some(0) }
         }
 
         /// CONTRACT (node-recovery.md step 2, per member, and the one loop on every gossip interval):
@@ -777,7 +777,7 @@ pub(crate) mod tests {
             let held = view.clone().write_owned().await;
             let read = Arc::new(AtomicBool::new(false));
             let in_flight: Arc<Mutex<HashSet<(NodeId, IncarnationId)>>> = Arc::default();
-            let birth = (NodeId::mint(), IncarnationId("inc-of-b".into()));
+            let birth = (NodeId::mint(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-of-b")).unwrap());
             in_flight.lock().unwrap().insert(birth.clone());
             let follower = {
                 let (view, read) = (view.clone(), read.clone());
@@ -851,7 +851,7 @@ pub(crate) mod tests {
 
             let mut t = OfflineTickle::new();
             assert_eq!(tick(&mut t, PROBE_DELAY, vec![marked("b")]).await.tickled, vec!["b".to_string()]);
-            let reborn = SilentNode { incarnation: Some(crate::model::IncarnationId("inc-of-b-again".into())), ..marked("b") };
+            let reborn = SilentNode { incarnation: Some(crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-of-b-again")).unwrap()), ..marked("b") };
             sleep(INTERVAL).await;
             assert_eq!(tick(&mut t, PROBE_DELAY + 500, vec![reborn]).await.tickled, vec!["b".to_string()], "another birth at b's node id: its own round");
             assert_eq!(t.rounds(), (1, 0), "the old birth's round was dropped");
@@ -876,7 +876,7 @@ pub(crate) mod tests {
         const BUDGET: Duration = Duration::from_secs(10);
 
         fn birth() -> (NodeId, IncarnationId) {
-            (NodeId::mint(), IncarnationId("inc-of-the-silent-node".into()))
+            (NodeId::mint(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-of-the-silent-node")).unwrap())
         }
 
         fn current(b: &(NodeId, IncarnationId)) -> StatusReply {
@@ -1444,7 +1444,7 @@ pub(crate) mod tests {
         let attr = |k: &str| a.get(k).map(String::as_str).unwrap_or_default().to_string();
         assert_eq!(attr("node"), "mesh1.rpc.1", "{a:?}");
         assert_eq!(attr("node_id"), held.node_id.to_string(), "{a:?}");
-        assert_eq!(attr("incarnation_id"), held.incarnation_id.clone().unwrap().0, "the exact birth: {a:?}");
+        assert_eq!(attr("incarnation_id"), held.incarnation_id.clone().unwrap().as_str(), "the exact birth: {a:?}");
         assert_eq!(attr("status"), "dead", "the status it was writing: {a:?}");
         assert_eq!(attr("store"), "status.storage", "{a:?}");
         assert!(attr("error").contains("status/silence/") && attr("error").contains("No space left on device (os error 28)"), "the store's own cause, with its file: {a:?}");

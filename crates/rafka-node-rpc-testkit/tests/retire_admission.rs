@@ -151,7 +151,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
             })
             .await;
         let terminal = retired.unwrap_or_else(|e| panic!("the retired runtime exited: its commands were completed and its exit proven, whatever the fabric last heard: {e:?}"));
-        assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (created.node.node_id.as_str(), created.node.incarnation_id.as_ref().map(|i| i.0.as_str())), "the terminal receipt names the retired birth: {terminal:?}");
+        assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (created.node.node_id.as_str(), created.node.incarnation_id.as_ref().map(|i| i.as_str())), "the terminal receipt names the retired birth: {terminal:?}");
         assert!(exited(&process, &created.handle).await);
         let _ = std::fs::remove_dir_all(&template.data_root);
     })

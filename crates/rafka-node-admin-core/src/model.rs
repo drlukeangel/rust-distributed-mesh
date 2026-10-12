@@ -4,30 +4,11 @@
 //! are never ordered (PRD §22).
 
 use serde::{Deserialize, Serialize};
-use std::fmt;
-
-/// Opaque id local to node-admin: one runtime realised by a provider.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct DeploymentId(pub String);
-
-impl DeploymentId {
-    /// A fresh deployment id.
-    pub fn mint() -> Self {
-        Self(hex::encode(rand::random::<[u8; 16]>()))
-    }
-}
-
-impl fmt::Display for DeploymentId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
 
 // Identity, path and port types are the Mesh EF's (rafka-mesh-entity);
 // node-admin uses them, it does not redefine them.
 pub use rafka_mesh_entity::path::is_valid_mesh_name;
-pub use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName, PathNameError};
+pub use rafka_mesh_entity::{DeploymentId, EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName, PathNameError};
 
 /// Node lifecycle status as published on views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

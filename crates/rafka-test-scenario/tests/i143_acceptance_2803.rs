@@ -66,7 +66,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.0;
+    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
 
     // The lost mesh: the one whose admins do not hold the fabric seat.
@@ -113,7 +113,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         let estate = &estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births.clone());
         async move {
-            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId(accepted.clone())).await.expect("build.get of the accepted Build");
+            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
             let later = b.phase == rafka_node_rpc_contract::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len();
             (later && reborn).then_some(b)
@@ -251,7 +251,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.0;
+    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
     // The fault falls on an established fabric: the person's admin restarts from the Fabric record the
     // fabric-primary writes at the state commit, so the fabric is ready-for-traffic first.

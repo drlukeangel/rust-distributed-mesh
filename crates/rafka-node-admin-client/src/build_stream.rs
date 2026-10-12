@@ -198,7 +198,10 @@ impl BuildStream {
 /// The refusal `reply` is, as the call ends.
 fn refusal(reply: BuildReply) -> CallEnd {
     if let BuildReply::BuildInProgress { current_build_id } = &reply {
-        return CallEnd::BuildInProgress { current: BuildId(current_build_id.clone()) };
+        return match BuildId::parse(current_build_id) {
+            Ok(current) => CallEnd::BuildInProgress { current },
+            Err(e) => CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("the fabric-primary answered BuildInProgress naming a Build id that is not a Crockford id: {e}") },
+        };
     }
     let detail = match &reply {
         BuildReply::NotFabricPrimary { fabric_primary } => format!("the receiver is not the fabric-primary; it sees {}", fabric_primary.as_deref().unwrap_or("none")),
@@ -263,7 +266,9 @@ impl BuildCarrier {
             };
             match (first, stream) {
                 (BuildReply::Started { build_id, attempt, disposition }, Some(stream)) => {
-                    return Ok(BuildStream { stream, build_id: BuildId(build_id), attempt, disposition, seen: HashSet::new(), ended: false });
+                    let build_id = BuildId::parse(&build_id)
+                        .map_err(|e| CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("the fabric-primary started a Build under an id that is not a Crockford id: {e}") })?;
+                    return Ok(BuildStream { stream, build_id, attempt, disposition, seen: HashSet::new(), ended: false });
                 }
                 (BuildReply::NotFabricPrimary { fabric_primary: Some(named) }, _) => match named.parse::<PathName>() {
                     Ok(next) if !asked.contains(&next) => target = next,
@@ -283,12 +288,12 @@ impl BuildCarrier {
     /// `build.create` for a Build the caller already holds the id of: never a second Build. The
     /// stream carries the frames of `from_attempt` and later attempts.
     pub async fn resubmit(&self, build_id: &BuildId, from_attempt: u32) -> Result<BuildStream, CallEnd> {
-        self.open(BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: build_id.0.clone(), from_attempt } }).await
+        self.open(BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: build_id.to_string(), from_attempt } }).await
     }
 
     /// `build.get`: the Build and its receipts, for reattachment after a cut.
     pub async fn get(&self, build_id: &BuildId) -> Result<BuildReceipts, CallEnd> {
-        let mut stream = self.open(BuildRequest::Get { build_id: build_id.0.clone() }).await?;
+        let mut stream = self.open(BuildRequest::Get { build_id: build_id.to_string() }).await?;
         let mut steps = Vec::new();
         let mut header = None;
         while let Some(frame) = stream.next().await {
@@ -309,7 +314,7 @@ impl BuildCarrier {
 
     /// `build.delete`: a finished Build leaves history.
     pub async fn delete(&self, build_id: &BuildId) -> Result<(), CallEnd> {
-        let mut stream = self.open(BuildRequest::Delete { build_id: build_id.0.clone() }).await?;
+        let mut stream = self.open(BuildRequest::Delete { build_id: build_id.to_string() }).await?;
         match stream.next().await {
             Some(Ok(BuildFrame::Deleted)) => Ok(()),
             Some(Ok(other)) => Err(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a build.delete stream carried {other:?}") }),

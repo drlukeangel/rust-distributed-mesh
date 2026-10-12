@@ -51,7 +51,15 @@ impl BuildFactsDoor {
         );
         async move {
             let span = tracing::Span::current();
-            let id = BuildId(build_id.clone());
+            let id = match BuildId::parse(&build_id) {
+                Ok(id) => id,
+                Err(e) => {
+                    span.record("outcome", "malformed-build-id");
+                    tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %self.me, build_id = %build_id, reason = %e, "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the facts read is refused: its Build id is not a Crockford id"));
+                    return BuildFactsReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt };
+                }
+            };
             // One read of this admin's log: the stream is a snapshot of it.
             let held: Vec<BuildFact> = match self.builds.facts().await {
                 Ok(all) => all.into_iter().filter(|f| *f.build_id() == id).collect(),
@@ -173,7 +181,7 @@ impl FetchFailure {
 /// arrived with every chunk `0..chunks` present once and a fact count that agrees; anything less is
 /// a failure that names what was missing, and the caller absorbs nothing from it.
 pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, build_id: &BuildId) -> Result<Fetched, FetchFailure> {
-    let req = BuildFactsRequest::FetchBuildFacts { build_id: build_id.0.clone() };
+    let req = BuildFactsRequest::FetchBuildFacts { build_id: build_id.to_string() };
     let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(Duration::from_secs(5)), ..Default::default() };
     let mut stream = match client.call_stream::<BuildFacts>(target, &req, &opts).await {
         Ok((s, _)) => s,
@@ -188,7 +196,7 @@ pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, buil
             StreamItem::Frame(FrameKind::Refusal(_), r) => return Err(refusal_of(r)),
             StreamItem::Frame(_, BuildFactsReply::Started) => {}
             StreamItem::Frame(_, BuildFactsReply::Facts { build_id: b, chunk_index, chunk_count, facts }) => {
-                if b != build_id.0 {
+                if b != build_id.as_str() {
                     return Err(FetchFailure::Incomplete(format!("a chunk of Build {b} arrived in the read of {build_id}")));
                 }
                 if chunks.is_empty() {
@@ -210,7 +218,7 @@ pub async fn fetch_build_facts(client: &NodeRpcClient, target: &NodeTarget, buil
     let Some((b, facts, n, complete)) = end else {
         return Err(FetchFailure::Interrupted(format!("the stream ended after {} of {} chunks without its End frame", chunks.iter().flatten().count(), chunks.len())));
     };
-    if b != build_id.0 {
+    if b != build_id.as_str() {
         return Err(FetchFailure::Incomplete(format!("the End names Build {b}, the read was of {build_id}")));
     }
     if n as usize != chunks.len() || chunks.iter().any(Option::is_none) {

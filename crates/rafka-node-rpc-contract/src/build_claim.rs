@@ -199,7 +199,7 @@ mod tests {
             assert_eq!(back, r);
             assert_eq!(BuildClaim::classify_reply(&back), kind);
         }
-        let q = BuildClaimRequest::ClaimAttempt { build_id: "bld-x".into(), attempt: 3, executor_node_id: NodeId::mint(), executor_incarnation: IncarnationId::mint() };
+        let q = BuildClaimRequest::ClaimAttempt { build_id: "b7swg3jj790z".into(), attempt: 3, executor_node_id: NodeId::mint(), executor_incarnation: IncarnationId::mint() };
         assert_eq!(BuildClaim::decode_request(&BuildClaim::encode_request(&q).unwrap()).unwrap(), q);
         assert!(BuildClaim::encode_request(&q).unwrap().len() <= BuildClaim::MAX_REQUEST_FRAME_BYTES);
     }

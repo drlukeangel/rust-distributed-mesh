@@ -97,7 +97,7 @@ async fn retire_mesh1(test: &str) -> Retired {
         .find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic)
         .and_then(|n| n.admin_api_base.clone())
         .expect("a ready mesh2 admin");
-    let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.0;
+    let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.to_string();
     // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
     let left: Vec<NodeView> = estate
         .until_view("mesh1's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
@@ -109,7 +109,7 @@ async fn retire_mesh1(test: &str) -> Retired {
     let last_id = before.iter().find(|n| n.name.to_string() == last).map(|n| n.node_id.to_string()).unwrap();
     estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
     let mut delete = estate.nodes_obj().await.delete(&last.parse().unwrap()).await.unwrap_or_else(|e| panic!("the node.delete of mesh1's last admin {last} was refused: {e}"));
-    let c = Estate::complete(&mut delete).await.build_id.0;
+    let c = Estate::complete(&mut delete).await.build_id.to_string();
     estate.settled_views(&[mesh("mesh2")]).await;
     for (name, pid) in &pids {
         assert!(!alive(*pid), "{name}'s runtime is gone once the mesh.delete and the last admin's node.delete are complete");

@@ -144,8 +144,12 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
     let Some(incarnation) = node.incarnation_id.clone() else {
         return CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.name) };
     };
+    let build_id = match rafka_node_admin_client::BuildId::parse(&ctx.build_id) {
+        Ok(build_id) => build_id,
+        Err(e) => return CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.name, ctx.build_id) },
+    };
     let _ = commands.open(CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation: incarnation.clone() });
-    let (node_id, build_id, attempt) = (node.node_id.clone(), ctx.build_id.clone(), ctx.attempt);
+    let (node_id, attempt) = (node.node_id.clone(), ctx.attempt);
     let admission = match cmd {
         // The executor's own status authority carries it (status_rpc.rs `carry_delete_connections`):
         // see `AdminObserver::send_command`; a client alone has no mesh-primary to set the status.
@@ -156,13 +160,13 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
         }
         NodeCommand::Stop => {
             let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
-            let stop = rafka_node_admin_client::StopContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
+            let stop = rafka_node_admin_client::StopContext::new(build_id, attempt, node.name.clone());
             let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: crate::node_self::connections_delete_deadline_from_env() + Duration::from_secs(10) }, ..Default::default() };
             admission_of(rafka_node_admin_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await)
         }
         NodeCommand::Start => {
             let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
-            let start = rafka_node_admin_client::StartContext::new(rafka_node_admin_client::BuildId(build_id), attempt, node.name.clone());
+            let start = rafka_node_admin_client::StartContext::new(build_id, attempt, node.name.clone());
             let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..Default::default() };
             admission_of(rafka_node_admin_client::NodeRpc::new(client).start(&birth, &start, &opts).await)
         }
@@ -246,7 +250,7 @@ pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> Sta
     let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());
     tracing::info_span!(
         "rdm.node_admin.status.reject.via-reserved-position",
-        node = %receiver, op = req.op(), operation = %operation, build_id = %build_id, attempt = *attempt, subject = %node_id, incarnation_id = %incarnation.0,
+        node = %receiver, op = req.op(), operation = %operation, build_id = %build_id, attempt = *attempt, subject = %node_id, incarnation_id = %incarnation.as_str(),
         caller = %caller, field = "command", expected = RETIRED_PAIR_IS_RESERVED, reported = %reported, "otel.kind" = "internal"
     )
     .in_scope(|| tracing::info!("a reserved Status position was refused by name: it is never a call and starts nothing"));
@@ -273,7 +277,7 @@ pub fn refuse_node_left(receiver: &str, name: &str, caller: &str, req: &StatusRe
         build_id = %build_id,
         attempt = *attempt,
         subject = %node_id,
-        incarnation_id = %incarnation.0,
+        incarnation_id = %incarnation.as_str(),
         name = %name,
         caller = %caller,
         field = "command",
@@ -290,7 +294,7 @@ mod tests {
     use super::*;
 
     fn key(op: &str) -> CommandKey {
-        CommandKey { build_id: "bld_1".into(), attempt: 1, operation: op.into(), node_id: NodeId::mint(), incarnation: IncarnationId("i".into()) }
+        CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: op.into(), node_id: NodeId::mint(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() }
     }
 
     /// CONTRACT: a completion resolves its open command once; a repeat is a repeat; a completion

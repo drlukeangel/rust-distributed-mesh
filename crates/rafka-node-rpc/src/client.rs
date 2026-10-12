@@ -309,7 +309,7 @@ impl NodeRpcClient {
             }
             _ => match self.resolver.resolve(target) {
                 Ok(n) => {
-                    tracing::info!(step = "resolved", node = %n.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.0, "the target resolved to one birth");
+                    tracing::info!(step = "resolved", node = %n.name, node_id = %n.node_id, peer = %n.endpoint_id.fmt_short(), addr = %n.transport_addr, incarnation = %n.incarnation.as_str(), "the target resolved to one birth");
                     // Whatever this node's record no longer names leaves the pool now.
                     self.pool.purge_stale(&n);
                     Reach { peer: n.endpoint_id, addr: n.transport_addr, observed: Some(n.clone()), node: Some(n) }
@@ -351,7 +351,7 @@ impl NodeRpcClient {
             }
             Err(DialError::Superseded) => {
                 // The birth moved while this dial was in flight: the target is stale.
-                let now = self.resolver.resolve(target).ok().map(|n| n.incarnation.0).unwrap_or_default();
+                let now = self.resolver.resolve(target).ok().map(|n| n.incarnation.to_string()).unwrap_or_default();
                 stale_span(&request_target, &format!("incarnation {} superseded by {now}", key.birth()));
                 return Phase::Done(pre.stale_before_finish(&request_target), Some(evidence));
             }

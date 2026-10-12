@@ -147,7 +147,7 @@ pub fn decode_launcher(s: &str) -> Result<Launcher> {
     Ok(Launcher {
         name: name.parse().map_err(|e| format!("{ENV_LAUNCHER} name: {e}"))?,
         node_id: NodeId::parse(node_id).map_err(|e| format!("{ENV_LAUNCHER} node id: {e}"))?,
-        incarnation: IncarnationId(incarnation.to_string()),
+        incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("{ENV_LAUNCHER} incarnation: {e}"))?,
     })
 }
 
@@ -171,13 +171,13 @@ impl Launch {
         m.insert(ENV_FABRIC_ID.into(), self.fabric_id.to_string());
         m.insert(ENV_NODE_NAME.into(), self.name.to_string());
         m.insert(ENV_NODE_ID.into(), self.node_id.to_string());
-        m.insert(ENV_INCARNATION.into(), self.incarnation.0.clone());
+        m.insert(ENV_INCARNATION.into(), self.incarnation.to_string());
         if let Some(s) = &self.supersedes {
-            m.insert(ENV_SUPERSEDES.into(), s.0.clone());
+            m.insert(ENV_SUPERSEDES.into(), s.to_string());
         }
         m.insert(ENV_TRANSPORT_ADDR.into(), self.bind_addr.to_string());
         if let Some(l) = &self.launcher {
-            m.insert(ENV_LAUNCHER.into(), format!("{},{},{}", l.name, l.node_id, l.incarnation.0));
+            m.insert(ENV_LAUNCHER.into(), format!("{},{},{}", l.name, l.node_id, l.incarnation));
         }
         m.insert(ENV_LISTENERS.into(), encode_listeners(&self.listeners));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
@@ -201,8 +201,8 @@ impl Launch {
             fabric_id: FabricId::parse(&req(ENV_FABRIC_ID)?).map_err(|e| format!("{ENV_FABRIC_ID}: {e}"))?,
             name: req(ENV_NODE_NAME)?.parse().map_err(|e| format!("{ENV_NODE_NAME}: {e}"))?,
             node_id: NodeId::parse(&req(ENV_NODE_ID)?).map_err(|e| format!("{ENV_NODE_ID}: {e}"))?,
-            incarnation: IncarnationId(req(ENV_INCARNATION)?),
-            supersedes: get(ENV_SUPERSEDES).filter(|s| !s.is_empty()).map(IncarnationId),
+            incarnation: IncarnationId::parse(&req(ENV_INCARNATION)?).map_err(|e| format!("{ENV_INCARNATION}: {e}"))?,
+            supersedes: get(ENV_SUPERSEDES).filter(|s| !s.is_empty()).map(|s| IncarnationId::parse(&s).map_err(|e| format!("{ENV_SUPERSEDES}: {e}"))).transpose()?,
             bind_addr: req(ENV_TRANSPORT_ADDR)?.parse().map_err(|e| format!("{ENV_TRANSPORT_ADDR}: {e}"))?,
             listeners: decode_listeners(&get(ENV_LISTENERS).unwrap_or_default())?,
             launcher: get(ENV_LAUNCHER).filter(|v| !v.trim().is_empty()).map(|v| decode_launcher(&v)).transpose()?,

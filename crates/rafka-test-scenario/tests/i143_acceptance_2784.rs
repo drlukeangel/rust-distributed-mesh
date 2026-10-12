@@ -220,7 +220,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
-    let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.0;
+    let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
     let all: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect();
     let nodes = values(&estate.settled_named(&all).await);
 
@@ -524,7 +524,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
-    let accepted = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.0;
+    let accepted = estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await.build_id.to_string();
     let all: BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=2).map(move |i| format!("{m}.rpc.{i}")))).collect();
     let before = values(&estate.settled_named(&all).await);
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
@@ -577,7 +577,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let done = wait_for("the accepted Build completes a later attempt and every lost birth is reborn", Duration::from_secs(300), || {
         let (estate, accepted, lost_births) = (&estate, accepted.clone(), lost_births.clone());
         async move {
-            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId(accepted.clone())).await.ok()?;
+            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).ok()?).await.ok()?;
             let later = b.phase == rafka_node_rpc_contract::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(n).is_some_and(|old| old != i)).count() == lost_births.len();
             (later && reborn).then_some(b)
@@ -653,7 +653,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
         "inspected_after_kill": inspected_after_kill,
         "containers_after": containers_after,
         "attempt_before_fault": attempt_before,
-        "final_build": {"build_id": done.build_id.0, "phase": format!("{:?}", done.phase), "attempt": done.attempt, "executor": done.executor, "reason": done.reason},
+        "final_build": {"build_id": done.build_id.as_str(), "phase": format!("{:?}", done.phase), "attempt": done.attempt, "executor": done.executor, "reason": done.reason},
         "recovery_admin": recovery_admin,
         "pending_handoff": span_row(first, &["mesh", "mesh_id", "node", "target", "outcome"]),
         "fault_unix_nano": fault_at,
@@ -741,7 +741,7 @@ async fn container_primary_mesh_retired_hands_off_authority_before_its_container
 
     // THE HAND-OFF AND LOSS, through the rectifier: one Build retiring the holder's mesh.
     let started = now_nanos();
-    let build_id = estate.reconcile_shape("fabric1", &[(survivor_mesh.as_str(), 2, 3)]).await.build_id.0;
+    let build_id = estate.reconcile_shape("fabric1", &[(survivor_mesh.as_str(), 2, 3)]).await.build_id.to_string();
     let build_complete = now_nanos();
     // The former holder's containers: terminal at the daemon (not running, or removed).
     let mut lost_terminal = BTreeMap::new();

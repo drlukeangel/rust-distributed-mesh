@@ -38,16 +38,9 @@ pub use rafka_mesh_entity::PathName;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// A Build's id as node-admin returns it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct BuildId(pub String);
-
-impl fmt::Display for BuildId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+/// A Build's id as node-admin returns it: the one Crockford id type (R-BI5), refused by name when
+/// it is anything else.
+pub use rafka_mesh_entity::BuildId;
 
 /// One mesh's desired counts (`POST /api/meshes`, and inside a fabric Build).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

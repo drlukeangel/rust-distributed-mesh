@@ -18,11 +18,11 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 fn incumbent() -> HandoverBirth {
-    HandoverBirth { mesh: "m".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId("i".into()) }
+    HandoverBirth { mesh: "m".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() }
 }
 
 fn successor() -> HandoverBirth {
-    HandoverBirth { mesh: "n".into(), node_id: NodeId::parse("0123456789cd").unwrap(), incarnation: IncarnationId("j".into()) }
+    HandoverBirth { mesh: "n".into(), node_id: NodeId::parse("0123456789cd").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("j")).unwrap() }
 }
 
 fn take_seats() -> FabricPrimaryHandoverRequest {
@@ -43,9 +43,9 @@ fn committed() -> CommittedSeat {
 }
 
 /// `m`, `0123456789ab`, `i`.
-const INCUMBENT: &str = "01 6d  0c 303132333435363738396162  01 69";
+const INCUMBENT: &str = "01 6d  0c 303132333435363738396162  0c 79727a34396a333033796834";
 /// `n`, `0123456789cd`, `j`.
-const SUCCESSOR: &str = "01 6e  0c 303132333435363738396364  01 6a";
+const SUCCESSOR: &str = "01 6e  0c 303132333435363738396364  0c 79727a37396a3330337a7378";
 
 #[test]
 fn requests_match_the_frozen_three_variant_wire_schema() {
@@ -88,7 +88,7 @@ fn replies_match_the_frozen_nineteen_variant_wire_schema() {
         (Draining { reason: "d".into() }, "0b 01 64"),
         (Unauthorized { reason: "u".into() }, "0c 01 75"),
         // seats (len 1) | seat FabricPrimary=0 | holder birth | epoch 8
-        (SeatsCommitted { seats: vec![committed()] }, "0d 01 00  01 6e  0c 303132333435363738396364  01 6a  08"),
+        (SeatsCommitted { seats: vec![committed()] }, "0d 01 00  01 6e  0c 303132333435363738396364  0c 79727a37396a3330337a7378  08"),
         // seat MeshPrimary=1 { mesh "m" } | expected | current
         (RejectedStaleSeat { seat: Seat::MeshPrimary { mesh: "m".into() }, expected: 3, current: 4 }, "0e 01 016d 03 04"),
         // seat MeshPrimary=1 { mesh "m" } | epoch u64::MAX, the ten-byte varint ff×9 01
@@ -124,7 +124,7 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
 #[test]
 fn the_largest_request_fits_the_frame_ceiling() {
     let long = "x".repeat(128);
-    let b = || HandoverBirth { mesh: long.clone(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId(long.clone()) };
+    let b = || HandoverBirth { mesh: long.clone(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap() };
     let q = FabricPrimaryHandoverRequest::FabricPrimaryTaken { fabric: long.clone(), incumbent: b(), successor: b(), expected_epoch: u64::MAX, committed_epoch: u64::MAX, operation: long.clone() };
     assert!(FabricPrimaryHandover::encode_request(&q).unwrap().len() <= FabricPrimaryHandover::MAX_REQUEST_FRAME_BYTES);
     let seats = vec![SeatEpoch { seat: Seat::MeshPrimary { mesh: long.clone() }, expected_epoch: u64::MAX }, SeatEpoch { seat: Seat::FabricPrimary, expected_epoch: u64::MAX }];

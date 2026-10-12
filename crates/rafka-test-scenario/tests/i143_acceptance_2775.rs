@@ -95,7 +95,7 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
     let restart_attempt = Estate::complete(&mut restart).await;
-    let restart_build = restart_attempt.build_id.0.clone();
+    let restart_build = restart_attempt.build_id.to_string();
     let restarted = view(&estate, NODE).await;
     assert_eq!(restarted["status"], "ready-for-traffic", "the restarted birth is ready: {restarted}");
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
@@ -165,7 +165,7 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let first_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
     let put = estate.probe(&["put", "--target", &path, "--key", "41", "--value", "old-birth"]);
     landed_on(&put, &first, "put");
-    let build_id = build.0.clone();
+    let build_id = build.to_string();
     let attempt_before = u64::from(estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build").attempt);
 
     // The runtime dies (a fault); its mesh-primary answers it with node recovery.

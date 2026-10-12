@@ -151,8 +151,8 @@ fn a_stopped_node_whose_heartbeat_book_lacks_its_commander_starts_and_joins_it_t
             return;
         }
         let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_key, commander_id } = rig("rejoin-commander").await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_rejoin".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_rejoin".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ptwmpv3sma8m".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "ptwmpv3sma8m".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
 
         let left = call(&commander, &target, &stop).await;
@@ -203,8 +203,8 @@ fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_join
             return;
         }
         let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_id, .. } = rig_carried("rejoin-unrecorded", false).await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_unrecorded".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_unrecorded".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "daycheyancwf".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "daycheyancwf".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
@@ -264,8 +264,8 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
             incarnation: born.node.incarnation.clone(),
             transport_addr: born.node.transport_addr,
         });
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_successor".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
-        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_successor".into(), attempt, operation: "start-node:mesh1.rpc.1".into() };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7f0xhg20h9hv".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = |attempt: u32| StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7f0xhg20h9hv".into(), attempt, operation: "start-node:mesh1.rpc.1".into() };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         let left = call(&lost, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the stop is answered Stopped: {left:?}");
@@ -320,8 +320,8 @@ fn a_start_whose_commander_the_resolver_holds_departed_joins_it_over_its_call() 
             return;
         }
         let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_id, .. } = rig("departed-commander").await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_departed".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_departed".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "848haseghsta".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "848haseghsta".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
         let left = call(&commander, &target, &stop).await;
         assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
         let held = running.membership.projected_member_at(&commander.seed.0).expect("the projection carries the commander");
@@ -354,8 +354,8 @@ fn a_hook_blocked_on_its_authoritys_word_runs_again_when_a_commander_no_record_n
         use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
         let hydrator = TestHydrator::new(Mode::Local);
         let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, .. } = rig_hydrating("addressed-unrecorded", false, Some(hydrator.clone())).await;
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_addressed".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_addressed".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "f4te7echyh6f".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         assert!(matches!(call(&commander, &target, &stop).await, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped");
         commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));

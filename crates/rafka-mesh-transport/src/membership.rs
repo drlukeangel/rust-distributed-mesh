@@ -139,12 +139,12 @@ fn fenced_incarnations() -> &'static Mutex<std::collections::HashSet<(String, St
 
 /// Fence the exact birth `(node_id, incarnation)` in the peer-location book.
 pub fn fence_incarnation(node_id: &NodeId, incarnation: &rafka_mesh_entity::IncarnationId) {
-    fenced_incarnations().lock().unwrap().insert((node_id.to_string(), incarnation.0.clone()));
+    fenced_incarnations().lock().unwrap().insert((node_id.to_string(), incarnation.to_string()));
 }
 
 /// Whether `(node_id, incarnation)` is fenced in the peer-location book.
 fn incarnation_fenced(node_id: &NodeId, incarnation: &rafka_mesh_entity::IncarnationId) -> bool {
-    fenced_incarnations().lock().unwrap().contains(&(node_id.to_string(), incarnation.0.clone()))
+    fenced_incarnations().lock().unwrap().contains(&(node_id.to_string(), incarnation.to_string()))
 }
 
 /// Register where the birth `d` names is (rafka-v2 node-base `register_peer_location_if_fresher`).
@@ -168,7 +168,7 @@ pub fn register_location(marks: &LocationMarks, lookup: &MemoryLookup, d: &MeshD
             "rdm.mesh.connection.reject.via-fenced-incarnation",
             node = %d.node.name,
             node_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.0,
+            incarnation_id = %d.node.incarnation.as_str(),
             socket = %d.node.transport_addr,
         )
         .in_scope(|| tracing::info!("a digest of a deleted incarnation: its socket is not registered for the key"));
@@ -191,7 +191,7 @@ pub fn register_location(marks: &LocationMarks, lookup: &MemoryLookup, d: &MeshD
     let mut moved = None;
     if fresher {
         if let Some(old) = marked.or(held).filter(|o| *o != d.node.transport_addr) {
-            moved = Some(LocationMove { key, node: d.node.name.to_string(), incarnation: d.node.incarnation.0.clone(), old, new: d.node.transport_addr });
+            moved = Some(LocationMove { key, node: d.node.name.to_string(), incarnation: d.node.incarnation.to_string(), old, new: d.node.transport_addr });
         }
         lookup.set_endpoint_info(addr);
     } else if held.is_none() {
@@ -2064,7 +2064,7 @@ impl View {
                     kind,
                     subject = %op.name,
                     subject_id = %op.node_id,
-                    incarnation_id = %op.incarnation.0,
+                    incarnation_id = %op.incarnation.as_str(),
                     build_id = %op.build_id,
                     attempt = op.attempt,
                     operation = %op.operation,
@@ -2175,7 +2175,7 @@ impl View {
                     node = %self.node,
                     kind,
                     subject_id = %hook.node_id,
-                    incarnation_id = %hook.incarnation.0,
+                    incarnation_id = %hook.incarnation.as_str(),
                     fabric_id = %hook.fabric_id,
                     build_id = %hook.build_id,
                     attempt = hook.attempt,
@@ -2231,7 +2231,7 @@ impl View {
         if kind != StatusEvent::Stopped {
             return false;
         }
-        let key = (op.node_id.to_string(), op.incarnation.0.clone());
+        let key = (op.node_id.to_string(), op.incarnation.to_string());
         for (channel, rx) in [("mesh-channel", &self.mesh_rx), ("backbone", &self.backbone_rx)] {
             let rx = rx.lock().unwrap();
             let Some((held_publisher, held_version)) = rx.held_version(mesh) else { continue };
@@ -2249,7 +2249,7 @@ impl View {
                 node = %self.node,
                 subject = %op.name,
                 subject_id = %op.node_id,
-                incarnation_id = %op.incarnation.0,
+                incarnation_id = %op.incarnation.as_str(),
                 build_id = %op.build_id,
                 attempt = op.attempt,
                 operation = %op.operation,
@@ -2632,7 +2632,7 @@ impl View {
             node = %self.node,
             member = %d.node.name,
             member_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.0,
+            incarnation_id = %d.node.incarnation.as_str(),
             status = ?d.status,
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
             channel = side.name(),
@@ -2653,7 +2653,7 @@ impl View {
             node = %self.node,
             member = %op.name,
             member_id = %op.node_id,
-            incarnation_id = %op.incarnation.0,
+            incarnation_id = %op.incarnation.as_str(),
             status = ?rafka_mesh_entity::MemberStatus::Leaving,
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
             channel,
@@ -3326,7 +3326,7 @@ impl std::fmt::Display for NoMeshPrimary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoSeatRecord { mesh } => write!(f, "no seat record of mesh {mesh} is held"),
-            Self::HolderNotHeld { holder, held_incarnation: Some(other), .. } => write!(f, "the seat record names {holder}; the node holds birth {} of that node instead", other.0),
+            Self::HolderNotHeld { holder, held_incarnation: Some(other), .. } => write!(f, "the seat record names {holder}; the node holds birth {} of that node instead", other.as_str()),
             Self::HolderNotHeld { holder, held_incarnation: None, departed } => write!(f, "the seat record names {holder}; no digest of that node is held{}", if *departed { " (held departed)" } else { "" }),
             Self::HolderGone { holder } => write!(f, "the seat record names {holder}, a birth held as proven gone"),
         }
@@ -3692,7 +3692,7 @@ impl Backbone {
         if op.name.mesh == self.mesh || !self.status_publishing.load(Ordering::Relaxed) {
             return false;
         }
-        self.view_meshes.lock().unwrap().get(&op.name.mesh) == Some(&true) || self.deleted_births.lock().unwrap().contains(&(op.node_id.to_string(), op.incarnation.0.clone()))
+        self.view_meshes.lock().unwrap().get(&op.name.mesh) == Some(&true) || self.deleted_births.lock().unwrap().contains(&(op.node_id.to_string(), op.incarnation.to_string()))
     }
 
     /// This admin holds `op`'s birth stopped or departed in its book and, by
@@ -3703,7 +3703,7 @@ impl Backbone {
         if !of_deleted_mesh {
             return;
         }
-        self.deleted_births.lock().unwrap().insert((op.node_id.to_string(), op.incarnation.0.clone()));
+        self.deleted_births.lock().unwrap().insert((op.node_id.to_string(), op.incarnation.to_string()));
         self.membership.book.overlays_moved();
     }
 
@@ -3736,7 +3736,7 @@ impl Backbone {
         };
         for mesh in live {
             let (in_flight, departed) = listed.remove(&mesh).unwrap_or_default();
-            let births: BTreeSet<(String, String)> = in_flight.iter().chain(departed.iter()).map(|op| (op.node_id.to_string(), op.incarnation.0.clone())).collect();
+            let births: BTreeSet<(String, String)> = in_flight.iter().chain(departed.iter()).map(|op| (op.node_id.to_string(), op.incarnation.to_string())).collect();
             self.deleted_births.lock().unwrap().retain(|b| !births.contains(b));
             self.deleted_versions.lock().unwrap().remove(&mesh);
             tracing::info_span!("rdm.mesh.backbone.reject.via-mesh-live", node = %self.node, mesh = %mesh, publisher = %self.publisher, in_flight = in_flight.len(), departed = departed.len())
@@ -3900,7 +3900,7 @@ impl Backbone {
             frame = kind.name(),
             subject = %op.name,
             subject_id = %op.node_id,
-            incarnation_id = %op.incarnation.0,
+            incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
             attempt = op.attempt,
             operation = %op.operation,
@@ -4005,7 +4005,7 @@ impl Backbone {
             node = %self.node,
             seat = seat.name(),
             holder_node_id = %node_id,
-            holder_incarnation = %incarnation.0,
+            holder_incarnation = %incarnation.as_str(),
             iroh_known_addrs = %seen.known_addrs,
             iroh_active_addrs = %seen.active_addrs,
         )
@@ -4136,7 +4136,7 @@ pub(crate) struct Fence {
 impl Fence {
     /// The stop births a source projection carries.
     fn stops_of(full: Option<&crate::snapshot::Full>) -> BTreeSet<(String, String)> {
-        full.map(|f| f.in_flight().into_iter().filter(LifecycleOp::is_stop).map(|o| (o.node_id.to_string(), o.incarnation.0)).collect()).unwrap_or_default()
+        full.map(|f| f.in_flight().into_iter().filter(LifecycleOp::is_stop).map(|o| (o.node_id.to_string(), o.incarnation.to_string())).collect()).unwrap_or_default()
     }
 
     /// The restarts, by operation key, a source projection carries.
@@ -4289,7 +4289,7 @@ fn reject_departed_overlay(holder: &str, op: &LifecycleOp, frame: &'static str) 
         holder,
         node = %op.name,
         node_id = %op.node_id,
-        incarnation_id = %op.incarnation.0,
+        incarnation_id = %op.incarnation.as_str(),
         frame,
         build_id = %op.build_id,
         attempt = op.attempt,
@@ -4304,7 +4304,7 @@ fn reject_departed(d: &MeshDigest, via: &'static str) {
         "rdm.mesh.membership.reject.via-departed-birth",
         node = %d.node.name,
         node_id = %d.node.node_id,
-        incarnation_id = %d.node.incarnation.0,
+        incarnation_id = %d.node.incarnation.as_str(),
         via,
     )
     .in_scope(|| tracing::info!("a digest of a departed node: refused, the departure stands"));
@@ -4333,7 +4333,7 @@ fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
             "rdm.mesh.runtime.reject.via-locator-changed",
             node = %d.node.name,
             node_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.0,
+            incarnation_id = %d.node.incarnation.as_str(),
             held_locator_fingerprint = %held.node.runtime.as_ref().map(|r| r.locator_fingerprint()).unwrap_or_default(),
             offered_locator_fingerprint = %d.node.runtime.as_ref().map(|r| r.locator_fingerprint()).unwrap_or_default(),
         )
@@ -4440,7 +4440,7 @@ impl DigestBook {
             holder = %self.holder.lock().unwrap(),
             node = %op.name,
             node_id = %op.node_id,
-            incarnation_id = %op.incarnation.0,
+            incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
             attempt = op.attempt,
             operation = %op.operation,
@@ -4472,7 +4472,7 @@ impl DigestBook {
                 "rdm.mesh.membership.update.via-node-restarting",
                 node = %op.name,
                 node_id = %op.node_id,
-                incarnation_id = %op.incarnation.0,
+                incarnation_id = %op.incarnation.as_str(),
                 build_id = %op.build_id,
                 attempt = op.attempt,
                 operation = %op.operation,
@@ -4527,7 +4527,7 @@ impl DigestBook {
                 "rdm.mesh.membership.update.via-restart-closed-by-facts",
                 node = %op.name,
                 node_id = %op.node_id,
-                incarnation_id = %op.incarnation.0,
+                incarnation_id = %op.incarnation.as_str(),
                 build_id = %op.build_id,
                 attempt = op.attempt,
                 operation = %op.operation,
@@ -4609,7 +4609,7 @@ impl DigestBook {
                 node = %self.holder.lock().unwrap(),
                 member = %op.name,
                 node_id = %op.node_id,
-                incarnation_id = %op.incarnation.0,
+                incarnation_id = %op.incarnation.as_str(),
                 build_id = %op.build_id,
                 attempt = op.attempt,
                 operation = %op.operation,
@@ -4662,7 +4662,7 @@ impl DigestBook {
                 "rdm.mesh.membership.update.via-deleting-closed-by-facts",
                 node = %op.name,
                 node_id = %op.node_id,
-                incarnation_id = %op.incarnation.0,
+                incarnation_id = %op.incarnation.as_str(),
                 build_id = %op.build_id,
                 attempt = op.attempt,
                 operation = %op.operation,
@@ -4710,7 +4710,7 @@ impl DigestBook {
             node = %self.holder.lock().unwrap(),
             member = %name,
             node_id = %node_id,
-            incarnation_id = %incarnation.0,
+            incarnation_id = %incarnation.as_str(),
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
             status = "ReadyForTraffic",
             restarts_closed = %closed.iter().map(|o| o.operation.as_str()).collect::<Vec<_>>().join(","),
@@ -4765,7 +4765,7 @@ impl DigestBook {
             "rdm.mesh.membership.remove.via-node-stopped",
             node = %op.name,
             node_id = %op.node_id,
-            incarnation_id = %op.incarnation.0,
+            incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
             attempt = op.attempt,
             operation = %op.operation,
@@ -4809,7 +4809,7 @@ impl DigestBook {
         let carried_status = if matches!(door, "topology" | "forwarded") { format!("{:?}", d.status) } else { String::new() };
         let Some(held_seq) = held_seq else {
             self.end_stop(d.node.node_id.as_str());
-            tracing::info_span!("rdm.mesh.membership.update.via-node-started", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.0, node_state = ?d.node_state, digest_seq = d.digest_seq, door)
+            tracing::info_span!("rdm.mesh.membership.update.via-node-started", node = %d.node.name, node_id = %d.node.node_id, incarnation_id = %d.node.incarnation.as_str(), node_state = ?d.node_state, digest_seq = d.digest_seq, door)
                 .in_scope(|| tracing::info!("a later birth of a stopped node is heard: the stop of the older birth is over"));
             return false;
         };
@@ -4818,7 +4818,7 @@ impl DigestBook {
             node = %self.holder.lock().unwrap(),
             member = %d.node.name,
             node_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.0,
+            incarnation_id = %d.node.incarnation.as_str(),
             node_state = ?d.node_state,
             entry_status = %carried_status,
             digest_seq = d.digest_seq,
@@ -4873,7 +4873,7 @@ impl DigestBook {
             node = %self.holder.lock().unwrap(),
             member = %op.name,
             node_id = %op.node_id,
-            incarnation_id = %op.incarnation.0,
+            incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
             attempt = op.attempt,
             operation = %op.operation,
@@ -4902,7 +4902,7 @@ impl DigestBook {
             node = %self.holder.lock().unwrap(),
             member = %name,
             node_id = %node_id,
-            incarnation_id = %incarnation.0,
+            incarnation_id = %incarnation.as_str(),
             status = ?status,
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
         )
@@ -4929,7 +4929,7 @@ impl DigestBook {
             node = %self.holder.lock().unwrap(),
             member = %op.name,
             node_id = %op.node_id,
-            incarnation_id = %op.incarnation.0,
+            incarnation_id = %op.incarnation.as_str(),
             build_id = %op.build_id,
             attempt = op.attempt,
             operation = %op.operation,
@@ -5011,7 +5011,7 @@ impl DigestBook {
     fn note_stops_carried(&self, fence: &Fence) {
         let mut marks = self.stopped_marks.lock().unwrap();
         let mut note = |key: &(String, String), publisher: &str, version: u64| {
-            if let Some(m) = marks.get_mut(&key.0).filter(|m| m.incarnation.0 == key.1) {
+            if let Some(m) = marks.get_mut(&key.0).filter(|m| m.incarnation.as_str() == key.1) {
                 if m.carried.as_ref().is_none_or(|(p, v)| p != publisher || version > *v) {
                     m.carried = Some((publisher.to_string(), version));
                 }
@@ -5043,7 +5043,7 @@ impl DigestBook {
     /// Decided and taken under one hold of the stop marks: a node's backbone and mesh channel each
     /// apply their projections under their own receiver, and the stop ends on one of them, once.
     fn stopped_entry(&self, d: &MeshDigest, fence: &Fence) -> Option<bool> {
-        let key = (d.node.node_id.to_string(), d.node.incarnation.0.clone());
+        let key = (d.node.node_id.to_string(), d.node.incarnation.to_string());
         let mark = {
             let mut marks = self.stopped_marks.lock().unwrap();
             let held = marks.get(d.node.node_id.as_str()).filter(|m| m.incarnation == d.node.incarnation)?;
@@ -5088,7 +5088,7 @@ impl DigestBook {
             node = %self.holder.lock().unwrap(),
             member = %d.node.name,
             node_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.0,
+            incarnation_id = %d.node.incarnation.as_str(),
             stops_cleared = %cleared.join(","),
             publisher = %fence.publisher,
             channel = fence.channel,
@@ -5110,7 +5110,7 @@ impl DigestBook {
             node = %self.holder.lock().unwrap(),
             member = %d.node.name,
             node_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.0,
+            incarnation_id = %d.node.incarnation.as_str(),
             status = ?d.status,
             digest_seq = d.digest_seq,
             door = "projection",
@@ -5177,7 +5177,7 @@ impl DigestBook {
             node = %self.holder.lock().unwrap(),
             member = %d.node.name,
             member_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.0,
+            incarnation_id = %d.node.incarnation.as_str(),
             status = ?d.status,
             prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
             heartbeat_held = held,
@@ -5411,7 +5411,7 @@ impl DigestBook {
     /// the departure is held before the stop ends, and this reads the stops first.
     pub(crate) fn deleted_mesh_listing(&self, births: &mut BTreeSet<(String, String)>, own: &str) -> BTreeMap<String, (Vec<LifecycleOp>, Vec<LifecycleOp>)> {
         let (in_flight, departed) = (self.in_flight(), self.departed());
-        let birth = |op: &LifecycleOp| (op.node_id.to_string(), op.incarnation.0.clone());
+        let birth = |op: &LifecycleOp| (op.node_id.to_string(), op.incarnation.to_string());
         let stops: Vec<LifecycleOp> = in_flight.into_iter().filter(|op| op.is_stop() && op.name.mesh != own && births.contains(&birth(op))).collect();
         let deletes: Vec<LifecycleOp> = departed.into_iter().filter(|op| op.name.mesh != own && births.contains(&birth(op))).collect();
         births.retain(|b| stops.iter().chain(deletes.iter()).any(|op| birth(op) == *b));
@@ -5627,7 +5627,7 @@ impl DigestBook {
                 node = %self.holder.lock().unwrap(),
                 member = %d.node.name,
                 node_id = %d.node.node_id,
-                incarnation_id = %d.node.incarnation.0,
+                incarnation_id = %d.node.incarnation.as_str(),
                 node_state = ?d.node_state,
                 digest_seq = d.digest_seq,
                 status = "Pending",
@@ -5846,7 +5846,7 @@ mod tests {
     fn a_birth_keeps_its_runtime_and_a_restart_brings_a_new_one() {
         use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
         let fact = |pid: u32, domain: &str| RuntimeFact {
-            deployment_id: "dep".into(),
+            deployment_id: rafka_mesh_entity::fixture_crockford60("dep"),
             provider: RuntimeProvider::Process,
             control_domain: domain.into(),
             locator: RuntimeLocator::Process { pid, start: 7 },
@@ -5902,7 +5902,7 @@ mod tests {
     fn members(mesh: &str, publisher: &str, forwarded_by: Option<&str>, digests: Vec<MeshDigest>, in_flight: Vec<LifecycleOp>, departed: Vec<LifecycleOp>) -> Frame {
         Frame::Members {
             mesh: mesh.into(),
-            publisher: PublisherId { node: publisher.into(), incarnation: IncarnationId("birth".into()) },
+            publisher: PublisherId { node: publisher.into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap() },
             forwarded_by: forwarded_by.map(String::from),
             topology_version: 1,
             published_at_rafka_ms: 1,
@@ -6661,13 +6661,13 @@ mod tests {
 
     #[test]
     fn members_are_packed_into_frames_that_fit_one_gossip_message() {
-        let ds: Vec<MeshDigest> = (0..40).map(|i| digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, i)).collect();
+        let ds: Vec<MeshDigest> = (0..64).map(|i| digest(&NodeId::mint(), &IncarnationId::mint(), None, MemberStatus::ReadyForTraffic, i)).collect();
         let in_flight: Vec<LifecycleOp> = (0..3).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh1.rpc.1")).collect();
         let departed: Vec<LifecycleOp> = (0..5).map(|_| op(&NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh1.rpc.1")).collect();
         let frame = |digests| members("mesh1", "mesh1.admin.1", Some("mesh2.admin.1"), digests, in_flight.clone(), departed.clone());
         let runs = pack(ds.clone(), frame);
-        assert!(runs.len() > 1, "forty digests do not fit one message");
-        assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 40, "every digest travels");
+        assert!(runs.len() > 1, "sixty-four digests do not fit one message");
+        assert_eq!(runs.iter().map(Vec::len).sum::<usize>(), 64, "every digest travels");
         for r in &runs {
             assert!(frame(r.clone()).encode().len() <= MAX_FRAME, "a run fits one message");
         }
@@ -6679,7 +6679,7 @@ mod tests {
         use rafka_mesh_entity::{RuntimeFact, RuntimeLocator, RuntimeProvider};
         // The largest fact a birth may publish: a container id in a long domain.
         let mut fact = RuntimeFact {
-            deployment_id: "d".repeat(64),
+            deployment_id: "d".repeat(12),
             provider: RuntimeProvider::Container,
             control_domain: String::new(),
             locator: RuntimeLocator::Container { id: "f".repeat(64) },
@@ -6903,7 +6903,7 @@ mod tests {
             d.node.name = "mesh2.rpc.1".parse().unwrap();
             d
         };
-        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId("birth".into()) };
+        let publisher = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap() };
         let first = Frame::Members {
             mesh: "mesh2".into(),
             publisher: publisher.clone(),
@@ -7085,12 +7085,12 @@ mod tests {
         for d in [&admin, &rpc] {
             assert!(book.record_forwarded(d.clone()));
         }
-        let applied = book.mesh_left(&m1, None, "bld_1", 1, 9);
+        let applied = book.mesh_left(&m1, None, "66h8qrqvaajk", 1, 9);
         assert_eq!((applied.name.as_deref(), applied.departed), (Some("mesh1"), 2));
         assert!(book.all().is_empty(), "the births left the active topology");
-        assert_eq!(book.mesh_left(&m1, None, "bld_1", 1, 9).departed, 0, "idempotent");
+        assert_eq!(book.mesh_left(&m1, None, "66h8qrqvaajk", 1, 9).departed, 0, "idempotent");
         assert!(book.is_departed(admin.node.node_id.as_str()) && book.is_departed(rpc.node.node_id.as_str()));
-        assert!(book.departed().iter().all(|op| op.operation.starts_with("stop-node:mesh1.") && op.build_id == "bld_1"));
+        assert!(book.departed().iter().all(|op| op.operation.starts_with("stop-node:mesh1.") && op.build_id == "66h8qrqvaajk"));
         // Within the retention a late digest of a departed birth is refused.
         let mut late = admin.clone();
         late.digest_seq += 10;
@@ -7144,7 +7144,7 @@ mod tests {
             let (mesh, from, v, full) = taken.source.expect("a complete source snapshot");
             let _ = primary.forwarder.lock().unwrap().source("mesh2.admin.1", &mesh, &from, v, &full, version);
             if version == 1 {
-                primary.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
+                primary.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
             }
         }
         // A new mesh2 node joins: it reads the primary's topology (0x1E), then hears its replay.
@@ -7225,8 +7225,8 @@ mod tests {
         let (mesh, from, version, full) = taken.source.expect("a complete source snapshot");
         let _ = primary.forwarder.lock().unwrap().source("mesh2.admin.1", &mesh, &from, version, &full, 1);
         let op = format!("shutdown-mesh:{m1}");
-        primary.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: op.clone(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
-        primary.take(&Frame::MeshLeft { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: op, receipt_manifest: "m".into(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None }, &fabric, "backbone");
+        primary.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: op.clone(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
+        primary.take(&Frame::MeshLeft { mesh_id: m1.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: op, receipt_manifest: "m".into(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None }, &fabric, "backbone");
         assert!(primary.forwarder.lock().unwrap().snapshots().iter().all(|s| s.mesh != "mesh1"), "the primary serves no topology of the departed mesh");
         let joiner = View::new("mesh2", "mesh2.rpc.9");
         let mut replay = primary.book.statuses.held_frames(&fabric, "mesh2.admin.1");
@@ -7275,10 +7275,10 @@ mod tests {
         assert_eq!(taken.carried.len(), 2, "the mesh is held before it leaves");
         // The Build now names {mesh2}: mesh1 is leaving, and the source this node holds is updated.
         view.book.set_accepted_meshes(["mesh2".to_string()].into());
-        view.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
+        view.take(&Frame::MeshLeaving { mesh_id: m1.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 7, forwarded_by: None }, &fabric, "backbone");
         let leaving = view.take_snapshot(&members(2, 2), &fabric, Side::Backbone);
         assert!(!leaving.carried.is_empty(), "a leaving mesh's source is still held and still moves");
-        view.take(&Frame::MeshLeft { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), receipt_manifest: "m".into(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None }, &fabric, "backbone");
+        view.take(&Frame::MeshLeft { mesh_id: m1.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), receipt_manifest: "m".into(), publisher: "mesh3.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None }, &fabric, "backbone");
         assert!(view.book.all().iter().all(|d| d.node.name.mesh != "mesh1"), "its births left the active topology");
         assert!(view.backbone_rx.lock().unwrap().held_full("mesh1").is_none() && view.mesh_rx.lock().unwrap().held_full("mesh1").is_none(), "no source projection of the mesh is kept");
         assert!(view.forwarder.lock().unwrap().replay("mesh2.admin.1", 1).is_empty(), "nothing of the mesh is replayed");
@@ -7325,7 +7325,7 @@ mod tests {
             in_flight: Vec::new(),
             departed,
         };
-        let left = Frame::MeshLeft { mesh_id: m1.clone(), build_id: "bld_1".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), receipt_manifest: "m".into(), publisher: "mesh2.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None };
+        let left = Frame::MeshLeft { mesh_id: m1.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: format!("shutdown-mesh:{m1}"), receipt_manifest: "m".into(), publisher: "mesh2.admin.1".into(), event_at_rafka_ms: 9, forwarded_by: None };
         // An admin of a peer mesh that holds no accepted Build, and an ordinary node of the
         // fabric-primary's mesh: each held the deleted mesh from its last admin, then applied mesh-left.
         let admin = View::new("mesh3", "mesh3.admin.2");
@@ -7510,7 +7510,7 @@ mod tests {
         for o in [&stop_last, &stop_other, &stop_own] {
             assert!(book.stopped(o.clone()));
         }
-        let birth = |o: &LifecycleOp| (o.node_id.to_string(), o.incarnation.0.clone());
+        let birth = |o: &LifecycleOp| (o.node_id.to_string(), o.incarnation.to_string());
         let mut births: BTreeSet<(String, String)> = [birth(&stop_last), birth(&stop_own)].into_iter().collect();
         let listed = book.deleted_mesh_listing(&mut births, "mesh2");
         assert_eq!(listed.keys().cloned().collect::<Vec<_>>(), ["mesh1"], "the own mesh is never listed: {listed:?}");
@@ -7604,7 +7604,7 @@ mod tests {
         assert_eq!(refused.len(), 2, "one refusal per late frame, none for the copy: {refused:?}");
         assert_eq!((refused[0]["frame"].as_str(), refused[0]["operation"].as_str(), refused[0]["build_id"].as_str()), ("node-stopped", "stop-node:mesh1.admin.1", "b0"));
         assert_eq!((refused[1]["frame"].as_str(), refused[1]["operation"].as_str()), ("node-deleted", "retire-node:mesh1.admin.1"));
-        assert!(refused.iter().all(|f| f["node_id"] == id.to_string() && f["incarnation_id"] == inc.0));
+        assert!(refused.iter().all(|f| f["node_id"] == id.to_string() && f["incarnation_id"] == inc.as_str()));
     }
 
     /// CONTRACT (R-NS1 change 3): a departure refused by the departed fence is refused by name once.

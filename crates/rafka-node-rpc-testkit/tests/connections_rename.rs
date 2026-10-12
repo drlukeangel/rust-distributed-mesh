@@ -140,7 +140,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
                 }
             }
         };
-        let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 1, operation: format!("stop-node:{born}") };
+        let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 1, operation: format!("stop-node:{born}") };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         // The trace (R-CR6): the stop's All deletes the data-plane connection on that connection's
         // own span, and the pool's hard cut is the stop's own transport cut, after the whole All.
@@ -154,7 +154,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         admin.put_row(NodeRow { name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None });
         let key = node::load_or_mint_key(&root.join(born.to_string())).unwrap();
         admin.deployed_as(&renamed, &key, taken.clone(), Some(born.clone()));
-        let start = StatusRequest::StartNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 2, operation: format!("start-node:{taken}") };
+        let start = StatusRequest::StartNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "evnhx9g6n82z".into(), attempt: 2, operation: format!("start-node:{taken}") };
         assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");
 
         // The peer hears the renamed digest, and the feed of its own process takes it into its
@@ -343,13 +343,13 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
                 }
             }
         };
-        let stop = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_join_row".into(), attempt: 1, operation: format!("stop-node:{born}") };
+        let stop = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 1, operation: format!("stop-node:{born}") };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
         seams.connections.drain().await;
         let at_stop = kept_log(&store, &fabric, &born).len();
         admin.put_row(NodeRow { name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None });
         admin.deployed_as(&launch, &key, taken.clone(), Some(born.clone()));
-        let start = StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_join_row".into(), attempt: 2, operation: format!("start-node:{taken}") };
+        let start = StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 2, operation: format!("start-node:{taken}") };
         assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");
         seams.connections.drain().await;
         assert_eq!(kept_log(&store, &fabric, &born).len(), at_stop, "the start's join wrote no entry: Node RPC is no connection");

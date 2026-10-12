@@ -192,7 +192,7 @@ fn resolved(view: &Value) -> Vec<ResolvedNode> {
                 name: n["name"].as_str()?.parse().ok()?,
                 endpoint_id: n["endpoint_id"].as_str()?.parse().ok()?,
                 transport_addr: n["transport_addr"].as_str()?.parse().ok()?,
-                incarnation: IncarnationId(n["incarnation_id"].as_str()?.to_string()),
+                incarnation: IncarnationId::parse(n["incarnation_id"].as_str()?).ok()?,
             })
         })
         .collect()
@@ -482,7 +482,7 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             let parts: Vec<&str> = s.split('|').collect();
             let [node, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node>|<incarnation>|<version>")) };
             Some(SourceVersion {
-                publisher: rafka_mesh_entity::PublisherId { node: node.to_string(), incarnation: IncarnationId(incarnation.to_string()) },
+                publisher: rafka_mesh_entity::PublisherId { node: node.to_string(), incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))? },
                 topology_version: version.parse().map_err(|e| format!("--since version {version:?}: {e}"))?,
             })
         }
@@ -505,12 +505,12 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
                 match item {
                     StreamItem::Frame(_, f) => frames.push(match f {
                         TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } => json!({
-                            "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.0, "topology_version": topology_version,
+                            "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
                             "snapshot_id": snapshot_id, "chunk_index": chunk_index, "chunk_count": chunk_count,
                             "members": digests.into_iter().map(|d| rafka_mesh_entity::MeshDigest::from(d).node.name.to_string()).collect::<Vec<_>>(),
                             "in_flight": in_flight.len(), "departed": departed.len(),
                         }),
-                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.0, "topology_version": topology_version}),
+                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
                         TopologyReply::End { meshes } => json!({"frame": "end", "meshes": meshes}),
                         other => json!({"frame": other.name(), "detail": format!("{other:?}")}),
                     }),

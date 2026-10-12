@@ -94,7 +94,7 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 }
 
 fn command(launch: &Launch, start: bool) -> StatusRequest {
-    let (node_id, incarnation, build_id) = (launch.node_id.clone(), launch.incarnation.clone(), "bld_admin_start_declares".to_string());
+    let (node_id, incarnation, build_id) = (launch.node_id.clone(), launch.incarnation.clone(), "xtccsd8180sr".to_string());
     if start {
         StatusRequest::StartNode { node_id, incarnation, build_id, attempt: 2, operation: format!("start-node:{}", launch.name) }
     } else {

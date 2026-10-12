@@ -188,7 +188,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let slot: HandoverSlot = Arc::new(OnceLock::new());
     let (facts_slot, build_slot): (BuildFactsSlot, BuildSlot) = (Arc::new(OnceLock::new()), Arc::new(OnceLock::new()));
     let served = rafka_node_admin_core::build_facts_read::serve(rafka_node_admin_core::fabric_handover::serve(ServerBuilder::new(), slot.clone()), facts_slot.clone());
-    let server = rafka_node_admin_core::build_op::serve(served, build_slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }).expect("the catalog seals");
+    let server = rafka_node_admin_core::build_op::serve(served, build_slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog seals");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
@@ -572,12 +572,12 @@ fn the_new_seat_resumes_a_resubmitted_build_it_has_not_heard_from_its_incumbents
         assert!(n_log.read_build(&b).await.is_err(), "N has heard nothing of B before the re-submit");
         // The caller re-submits B at the seat P's new-seat frame names.
         let at_new_seat = rafka_node_admin_client::BuildCarrier::new(f.incumbent.client.clone(), f.successor.resolved.name.clone());
-        let resubmitted = at_new_seat.resubmit(&rafka_node_admin_client::BuildId(b.0.clone()), 1).await.map(|s| (s.build_id().0.clone(), s.attempt(), s.disposition()));
+        let resubmitted = at_new_seat.resubmit(&b, 1).await.map(|s| (s.build_id().to_string(), s.attempt(), s.disposition()));
         let held = n_log.read_build(&b).await.map(|p| (p.attempt, p.executor));
         (resubmitted.map(|r| (b.clone(), r)), held)
     });
     let (b, (build_id, attempt, disposition)) = resubmitted.expect("the new seat admits the re-submit by build_id from its incumbent's facts");
-    assert_eq!(build_id, b.0, "never a second Build");
+    assert_eq!(build_id, b.as_str(), "never a second Build");
     assert_eq!((attempt, disposition), (1, rafka_node_rpc_contract::build::Disposition::Attached), "the re-submit attaches to the attempt it named");
     let (held_attempt, held_executor) = held.expect("N's own log holds B once its incumbent's facts are absorbed");
     assert_eq!((held_attempt, held_executor.as_deref()), (1, Some("mesh1.admin.1")), "no new attempt is claimed: the same attempt, by the same executor");
@@ -626,7 +626,7 @@ async fn a_wrong_birth_a_stale_epoch_and_a_conflict_are_each_refused_by_name() {
     let spans = capture();
     let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
     let op = "fabric-primary-handover:refusals";
-    let other_birth = |b: &HandoverBirth| HandoverBirth { incarnation: IncarnationId("another-birth".into()), ..b.clone() };
+    let other_birth = |b: &HandoverBirth| HandoverBirth { incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("another-birth")).unwrap(), ..b.clone() };
     // The command names a successor birth that is not the receiver's.
     let wrong_successor = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: other_birth(&birth(&f.successor)), expected_epoch: 7, operation: op.into() };
     assert_eq!(send(&f.incumbent, &f.successor, wrong_successor).await, Reply::RejectedWrongBirth { role: "successor".into() });
@@ -668,13 +668,13 @@ async fn a_handover_call_naming_a_counterparty_the_receiver_does_not_hold_is_jud
         return;
     }
     let spans = capture();
-    let other_birth = |b: &HandoverBirth| HandoverBirth { incarnation: IncarnationId("another-birth".into()), ..b.clone() };
+    let other_birth = |b: &HandoverBirth| HandoverBirth { incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("another-birth")).unwrap(), ..b.clone() };
 
     let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
     let taken_other_successor = Request::FabricPrimaryTaken { fabric: "fabric1".into(), incumbent: birth(&f.incumbent), successor: other_birth(&birth(&f.successor)), expected_epoch: 7, committed_epoch: 8, operation: "fabric-primary-handover:taken-other-successor".into() };
     assert_eq!(send(&f.successor, &f.incumbent, taken_other_successor).await, Reply::Applied, "the completion is judged by the incumbent's own birth and its epochs");
     let moved = f.incumbent.door.membership.seats().fabric().expect("the incumbent holds a fabric seat record");
-    assert_eq!((moved.incarnation.0.as_str(), moved.epoch), ("another-birth", 8), "the record moved to the birth the completion names: {moved}");
+    assert_eq!((moved.incarnation.to_string(), moved.epoch), (rafka_mesh_entity::fixture_crockford60("another-birth"), 8), "the record moved to the birth the completion names: {moved}");
 
     let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
     let take_other_incumbent = Request::TakeFabricPrimary { fabric: "fabric1".into(), incumbent: other_birth(&birth(&f.incumbent)), successor: birth(&f.successor), expected_epoch: 7, operation: "fabric-primary-handover:take-other-incumbent".into() };
@@ -682,7 +682,7 @@ async fn a_handover_call_naming_a_counterparty_the_receiver_does_not_hold_is_jud
     assert_eq!(f.successor.door.membership.seats().fabric(), Some(holder_of(&f.successor, 8)), "the successor committed the seat at epoch 8");
 
     let (f, _) = fabric(NodeStatus::ReadyForTraffic, false, true).await;
-    let seat_elsewhere = SeatHolder { mesh: "mesh9".into(), node_id: NodeId::parse("000000000003").unwrap(), incarnation: IncarnationId("x".into()), epoch: 8 };
+    let seat_elsewhere = SeatHolder { mesh: "mesh9".into(), node_id: NodeId::parse("000000000003").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("x")).unwrap(), epoch: 8 };
     f.successor.door.membership.seats().take(Seat::FabricPrimary, &seat_elsewhere);
     assert_eq!(send(&f.incumbent, &f.successor, take(&f, 7, "fabric-primary-handover:elsewhere-7")).await, Reply::RejectedStaleEpoch { expected: 7, current: 8 });
     assert_eq!(send(&f.incumbent, &f.successor, take(&f, 8, "fabric-primary-handover:elsewhere-8")).await, Reply::Applied);
@@ -757,7 +757,7 @@ async fn a_command_to_a_mesh_primary_the_calculation_does_not_select_is_refused(
         let _ = a;
     }
     assert_eq!(f.incumbent.door.membership.seats().fabric(), Some(holder_of(&third, 8)));
-    assert_eq!(spans.named(COMMITTED)[0]["successor"], format!("mesh3:{}:{}", third.resolved.node_id, third.resolved.incarnation.0));
+    assert_eq!(spans.named(COMMITTED)[0]["successor"], format!("mesh3:{}:{}", third.resolved.node_id, third.resolved.incarnation.as_str()));
 }
 
 /// CONTRACT: a handover committed at the successor whose completion the incumbent did not
@@ -819,14 +819,14 @@ async fn each_stage_of_the_handover_is_a_durable_row_on_both_admins() {
     let _spans = capture();
     let (incumbent_dir, successor_dir) = (DataDir::new("handover-incumbent"), DataDir::new("handover-successor"));
     let fabric_id = FabricId::mint();
-    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
-    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
+    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())).await;
     let f = join(incumbent, successor).await;
     let op = operation_of(&f);
     f.incumbent.door.hand_over("mesh1", &f.mesh1_id).await.expect("confirmed");
     until("the successor holds the confirmation", || matches!(f.successor.door.handovers.get(&op), Some((_, Stage::Confirmed(8))))).await;
-    let successor_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap().handovers().await.unwrap();
-    let incumbent_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap().handovers().await.unwrap();
+    let successor_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&successor_dir.0), &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap().handovers().await.unwrap();
+    let incumbent_rows = FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&incumbent_dir.0), &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap().handovers().await.unwrap();
     let expect = |rows: &[HandoverRow], stage: HandoverStage| {
         assert_eq!(rows.len(), 1, "one handover: {rows:?}");
         let r = &rows[0];
@@ -868,7 +868,7 @@ async fn a_successor_restarted_between_commit_and_confirmation_completes_the_com
     let dir = DataDir::new("handover-restart");
     let fabric_id = FabricId::mint();
     let (incumbent, _) = admin(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", false).await;
-    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())).await;
     let f = join(incumbent, successor).await;
     let op = operation_of(&f);
     // The incumbent's door is not serving: the commit happens and its completion is not acknowledged.
@@ -878,7 +878,7 @@ async fn a_successor_restarted_between_commit_and_confirmation_completes_the_com
     // The successor exits and is born again over its data dir.
     let committed_birth = birth(&f.successor);
     drop(f.successor);
-    let (reborn, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap())).await;
+    let (reborn, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir.0), &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())).await;
     assert_ne!(birth(&reborn).incarnation, committed_birth.incarnation, "a restart is a new birth");
     assert!(reborn.door.handovers.get(&op).is_none(), "nothing is held before the admin reads its storage");
     assert_eq!(reborn.door.restore().await.unwrap(), 1);
@@ -1190,7 +1190,7 @@ async fn a_take_seats_naming_a_stale_seat_another_holder_birth_or_a_successor_ou
     // N naming another birth of P.
     let mut wrong = take_seats(&f.p, &f.n, 3, 7, "b1", "restart-node:mesh1.admin.1");
     if let Request::TakeSeats { holder, .. } = &mut wrong {
-        holder.incarnation = IncarnationId("another-birth".into());
+        holder.incarnation = IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("another-birth")).unwrap();
     }
     assert_eq!(send(&f.n, &f.p, wrong).await, Reply::RejectedWrongBirth { role: "holder".into() });
     // X, another mesh's primary, is never the successor of a transfer of mesh1's seats.
@@ -1307,7 +1307,7 @@ async fn an_executor_that_cannot_reach_a_proven_lost_holder_reads_the_committed_
     }
     assert_eq!(read.span_context.trace_id().to_string(), trace_id, "the committed-row read is the cell's own story");
     assert_eq!(attr(read, "outcome").as_deref(), Some("held"));
-    assert_eq!(attr(read, "successor").as_deref(), Some(format!("mesh1:{}:{}", n.resolved.node_id, n.resolved.incarnation.0).as_str()));
+    assert_eq!(attr(read, "successor").as_deref(), Some(format!("mesh1:{}:{}", n.resolved.node_id, n.resolved.incarnation.as_str()).as_str()));
 }
 
 /// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary): TakeSeats moves

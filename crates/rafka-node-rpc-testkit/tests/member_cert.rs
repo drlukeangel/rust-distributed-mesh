@@ -69,7 +69,7 @@ fn a_node_admitted_by_an_issuing_authority_holds_a_member_cert_for_exactly_its_b
         let cert = TestMemberCert::decode(&running.member_cert).expect("the handle holds the signer's bytes");
         assert_eq!(
             (cert.node_id.as_str(), cert.incarnation.as_str(), cert.name.as_str(), cert.mesh.as_str(), cert.endpoint_key.as_str()),
-            (launch.node_id.to_string().as_str(), launch.incarnation.0.as_str(), "mesh1.rpc.1", "mesh1", key.public().to_string().as_str()),
+            (launch.node_id.to_string().as_str(), launch.incarnation.as_str(), "mesh1.rpc.1", "mesh1", key.public().to_string().as_str()),
             "the cert names exactly this birth"
         );
         assert!((AUTHORITY_REFERENCE_MS..AUTHORITY_REFERENCE_MS + 60_000).contains(&cert.issued_at_ms), "issued on the authority's rafka-time: {}", cert.issued_at_ms);
@@ -108,8 +108,8 @@ fn a_restarted_node_is_issued_a_fresh_member_cert_for_its_new_incarnation() {
         let second = node::start(&second_launch, |b, _| b).await.expect("the restarted birth starts");
         let second_cert = TestMemberCert::decode(&second.member_cert).unwrap();
 
-        assert_eq!(first_cert.incarnation, first_launch.incarnation.0);
-        assert_eq!(second_cert.incarnation, second_launch.incarnation.0, "the restart's cert names the new incarnation");
+        assert_eq!(first_cert.incarnation, first_launch.incarnation.as_str());
+        assert_eq!(second_cert.incarnation, second_launch.incarnation.as_str(), "the restart's cert names the new incarnation");
         assert_ne!(first_bytes, second.member_cert, "a restart never reuses its predecessor's cert");
         assert_eq!((first_cert.node_id.as_str(), first_cert.endpoint_key.as_str()), (second_cert.node_id.as_str(), second_cert.endpoint_key.as_str()), "the same node and key");
         assert!(second_cert.issued_at_ms > first_cert.issued_at_ms, "issued later on rafka-time: {} then {}", first_cert.issued_at_ms, second_cert.issued_at_ms);

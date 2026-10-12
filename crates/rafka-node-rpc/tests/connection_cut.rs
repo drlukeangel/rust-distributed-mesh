@@ -35,7 +35,7 @@ async fn a_cut_closes_every_accepted_connection_but_the_spared_peers_and_the_end
             let PingRequest::Ping { payload, .. } = req;
             Ok(PingReply::Pong { payload })
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();

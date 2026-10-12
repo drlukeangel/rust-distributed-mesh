@@ -255,7 +255,7 @@ impl SeatFold {
                 node = %self.name,
                 member = %name,
                 node_id = %node_id,
-                incarnation_id = %incarnation.0,
+                incarnation_id = %incarnation.as_str(),
                 status = ?status,
                 prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
                 outcome,
@@ -581,7 +581,7 @@ impl StatusAuthority {
                     // The fabric's `build_id` is the current Build, read from this admin's builds store (R-BI3):
                     // a read that fails is named, never answered as no Build.
                     return match self.builds.current_build().await {
-                        Ok(current) => crate::views::fabric_answer(&me, &view, current.into_build_id().map(|b| b.0)),
+                        Ok(current) => crate::views::fabric_answer(&me, &view, current.into_build_id().map(|b| b.to_string())),
                         Err(e) => StatusReply::source_failed("builds.storage", "fabric.get", &format!("{me} could not read its current Build: {e}")),
                     };
                 }
@@ -672,7 +672,7 @@ impl StatusAuthority {
             }
             Err(_) => "refused",
         };
-        tracing::info_span!("rdm.node_admin.status.update.via-cycle-begun", node = %node.name, node_id = %node.node_id, incarnation_id = %birth.0, held = ?state, outcome, "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.status.update.via-cycle-begun", node = %node.name, node_id = %node.node_id, incarnation_id = %birth.as_str(), held = ?state, outcome, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("a start begins the birth's next cycle: its declared state is measured from Pending again"));
     }
 
@@ -693,7 +693,7 @@ impl StatusAuthority {
         let at_path: std::collections::HashMap<crate::model::PathName, NodeId> = book.all().into_iter().map(|d| (d.node.name, d.node.node_id)).collect();
         for ((node_id, incarnation), name) in held {
             let (why, by) = match book.get(node_id.as_str()) {
-                Some((d, _)) if d.node.incarnation != incarnation => ("new-incarnation", d.node.incarnation.0.clone()),
+                Some((d, _)) if d.node.incarnation != incarnation => ("new-incarnation", d.node.incarnation.to_string()),
                 Some(_) => continue,
                 None if book.is_departed(node_id.as_str()) => ("node-deleted", String::new()),
                 None => match name.as_ref().and_then(|n| at_path.get(n)) {
@@ -711,9 +711,9 @@ impl StatusAuthority {
                 Err(e) => ("refused", e.to_string()),
             };
             let span = match why {
-                "new-incarnation" => tracing::info_span!("rdm.node_admin.status.remove.via-new-incarnation", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.0, held_incarnation_id = %by, outcome, error = %error, "otel.kind" = "internal"),
-                "new-node" => tracing::info_span!("rdm.node_admin.status.remove.via-new-node", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.0, path = %name.as_ref().map(ToString::to_string).unwrap_or_default(), held_node_id = %by, outcome, error = %error, "otel.kind" = "internal"),
-                _ => tracing::info_span!("rdm.node_admin.status.remove.via-node-deleted", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.0, outcome, error = %error, "otel.kind" = "internal"),
+                "new-incarnation" => tracing::info_span!("rdm.node_admin.status.remove.via-new-incarnation", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.as_str(), held_incarnation_id = %by, outcome, error = %error, "otel.kind" = "internal"),
+                "new-node" => tracing::info_span!("rdm.node_admin.status.remove.via-new-node", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.as_str(), path = %name.as_ref().map(ToString::to_string).unwrap_or_default(), held_node_id = %by, outcome, error = %error, "otel.kind" = "internal"),
+                _ => tracing::info_span!("rdm.node_admin.status.remove.via-node-deleted", node = %self.me, node_id = %node_id, incarnation_id = %incarnation.as_str(), outcome, error = %error, "otel.kind" = "internal"),
             };
             span.in_scope(|| tracing::info!("a superseded birth's declared-state keys are tombstoned: nothing of that birth is folded back"));
         }
@@ -1458,7 +1458,7 @@ mod tests {
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare);
         assert!(holding_me(&reply) && effect.is_none(), "the retired birth's seat is not this admin's: {reply:?}");
 
-        let stop = StatusRequest::StopNode { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.admin.1".into() };
+        let stop = StatusRequest::StopNode { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.admin.1".into() };
         let reply = auth.apply(Some(owner.clone()), &stop).await;
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node naming this admin's node id reaches the subject's own door: {reply:?}");
     }
@@ -1484,13 +1484,13 @@ mod tests {
         };
         let auth = authority_of(&me, view);
         let incarnation = me.incarnation_id.clone().unwrap();
-        let stop = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.admin.2".into() };
+        let stop = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.admin.2".into() };
         let reply = auth.apply(None, &stop).await;
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node from a stranger reaches the subject's own door: {reply:?}");
         let probe = StatusRequest::ProbeNodeState { node_id: me.node_id.clone(), incarnation: incarnation.clone() };
         let reply = auth.apply(None, &probe).await;
         assert!(matches!(&reply, R::Current { node_id, state: NodeState::ReadyForTraffic, .. } if *node_id == me.node_id), "a probe from a stranger is answered by the subject: {reply:?}");
-        let stale = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 2, operation: "stop-node:mesh1.admin.2".into() };
+        let stale = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "stop-node:mesh1.admin.2".into() };
         assert_eq!(auth.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
     }
 

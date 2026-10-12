@@ -20,8 +20,8 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::AddNode { mesh: "m".into(), node_kind: NodeKind::RpcNode }) }, "00 00 02 01 6d 01"),
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }) }, "00 00 06 0b 6d657368312e7270632e31"),
         (
-            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: "mesh1.rpc.1".parse().unwrap(), node_id: rafka_mesh_entity::NodeId::parse("0123456789ab").unwrap(), incarnation: rafka_mesh_entity::IncarnationId("i".into()) }) },
-            "00 00 0b 0b 6d657368312e7270632e31 0c 303132333435363738396162 01 69",
+            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: "mesh1.rpc.1".parse().unwrap(), node_id: rafka_mesh_entity::NodeId::parse("0123456789ab").unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() }) },
+            "00 00 0b 0b 6d657368312e7270632e31 0c 303132333435363738396162 0c 79727a34396a333033796834",
         ),
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),
         (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), intent: vec![vec![0xAA, 0xBB], vec![]], operations: vec![b"{}".to_vec()], hand_off_to: Some("n".into()) }, "01 01 62 02 01 65 00 00 00 00 02 02 aabb 00 01 02 7b7d 01 01 6e"),
@@ -120,10 +120,10 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
 
 #[test]
 fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() {
-    let r = BuildReply::Failed { build_id: "bld-0123456789abcdef01234567".into(), attempt: u32::MAX, operation: "o".repeat(256), step: "s".repeat(256), reason: "r".repeat(16 * 1024) };
+    let r = BuildReply::Failed { build_id: "cq2tyb03krac".into(), attempt: u32::MAX, operation: "o".repeat(256), step: "s".repeat(256), reason: "r".repeat(16 * 1024) };
     assert!(Build::encode_reply(&r).unwrap().len() <= Build::MAX_REPLY_FRAME_BYTES);
     let q = BuildRequest::AttemptRun {
-        build_id: "bld-0123456789abcdef01234567".into(),
+        build_id: "cq2tyb03krac".into(),
         attempt: u32::MAX,
         executor: "mesh1.admin.1".into(),
         context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("t".repeat(55)), tracestate: Some("s".repeat(512)), baggage: Some("b".repeat(8192)) },

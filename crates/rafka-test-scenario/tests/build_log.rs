@@ -34,7 +34,7 @@ fn log_read_ended(failure: FetchFailure) -> CallEnd {
 /// An admin that holds no fact of the Build ends the call `Indeterminate` (`unknown build`), naming it.
 pub async fn log_read(carrier: &BuildCarrier, id: &str) -> Result<Vec<BuildFact>, CallEnd> {
     let target = NodeTarget::CurrentPath(carrier.fabric_primary().clone());
-    fetch_build_facts(carrier.client(), &target, &BuildId(id.into())).await.map(|fetched| fetched.facts).map_err(log_read_ended)
+    fetch_build_facts(carrier.client(), &target, &BuildId::parse(id).unwrap()).await.map(|fetched| fetched.facts).map_err(log_read_ended)
 }
 
 /// Await the typed fact `holds` of Build `id` in the Build log of the node-admin `carrier` starts at.
@@ -52,7 +52,7 @@ pub async fn log_fact(carrier: &BuildCarrier, id: &str, fact: &str, within: Dura
 
 /// Build `id` as `facts` fold it, `None` while they hold no acceptance of it.
 pub fn projection(facts: &[BuildFact], id: &str) -> Option<BuildProjection> {
-    fold(facts).remove(&BuildId(id.into()))
+    fold(facts).remove(&BuildId::parse(id).unwrap())
 }
 
 /// Await the fact `holds` of the Build `id` as the Build log of the node-admin `carrier` starts at folds

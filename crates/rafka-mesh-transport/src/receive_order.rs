@@ -67,7 +67,7 @@ impl std::fmt::Display for Key {
 /// The frame's name in spans, its source and its order key; `None` for a frame with no order key.
 fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
     match f {
-        Frame::Digest { digest } => Some(("digest", Source::Birth { node_id: digest.node.node_id.to_string(), incarnation: digest.node.incarnation.0.clone() }, Key::DigestSeq(digest.digest_seq))),
+        Frame::Digest { digest } => Some(("digest", Source::Birth { node_id: digest.node.node_id.to_string(), incarnation: digest.node.incarnation.to_string() }, Key::DigestSeq(digest.digest_seq))),
         Frame::Members { mesh, topology_version, published_at_rafka_ms, .. } => {
             Some(("members", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
         }
@@ -154,7 +154,7 @@ mod tests {
     }
 
     fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
-        LifecycleOp { build_id: "bld-1".into(), attempt: 1, operation: format!("{operation}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
+        LifecycleOp { build_id: "3qcfk1kq47m9".into(), attempt: 1, operation: format!("{operation}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
     }
 
     /// CONTRACT (R-RX3: Members and MembersDelta order by `published_at_rafka_ms` then
@@ -192,7 +192,7 @@ mod tests {
         let at = |seq: u64| Frame::Digest { digest: MeshDigest { digest_seq: seq, ..d.clone() } };
         assert_eq!(order.admit(&at(7)), Ok(()));
         assert_eq!(order.admit(&at(7)), Ok(()), "a copy of the held heartbeat is the book's to absorb");
-        assert_eq!(order.admit(&at(3)), Err(Earlier { frame: "digest", source: format!("{}/{}", d.node.node_id, d.node.incarnation.0), held: "digest_seq=7".into(), offered: "digest_seq=3".into() }));
+        assert_eq!(order.admit(&at(3)), Err(Earlier { frame: "digest", source: format!("{}/{}", d.node.node_id, d.node.incarnation.as_str()), held: "digest_seq=7".into(), offered: "digest_seq=3".into() }));
         let restarted = MeshDigest { node: MeshNode { incarnation: IncarnationId::mint(), ..d.node.clone() }, digest_seq: 1, ..d.clone() };
         assert_eq!(order.admit(&Frame::Digest { digest: restarted }), Ok(()), "a new incarnation is another source");
     }

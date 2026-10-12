@@ -160,7 +160,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     // ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let started = now_ns();
-    let build_id = estate.reconcile_shape("fabric1", &[mesh(&survivor_mesh)]).await.build_id.0;
+    let build_id = estate.reconcile_shape("fabric1", &[mesh(&survivor_mesh)]).await.build_id.to_string();
     let build_complete = now_ns();
     // mesh.deleted leaves the lost mesh's last admin alive; its end is its own node.delete, which the
     // fabric-primary executes and whose TerminateRuntime proves the exit (mesh-delete.md step 7).

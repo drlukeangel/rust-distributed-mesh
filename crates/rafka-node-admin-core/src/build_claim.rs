@@ -189,10 +189,18 @@ impl ClaimDoor {
         };
         if executor.incarnation_id.as_ref() != Some(&executor_incarnation) {
             return BuildClaimReply::PeerUnresolved {
-                reason: format!("{}: the request names birth {} of {} and this view holds {:?}", self.me, executor_incarnation.0, executor.name, executor.incarnation_id.as_ref().map(|i| &i.0)),
+                reason: format!("{}: the request names birth {} of {} and this view holds {:?}", self.me, executor_incarnation.as_str(), executor.name, executor.incarnation_id.as_ref().map(|i| i.as_str())),
             };
         }
-        self.claim(&executor.name.to_string(), &BuildId(build_id), attempt).await
+        let build_id = match BuildId::parse(&build_id) {
+            Ok(build_id) => build_id,
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %self.me, executor = %executor.name, build_id = %build_id, reason = %e, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("the claim is refused: its Build id is not a Crockford id"));
+                return BuildClaimReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt };
+            }
+        };
+        self.claim(&executor.name.to_string(), &build_id, attempt).await
     }
 }
 

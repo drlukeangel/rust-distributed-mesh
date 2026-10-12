@@ -31,7 +31,7 @@ fn s(v: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wedged_broker_is_marked_then_held_and_comes_back_as_the_same_birth() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1)])] }).await.build_id.0;
+    let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1)])] }).await.build_id.to_string();
     let want = ["mesh1.admin.1", "mesh1.broker.1", "mesh1.broker.2", "mesh1.gateway.1"].iter().map(|n| n.to_string()).collect();
     let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await);
     let target = nodes.iter().find(|n| n["kind"] == "broker" && n["is_primary"] == false).cloned().expect("a non-primary broker");

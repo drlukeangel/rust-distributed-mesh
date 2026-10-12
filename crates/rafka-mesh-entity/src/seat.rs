@@ -62,7 +62,7 @@ impl SeatHolder {
 
 impl std::fmt::Display for SeatHolder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}@{} (epoch {})", self.mesh, self.node_id, self.incarnation.0, self.epoch)
+        write!(f, "{}:{}@{} (epoch {})", self.mesh, self.node_id, self.incarnation, self.epoch)
     }
 }
 
@@ -155,7 +155,7 @@ mod tests {
     use super::*;
 
     fn holder(node: &str, inc: &str, epoch: u64) -> SeatHolder {
-        SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse(node).unwrap(), incarnation: IncarnationId(inc.into()), epoch }
+        SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse(node).unwrap(), incarnation: IncarnationId::parse(&crate::ids::fixture_crockford60(inc)).unwrap(), epoch }
     }
 
     #[test]

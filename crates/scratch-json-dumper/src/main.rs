@@ -12,9 +12,9 @@ use serde_json::to_string_pretty;
 use std::str::FromStr;
 
 fn main() {
-    let build_id = BuildId("bld_1a2b3c4d".into());
+    let build_id = BuildId::parse("ynh5g2bqzf4r").unwrap();
     let path_1 = PathName::from_str("mesh1.rpc.1").unwrap();
-    let inc = IncarnationId("0000000000000008".into());
+    let inc = IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("0000000000000008")).unwrap();
     let node_id = NodeId::mint(); // Crockford
     let mesh_id = MeshId::mint();
     let fabric_id = FabricId::mint();
@@ -55,7 +55,7 @@ fn main() {
 
     // 4. LifecycleOp
     let op = LifecycleOp {
-        build_id: build_id.0.clone(),
+        build_id: build_id.to_string(),
         attempt: 1,
         operation: "restart-node:mesh1.rpc.1".into(),
         node_id: node_id.clone(),

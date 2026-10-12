@@ -110,7 +110,7 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 }
 
 fn op_of(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { build_id: "bld-s53".into(), attempt: 1, operation: format!("{operation}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
+    LifecycleOp { build_id: "81ey2zm6h456".into(), attempt: 1, operation: format!("{operation}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
 }
 
 fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
@@ -236,7 +236,7 @@ async fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignor
     let at = |name: &str, node: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && attr(s, "node") == node).collect() };
     let ignored = at("rdm.mesh.membership.reject.via-earlier-version", "mesh1.rpc.1");
     let mut said: Vec<(String, String, String, String, String)> = ignored.iter().map(|s| (attr(s, "channel"), attr(s, "frame"), attr(s, "source"), attr(s, "held"), attr(s, "offered"))).collect();
-    let birth = |d: &MeshDigest| format!("{}/{}", d.node.node_id, d.node.incarnation.0);
+    let birth = |d: &MeshDigest| format!("{}/{}", d.node.node_id, d.node.incarnation.as_str());
     let mut expected = vec![
         ("mesh:mesh1".to_string(), "members".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7)),
         ("mesh:mesh1".to_string(), "members-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1)),

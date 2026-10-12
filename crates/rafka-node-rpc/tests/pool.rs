@@ -64,7 +64,7 @@ async fn node() -> Node {
                 }
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
@@ -325,13 +325,13 @@ struct Told(Mutex<Vec<String>>);
 
 impl rafka_node_rpc::ConnectionObserver for Told {
     fn direct_connected(&self, n: &ResolvedNode) {
-        self.0.lock().unwrap().push(format!("connected {}", n.incarnation.0));
+        self.0.lock().unwrap().push(format!("connected {}", n.incarnation.as_str()));
     }
     fn direct_failed(&self, n: &ResolvedNode, reason: &str) {
-        self.0.lock().unwrap().push(format!("failed {} ({reason})", n.incarnation.0));
+        self.0.lock().unwrap().push(format!("failed {} ({reason})", n.incarnation.as_str()));
     }
     fn direct_broken(&self, n: &ResolvedNode, reason: &str) {
-        self.0.lock().unwrap().push(format!("broken {} ({reason})", n.incarnation.0));
+        self.0.lock().unwrap().push(format!("broken {} ({reason})", n.incarnation.as_str()));
     }
 }
 
@@ -391,7 +391,7 @@ async fn three_reply_deadlines_report_nothing_broken_to_the_connections_writer()
         assert_eq!(ev.unwrap().connection, first.connection, "call {i} rode the pooled connection");
     }
     let told = told.0.lock().unwrap().clone();
-    assert_eq!(told, vec![format!("connected {}", r.record.incarnation.0)], "the dial's connected, once, and nothing broken: {told:?}");
+    assert_eq!(told, vec![format!("connected {}", r.record.incarnation.as_str())], "the dial's connected, once, and nothing broken: {told:?}");
     assert_eq!(r.client.pooled().len(), 1, "the connection is still pooled");
 }
 

@@ -81,7 +81,7 @@ async fn every_read_decodes_into_the_client_views() {
 /// Run the Build's open attempt to convergence, as its executor would.
 async fn settle(cp: &ControlPlane, id: &rafka_node_admin_client::BuildId) {
     use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt};
-    let id = BuildId(id.0.clone());
+    let id = id.clone();
     let attempt = cp.builds.read_build(&id).await.unwrap().attempt + 1;
     cp.builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
     cp.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();

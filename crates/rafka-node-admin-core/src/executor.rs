@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn a_handed_off_attempt_leaves_the_build_waiting_for_its_next_claim() {
         use crate::build_state::{fold, BuildAccepted, BuildFact};
-        let id = crate::build::BuildId("bld-x".into());
+        let id = crate::build::BuildId::parse("b7swg3jj790z").unwrap();
         let facts = vec![
             BuildFact::Accepted(BuildAccepted {
                 build_id: id.clone(),

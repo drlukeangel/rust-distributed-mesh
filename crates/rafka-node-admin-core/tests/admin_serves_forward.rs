@@ -31,7 +31,7 @@ fn birth() -> Birth {
 }
 
 fn served(b: &Birth) -> ServedBirth {
-    ServedBirth { node_id: b.node_id.to_string(), incarnation: b.incarnation.0.clone() }
+    ServedBirth { node_id: b.node_id.to_string(), incarnation: b.incarnation.to_string() }
 }
 
 fn resolved(b: &Birth, name: &str, addr: std::net::SocketAddr) -> ResolvedNode {

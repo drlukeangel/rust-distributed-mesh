@@ -270,7 +270,7 @@ impl Drive {
             .filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from && s.attempt < to)
             .map(|s| {
                 let subject = s.output.clone().and_then(|o| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(o).ok()).map(|op| op.node_id);
-                (BuildReply::Step { build_id: self.build_id.0.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() }, subject)
+                (BuildReply::Step { build_id: self.build_id.to_string(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() }, subject)
             })
             .collect()
     }
@@ -540,7 +540,7 @@ fn world(drive: &Drive, p: &BuildProjection, t: &Topology) -> String {
     let mut members: Vec<String> = t
         .members()
         .filter(|n| Some(&n.mesh) == mesh.as_ref())
-        .map(|n| format!("{}:{}:{:?}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("-"), n.status, n.is_primary))
+        .map(|n| format!("{}:{}:{:?}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("-"), n.status, n.is_primary))
         .collect();
     members.sort();
     format!("{} receipts={} members=[{}]", first.map(|op| op.key()).unwrap_or_default(), p.steps.len(), members.join(","))
@@ -651,7 +651,7 @@ impl DriveEnv {
 
     /// A blocker the drive itself holds: framed once for a new reason.
     fn blocked(&self, drive: &Arc<Drive>, attempt: u32, operation: &str, step: &str, reason: &str) {
-        drive.push(BuildReply::Blocked { build_id: drive.build_id.0.clone(), attempt, operation: operation.into(), step: step.into(), reason: crate::build_run::bounded_reason(reason.into()) });
+        drive.push(BuildReply::Blocked { build_id: drive.build_id.to_string(), attempt, operation: operation.into(), step: step.into(), reason: crate::build_run::bounded_reason(reason.into()) });
     }
 
     /// What the peer-mesh investigation holds of the mesh of `op`'s node when that mesh is a peer
@@ -761,7 +761,7 @@ impl DriveEnv {
                         return end;
                     }
                 }
-                drive.finish(BuildReply::Complete { build_id: id.0.clone(), attempt: p.attempt });
+                drive.finish(BuildReply::Complete { build_id: id.to_string(), attempt: p.attempt });
                 return DriveEnd::Terminal;
             }
             match crate::build_state::drivable(&*self.builds, &p).await {

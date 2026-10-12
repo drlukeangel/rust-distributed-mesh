@@ -68,7 +68,7 @@ pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
     for op in book.departed() {
         let applied = resolver.depart(&op.node_id, &op.incarnation, &op.name);
         if applied == Applied::Departed {
-            tracing::info_span!("rdm.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.0)
+            tracing::info_span!("rdm.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.as_str())
                 .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
         }
     }
@@ -76,13 +76,13 @@ pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
     let parked = book.parked().into_iter().map(|d| (d.node.node_id, d.node.incarnation, d.node.name)).chain(book.parked_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
     for (node_id, incarnation, name) in parked {
         if resolver.park(&node_id, &incarnation) {
-            tracing::info_span!("rdm.node_rpc.node.update.via-membership", node, target = %name, target_id = %node_id, incarnation_id = %incarnation.0, change = "Parked")
+            tracing::info_span!("rdm.node_rpc.node.update.via-membership", node, target = %name, target_id = %node_id, incarnation_id = %incarnation.as_str(), change = "Parked")
                 .in_scope(|| tracing::info!("the resolver holds the parked birth by its exact id only: its path is given up"));
         }
     }
     for d in book.all() {
         let Some(birth) = resolved(&d) else { continue };
-        let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.0.clone());
+        let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.to_string());
         match resolver.apply(birth, d.node.supersedes.as_ref()) {
             Applied::Unchanged | Applied::Departed => {}
             Applied::Refused(r) => tracing::info_span!("rdm.node_rpc.node.reject.via-membership", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, reason = ?r)

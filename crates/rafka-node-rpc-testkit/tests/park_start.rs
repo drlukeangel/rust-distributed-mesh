@@ -76,8 +76,8 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         let target = NodeTarget::ExactNode(born.node.node_id.clone());
         let (node_id, incarnation) = (born.node.node_id.clone(), born.node.incarnation.clone());
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_park".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_park".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
 
         // A live node refuses a start: only a parked one starts.
         assert!(matches!(call(&admin, &target, &start).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "a start of a live node is refused naming its state");
@@ -130,9 +130,9 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a
         // naturally idempotent uncertain step can settle it"). Another command's start of this live
         // node is still refused naming its state.
-        let reissued = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_park".into(), attempt: 3, operation: "start-node:mesh1.rpc.1".into() };
+        let reissued = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 3, operation: "start-node:mesh1.rpc.1".into() };
         assert_eq!(call(&admin, &target, &reissued).await, StatusReply::AlreadyApplied, "the reissued start settles as already applied");
-        let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_other".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() };
+        let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7kq2m9vx4pzr".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() };
         assert!(matches!(call(&admin, &target, &other).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "another Build's start of the live node is refused naming its state");
         let _ = std::fs::remove_dir_all(&dir);
     })

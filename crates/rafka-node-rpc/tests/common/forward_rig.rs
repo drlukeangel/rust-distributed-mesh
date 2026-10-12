@@ -92,7 +92,7 @@ pub fn birth() -> (NodeId, IncarnationId) {
 }
 
 pub fn served(b: &(NodeId, IncarnationId)) -> ServedBirth {
-    ServedBirth { node_id: b.0.to_string(), incarnation: b.1 .0.clone() }
+    ServedBirth { node_id: b.0.to_string(), incarnation: b.1 .to_string() }
 }
 
 pub async fn start(server: rafka_node_rpc::NodeRpcServer, key: SecretKey, name: &str, b: (NodeId, IncarnationId)) -> Node {

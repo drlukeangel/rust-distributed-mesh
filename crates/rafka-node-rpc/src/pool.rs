@@ -63,7 +63,7 @@ impl PoolKey {
 
     /// The birth the key names, as a span field: empty for a key of no birth.
     pub fn birth(&self) -> &str {
-        self.incarnation.as_ref().map(|i| i.0.as_str()).unwrap_or_default()
+        self.incarnation.as_ref().map(|i| i.as_str()).unwrap_or_default()
     }
 
     fn superseded_by(&self, _node: Option<&ResolvedNode>) -> &'static str {

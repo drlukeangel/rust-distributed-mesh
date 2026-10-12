@@ -586,7 +586,7 @@ impl NodeSelf {
         // The check-in hook runs in the path of the completion call, before it goes out.
         let frame = crate::fabric_state::hook_frame(key, true, self.node_id.clone(), self.incarnation.clone(), &self.held_name().to_string(), self.membership.clock().now_rafka_ms());
         let channels = if self.backbone.is_some() { "mesh,backbone" } else { "mesh" };
-        tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.held_name(), round = key.kind.command(), hook = key.kind.completion(), subject_id = %self.node_id, incarnation_id = %self.incarnation.0, build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal")
+        tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.held_name(), round = key.kind.command(), hook = key.kind.completion(), subject_id = %self.node_id, incarnation_id = %self.incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels, bound = true, "otel.kind" = "internal")
             .in_scope(|| tracing::info!("the check-in hook is published"));
         // What became of the hook is named on the call's span: handed to gossip, or why not.
         let hook = match &self.backbone {

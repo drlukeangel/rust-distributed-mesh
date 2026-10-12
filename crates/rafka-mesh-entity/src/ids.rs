@@ -7,8 +7,9 @@
 //! it carries no time, age, ordinal or topology. Display prefixes (`msh_`,
 //! `fab_`, node-kind prefixes) are a presentation concern and never stored.
 //!
-//! Every other identity here (incarnation, transport) is opaque,
-//! compared by equality only, and keeps its own representation.
+//! The incarnation, Build and deployment identities are canonical Crockford60 too (R-BI5: one id
+//! type, never hex). The transport identity ([`EndpointId`]) is iroh's own key, opaque, compared by
+//! equality only, and keeps iroh's representation.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -35,6 +36,14 @@ pub fn decode_crockford60(s: &str) -> Option<u64> {
         return None;
     }
     s.bytes().try_fold(0u64, |v, b| Some((v << 5) | CROCKFORD.iter().position(|c| *c == b)? as u64))
+}
+
+/// A canonical id for a fixture `label`, for tests: the same label always yields the same id.
+/// Production ids are minted, never derived.
+#[doc(hidden)]
+pub fn fixture_crockford60(label: &str) -> String {
+    let h = label.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
+    encode_crockford60(h)
 }
 
 /// Mint a canonical id: 60 bits from the OS CSPRNG, nothing else feeds it.
@@ -171,42 +180,33 @@ product_id!(
     ConnectionId, "connection id"
 );
 
-/// Width of a minted opaque id ([`IncarnationId`], [`EndpointId`] when minted): 128 random bits in
-/// lower-case hex.
-pub const OPAQUE_ID_LEN: usize = 32;
+product_id!(
+    /// One process birth of a logical node (`RuntimeIncarnationId`). Equality only: never ordered.
+    IncarnationId, "incarnation id"
+);
+product_id!(
+    /// A Build's identity (build.md §3): minted once when the Build is accepted, carried by every
+    /// attempt, claim and receipt of it. Ordered only so a set of Builds has a stable iteration.
+    BuildId, "build id", PartialOrd, Ord
+);
+product_id!(
+    /// One runtime a node-admin's provider realised for a node birth, local to that node-admin.
+    /// Ordered only so a set of deployments has a stable iteration.
+    DeploymentId, "deployment id", PartialOrd, Ord
+);
 
-macro_rules! opaque_id {
-    ($(#[$m:meta])* $name:ident) => {
-        $(#[$m])*
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-        #[serde(transparent)]
-        pub struct $name(pub String);
+/// The node's authenticated transport identity: its Iroh endpoint id (public key), under iroh's
+/// own name, exactly what iroh issues. Never a product identity; never the Fabric's id; never
+/// minted here, so it carries no mint and no parse.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EndpointId(pub String);
 
-        impl $name {
-            /// Mint a fresh id: 128 random bits, lower-case hex.
-            pub fn mint() -> Self {
-                Self(hex::encode(rand::random::<[u8; OPAQUE_ID_LEN / 2]>()))
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-    };
+impl fmt::Display for EndpointId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
-
-opaque_id!(
-    /// One process birth of a logical node (`RuntimeIncarnationId`).
-    IncarnationId
-);
-opaque_id!(
-    /// The node's authenticated transport identity: its Iroh endpoint id
-    /// (public key), under iroh's own name. Never a product identity; never
-    /// the Fabric's id.
-    EndpointId
-);
 
 #[cfg(test)]
 mod tests {
@@ -225,7 +225,15 @@ mod tests {
     #[test]
     fn every_product_id_mints_twelve_lowercase_crockford_characters() {
         for _ in 0..2000 {
-            for s in [NodeId::mint().to_string(), MeshId::mint().to_string(), FabricId::mint().to_string()] {
+            let minted = [
+                NodeId::mint().to_string(),
+                MeshId::mint().to_string(),
+                FabricId::mint().to_string(),
+                IncarnationId::mint().to_string(),
+                BuildId::mint().to_string(),
+                DeploymentId::mint().to_string(),
+            ];
+            for s in minted {
                 assert_eq!(s.len(), 12, "{s}");
                 assert!(s.bytes().all(|b| CROCKFORD.contains(&b)), "{s}");
                 assert!(!s.contains(['i', 'l', 'o', 'u']), "{s}");
@@ -244,12 +252,28 @@ mod tests {
         }
     }
 
-    /// R-BI5: a stored 32-character hex incarnation is an old row; reading it is refused by name.
+    /// R-BI5: a stored hex incarnation, Build (`bld-<24 hex>`) or deployment id is an old row; reading
+    /// it is refused by name, the error naming the kind and the value.
     #[test]
-    fn a_stored_hex_incarnation_id_is_refused_by_name() {
-        let hex = "0123456789abcdef0123456789abcdef";
-        let e = serde_json::from_str::<IncarnationId>(&format!("\"{hex}\"")).unwrap_err().to_string();
-        assert!(e.contains("incarnation id") && e.contains(hex), "{e}");
+    fn a_stored_hex_id_is_refused_by_name() {
+        let hex32 = "0123456789abcdef0123456789abcdef";
+        let bld = "bld-0123456789abcdef01234567";
+        let e = serde_json::from_str::<IncarnationId>(&format!("\"{hex32}\"")).unwrap_err().to_string();
+        assert!(e.contains("incarnation id") && e.contains(hex32), "{e}");
+        let e = serde_json::from_str::<DeploymentId>(&format!("\"{hex32}\"")).unwrap_err().to_string();
+        assert!(e.contains("deployment id") && e.contains(hex32), "{e}");
+        let e = serde_json::from_str::<BuildId>(&format!("\"{bld}\"")).unwrap_err().to_string();
+        assert!(e.contains("build id") && e.contains(bld), "{e}");
+        assert!(matches!(BuildId::parse(bld), Err(IdError::NonCanonical { kind: "build id", found: 'l', .. })), "{:?}", BuildId::parse(bld));
+        assert!(matches!(IncarnationId::parse(hex32), Err(IdError::WrongWidth { kind: "incarnation id", len: 32, .. })), "{:?}", IncarnationId::parse(hex32));
+    }
+
+    /// The transport identity is iroh's own key, whatever width iroh issues: it is never parsed as a product id.
+    #[test]
+    fn an_endpoint_id_is_whatever_iroh_issues() {
+        let key = "ab".repeat(32);
+        let id: EndpointId = serde_json::from_str(&format!("\"{key}\"")).unwrap();
+        assert_eq!(id.to_string(), key);
     }
 
     #[test]

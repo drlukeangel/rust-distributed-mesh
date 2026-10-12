@@ -87,7 +87,7 @@ pub fn hooks(mode: Mode, faults: Arc<AdminFaults>) -> Result<FabricHooks, String
                 }
                 Mode::ForeignBuild => {
                     tracing::info!("the application answers state-synced for another Build");
-                    StateSyncRound { build_id: "bld_foreign".into(), ..round }
+                    StateSyncRound { build_id: "b5zscevkjkja".into(), ..round }
                 }
                 Mode::OldAttempt => {
                     tracing::info!("the application answers state-synced for attempt 0");

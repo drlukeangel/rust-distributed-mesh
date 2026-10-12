@@ -666,7 +666,7 @@ mod tests {
             event_at_rafka_ms: 4_242,
         };
         let receipt = |operation: &str| BuildStepReceipt {
-            build_id: BuildId("b1".into()),
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt: 2,
             operation: operation.into(),
             step: "Complete".into(),
@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn a_replace_rename_receipt_naming_the_old_birth_travels_the_build_topic() {
         let op = rafka_mesh_entity::LifecycleOp {
-            build_id: "bld-1".into(),
+            build_id: "3qcfk1kq47m9".into(),
             attempt: 2,
             operation: "replace-node:mesh1.rpc.1".into(),
             node_id: rafka_mesh_entity::NodeId::mint(),
@@ -721,7 +721,7 @@ mod tests {
             event_at_rafka_ms: 7,
         };
         let receipt = BuildStepReceipt {
-            build_id: BuildId("bld-1".into()),
+            build_id: BuildId::parse("3qcfk1kq47m9").unwrap(),
             attempt: 2,
             operation: op.operation.clone(),
             step: crate::deployment::pipeline::ReplaceStep::RenamePredecessor.name().into(),
@@ -754,8 +754,8 @@ mod tests {
         use futures_util::FutureExt as _;
         use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
         let seats = rafka_mesh_transport::membership::SeatBook::default();
-        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId("p1".into()));
-        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId("n1".into()), epoch: 2 };
+        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p1")).unwrap());
+        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), epoch: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
         let source = {
             let changed = Some(seats.subscribe());
@@ -789,7 +789,7 @@ mod tests {
     async fn a_seat_commit_waits_for_the_decision_in_flight_and_the_moved_record_refuses_every_later_one() {
         use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
         let seats = rafka_mesh_transport::membership::SeatBook::default();
-        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId("p1".into()));
+        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p1")).unwrap());
         let source = {
             let changed = Some(seats.subscribe());
             let (seats, me) = (seats.clone(), me.clone());
@@ -802,7 +802,7 @@ mod tests {
         let (decisions, c, book) = (authority.decisions(), committed.clone(), seats.clone());
         let moving = tokio::spawn(async move {
             let _held = decisions.lock_owned().await;
-            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId("n1".into()), epoch: 2 });
+            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), epoch: 2 });
             c.load(std::sync::atomic::Ordering::SeqCst)
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

@@ -9,7 +9,7 @@
 // @feature: node-lifecycle
 
 use crate::mesh_leave_resume::{capture, trace_id};
-use rafka_mesh_entity::{MeshId, NodeId};
+use rafka_mesh_entity::{BuildId, MeshId, NodeId};
 use rafka_node_admin_core::deployment::pipeline::RuntimeProof;
 use rafka_node_admin_core::mesh_leave::{admit_leave_mesh, operation, run_admitted, Admitted, ExitManifest, LeaveAdmission, LeaveBook, LeaveKey, LeaveMeshAdmission, LeaveRunEnd, LeaveRuns, RosterBirth};
 use rafka_node_admin_core::status_rpc::Declared;
@@ -27,11 +27,11 @@ fn owner_named() -> rafka_node_admin_core::mesh_leave::LeaveOwner {
 }
 
 fn key(mesh_id: &MeshId, build_id: &str, attempt: u32) -> LeaveKey {
-    LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.into(), attempt, operation: operation(mesh_id) }
+    LeaveKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse(build_id).unwrap(), attempt, operation: operation(mesh_id) }
 }
 
 fn round(k: &LeaveKey) -> MeshDeleteRound {
-    MeshDeleteRound { build_id: k.build_id.clone(), attempt: k.attempt, operation: k.operation.clone() }
+    MeshDeleteRound { build_id: k.build_id.to_string(), attempt: k.attempt, operation: k.operation.clone() }
 }
 
 fn final_primary() -> RosterBirth {
@@ -75,7 +75,7 @@ fn named_rounds(span: &Value) -> (String, String, String, String, String, String
 fn a_leave_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_the_run_keeps_its_round() {
     let cap = capture();
     let mesh_id = MeshId::mint();
-    let (held, stale, other) = (key(&mesh_id, "bld_a", 2), key(&mesh_id, "bld_a", 1), key(&mesh_id, "bld_b", 1));
+    let (held, stale, other) = (key(&mesh_id, "ay59nvr5jw53", 2), key(&mesh_id, "ay59nvr5jw53", 1), key(&mesh_id, "k4eyvfmr6wmf", 1));
     let (owner, late) = (owner_named(), owner_named());
     let last = final_primary();
     let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };
@@ -116,7 +116,7 @@ fn a_leave_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_th
     keep("leave_mesh_round", &trace_id, &spans);
     let stale_spans = refusals(&spans, &trace_id, STALE);
     let conflicting_spans = refusals(&spans, &trace_id, CONFLICTING);
-    let named = |k: &LeaveKey| (k.build_id.clone(), k.attempt.to_string(), k.operation.clone());
+    let named = |k: &LeaveKey| (k.build_id.to_string(), k.attempt.to_string(), k.operation.clone());
     let expect = |offered: &LeaveKey| {
         let (h, o) = (named(&held), named(offered));
         ("leave-mesh".to_string(), h.0, h.1, h.2, o.0, o.1, o.2)
@@ -138,8 +138,8 @@ fn a_leave_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_th
 fn a_mesh_leave_naming_a_round_the_fabric_primary_does_not_hold_is_refused_by_name() {
     let cap = capture();
     let mesh_id = MeshId::mint();
-    let (held, stale, unopened, other) = (key(&mesh_id, "bld_a", 2), key(&mesh_id, "bld_a", 1), key(&mesh_id, "bld_a", 3), key(&mesh_id, "bld_b", 2));
-    let elsewhere = key(&MeshId::mint(), "bld_c", 1);
+    let (held, stale, unopened, other) = (key(&mesh_id, "ay59nvr5jw53", 2), key(&mesh_id, "ay59nvr5jw53", 1), key(&mesh_id, "ay59nvr5jw53", 3), key(&mesh_id, "k4eyvfmr6wmf", 2));
+    let elsewhere = key(&MeshId::mint(), "xe5k179s7rw5", 1);
     let last = final_primary();
     let admitted = Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime(), amendments: Vec::new() };
     let book = LeaveBook::default();
@@ -169,11 +169,11 @@ fn a_mesh_leave_naming_a_round_the_fabric_primary_does_not_hold_is_refused_by_na
         "each round the owner does not hold open is refused by name, the round held and the one offered"
     );
     assert_eq!(accepted, Ok(last), "the round held is admitted");
-    assert!(matches!(&unknown, Err(StatusReply::RejectedUnmatchedCompletion { field, reported, .. }) if field == "command" && reported.contains(&elsewhere.build_id)), "a mesh with no open leave names no open command: {unknown:?}");
+    assert!(matches!(&unknown, Err(StatusReply::RejectedUnmatchedCompletion { field, reported, .. }) if field == "command" && reported.contains(elsewhere.build_id.as_str())), "a mesh with no open leave names no open command: {unknown:?}");
     assert!(handoff.borrow().is_none(), "a refused round ends nothing: the open leave still waits for its handoff");
     let spans = cap.spans();
     keep("mesh_leave_round", &trace_id, &spans);
-    let named = |k: &LeaveKey| (k.build_id.clone(), k.attempt.to_string(), k.operation.clone());
+    let named = |k: &LeaveKey| (k.build_id.to_string(), k.attempt.to_string(), k.operation.clone());
     let expect = |offered: &LeaveKey| {
         let (h, o) = (named(&held), named(offered));
         ("mesh-leave".to_string(), h.0, h.1, h.2, o.0, o.1, o.2)
@@ -197,7 +197,7 @@ fn a_mesh_leave_naming_a_round_the_fabric_primary_does_not_hold_is_refused_by_na
 fn a_leave_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leaving_row_once() {
     let cap = capture();
     let mesh_id = MeshId::mint();
-    let (held, stale, next) = (key(&mesh_id, "bld_a", 2), key(&mesh_id, "bld_a", 1), key(&mesh_id, "bld_a", 3));
+    let (held, stale, next) = (key(&mesh_id, "ay59nvr5jw53", 2), key(&mesh_id, "ay59nvr5jw53", 1), key(&mesh_id, "ay59nvr5jw53", 3));
     let (owner, late) = (owner_named(), owner_named());
     let last = final_primary();
     let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };

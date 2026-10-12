@@ -90,7 +90,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
         let path: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
         let op = LifecycleOp {
-            build_id: build_id.0.clone(),
+            build_id: build_id.to_string(),
             attempt: 2,
             operation: format!("restart-node:{path}"),
             node_id: node_id.clone(),
@@ -171,7 +171,7 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
         let op_at = |path: &str, kind: &str| {
             let path: rafka_node_admin_core::model::PathName = path.parse().unwrap();
             LifecycleOp {
-                build_id: build_id.0.clone(),
+                build_id: build_id.to_string(),
                 attempt: 2,
                 operation: format!("{kind}:{path}"),
                 node_id: NodeId::mint(),
@@ -272,7 +272,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
         let op_at = |path: &str, attempt: u32| {
             let path: rafka_node_admin_core::model::PathName = path.parse().unwrap();
             LifecycleOp {
-                build_id: build_id.0.clone(),
+                build_id: build_id.to_string(),
                 attempt,
                 operation: format!("restart-node:{path}"),
                 node_id: NodeId::mint(),

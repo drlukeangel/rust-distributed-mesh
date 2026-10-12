@@ -142,7 +142,7 @@ fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
 }
 
 fn row(h: &(Seen, MeshDigest)) -> Value {
-    json!({ "heard_at_ms": h.0.heard_at_ms, "digest_seq": h.1.digest_seq, "emitted_at_rafka_ms": h.1.emitted_at_rafka_ms, "node_state": format!("{:?}", h.1.node_state), "incarnation": h.1.node.incarnation.0 })
+    json!({ "heard_at_ms": h.0.heard_at_ms, "digest_seq": h.1.digest_seq, "emitted_at_rafka_ms": h.1.emitted_at_rafka_ms, "node_state": format!("{:?}", h.1.node_state), "incarnation": h.1.node.incarnation.as_str() })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

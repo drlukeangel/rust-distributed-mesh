@@ -520,13 +520,13 @@ mod tests {
     fn born(path: &str, node_id: &str, inc: &str, status: NodeStatus) -> Node {
         let mut n = Node::allocated(path.parse().unwrap());
         n.node_id = id(node_id);
-        n.incarnation_id = Some(IncarnationId(inc.into()));
+        n.incarnation_id = Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap());
         n.status = status;
         n
     }
 
     fn holder(mesh: &str, node_id: &str, inc: &str, epoch: u64) -> SeatHolder {
-        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId(inc.into()), epoch }
+        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap(), epoch }
     }
 
     fn incumbency(fabric: SeatHolder, meshes: &[SeatHolder]) -> Incumbency {
@@ -534,7 +534,7 @@ mod tests {
     }
 
     fn lose(inc: &mut Incumbency, _node_id: &str, incarnation: &str) {
-        inc.lost.insert(IncarnationId(incarnation.into()));
+        inc.lost.insert(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(incarnation)).unwrap());
     }
 
     fn fabric_name(nodes: &[Node]) -> Option<String> {

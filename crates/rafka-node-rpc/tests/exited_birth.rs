@@ -30,7 +30,7 @@ async fn a_call_to_an_exited_birth_dials_nothing_and_the_successor_is_dialled() 
                 let PingRequest::Ping { payload, .. } = req;
                 Ok(PingReply::Pong { payload })
             })
-            .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+            .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
             .unwrap()
     };
 

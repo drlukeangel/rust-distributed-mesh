@@ -246,7 +246,7 @@ fn node(name: &str) -> Node {
 }
 
 fn handle(name: &str, pid: u32) -> DeploymentHandle {
-    DeploymentHandle { deployment_id: DeploymentId(format!("dep-{name}")), provider: ProviderKind::Process, pid: Some(pid), start: Some(1), container: None, domain: Some(DOMAIN.into()) }
+    DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("dep-{name}"))).unwrap(), provider: ProviderKind::Process, pid: Some(pid), start: Some(1), container: None, domain: Some(DOMAIN.into()) }
 }
 
 /// The roster as a view holds it at admission: every live member of mesh2.
@@ -341,7 +341,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
             .unwrap();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         let joins = Joins::default();
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
@@ -495,7 +495,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
             .unwrap();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 1, operation: outer.clone() };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: 1, operation: outer.clone() };
         let joins = Joins::default();
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
@@ -525,7 +525,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
         // The handoff the leaving primary sends for the incomplete run, judged over its facts.
         let facts = builds.facts().await.unwrap();
         let admitted = Admitted { roster, final_primary: me.clone(), final_runtime: final_runtime.clone(), amendments: Vec::new() };
-        let verdict = handoff_verdict(&facts, &key, &admitted, &manifest_reference(&key.build_id, 1, &outer, false));
+        let verdict = handoff_verdict(&facts, &key, &admitted, &manifest_reference(key.build_id.as_str(), 1, &outer, false));
         (tier, verdict, trace_id)
     });
     let spans = cap.spans();
@@ -582,7 +582,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         }
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 1, operation: outer.clone() };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: 1, operation: outer.clone() };
         let joins = Joins::default();
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
@@ -614,7 +614,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         // The owner's validated handoff, then mesh.deleted's completion: nothing of the final primary
         // is stopped.
         let facts = builds.facts().await.unwrap();
-        let HandoffVerdict::Accept(manifest) = handoff_verdict(&facts, &key, &admitted, &manifest_reference(&build_id.0, 1, &outer, false)) else { panic!("the handoff is accepted") };
+        let HandoffVerdict::Accept(manifest) = handoff_verdict(&facts, &key, &admitted, &manifest_reference(&build_id.as_str(), 1, &outer, false)) else { panic!("the handoff is accepted") };
         record_completion(&builds, &key, "mesh1.admin.1", &manifest).await.expect("mesh.deleted's completion is recorded");
         let terminated_at_completion = fleet.terminated.lock().unwrap().clone();
         let steps = builds.read_build(&build_id).await.unwrap().steps;
@@ -695,7 +695,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     let view = Arc::new(RwLock::new(writer_view(std::slice::from_ref(&last), None, Some(fp.clone()))));
     let rows = NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), storage.clone());
     let mesh_id = MeshId::mint();
-    let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: BuildId::mint().0, attempt: 1, operation: operation(&mesh_id) };
+    let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: BuildId::mint(), attempt: 1, operation: operation(&mesh_id) };
     let deleting = format!("retire-node:{FINAL}");
     let (second, live, stopped, after, row, statuses, again, trace_id) = cap.run(async {
         let root = tracing::info_span!("cell.final-primary-row-deleted", operation = %key.operation);
@@ -715,7 +715,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
             n.parked = true;
         });
         let stopped = rows.deleted(&last, &deleting).await;
-        let exited = rafka_node_admin_core::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().0, runtime: None, exit_code: Some(0) };
+        let exited = rafka_node_admin_core::deployment::pipeline::TerminalReceipt { node: last.name.to_string(), node_id: last.node_id.to_string(), incarnation_id: last.incarnation_id.clone().unwrap().to_string(), runtime: None, exit_code: Some(0) };
         let after = mesh_left_rows(Some(&rows), &status, &rafka_node_admin_core::storage::MemoryMeshStorage::default(), &declared, "mesh1.admin.1", &key, "mesh2", std::slice::from_ref(&exited)).await;
         let row = storage.node_row_at(&last.name).await.unwrap();
         let statuses = status.mesh_statuses().await.unwrap();
@@ -804,7 +804,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             .unwrap();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         let joins = Joins::default();
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
@@ -850,7 +850,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         let records2: Vec<Node> = view.holds(&records);
         let manifest = members_exited(&builds, &key(2), OTHER_ADMIN, &mp2, &survivor, survivor_runtime.clone(), &records2, &[], shutdown(2), no_rows).await.expect("the amended primary's member workflows complete");
         let facts = builds.facts().await.unwrap();
-        let verdict = handoff_verdict(&facts, &key(2), &admitted, &manifest_reference(&build_id.0, 2, &outer, false));
+        let verdict = handoff_verdict(&facts, &key(2), &admitted, &manifest_reference(&build_id.as_str(), 2, &outer, false));
         // A stale hand-off: the same receipts, naming the predecessor as final primary.
         let stale_manifest = ExitManifest { final_primary: lost.clone(), ..manifest.clone() };
         let stale_facts: Vec<BuildFact> = facts
@@ -860,7 +860,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
                 other => other.clone(),
             })
             .collect();
-        let stale = handoff_verdict(&stale_facts, &key(2), &admitted, &manifest_reference(&build_id.0, 2, &outer, false));
+        let stale = handoff_verdict(&stale_facts, &key(2), &admitted, &manifest_reference(&build_id.as_str(), 2, &outer, false));
         // mesh.deleted from the amended primary's accepted manifest; its own end is a separate
         // node.delete, whose exact exit completes mesh-left's proof set.
         let HandoffVerdict::Accept(completed) = verdict.clone() else { panic!("the amended primary's manifest is accepted: {verdict:?}") };
@@ -934,7 +934,7 @@ fn an_unproven_silent_primary_refuses_the_resume_and_no_amendment_is_recorded() 
             .unwrap();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         let root = tracing::info_span!("cell.mesh-leave-unproven", build_id = %build_id, operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
@@ -985,7 +985,7 @@ fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting
             .unwrap();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         let root = tracing::info_span!("cell.mesh-leave-repeated-loss", build_id = %build_id, operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
@@ -1002,7 +1002,7 @@ fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting
         let receipts = vec![exited(&by(FAILING), &runtime(FAILING, 46_003)), exited(&by(EXITING), &runtime(EXITING, 46_004)), exited(&first, &runtime(FINAL, 46_000)), exited(&second, &runtime(OTHER_ADMIN, 46_001))];
         let omitting = ExitManifest { mesh_id: mesh_id.to_string(), roster: leaving.clone(), final_primary: third.clone(), final_runtime: Some(a2.final_runtime.clone()), receipts };
         let facts = vec![BuildFact::Step(BuildStepReceipt { build_id: build_id.clone(), attempt: 3, operation: outer.clone(), step: STEP_OTHER_MEMBERS_EXITED.into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: serde_json::to_value(&omitting).ok(), executor: Some(NEW_ADMIN.into()) })];
-        let omitted = handoff_verdict(&facts, &key(3), &admitted, &manifest_reference(&build_id.0, 3, &outer, false));
+        let omitted = handoff_verdict(&facts, &key(3), &admitted, &manifest_reference(&build_id.as_str(), 3, &outer, false));
         let _ = step_facts(&facts);
         (r1, r2, admitted, mp, omitted, trace_id)
     });
@@ -1050,7 +1050,7 @@ fn an_amended_primary_admits_the_leave_from_the_owners_facts_before_gossip_bring
         let build_id = BuildId::mint();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         for b in [&owner, &own] {
             b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
             accepted_roster(b, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
@@ -1124,7 +1124,7 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
         builds.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         accepted_roster(&builds, &key(1), STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &lost, &lost_runtime, || live_roster(&records)).await.unwrap();
         let root = tracing::info_span!("cell.mesh-leave-fp-resume", build_id = %build_id, operation = %outer);
         let trace_id = trace_id(&root);
@@ -1183,7 +1183,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
         let build_id = BuildId::mint();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         for b in [&owner, &own] {
             b.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         }
@@ -1223,7 +1223,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
         };
         let own_steps = own.read_build(&build_id).await.unwrap().steps;
         let admitted = admitted_of(&owner.read_build(&build_id).await.unwrap().steps, &outer).unwrap().unwrap();
-        let verdict = handoff_verdict(&own.facts().await.unwrap(), &key(2), &admitted, &manifest_reference(&build_id.0, 2, &outer, false));
+        let verdict = handoff_verdict(&own.facts().await.unwrap(), &key(2), &admitted, &manifest_reference(&build_id.as_str(), 2, &outer, false));
         (out, own_steps, verdict, trace_id)
     });
     let spans = cap.spans();
@@ -1305,7 +1305,7 @@ fn a_roster_birth_the_view_does_not_list_is_worked_from_the_record_its_membershi
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 2, operation: operation(&mesh_id) };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: 2, operation: operation(&mesh_id) };
         let deleted = std::sync::Mutex::new(Vec::new());
         // The leave's records, under the cell's capture: the held record is named as it is taken.
         let worked = roster_records(&view, &roster, |b| (b.node == FAILING).then(|| held_stopped.clone()));
@@ -1373,7 +1373,7 @@ fn a_roster_birth_the_created_admin_never_held_runs_from_the_roster_and_its_row_
             .await
             .unwrap();
         let mesh_id = MeshId::mint();
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 2, operation: operation(&mesh_id) };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: 2, operation: operation(&mesh_id) };
         let root = tracing::info_span!("cell.mesh-leave-roster-birth", build_id = %build_id, operation = %key.operation);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
@@ -1424,7 +1424,7 @@ fn a_leaving_primary_that_has_not_heard_the_build_runs_the_leave_over_the_owners
         let (owner, own) = (WireBuilds(MemoryBuildStateAdapter::new()), WireBuilds(MemoryBuildStateAdapter::new()));
         let build_id = BuildId::mint();
         let mesh_id = MeshId::mint();
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt: 1, operation: operation(&mesh_id) };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: 1, operation: operation(&mesh_id) };
         owner.publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 }).await.unwrap();
         accepted_roster(&owner, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &my_runtime, || live_roster(&records)).await.unwrap();
         let owner_facts = owner.facts().await.unwrap();
@@ -1469,8 +1469,8 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
     let me = RosterBirth::of(&records[0]).unwrap();
     let admitted = Admitted { roster: roster.clone(), final_primary: me.clone(), final_runtime: RuntimeProof::of(&handles[FINAL].fact().unwrap()), amendments: Vec::new() };
     let mesh_id = MeshId::mint();
-    let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: BuildId::mint().0, attempt: 1, operation: operation(&mesh_id) };
-    let reference = manifest_reference(&key.build_id, 1, &key.operation, false);
+    let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: BuildId::mint(), attempt: 1, operation: operation(&mesh_id) };
+    let reference = manifest_reference(key.build_id.as_str(), 1, &key.operation, false);
     let cap = capture();
     let (verdict, not_ready, trace_id) = cap.run(async {
         let root = tracing::info_span!("cell.mesh-leave-unknown-build-handoff", build_id = %key.build_id);
@@ -1491,7 +1491,7 @@ fn a_final_primary_that_holds_no_fact_of_the_build_ends_the_open_leave_incomplet
             let expected: BTreeSet<String> = roster.iter().filter(|b| **b != me).map(|b| format!("{} {}", b.node, b.incarnation_id)).collect();
             let HandoffVerdict::Incomplete { reason, without_exit } = &v else { unreachable!() };
             assert_eq!(without_exit.iter().cloned().collect::<BTreeSet<_>>(), expected, "every roster birth but the final primary is without an Exited receipt");
-            assert!(reason.contains("holds no fact of") && reason.contains(&key.build_id), "the reason names the unknown Build: {reason}");
+            assert!(reason.contains("holds no fact of") && reason.contains(key.build_id.as_str()), "the reason names the unknown Build: {reason}");
             assert!(
                 matches!(v.refusal(), Some(StatusReply::RejectedIncompleteManifest { missing: 2, ref without_exit, ref reason }) if without_exit.iter().cloned().collect::<BTreeSet<_>>() == expected && reason.contains("holds no fact of")),
                 "the handoff is refused by name, the births and the unknown Build named: {:?}",
@@ -1632,7 +1632,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
             .unwrap();
         let mesh_id = MeshId::mint();
         let outer = operation(&mesh_id);
-        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.0.clone(), attempt, operation: outer.clone() };
+        let key = |attempt: u32| LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.clone() };
         let joins = Joins::default();
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
@@ -1721,7 +1721,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
 fn open_leave(book: &LeaveBook, records: &[Node]) -> (LeaveKey, tokio::sync::watch::Receiver<Option<rafka_node_admin_core::mesh_leave::LeaveOutcome>>, RosterBirth) {
     let roster = live_roster(records).unwrap();
     let final_primary = RosterBirth::of(records.iter().find(|n| n.name.to_string() == FINAL).unwrap()).unwrap();
-    let key = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint().0, attempt: 1, operation: String::new() };
+    let key = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: String::new() };
     let key = LeaveKey { operation: operation(&key.mesh_id), ..key };
     let admitted = Admitted { roster, final_primary: final_primary.clone(), final_runtime: RuntimeProof::of(&handle(FINAL, 46_000).fact().unwrap()), amendments: Vec::new() };
     let handoff = book.open(key.clone(), admitted);

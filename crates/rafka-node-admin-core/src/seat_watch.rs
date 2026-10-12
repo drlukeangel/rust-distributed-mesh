@@ -104,7 +104,7 @@ pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSe
     match record {
         Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {
             let to = name_of(&h.node_id);
-            let by = format!("the fabric seat record names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.0, h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
+            let by = format!("the fabric seat record names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.as_str(), h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
             crate::fabric_builds::SeatRecord::Moved { by, to }
         }
         Some(h) if h.is_birth(&me.0, &me.1) => crate::fabric_builds::SeatRecord::Open { holder: name_of(&h.node_id) },
@@ -228,7 +228,9 @@ impl Looker {
     /// (node-recovery.md step 2, run by the seat watch: fabric-node-lifecycle-elections.md §4.1).
     pub async fn look(&self, view: &Topology, n: &Node) -> Finding {
         let target = NodeTarget::ExactNode(n.node_id.clone());
-        let incarnation = n.incarnation_id.clone().unwrap_or_else(|| IncarnationId(String::new()));
+        let Some(incarnation) = n.incarnation_id.clone() else {
+            return Finding::Unproven { reason: format!("{} ({}) holds no recorded birth: there is no exact birth to look at", n.name, n.node_id) };
+        };
         // Every probe names the same exact birth: one kick, by node id and incarnation.
         let kick = rafka_node_rpc_contract::status::StatusRequest::ProbeNodeState { node_id: n.node_id.clone(), incarnation: incarnation.clone() };
         // 1. A direct ping; when it answers, the status kick makes the birth say it is there.
@@ -300,7 +302,7 @@ pub async fn inspect_birth(provider: &dyn crate::deployment::provider::Deploymen
         Err(e) => return Finding::Unproven { reason: format!("the provider refused to adopt its runtime: {e}") },
     };
     let inspected = provider.inspect(&handle).await;
-    match crate::deployment::provider::exit_proof(inspected, &fact, data_dir.as_deref().map(std::path::Path::new), &inc.0).await {
+    match crate::deployment::provider::exit_proof(inspected, &fact, data_dir.as_deref().map(std::path::Path::new), &inc.as_str()).await {
         Ok(crate::deployment::provider::DeploymentStatus::Exited { code }) => Finding::Exited { code },
         Ok(crate::deployment::provider::DeploymentStatus::Running) => Finding::Running,
         Ok(other) => Finding::Unproven { reason: format!("its runtime is not proven exited: {other:?}") },
@@ -429,7 +431,7 @@ pub async fn run(w: Watch) {
                 node = %w.me,
                 suspect = %node.name,
                 suspect_node_id = %node.node_id,
-                suspect_incarnation = node.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or(""),
+                suspect_incarnation = node.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or(""),
                 trigger = trigger.name(),
                 holds_fabric_seat = node.is_fabric_primary,
                 finding = tracing::field::Empty,
@@ -465,7 +467,7 @@ mod tests {
     fn admin(path: &str, id: &str, inc: &str, status: NodeStatus) -> Node {
         let mut n = Node::allocated(path.parse().unwrap());
         n.node_id = NodeId::parse(id).unwrap();
-        n.incarnation_id = Some(IncarnationId(inc.into()));
+        n.incarnation_id = Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap());
         n.status = status;
         n
     }
@@ -593,7 +595,7 @@ mod tests {
         const BUDGET: Duration = Duration::from_secs(10);
 
         fn birth() -> (NodeId, IncarnationId) {
-            (NodeId::mint(), IncarnationId("inc-of-the-holder".into()))
+            (NodeId::mint(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc-of-the-holder")).unwrap())
         }
 
         fn current(b: &(NodeId, IncarnationId)) -> StatusReply {
@@ -693,7 +695,7 @@ mod tests {
             for r in [current(&b), parked(&b), blocked] {
                 assert!(birth_answered(Some(&r), &b.0, &b.1), "{} is the birth's answer", r.name());
             }
-            let other = (b.0.clone(), IncarnationId("an-older-birth".into()));
+            let other = (b.0.clone(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("an-older-birth")).unwrap());
             for r in [StatusReply::NotReady { reason: "carrier not ready".into() }, current(&other), parked(&other), StatusReply::RejectedStaleIncarnation { held: other.1.clone() }] {
                 assert!(!birth_answered(Some(&r), &b.0, &b.1), "{} is no answer from the exact birth", r.name());
             }

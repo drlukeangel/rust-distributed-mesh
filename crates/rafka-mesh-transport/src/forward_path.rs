@@ -572,7 +572,7 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
         path.set_role(true);
         let (p, q) = (publisher(), publisher());
-        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::Members { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: None, topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, departed: dep }).len();
+        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::Members { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("mesh2.admin.1".into()), topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, departed: dep }).len();
         assert!(chunks > 1, "the full spans {chunks} chunks");
         path.source("mesh2.admin.1", "mesh1", &p, 10, &big(10), 1);
         path.source("mesh2.admin.1", "mesh3", &q, 5, &source_at(&ids, 5), 2);

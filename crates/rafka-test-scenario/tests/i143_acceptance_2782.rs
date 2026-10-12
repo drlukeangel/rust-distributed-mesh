@@ -474,7 +474,7 @@ impl Run {
 
     /// The Build a workflow call opened or joined.
     fn id_of(stream: &WorkflowStream) -> String {
-        stream.accepted().build_id.0.clone()
+        stream.accepted().build_id.to_string()
     }
 
     /// `node.create` of a `kind` node in mesh1, accepted: the stream of the Build that runs it.
@@ -574,7 +574,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         }
         Trigger::CreateMesh(mesh) => {
             let stream = run.estate.submit(&BuildSpec::CreateMesh(MeshDesired::of(mesh.as_str(), [(NodeKind::NodeAdmin, 1)]))).await;
-            (stream.build_id().0.clone(), Triggered::Build(stream))
+            (stream.build_id().to_string(), Triggered::Build(stream))
         }
         Trigger::SpawnRequest => {
             let nodes = Nodes::new(run.estate.carrier_at(&path(&door.name)).await);

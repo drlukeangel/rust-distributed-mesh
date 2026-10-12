@@ -10,24 +10,9 @@ use crate::topology::Topology;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Opaque Build identity. It belongs to fabric control state, not to the
-/// executor that happens to run it.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct BuildId(pub String);
-
-impl BuildId {
-    /// A fresh Build id.
-    pub fn mint() -> Self {
-        Self(format!("bld-{}", hex::encode(rand::random::<[u8; 12]>())))
-    }
-}
-
-impl fmt::Display for BuildId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+/// The Build identity: a Crockford id like every other id (R-BI5). It belongs to fabric control
+/// state, not to the executor that happens to run it.
+pub use rafka_mesh_entity::BuildId;
 
 /// The desired counts of one mesh's nodes by kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

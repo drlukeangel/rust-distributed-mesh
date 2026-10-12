@@ -80,7 +80,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // The pre-notice is read from each receiver's overlay span below, not from a poll: the window
     // in which the node is live and not routable is the stop leg, and a poll's cadence
     // is not evidence of it.
-    let build_id = Estate::complete(&mut removal).await.build_id.0;
+    let build_id = Estate::complete(&mut removal).await.build_id.to_string();
     let after = Estate::values(&estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 1, 1)]).await);
     assert!(after.iter().all(|n| n["name"] != VICTIM), "the current topology no longer lists the node: {after:#?}");
     estate.artifact("nodes-after.json", &json!(after));

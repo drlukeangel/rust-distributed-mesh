@@ -159,7 +159,7 @@ async fn a_node_stopped_past_the_ttl_is_collected_by_one_ordinary_delete_build()
     let collected = spans.spans("rdm.node_admin.node.delete.via-stopped-ttl");
     assert_eq!(collected.len(), 1, "{collected:?}");
     let a = &collected[0].1;
-    assert_eq!((a["node"].as_str(), a["stopped_at"].as_str(), a["ttl"].as_str(), a["build_id"].as_str()), (STOPPED, stopped_at.to_string().as_str(), "60000", build_id.0.as_str()), "{a:?}");
+    assert_eq!((a["node"].as_str(), a["stopped_at"].as_str(), a["ttl"].as_str(), a["build_id"].as_str()), (STOPPED, stopped_at.to_string().as_str(), "60000", build_id.as_str()), "{a:?}");
 }
 
 /// CONTRACT (§6.9 Setting): unset, `RDM_STOPPED_NODE_TTL` is RDM's shipped 30 minutes; blank means

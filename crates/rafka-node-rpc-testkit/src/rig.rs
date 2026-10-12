@@ -508,7 +508,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
         }
     };
     let rpc_server = serve_app(serve_commands(rafka_node_admin_core::topology_read::serve(rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot), topology_slot.clone())))
-        .seal(rafka_node_rpc::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.0.clone() })
+        .seal(rafka_node_rpc::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.to_string() })
         .expect("the admin side's catalog seals");
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, rpc_server).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();

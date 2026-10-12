@@ -12,7 +12,7 @@
 // @feature: node-lifecycle
 
 use crate::mesh_leave_resume::{capture, trace_id};
-use rafka_mesh_entity::{MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
+use rafka_mesh_entity::{BuildId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_admin_core::build_facts_read::FetchFailure;
 use rafka_node_admin_core::deployment::pipeline::RuntimeProof;
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
@@ -26,7 +26,7 @@ const SOURCE_FAILED: &str = "rdm.node_admin.mesh.reject.via-source-failed";
 const DOMAIN: &str = "mesh-delete-source";
 
 fn key(mesh_id: &MeshId) -> LeaveKey {
-    LeaveKey { mesh_id: mesh_id.clone(), build_id: "bld_source".into(), attempt: 1, operation: operation(mesh_id) }
+    LeaveKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse("pdz453kf4br6").unwrap(), attempt: 1, operation: operation(mesh_id) }
 }
 
 /// The cell's spans, written to `target/cells/mesh_delete_source/<cell>/spans.json`; its trace id and
@@ -73,7 +73,7 @@ fn a_mesh_leave_whose_manifest_cannot_be_read_is_refused_by_name_and_the_leave_s
     let fp = RosterBirth { node: "mesh2.admin.1".into(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() };
     let runtime = RuntimeProof { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() };
     let admitted = Admitted { roster: vec![fp.clone()], final_primary: fp, final_runtime: runtime, amendments: Vec::new() };
-    let reference = manifest_reference(&k.build_id, 1, &k.operation, false);
+    let reference = manifest_reference(k.build_id.as_str(), 1, &k.operation, false);
     let cap = capture();
     let (unreached, not_ready, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.mesh.reject.via-manifest-unread", mesh_id = %mesh_id);
@@ -86,7 +86,7 @@ fn a_mesh_leave_whose_manifest_cannot_be_read_is_refused_by_name_and_the_leave_s
     let spans = cap.spans();
     keep("manifest_unread", &trace_id, &spans);
     let (source, op, cause) = source_failed(&unreached);
-    assert!(source.contains("Build log of mesh2.admin.1") && op.contains("fetch-build-facts bld_source") && op.contains(&reference) && cause.contains("unreached") && cause.contains("no path"), "{source} | {op} | {cause}");
+    assert!(source.contains("Build log of mesh2.admin.1") && op.contains("fetch-build-facts pdz453kf4br6") && op.contains(&reference) && cause.contains("unreached") && cause.contains("no path"), "{source} | {op} | {cause}");
     let (_, _, cause) = source_failed(&not_ready);
     assert!(cause.contains("not ready") && cause.contains("hydrating"), "the final primary's door not ready is a fact of the read: {cause}");
     let named = refusals(&spans, &trace_id);
@@ -166,7 +166,7 @@ impl DeploymentProvider for Host {
 fn a_mesh_leave_naming_a_runtime_the_provider_cannot_adopt_is_refused_by_name() {
     let mesh_id = MeshId::mint();
     let k = key(&mesh_id);
-    let fact = |domain: &str| RuntimeFact { deployment_id: "dep-final".into(), provider: RuntimeProvider::Process, control_domain: domain.into(), locator: RuntimeLocator::Process { pid: 4242, start: 7 } };
+    let fact = |domain: &str| RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60("dep-final"), provider: RuntimeProvider::Process, control_domain: domain.into(), locator: RuntimeLocator::Process { pid: 4242, start: 7 } };
     let cap = capture();
     let (foreign, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.mesh.reject.via-provider-refused", mesh_id = %mesh_id);
@@ -178,6 +178,6 @@ fn a_mesh_leave_naming_a_runtime_the_provider_cannot_adopt_is_refused_by_name() 
     let spans = cap.spans();
     keep("provider_refused", &trace_id, &spans);
     let (source, op, cause) = source_failed(&foreign);
-    assert!(source.contains("provider of mesh1.admin.1") && op.contains("adopt") && op.contains("dep-final") && cause.contains("control domain"), "{source} | {op} | {cause}");
+    assert!(source.contains("provider of mesh1.admin.1") && op.contains("adopt") && op.contains(&rafka_mesh_entity::fixture_crockford60("dep-final")) && cause.contains("control domain"), "{source} | {op} | {cause}");
     assert_eq!(refusals(&spans, &trace_id), vec![("mesh-leave".to_string(), source, op, cause)], "one reject span, naming the call and the three fields");
 }

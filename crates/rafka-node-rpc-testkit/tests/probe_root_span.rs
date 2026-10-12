@@ -74,14 +74,14 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
         let carrier_server = ServerBuilder::new()
             .carry::<rafka_node_rpc_testkit::proof_store::ProofStore>()
             .serve_forward(carrier_client)
-            .seal(ServedBirth { node_id: carrier_id.to_string(), incarnation: carrier_inc.0.clone() })
+            .seal(ServedBirth { node_id: carrier_id.to_string(), incarnation: carrier_inc.to_string() })
             .unwrap();
         let cep = rafka_node_rpc::endpoint::bind(carrier_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let caddr = cep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _crouter = Router::builder(cep).accept(rafka_node_rpc::ALPN, carrier_server).spawn();
         let view = serde_json::json!({"nodes": [
             {"node_id": launch.node_id.to_string(), "name": "mesh1.rpc.1", "endpoint_id": key.public().to_string(), "transport_addr": addr.to_string(), "incarnation_id": launch.incarnation.to_string()},
-            {"node_id": carrier_id.to_string(), "name": "mesh1.gateway.1", "endpoint_id": carrier_key.public().to_string(), "transport_addr": caddr.to_string(), "incarnation_id": carrier_inc.0},
+            {"node_id": carrier_id.to_string(), "name": "mesh1.gateway.1", "endpoint_id": carrier_key.public().to_string(), "transport_addr": caddr.to_string(), "incarnation_id": carrier_inc.as_str()},
         ]})
         .to_string();
         let admin = serve_view(view);

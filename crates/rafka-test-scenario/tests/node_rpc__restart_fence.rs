@@ -74,7 +74,7 @@ async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     assert_eq!((after["outcome"].as_str(), after["route"].as_str()), (Some("Reply"), Some("via-peer")), "{after}");
     assert_eq!(after["reply"]["executing_node"], broker_id, "{after}");
     assert_eq!(after["reply"]["result"], json!({"found": true, "value": "before-restart"}));
-    estate.artifact("calls.json", &json!({"put": put, "by_path": by_path, "restart": {"build_id": restart.build_id.0, "attempt": restart.attempt}, "reborn": reborn, "after": after}));
+    estate.artifact("calls.json", &json!({"put": put, "by_path": by_path, "restart": {"build_id": restart.build_id.to_string(), "attempt": restart.attempt}, "reborn": reborn, "after": after}));
 
     estate.stop().await;
     let spans = estate.spans();

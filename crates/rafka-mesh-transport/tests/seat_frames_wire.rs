@@ -16,7 +16,7 @@ fn node() -> NodeId {
 }
 
 fn holder(epoch: u64) -> SeatHolder {
-    SeatHolder { mesh: "m".into(), node_id: node(), incarnation: IncarnationId("i".into()), epoch }
+    SeatHolder { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), epoch }
 }
 
 /// CONTRACT: `Seated` is variant 8 and `Concern` variant 9 of the membership frame, appended after
@@ -25,12 +25,12 @@ fn holder(epoch: u64) -> SeatHolder {
 /// variant inserted before the end, or a self-describing encoding.
 #[test]
 fn seat_frames_match_the_frozen_wire_schema() {
-    // 08 = Seated; 01 = FabricPrimary; 01 6d = "m"; 0c + 12 ASCII bytes = the NodeId; 01 69 = "i"; 02 = epoch.
+    // 08 = Seated; 01 = FabricPrimary; 01 6d = "m"; 0c + 12 ASCII bytes = the NodeId; 0c <fixture("i")> = the incarnation; 02 = epoch.
     let node_hex = "0c 303472616a303970337a7037";
     let fixtures = [
-        (Frame::Seated { seat: Seat::FabricPrimary, holder: holder(2) }, format!("08 01 016d {node_hex} 0169 02")),
-        (Frame::Seated { seat: Seat::MeshPrimary, holder: holder(300) }, format!("08 00 016d {node_hex} 0169 ac02")),
-        (Frame::Concern { seat: Seat::FabricPrimary, node_id: node(), incarnation: IncarnationId("i".into()), observer: "o".into() }, format!("09 01 {node_hex} 0169 016f")),
+        (Frame::Seated { seat: Seat::FabricPrimary, holder: holder(2) }, format!("08 01 016d {node_hex} 0c79727a34396a333033796834 02")),
+        (Frame::Seated { seat: Seat::MeshPrimary, holder: holder(300) }, format!("08 00 016d {node_hex} 0c79727a34396a333033796834 ac02")),
+        (Frame::Concern { seat: Seat::FabricPrimary, node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), observer: "o".into() }, format!("09 01 {node_hex} 0c79727a34396a333033796834 016f")),
     ];
     for (frame, hex) in fixtures {
         assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
@@ -39,7 +39,7 @@ fn seat_frames_match_the_frozen_wire_schema() {
     // The frames that existed keep their positions.
     assert_eq!(Frame::FabricStatus { fabric: rafka_mesh_entity::FabricId::parse("04raj09p3zp7").unwrap(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }.encode()[0], 7);
     // A seat this build does not know is refused by name, never read as a prefix.
-    let e = Frame::decode(&bytes("08 02 016d 0c 303472616a303970337a7037 0169 02")).unwrap_err().to_string();
+    let e = Frame::decode(&bytes("08 02 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02")).unwrap_err().to_string();
     assert!(e.contains("postcard decode"), "{e}");
 }
 
@@ -67,12 +67,12 @@ fn a_seat_book_holds_the_superseding_record_and_replays_what_it_holds() {
 fn new_fabric_primary_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
     let frame = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:54474".parse().unwrap(), admin_api_base: Some("h".into()) };
-    // 11 = variant 17; holder 016d {node} 0169 08; 0165 = "e"; 00 7f000001 caa903 = 127.0.0.1:54474; 01 0168 = Some("h").
-    let hex = format!("11 016d {node_hex} 0169 08 0165 00 7f000001 caa903 01 0168");
+    // 11 = variant 17; holder 016d {node} 0c79727a34396a333033796834 08; 0165 = "e"; 00 7f000001 caa903 = 127.0.0.1:54474; 01 0168 = Some("h").
+    let hex = format!("11 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 caa903 01 0168");
     assert_eq!(frame.encode(), bytes(&hex));
     assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
     let none = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:80".parse().unwrap(), admin_api_base: None };
-    assert_eq!(none.encode(), bytes(&format!("11 016d {node_hex} 0169 08 0165 00 7f000001 50 00")));
+    assert_eq!(none.encode(), bytes(&format!("11 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 50 00")));
     assert_eq!(Frame::MeshLeft { mesh_id: rafka_mesh_entity::MeshId::parse("04raj09p3zp7").unwrap(), build_id: "b".into(), attempt: 1, operation: "o".into(), receipt_manifest: "m".into(), publisher: "p".into(), event_at_rafka_ms: 1, forwarded_by: None }.encode()[0], 16);
 }
 
@@ -95,8 +95,8 @@ fn a_new_fabric_primarys_contacts_attach_only_to_the_holder_the_book_holds() {
 fn seated_together(mesh_epoch: u64, fabric_epoch: u64) -> Frame {
     use rafka_mesh_entity::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
     use rafka_mesh_entity::LifecycleOp;
-    let op = LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId("i".into()), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
-    let birth = HandoverBirth { mesh: "m".into(), node_id: node(), incarnation: IncarnationId("i".into()) };
+    let op = LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
+    let birth = HandoverBirth { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() };
     Frame::SeatedTogether {
         op,
         successor: holder(mesh_epoch),
@@ -111,10 +111,10 @@ fn seated_together(mesh_epoch: u64, fabric_epoch: u64) -> Frame {
 #[test]
 fn seated_together_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
-    // 17 = variant 23; op: 0162 01 016f {node} 0169 09"m.admin.1" 01; successor 016d {node} 0169 04;
-    // seats (node-rpc-envelope.md CommittedSeat): 02 | MeshPrimary=1 { 016d } birth 016d {node} 0169
-    // epoch 04 | FabricPrimary=0 birth 016d {node} 0169 epoch 09.
-    let hex = format!("17 0162 01 016f {node_hex} 0169 09 6d2e61646d696e2e31 01  016d {node_hex} 0169 04  02 01 016d 016d {node_hex} 0169 04 00 016d {node_hex} 0169 09");
+    // 17 = variant 23; op: 0162 01 016f {node} 0c79727a34396a333033796834 09"m.admin.1" 01; successor 016d {node} 0c79727a34396a333033796834 04;
+    // seats (node-rpc-envelope.md CommittedSeat): 02 | MeshPrimary=1 { 016d } birth 016d {node} 0c79727a34396a333033796834
+    // epoch 04 | FabricPrimary=0 birth 016d {node} 0c79727a34396a333033796834 epoch 09.
+    let hex = format!("17 0162 01 016f {node_hex} 0c79727a34396a333033796834 09 6d2e61646d696e2e31 01  016d {node_hex} 0c79727a34396a333033796834 04  02 01 016d 016d {node_hex} 0c79727a34396a333033796834 04 00 016d {node_hex} 0c79727a34396a333033796834 09");
     assert_eq!(seated_together(4, 9).encode(), bytes(&hex));
     assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
 }

@@ -75,8 +75,14 @@ pub struct RosterBirth {
 impl RosterBirth {
     /// The birth `n` holds.
     pub fn of(n: &Node) -> Result<Self, String> {
-        let incarnation_id = n.incarnation_id.as_ref().map(|i| i.0.clone()).ok_or_else(|| format!("{} has no known birth", n.name))?;
+        let incarnation_id = n.incarnation_id.as_ref().map(|i| i.to_string()).ok_or_else(|| format!("{} has no known birth", n.name))?;
         Ok(Self { node: n.name.to_string(), node_id: n.node_id.to_string(), incarnation_id })
+    }
+
+    /// The exact birth the roster names, refused by name when its incarnation is not a Crockford id
+    /// (a roster of an older format).
+    pub fn birth(&self) -> Result<crate::model::IncarnationId, rafka_mesh_entity::IdError> {
+        crate::model::IncarnationId::parse(&self.incarnation_id)
     }
 
     /// The record of this exact birth the accepted roster alone gives (R11: the roster decides
@@ -87,7 +93,7 @@ impl RosterBirth {
         let name: crate::model::PathName = self.node.parse().map_err(|e| format!("the roster birth's path.name {} does not parse: {e:?}", self.node))?;
         let mut n = Node::allocated(name);
         n.node_id = NodeId::parse(&self.node_id).map_err(|e| format!("the roster birth {}'s node id {} does not parse: {e}", self.node, self.node_id))?;
-        n.incarnation_id = Some(crate::model::IncarnationId(self.incarnation_id.clone()));
+        n.incarnation_id = Some(self.birth().map_err(|e| format!("the roster birth {}: {e}", self.node))?);
         n.status = crate::model::NodeStatus::Leaving;
         Ok(n)
     }
@@ -155,7 +161,7 @@ pub fn first_mismatch(manifest: &ExitManifest, roster: &[RosterBirth], final_pri
 /// `capture()` (the roster as this admin's view holds it now) is recorded with one blind append and
 /// returned.
 pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, step: &str, executor: &str, final_primary: &RosterBirth, final_runtime: &RuntimeProof, capture: impl FnOnce() -> Result<Vec<RosterBirth>, String>) -> Result<Vec<RosterBirth>, String> {
-    let build_id = BuildId(key.build_id.clone());
+    let build_id = key.build_id.clone();
     let view = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the {step} receipt of {}: {e}", key.operation))?;
     let recorded = view.steps.iter().filter(|r| r.operation == key.operation && r.step == step && r.outcome == StepOutcome::Complete).min_by_key(|r| r.attempt);
     let (roster, source, accepted_in) = match recorded {
@@ -165,6 +171,9 @@ pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, ste
                 .clone()
                 .and_then(|v| serde_json::from_value(v).ok())
                 .ok_or_else(|| format!("{executor}: the {step} receipt of {} (Build {build_id}, attempt {}) holds no readable roster: the accepted roster cannot be named", key.operation, r.attempt))?;
+            for b in row.roster.iter().chain(std::iter::once(&row.final_primary)) {
+                b.birth().map_err(|e| format!("{executor}: the {step} receipt of {} (Build {build_id}, attempt {}) names the roster birth {} at incarnation {:?}, which is not a Crockford id: {e}", key.operation, r.attempt, b.node, b.incarnation_id))?;
+            }
             (row.roster, "receipt", r.attempt)
         }
         None => {
@@ -241,7 +250,7 @@ async fn delete_complete(builds: &dyn BuildStateAdapter, executor: &str, b: &Ros
     let named = format!("{} {}", b.node, b.incarnation_id);
     let path: crate::model::PathName = b.node.parse().map_err(|e| format!("{executor}: the roster birth {named} names no path.name: {e:?}"))?;
     let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("{executor}: the roster birth {named}'s node id {} does not parse: {e}", b.node_id))?;
-    let birth = crate::model::IncarnationId(b.incarnation_id.clone());
+    let birth = b.birth().map_err(|e| format!("{executor}: the roster birth {named}: {e}"))?;
     builds.recovery_of(&path, &node_id, &birth).await.map(|done| done.is_some()).map_err(|e| format!("{executor}: the Build log could not say whether the node.delete of {named} is complete: {e}"))
 }
 
@@ -285,7 +294,7 @@ pub fn completion_of(steps: &[BuildStepReceipt], operation: &str) -> Option<Resu
 pub async fn record_completion(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, manifest: &ExitManifest) -> Result<(), String> {
     builds
         .append_step_receipt(&BuildStepReceipt {
-            build_id: BuildId(key.build_id.clone()),
+            build_id: key.build_id.clone(),
             attempt: key.attempt,
             operation: key.operation.clone(),
             step: STEP_MESH_DELETED.into(),
@@ -420,7 +429,7 @@ pub fn span_unproven(key: &LeaveKey, predecessor: &RosterBirth, reason: &str) {
 /// exit receipts (`exit_receipts`) takes. `terminal` must name the current final primary's exact
 /// birth and the runtime admitted (or amended) for it; anything else proves nothing and is refused.
 pub async fn record_predecessor_exit(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, terminal: &TerminalReceipt) -> Result<(), String> {
-    let build_id = BuildId(key.build_id.clone());
+    let build_id = key.build_id.clone();
     let operation = key.operation.as_str();
     let steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}"))?.steps;
     let admitted = admitted_of(&steps, operation).ok_or_else(|| format!("{operation}: no {STEP_ACCEPTED_ROSTER} receipt is recorded: there is no final primary to replace"))??;
@@ -456,7 +465,7 @@ pub async fn record_predecessor_exit(builds: &dyn BuildStateAdapter, key: &Leave
 /// `AlreadyApplied`; a second amendment for the same predecessor is refused by name; an amendment
 /// of a birth that is not the current final primary, or that names an exited birth, is refused.
 pub async fn amend_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, amendment: &RosterAmended) -> Result<Amended, String> {
-    let build_id = BuildId(key.build_id.clone());
+    let build_id = key.build_id.clone();
     let operation = key.operation.as_str();
     let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
     let (pred, next) = (named(&amendment.predecessor), named(&amendment.final_primary));
@@ -549,7 +558,7 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
 pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, records: &crate::admin::Records, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, crate::executor::RunEnd> {
     let operation = key.operation.as_str();
     let lost = &admitted.final_primary;
-    let steps = builds.read_build(&BuildId(key.build_id.clone())).await.map_err(|e| format!("{executor}: the Build {} could not be read for the receipts of {operation}: {e}", key.build_id))?.steps;
+    let steps = builds.read_build(&key.build_id.clone()).await.map_err(|e| format!("{executor}: the Build {} could not be read for the receipts of {operation}: {e}", key.build_id))?.steps;
     if !exit_receipts(&steps, operation, std::slice::from_ref(lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
         // A lost primary not proven exited refuses the resume by name; the leave is incomplete, not failed.
         let terminal = prove_predecessor_exit(provider, row, lost, &admitted.final_runtime).await.map_err(|reason| {
@@ -641,7 +650,7 @@ where
 {
     let operation = key.operation.as_str();
     let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
-    let build_id = BuildId(key.build_id.clone());
+    let build_id = key.build_id.clone();
     let unread = |e: BuildStateError| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}");
     // The owner's Build facts: read once when this admin's own log holds none, else not yet read.
     enum Owner<F> {
@@ -693,7 +702,7 @@ where
 /// absent here, and runs from the roster birth itself
 /// ([`members_exited`], [`RosterBirth::record`]).
 pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&RosterBirth) -> Option<Node>) -> Vec<Node> {
-    let exact = |b: &RosterBirth, n: &Node| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id);
+    let exact = |b: &RosterBirth, n: &Node| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id);
     roster
         .iter()
         .filter_map(|b| {
@@ -716,7 +725,7 @@ pub fn roster_records(view: &[Node], roster: &[RosterBirth], held: impl Fn(&Rost
 /// row not read leaves the birth's `Deleted` write to refuse by name.
 pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executor: &str, operation: &str, roster: &[RosterBirth], records: &[Node]) {
     let Some(rows) = rows else { return };
-    let exact = |b: &RosterBirth, n: &Node| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id);
+    let exact = |b: &RosterBirth, n: &Node| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id);
     for b in roster.iter().filter(|b| !records.iter().any(|n| exact(b, n))) {
         let read = match (b.node.parse::<crate::model::PathName>(), NodeId::parse(&b.node_id)) {
             (Ok(name), Ok(node_id)) => rows.hold_row_of(&name, &node_id).await,
@@ -764,7 +773,7 @@ where
     if !roster.contains(me) {
         return Err(format!("{executor} ({} {}) is not a birth of the roster accepted for {}: no member is stopped", me.node, me.incarnation_id, key.operation));
     }
-    let build_id = BuildId(key.build_id.clone());
+    let build_id = key.build_id.clone();
     let mut steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {}: {e}", key.operation))?.steps;
     steps.extend(known.iter().cloned());
     let proofs = exit_proofs(&steps, &key.operation, roster);
@@ -796,7 +805,7 @@ where
         let mut failed = Vec::new();
         let mut members: Vec<Node> = Vec::new();
         for b in remaining.iter().filter(|b| is_admin(b) == admins) {
-            match records.iter().find(|n| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id)) {
+            match records.iter().find(|n| n.node_id.to_string() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id)) {
                 Some(n) => members.push(n.clone()),
                 // The accepted roster decides what runs, not what this admin holds: a birth it never
                 // held a record of (it joined after that birth stopped) runs from the roster birth.
@@ -842,7 +851,7 @@ where
     let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.to_vec(), final_primary: me.clone(), final_runtime: Some(final_runtime), receipts };
     builds
         .append_step_receipt(&BuildStepReceipt {
-            build_id: BuildId(key.build_id.clone()),
+            build_id: key.build_id.clone(),
             attempt: key.attempt,
             operation: key.operation.clone(),
             step: STEP_OTHER_MEMBERS_EXITED.into(),
@@ -864,7 +873,7 @@ where
 /// refusal names the birth and the writer's reason; `executor` is the admin writing.
 pub async fn birth_row_deleted(rows: Option<&crate::node_rows::NodeRows>, executor: &str, operation: &str, records: &[Node], b: &RosterBirth) -> Result<(), String> {
     let rows = rows.ok_or_else(|| format!("{executor} holds no writer of node rows, so {} {}'s row is not written Deleted", b.node, b.incarnation_id))?;
-    let exact = records.iter().find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == b.incarnation_id));
+    let exact = records.iter().find(|n| n.node_id.as_str() == b.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.as_str() == b.incarnation_id));
     let written = match exact {
         Some(record) => rows.deleted(record, operation).await,
         None => {
@@ -1142,7 +1151,7 @@ pub struct LeaveKey {
     /// The mesh that leaves.
     pub mesh_id: MeshId,
     /// The Build the operation belongs to.
-    pub build_id: String,
+    pub build_id: BuildId,
     /// The Build attempt that holds it.
     pub attempt: u32,
     /// `shutdown-mesh:<mesh_id>`.
@@ -1152,7 +1161,7 @@ pub struct LeaveKey {
 impl LeaveKey {
     /// The round this key names, as a round refusal carries it (its mesh id is the call's own).
     pub fn round(&self) -> MeshDeleteRound {
-        MeshDeleteRound { build_id: self.build_id.clone(), attempt: self.attempt, operation: self.operation.clone() }
+        MeshDeleteRound { build_id: self.build_id.to_string(), attempt: self.attempt, operation: self.operation.clone() }
     }
 }
 
@@ -1606,7 +1615,7 @@ mod tests {
     #[test]
     fn a_leave_mesh_from_a_successor_owner_takes_over_the_running_leaves_handoff() {
         let runs = LeaveRuns::default();
-        let key = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let key = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
         let (first, successor) = (owner(), owner());
         assert_eq!(runs.admit(&key, &first), LeaveAdmission::Start);
         assert_eq!(runs.admit(&key, &successor), LeaveAdmission::Running);
@@ -1631,7 +1640,7 @@ mod tests {
     #[test]
     fn a_leave_mesh_of_a_later_attempt_while_the_members_run_joins_the_run_under_way() {
         let runs = LeaveRuns::default();
-        let first = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let first = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
         let later = LeaveKey { attempt: 2, ..first.clone() };
         let (owner1, owner2) = (owner(), owner());
         assert_eq!(runs.admit(&first, &owner1), LeaveAdmission::Start, "the first leave-mesh starts the member workflows");
@@ -1655,7 +1664,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
         let runs = Arc::new(LeaveRuns::default());
-        let first = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let first = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
         let later = LeaveKey { attempt: 2, ..first.clone() };
         let (owner1, owner2) = (owner(), owner());
         let last = birth("mesh2.admin.1", "i3");
@@ -1708,7 +1717,7 @@ mod tests {
     #[test]
     fn an_incomplete_report_ends_the_open_leave_at_once_with_its_reason() {
         let book = LeaveBook::default();
-        let key = LeaveKey { mesh_id: MeshId::mint(), build_id: "b".into(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let key = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
         let last = birth("mesh2.admin.1", "i3");
         let runtime = receipt(&last).runtime.unwrap();
         let rx = book.open(key.clone(), Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime, amendments: Vec::new() });

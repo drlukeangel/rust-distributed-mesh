@@ -284,7 +284,7 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
         let (at_path, resolved, successor_id, predecessor_at_ready, data_at_ready) = peer_at_ready.lock().unwrap().take().expect("the successor reached readiness");
         assert_eq!(predecessor_at_ready, DeploymentStatus::Running, "the predecessor is parked, its process alive, while the successor is created and made ready");
         assert_eq!(data_at_ready.as_deref(), Some(&b"records"[..]), "the predecessor's data is in its own directory at the successor's readiness: {segment:?}");
-        let live: Vec<(String, String, String)> = at_path.iter().filter(|n| n.status.is_live()).map(|n| (n.node_id.to_string(), format!("{:?}", n.status), n.incarnation_id.as_ref().map(|i| i.0.clone()).unwrap_or_default())).collect();
+        let live: Vec<(String, String, String)> = at_path.iter().filter(|n| n.status.is_live()).map(|n| (n.node_id.to_string(), format!("{:?}", n.status), n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default())).collect();
         assert_eq!(live.len(), 1, "a peer's view holds one live birth at {}: {live:?}", path());
         assert_eq!(live[0].0, successor_id.to_string(), "the live birth at {} is the successor: {live:?}", path());
         assert_eq!(resolved.map(|r| r.node_id), Ok(successor_id.clone()), "a peer resolves {} to the successor once the predecessor is parked and renamed", path());
@@ -325,13 +325,13 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
         let all = spans.0.lock().unwrap().clone();
         let (_, parent, rename) = all
             .values()
-            .find(|(n, _, f)| n == "rdm.node_admin.node.update.via-replace-rename" && f.get("build_id") == Some(&replace_build.0))
+            .find(|(n, _, f)| n == "rdm.node_admin.node.update.via-replace-rename" && f.get("build_id") == Some(&replace_build.to_string()))
             .expect("the rename is spanned");
         assert_eq!(parent.as_deref(), Some("rdm.node_admin.deployment.update.via-step"));
         assert_eq!(rename.get("from"), Some(&path().to_string()));
         assert_eq!(rename.get("to"), Some(&format!("{}.old", path())));
         assert_eq!(rename.get("node_id"), Some(&old));
-        assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("replace") && f.get("build_id") == Some(&replace_build.0)));
+        assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("replace") && f.get("build_id") == Some(&replace_build.to_string())));
 
         // RDM moved no data: the predecessor's directory holds all of it, the successor's none of it.
         let new_dir = std::path::PathBuf::from(second.node.data_dir.clone().unwrap());
@@ -405,7 +405,7 @@ fn a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails
         assert!(rig.sink.renamed.lock().unwrap().is_empty(), "the predecessor keeps its path.name");
         let all = spans.0.lock().unwrap().clone();
         assert!(
-            !all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-replace-rename" && f.get("build_id") == Some(&replace_build.0)),
+            !all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-replace-rename" && f.get("build_id") == Some(&replace_build.to_string())),
             "no rename is spanned"
         );
 

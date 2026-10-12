@@ -14,7 +14,7 @@ fn path(kind: NodeKind, ordinal: u32) -> PathName {
 }
 
 fn end(kind: NodeKind, ordinal: u32, incarnation: Option<&str>) -> ConnectionEnd {
-    ConnectionEnd { name: path(kind, ordinal), node_id: NodeId::mint(), incarnation: incarnation.map(|i| IncarnationId(i.into())) }
+    ConnectionEnd { name: path(kind, ordinal), node_id: NodeId::mint(), incarnation: incarnation.map(|i| IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(i)).unwrap()) }
 }
 
 fn direct(source: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, at: u64) -> NodeConnection {
@@ -138,7 +138,7 @@ fn a_stale_destination_incarnation_is_fenced() {
     held.apply(p.clone()).unwrap();
     assert_eq!(proxy_invalid(&held, &p), None, "membership holds the birth the Proxy recorded");
     // The destination restarts: membership now holds process d2 at its path.
-    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId("d2".into()));
+    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("d2")).unwrap());
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_DESTINATION_SUPERSEDED));
     let r = resolve(&held, &own.name, &dest.name, RPC);
     assert_eq!(r.route, EffectiveRoute::Direct { known: false });
@@ -151,7 +151,7 @@ fn a_stale_carrier_incarnation_is_fenced() {
     let m = members(&mut held, &[&carrier, &dest]);
     let p = proxy(own.clone(), carrier.clone(), dest.clone(), 30);
     held.apply(p.clone()).unwrap();
-    m.set(carrier.node_id.clone(), carrier.name.clone(), IncarnationId("c2".into()));
+    m.set(carrier.node_id.clone(), carrier.name.clone(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("c2")).unwrap());
     assert_eq!(proxy_invalid(&held, &p), Some(INVALID_CARRIER_SUPERSEDED));
 }
 
@@ -184,7 +184,7 @@ fn a_direct_fact_naming_a_superseded_destination_is_not_current() {
     held.apply(direct(own.clone(), dest.clone(), ConnectionState::Connected, 20)).unwrap();
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: true });
     assert_eq!(held.active_directs_to(&dest.name).unwrap().len(), 2);
-    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId("d2".into()));
+    m.set(dest.node_id.clone(), dest.name.clone(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("d2")).unwrap());
     assert_eq!(resolve(&held, &own.name, &dest.name, RPC).route, EffectiveRoute::Direct { known: false }, "the fact names d1, membership holds d2");
     assert!(held.active_directs_to(&dest.name).unwrap().is_empty(), "no carrier edge names the current destination");
     assert_eq!(select_carrier(&held, &own.name, &dest.name, RPC), Ok(None));
@@ -245,7 +245,7 @@ fn a_carrier_is_chosen_from_edges_naming_the_current_destination_process_spread_
     let mut held = ConnectionsHeld::new();
     held.mark_complete();
     for (ordinal, dest_incarnation, at) in [(2, "d2", 20), (3, "d2", 21), (4, "d1", 5)] {
-        let d = ConnectionEnd { incarnation: Some(IncarnationId(dest_incarnation.into())), ..dest.clone() };
+        let d = ConnectionEnd { incarnation: Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(dest_incarnation)).unwrap()), ..dest.clone() };
         held.apply(direct(end(NodeKind::RpcNode, ordinal, Some("c")), d, ConnectionState::Connected, at)).unwrap();
     }
     held.apply(direct(end(NodeKind::RpcNode, 5, None), dest.clone(), ConnectionState::Connected, 30)).unwrap();

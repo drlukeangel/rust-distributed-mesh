@@ -238,7 +238,7 @@ impl JoinDoor {
             "rdm.node_admin.node.update.via-join",
             node = %d.node.name,
             node_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.0,
+            incarnation_id = %d.node.incarnation.as_str(),
             reported_addr = %d.node.transport_addr,
             served_by = %self.me,
             caller = tracing::field::Empty,
@@ -327,7 +327,7 @@ impl JoinDoor {
                 span.record("outcome", "deployment-abandoned");
                 span.record("build_id", a.build_id.as_str());
                 span.record("attempt", a.attempt);
-                tracing::warn!(build_id = %a.build_id, attempt = a.attempt, node_id = %a.deployed.node_id, incarnation = %a.deployed.incarnation.0, "this admin ended the deployment of this birth before it reported");
+                tracing::warn!(build_id = %a.build_id, attempt = a.attempt, node_id = %a.deployed.node_id, incarnation = %a.deployed.incarnation.as_str(), "this admin ended the deployment of this birth before it reported");
                 JoinReply::DeploymentAbandoned { build_id: a.build_id, attempt: a.attempt, node_id: a.deployed.node_id, incarnation: a.deployed.incarnation }
             }
             Standing::Unknown => {
@@ -474,7 +474,7 @@ mod tests {
     use rafka_mesh_entity::{MemberStatus, MeshNode};
 
     fn fact() -> RuntimeFact {
-        RuntimeFact::of_this_process("dep-1").unwrap()
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap()
     }
 
     fn deployed() -> Deployed {
@@ -540,7 +540,7 @@ mod tests {
         match joins.standing(&d) {
             Standing::Mismatch(m) => {
                 assert_eq!(m.field, "incarnation");
-                assert!(m.deployed.contains(&dep.incarnation.0) && m.reported.contains(&d.node.incarnation.0));
+                assert!(m.deployed.contains(&dep.incarnation.as_str()) && m.reported.contains(&d.node.incarnation.as_str()));
             }
             other => panic!("{other:?}"),
         }
@@ -608,7 +608,7 @@ mod tests {
     fn a_join_digest_with_another_runtime_or_data_dir_or_key_is_refused_by_its_field() {
         let dep = deployed();
         let mut other_fact = digest_of(&dep);
-        other_fact.node.runtime = Some(RuntimeFact::of_this_process("dep-2").unwrap());
+        other_fact.node.runtime = Some(RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-2")).unwrap());
         assert_eq!(dep.verify(&other_fact).unwrap_err().field, "runtime");
         let mut dir = digest_of(&dep);
         dir.data_dir = Some("/elsewhere".into());

@@ -188,7 +188,7 @@ async fn a_restart_over_the_build_family_is_one_call_that_pushes_every_step_fram
     estate.stop().await;
     let spans = estate.spans();
     // The flame: the call, the fabric-primary's drive and dispatch, and the executor's run are one trace.
-    let build = &accepted.build_id.0;
+    let build = &accepted.build_id.to_string();
     let reconcile = spans_named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string())
@@ -252,7 +252,7 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
 
     estate.stop().await;
     let spans = estate.spans();
-    let build = &accepted.build_id.0;
+    let build = &accepted.build_id.to_string();
     let drives: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
     assert!(!drives.is_empty());
     assert!(drives.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "terminal"), "the drive ended the Build with no caller attached: {drives:?}");
@@ -265,7 +265,7 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
 
 /// What a `build.attempt.run` sent to `to` for `attempt` answers, whole: the refusal, or the first frame.
 async fn attempt_run(caller: &Caller, to: &str, build: &BuildId, attempt: u32, executor: &str) -> BuildReply {
-    let req = BuildRequest::AttemptRun { build_id: build.0.clone(), attempt, executor: executor.into(), context: CallContext::default(), intent: Vec::new(), operations: Vec::new(), hand_off_to: None };
+    let req = BuildRequest::AttemptRun { build_id: build.to_string(), attempt, executor: executor.into(), context: CallContext::default(), intent: Vec::new(), operations: Vec::new(), hand_off_to: None };
     let opts = CallOptions { budget: Budget::Stream { send: Duration::from_secs(10) }, ..CallOptions::default() };
     match caller.client.call_stream::<Build>(&NodeTarget::CurrentPath(path(to)), &req, &opts).await {
         Err((RpcOutcome::Reply(r), _)) => r.into_value(),
@@ -337,7 +337,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
 
     estate.stop().await;
     let spans = estate.spans();
-    let build = &accepted.build_id.0;
+    let build = &accepted.build_id.to_string();
     let proofs: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string()).collect();
     assert_eq!(proofs.len(), 1, "the departure was proven once, before the next attempt was claimed: {proofs:?}");
     assert_eq!(s(&proofs[0]["attributes"]["executor"]), "mesh2.admin.1");
@@ -369,7 +369,7 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
     let held = door.wait_held("claimed").await;
-    assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.0, "{held}");
+    assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
     assert_eq!(s(&held["hit"]["executor"]), "mesh2.admin.1", "the claim names mesh2's primary, which is alive");
     // The fabric-primary dies at that cut.
     estate.kill_bootstrap();
@@ -403,7 +403,7 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     estate.admin = caller.base_of(&successor);
     estate.stop().await;
     let spans = estate.spans();
-    let build = &accepted.build_id.0;
+    let build = &accepted.build_id.to_string();
     let run = spans_named(&spans, "rdm.node_admin.build.serve.via-attempt-run")
         .into_iter()
         .find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["attempt"]) == accepted.attempt.to_string())
@@ -455,7 +455,7 @@ async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_se
     estate.admin = base;
     estate.stop().await;
     let spans = estate.spans();
-    let build = &build_id.0;
+    let build = &build_id.as_str();
     let handover_calls = spans_named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| sp["attributes"]["op"].as_str().and_then(|o| o.parse::<u64>().ok()).or_else(|| sp["attributes"]["op"].as_u64()) == Some(0x21)).count();
     assert!(handover_calls >= 1, "the seat moved by the fabric-primary handover, op 0x21");
     let fenced: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
@@ -621,7 +621,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(grown)).await.expect("the fabric-primary accepts mesh2");
     let (build_id, attempt) = (stream.build_id().clone(), stream.attempt());
     let held = door.wait_held("cut").await;
-    assert_eq!(s(&held["hit"]["build_id"]), build_id.0, "{held}");
+    assert_eq!(s(&held["hit"]["build_id"]), build_id.as_str(), "{held}");
     // The claim landed before the executor was lost: mesh2's row is on the store root.
     let row: Value = serde_json::from_slice(&std::fs::read(root.join("meshes/mesh2.json")).expect("the fabric-primary's claim of mesh2 wrote its row to the store root")).unwrap();
     let claimed = s(&row["record"]["mesh_id"]);
@@ -631,7 +631,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     // the survivor's log is read over `FetchBuildFacts`, which every node-admin serves from its own.
     if let Some(operation) = survivor_holds {
         let survivor = caller.survivor_of(&fp);
-        crate::build_log::log_fact(&caller.carrier_at(&survivor), &build_id.0, &format!("{operation} Complete at attempt {attempt}"), Duration::from_secs(60), |facts| {
+        crate::build_log::log_fact(&caller.carrier_at(&survivor), &build_id.as_str(), &format!("{operation} Complete at attempt {attempt}"), Duration::from_secs(60), |facts| {
                 facts.iter().any(|f| matches!(f, BuildFact::Step(r) if r.operation == operation && r.step == "Complete" && r.attempt == attempt && r.outcome == StepOutcome::Complete))
             })
             .await

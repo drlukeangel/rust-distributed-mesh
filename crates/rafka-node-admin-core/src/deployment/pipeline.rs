@@ -373,8 +373,8 @@ impl CurrentRuntimeAdoption {
         let mut a = Self { node: node.clone(), data_dir: data_dir.to_path_buf(), span, receipts: Vec::new(), fact: None };
         a.fact = a.step(AdoptStep::AdoptCurrentRuntime, |n| {
             match &container_domain {
-                Some(d) => RuntimeFact::of_this_container(&deployment_id.0, d),
-                None => RuntimeFact::of_this_process(&deployment_id.0),
+                Some(d) => RuntimeFact::of_this_container(&deployment_id.as_str(), d),
+                None => RuntimeFact::of_this_process(&deployment_id.as_str()),
             }
             .map(|f| (Some(f.clone()), RuntimeEvidence::of(&f)))
             .map_err(|e| format!("{n}: {e}"))
@@ -1388,7 +1388,7 @@ impl DeploymentPipeline<'_> {
             attempt = req.attempt,
             operation = %run.operation,
             node_id = %identity.node_id,
-            incarnation_id = %identity.incarnation.0,
+            incarnation_id = %identity.incarnation.as_str(),
             deployment_id = %identity.deployment_id,
             executor = %self.template.executor(),
             outcome = tracing::field::Empty,
@@ -1617,7 +1617,7 @@ impl DeploymentPipeline<'_> {
         };
         self.step(run, CreateStep::RegisterExactRuntimeHandle.name(), async {
             let f = exact()?;
-            if f.deployment_id != id.deployment_id.0 {
+            if f.deployment_id != id.deployment_id.as_str() {
                 return Err(format!("{}: the handle realises deployment {}, not {}", req.node, f.deployment_id, id.deployment_id));
             }
             f.validate().map_err(|e| format!("{}: {e}", req.node))?;
@@ -2044,9 +2044,9 @@ impl DeploymentPipeline<'_> {
                     reason: format!(
                         "{name}: the exit proof names birth {} at {}, the delete is of {} at {}",
                         exit.node_id,
-                        exit.incarnation_id.0,
+                        exit.incarnation_id.as_str(),
                         node.node_id,
-                        node.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")
+                        node.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("no known birth")
                     ),
                 });
             }
@@ -2096,7 +2096,7 @@ impl DeploymentPipeline<'_> {
                         attempt = req.attempt,
                         node = %name,
                         node_id = %exit.node_id,
-                        incarnation_id = %exit.incarnation_id.0,
+                        incarnation_id = %exit.incarnation_id.as_str(),
                         exit_code = exit.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
                         proof = %exit.proof,
                         observed_at_ms = exit.observed_at_ms,
@@ -2128,8 +2128,8 @@ impl DeploymentPipeline<'_> {
     fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {
         let operation = match cmd {
             crate::node_commands::NodeCommand::DeleteConnections => format!("node.connections.delete:{}", node.name),
-            crate::node_commands::NodeCommand::Stop => rafka_node_admin_client::StopContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
-            crate::node_commands::NodeCommand::Start => rafka_node_admin_client::StartContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
+            crate::node_commands::NodeCommand::Stop => rafka_node_admin_client::StopContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
+            crate::node_commands::NodeCommand::Start => rafka_node_admin_client::StartContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
         };
         CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation }
     }
@@ -2309,7 +2309,7 @@ impl DeploymentPipeline<'_> {
             Ok(TerminalReceipt {
                 node: name.to_string(),
                 node_id: node.node_id.to_string(),
-                incarnation_id: node.incarnation_id.as_ref().map(|i| i.0.clone()).ok_or_else(|| format!("{name} has no known birth: the exit proves no birth"))?,
+                incarnation_id: node.incarnation_id.as_ref().map(|i| i.to_string()).ok_or_else(|| format!("{name} has no known birth: the exit proves no birth"))?,
                 runtime: handle.fact().as_ref().map(RuntimeProof::of),
                 exit_code,
             })
@@ -2416,7 +2416,7 @@ impl DeploymentPipeline<'_> {
                 attempt = req.attempt,
                 node = %name,
                 node_id = %old.node_id,
-                incarnation_id = %birth.0,
+                incarnation_id = %birth.as_str(),
                 from = %name,
                 to = %to,
                 proof,
@@ -2475,7 +2475,7 @@ impl DeploymentPipeline<'_> {
         let (onto, from) = (&req.node, &req.from);
         self.step(&mut run, UpdateStep::UpdateNode.name(), async {
             if onto.node_id == from.node_id || onto.incarnation_id.is_none() {
-                return Err(format!("{name}: node.update copies the exited birth {}'s caller-owned meta onto the node its create made there, and the node held at the path is {} at {}", from.node_id, onto.node_id, onto.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")));
+                return Err(format!("{name}: node.update copies the exited birth {}'s caller-owned meta onto the node its create made there, and the node held at the path is {} at {}", from.node_id, onto.node_id, onto.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("no known birth")));
             }
             // The caller-owned group as this admin's records hold it of the exited birth: the node
             // record carries no caller-owned field, so the group is its default and nothing is written.
@@ -2700,7 +2700,7 @@ mod tests {
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: BuildId("bld-1".into()), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
+        BuildStepReceipt { build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
     }
 
     #[test]

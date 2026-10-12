@@ -40,7 +40,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     }
     if let Some(l) = &cfg.launch {
         boot.record("node", l.name.to_string().as_str());
-        boot.record("incarnation_id", l.incarnation.0.as_str());
+        boot.record("incarnation_id", l.incarnation.as_str());
     }
     // The runtime's long-lived tasks (endpoint, gossip, control API) must not
     // hold the boot span open: it closes, and is exported, once booted.

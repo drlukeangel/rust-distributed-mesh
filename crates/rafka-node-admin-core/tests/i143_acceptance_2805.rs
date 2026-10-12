@@ -205,7 +205,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let server = rafka_node_admin_core::status_rpc::serve(core, slot)
         .with_ready_gate(ready.clone())
-        .seal(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().0 })
+        .seal(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = me.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();

@@ -104,7 +104,7 @@ async fn an_accepted_connection_is_direct_connected_on_the_acceptor_once() {
             let ProbeRequest::Probe { payload } = req;
             Ok::<_, HandlerFault>(ProbeReply::Probed { payload, served_by: "mesh1.rpc.1".into(), caller: String::new() })
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let addr = ae.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     let _router = Router::builder(ae).accept(rafka_node_rpc::ALPN, server).spawn();

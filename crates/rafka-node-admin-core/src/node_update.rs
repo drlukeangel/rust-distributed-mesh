@@ -45,7 +45,7 @@ pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwL
     let StatusRequest::UpdateNode { node_id, incarnation, name, tags } = req else { unreachable!("update is called for UpdateNode only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
-        node = %me, node_id = %node_id, incarnation_id = %incarnation.0, from = tracing::field::Empty, to = %name, tags = %crate::node_rows::labels(tags),
+        node = %me, node_id = %node_id, incarnation_id = %incarnation.as_str(), from = tracing::field::Empty, to = %name, tags = %crate::node_rows::labels(tags),
         tags_arrived = tracing::field::Empty, tags_left = tracing::field::Empty, traffic = tracing::field::Empty, connections = tracing::field::Empty, apply = tracing::field::Empty,
         outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );

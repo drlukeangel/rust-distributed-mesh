@@ -89,7 +89,7 @@ async fn fixture(cell: &str) -> Fixture {
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
     let built = estate.reconcile_shape("fabric1", &shape).await;
-    let accepted = built.build_id.0.clone();
+    let accepted = built.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
     let fabric_primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let lost = if fabric_primary.starts_with("mesh1.") { "mesh2" } else { "mesh1" }.to_string();
@@ -270,7 +270,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
         let estate = &f.estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births_w.clone());
         async move {
-            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId(accepted.clone())).await.expect("build.get of the accepted Build");
+            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
             let later = b.phase == rafka_node_rpc_contract::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
             (later && reborn).then_some(b)

@@ -50,7 +50,7 @@ impl AdminRunner {
     /// The record this admin's membership holds of the exact roster birth `b`: its digest, live or
     /// parked, as the view projects a digest (the leave's records, [`crate::mesh_leave::roster_records`]).
     fn held_record(&self, b: &RosterBirth) -> Option<Node> {
-        let d = self.book.get(&b.node_id).map(|(d, _)| d).or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.0 == b.incarnation_id)?;
+        let d = self.book.get(&b.node_id).map(|(d, _)| d).or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id.as_str() == b.node_id)).filter(|d| d.node.incarnation.as_str() == b.incarnation_id)?;
         let mut n = Node::allocated(d.node.name.clone());
         n.node_id = d.node.node_id.clone();
         n.endpoint_id = Some(d.node.endpoint_id.clone());
@@ -62,7 +62,7 @@ impl AdminRunner {
         n.config = d.config.clone();
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
-        n.deployment_id = d.node.runtime.as_ref().map(|f| DeploymentId(f.deployment_id.clone()));
+        n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());
         Some(n)
     }
 
@@ -78,7 +78,7 @@ impl AdminRunner {
     async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), crate::executor::RunEnd> {
         // Where this owner resumes, from its own Build facts, before it calls anything.
         let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.to_string() };
         // The view is projected now, its proven exits read from their exit-proof rows (R-EL1, R11):
         // a primary whose exit an earlier attempt proved and recorded holds no seat here, so the
         // admin created for its mesh, or the one that survived it, is read seated.
@@ -265,7 +265,7 @@ impl AdminRunner {
     async fn roster_birth_row(&self, store: &dyn crate::storage::NodesStorage, b: &RosterBirth) -> Result<Option<crate::storage::RuntimeRow>, String> {
         let node: PathName = b.node.parse().map_err(|e| format!("the roster names a birth by `{}`, which is not a path.name: {e}", b.node))?;
         let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("the roster names {} by node id `{}`, which does not parse: {e}", b.node, b.node_id))?;
-        crate::admin::birth_runtime_row(store, &self.me, &node, &node_id, &IncarnationId(b.incarnation_id.clone())).await
+        crate::admin::birth_runtime_row(store, &self.me, &node, &node_id, &b.birth().map_err(|e| format!("the roster names {} at birth `{}`, which does not parse: {e}", b.node, b.incarnation_id))?).await
     }
 
     /// "When none survives" (mesh-delete.md, "Resume after the primary's loss", step 2), for the
@@ -280,7 +280,7 @@ impl AdminRunner {
         if crate::mesh_leave::exit_receipts(steps, outer, std::slice::from_ref(b)).contains_key(&(b.node_id.clone(), b.incarnation_id.clone())) {
             return Ok(());
         }
-        if NodeId::parse(&b.node_id).is_ok_and(|id| self.records.is_exited(&id, &IncarnationId(b.incarnation_id.clone()))) {
+        if NodeId::parse(&b.node_id).is_ok_and(|id| b.birth().is_ok_and(|birth| self.records.is_exited(&id, &birth))) {
             return Ok(());
         }
         let refused = |reason: String| {
@@ -352,7 +352,7 @@ impl AdminRunner {
     /// open: silence is not death.
     async fn final_primary_exit(&self, key: &LeaveKey, primary: &Node, admitted: &crate::mesh_leave::Admitted, inspected: &std::sync::Mutex<Option<Option<NodeStatus>>>) -> Option<String> {
         let lost = &admitted.final_primary;
-        let incarnation = IncarnationId(lost.incarnation_id.clone());
+        let incarnation = lost.birth().ok()?;
         if self.records.is_exited(&primary.node_id, &incarnation) {
             return Some("its exit-proof row is read in this fabric-primary's view".to_string());
         }
@@ -416,7 +416,7 @@ impl AdminRunner {
             }
         };
         let (build_id, attempt, operation) = found;
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-final-birth-deleted", node = %self.me, subject = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %build_id, attempt, operation = %operation, deleted_by = %op.operation, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-final-birth-deleted", node = %self.me, subject = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %build_id, attempt, operation = %operation, deleted_by = %op.operation, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         let result = self.mesh_left_in(op, &build_id, attempt, &operation).instrument(span.clone()).await;
         match &result {
             Ok(outcome) => {
@@ -437,7 +437,7 @@ impl AdminRunner {
         }
         let completion = crate::mesh_leave::completion_of(&steps, operation).ok_or_else(|| format!("{operation}: no {STEP_MESH_DELETED} receipt is held in {build_id}"))??;
         // The final birth's exact Exited: its node.delete's TerminateRuntime receipt, in that Build.
-        let deleted_in = crate::build::BuildId(op.build_id.clone());
+        let deleted_in = crate::build::BuildId::parse(&op.build_id).map_err(|e| format!("{}: the node.delete names Build {:?}, which is not a Crockford id: {e}", op.operation, op.build_id))?;
         let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
         let terminal = self
             .builds
@@ -448,11 +448,11 @@ impl AdminRunner {
             .into_iter()
             .filter(|r| r.operation == op.operation && r.step == terminate && r.outcome == StepOutcome::Complete)
             .filter_map(|r| r.output.and_then(|v| serde_json::from_value::<crate::deployment::pipeline::TerminalReceipt>(v).ok()))
-            .find(|t| t.node_id == op.node_id.as_str() && t.incarnation_id == op.incarnation.0)
-            .ok_or_else(|| format!("{}: no exact Exited receipt of {} {} is held in {deleted_in}", op.operation, op.name, op.incarnation.0))?;
+            .find(|t| t.node_id == op.node_id.as_str() && t.incarnation_id == op.incarnation.as_str())
+            .ok_or_else(|| format!("{}: no exact Exited receipt of {} {} is held in {deleted_in}", op.operation, op.name, op.incarnation.as_str()))?;
         let all = crate::mesh_leave::mesh_left_proof(&completion, &terminal).map_err(|e| format!("{operation}: the proof set is not complete: {e}"))?;
         let mesh_id = MeshId::parse(&completion.mesh_id).map_err(|e| format!("{operation}: the completion names the mesh id {:?}, which does not parse: {e}", completion.mesh_id))?;
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: operation.to_string() };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: operation.to_string() };
         let event = MeshLeaveEvent { mesh_id, build_id: build_id.to_string(), attempt, operation: operation.to_string(), receipt_manifest: None, final_primary: None };
         self.record_mesh_left(&key, &op.name.mesh, all, event).await?;
         Ok("applied")
@@ -462,8 +462,8 @@ impl AdminRunner {
     /// as the `MeshLeft` receipt after the mesh's departed contacts are dropped and its row Dead is
     /// ensured; then the mesh-left hook runs and the mesh's id is dropped.
     async fn record_mesh_left(&self, key: &LeaveKey, mesh: &str, all: ExitManifest, event: MeshLeaveEvent) -> Result<(), String> {
-        let (build_id, attempt, outer, mesh_id) = (crate::build::BuildId(key.build_id.clone()), key.attempt, key.operation.as_str(), &key.mesh_id);
-        let reference = manifest_reference(&key.build_id, attempt, outer, true);
+        let (build_id, attempt, outer, mesh_id) = (key.build_id.clone(), key.attempt, key.operation.as_str(), &key.mesh_id);
+        let reference = manifest_reference(key.build_id.as_str(), attempt, outer, true);
         // This fabric-primary is the acting primary of a mesh that has none left: the final birth's
         // node.delete wrote its row Deleted and proved its exit.
         crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &*self.mesh_storage, &self.records.declared, &self.me.to_string(), key, mesh, &all.receipts).await?;
@@ -517,7 +517,15 @@ impl AdminRunner {
         // fabric-primary this admin's view names (LeaveMesh is the fabric-primary's command,
         // node-rpc-envelope.md "Mesh delete command pair"). Nothing checks who is calling
         // (node-rpc.md §14).
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
+        let build = match crate::build::BuildId::parse(build_id) {
+            Ok(build) => build,
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.mesh.reject.via-malformed-build-id", node = %self.me, mesh_id = %mesh_id, build_id = %build_id, reason = %e, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("leave-mesh refused: its Build id is not a Crockford id"));
+                return StatusReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt };
+            }
+        };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build, attempt: *attempt, operation: operation.clone() };
         let call = match peer {
             Some(key) => crate::workflows::node_start::reached_back(&self.me.to_string(), &self.node_rpc.client, &key).await.ok().map(|target| crate::mesh_leave::LeaveOwner { target, name: sender.map(|n| n.name.to_string()).unwrap_or_else(|| format!("the admin at endpoint {}", key.fmt_short())) }),
             None => None,
@@ -617,7 +625,7 @@ impl AdminRunner {
         // The roster captured once, or, when this admin holds none, what the owner admitted: the
         // roster amendments the fabric-primary recorded (a primary lost mid-leave) are read from the
         // owner's Build facts when this admin has not yet heard them ([`crate::mesh_leave::leaving_roster`]).
-        let build_id = crate::build::BuildId(key.build_id.clone());
+        let build_id = key.build_id.clone();
         let fetch_owner = || async {
             crate::build_facts_read::fetch_build_facts(&self.node_rpc.client, &owner.target, &build_id).await.map(|f| f.facts).map_err(|e| format!("{}: the owner {owner}'s Build facts of {build_id} could not be read for the leave's roster: {e}", self.me))
         };
@@ -645,7 +653,7 @@ impl AdminRunner {
             // Whether the birth is stopped is the record's the leave works from (a stopped member's
             // delete goes straight to its exit proof), as `retire` takes it from the view.
             let record = Node { parked: n.parked, ..record };
-            let terminal = self.delete_birth(&crate::build::BuildId(key.build_id.clone()), key.attempt, record, handle).await.map_err(|e| format!("{}'s node.delete: {e}", n.name))?;
+            let terminal = self.delete_birth(&key.build_id.clone(), key.attempt, record, handle).await.map_err(|e| format!("{}'s node.delete: {e}", n.name))?;
             self.records.put_exit_of_receipt(&terminal).await.map_err(|e| format!("{}'s exit is not recorded: {e}", n.name))?;
             Ok(terminal)
         }
@@ -657,7 +665,7 @@ impl AdminRunner {
 
     /// The `MeshLeave` handoff: the mesh-leave gossip hook, then the call up to the owner.
     async fn hand_off(&self, key: &LeaveKey, owner: &crate::mesh_leave::LeaveOwner, manifest: &ExitManifest) {
-        let reference = manifest_reference(&key.build_id, key.attempt, &key.operation, false);
+        let reference = manifest_reference(key.build_id.as_str(), key.attempt, &key.operation, false);
         let view = self.topology.read().await.clone();
         let Some(me) = view.own(&self.node_id).cloned() else {
             tracing::info!(operation = %key.operation, "this admin holds no view of itself: the handoff waits for a repeated leave-mesh");
@@ -693,7 +701,7 @@ impl AdminRunner {
         }
         self.refresh_view().await;
         self.lifecycle_events
-            .mesh_leave(&MeshLeaveEvent { mesh_id: key.mesh_id.clone(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.operation.clone(), receipt_manifest: Some(reference), final_primary: Some((final_node_id, final_incarnation)) })
+            .mesh_leave(&MeshLeaveEvent { mesh_id: key.mesh_id.clone(), build_id: key.build_id.to_string(), attempt: key.attempt, operation: key.operation.clone(), receipt_manifest: Some(reference), final_primary: Some((final_node_id, final_incarnation)) })
             .await;
         self.call_mesh_leave(key, owner, "complete", manifest.receipts.len()).await;
     }
@@ -703,7 +711,7 @@ impl AdminRunner {
     /// its exit manifest receipt. `manifest` says whether that receipt is recorded (`complete`) or
     /// the member workflows ended without one (`incomplete`).
     async fn call_mesh_leave(&self, key: &LeaveKey, owner: &crate::mesh_leave::LeaveOwner, manifest: &'static str, manifest_receipts: usize) {
-        let reference = manifest_reference(&key.build_id, key.attempt, &key.operation, false);
+        let reference = manifest_reference(key.build_id.as_str(), key.attempt, &key.operation, false);
         let view = self.topology.read().await.clone();
         let node_rpc = &self.node_rpc;
         let Some(me) = view.own(&self.node_id).cloned() else {
@@ -715,7 +723,7 @@ impl AdminRunner {
             return;
         };
         let (Some(final_incarnation), final_node_id) = (me.incarnation_id.clone(), me.node_id.clone()) else { return };
-        let req = StatusRequest::MeshLeave { mesh_id: key.mesh_id.clone(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.operation.clone(), final_node_id, final_incarnation, final_runtime, receipt_manifest: reference };
+        let req = StatusRequest::MeshLeave { mesh_id: key.mesh_id.clone(), build_id: key.build_id.to_string(), attempt: key.attempt, operation: key.operation.clone(), final_node_id, final_incarnation, final_runtime, receipt_manifest: reference };
         let (out, _) = node_rpc.client.call::<Status>(&owner.target, &req, &rafka_node_rpc::CallOptions::default()).await;
         let outcome = match &out {
             rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => format!("{} {:?}", r.value().name(), r.value()),
@@ -742,16 +750,19 @@ impl AdminRunner {
     #[allow(clippy::too_many_arguments)]
     async fn validate_handoff_in(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, operation: &str, final_node_id: &NodeId, final_incarnation: &IncarnationId, final_runtime: &rafka_mesh_entity::RuntimeFact, receipt_manifest: &str) -> StatusReply {
         let unmatched = |field: &str, expected: String, reported: String| StatusReply::RejectedUnmatchedCompletion { field: field.into(), expected, reported };
-        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: operation.to_string() };
+        let build = match crate::build::BuildId::parse(build_id) {
+            Ok(build) => build,
+            Err(e) => return unmatched("build_id", format!("a Crockford Build id ({e})"), build_id.to_string()),
+        };
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build.clone(), attempt, operation: operation.to_string() };
         let admitted = match self.leaves.admitted_for(&key) {
             Ok(admitted) => admitted,
             Err(refused) => {
                 // No open leave: after mesh.deleted's completion receipt the handoff is a replay,
                 // answered from the receipt (AlreadyApplied, no second receipt).
-                let build = crate::build::BuildId(build_id.to_string());
                 match self.builds.read_build(&build).await {
                     Ok(b) => {
-                        if let Some(reply) = crate::mesh_leave::replayed_handoff(&b.steps, &key, final_node_id, &final_incarnation.0) {
+                        if let Some(reply) = crate::mesh_leave::replayed_handoff(&b.steps, &key, final_node_id, &final_incarnation.as_str()) {
                             return reply;
                         }
                     }
@@ -765,8 +776,8 @@ impl AdminRunner {
         if receipt_manifest.len() > rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES {
             return unmatched("receipt_manifest", format!("at most {} bytes", rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES), format!("{} bytes", receipt_manifest.len()));
         }
-        if final_node_id.to_string() != admitted.final_primary.node_id || final_incarnation.0 != admitted.final_primary.incarnation_id {
-            return unmatched("final_primary", format!("{} {}", admitted.final_primary.node_id, admitted.final_primary.incarnation_id), format!("{final_node_id} {}", final_incarnation.0));
+        if final_node_id.to_string() != admitted.final_primary.node_id || final_incarnation.as_str() != admitted.final_primary.incarnation_id {
+            return unmatched("final_primary", format!("{} {}", admitted.final_primary.node_id, admitted.final_primary.incarnation_id), format!("{final_node_id} {}", final_incarnation.as_str()));
         }
         // The final primary's exact runtime, and this admin's provider access to it.
         if RuntimeProof::of(final_runtime) != admitted.final_runtime {
@@ -777,7 +788,7 @@ impl AdminRunner {
         }
         // The manifest: the sender's Build facts, read now.
         let node_rpc = &self.node_rpc;
-        let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &crate::build::BuildId(build_id.to_string())).await.map(|f| f.facts);
+        let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &build).await.map(|f| f.facts);
         let verdict = match crate::mesh_leave::handoff_verdict_from_read(read, &key, &admitted, receipt_manifest, &self.me.to_string(), &final_node_id.to_string()) {
             Ok(v) => v,
             Err(refused) => return refused,

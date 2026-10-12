@@ -20,7 +20,7 @@ async fn a_products_adapter_is_catalogued_readable_and_unserved_on_the_node_rpc_
             Ok(PingReply::Pong { payload })
         })
         .adapter(CatalogEntry::transitional(0x12, "data-frame", "rafka", "i142 U6", 64 * 1024))
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     // The product's dispatcher reads the same sealed catalog.
     let held = server.catalog().lookup(0x12).expect("the adapter is catalogued");

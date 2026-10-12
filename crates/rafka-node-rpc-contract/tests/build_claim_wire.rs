@@ -15,12 +15,12 @@ fn bytes(hex: &str) -> Vec<u8> {
 #[test]
 fn the_request_matches_the_frozen_one_variant_wire_schema() {
     let q = BuildClaimRequest::ClaimAttempt {
-        build_id: "bld-x".into(),
+        build_id: "b7swg3jj790z".into(),
         attempt: 3,
         executor_node_id: NodeId::parse("0123456789ab").unwrap(),
-        executor_incarnation: IncarnationId("birth".into()),
+        executor_incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(),
     };
-    let expected = bytes("00") .into_iter().chain(bytes("05626c642d78")).chain(bytes("03")).chain(bytes("0c303132333435363738396162")).chain(bytes("056269727468")).collect::<Vec<u8>>();
+    let expected = bytes("00") .into_iter().chain(bytes("0c6237737767336a6a3739307a")).chain(bytes("03")).chain(bytes("0c303132333435363738396162")).chain(bytes("0c397763707266677776746879")).collect::<Vec<u8>>();
     assert_eq!(BuildClaim::encode_request(&q).unwrap(), expected);
     assert_eq!(BuildClaim::decode_request(&expected).unwrap(), q);
 }

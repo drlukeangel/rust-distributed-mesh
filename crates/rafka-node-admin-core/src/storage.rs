@@ -254,7 +254,7 @@ pub struct RuntimeRow {
 impl RuntimeRow {
     /// The row's key: the birth it describes.
     pub fn key(&self) -> String {
-        format!("{}--{}", self.node_id, self.incarnation_id.0)
+        format!("{}--{}", self.node_id, self.incarnation_id.as_str())
     }
 }
 
@@ -440,7 +440,7 @@ impl NodesStorage for MemoryNodesStorage {
         Ok(self.runtimes.lock().unwrap().values().cloned().collect())
     }
     async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.0)).cloned())
+        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.as_str())).cloned())
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         Ok(self.own.lock().unwrap().clone())
@@ -838,7 +838,7 @@ impl NodesStorage for FileNodesStorage {
         self.runtimes.list(RUNTIME_FORMAT).await
     }
     async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        self.runtimes.read(&format!("{}--{}", node_id, incarnation.0), RUNTIME_FORMAT).await
+        self.runtimes.read(&format!("{}--{}", node_id, incarnation.as_str()), RUNTIME_FORMAT).await
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         self.own.read("self", NODE_FORMAT).await
@@ -1434,8 +1434,8 @@ mod tests {
         let row = |inc: &str| RuntimeRow {
             node_id: NodeId::mint(),
             name: "mesh1.admin.2".parse().unwrap(),
-            incarnation_id: IncarnationId(inc.into()),
-            runtime: rafka_mesh_entity::RuntimeFact::of_this_process("dep-1").unwrap(),
+            incarnation_id: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap(),
+            runtime: rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap(),
             data_dir: Some("/tmp/x".into()),
         };
         let (a, b) = (row("i1"), row("i2"));
@@ -1445,7 +1445,7 @@ mod tests {
         n.put_runtime(&b).await.unwrap();
         n.put_runtime(&a).await.unwrap();
         let mut held = FileNodesStorage::open(&d, &root, "mesh1", &IncarnationId::mint()).await.unwrap().runtimes().await.unwrap();
-        held.sort_by_key(|r| r.incarnation_id.0.clone());
+        held.sort_by_key(|r| r.incarnation_id.to_string());
         assert_eq!(held, [a.clone(), b.clone()], "two births, two rows; a repeated put is the same row");
         std::fs::write(d.join("nodes/runtimes").join(format!("{}.json", a.key())), br#"{"format":"node-runtime/9","record":{}}"#).unwrap();
         assert!(matches!(n.runtimes().await, Err(StorageError::Unrecognised { .. })));
@@ -1488,7 +1488,7 @@ mod tests {
     /// read: the runtime's only thread keeps running, and the list answers the row.
     #[test]
     fn a_list_of_records_waits_on_the_disk_off_the_runtime_thread() {
-        let row = RuntimeRow { node_id: NodeId::mint(), name: "mesh1.admin.2".parse().unwrap(), incarnation_id: IncarnationId("i1".into()), runtime: rafka_mesh_entity::RuntimeFact::of_this_process("dep-1").unwrap(), data_dir: Some("/tmp/x".into()) };
+        let row = RuntimeRow { node_id: NodeId::mint(), name: "mesh1.admin.2".parse().unwrap(), incarnation_id: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i1")).unwrap(), runtime: rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap(), data_dir: Some("/tmp/x".into()) };
         let bytes = serde_json::to_vec(&serde_json::json!({ "format": RUNTIME_FORMAT, "record": row })).unwrap();
         let (ran, listed) = runtime_runs_while_a_file_is_read("nodes/runtimes", &row.key(), bytes, move |s| Box::pin(async move { s.runtimes().await }));
         assert!(ran, "the runtime thread ran while the list waited on the disk");

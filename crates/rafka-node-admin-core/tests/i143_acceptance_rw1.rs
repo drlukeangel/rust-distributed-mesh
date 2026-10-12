@@ -73,20 +73,20 @@ fn heartbeat(ordinal: u32, runtime: Option<RuntimeFact>, full: bool) -> MeshDige
 }
 
 fn process_runtime() -> RuntimeFact {
-    RuntimeFact { deployment_id: "dep1".into(), provider: RuntimeProvider::Process, control_domain: "host-a".into(), locator: RuntimeLocator::Process { pid: 4242, start: 987_654 } }
+    RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60("dep1"), provider: RuntimeProvider::Process, control_domain: "host-a".into(), locator: RuntimeLocator::Process { pid: 4242, start: 987_654 } }
 }
 
 fn container_runtime() -> RuntimeFact {
-    RuntimeFact { deployment_id: "dep2".into(), provider: RuntimeProvider::Container, control_domain: "docker-a".into(), locator: RuntimeLocator::Container { id: "f".repeat(64) } }
+    RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60("dep2"), provider: RuntimeProvider::Container, control_domain: "docker-a".into(), locator: RuntimeLocator::Container { id: "f".repeat(64) } }
 }
 
 fn op(operation: &str) -> LifecycleOp {
-    LifecycleOp { build_id: "bld-1".into(), attempt: 2, operation: operation.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 7 }
+    LifecycleOp { build_id: "3qcfk1kq47m9".into(), attempt: 2, operation: operation.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 7 }
 }
 
 fn round_hook(verb: &str) -> rafka_mesh_entity::RoundHook {
     let fabric_id = fabric();
-    rafka_mesh_entity::RoundHook { operation: format!("{verb}:{fabric_id}"), fabric_id, node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld-1".into(), attempt: 2, publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 7 }
+    rafka_mesh_entity::RoundHook { operation: format!("{verb}:{fabric_id}"), fabric_id, node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "3qcfk1kq47m9".into(), attempt: 2, publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 7 }
 }
 
 fn publisher() -> PublisherId {
@@ -164,7 +164,7 @@ fn frames() -> Vec<Frame> {
 }
 
 fn bid(s: &str) -> BuildId {
-    BuildId(s.into())
+    BuildId::parse(s).unwrap()
 }
 
 fn topology() -> FabricTopology {
@@ -192,7 +192,7 @@ fn changes() -> Vec<Option<TopologyChange>> {
 }
 
 fn step(step: &str, output: Option<Value>) -> BuildFact {
-    BuildFact::Step(BuildStepReceipt { build_id: bid("bld-1"), attempt: 2, operation: "create-node:mesh2.rpc.1".into(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("key@127.0.0.1:1".into()) })
+    BuildFact::Step(BuildStepReceipt { build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: "create-node:mesh2.rpc.1".into(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("key@127.0.0.1:1".into()) })
 }
 
 fn to_json<T: serde::Serialize>(v: &T) -> Value {
@@ -203,15 +203,15 @@ fn to_json<T: serde::Serialize>(v: &T) -> Value {
 fn facts() -> Vec<BuildFact> {
     let mut out = Vec::new();
     for change in changes() {
-        out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("bld-1"), topology: topology(), submitted_change: change, submitted_at_ms: 55 }));
+        out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), submitted_change: change, submitted_at_ms: 55 }));
     }
-    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { build_id: bid("bld-1"), attempt: 2, reason: AttemptReason::Restart, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
+    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Restart, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
     out.push(action(None));
     out.push(action(Some(AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
     out.push(action(Some(AttemptAction::Replace { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
     // A member's recovery (node-recovery.md): the attempt the mesh-primary's submit opens.
     out.push(BuildFact::Opened(AttemptOpened {
-        build_id: bid("bld-1"),
+        build_id: bid("3qcfk1kq47m9"),
         attempt: 2,
         reason: AttemptReason::Recovery,
         action: Some(AttemptAction::Recover { path: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), from_incarnation: IncarnationId::mint() }),
@@ -219,10 +219,10 @@ fn facts() -> Vec<BuildFact> {
         opened_at_ms: 56,
     }));
 
-    out.push(BuildFact::Claim(BuildAttemptClaim { build_id: bid("bld-1"), attempt: 2, executor: "mesh1.admin.1".into() }));
+    out.push(BuildFact::Claim(BuildAttemptClaim { build_id: bid("3qcfk1kq47m9"), attempt: 2, executor: "mesh1.admin.1".into() }));
     out.push(step("PrepareNetwork", None));
     out.push(BuildFact::Step(BuildStepReceipt {
-        build_id: bid("bld-1"),
+        build_id: bid("3qcfk1kq47m9"),
         attempt: 2,
         operation: "create-node:mesh2.rpc.1".into(),
         step: "WaitForBind".into(),
@@ -230,20 +230,20 @@ fn facts() -> Vec<BuildFact> {
         output: None,
         executor: None,
     }));
-    out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": null, "deployment_id": "dep-1" }))));
-    out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": to_json(&IncarnationId::mint()), "deployment_id": "dep-1" }))));
+    out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": null, "deployment_id": "an16er0436pg" }))));
+    out.push(step(CreateStep::AllocateIdentity.name(), Some(json!({ "node_id": to_json(&NodeId::mint()), "incarnation": to_json(&IncarnationId::mint()), "supersedes": to_json(&IncarnationId::mint()), "deployment_id": "an16er0436pg" }))));
     out.push(step(CreateStep::WaitForBind.name(), Some(to_json(&Bound { transport: "127.0.0.1:41000".parse().unwrap(), listeners: vec![("control".into(), "127.0.0.1:41001".parse().unwrap())] }))));
     out.push(step(CreateStep::PrepareStorage.name(), Some(to_json(&EndpointId("abcd".into())))));
     out.push(step(
         CreateStep::DeployRuntime.name(),
-        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId("dep-1".into()), provider: ProviderKind::Process, pid: Some(4242), start: Some(99), container: None, domain: Some("host-a".into()) })),
+        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap(), provider: ProviderKind::Process, pid: Some(4242), start: Some(99), container: None, domain: Some("host-a".into()) })),
     ));
     out.push(step(
         CreateStep::DeployRuntime.name(),
-        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId("dep-2".into()), provider: ProviderKind::Container, pid: None, start: None, container: Some("c".repeat(64)), domain: None })),
+        Some(to_json(&DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60("dep-2")).unwrap(), provider: ProviderKind::Container, pid: None, start: None, container: Some("c".repeat(64)), domain: None })),
     ));
     let evidence = |data_dir: Option<&str>| {
-        let mut v = json!({ "deployment_id": "dep-1", "provider": "process", "provider_control_domain_fingerprint": "aa11", "runtime_locator_kind": "process-pid-start", "runtime_locator_fingerprint": "bb22" });
+        let mut v = json!({ "deployment_id": "an16er0436pg", "provider": "process", "provider_control_domain_fingerprint": "aa11", "runtime_locator_kind": "process-pid-start", "runtime_locator_fingerprint": "bb22" });
         if let Some(d) = data_dir {
             v["data_dir"] = d.into();
         }
@@ -287,10 +287,10 @@ fn facts() -> Vec<BuildFact> {
         // A receipt an earlier build wrote: no step of this build runs it, and it still decodes.
         out.push(step(rafka_node_admin_core::wire::RELEASE_STORAGE_STEP, Some(to_json(&s))));
     }
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("bld-1"), attempt: 2, outcome: AttemptOutcome::Converged }));
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("bld-1"), attempt: 2, outcome: AttemptOutcome::Failed { reason: "step failed".into() } }));
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("bld-1"), attempt: 3, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }));
-    out.push(BuildFact::Forget { build_id: bid("bld-1") });
+    out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Converged }));
+    out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Failed { reason: "step failed".into() } }));
+    out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("3qcfk1kq47m9"), attempt: 3, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }));
+    out.push(BuildFact::Forget { build_id: bid("3qcfk1kq47m9") });
     out
 }
 
@@ -400,8 +400,8 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     let named: Vec<String> = refused.iter().map(|e| e.to_string()).collect();
     assert_eq!(named.len(), 2, "{named:?}");
     assert!(refused.iter().all(|e| matches!(e, BuildStateError::Unencodable(_))), "{named:?}");
-    assert!(named[0].contains("step PrepareNetwork (Build bld-1, attempt 2)") && named[0].contains("commits no output"), "{}", named[0]);
-    assert!(named[1].contains("step AllocateIdentity (Build bld-1, attempt 2)"), "{}", named[1]);
+    assert!(named[0].contains("step PrepareNetwork (Build 3qcfk1kq47m9, attempt 2)") && named[0].contains("commits no output"), "{}", named[0]);
+    assert!(named[1].contains("step AllocateIdentity (Build 3qcfk1kq47m9, attempt 2)"), "{}", named[1]);
     let sent: usize = messages.iter().map(|m| BuildMessage::from_bytes(m).unwrap().facts.len()).sum();
     assert_eq!(sent, 2, "the facts around a refused one still travel");
     result.insert("unencodable".into(), json!({ "refused": named, "sent": sent }));

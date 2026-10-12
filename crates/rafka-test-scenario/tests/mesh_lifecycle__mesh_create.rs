@@ -84,7 +84,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1")] }).await;
 
     // {mesh1} -> {mesh1, mesh2}
-    let create = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.0;
+    let create = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await.build_id.to_string();
     let build = built(&estate, &create).await;
     let want: std::collections::BTreeSet<String> = ["mesh1", "mesh2"]
         .iter()
@@ -112,12 +112,12 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Grow and shrink mesh2 from its own endpoint: the fabric-primary accepts the call, mesh2's primary executes the Build.
     let mut growing = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh2".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
-    let grow = Estate::complete(&mut growing).await.build_id.0;
+    let grow = Estate::complete(&mut growing).await.build_id.to_string();
     let b = built(&estate, &grow).await;
     assert_eq!(b["executor"], mesh2_primary.as_str(), "{b:#}");
     estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 ready for traffic", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
     let mut shrinking = estate.nodes_obj().await.delete(&"mesh2.rpc.4".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh2.rpc.4: {e}"));
-    let shrink = Estate::complete(&mut shrinking).await.build_id.0;
+    let shrink = Estate::complete(&mut shrinking).await.build_id.to_string();
     let b = built(&estate, &shrink).await;
     assert_eq!(b["executor"], mesh2_primary.as_str(), "{b:#}");
     estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 retired", Duration::from_secs(30), |n| n.is_none().then_some(())).await;
