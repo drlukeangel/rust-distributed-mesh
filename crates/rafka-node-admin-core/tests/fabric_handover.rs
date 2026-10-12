@@ -11,7 +11,7 @@ use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::election::{resolve_with, Incumbency};
 use rafka_node_admin_core::build_facts_read::FetchFailure;
 use rafka_node_admin_core::fabric_handover::{won_claim_from_read, HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, SourceFailure, Stage, WonClaims, WriteCutOff};
-use rafka_node_admin_core::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage, SeatRow, SeatTransferRow};
+use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage, SeatRow, SeatTransferRow};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -134,9 +134,9 @@ impl FabricStorage for FailingStorage {
         self.check("fabric_rows")?;
         self.inner.fabric_rows().await
     }
-    async fn put_identity(&self, identity: &FabricIdentity) -> Result<FabricIdentity, FabricStorageError> {
-        self.check("put_identity")?;
-        self.inner.put_identity(identity).await
+    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
+        self.check("claim_identity")?;
+        self.inner.claim_identity(identity).await
     }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
         self.check("put_pointer")?;
