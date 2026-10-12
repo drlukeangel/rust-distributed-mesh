@@ -185,6 +185,20 @@ impl Declarer {
         self.pending.lock().unwrap().entry(key.clone()).or_insert(Pending { key, to, request, attempts: 0, last: None, sent: None, trace });
     }
 
+    /// A start of this admin's birth `incarnation` begins its next cycle: the own-state declarations
+    /// its last cycle owed or had answered are forgotten whole, so the node.started this start reports
+    /// is owed afresh to its mesh's primary (states.md: node ReadyForTraffic is set from "the node's
+    /// node.started report, after every start gate"), never stood for by the last cycle's answer.
+    pub(crate) fn begin_own_cycle(&self, me: &PathName, incarnation: &str) {
+        let own = |k: &Key| matches!(k, Key::OwnState(inc, _) if inc == incarnation);
+        let forgotten: Vec<Key> = self.requests.lock().unwrap().keys().filter(|k| own(k)).cloned().collect();
+        self.requests.lock().unwrap().retain(|k, _| !own(k));
+        self.done.lock().unwrap().retain(|k, _| !own(k));
+        self.pending.lock().unwrap().retain(|k, _| !own(k));
+        tracing::info_span!("rdm.node_admin.status.remove.via-cycle-begun", node = %me, incarnation_id = incarnation, forgotten = ?forgotten)
+            .in_scope(|| tracing::info!("a start begins this birth's next cycle: its own state is owed afresh at node.started"));
+    }
+
     #[cfg(test)]
     pub fn answered(&self, key: &Key) -> Option<String> {
         self.done.lock().unwrap().get(key).map(|(o, _, _)| o.clone())

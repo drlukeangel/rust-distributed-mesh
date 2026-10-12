@@ -2419,6 +2419,8 @@ struct AdminSession {
     local: Arc<dyn crate::build_state::LocalBuildLog>,
     /// The node-admins a start's Build-facts read asks, in order.
     responders: crate::hydrate::Responders,
+    /// What this admin owes its authorities: a start begins its next own-state cycle there.
+    declarer: Arc<crate::status_declare::Declarer>,
 }
 
 #[async_trait::async_trait]
@@ -2532,6 +2534,9 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
                 let _ = s.shutdown.learn(sd, "start", &joined.served_by).await;
             }
         }
+        // node.joined begins this birth's next cycle: the node.started it reports is owed afresh to its
+        // mesh's primary, before its declarer runs again.
+        s.declarer.begin_own_cycle(&s.name, &s.incarnation.0);
         // Back on the topic means a neighbour: only then does this admin say it is back, once, as
         // Pending, so every node that held it parked or restarting hears the rejoin.
         membership.wait_for_neighbour().await;
@@ -5743,6 +5748,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             wake: records.clone(),
                                             local: journal.clone(),
                                             responders: responders.clone(),
+                                            declarer: declarer.clone(),
                                         }));
                                         let _ = own_commands.set(own);
                                     }
