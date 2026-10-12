@@ -1,11 +1,11 @@
-//! i143.e12.s41 follow-up (rafka-v2 #3068): the departed fence on a mesh status is per exact birth.
+//! i143.e12.s41 follow-up (rafka-v2 #3068), and i143.e12.s53 (R-RX1): a mesh status is taken for what
+//! it carries, whoever its publisher is.
 //!
-//! The design (rafka-v2 docs/architecture/gossip.md §3.1 receiver rules: "the departure record keeps
-//! `(NodeId, IncarnationId)` for exact proof, the fence is the NodeId"; fabric-authority.md §7: "A
-//! successor mesh primary reads/hydrates the Mesh lifecycle state that already exists and adopts that
-//! exact state locally"; R-ML2: the admin a mesh investigation creates is a node-admin joining a live
-//! mesh, which as successor primary adopts the mesh's held state). A `MeshStatus` names its publisher by
-//! path.name only, so the receiver resolves the name to the birth that holds it now.
+//! The design (rafka-v2 docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md R-RX1: no receiver
+//! refuses an input because of who sent it; fabric-authority.md §7: "A successor mesh primary
+//! reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally";
+//! R-ML2: the admin a mesh investigation creates is a node-admin joining a live mesh, which as successor
+//! primary adopts the mesh's held state). The held status orders a status by its `changed_at_rafka_ms`.
 //!
 //! The defect this cell pins (traces bec3d0cbaa59317b18f954c1d27fdb73, d2427d34ca338d823e76781c4c052624;
 //! fresh pending 647061808568a00bf7a6d8f8ef75a55c): the new mesh2.admin.1 held its predecessor's
@@ -111,16 +111,15 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
     }
 }
 
-/// CONTRACT (#3068; gossip.md §3.1 "the fence is the NodeId"; fabric-authority.md §7; R-ML2): through
-/// real gossip on mesh2's channel. mesh2.admin.2 holds mesh2's status as the old primary X
-/// (mesh2.admin.1) published it, then executes X's replace-node and publishes `NodeDeleted`; the
-/// node-admin joining the live mesh at X's path.name (a new birth Y) and the member mesh2.rpc.1 each
-/// hold X departed. Y's entry answer (mesh2.admin.2's held statuses, the original publisher kept) gives
-/// Y its mesh's status before Y's first heartbeat: Y takes it, the name being its own, and holds X's
-/// exact fact to adopt. The same answer at mesh2.rpc.1, where no live birth holds the name, is refused
-/// by name, naming X's exact departure and the status refused. Once Y's heartbeat reaches the member,
-/// the name resolves to Y's live birth and the member takes it. Must NOT happen: Y refusing its mesh's
-/// status because its predecessor's name is held departed.
+/// CONTRACT (#3068; R-RX1; fabric-authority.md §7; R-ML2): through real gossip on mesh2's channel.
+/// mesh2.admin.2 holds mesh2's status as the old primary X (mesh2.admin.1) published it, then executes
+/// X's replace-node and publishes `NodeDeleted`; the node-admin joining the live mesh at X's path.name
+/// (a new birth Y) and the member mesh2.rpc.1 each hold X departed. Y's entry answer (mesh2.admin.2's
+/// held statuses, the original publisher kept) gives Y its mesh's status before Y's first heartbeat: Y
+/// takes it and holds X's exact fact to adopt. The same answer at mesh2.rpc.1, where no live birth holds
+/// the name, is taken too: a status is never refused for its publisher. Once Y's heartbeat reaches the
+/// member, the same answer again is a repeat of the change held and is not taken again. Must NOT
+/// happen: a status refused for its publisher's name (`via-departed-birth` with `frame=mesh-status`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_entry_answer_before_its_first_heartbeat() {
     let cell = "a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_entry_answer_before_its_first_heartbeat";
@@ -161,14 +160,14 @@ async fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_fro
     y.learn_statuses(&answer);
     assert_eq!(y.mesh_status("mesh2"), held, "Y takes its mesh's status before its first heartbeat: X's departure never refuses the name Y holds");
     m.learn_statuses(&answer);
-    assert_eq!(m.mesh_status("mesh2"), None, "no live birth holds the name at the member: refused by name");
+    assert_eq!(m.mesh_status("mesh2"), held, "the member takes it too, though no live birth holds the name there");
 
     // Y's first heartbeat reaches the member: the name resolves to Y's live birth.
     let (y_id, y_inc) = (NodeId::mint(), IncarnationId::mint());
     y.publish(&digest("mesh2.admin.1", &y_id, &y_inc, 41_021)).await.unwrap();
     until("the member to hold Y's birth", || m.book.get(y_id.as_str()).is_some()).await;
     m.learn_statuses(&answer);
-    assert_eq!(m.mesh_status("mesh2"), held, "the member takes the status once Y's live birth holds the name");
+    assert_eq!(m.mesh_status("mesh2"), held, "the repeat leaves the held status as it is");
 
     for n in [&p_node, &m_node, &y_node] {
         n.ep.close().await;
@@ -182,16 +181,12 @@ async fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_fro
     assert_eq!((attr(taken_at_y, "publisher"), attr(taken_at_y, "forwarded_by"), attr(taken_at_y, "changed_at_rafka_ms"), attr(taken_at_y, "taken")), ("mesh2.admin.1".to_string(), "mesh2.admin.2".to_string(), "5".to_string(), "true".to_string()));
     assert!(deleted_at_y["start_unix_nano"].as_u64() < taken_at_y["start_unix_nano"].as_u64(), "the departure was held at Y before the status");
     let refused: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-departed-birth").into_iter().filter(|s| attr(s, "frame") == "mesh-status").collect();
-    assert_eq!(refused.len(), 1, "one refusal, at the member, none at Y: {refused:#?}");
-    assert_eq!(
-        (attr(refused[0], "holder"), attr(refused[0], "node_id"), attr(refused[0], "incarnation_id"), attr(refused[0], "operation"), attr(refused[0], "publisher"), attr(refused[0], "forwarded_by"), attr(refused[0], "changed_at_rafka_ms"), attr(refused[0], "via")),
-        ("mesh2.rpc.1".to_string(), x.to_string(), x_inc.0.clone(), "replace-node:mesh2.admin.1".to_string(), "mesh2.admin.1".to_string(), "mesh2.admin.2".to_string(), "5".to_string(), "entry-answer".to_string()),
-        "the refusal names X's exact departure and the status refused"
-    );
-    let taken_at_m: Vec<&&Value> = taken.iter().filter(|s| attr(s, "node") == "mesh2.rpc.1").collect();
-    assert_eq!(taken_at_m.len(), 1, "the member takes it once, after Y's heartbeat: {taken_at_m:#?}");
+    assert!(refused.is_empty(), "no status is refused for its publisher's name: {refused:#?}");
+    let heard_at_m: Vec<(String, String)> = taken.iter().filter(|s| attr(s, "node") == "mesh2.rpc.1").map(|s| (attr(s, "publisher"), attr(s, "taken"))).collect();
+    assert_eq!(heard_at_m, vec![("mesh2.admin.1".to_string(), "true".to_string()), ("mesh2.admin.1".to_string(), "false".to_string())], "the member takes it at the first answer, and the repeat is not taken again");
+    let taken_at_m = taken.iter().find(|s| attr(s, "node") == "mesh2.rpc.1").expect("the member's first status span");
     let mut lines = String::new();
-    for (what, s) in [("deleted-at-y", *deleted_at_y), ("taken-at-y", *taken_at_y), ("refused-at-member", refused[0]), ("taken-at-member", *taken_at_m[0])] {
+    for (what, s) in [("deleted-at-y", *deleted_at_y), ("taken-at-y", *taken_at_y), ("taken-at-member", *taken_at_m)] {
         lines.push_str(&format!("{what} {} {} holder={} node={} via={} publisher={} taken={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "holder"), attr(s, "node"), attr(s, "via"), attr(s, "publisher"), attr(s, "taken")));
     }
     std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();

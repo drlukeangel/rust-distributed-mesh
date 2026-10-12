@@ -4,6 +4,7 @@
 //!
 //! - [`membership`]: the gossip membership, the digest book and the cut-off rule.
 //! - [`snapshot`]: the state machines over `topology_version`, chunked snapshots and deltas.
+//! - `receive_order`: the one ordering check every frame a channel decodes passes (R-RX3).
 //! - [`wire`]: the codec every gossip frame goes through.
 //! - [`chunking`]: ordered packing into gossip messages.
 //! - [`clock`]: the source of Rafka-time a binary supplies.
@@ -17,6 +18,7 @@ pub(crate) mod discipline;
 pub mod iroh_obs;
 pub mod load;
 pub mod membership;
+pub(crate) mod receive_order;
 pub mod snapshot;
 #[cfg(test)]
 mod span_capture;

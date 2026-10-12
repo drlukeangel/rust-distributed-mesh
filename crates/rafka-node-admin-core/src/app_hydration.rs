@@ -501,6 +501,17 @@ impl HookDriver {
                 Step::Passed
             }
             Some(HookOutcome::Blocked { reason, retry_on }) => {
+                // A Blocked outcome names its blocker (fabric-node-hooks.md, "Outcomes and the gate"):
+                // its reason is the blocker evidence and the executor's ProbeNodeState answer. A reason
+                // that names nothing is no Blocked outcome; the hook ends by name.
+                if reason.trim().is_empty() {
+                    let why = format!("the hook returned Blocked with no reason, asking to run again on {}: a blocker it does not name cannot be answered to the executor", retry_on.name());
+                    span.record("outcome", "failed");
+                    span.record("reason", why.as_str());
+                    span.in_scope(|| tracing::info!("hydrate_before_ready returned Blocked with no reason"));
+                    self.state.send_replace(HydrationState::Failed(why.clone()));
+                    return Step::Failed(why);
+                }
                 if self.ctx.authority.accepted().is_none() && !matches!(retry_on, RetryOn::TargetReachable { .. }) {
                     let why = format!("the hook asked to wait for {} but this birth has no authority ({}): {reason}", retry_on.name(), match &self.ctx.authority { Authority::None(w) => w.reason(), Authority::Accepted(_) => "" });
                     span.record("outcome", "failed");

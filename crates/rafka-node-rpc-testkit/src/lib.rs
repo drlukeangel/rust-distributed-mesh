@@ -49,6 +49,18 @@ pub fn hydrate_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("hydrate-knob")
 }
 
+/// Record `text` as node `name`'s `hydrate_before_ready` knob under `root` ([`hydrate_knob_dir`]).
+/// The node's hook reads the knob on every attempt, while the scenario rewrites it, so the text is
+/// written to `<path.name>.staged` beside the knob and renamed over it: a read opens the old file or
+/// the new one, each whole, and never a knob truncated before its new text is written.
+pub fn write_hydrate_knob(root: &std::path::Path, name: &str, text: &str) -> std::io::Result<()> {
+    let dir = hydrate_knob_dir(root);
+    std::fs::create_dir_all(&dir)?;
+    let staged = dir.join(format!("{name}.staged"));
+    std::fs::write(&staged, text)?;
+    std::fs::rename(&staged, dir.join(name))
+}
+
 /// The directory under an estate's data root where a scenario records a rafka-time knob for one
 /// node: the file `<root>/rafka-time-knob/<path.name>` holds `ahead_ms=<signed ms>` and/or
 /// `drift_ppm=<signed ppm>` lines.
@@ -75,4 +87,30 @@ pub fn apply_rafka_time_knob(root: &std::path::Path, name: &str, time: &rafka_me
     tracing::info_span!(parent: parent, "rdm.mesh.node.update.via-rafka-time-knob", node = name, ahead_ms, drift_ppm)
         .in_scope(|| tracing::info!("a scenario put this node's rafka-time off its authority's"));
     Some((ahead_ms, drift_ppm))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    /// CONTRACT: a rewrite of a node's `hydrate_before_ready` knob never touches the file a reader
+    /// already opened: the reader holding the knob reads the text it opened, whole, and the next
+    /// open reads the new text. The knob's hook (`hydrate_probe::KnobHydrator`) reads the file on
+    /// every attempt while a scenario rewrites it. What must NOT happen: a rewrite in place, which
+    /// truncates the very file a reader holds and writes after it, so a read between the two
+    /// sees the knob empty and the hook answers `Blocked` with no reason.
+    #[test]
+    fn a_knob_rewrite_never_touches_the_file_a_reader_holds_open() {
+        let root = std::env::temp_dir().join(format!("hydrate-knob-rewrite-{}", rafka_mesh_entity::NodeId::mint()));
+        let (a, b) = ("the rows of orders are not yet published", "the authority of orders is draining");
+        write_hydrate_knob(&root, "mesh1.rpc.2", a).unwrap();
+        let mut held = std::fs::File::open(hydrate_knob_dir(&root).join("mesh1.rpc.2")).unwrap();
+        write_hydrate_knob(&root, "mesh1.rpc.2", b).unwrap();
+        let mut read = String::new();
+        held.read_to_string(&mut read).unwrap();
+        assert_eq!(read, a, "the reader that opened the knob before the rewrite reads the text it opened, whole");
+        assert_eq!(std::fs::read_to_string(hydrate_knob_dir(&root).join("mesh1.rpc.2")).unwrap(), b, "the next open reads the new text");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

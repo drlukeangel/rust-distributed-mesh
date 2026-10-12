@@ -540,8 +540,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
 
     // The next birth's hook is blocked for A from its first attempt.
     let knob = rafka_node_rpc_testkit::hydrate_knob_dir(&estate.root);
-    std::fs::create_dir_all(&knob).unwrap();
-    std::fs::write(knob.join(BLOCKED), A).unwrap();
+    rafka_node_rpc_testkit::write_hydrate_knob(&estate.root, BLOCKED, A).unwrap();
     let grown = FabricDesired { fabric: FABRIC.into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] };
     let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(grown)).await.expect("the fabric-primary accepts the grown shape");
     let (before_a, (step, reason)) = next_blocked(&mut stream).await;
@@ -552,14 +551,14 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     // Reruns blocked for the same reason: the executor's probes address the birth, so its hook runs
     // again on each; wait until it has been blocked for A three more times.
     wait_for("three more attempts blocked for A", Duration::from_secs(60), || async { (knob_attempts(&knob, BLOCKED, A) >= 4).then_some(()) }).await;
-    std::fs::write(knob.join(BLOCKED), B).unwrap();
+    rafka_node_rpc_testkit::write_hydrate_knob(&estate.root, BLOCKED, B).unwrap();
     let (before_b, (step_b, reason_b)) = next_blocked(&mut stream).await;
     assert_eq!(step_b, "WaitForNodeReady");
     assert!(reason_b.contains(B) && !reason_b.contains(A), "the next Blocked frame is the changed reason, never A again: {reason_b}");
     assert!(!before_b.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "the step is still in flight: {before_b:?}");
 
     wait_for("an attempt blocked for B", Duration::from_secs(60), || async { (knob_attempts(&knob, BLOCKED, B) >= 2).then_some(()) }).await;
-    std::fs::write(knob.join(BLOCKED), "pass").unwrap();
+    rafka_node_rpc_testkit::write_hydrate_knob(&estate.root, BLOCKED, "pass").unwrap();
     let rest = until_complete(&mut stream).await;
     assert!(!rest.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })), "nothing is framed Blocked once the hook passed: {rest:?}");
     assert!(rest.iter().any(|f| matches!(f, BuildFrame::Step { step, .. } if step == "WaitForNodeReady")), "WaitForNodeReady completed: {rest:?}");
