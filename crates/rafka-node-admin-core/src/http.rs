@@ -282,7 +282,10 @@ impl ControlPlane {
             // The topology never names a `.old` path: the parked predecessor a replacement left there
             // is found in the view alone, and only a delete acts on it.
             let parked_old = kind == ActionKind::Delete && path.old;
-            if (kind == ActionKind::Delete) != path.old || (!parked_old && !current.topology.contains(&path)) {
+            // A birth of a mesh deleted at mesh.deleted (its last admin, alive): no accepted Build names
+            // the mesh, and only a delete acts on it (mesh-delete.md step 7).
+            let deleted_mesh = kind == ActionKind::Delete && !path.old && !current.topology.meshes.contains_key(&path.mesh) && self.of_deleted_mesh(&path).await;
+            if (kind == ActionKind::Delete) != (path.old || deleted_mesh) || (!parked_old && !deleted_mesh && !current.topology.contains(&path)) {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
                 return Err(Refusal::Reject(reject));
@@ -327,8 +330,9 @@ impl ControlPlane {
                 let unheard = matches!(n.status, crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
                 // A start is the transition out of Leaving, and only for a parked process; every other action needs a live node.
                 let startable = kind == ActionKind::Start && n.parked;
-                // A delete acts on the parked predecessor, or on one whose exit is already proven.
-                let deletable = kind == ActionKind::Delete && (n.parked || n.status == crate::model::NodeStatus::Dead);
+                // A delete acts on the parked predecessor, or on one whose exit is already proven, or on
+                // the last admin of a deleted mesh, live or stopped: its node.delete stops it first.
+                let deletable = kind == ActionKind::Delete && (n.parked || n.status == crate::model::NodeStatus::Dead || deleted_mesh);
                 let needs_live = !matches!(kind, ActionKind::Start | ActionKind::Delete);
                 if (kind == ActionKind::Start && !startable) || (kind == ActionKind::Delete && !deletable) || (needs_live && !n.status.is_live() && !(replace && unheard)) {
                     let reason = match kind {
@@ -337,7 +341,7 @@ impl ControlPlane {
                         ActionKind::Drain => "a drain needs a live node",
                         ActionKind::Stop => "a stop needs a live node",
                         ActionKind::Start => "a start needs a parked node",
-                        ActionKind::Delete => "a delete of a .old path needs the parked predecessor or one whose exit is proven",
+                        ActionKind::Delete => "a delete of a .old path needs the parked predecessor or one whose exit is proven; any other delete through this route is of a deleted mesh's birth",
                     };
                     return Err(not_live(&outer, route, &path, n.status, reason));
                 }
@@ -380,6 +384,17 @@ impl ControlPlane {
 }
 
 impl ControlPlane {
+    /// Whether `path` is a birth of a mesh deleted at mesh.deleted, as the live view holds it: the
+    /// mesh's status is deleted (its row Dead), and its last admin lives on until its own node.delete
+    /// (mesh-delete.md steps 6-7).
+    pub async fn of_deleted_mesh(&self, path: &PathName) -> bool {
+        let t = match self.view_now.get() {
+            Some(project) => project(),
+            None => self.topology.read().await.clone(),
+        };
+        t.meshes.iter().any(|m| m.name == path.mesh && m.status == crate::model::ScopeStatus::Dead)
+    }
+
     /// Open the next attempt of the accepted Build as the recovery of `path` from its exited birth
     /// `(node_id, incarnation)` (node-recovery.md "Execution"): one topology Build in flight, so a
     /// Build still Pending or Running answers `BuildInProgress`. No live-status check: the node is
@@ -676,10 +691,11 @@ async fn spawn_node(State(cp): State<Shared>, raw: String) -> Result<Response, R
 
 async fn delete_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    // `node.delete` of the parked predecessor a replacement left at `<path>.old`: the topology never
-    // names that path, so the delete is the next attempt of the accepted Build, fenced to the exact
-    // parked birth (node-decommission.md).
-    if node.old {
+    // `node.delete` of the parked predecessor a replacement left at `<path>.old`, or of the last
+    // admin of a deleted mesh (mesh-delete.md step 7: a separate node.delete after mesh.deleted): the
+    // topology never names that path, so the delete is the next attempt of the accepted Build, fenced
+    // to the exact birth (node-decommission.md).
+    if node.old || cp.of_deleted_mesh(&node).await {
         return Ok(accepted(cp.open_attempt("DELETE /api/nodes/{name}", AttemptReason::Delete, node, ActionKind::Delete, None).await?));
     }
     Ok(accepted(cp.submit("DELETE /api/nodes/{name}", TopologyChange::RemoveNode { node }).await?))

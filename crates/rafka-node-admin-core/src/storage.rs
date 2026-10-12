@@ -28,23 +28,105 @@ use std::sync::Mutex;
 
 // ---------------------------------------------------------------- mesh.storage
 
-/// A Mesh's identity.
+/// A Mesh row (node-identity-and-state.md §2.7): the mesh's identity at its name's key, and whether
+/// its removal made it Dead. Written whole by the mesh's primary (the fabric-primary only as acting
+/// primary of a mesh with none), through the claim of its name ([`MeshStorage::claim_mesh`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshRecord {
     /// The mesh's minted id.
     pub mesh_id: MeshId,
-    /// The mesh's name.
+    /// The mesh's name: the row's key.
     pub name: String,
+    /// Set by the mesh's removal (mesh.deleted at its primary, or mesh-left at the fabric-primary as
+    /// acting primary): the mesh is Dead, its name is released (R-MN1 item 2) and its id is never
+    /// written live again.
+    pub dead: bool,
 }
 
-/// The durable record of the meshes this admin knows.
+/// What a claim of a mesh's name wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeshClaim {
+    /// The row was written at the name's key: the key was free, held by this mesh's own row with
+    /// other contents (its Dead write), or held by another mesh's Dead row, which `over` names (its
+    /// removal released the name, R-MN1).
+    Written {
+        /// The Dead mesh whose row the claim took the name over.
+        over: Option<MeshId>,
+    },
+    /// This mesh's own row stands at the key exactly as given: nothing is written (a re-claim at the
+    /// fabric's state-commit, a retry, a replaced primary).
+    Held,
+}
+
+/// Why a claim of a mesh's name wrote nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MeshClaimRefused {
+    /// Another mesh's live row holds the name: it is released only when that mesh's row is Dead.
+    NameHeld {
+        /// The name claimed.
+        name: String,
+        /// The mesh whose row holds it.
+        by: MeshId,
+    },
+    /// This mesh's own row at the name is Dead: a dead mesh is never written live again and its id
+    /// is never reissued (states.md); only its Dead row is ever written again.
+    MeshDead {
+        /// The name claimed.
+        name: String,
+        /// The dead mesh.
+        mesh_id: MeshId,
+    },
+}
+
+impl MeshClaimRefused {
+    /// The span outcome that names the refusal.
+    pub fn outcome(&self) -> &'static str {
+        match self {
+            Self::NameHeld { .. } => "name-held",
+            Self::MeshDead { .. } => "mesh-dead",
+        }
+    }
+}
+
+impl std::fmt::Display for MeshClaimRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NameHeld { name, by } => write!(f, "the mesh name {name} is held by mesh {by}: it is released only when that mesh's row is Dead"),
+            Self::MeshDead { name, mesh_id } => write!(f, "mesh {mesh_id}'s row at {name} is Dead: a dead mesh is never written live again"),
+        }
+    }
+}
+
+impl std::error::Error for MeshClaimRefused {}
+
+/// What a claim of `row` meets in `held`, the row at its name's key: free (none, or another mesh's
+/// Dead row), this mesh's own row, or held by another mesh's live row.
+fn claim_mesh_against(held: Option<&MeshRecord>, row: &MeshRecord) -> Result<MeshClaim, MeshClaimRefused> {
+    match held {
+        None => Ok(MeshClaim::Written { over: None }),
+        Some(h) if h == row => Ok(MeshClaim::Held),
+        Some(h) if h.mesh_id == row.mesh_id && h.dead => Err(MeshClaimRefused::MeshDead { name: row.name.clone(), mesh_id: row.mesh_id.clone() }),
+        Some(h) if h.mesh_id == row.mesh_id => Ok(MeshClaim::Written { over: None }),
+        Some(h) if h.dead => Ok(MeshClaim::Written { over: Some(h.mesh_id.clone()) }),
+        Some(h) => Err(MeshClaimRefused::NameHeld { name: row.name.clone(), by: h.mesh_id.clone() }),
+    }
+}
+
+/// The durable record of the meshes this admin knows: each mesh's row at its name.
 #[async_trait]
 pub trait MeshStorage: Send + Sync {
-    /// The record of the mesh named `name`.
+    /// The row at the name `name`: a point read through its key; `None` when none was ever written.
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError>;
-    /// Keep `record`, keyed by its mesh name.
-    async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError>;
-    /// Every mesh record held.
+    /// Claim `record.name` for `record.mesh_id` and keep `record` as the Mesh row at that key. The
+    /// claim is here, inside the adapter, and nowhere else (node-identity-and-state.md §2.7, R13):
+    /// insert-and-fail on the name's key, decided by the store in one step against every other write
+    /// of this store. The key is free when no row is there or another mesh's Dead row is (its removal
+    /// released the name): `record` is put whole. This mesh's own row there is the same mesh
+    /// re-claiming its name: idempotent, written only when `record` differs (its Dead write), and a
+    /// Dead row is never written live again (`MeshDead`). Another mesh's live row holds the name:
+    /// `NameHeld` naming that mesh, and nothing is written.
+    async fn claim_mesh(&self, record: &MeshRecord) -> Result<Result<MeshClaim, MeshClaimRefused>, StorageError>;
+    /// Every mesh row held.
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError>;
 }
 
@@ -57,43 +139,58 @@ impl MeshStorage for MemoryMeshStorage {
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
         Ok(self.0.lock().unwrap().get(name).cloned())
     }
-    async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
-        self.0.lock().unwrap().insert(record.name.clone(), record.clone());
-        Ok(())
+    async fn claim_mesh(&self, record: &MeshRecord) -> Result<Result<MeshClaim, MeshClaimRefused>, StorageError> {
+        // The internal index is the map's key: the look and the insert are one step under its lock.
+        let mut rows = self.0.lock().unwrap();
+        let claimed = claim_mesh_against(rows.get(&record.name), record);
+        if let Ok(MeshClaim::Written { .. }) = claimed {
+            rows.insert(record.name.clone(), record.clone());
+        }
+        Ok(claimed)
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
         Ok(self.0.lock().unwrap().values().cloned().collect())
     }
 }
 
-const MESH_FORMAT: &str = "mesh-record/1";
+const MESH_FORMAT: &str = "mesh-record/2";
 
 /// `<store root>/meshes/<name>.json`: each mesh's Mesh row, written by that mesh's primary.
 #[derive(Debug)]
-pub struct FileMeshStorage(FileRecords);
+pub struct FileMeshStorage {
+    rows: FileRecords,
+    /// Every claim is one at a time, so a claim's look at the key and its write are one step against
+    /// every other write of this store.
+    claims: tokio::sync::Mutex<()>,
+}
 
 impl FileMeshStorage {
     /// Open the store under the fabric's store root, written by the process born as `writer`.
     pub async fn open(root: &crate::store_root::StoreRoot, writer: &IncarnationId) -> Result<Self, StorageError> {
-        Ok(Self(root.records(root.dir(), "meshes", writer).await?))
+        Ok(Self { rows: root.records(root.dir(), "meshes", writer).await?, claims: tokio::sync::Mutex::new(()) })
     }
 
     /// The records the mesh-primary seat writes (its Mesh row): what a seat transfer cuts off.
     pub fn mesh_primary_records(&self) -> [&FileRecords; 1] {
-        [&self.0]
+        [&self.rows]
     }
 }
 
 #[async_trait]
 impl MeshStorage for FileMeshStorage {
     async fn mesh(&self, name: &str) -> Result<Option<MeshRecord>, StorageError> {
-        self.0.read(name, MESH_FORMAT).await
+        self.rows.read(name, MESH_FORMAT).await
     }
-    async fn put_mesh(&self, record: &MeshRecord) -> Result<(), StorageError> {
-        self.0.write(&record.name, MESH_FORMAT, record).await
+    async fn claim_mesh(&self, record: &MeshRecord) -> Result<Result<MeshClaim, MeshClaimRefused>, StorageError> {
+        let _one = self.claims.lock().await;
+        let claimed = claim_mesh_against(self.rows.read::<MeshRecord>(&record.name, MESH_FORMAT).await?.as_ref(), record);
+        if let Ok(MeshClaim::Written { .. }) = claimed {
+            self.rows.write(&record.name, MESH_FORMAT, record).await?;
+        }
+        Ok(claimed)
     }
     async fn meshes(&self) -> Result<Vec<MeshRecord>, StorageError> {
-        self.0.list(MESH_FORMAT).await
+        self.rows.list(MESH_FORMAT).await
     }
 }
 
@@ -703,14 +800,14 @@ mod tests {
     #[tokio::test]
     async fn mesh_nodes_and_connections_hold_their_records_in_memory_and_across_a_reopen() {
         let d = crate::record_store::tempdir("storage");
-        let mesh = MeshRecord { mesh_id: MeshId::mint(), name: "mesh1".into() };
+        let mesh = MeshRecord { mesh_id: MeshId::mint(), name: "mesh1".into(), dead: false };
         let (own, peer) = (node("mesh1.admin.1"), node("mesh1.rpc.1"));
         let (up, down) = (fact(ConnectionState::Connected), fact(ConnectionState::Disconnected));
         let check = async |m: &dyn MeshStorage, n: &dyn NodesStorage, c: &dyn ConnectionsStorage, fresh: bool| {
             if fresh {
                 assert_eq!(m.mesh("mesh1").await.unwrap(), None);
                 assert_eq!(n.own().await.unwrap(), None);
-                m.put_mesh(&mesh).await.unwrap();
+                assert_eq!(m.claim_mesh(&mesh).await.unwrap(), Ok(MeshClaim::Written { over: None }));
                 n.put_own(&own).await.unwrap();
                 n.put_contact(&peer).await.unwrap();
                 c.put_connection(&up).await.unwrap();
@@ -764,7 +861,7 @@ mod tests {
         // The fabric's first state-commit published the store: what follows writes to it.
         root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
         let writes = async |n: &FileNodesStorage, m: &FileMeshStorage, mesh: &str| {
-            m.put_mesh(&MeshRecord { mesh_id: MeshId::mint(), name: mesh.into() }).await.unwrap();
+            m.claim_mesh(&MeshRecord { mesh_id: MeshId::mint(), name: mesh.into(), dead: false }).await.unwrap().expect("each mesh claims a name no mesh holds");
             for name in [format!("{mesh}.admin.1"), format!("{mesh}.rpc.1"), format!("{mesh}.rpc.2")] {
                 n.put_node_row(&row(&name)).await.unwrap().expect("each row is at a name no node holds");
                 n.put_contact(&node(&name)).await.unwrap();
@@ -955,6 +1052,37 @@ mod tests {
         };
         check(&MemoryNodesStorage::default(), "memory").await;
         check(&FileNodesStorage::open(&d, &crate::store_root::StoreRoot::at(&d.join("root")), "mesh1", &IncarnationId::mint()).await.unwrap(), "file").await;
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// CONTRACT (node-identity-and-state.md §2.7: the mesh's name is claimed "by insert-and-fail on
+    /// the key `(path, name)` ... Held means held by a different MeshId: `NameHeld` names that holder.
+    /// The same MeshId re-claiming its own name ... is idempotent and accepted"; R-MN1: only a delete
+    /// releases a name, a mesh's by its removal, the row Dead; states.md: a mesh id is never reissued,
+    /// dead is final): the mesh store's adapter is where a mesh's name is claimed. A free key takes
+    /// the row; the same mesh re-claiming finds its own row and writes nothing; another mesh's claim
+    /// of the live name is refused naming the holder and writes nothing; the holder's Dead row is a
+    /// write of its own row, and a repeat of it writes nothing; the Dead mesh is never written live
+    /// again; another mesh claims the name over the Dead row, which the claim names. The memory store
+    /// and the file store each run their own check.
+    #[tokio::test]
+    async fn a_mesh_name_is_claimed_in_the_adapter_and_only_a_dead_row_releases_it() {
+        let d = crate::record_store::tempdir("storage-mesh-claim");
+        let check = async |m: &dyn MeshStorage, store: &str| {
+            let (first, second) = (MeshId::mint(), MeshId::mint());
+            let row = |id: &MeshId, dead: bool| MeshRecord { mesh_id: id.clone(), name: "mesh2".into(), dead };
+            assert_eq!(m.claim_mesh(&row(&first, false)).await, Ok(Ok(MeshClaim::Written { over: None })), "{store}: a free key takes the row");
+            assert_eq!(m.claim_mesh(&row(&first, false)).await, Ok(Ok(MeshClaim::Held)), "{store}: the same mesh re-claiming its name writes nothing");
+            assert_eq!(m.claim_mesh(&row(&second, false)).await, Ok(Err(MeshClaimRefused::NameHeld { name: "mesh2".into(), by: first.clone() })), "{store}: another mesh's live row holds mesh2");
+            assert_eq!(m.mesh("mesh2").await.unwrap(), Some(row(&first, false)), "{store}: nothing is written by a refused claim");
+            assert_eq!(m.claim_mesh(&row(&first, true)).await, Ok(Ok(MeshClaim::Written { over: None })), "{store}: the holder's Dead row is a write of its own row");
+            assert_eq!(m.claim_mesh(&row(&first, true)).await, Ok(Ok(MeshClaim::Held)), "{store}: a repeat of the Dead row writes nothing");
+            assert_eq!(m.claim_mesh(&row(&first, false)).await, Ok(Err(MeshClaimRefused::MeshDead { name: "mesh2".into(), mesh_id: first.clone() })), "{store}: a dead mesh is never written live again");
+            assert_eq!(m.claim_mesh(&row(&second, false)).await, Ok(Ok(MeshClaim::Written { over: Some(first.clone()) })), "{store}: a Dead row holds no name");
+            assert_eq!(m.mesh("mesh2").await.unwrap(), Some(row(&second, false)), "{store}: the claim over the Dead row is written");
+        };
+        check(&MemoryMeshStorage::default(), "memory").await;
+        check(&FileMeshStorage::open(&crate::store_root::StoreRoot::at(&d.join("root")), &IncarnationId::mint()).await.unwrap(), "file").await;
         let _ = std::fs::remove_dir_all(&d);
     }
 }

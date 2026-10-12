@@ -417,6 +417,123 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
     estate.shutdown().await;
 }
 
+/// CONTRACT (node-recovery.md "Failure and receipts": "the mesh-primary is the submitter that
+/// resubmits by `build_id` ... the mesh-primary's next tick finds the member still proven exited and
+/// submits the recovery"; CLAUDE.md read rule: node-local state that should be the durable answer is
+/// replaced by the read): in mesh2 (two node-admins, its mesh-primary not the fabric-primary) a
+/// member's data dir loses its node-key and the member is killed. Its Build's node.delete completes
+/// and its node.create refuses at PrepareStorage, so the attempt ends Failed. mesh2's primary is then
+/// killed with the key still missing (nothing it submitted can complete), and mesh2's other admin
+/// takes the seat. Once no attempt for the member is in flight, the key is put back. The new
+/// mesh-primary never submitted for the member, never inspects it (its birth departed) and holds
+/// nothing of it in memory: it reads the accepted Build's Failed attempt and the birth's exit-proof
+/// row and submits the same exited birth over op 0x20 to the fabric-primary in mesh1. A later attempt
+/// of the same Build runs only the create and the update, and the path comes back as a new node over
+/// the same data dir and endpoint key. Must NOT happen: the path left empty after the seat moved, a
+/// second node.delete of the exited birth, a Build minted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_the_mesh_primary_seat() {
+    let estate = Estate::bootstrap(owner("a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_the_mesh_primary_seat"), "fabric1", "mesh1").await;
+    let (status, a) = estate
+        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}, {"name": "mesh2", "node_admin": 2, "rpc_node": 2}]}))
+        .await;
+    assert_eq!(status, 202, "{a}");
+    let birth_build = s(&a["build_id"]);
+    estate.await_build(&birth_build, SETTLE).await;
+    estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+    let nodes = estate.nodes().await;
+    let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
+    assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
+    let mp = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
+    let heir = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != mp.as_str()).expect("mesh2's second admin")["name"]);
+    const NODE: &str = "mesh2.rpc.1";
+    let before = estate.node(NODE).await;
+    let data_dir = estate.data_dir_of(NODE).await;
+    let key_path = Path::new(&data_dir).join("node-key");
+    let key = std::fs::read(&key_path).unwrap_or_else(|e| panic!("{NODE}'s node-key in {data_dir}: {e}"));
+    std::fs::remove_file(&key_path).unwrap();
+    estate.kill_node(NODE).await;
+
+    let submits = |spans: &[Value]| -> Vec<Value> { named(spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect() };
+    let failed = wait_for("the create of the Build for the proven exit fails at PrepareStorage", SETTLE, || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("failed")) }).await;
+    let failed_attempt: u64 = s(&failed["attributes"]["attempt"]).parse().expect("the failed submit names its attempt");
+    let outcome = s(&failed["attributes"]["outcome"]);
+    assert!(outcome.contains(&format!("create-node:{NODE} step PrepareStorage")) && outcome.contains("node-key is missing"), "the create refused the dir with no key by name: {failed}");
+    assert_eq!((s(&failed["attributes"]["submitter"]), s(&failed["attributes"]["fabric_primary"]), s(&failed["attributes"]["build_id"])), (mp.clone(), fp.clone(), birth_build.clone()), "{mp} submitted over op 0x20 to {fp}: {failed}");
+
+    // mesh2's seat moves: its primary is killed with the key still missing, so nothing it submitted
+    // can complete, and its second admin takes the seat.
+    estate.kill_node(&mp).await;
+    let seat = wait_for(&format!("{heir} takes mesh2's seat"), SETTLE, || async {
+        named(&estate.spans(), "rdm.mesh.election.resolve.via-mesh-primary")
+            .into_iter()
+            .find(|sp| sp["attributes"]["observer"] == heir.as_str() && sp["attributes"]["winner_path"] == heir.as_str() && start(sp) > start(&failed))
+            .cloned()
+    })
+    .await;
+    // No attempt for the member is in flight (one the killed primary opened or ran is continued by
+    // the drive and fails on the missing key): only a later submit can bring the path back.
+    let (_, idle) = wait_for(&format!("no attempt for {NODE} is in flight in {birth_build}"), SETTLE, || async {
+        let (status, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+        let running = matches!(b["state"].as_str(), Some("pending" | "running"));
+        let member = b["action"]["action"] == "recover" && b["action"]["path"] == NODE;
+        (status == 200 && !(running && member)).then_some((status, b))
+    })
+    .await;
+    std::fs::write(&key_path, &key).unwrap();
+
+    let after = wait_for(&format!("{NODE} ready as a new node after mesh2's seat moved"), SETTLE, || async {
+        let n = estate.node_opt(NODE).await?;
+        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
+    })
+    .await;
+    assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
+    assert_eq!(estate.data_dir_of(NODE).await, data_dir, "the same data dir");
+    let done = wait_for("the completed submit of the exited birth is exported", Duration::from_secs(60), || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("complete")) }).await;
+    assert_eq!((s(&done["attributes"]["submitter"]), s(&done["attributes"]["fabric_primary"])), (heir.clone(), fp.clone()), "the admin that took the seat submitted over op 0x20 to {fp}: {done}");
+    assert_eq!(s(&done["attributes"]["disposition"]), "created", "the fabric-primary opened the next attempt: {done}");
+    assert_eq!(s(&done["attributes"]["build_id"]), birth_build, "the same Build, no Build minted: {done}");
+    assert_eq!(done["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {done}");
+    let attempt: u64 = s(&done["attributes"]["attempt"]).parse().expect("the completed submit names its attempt");
+    assert!(attempt > failed_attempt, "a later attempt than the failed one: {done}");
+    assert_eq!(s(&done["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{done}");
+    assert!(s(&done["attributes"]["after_failed_attempt"]).parse::<u64>().is_ok_and(|a| a >= failed_attempt && a < attempt), "the submit follows the Failed attempt the Build holds: {done}");
+
+    let spans = wait_for("the completing attempt's reconcile span is exported", Duration::from_secs(30), || async {
+        let spans = estate.spans();
+        reconcile_span(&spans, &birth_build, &attempt.to_string()).is_some().then_some(spans)
+    })
+    .await;
+    // The fabric-primary admitted it from the op 0x20 door (route build.create), at that attempt.
+    let admitted = named(&spans, "rdm.node_admin.build.update.via-recovery")
+        .into_iter()
+        .find(|sp| sp["attributes"]["node_id"] == before["node_id"] && s(&sp["attributes"]["attempt"]) == attempt.to_string())
+        .unwrap_or_else(|| panic!("{fp} admitted attempt {attempt} for {NODE}"));
+    assert_eq!((s(&admitted["attributes"]["route"]), s(&admitted["attributes"]["outcome"])), ("build.create".to_string(), "admitted".to_string()), "{admitted}");
+    assert!(
+        !named(&spans, "rdm.node_admin.node.resolve.via-provider-inspection").iter().any(|sp| sp["attributes"]["node_id"] == before["node_id"] && sp["attributes"]["inspector"] == heir.as_str()),
+        "{heir} never inspected the departed birth: the submit came from the durable facts"
+    );
+    let reconcile = reconcile_span(&spans, &birth_build, &attempt.to_string()).expect("the attempt's reconcile span");
+    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("create-node:{NODE},update-node:{NODE}"), "only what was left: {reconcile}");
+    let (_, build) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+    let steps = build["steps"].as_array().cloned().unwrap_or_default();
+    let deleted: Vec<&Value> = steps.iter().filter(|r| r["operation"] == format!("retire-node:{NODE}").as_str() && r["step"] == "NodeDeleted").collect();
+    assert_eq!(deleted.len(), 1, "one node.delete of the exited birth, never again: {deleted:?}");
+    eprintln!(
+        "s57 part 3: failed attempt {failed_attempt} by {mp} trace {} | seat {heir} trace {} | idle at {} attempt {} | complete attempt {attempt} by {heir} trace {} | admitted trace {}",
+        failed["trace_id"].as_str().unwrap_or(""),
+        seat["trace_id"].as_str().unwrap_or(""),
+        s(&idle["state"]),
+        idle["attempt"],
+        done["trace_id"].as_str().unwrap_or(""),
+        admitted["trace_id"].as_str().unwrap_or(""),
+    );
+    estate.record_trace_url(done["trace_id"].as_str().unwrap_or(""));
+    estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 2, 2)], SETTLE).await;
+    estate.shutdown().await;
+}
+
 /// The fence spans of the exited birth `old` (node-recovery.md "Delete fences the old instance
 /// before the new join"): its resolver entry and the direct paths of its endpoint key retired.
 fn exit_fences<'a>(spans: &'a [Value], old: &Value) -> Vec<&'a Value> {

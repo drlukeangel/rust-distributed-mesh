@@ -1,12 +1,16 @@
-//! The two sides of the mesh-leave workflow a runner executes (mesh-leave.md).
+//! The two sides of the mesh-delete workflow a runner executes (mesh-delete.md).
 //!
 //! The owner's side ([`AdminRunner::shutdown_mesh`]) is the fabric-primary: it owns the outer
-//! workflow `shutdown-mesh:<mesh_id>` once the fabric seat is outside the leaving mesh (the
+//! workflow `shutdown-mesh:<mesh_id>` once the fabric seat is outside the deleting mesh (the
 //! confirmed fabric-primary handover, `fabric_handover`). It captures the accepted roster and the
 //! final primary's provider access (refusing before anything is dismantled when it has none),
-//! publishes `mesh-leaving`, sends `LeaveMesh`, waits for the validated `MeshLeave` handoff, drains
-//! and stops the final primary itself, and only with every exact exit proven records `MeshLeft`.
-//! The leaving mesh's primary's side ([`AdminRunner::admit_leave`]) admits `LeaveMesh`, runs the
+//! publishes `mesh-leaving`, sends `LeaveMesh`, waits for the validated `MeshLeave` handoff
+//! (mesh.deleted) and records its completion receipt: the mesh.delete ends there, the final primary
+//! alive (steps 5-6). The final primary's end is a separate node.delete with the fabric-primary as
+//! executor (step 7); once this admin publishes that birth deleted from its exact exit proof
+//! ([`AdminRunner::mesh_left_after_delete`]) every birth is proven exited and it records `MeshLeft`
+//! and publishes mesh-left (R-MD1 items 2-3).
+//! The deleting mesh's primary's side ([`AdminRunner::admit_leave`]) admits `LeaveMesh`, runs the
 //! member workflows (every ordinary node in parallel, then every other node-admin in parallel),
 //! records one exit manifest as a step receipt of the accepted Build and calls `MeshLeave` up to
 //! the owner, still running.
@@ -14,16 +18,16 @@
 use super::*;
 use crate::build_state::{BuildStepReceipt, StepOutcome};
 use crate::deployment::pipeline::{MeshLeaveEvent, RuntimeProof, TerminalReceipt};
-use crate::mesh_leave::{accepted_roster, first_mismatch, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_MESH_LEFT};
+use crate::mesh_leave::{accepted_roster, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_MESH_DELETED, STEP_MESH_LEFT};
 use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
 
 /// How long the owner waits for the leaving mesh's `MeshLeave` handoff before its attempt ends
-/// incomplete. A leaving primary whose member workflows end incomplete says so inside a
+/// incomplete. A deleting primary whose member workflows end incomplete says so inside a
 /// `MeshLeave` call, which ends the attempt at once; this bound covers a handoff that never
 /// arrives (a lost call, a lost primary). A failed attempt ends the Build; the fabric-primary's
-/// drift check (`crate::admin::reconcile_drift`) opens the next attempt while the removed mesh is
-/// still live with no `MeshLeft` receipt, and that attempt resumes from the receipts.
+/// drift check (`crate::admin::reconcile_drift`) opens the next attempt while the removed mesh's
+/// mesh.delete holds no completion receipt, and that attempt resumes from the receipts.
 const HANDOFF_WAIT: Duration = Duration::from_secs(120);
 
 /// What serves `LeaveMesh` and `MeshLeave` for a running admin.
@@ -38,6 +42,9 @@ impl MeshLeaver for LeaveDoor {
     }
     async fn mesh_leave(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply {
         self.runner.validate_handoff(sender, req).await
+    }
+    async fn birth_deleted(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        self.runner.mesh_left_after_delete(op).await
     }
 }
 
@@ -90,15 +97,10 @@ impl AdminRunner {
                 self.forget_mesh_id(mesh);
                 return Ok(());
             }
-            crate::mesh_leave::OwnerResume::FinalExited(all) => {
-                // Resumed after the final primary's exact exit was recorded: nothing is called (it
-                // is gone); the proof set from the receipts is what MeshLeft records.
-                let last = &all.final_primary;
-                if let Some(node) = view.nodes.iter().find(|n| n.node_id.to_string() == last.node_id && n.incarnation_id.as_ref().is_some_and(|i| i.0 == last.incarnation_id)).cloned() {
-                    self.after_mesh_exit(&node, "mesh-leave");
-                }
-                let event = MeshLeaveEvent { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string(), receipt_manifest: None, final_primary: None };
-                return self.record_mesh_left(&key, mesh, all, event).await;
+            crate::mesh_leave::OwnerResume::Deleted(_) => {
+                // Resumed after mesh.deleted's completion was recorded: the mesh.delete ended, its
+                // final primary alive; nothing is called. Its end is its own node.delete.
+                return Ok(());
             }
             crate::mesh_leave::OwnerResume::Lead => {}
         }
@@ -129,8 +131,9 @@ impl AdminRunner {
                 recorded = crate::mesh_leave::admitted_of(&steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))?;
             }
         }
-        // The final primary's authoritative provider domain: access before anything is dismantled.
-        let (final_record, final_handle) = self.handle_for(&primary).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: no provider proof path for its final primary: {e}"))?;
+        // The final primary's authoritative provider domain: access before anything is dismantled
+        // (its node.delete, executed by this fabric-primary, proves its exit through it).
+        let (_, final_handle) = self.handle_for(&primary).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: no provider proof path for its final primary: {e}"))?;
         let final_fact = final_handle.fact().ok_or_else(|| format!("{outer} is refused before {mesh} is dismantled: the final primary {} has no exact runtime handle", primary.name))?;
         let (final_primary, final_runtime) = (RosterBirth::of(&primary)?, RuntimeProof::of(&final_fact));
         let admitted = match recorded {
@@ -155,7 +158,7 @@ impl AdminRunner {
             return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id));
         }
         let handoff = self.leaves.open(key.clone(), admitted.clone());
-        let result = self.lead_leave(build_id, attempt, mesh, mesh_id, outer, node_rpc, &primary, final_record, final_handle, &key, &admitted, handoff).await;
+        let result = self.lead_leave(build_id, attempt, mesh_id, outer, node_rpc, &primary, &key, handoff).await;
         if result.is_err() {
             // This attempt's open leave ends with it; the receipts are the record a resumed attempt reads.
             self.leaves.close(&key);
@@ -262,21 +265,18 @@ impl AdminRunner {
         crate::admin::birth_runtime_row(store, &self.me, &node, &node_id, &IncarnationId(lost.incarnation_id.clone())).await
     }
 
-    /// Steps 2-7 of the owner's workflow, for the leave `key` opened with `admitted`.
+    /// Steps 2-5 of the owner's workflow, for the leave `key` opened at admission: `mesh.deleting`,
+    /// `LeaveMesh`, the validated handoff (mesh.deleted) and its completion receipt.
     #[allow(clippy::too_many_arguments)]
     async fn lead_leave(
         &self,
         build_id: &crate::build::BuildId,
         attempt: u32,
-        mesh: &str,
         mesh_id: &MeshId,
         outer: &str,
         node_rpc: &crate::node_rpc::ProcessNodeRpc,
         primary: &Node,
-        final_record: Node,
-        final_handle: crate::deployment::provider::DeploymentHandle,
         key: &LeaveKey,
-        admitted: &Admitted,
         mut handoff: tokio::sync::watch::Receiver<Option<crate::mesh_leave::LeaveOutcome>>,
     ) -> Result<(), String> {
         let event = MeshLeaveEvent { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string(), receipt_manifest: None, final_primary: None };
@@ -289,7 +289,9 @@ impl AdminRunner {
             rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => return Err(format!("{outer}: {} refused leave-mesh: {} ({:?})", primary.name, r.value().name(), r.value())),
             other => return Err(format!("{outer}: leave-mesh to {} ended {} ({other:?}): the mesh may or may not have admitted it", primary.name, other.name())),
         }
-        // Steps 3-4 run at the mesh-primary; its validated handoff is what this waits for.
+        // Steps 3-4 run at the mesh-primary; its validated handoff, mesh.deleted, is what this waits
+        // for. The validation covered the accepted roster (and every amendment) exactly, every birth
+        // but the final primary, which reports still running.
         let manifest = match tokio::time::timeout(HANDOFF_WAIT, handoff.wait_for(|m| m.is_some())).await {
             Ok(Ok(m)) => match m.clone().expect("waited for Some") {
                 Ok(manifest) => manifest,
@@ -298,34 +300,94 @@ impl AdminRunner {
             Ok(Err(_)) => return Err(format!("{outer}: the open leave was closed while its handoff was awaited")),
             Err(_) => return Err(format!("{outer}: {} sent no valid mesh-leave within {HANDOFF_WAIT:?}; the workflow is incomplete and its receipts stand", primary.name)),
         };
-        // Step 5: the final primary drains and stops under the owner's authority.
-        let template = self.template_for(NodeKind::NodeAdmin, mesh).await?;
-        let mut node = final_record.clone();
-        let terminal = self.pipeline(&template).shutdown_member(build_id, attempt, outer, &mut node, &final_handle).await.map_err(|e| format!("{outer}: the final primary {}: {e}", primary.name))?;
-        self.records.put_exit_of_receipt(&terminal).await.map_err(|e| format!("{outer}: the final primary {}'s exit is not recorded: {e}", primary.name))?;
-        self.after_mesh_exit(&node, "mesh-leave");
-        // Steps 6-7: the complete proof set, or nothing.
-        let mut all = manifest;
-        all.final_runtime = None;
-        all.receipts.push(terminal);
-        if let Some((field, expected, reported)) = first_mismatch(&all, &admitted.roster, &admitted.final_primary, true) {
-            return Err(format!("{outer}: the proof set is not complete: {field}: expected {expected}, reported {reported}"));
-        }
-        self.record_mesh_left(key, mesh, all, event).await
+        // Step 5: mesh.deleted ends the mesh.delete. The final primary is not deleted inside its own
+        // mesh.delete: it keeps publishing its aggregate until a separate node.delete (step 7).
+        self.record_mesh_deleted(key, manifest).await
     }
 
-    /// Step 7: the complete proof set `all` is recorded as the `MeshLeft` receipt, then the
-    /// mesh-left hook runs and the mesh's id is dropped.
+    /// mesh.deleted's completion (mesh-delete.md step 5): the validated manifest `manifest` (every
+    /// birth of the mesh but its final primary) is recorded as the `MeshDeleted` receipt and the open
+    /// leave ends. Nothing of the final primary is stopped, written or published here.
+    async fn record_mesh_deleted(&self, key: &LeaveKey, manifest: ExitManifest) -> Result<(), String> {
+        crate::mesh_leave::record_completion(&*self.builds, key, &self.me.to_string(), &manifest).await?;
+        // The mesh-primary committed the row Dead before it called: this fabric-primary's view states
+        // the mesh deleted from its acceptance on, so a node.delete of its last admin names it.
+        self.records.hold_mesh_deleted(&key.mesh_id);
+        self.leaves.close(key);
+        self.refresh_view().await;
+        Ok(())
+    }
+
+    /// mesh-left (R-MD1 items 2-3): this admin published `op`'s birth deleted from the provider's
+    /// exact exit proof. When that birth is the final primary a mesh.delete's completion receipt names
+    /// (a point read of the Build facts, [`crate::build_state::BuildStateAdapter::mesh_deleted_of`]),
+    /// every birth of the mesh is now proven exited: the final birth's exact Exited receipt is read
+    /// from the node.delete's own `TerminateRuntime` step receipt, the complete proof set is checked
+    /// ([`crate::mesh_leave::mesh_left_proof`]) and recorded as `MeshLeft`, and mesh-left is published.
+    /// Any other deleted birth names no completion and nothing happens. A refusal is spanned by name
+    /// and leaves the node.delete as it is.
+    pub(super) async fn mesh_left_after_delete(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        let found = match self.builds.mesh_deleted_of(&op.node_id, &op.incarnation).await {
+            Ok(Some(found)) => found,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.mesh.reject.via-mesh-left", node = %self.me, subject = %op.name, node_id = %op.node_id, reason = %format!("the mesh.delete completion index could not be read: {e}"))
+                    .in_scope(|| tracing::info!("mesh-left is not decided: the index of mesh.delete completions could not be read"));
+                return;
+            }
+        };
+        let (build_id, attempt, operation) = found;
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-final-birth-deleted", node = %self.me, subject = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %build_id, attempt, operation = %operation, deleted_by = %op.operation, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let result = self.mesh_left_in(op, &build_id, attempt, &operation).instrument(span.clone()).await;
+        match &result {
+            Ok(outcome) => {
+                span.record("outcome", *outcome);
+            }
+            Err(reason) => {
+                span.record("outcome", "refused");
+                span.record("reason", reason.as_str());
+            }
+        }
+        span.in_scope(|| tracing::info!("the final primary of a deleted mesh is proven exited: mesh-left is decided"));
+    }
+
+    async fn mesh_left_in(&self, op: &rafka_mesh_entity::LifecycleOp, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<&'static str, String> {
+        let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{operation}: the Build {build_id} could not be read for its completion: {e}"))?.steps;
+        if crate::mesh_leave::owner_resume(&steps, operation)? == crate::mesh_leave::OwnerResume::Left {
+            return Ok("already-applied");
+        }
+        let completion = crate::mesh_leave::completion_of(&steps, operation).ok_or_else(|| format!("{operation}: no {STEP_MESH_DELETED} receipt is held in {build_id}"))??;
+        // The final birth's exact Exited: its node.delete's TerminateRuntime receipt, in that Build.
+        let deleted_in = crate::build::BuildId(op.build_id.clone());
+        let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
+        let terminal = self
+            .builds
+            .read_build(&deleted_in)
+            .await
+            .map_err(|e| format!("{}: the Build {deleted_in} of the node.delete could not be read for its exit proof: {e}", op.operation))?
+            .steps
+            .into_iter()
+            .filter(|r| r.operation == op.operation && r.step == terminate && r.outcome == StepOutcome::Complete)
+            .filter_map(|r| r.output.and_then(|v| serde_json::from_value::<crate::deployment::pipeline::TerminalReceipt>(v).ok()))
+            .find(|t| t.node_id == op.node_id.as_str() && t.incarnation_id == op.incarnation.0)
+            .ok_or_else(|| format!("{}: no exact Exited receipt of {} {} is held in {deleted_in}", op.operation, op.name, op.incarnation.0))?;
+        let all = crate::mesh_leave::mesh_left_proof(&completion, &terminal).map_err(|e| format!("{operation}: the proof set is not complete: {e}"))?;
+        let mesh_id = MeshId::parse(&completion.mesh_id).map_err(|e| format!("{operation}: the completion names the mesh id {:?}, which does not parse: {e}", completion.mesh_id))?;
+        let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: operation.to_string() };
+        let event = MeshLeaveEvent { mesh_id, build_id: build_id.to_string(), attempt, operation: operation.to_string(), receipt_manifest: None, final_primary: None };
+        self.record_mesh_left(&key, &op.name.mesh, all, event).await?;
+        Ok("applied")
+    }
+
+    /// mesh-left: the complete proof set `all` (every birth, the final primary included) is recorded
+    /// as the `MeshLeft` receipt after the mesh's departed contacts are dropped and its row Dead is
+    /// ensured; then the mesh-left hook runs and the mesh's id is dropped.
     async fn record_mesh_left(&self, key: &LeaveKey, mesh: &str, all: ExitManifest, event: MeshLeaveEvent) -> Result<(), String> {
         let (build_id, attempt, outer, mesh_id) = (crate::build::BuildId(key.build_id.clone()), key.attempt, key.operation.as_str(), &key.mesh_id);
         let reference = manifest_reference(&key.build_id, attempt, outer, true);
-        // The final primary's row Deleted and the mesh row Dead, before the receipt: this
-        // fabric-primary is the acting primary of a mesh that has none left, as its view shows once
-        // it reads the exit-proof rows of the proof set's births, the final primary's included
-        // (R-EL1: the exited holder's seat is vacant).
-        self.refresh_view().await;
-        let records: Vec<Node> = self.topology.read().await.nodes.iter().filter(|n| n.mesh == mesh).cloned().collect();
-        crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &self.records.declared, &self.me.to_string(), key, mesh, &records, &all.final_primary, &all.receipts).await?;
+        // This fabric-primary is the acting primary of a mesh that has none left: the final birth's
+        // node.delete wrote its row Deleted and proved its exit.
+        crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &*self.mesh_storage, &self.records.declared, &self.me.to_string(), key, mesh, &all.receipts).await?;
         self.builds
             .append_step_receipt(&BuildStepReceipt {
                 build_id: build_id.clone(),
@@ -340,7 +402,6 @@ impl AdminRunner {
             .map_err(|e| format!("{outer}: the MeshLeft receipt could not be recorded: {e}"))?;
         tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left-receipt", mesh_id = %mesh_id, build_id = %build_id, attempt, operation = %outer, receipts = all.receipts.len(), roster = all.roster.len(), manifest = %reference)
             .in_scope(|| tracing::info!("every exact exit is proven: the MeshLeft receipt is recorded"));
-        self.leaves.close(key);
         self.lifecycle_events.mesh_left(&MeshLeaveEvent { receipt_manifest: Some(reference), ..event }).await;
         self.forget_mesh_id(mesh);
         self.refresh_view().await;
@@ -351,7 +412,9 @@ impl AdminRunner {
     /// mesh of the same name created after it is a new mesh with a new id. The id is dropped at the
     /// receipt, never left for a later sweep to find the mesh without a member.
     fn forget_mesh_id(&self, mesh: &str) {
-        self.records.meshes.lock().unwrap().remove(mesh);
+        if let Some(id) = self.records.meshes.lock().unwrap().remove(mesh) {
+            self.records.deleted_meshes_forget(&id);
+        }
     }
 
     /// `LeaveMesh` at the leaving mesh's primary: admit it and run the member workflows.
@@ -486,16 +549,19 @@ impl AdminRunner {
         members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, records, &known, |n| async move { self.shutdown_one(key, &n).await }, |b| async move { crate::mesh_leave::birth_row_deleted(self.records.node_rows().as_deref(), &self.me.to_string(), &key.operation, records, &b).await }).await
     }
 
-    /// One member's drain and stop and the provider's terminal receipt of its exact runtime.
+    /// One member's end (mesh-delete.md step 3: "The mesh-primary runs the whole node.delete for
+    /// every ordinary node"): the ordinary node.delete workflow ([`AdminRunner::delete_birth`]) of the
+    /// exact birth, under the mesh.delete's Build and attempt, and its exact Exited recorded as the
+    /// birth's exit-proof row. The provider's terminal receipt is the member's roster receipt.
     async fn shutdown_one(&self, key: &LeaveKey, n: &Node) -> Result<TerminalReceipt, String> {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-shutdown-member", node = %n.name, node_id = %n.node_id, operation = %key.operation, build_id = %key.build_id, attempt = key.attempt, outcome = tracing::field::Empty);
         let result = async {
-            let (mut record, handle) = self.handle_for(n).await?;
-            let template = self.template_for(n.kind, &n.mesh).await?;
-            let terminal = self.pipeline(&template).shutdown_member(&crate::build::BuildId(key.build_id.clone()), key.attempt, &key.operation, &mut record, &handle).await.map_err(|e| e.to_string())?;
+            let (record, handle) = self.handle_for(n).await?;
+            // Whether the birth is stopped is the record's the leave works from (a stopped member's
+            // delete goes straight to its exit proof), as `retire` takes it from the view.
+            let record = Node { parked: n.parked, ..record };
+            let terminal = self.delete_birth(&crate::build::BuildId(key.build_id.clone()), key.attempt, record, handle).await.map_err(|e| format!("{}'s node.delete: {e}", n.name))?;
             self.records.put_exit_of_receipt(&terminal).await.map_err(|e| format!("{}'s exit is not recorded: {e}", n.name))?;
-            self.after_mesh_exit(&record, "mesh-leave");
-            self.handles.lock().unwrap().remove(&n.name);
             Ok(terminal)
         }
         .instrument(span.clone())
@@ -523,16 +589,24 @@ impl AdminRunner {
         // it, gossips it and answers"); its view then states the mesh Dead and its status round
         // publishes MeshStatus Dead, five sends, while it lives (R-NS1 item 1). A refused put
         // answers no handoff: the owner's repeated leave-mesh decides it afresh.
+        // Its Mesh row is written Dead on mesh.storage with it, which releases the mesh's name (R-MN1
+        // item 2); a refused write answers no handoff either.
         let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Dead).await;
-        tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %self.me, mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), outcome = committed.name())
-            .in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row Dead is stored and applied from its members' exit proofs"));
-        match committed {
-            StatusReply::Applied | StatusReply::AlreadyApplied => self.refresh_view().await,
-            refused => {
-                tracing::info!(operation = %key.operation, reply = refused.name(), "the Dead row was not committed: the handoff waits for a repeated leave-mesh");
-                return;
-            }
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %self.me, mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), outcome = committed.name(), mesh_row = tracing::field::Empty, error = tracing::field::Empty);
+        let mesh_row = match committed {
+            StatusReply::Applied | StatusReply::AlreadyApplied => crate::mesh_leave::mesh_row_dead(&*self.mesh_storage, &me.mesh, &key.mesh_id).await,
+            refused => Err(format!("the Dead status row was not committed: {}", refused.name())),
+        };
+        match &mesh_row {
+            Ok(row) => span.record("mesh_row", *row),
+            Err(e) => span.record("mesh_row", "not-written").record("error", e.as_str()),
+        };
+        span.in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row Dead is stored and applied from its members' exit proofs, and its name released"));
+        if let Err(e) = mesh_row {
+            tracing::info!(operation = %key.operation, error = %e, "the mesh row Dead was not committed: the handoff waits for a repeated leave-mesh");
+            return;
         }
+        self.refresh_view().await;
         self.lifecycle_events
             .mesh_leave(&MeshLeaveEvent { mesh_id: key.mesh_id.clone(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.operation.clone(), receipt_manifest: Some(reference), final_primary: Some((final_node_id, final_incarnation)) })
             .await;
@@ -585,7 +659,22 @@ impl AdminRunner {
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: operation.to_string() };
         let admitted = match self.leaves.admitted_for(&key) {
             Ok(admitted) => admitted,
-            Err(refused) => return refused,
+            Err(refused) => {
+                // No open leave: after mesh.deleted's completion receipt the handoff is a replay,
+                // answered from the receipt (AlreadyApplied, no second receipt).
+                let build = crate::build::BuildId(build_id.to_string());
+                match self.builds.read_build(&build).await {
+                    Ok(b) => {
+                        if let Some(reply) = crate::mesh_leave::replayed_handoff(&b.steps, &key, final_node_id, &final_incarnation.0) {
+                            return reply;
+                        }
+                    }
+                    // A Build this admin holds no fact of holds no completion of it either.
+                    Err(crate::build_state::BuildStateError::UnknownBuild(_)) => {}
+                    Err(e) => return crate::mesh_leave::refuse_source_failed("mesh-leave", &key, &format!("the Build log of {}", self.me), &format!("read {build} for the completion of {operation}"), &e.to_string()),
+                }
+                return refused;
+            }
         };
         if receipt_manifest.len() > rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES {
             return unmatched("receipt_manifest", format!("at most {} bytes", rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES), format!("{} bytes", receipt_manifest.len()));
@@ -623,20 +712,6 @@ impl AdminRunner {
             StatusReply::Applied
         } else {
             StatusReply::AlreadyApplied
-        }
-    }
-
-    /// The exact birth's exit is proven: the resolver names no current birth for it and its direct
-    /// paths are retired, so nothing aims at its old socket.
-    pub(super) fn after_mesh_exit(&self, record: &Node, kind: &'static str) {
-        if let Some(incarnation) = record.incarnation_id.as_ref() {
-            self.node_rpc.resolver.retire_birth(&record.node_id, incarnation);
-        }
-        if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
-            let ep = ep.clone();
-            tokio::spawn(async move { ep.replace_direct_addrs(key, []).await });
-            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-retired", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind, reason = "proven-exit")
-                .in_scope(|| tracing::info!("the exited birth's direct paths are retired: nothing aims at its old socket"));
         }
     }
 }

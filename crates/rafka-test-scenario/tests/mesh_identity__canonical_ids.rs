@@ -125,8 +125,20 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     let new_id = canonical("node id", &regrown.iter().find(|n| n["name"] == "mesh1.rpc.2").unwrap()["node_id"]);
     assert_ne!(new_id, replaced, "a recreated node is a new logical node");
 
-    // Replacement of a mesh: removed, then created again.
+    // Replacement of a mesh: removed, then created again. mesh.delete ends at mesh.deleted with
+    // mesh2's last admin alive; its end is its own node.delete (mesh-delete.md steps 5-7), and only
+    // that delete releases its name (R-MN1).
     build(&estate, &shape(&["mesh1"], 2)).await;
+    let last = wait_for("mesh2's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), || async {
+        let nodes = estate.nodes().await;
+        let mesh2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["name"])).collect();
+        let alive = nodes.iter().any(|n| n["mesh"] == "mesh2" && n["status"] == "ready-for-traffic");
+        (mesh2.len() == 1 && alive).then(|| mesh2[0].clone())
+    })
+    .await;
+    let (status, d) = estate.delete(&format!("/api/nodes/{last}")).await;
+    assert_eq!(status, 202, "the node.delete of mesh2's last admin {last}: {d}");
+    estate.await_build(d["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
     estate.settled(&names(&["mesh1"], 2), Duration::from_secs(30)).await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;
     let recreated = estate.settled(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await;
@@ -191,15 +203,16 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .count();
     assert!(ran >= 2, "each restart ran its own StartNode, none reused: {ran} complete StartNode steps under {restart_build}");
 
-    // R-MN1: mesh2's removal deleted every roster birth (the final primary's row by the
-    // fabric-primary at mesh-left) and wrote the mesh row Dead; mesh2 created again claimed
-    // mesh2.admin.1 over the Deleted row, its config seeded from it, under a new MeshId.
+    // R-MN1: mesh2's removal deleted every roster birth (each member's row by its node.delete under
+    // the mesh.delete, the last admin's by its own node.delete, the fabric-primary its executor) and
+    // wrote the mesh row Dead; mesh2 created again claimed mesh2.admin.1 over the Deleted row, its
+    // config seeded from it, under a new MeshId.
     let leave = format!("shutdown-mesh:{}", mesh_ids["mesh2"]);
     let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-row");
     for n in regrown.iter().filter(|n| n["mesh"] == "mesh2") {
         let row = deleted.iter().find(|sp| {
             let a = &sp["attributes"];
-            s(&a["operation"]) == leave && a["subject"] == n["name"] && s(&a["node_id"]) == s(&n["node_id"])
+            (s(&a["operation"]) == leave || s(&a["operation"]) == format!("retire-node:{}", s(&n["name"]))) && a["subject"] == n["name"] && s(&a["node_id"]) == s(&n["node_id"]) && a["outcome"] == "row-deleted"
         });
         assert!(row.is_some_and(|sp| sp["attributes"]["outcome"] == "row-deleted"), "{}'s row is written Deleted by mesh2's removal: {row:?}", n["name"]);
     }
@@ -216,6 +229,24 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_eq!(claim["attributes"]["outcome"], "row-seeded", "{claim}");
     assert_eq!(s(&claim["attributes"]["seeded_from"]), s(&old_admin["node_id"]), "seeded from the old mesh2.admin.1's Deleted row: {claim}");
     assert_eq!(s(&new_admin["mesh"]), "mesh2");
+    // node-identity-and-state.md §2.7 + R-MN1 change 4: a mesh's primary claims the mesh's name by
+    // insert-and-fail on its key, before it writes anything else of the mesh; the removed mesh2's Mesh
+    // row is written Dead, which releases the name; the recreated mesh2's primary claims the name over
+    // that Dead row under its new MeshId. No mesh's claim conflicts with itself across creation and
+    // the fabric's state-commit.
+    let claims = named(&spans, "rdm.node_admin.mesh.create.via-mesh-row");
+    let claim_of = |id: &str| claims.iter().find(|sp| sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["mesh_id"]) == id && sp["attributes"]["moment"] == "claim").copied();
+    let old_claim = claim_of(&mesh_ids["mesh2"]).unwrap_or_else(|| panic!("the removed mesh2's primary claimed its name: {claims:?}"));
+    assert_eq!(old_claim["attributes"]["outcome"], "row-written", "{old_claim}");
+    assert!(
+        dead.iter().any(|sp| s(&sp["attributes"]["mesh_id"]) == mesh_ids["mesh2"] && sp["attributes"]["mesh_row"] == "dead-written"),
+        "the removed mesh2's Mesh row is written Dead, releasing its name: {dead:?}"
+    );
+    let new_claim = claim_of(&s(&m2["id"])).unwrap_or_else(|| panic!("the recreated mesh2's primary claims its name: {claims:?}"));
+    assert_eq!(new_claim["attributes"]["outcome"], "row-written", "{new_claim}");
+    assert_eq!(s(&new_claim["attributes"]["over"]), mesh_ids["mesh2"], "the recreated mesh2 claims over the removed mesh2's Dead row: {new_claim}");
+    assert!(claims.iter().all(|c| c["attributes"]["outcome"] == "row-written" || c["attributes"]["outcome"] == "row-held-by-mesh"), "no mesh's claim is refused: {claims:?}");
+    eprintln!("trace {}: rdm.node_admin.mesh.create.via-mesh-row mesh=mesh2 mesh_id={} outcome=row-written over={}", s(&new_claim["trace_id"]), s(&m2["id"]), mesh_ids["mesh2"]);
     let ready = named(&spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["incarnation_id"] == new_admin["incarnation_id"]).expect("the recreated mesh2.admin.1 reports ready");
     assert_eq!(s(&ready["attributes"]["mesh_id"]), s(&m2["id"]), "under the new MeshId");
     // A mesh created again is a new mesh (R-MN1): the removed mesh's births departed at mesh-left,
