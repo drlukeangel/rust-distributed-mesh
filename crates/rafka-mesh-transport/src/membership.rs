@@ -4312,7 +4312,8 @@ impl DigestBook {
     /// that mesh's primary (gossip.md §3.1 `Members`).
     fn own_mesh_member(&self, d: &MeshDigest) -> bool {
         let own_mesh = self.own_mesh.lock().unwrap();
-        !own_mesh.is_empty() && d.node.name.mesh == *own_mesh && self.own.lock().unwrap().as_deref() != Some(d.node.node_id.as_str())
+        let itself = self.own.lock().unwrap().as_deref() == Some(d.node.node_id.as_str()) || d.node.name.to_string() == *self.holder.lock().unwrap();
+        !own_mesh.is_empty() && d.node.name.mesh == *own_mesh && !itself
     }
 
     /// The status this book holds for the own-mesh birth `d`, as a non-primary takes it: its
@@ -4328,7 +4329,8 @@ impl DigestBook {
     /// runtime as its own heartbeat said, takes that status. Nothing else of `d` is taken. `false`
     /// when nothing moved.
     fn take_projected_status(&self, d: &MeshDigest, fence: &Fence) -> bool {
-        if self.is_departed(d.node.node_id.as_str()) || self.is_stopped(d) {
+        // This node's own birth is its own word: no projection moves the status it holds of itself.
+        if !self.own_mesh_member(d) || self.is_departed(d.node.node_id.as_str()) || self.is_stopped(d) {
             return false;
         }
         let prior = {
@@ -5332,6 +5334,27 @@ mod tests {
         assert!(refused.iter().any(|f| f["door"] == "heartbeat" && f["digest_seq"] == "3"), "{refused:?}");
         let ended = spans.named("rdm.mesh.membership.update.via-stop-ended-in-projection");
         assert_eq!(ended.iter().map(|f| (f["held_version"].clone(), f["topology_version"].clone(), f["stop_carried_at"].clone())).collect::<Vec<_>>(), vec![("3".to_string(), "4".to_string(), "2".to_string())], "ended once, at v4 over the v3 held, the stop carried at v2: {ended:?}");
+    }
+
+    /// CONTRACT (gossip.md §3.1 `Members`): a node's own birth is its own word. The mesh-primary's
+    /// projection lists every member, the receiving node among them; the status it holds of itself
+    /// stays the one it published, whether the projection arrives before its first publication (its
+    /// name) or after it (its NodeId). Must NOT happen: a node taking a lagging status of itself from
+    /// the projection.
+    #[test]
+    fn a_node_takes_no_status_of_itself_from_its_primarys_projection() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = View::new("mesh1", "mesh1.rpc.1");
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let itself = |status, seq| digest(&id, &inc, None, status, seq);
+        let members = |version: u64, d: MeshDigest| Frame::Members { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.1".into()), topology_version: version, published_at_rafka_ms: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![d], in_flight: vec![], departed: vec![] };
+        view.take_snapshot(&members(1, itself(MemberStatus::Pending, 1)), &fabric, Side::MeshChannel);
+        assert!(view.book.member_statuses.lock().unwrap().get(id.as_str()).is_none(), "before its first publication, by its name");
+        *view.book.own.lock().unwrap() = Some(id.to_string());
+        assert!(view.book.record(itself(MemberStatus::ReadyForTraffic, 2)));
+        view.take_snapshot(&members(2, itself(MemberStatus::Leaving, 1)), &fabric, Side::MeshChannel);
+        assert_eq!(view.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::ReadyForTraffic), "after it, by its NodeId: its own status stands");
     }
 
     /// CONTRACT (gossip.md §3.1 `MembersDelta` carries "overlay and departed changes"; §3.3 a delta is
