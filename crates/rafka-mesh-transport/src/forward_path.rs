@@ -395,9 +395,8 @@ mod tests {
     /// mesh a full: its next publication puts the full of every source into it.
     #[tokio::test]
     async fn a_refused_forward_is_named_and_the_next_publication_owes_a_full() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = Spans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         // The channel refuses the second send: the delta v10 to v11.
         let rec = Recorder { fail: Arc::new(Mutex::new(vec![1])), ..Recorder::default() };
@@ -425,9 +424,8 @@ mod tests {
     /// CONTRACT: a queue whose sender task is gone is named, never silent, and owes a full.
     #[tokio::test]
     async fn a_queue_with_no_sender_task_is_named_and_owes_a_full() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = Spans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let owes = Arc::new(AtomicBool::new(false));
         let (queue, rx) = mpsc::unbounded_channel();
@@ -486,9 +484,8 @@ mod tests {
     /// Taking the role again sends the full of the new term, behind nothing of the old one.
     #[tokio::test]
     async fn a_forward_queued_before_the_role_dropped_is_never_sent() {
-        use tracing_subscriber::layer::SubscriberExt;
         let spans = Spans::default();
-        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let _capture = crate::span_capture::install(spans.clone());
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
         let gate = Gate::new();
         let path = ForwardPath::new(Arc::default(), Arc::default(), gate.sink());

@@ -143,8 +143,6 @@ pub fn capture(cell: &str) -> Capture {
     let exporter = rafka_mesh_telemetry::jsonl_span_exporter(&dir, "testkit").unwrap_or_else(|e| panic!("the span artifact dir {} is unusable: {e}", dir.display()));
     let spans = Spans::default();
     let (capture, layer) = rafka_mesh_telemetry::span_capture(cell, exporter);
-    // Every callsite is enabled before this capture's dispatcher exists (`crate::enable_callsites`).
-    crate::enable_callsites();
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(spans.clone()).with(layer));
     Capture { spans, dir, dispatch, capture }
 }

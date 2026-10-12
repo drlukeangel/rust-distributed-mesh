@@ -97,6 +97,8 @@ impl RoundActions for StorePublication {
             rows = tracing::field::Empty,
             dropped = tracing::field::Empty,
             held = tracing::field::Empty,
+            stands = tracing::field::Empty,
+            refused = tracing::field::Empty,
             stores = tracing::field::Empty,
             error = tracing::field::Empty,
             "otel.kind" = "internal"
@@ -110,6 +112,8 @@ impl RoundActions for StorePublication {
                 span.record("rows", p.written() as u64);
                 span.record("dropped", p.dropped() as u64);
                 span.record("held", p.held() as u64);
+                span.record("stands", p.stands() as u64);
+                span.record("refused", p.refused() as u64);
                 span.record("stores", p.summary().as_str());
                 span.in_scope(|| tracing::info!("this node wrote what its scratchpad held to the store root, and writes there from now on"));
             }

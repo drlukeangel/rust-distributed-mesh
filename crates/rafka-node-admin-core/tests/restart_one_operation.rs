@@ -155,7 +155,6 @@ impl TopologySink for Discard {
 /// provider terminate, a `NodeDeleting`/`NodeDeleted`.
 #[tokio::test]
 async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process() {
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (capture, layer) = rafka_mesh_telemetry::span_capture("i143-3093-restart-one-op", exporter.clone());
     let _g = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));

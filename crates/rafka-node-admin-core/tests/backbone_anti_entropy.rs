@@ -74,6 +74,9 @@ impl FabricStorage for HeldStore {
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         self.inner.claim_identity(identity).await
     }
+    async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
+        self.inner.release_name(identity).await
+    }
     async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
         self.inner.put_pointer(pointer).await
     }
@@ -116,7 +119,6 @@ struct Capture {
 
 fn capture() -> Capture {
     use tracing_subscriber::layer::SubscriberExt;
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (capture, layer) = rafka_mesh_telemetry::span_capture("mesh1.admin.1", exporter.clone());
     Capture { exporter, capture, dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)) }

@@ -19,3 +19,4 @@ mod forward_role;
 mod acting_aggregate;
 mod stopped_birth;
 mod publisher_handover;
+mod departed_status;

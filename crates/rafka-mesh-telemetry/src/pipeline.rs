@@ -166,14 +166,34 @@ pub fn install_span_capture<E: SpanExporter + 'static>(service: &str, exporter: 
     Ok(capture)
 }
 
+/// Make every callsite's interest come from every registered dispatcher, once for the whole process:
+/// the one call a test makes before it installs a capture dispatcher of its own on its own threads
+/// ([`span_capture`] makes it itself).
+///
+/// tracing-core caches a callsite's interest for the whole process when the callsite is first hit.
+/// With exactly one dispatcher registered it asks only the thread that hit it (tracing-core 0.1.36
+/// `callsite.rs`, `Rebuilder::JustOne`), and a thread with no dispatcher of its own (another test's)
+/// answers never, so a capture would lose every span of a callsite such a thread hit first. A second
+/// dispatcher, registered here and installed as no thread's default, makes tracing take every
+/// callsite's interest from every live dispatcher; each span is then offered to the dispatcher of the
+/// thread that opens it. It is never a default: a process-wide default would hand a worker thread a
+/// registry that has not got the span a capturing test's endpoint stored as an explicit parent, and
+/// creating the child would panic.
+pub fn enable_callsites() {
+    static HELD: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+    HELD.get_or_init(|| tracing::Dispatch::new(tracing_subscriber::registry()));
+}
+
 /// The same capture as [`install_span_capture`], not installed: the layer goes into a subscriber the
 /// caller builds (a test that dispatches to its own subscriber on every thread of its own runtime,
-/// so two tests in one executable never share spans).
+/// so two tests in one executable never share spans). Every callsite is enabled first
+/// ([`enable_callsites`]), so the capture receives each span its own threads open.
 pub fn span_capture<S, E>(service: &str, exporter: E) -> (SpanCapture, impl tracing_subscriber::Layer<S>)
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
     E: SpanExporter + 'static,
 {
+    enable_callsites();
     let processor = span_processor("capture", exporter);
     let loss = processor.loss();
     let provider = TracerProvider::builder().with_span_processor(processor).build();

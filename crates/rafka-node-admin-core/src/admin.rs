@@ -1365,52 +1365,6 @@ impl MeshRowsWriter {
         Self { me: me.to_string(), fabric_id, mesh: mesh.to_string(), mesh_id, nodes, meshes, written: None, claim: None }
     }
 
-    /// mesh.create's claim of the mesh's name at its key, by the mesh store's insert-and-fail
-    /// ([`crate::storage::MeshStorage::claim_mesh`]): the Mesh row written, or this mesh's own row
-    /// found standing, or refused by name. One `rdm.node_admin.mesh.create.via-mesh-row` span,
-    /// `moment` `claim`. `None`: the store did not answer, and nothing is decided.
-    async fn claim_name(&self) -> Option<Result<(), crate::storage::MeshClaimRefused>> {
-        let span = tracing::info_span!(
-            "rdm.node_admin.mesh.create.via-mesh-row",
-            node = %self.me,
-            mesh = %self.mesh,
-            mesh_id = %self.mesh_id,
-            moment = "claim",
-            outcome = tracing::field::Empty,
-            holder = tracing::field::Empty,
-            over = tracing::field::Empty,
-            detail = tracing::field::Empty,
-            "otel.kind" = "internal",
-        );
-        let record = crate::storage::MeshRecord { mesh_id: self.mesh_id.clone(), name: self.mesh.clone(), dead: false };
-        let decided = match self.meshes.claim_mesh(&record).await {
-            Ok(Ok(crate::storage::MeshClaim::Written { over })) => {
-                span.record("outcome", "row-written");
-                if let Some(over) = over {
-                    span.record("over", tracing::field::display(&over));
-                }
-                Some(Ok(()))
-            }
-            Ok(Ok(crate::storage::MeshClaim::Held)) => {
-                span.record("outcome", "row-held-by-mesh");
-                Some(Ok(()))
-            }
-            Ok(Err(refused)) => {
-                span.record("outcome", refused.outcome()).record("detail", refused.to_string().as_str());
-                if let crate::storage::MeshClaimRefused::NameHeld { by, .. } = &refused {
-                    span.record("holder", tracing::field::display(by));
-                }
-                Some(Err(refused))
-            }
-            Err(e) => {
-                span.record("outcome", "row-refused").record("detail", format!("{}: mesh.storage did not answer the claim of {} for mesh {}: {e}", self.me, self.mesh, self.mesh_id).as_str());
-                None
-            }
-        };
-        span.in_scope(|| tracing::info!("mesh.create: the mesh's name is claimed by insert-and-fail at its key; nothing else of the mesh is written until the claim wins"));
-        decided
-    }
-
     /// One round over the births `held` (every birth of the fabric this admin holds, itself
     /// included), `seated` when this admin holds its mesh's primary seat now, `departed` whether the
     /// book holds a node departed.
@@ -1421,7 +1375,8 @@ impl MeshRowsWriter {
             return;
         }
         if self.claim.is_none() {
-            self.claim = self.claim_name().await;
+            // A store that did not answer decides nothing: the next round asks again.
+            self.claim = claim_mesh_name(&*self.meshes, &self.me, &self.mesh, &self.mesh_id).await.ok().map(|c| c.map(|_| ()));
         }
         if !matches!(self.claim, Some(Ok(()))) {
             return;
@@ -1443,6 +1398,7 @@ impl MeshRowsWriter {
                 node_id: d.node.node_id.clone(),
                 fabric_id: self.fabric_id.clone(),
                 name: d.node.name.clone(),
+                mesh_id: self.mesh_id.clone(),
                 incarnation_id: d.node.incarnation.clone(),
                 endpoint_id: d.node.endpoint_id.clone(),
                 transport_addr: d.node.transport_addr,
@@ -1460,6 +1416,91 @@ impl MeshRowsWriter {
                 written.remove(&r.node_id);
             }
         }
+    }
+}
+
+/// The Mesh row of the mesh a restarting node-admin's own row names, read by that mesh's id (R-MN1: a
+/// mesh created again under the same name is a new mesh with a new id; R-ML2: a dead mesh is never
+/// restarted): the point read at the mesh's key, the name, is taken as the admin's mesh only when it
+/// is the row of the mesh id its own row holds, and live. A row of another MeshId at the name means
+/// the admin's mesh was removed and a mesh created again under the name; refused by name, naming
+/// both ids, as are a Dead row and no row.
+pub(crate) async fn own_mesh_row(meshes: &dyn crate::storage::MeshStorage, own: &crate::storage::NodeRecord) -> Result<crate::storage::MeshRecord, String> {
+    let (mesh, mesh_id) = (&own.name.mesh, &own.mesh_id);
+    match meshes.mesh(mesh).await.map_err(|e| format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage could not read the row of {mesh}: {e}", own.name))? {
+        None => Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), and mesh.storage holds no row of {mesh}", own.name)),
+        Some(row) if row.mesh_id != *mesh_id => Err(format!(
+            "this admin ({}) belongs to mesh {mesh_id} ({mesh}), which was removed: the name {mesh} is held by mesh {}, a mesh created again under it, and a removed mesh is never rejoined",
+            own.name, row.mesh_id
+        )),
+        Some(row) if row.dead => Err(format!("this admin ({}) belongs to mesh {mesh_id} ({mesh}), whose row is Dead: a dead mesh is never restarted", own.name)),
+        Some(row) => Ok(row),
+    }
+}
+
+/// mesh.create's claim of the mesh's name at its key (node-identity-and-state.md §2.7), by the mesh
+/// store's insert-and-fail ([`crate::storage::MeshStorage::claim_mesh`]), made by `me`: the
+/// fabric-primary at CreateMesh, as the writer of a mesh with no primary (R13), the mesh's first
+/// durable write; and the mesh's primary when its seat tenure starts, which finds the mesh's own row
+/// (the same MeshId re-claiming, idempotent). The Mesh row written, or this mesh's own row found
+/// standing, or refused by name. One `rdm.node_admin.mesh.create.via-mesh-row` span, `moment`
+/// `claim`. `Err`: the store did not answer, and nothing is decided.
+pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<Result<crate::storage::MeshClaim, crate::storage::MeshClaimRefused>, String> {
+    let span = tracing::info_span!(
+        "rdm.node_admin.mesh.create.via-mesh-row",
+        node = %me,
+        mesh = %mesh,
+        mesh_id = %mesh_id,
+        moment = "claim",
+        outcome = tracing::field::Empty,
+        holder = tracing::field::Empty,
+        over = tracing::field::Empty,
+        detail = tracing::field::Empty,
+        "otel.kind" = "internal",
+    );
+    let record = crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: mesh.to_string(), dead: false };
+    let claimed = meshes.claim_mesh(&record).await.map_err(|e| format!("{me}: mesh.storage did not answer the claim of {mesh} for mesh {mesh_id}: {e}"));
+    match &claimed {
+        Ok(Ok(crate::storage::MeshClaim::Written { over })) => {
+            span.record("outcome", "row-written");
+            if let Some(over) = over {
+                span.record("over", tracing::field::display(over));
+            }
+        }
+        Ok(Ok(crate::storage::MeshClaim::Held)) => {
+            span.record("outcome", "row-held-by-mesh");
+        }
+        Ok(Err(refused)) => {
+            span.record("outcome", refused.outcome()).record("detail", refused.to_string().as_str());
+            if let crate::storage::MeshClaimRefused::NameHeld { by, .. } = refused {
+                span.record("holder", tracing::field::display(by));
+            }
+        }
+        Err(e) => {
+            span.record("outcome", "row-refused").record("detail", e.as_str());
+        }
+    }
+    span.in_scope(|| tracing::info!("mesh.create: the mesh's name is claimed by insert-and-fail at its key; nothing else of the mesh is written until the claim wins"));
+    claimed
+}
+
+/// `create-mesh:<mesh>` at the fabric-primary `me` (lifecycles/node-create.md "Mesh absent ... Until
+/// the mesh has a primary, the fabric-primary writes its rows"; R13; CLAUDE.md: the claim is the first
+/// durable write of a create): the mesh's id, the one `records` already holds for it (an earlier
+/// attempt of this create) or a new one, is claimed at the mesh's name before anything else of the
+/// mesh is written, and held in `records` (what every launch of the mesh carries) only once the claim
+/// won. A refused claim fails the operation by name, holding nothing of the mesh: the Build runs no
+/// create of its nodes, so no node row of the mesh is claimed.
+pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str) -> Result<MeshId, String> {
+    let mesh_id = records.meshes.lock().unwrap().get(mesh).cloned().unwrap_or_else(MeshId::mint);
+    match claim_mesh_name(meshes, me, mesh, &mesh_id).await {
+        Ok(Ok(_)) => {
+            records.meshes.lock().unwrap().entry(mesh.to_string()).or_insert_with(|| mesh_id.clone());
+            records.wake.poke();
+            Ok(mesh_id)
+        }
+        Ok(Err(refused)) => Err(format!("{me}: create-mesh:{mesh}: the claim of the mesh's name for mesh {mesh_id} was refused, and nothing of the mesh is written: {refused}")),
+        Err(e) => Err(format!("{e}; nothing of the mesh is written")),
     }
 }
 
@@ -4203,14 +4244,7 @@ impl AdminRunner {
     async fn run_op(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         use tracing::Instrument;
         match op {
-            BuildOperation::CreateMesh { mesh } => {
-                {
-                    let mut meshes = self.records.meshes.lock().unwrap();
-                    meshes.entry(mesh.clone()).or_insert_with(MeshId::mint);
-                }
-                self.records.wake.poke();
-                Ok(())
-            }
+            BuildOperation::CreateMesh { mesh } => create_mesh(&self.records, &*self.mesh_storage, &self.me.to_string(), mesh).await.map(|_| ()),
             BuildOperation::CreateNode { node, over: Some(from) } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.0);
@@ -4715,7 +4749,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     };
     let key = load_or_mint_key(&cfg.data_dir).await?;
     drop(step);
-    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = tracing::field::Empty, restart = tracing::field::Empty, writes_to = tracing::field::Empty);
+    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = tracing::field::Empty, restart = tracing::field::Empty, writes_to = tracing::field::Empty, mesh_id = tracing::field::Empty, error = tracing::field::Empty);
     // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
     // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
     // under the fabric's shared store root (R14). An admin that finds its own row in nodes.storage
@@ -4768,9 +4802,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {
                 format!("{}: nodes.storage holds this admin ({}) but fabric.storage holds no Fabric record", cfg.data_dir.display(), own.name)
             })?;
-            let mesh = mesh_storage.mesh(&own.name.mesh).await.map_err(storage_err)?.ok_or_else(|| {
-                format!("{}: nodes.storage holds this admin ({}) but mesh.storage holds no {} record", cfg.data_dir.display(), own.name, own.name.mesh)
-            })?;
+            storage_step.record("mesh_id", tracing::field::display(&own.mesh_id));
+            let mesh = match own_mesh_row(&*mesh_storage, &own).await {
+                Ok(row) => row,
+                Err(e) => {
+                    let e = format!("refusing to start: {}: {e}", cfg.data_dir.display());
+                    storage_step.record("error", e.as_str());
+                    return Err(e);
+                }
+            };
             cfg.fabric = fabric.name.clone();
             cfg.fabric_id = fabric.fabric_id.clone();
             cfg.mesh = mesh.name.clone();
@@ -5132,7 +5172,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // channel; it tops up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each
                 // such mesh, as every node does. Held behind the gate: a parked admin tops up nothing, and a
                 // gap signalled while it was parked is topped up once it runs again.
-                tasks_early.push(park_gate.spawn(membership.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone(), rafka_time.clone(), name.to_string(), node_id.clone()))));
+                tasks_early.push(park_gate.spawn(membership.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
                 // The seat records on the store root (`fabric.storage`): this admin enters knowing who held the
                 // seats.
                 for row in fabric_storage.seats().await.map_err(|e| e.to_string())? {
@@ -5587,6 +5627,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         node_id: node_id.clone(),
                                         fabric_id: cfg.fabric_id.clone(),
                                         name: name.clone(),
+                                        mesh_id: mesh_id.clone(),
                                         incarnation_id: incarnation.clone(),
                                         endpoint_id: d.node.endpoint_id.clone(),
                                         transport_addr: d.node.transport_addr,
@@ -6916,7 +6957,7 @@ mod tests {
     /// before; a contact of a birth that is simply not held now (silent, not departed) is kept.
     #[test]
     fn a_departed_births_contact_is_dropped_and_a_silent_ones_is_kept() {
-        let record = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: d.fabric_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new() };
+        let record = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: d.fabric_id.clone(), name: d.node.name.clone(), mesh_id: mesh_id(&d.node.name.mesh), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new() };
         let (departed, silent, replaced, successor) = (digest("mesh2.rpc.1", MemberStatus::Leaving), digest("mesh2.rpc.2", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic), digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic));
         let written: HashMap<NodeId, crate::storage::NodeRecord> = [&departed, &silent, &replaced].into_iter().map(|d| (d.node.node_id.clone(), record(d))).collect();
         let mut dropped = dropped_contacts(&written, std::slice::from_ref(&successor), |id| id == &departed.node.node_id);
@@ -7072,6 +7113,45 @@ mod tests {
             "one claim per seat tenure, the refusal naming the holder: {spans:?}"
         );
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
+    }
+
+    /// CONTRACT (R13: the fabric-primary writes as the acting primary of a mesh with no primary;
+    /// lifecycles/node-create.md "Mesh absent ... Until the mesh has a primary, the fabric-primary writes
+    /// its rows"; CLAUDE.md: the claim is the first durable write of a create, nothing is written for the
+    /// entity until it wins; node-identity-and-state.md §2.7: `NameHeld` names the holder, the same MeshId
+    /// re-claiming is idempotent): `create-mesh:mesh2` at the fabric-primary claims mesh2's name first.
+    /// On a free key it writes the Mesh row under the id it mints and holds that id for the mesh's
+    /// launches; a re-run of the operation claims the same id and finds its own row. Where another mesh's
+    /// live row holds mesh3, the operation fails naming the holder: mesh3's row stands and no id is held
+    /// for mesh3, so no launch can carry one and the Build runs no create of mesh3's nodes. One
+    /// `rdm.node_admin.mesh.create.via-mesh-row` span per claim, naming the fabric-primary. Must NOT
+    /// happen: a mesh id held, or anything of the mesh written, beside a refused claim.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn create_mesh_claims_the_mesh_name_first_and_a_refused_claim_holds_nothing_of_the_mesh() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let records = Records::default();
+        let holder = MeshId::mint();
+        let theirs = crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh3".into(), dead: false };
+        assert_eq!(crate::storage::MeshStorage::claim_mesh(&meshes, &theirs).await, Ok(Ok(crate::storage::MeshClaim::Written { over: None })));
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-claim");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let minted = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2").await.expect("a free name is claimed");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), Some(crate::storage::MeshRecord { mesh_id: minted.clone(), name: "mesh2".into(), dead: false }), "the claim wrote mesh2's row under the minted id");
+        assert_eq!(records.meshes.lock().unwrap().get("mesh2"), Some(&minted), "the won claim's id is what the mesh's launches carry");
+        assert_eq!(create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2").await, Ok(minted.clone()), "a re-run claims the same id");
+        let refused = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh3").await.expect_err("mesh3's name is held by another mesh's live row");
+        assert!(refused.contains("create-mesh:mesh3") && refused.contains(&holder.to_string()), "the refusal names the operation and the holder: {refused}");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh3").await.unwrap(), Some(theirs), "the refused claim wrote nothing: mesh3's row is the holder's");
+        assert_eq!(records.meshes.lock().unwrap().get("mesh3"), None, "no id is held for a mesh whose claim was refused: no launch of it can carry one");
+        let spans = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
+        let said: Vec<(String, String, String, String)> = spans
+            .iter()
+            .map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("mesh").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default(), s.attributes.get("holder").cloned().unwrap_or_default()))
+            .collect();
+        let row = |mesh: &str, outcome: &str, holder: &str| ("mesh1.admin.1".to_string(), mesh.to_string(), outcome.to_string(), holder.to_string());
+        assert_eq!(said, vec![row("mesh2", "row-written", ""), row("mesh2", "row-held-by-mesh", ""), row("mesh3", "name-held", &holder.to_string())], "{spans:?}");
+        eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[2].trace_id, spans[2].attributes);
     }
 
     /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
@@ -8390,7 +8470,7 @@ mod tests {
         let member = with_id(digest("mesh2.rpc.1", MemberStatus::Leaving), "210000000000");
         let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
         storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
-        let contact = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: fabric1(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new() };
+        let contact = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: fabric1(), name: d.node.name.clone(), mesh_id: mesh_id(&d.node.name.mesh), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new() };
         // mesh2's primary wrote its members' contacts while it held the seat; mesh1's own stays.
         for d in [&last, &member, &fp] {
             storage.put_contact(&contact(d)).await.unwrap();

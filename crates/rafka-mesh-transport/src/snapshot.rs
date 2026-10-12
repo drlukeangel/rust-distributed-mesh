@@ -346,8 +346,9 @@ pub enum Refusal {
         /// The version offered.
         offered_version: u64,
     },
-    /// The publisher's birth is one this receiver holds stopped or departed: a stopped birth
-    /// publishes nothing and a departed one has left, so its publication was delayed
+    /// A publication of another epoch than the one this receiver holds, whose publisher's birth this
+    /// receiver holds stopped or departed: a stopped birth publishes nothing and a departed one has
+    /// left, so its publication was delayed, and taking it would switch the receiver back
     /// (node-status-heartbeat-connections.md §A.3, §A.4). `reason` says which.
     PredecessorPublisher {
         /// `publisher-stopped` or `publisher-departed`.

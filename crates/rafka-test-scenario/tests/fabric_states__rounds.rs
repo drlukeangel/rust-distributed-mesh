@@ -387,10 +387,16 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     let before = rows_on(&root);
     estate.artifact("rows-before-state-commit.json", &json!(before));
     assert!(before.is_empty(), "no row reaches the store root {} before state-commit; found {}: {before:#?}", root.display(), before.len());
+    // R-FN1: the fabric's claim of its name sits beside the per-fabric roots, at
+    // `<store_dir>/fabrics/fabric1`, and is held in the fabric-primary's scratchpad like every row.
+    let name_claim = root.parent().expect("the store root sits under the store_dir").join(rafka_node_admin_core::store_root::FABRIC_NAMES).join("fabric1.json");
+    assert!(!name_claim.exists(), "the fabric's name claim reaches {} only at state-commit", name_claim.display());
     door.release("state-sync").await;
     ready_under(&estate, &first).await;
     let after = rows_on(&root);
     estate.artifact("rows-after-state-commit.json", &json!(after));
+    let claimed: Value = serde_json::from_slice(&std::fs::read(&name_claim).unwrap_or_else(|e| panic!("the state-commit published the fabric's name claim at {}: {e}", name_claim.display()))).unwrap();
+    assert_eq!(claimed["record"]["fabric_id"].as_str(), root.file_name().and_then(|n| n.to_str()), "the name claim names this fabric: {claimed}");
     let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     let holds = |prefix: &str| after.iter().any(|r| r.starts_with(prefix));
     assert!(holds("fabric/identity.json") && holds("fabric/pointers/"), "the fabric-primary published the Fabric row: {after:#?}");
@@ -460,7 +466,7 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
         }
     }
     let fp_stores = s(&published["mesh1.admin.1"]["attributes"]["stores"]);
-    for store in ["fabric=", "fabric/pointers=", "fabric/seats="] {
+    for store in ["fabrics=", "fabric=", "fabric/pointers=", "fabric/seats="] {
         assert!(fp_stores.split(',').any(|p| p.starts_with(store)), "the fabric-primary published {store}: {}", published["mesh1.admin.1"]);
     }
     // The other mesh's primary took the second Build's pointer as its own runtime state, not as a row.

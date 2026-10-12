@@ -497,7 +497,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                         Box::pin(async move {
                             // A delta that does not follow what this node holds desynchronizes that source; the node tops
                             // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
-                            membership.spawn_top_up(rafka_node_admin_core::topology_read::top_up_fetch(client.clone(), rafka_time.clone(), name.clone(), launch.node_id.clone()));
+                            membership.spawn_top_up(rafka_node_admin_core::topology_read::top_up_fetch(client.clone()));
                             // From here the node is on the mesh, Pending: it answers status, drain-node and stop-node, and
                             // says Pending on the membership cadence while its `hydrate_before_ready` hook runs. It is
                             // published ReadyForTraffic only once the hook has passed ("born full").

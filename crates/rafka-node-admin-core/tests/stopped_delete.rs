@@ -101,7 +101,6 @@ impl TopologySink for Discard {
 /// "Retain the data dir, node-identity.json and endpoint key").
 #[tokio::test]
 async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof() {
-    crate::enable_callsites();
     let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
     let (capture, layer) = rafka_mesh_telemetry::span_capture("i143-3072-stopped-delete", exporter.clone());
     let _g = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));

@@ -61,15 +61,63 @@ struct Stored<T> {
     record: T,
 }
 
+/// A held claim's decision, made again at the publication against the row then standing on the
+/// disk at its key (its bytes; `None`: no row): `Ok(Ok(true))` the claim is written, `Ok(Ok(false))`
+/// the same row stands and nothing is written, `Ok(Err)` the claim is refused, why named (its
+/// holder). `Err`: the standing row is not a record this build recognises, refused by name and never
+/// decided as no row.
+pub type ClaimDecision = std::sync::Arc<dyn Fn(Option<&[u8]>) -> Result<Result<bool, String>, StorageError> + Send + Sync>;
+
 /// One row a store holds in its process's scratchpad.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum HeldRow {
     /// The whole row, as a write puts it.
     Put(Vec<u8>),
     /// A create-once row, as an insert claims it: published only where no row is live at its key.
     Insert(Vec<u8>),
+    /// A claim the store's adapter decided against what its writer saw (its own scratchpad over the
+    /// disk): the publication decides it again against the row then standing on the disk, by
+    /// `decide`, and never writes it blindly over a row another writer published meanwhile. `insert`:
+    /// the key is one two writers can claim at once (above a fabric's root), so the publication
+    /// inserts by the filesystem's atomic link first.
+    Claim { bytes: Vec<u8>, decide: ClaimDecision, insert: bool },
     /// The row removed.
     Removed,
+    /// The holder's row released (a withdrawn claim): the publication removes the row standing at
+    /// the key only when `decide` says it is still the holder's (`Ok(true)`).
+    Released(ClaimDecision),
+}
+
+impl HeldRow {
+    /// The row's bytes, when it holds a row (`None`: removed or released).
+    fn bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Put(b) | Self::Insert(b) | Self::Claim { bytes: b, .. } => Some(b),
+            Self::Removed | Self::Released(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Debug for HeldRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Put(b) => write!(f, "Put({} bytes)", b.len()),
+            Self::Insert(b) => write!(f, "Insert({} bytes)", b.len()),
+            Self::Claim { bytes, insert, .. } => write!(f, "Claim({} bytes, insert: {insert})", bytes.len()),
+            Self::Removed => f.write_str("Removed"),
+            Self::Released(_) => f.write_str("Released"),
+        }
+    }
+}
+
+/// What the publication did with one held claim.
+enum ClaimPublished {
+    /// Written at its key.
+    Written,
+    /// The same row stands at its key: nothing written.
+    Stands,
+    /// Refused against the row standing at its key, why named: nothing written.
+    Refused(String),
 }
 
 /// Whether the writer of a store still owns the rows it held when its scratchpad is published:
@@ -220,10 +268,8 @@ impl FileRecords {
     /// no worker thread waits on the disk.
     pub async fn read<T: DeserializeOwned>(&self, key: &str, format: &str) -> Result<Option<T>, StorageError> {
         let path = self.path(key);
-        match self.held_row(key) {
-            Some(HeldRow::Put(b) | HeldRow::Insert(b)) => return Self::decode(&path, &b, format).map(Some),
-            Some(HeldRow::Removed) => return Ok(None),
-            None => {}
+        if let Some(row) = self.held_row(key) {
+            return row.bytes().map(|b| Self::decode(&path, b, format)).transpose();
         }
         let file = path.clone();
         match blocking_io(move || std::fs::read(&file)).await {
@@ -267,9 +313,9 @@ impl FileRecords {
                 }
             }
             for (key, row) in held {
-                if let HeldRow::Put(b) | HeldRow::Insert(b) = row {
+                if let Some(b) = row.bytes() {
                     let p = dir.join(format!("{key}.json"));
-                    records.insert(key, Self::decode(&p, &b, &format)?);
+                    records.insert(key, Self::decode(&p, b, &format)?);
                 }
             }
             Ok(records.into_values().collect())
@@ -321,14 +367,81 @@ impl FileRecords {
         .await
     }
 
+    /// [`Self::write`] of a claim the store's adapter decided under its own lock against the row at
+    /// `key` (R14 item 3: the sole writer's conditional write). While the store holds its writes the
+    /// claim is held with `decide`, the adapter's own decision of `record` against a row standing at
+    /// the key (`Ok(true)` write, `Ok(false)` the same row stands, `Err` refused, naming why), and the
+    /// publication makes it again against the row then on the disk: a held claim is never written
+    /// blindly over a row another writer published meanwhile.
+    pub async fn write_claimed<T: Serialize + DeserializeOwned + 'static>(&self, key: &str, format: &str, record: &T, decide: impl Fn(Option<&T>) -> Result<bool, String> + Send + Sync + 'static) -> Result<(), StorageError> {
+        let path = self.path(key);
+        let bytes = Self::encode(&path, format, record)?;
+        let held = self.writer(&path).await?;
+        if self.hold(key, HeldRow::Claim { bytes: bytes.clone(), decide: Self::decision(&path, format, decide), insert: false }) {
+            return Ok(());
+        }
+        let (dir, tmp) = (self.0.dir.clone(), self.tmp_path(key));
+        blocking_io(move || {
+            let _held = held;
+            write_file(&dir, &tmp, &path, &bytes)
+        })
+        .await
+    }
+
+    /// [`Self::insert`] of a claim two writers can make at once (a key above a fabric's root): held,
+    /// the claim keeps `decide` (as [`Self::write_claimed`]), and the publication inserts it by the
+    /// filesystem's atomic link, deciding against the row it meets there when the key is live.
+    pub async fn insert_claimed<T: Serialize + DeserializeOwned + 'static>(&self, key: &str, format: &str, record: &T, decide: impl Fn(Option<&T>) -> Result<bool, String> + Send + Sync + 'static) -> Result<bool, StorageError> {
+        let path = self.path(key);
+        let bytes = Self::encode(&path, format, record)?;
+        let held = self.writer(&path).await?;
+        if self.holding() {
+            let live = self.holds(key).await?;
+            return Ok(!live && self.hold(key, HeldRow::Claim { bytes, decide: Self::decision(&path, format, decide), insert: true }));
+        }
+        let (dir, tmp) = (self.0.dir.clone(), self.tmp_path(key));
+        blocking_io(move || {
+            let _held = held;
+            insert_file(&dir, &tmp, &path, &bytes)
+        })
+        .await
+    }
+
+    /// [`Self::remove`] of a release the store's adapter decided under its own lock (the holder's
+    /// row at `key` goes). While the store holds its writes the release is held with `holder`, which
+    /// says whether a row standing at the key is still the holder's, and the publication removes the
+    /// row on the disk only when it is: a held release never removes a row another writer published
+    /// meanwhile.
+    pub async fn remove_released<T: DeserializeOwned + 'static>(&self, key: &str, format: &str, holder: impl Fn(&T) -> bool + Send + Sync + 'static) -> Result<(), StorageError> {
+        let path = self.path(key);
+        let held = self.writer(&path).await?;
+        if self.hold(key, HeldRow::Released(Self::decision(&path, format, move |standing: Option<&T>| Ok(standing.is_some_and(&holder))))) {
+            return Ok(());
+        }
+        let dir = self.0.dir.clone();
+        blocking_io(move || {
+            let _held = held;
+            remove_file(&dir, &path)
+        })
+        .await
+    }
+
+    /// `decide`, over a typed record, as a decision over the bytes standing at the key: a standing
+    /// file this build does not recognise is refused by name, never decided as no row.
+    fn decision<T: DeserializeOwned + 'static>(path: &Path, format: &str, decide: impl Fn(Option<&T>) -> Result<bool, String> + Send + Sync + 'static) -> ClaimDecision {
+        let (path, format) = (path.to_path_buf(), format.to_string());
+        std::sync::Arc::new(move |standing: Option<&[u8]>| {
+            let standing = standing.map(|b| Self::decode::<T>(&path, b, &format)).transpose()?;
+            Ok(decide(standing.as_ref()))
+        })
+    }
+
     /// Whether a record under `key` exists, whatever it holds: the scratchpad's row, else a look at
     /// the disk on the blocking pool, as a point read is. A look that cannot be answered (the
     /// directory unreadable) is an error naming the file, never an answer of "not held".
     pub async fn holds(&self, key: &str) -> Result<bool, StorageError> {
-        match self.held_row(key) {
-            Some(HeldRow::Put(_) | HeldRow::Insert(_)) => return Ok(true),
-            Some(HeldRow::Removed) => return Ok(false),
-            None => {}
+        if let Some(row) = self.held_row(key) {
+            return Ok(row.bytes().is_some());
         }
         let path = self.path(key);
         let file = path.clone();
@@ -391,12 +504,7 @@ impl FileRecords {
         }
         blocking_io(move || {
             let _held = held;
-            match std::fs::remove_file(&path) {
-                // A removal that must survive a crash syncs its directory.
-                Ok(()) => sync_dir(&dir, &path),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
-            }
+            remove_file(&dir, &path)
         })
         .await
     }
@@ -431,32 +539,50 @@ impl FileRecords {
             return Ok(done);
         }
         let this = self.clone();
-        let written = blocking_io(move || {
+        let (written, stands, refused) = blocking_io(move || {
             let _held = guard;
             let h = this.held().expect("a held store");
-            let mut written = 0;
+            let (mut written, mut stands, mut refused) = (0, 0, Vec::new());
             for (key, row) in rows {
-                let path = this.path(&key);
+                let (path, tmp) = (this.path(&key), this.tmp_path(&key));
                 match row {
-                    HeldRow::Put(b) => write_file(&this.0.dir, &this.tmp_path(&key), &path, &b)?,
+                    HeldRow::Put(b) => {
+                        write_file(&this.0.dir, &tmp, &path, &b)?;
+                        written += 1;
+                    }
                     // A create-once row that is already live at its key stays what it is.
                     HeldRow::Insert(b) => {
-                        insert_file(&this.0.dir, &this.tmp_path(&key), &path, &b)?;
+                        insert_file(&this.0.dir, &tmp, &path, &b)?;
+                        written += 1;
                     }
-                    HeldRow::Removed => match std::fs::remove_file(&path) {
-                        Ok(()) => sync_dir(&this.0.dir, &path)?,
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => return Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
+                    // A claim is decided again against the row standing at its key: written, the same
+                    // row standing, or refused, named, and nothing written.
+                    HeldRow::Claim { bytes, decide, insert } => match publish_claim(&this.0.dir, &tmp, &path, &bytes, &decide, insert)? {
+                        ClaimPublished::Written => written += 1,
+                        ClaimPublished::Stands => stands += 1,
+                        ClaimPublished::Refused(why) => refused.push(format!("{key}: {why}")),
                     },
+                    HeldRow::Removed => {
+                        remove_file(&this.0.dir, &path)?;
+                        written += 1;
+                    }
+                    // A release removes the row standing at its key only while it is the holder's.
+                    HeldRow::Released(holder) => {
+                        if let Ok(true) = holder(read_standing(&path)?.as_deref())? {
+                            remove_file(&this.0.dir, &path)?;
+                            written += 1;
+                        }
+                    }
                 }
                 h.rows.lock().unwrap_or_else(|e| e.into_inner()).remove(&key);
-                written += 1;
             }
             *h.holding.lock().unwrap_or_else(|e| e.into_inner()) = false;
-            Ok::<usize, StorageError>(written)
+            Ok::<(usize, usize, Vec<String>), StorageError>((written, stands, refused))
         })
         .await?;
         done.written = written;
+        done.stands = stands;
+        done.refused = refused;
         Ok(done)
     }
 }
@@ -477,6 +603,12 @@ pub struct StorePublished {
     pub held: usize,
     /// Why the rows are still held.
     pub why_held: Option<String>,
+    /// The held claims whose row the publication found standing at their key (the same row, put by
+    /// another writer of the same identity): nothing written for them.
+    pub stands: usize,
+    /// The held claims the publication refused against the row standing at their key, each
+    /// `<key>: <why>` naming the holder: none of them was written.
+    pub refused: Vec<String>,
 }
 
 /// One store a scratchpad holds rows for until its publication.
@@ -534,8 +666,20 @@ impl Publication {
         self.stores.iter().map(|s| s.held).sum()
     }
 
+    /// The held claims whose row stood at their key already, nothing written for them.
+    pub fn stands(&self) -> usize {
+        self.stores.iter().map(|s| s.stands).sum()
+    }
+
+    /// The held claims refused against the row standing at their key, never written.
+    pub fn refused(&self) -> usize {
+        self.stores.iter().map(|s| s.refused.len()).sum()
+    }
+
     /// `<store>=<written>` for each store that wrote rows, `<store> dropped <n>: <why>` for each that
-    /// dropped them and `<store> held <n>: <why>` for each still holding them, comma-separated.
+    /// dropped them, `<store> held <n>: <why>` for each still holding them, `<store> stands <n>` for
+    /// each whose held claims found their row standing and `<store> refused <n>: <key>: <why>; ...` for
+    /// each whose held claims were refused, comma-separated.
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
         for s in &self.stores {
@@ -547,6 +691,12 @@ impl Publication {
             }
             if s.held > 0 {
                 parts.push(format!("{} held {}: {}", s.store, s.held, s.why_held.as_deref().unwrap_or("")));
+            }
+            if s.stands > 0 {
+                parts.push(format!("{} stands {}", s.store, s.stands));
+            }
+            if !s.refused.is_empty() {
+                parts.push(format!("{} refused {}: {}", s.store, s.refused.len(), s.refused.join("; ")));
             }
         }
         parts.join(",")
@@ -590,7 +740,7 @@ impl Scratchpad {
         let mut out = Publication::default();
         for store in stores {
             let done = store.publish().await?;
-            if done.written > 0 || done.dropped > 0 || done.held > 0 {
+            if done.written > 0 || done.dropped > 0 || done.held > 0 || done.stands > 0 || !done.refused.is_empty() {
                 out.stores.push(done);
             }
         }
@@ -625,6 +775,37 @@ fn sync_dir(dir: &Path, file: &Path) -> Result<(), StorageError> {
     std::fs::File::open(dir)
         .and_then(|d| d.sync_all())
         .map_err(|e| StorageError::Io { file: file.display().to_string(), reason: format!("the change landed but the directory {} could not be synced: {e}", dir.display()) })
+}
+
+/// Remove `path` from `dir`, if it is there; a removal that must survive a crash syncs its directory.
+fn remove_file(dir: &Path, path: &Path) -> Result<(), StorageError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => sync_dir(dir, path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
+    }
+}
+
+/// The bytes standing at `path`, `None` when no row is there.
+fn read_standing(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
+    match std::fs::read(path) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(StorageError::Io { file: path.display().to_string(), reason: e.to_string() }),
+    }
+}
+
+/// Publish one held claim: decided again against the row standing at `path` (after an atomic link
+/// insert, for an `insert` claim), written only when the decision says so.
+fn publish_claim(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8], decide: &ClaimDecision, insert: bool) -> Result<ClaimPublished, StorageError> {
+    if insert && insert_file(dir, tmp, path, bytes)? {
+        return Ok(ClaimPublished::Written);
+    }
+    match decide(read_standing(path)?.as_deref())? {
+        Ok(true) => write_file(dir, tmp, path, bytes).map(|()| ClaimPublished::Written),
+        Ok(false) => Ok(ClaimPublished::Stands),
+        Err(why) => Ok(ClaimPublished::Refused(why)),
+    }
 }
 
 fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool, StorageError> {
@@ -888,6 +1069,36 @@ mod tests {
         let later = FileRecords::open_held(&d, "later", &w, &pad, "later".into()).await.unwrap();
         assert!(!later.holding(), "a store opened after the publication writes to the disk from its open");
         assert_eq!(pad.publish().await.unwrap().written(), 0, "a second publication finds nothing held");
+    }
+
+    /// CONTRACT (this module: "a file this build does not recognise ... is refused by name, never read
+    /// as a value"; CLAUDE.md: a reader that does not recognise a value refuses with a named reason):
+    /// a held claim, and a held release, whose key holds at the publication a file this build does not
+    /// recognise end the publication by name, naming the file: neither is decided as if no row stood
+    /// there, and the file stands. Must NOT happen: an unrecognised row overwritten by a claim, or a
+    /// release falling through to "not the holder's".
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_held_claim_or_release_over_an_unrecognised_row_ends_the_publication_by_name() {
+        let d = tempdir("records-unrecognised-claim");
+        let w = crate::model::IncarnationId("held".into());
+        let foreign = br#"{"format":"thing/9","record":"theirs"}"#;
+        for (key, release) in [("claimed", false), ("released", true)] {
+            let pad = Scratchpad::new();
+            let r = FileRecords::open_held(&d, "things", &w, &pad, "things".into()).await.unwrap();
+            if release {
+                r.remove_released::<String>(key, "thing/1", |_| true).await.unwrap();
+            } else {
+                r.write_claimed(key, "thing/1", &"mine".to_string(), |standing: Option<&String>| Ok(standing.is_none())).await.unwrap();
+            }
+            let file = d.join("things").join(format!("{key}.json"));
+            std::fs::write(&file, foreign).unwrap();
+            match pad.publish().await {
+                Err(StorageError::Unrecognised { file: named, reason }) => assert!(named.ends_with(&format!("{key}.json")) && reason.contains("thing/9"), "{key}: {named}: {reason}"),
+                other => panic!("{key}: the publication over an unrecognised row answered {other:?}"),
+            }
+            assert_eq!(std::fs::read(&file).unwrap(), foreign, "{key}: the unrecognised row stands");
+        }
     }
 
     /// CONTRACT (R14 items 2 and 4): at its scratchpad's publication a store whose gate says its
