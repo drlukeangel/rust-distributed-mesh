@@ -50,8 +50,9 @@ fn ended_read<T>(span: &tracing::Span, op: &'static str, r: &Result<T, CallEnd>)
 /// spreads by gossip is read as it lands, until `holds`. `kind` and `fact` name the fact and `admin` the
 /// admin asked. An admin that does not report it within `within` ends the call `Indeterminate`, naming
 /// the fact, the admin and the last thing it reported (`report` of the last view read) or how its last
-/// read ended. Every fact awaiter is this body: `Fabrics::fact`, and a caller that reads a fact over a typed
-/// call of the crate that owns its type (a node-admin's own Build log, `FetchBuildFacts`) supplies that read.
+/// read ended. `Fabrics::fact` is this body, and so is a caller's that supplies the read of a fact whose type
+/// this crate cannot name (a node-admin's own Build log over `FetchBuildFacts`). `Peers::fact` polls on its own
+/// loop and is not this body.
 pub async fn await_fact<T, Fut>(
     kind: &str,
     admin: &str,
