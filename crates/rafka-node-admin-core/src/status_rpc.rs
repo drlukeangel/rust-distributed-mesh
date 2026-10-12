@@ -351,7 +351,11 @@ pub struct StatusAuthority {
     /// This admin's digest book: as its mesh's primary it sets each member's status there from the
     /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
     /// otherwise). `None` only where no admin owns a digest book.
-    pub book: Option<rafka_mesh_transport::membership::DigestBook>,}
+    pub book: Option<rafka_mesh_transport::membership::DigestBook>,
+    /// This admin's fabric record (`fabric.storage` folded with what it learned): `fabric.get`
+    /// answers its `Fabric.build_id` from it (node-identity-and-state.md §2.8).
+    pub accepted: Arc<crate::accepted::AcceptedStore>,
+}
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
 /// `Declared`: the effect is committed only after the put returned `Ok`.
@@ -1133,6 +1137,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1249,6 +1254,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         let birth = rpc.incarnation_id.clone().unwrap();
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
@@ -1308,6 +1314,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         }
     }
 
@@ -1599,6 +1606,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         for n in [&restarted, &deleted, &standing] {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1689,6 +1697,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);

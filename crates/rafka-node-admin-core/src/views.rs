@@ -225,8 +225,9 @@ pub fn meshes(view: &Topology, mesh: Option<&str>) -> Option<Vec<MeshView>> {
     }
 }
 
-/// The fabric as `view` holds it.
-pub fn fabric(view: &Topology) -> FabricView {
+/// The fabric as `view` holds it, with `build_id`, its `Fabric.build_id` as the answering admin's
+/// fabric record holds it.
+pub fn fabric(view: &Topology, build_id: Option<String>) -> FabricView {
     let f = view.fabric_view();
     FabricView {
         id: f.id,
@@ -236,6 +237,7 @@ pub fn fabric(view: &Topology) -> FabricView {
         fabric_primary: f.fabric_primary,
         admin_api_base: f.admin_api_base,
         meshes: f.meshes.into_iter().map(mesh_view).collect(),
+        build_id,
     }
 }
 
@@ -322,7 +324,7 @@ pub fn view_answer(me: &PathName, view: &Topology, req: &StatusRequest) -> Optio
             }
         }
         StatusRequest::GetFabric => {
-            let fabric = fabric(view);
+            let fabric = fabric(view, None);
             let count = fabric.meshes.len();
             let reply = StatusReply::within_reply_bound(StatusReply::Fabric { fabric }, "fabric.get");
             match &reply {

@@ -5411,6 +5411,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     },
                                     loads: control.loads.get().cloned(),
                                     book: Some(book.clone()),
+                                    accepted: control.accepted.clone(),
                                 }));
                             }
                             // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
@@ -8953,6 +8954,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         let _ = Declared::default();
 
