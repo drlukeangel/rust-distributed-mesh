@@ -325,7 +325,7 @@ impl AdminRunner {
         // (R-EL1: the exited holder's seat is vacant).
         self.refresh_view().await;
         let records: Vec<Node> = self.topology.read().await.nodes.iter().filter(|n| n.mesh == mesh).cloned().collect();
-        crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &self.records.declared, &self.me.to_string(), key, mesh, &records, &all.final_primary, &all.receipts).await?;
+        crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &*self.mesh_storage, &self.records.declared, &self.me.to_string(), key, mesh, &records, &all.final_primary, &all.receipts).await?;
         self.builds
             .append_step_receipt(&BuildStepReceipt {
                 build_id: build_id.clone(),
@@ -523,16 +523,24 @@ impl AdminRunner {
         // it, gossips it and answers"); its view then states the mesh Dead and its status round
         // publishes MeshStatus Dead, five sends, while it lives (R-NS1 item 1). A refused put
         // answers no handoff: the owner's repeated leave-mesh decides it afresh.
+        // Its Mesh row is written Dead on mesh.storage with it, which releases the mesh's name (R-MN1
+        // item 2); a refused write answers no handoff either.
         let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Dead).await;
-        tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %self.me, mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), outcome = committed.name())
-            .in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row Dead is stored and applied from its members' exit proofs"));
-        match committed {
-            StatusReply::Applied | StatusReply::AlreadyApplied => self.refresh_view().await,
-            refused => {
-                tracing::info!(operation = %key.operation, reply = refused.name(), "the Dead row was not committed: the handoff waits for a repeated leave-mesh");
-                return;
-            }
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %self.me, mesh = %me.mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, receipts = manifest.receipts.len(), outcome = committed.name(), mesh_row = tracing::field::Empty, error = tracing::field::Empty);
+        let mesh_row = match committed {
+            StatusReply::Applied | StatusReply::AlreadyApplied => crate::mesh_leave::mesh_row_dead(&*self.mesh_storage, &me.mesh, &key.mesh_id).await,
+            refused => Err(format!("the Dead status row was not committed: {}", refused.name())),
+        };
+        match &mesh_row {
+            Ok(row) => span.record("mesh_row", *row),
+            Err(e) => span.record("mesh_row", "not-written").record("error", e.as_str()),
+        };
+        span.in_scope(|| tracing::info!("mesh.deleted at the mesh's primary: its own mesh row Dead is stored and applied from its members' exit proofs, and its name released"));
+        if let Err(e) = mesh_row {
+            tracing::info!(operation = %key.operation, error = %e, "the mesh row Dead was not committed: the handoff waits for a repeated leave-mesh");
+            return;
         }
+        self.refresh_view().await;
         self.lifecycle_events
             .mesh_leave(&MeshLeaveEvent { mesh_id: key.mesh_id.clone(), build_id: key.build_id.clone(), attempt: key.attempt, operation: key.operation.clone(), receipt_manifest: Some(reference), final_primary: Some((final_node_id, final_incarnation)) })
             .await;

@@ -814,13 +814,30 @@ pub async fn birth_row_deleted(rows: Option<&crate::node_rows::NodeRows>, execut
 /// `MeshLeft` receipt: "At mesh-left the fabric-primary writes the final primary's row Deleted, as
 /// acting primary of a mesh that has none left, and the mesh row Dead". `rows` is the
 /// fabric-primary's writer, `records` its view's records of the mesh, `final_primary` the exact
-/// final birth; the Dead row is committed through `status` and held in `declared`.
+/// final birth; the Dead row is committed through `status` and held in `declared`, and the Mesh row
+/// Dead on `meshes`, which releases the mesh's name.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, records: &[Node], final_primary: &RosterBirth, proof: &[TerminalReceipt]) -> Result<(), String> {
+pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, records: &[Node], final_primary: &RosterBirth, proof: &[TerminalReceipt]) -> Result<(), String> {
     birth_row_deleted(rows, executor, &key.operation, records, final_primary).await?;
     drop_departed_contacts(rows, executor, key, mesh, proof).await?;
-    ensure_mesh_dead(status, declared, executor, key, mesh).await
+    ensure_mesh_dead(status, meshes, declared, executor, key, mesh).await
+}
+
+/// The Mesh row of `mesh_id` at `mesh` written Dead on mesh.storage (R-MN1 item 2: a mesh's name is
+/// released by its removal, the row Dead; R-MD1: the mesh-primary writes it at mesh.deleted, mesh-left's
+/// fabric-primary as acting primary when no primary survived), whole, through the claim of the name,
+/// so it never lands over another mesh's live row. Returns what the row is now: `dead-written`;
+/// `already-dead` (this mesh's row was Dead already: a repeat writes nothing); or `name-held` (another
+/// mesh's live row holds the name: this mesh holds no row there to release, and nothing is written).
+pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, mesh: &str, mesh_id: &MeshId) -> Result<&'static str, String> {
+    let row = crate::storage::MeshRecord { mesh_id: mesh_id.clone(), name: mesh.to_string(), dead: true };
+    match meshes.claim_mesh(&row).await {
+        Ok(Ok(crate::storage::MeshClaim::Written { .. })) => Ok("dead-written"),
+        Ok(Ok(crate::storage::MeshClaim::Held)) => Ok("already-dead"),
+        Ok(Err(crate::storage::MeshClaimRefused::NameHeld { .. })) => Ok("name-held"),
+        Ok(Err(refused)) => Err(format!("mesh.storage refused the Dead row of {mesh} ({mesh_id}): {refused}")),
+        Err(e) => Err(format!("mesh.storage could not write the Dead row of {mesh} ({mesh_id}): {e}")),
+    }
 }
 
 /// mesh-left drops the contact of every birth the complete proof set `proof` names from the removed
@@ -855,10 +872,10 @@ async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, execu
 /// No row held means no primary survived to write it: this fabric-primary puts it as acting primary
 /// of a mesh with none left (mesh-leave.md step 7) and records it as applied. One
 /// `rdm.node_admin.mesh.update.via-dead-row` span names the outcome and who wrote the row.
-async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str) -> Result<(), String> {
+async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str) -> Result<(), String> {
     let dead = rafka_node_rpc_contract::status::MeshState::Dead;
     let row = crate::status_storage::MeshStatusRow { mesh_id: key.mesh_id.clone(), state: dead };
-    let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, writer = tracing::field::Empty, error = tracing::field::Empty);
+    let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, writer = tracing::field::Empty, mesh_row = tracing::field::Empty, error = tracing::field::Empty);
     let refused = |e: String| {
         span.record("outcome", "not-committed");
         span.record("error", e.as_str());
@@ -874,9 +891,11 @@ async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, dec
         declared.lock().unwrap().meshes.insert(key.mesh_id.clone(), dead);
         ("applied", "acting-primary")
     };
+    let mesh_row = mesh_row_dead(meshes, mesh, &key.mesh_id).await.map_err(refused)?;
     span.record("outcome", outcome);
     span.record("writer", writer);
-    span.in_scope(|| tracing::info!("mesh-left: the mesh row Dead stands among the mesh's status rows before the MeshLeft receipt; the mesh's name is released"));
+    span.record("mesh_row", mesh_row);
+    span.in_scope(|| tracing::info!("mesh-left: the mesh row Dead stands among the mesh's status rows and on mesh.storage before the MeshLeft receipt; the mesh's name is released"));
     Ok(())
 }
 
