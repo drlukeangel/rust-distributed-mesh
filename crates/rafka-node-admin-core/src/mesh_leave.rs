@@ -825,10 +825,18 @@ pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &
 
 /// mesh-left at the fabric-primary (mesh-delete.md step 7: "The fabric-primary is its executor,
 /// proves its exit and, as acting primary of a mesh that has no primary, writes its row deleted"),
-/// after exact coverage of the proof set `all` and before the `MeshLeft` receipt: `refresh` installs
-/// the view `view`, whose election reads the proof set's exits as proven losses (R-EL1), and the
-/// rows are written from that view's records of `mesh` ([`mesh_left_rows`]). `records` are the
-/// fabric-primary's (its node-rows writer and its declared rows).
+/// after exact coverage of the proof set `all` and before the `MeshLeft` receipt. The proof set is
+/// every roster birth's exact Exited (step 5: the manifest this fabric-primary validated, and the
+/// final primary's exit it proved), so no birth of the mesh lives. Every exit of it the view
+/// `view` does not hold proven (`refresh` installs it) is recorded as that birth's exit-proof row
+/// (`Records::put_exit_of_receipt`: a blind put of its own key, whichever admin proved it) and the
+/// view installed again: its election reads them as proven losses (R-EL1), so it seats no birth of
+/// the mesh, whatever gossip it has not heard yet (R-NS1, R-MD1: no ordering guarantee) and
+/// whatever row it cannot read (before the fabric's first state-commit a member's exit-proof row
+/// lies in its mesh-primary's scratchpad). The rows are then written from that view's records of
+/// `mesh` ([`mesh_left_rows`]). `records` are the fabric-primary's (its node-rows writer, its
+/// status rows and its declared rows). One `rdm.node_admin.node.update.via-proof-set-exits` span
+/// names the exits recorded and those already held.
 #[allow(clippy::too_many_arguments)]
 pub async fn mesh_left<F, Fut>(records: &crate::admin::Records, refresh: F, view: &tokio::sync::RwLock<crate::topology::Topology>, status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, executor: &str, key: &LeaveKey, mesh: &str, all: &ExitManifest) -> Result<(), String>
 where
@@ -837,6 +845,28 @@ where
 {
     use crate::deployment::pipeline::TopologySink;
     refresh().await;
+    let span = tracing::info_span!("rdm.node_admin.node.update.via-proof-set-exits", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, recorded = tracing::field::Empty, held = tracing::field::Empty, error = tracing::field::Empty);
+    let (mut recorded, mut held) = (Vec::new(), Vec::new());
+    for t in &all.receipts {
+        let named = format!("{} {}", t.node, t.incarnation_id);
+        let node_id = NodeId::parse(&t.node_id).map_err(|e| format!("{}: the Exited receipt of {named} names no node id ({:?}): {e}", key.operation, t.node_id))?;
+        if records.is_exited(&node_id, &crate::model::IncarnationId(t.incarnation_id.clone())) {
+            held.push(named);
+            continue;
+        }
+        if let Err(e) = records.put_exit_of_receipt(t).await {
+            let why = format!("{}: {executor} could not record the proven exit of {named} from the proof set: {e}", key.operation);
+            span.record("error", why.as_str());
+            span.in_scope(|| tracing::info!("mesh-left: a proof set exit is not recorded"));
+            return Err(why);
+        }
+        recorded.push(named);
+    }
+    span.record("recorded", recorded.join(", ").as_str()).record("held", held.join(", ").as_str());
+    span.in_scope(|| tracing::info!("mesh-left: every exit of the proof set is held proven before the rows are written"));
+    if !recorded.is_empty() {
+        refresh().await;
+    }
     let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == mesh).cloned().collect();
     mesh_left_rows(records.node_rows().as_deref(), status, meshes, &records.declared, executor, key, mesh, &nodes, &all.final_primary, &all.receipts).await
 }

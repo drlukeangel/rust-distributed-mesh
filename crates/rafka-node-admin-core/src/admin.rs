@@ -8223,12 +8223,18 @@ mod tests {
         let status = crate::status_storage::MemoryStatusStorage::default();
         let capture = crate::span_capture::Capture::new("i143-3069-mesh-left-proof-set-exits");
         let (written, installed) = {
+            use tracing::Instrument;
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            let refresh = || async {
-                records.install_read(&fp.node.name, &view, &book, &fabric1(), |reads| project_with("fabric1", &fabric1(), ProviderKind::Process, &book, &records, reads)).await;
-            };
-            let written = crate::mesh_leave::mesh_left(&records, refresh, &view, &status, &crate::storage::MemoryMeshStorage::default(), &fp.node.name.to_string(), &key, "mesh2", &all).await;
-            (written, view.read().await.clone())
+            let root = tracing::info_span!("cell.mesh-left-proof-set-exits", operation = %key.operation);
+            async {
+                let refresh = || async {
+                    records.install_read(&fp.node.name, &view, &book, &fabric1(), |reads| project_with("fabric1", &fabric1(), ProviderKind::Process, &book, &records, reads)).await;
+                };
+                let written = crate::mesh_leave::mesh_left(&records, refresh, &view, &status, &crate::storage::MemoryMeshStorage::default(), &fp.node.name.to_string(), &key, "mesh2", &all).await;
+                (written, view.read().await.clone())
+            }
+            .instrument(root)
+            .await
         };
         written.unwrap_or_else(|e| panic!("mesh-left writes the final primary's row Deleted as acting primary of a mesh none of whose births lives: {e}"));
         assert_eq!(installed.node(&other.node.name).map(|n| (n.status, n.is_primary)), Some((NodeStatus::Dead, false)), "the member the proof set holds exited is Dead and holds no seat");
@@ -8239,6 +8245,10 @@ mod tests {
         let read_other = exits.iter().find(|s| s.attributes.get("node").map(String::as_str) == Some("mesh2.admin.2")).unwrap_or_else(|| panic!("the fabric-primary reads the member's exit-proof row: {exits:?}"));
         let deleted = capture.named("rdm.node_admin.node.delete.via-node-row");
         assert_eq!(deleted.iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), ["row-deleted"], "{deleted:?}");
+        let proof_set = capture.named("rdm.node_admin.node.update.via-proof-set-exits");
+        let attr = |k: &str| proof_set.first().and_then(|s| s.attributes.get(k).cloned()).unwrap_or_default();
+        assert_eq!((attr("recorded"), attr("held")), (format!("mesh2.admin.2 {}", other.node.incarnation.0), format!("mesh2.admin.1 {}", last.node.incarnation.0)), "the member's exit is recorded from the proof set; the final primary's was held: {proof_set:?}");
+        eprintln!("span rdm.node_admin.node.update.via-proof-set-exits trace_id={} {:?}", proof_set[0].trace_id, proof_set[0].attributes);
         eprintln!("span rdm.node_admin.node.resolve.via-exit-proof-row trace_id={} {:?}", read_other.trace_id, read_other.attributes);
         eprintln!("span rdm.node_admin.node.delete.via-node-row trace_id={} {:?}", deleted[0].trace_id, deleted[0].attributes);
     }
