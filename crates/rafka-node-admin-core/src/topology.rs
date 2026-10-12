@@ -447,6 +447,20 @@ mod tests {
         assert!(v.contains(&TopologyViolation::NodeInUnknownMesh { node: "mesh1.rpc.1".parse().unwrap(), mesh: "mesh9".into() }), "{v:?}");
     }
 
+    /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; node-update.md: "Config on the
+    /// row, `admin_api_base` included, is stored and gossiped as given; nothing checks it"): a
+    /// fabric whose node-admins advertise no `admin_api_base` names no violation and is converged.
+    /// What must NOT happen: a topology held unconverged for a config value RDM never reads.
+    #[test]
+    fn a_node_admin_primary_with_no_admin_api_base_names_no_violation() {
+        let mut t = mn();
+        for n in t.nodes.iter_mut() {
+            n.admin_api_base = None;
+        }
+        assert_eq!(t.violations(), vec![]);
+        assert!(t.is_converged());
+    }
+
     #[test]
     fn primary_admin_without_endpoint_is_named() {
         let mut t = mn();
