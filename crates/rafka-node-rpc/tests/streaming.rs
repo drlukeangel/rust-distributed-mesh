@@ -323,6 +323,7 @@ async fn a_streams_terminal_is_named_under_its_serve_span_in_the_callers_trace()
     crate::common::spans_exporter();
     let r = rig().await;
     let (trace, opts) = traced();
+    let _left = crate::common::TraceArtifact::new(&trace);
     let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(3, 8, Mode::Normal), &opts).await.map_err(|e| e.0).unwrap();
     while let Some(item) = s.next().await {
         if let StreamItem::Failed(f) = item {
@@ -353,6 +354,7 @@ async fn a_stream_that_panics_or_ends_without_its_terminal_is_refused_under_its_
         (Mode::BadFinal, "rdm.node_rpc.stream.reject.via-protocol-violation", "reason", "not its terminal"),
     ] {
         let (trace, opts) = traced();
+        let _left = crate::common::TraceArtifact::new(&trace);
         let (mut s, _) = r.client.call_stream::<Count>(&r.target, &count(2, 8, mode), &opts).await.map_err(|e| e.0).unwrap();
         while s.next().await.is_some() {}
         r.server.settled().await;
