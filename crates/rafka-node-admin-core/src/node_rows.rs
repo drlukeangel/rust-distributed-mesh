@@ -394,14 +394,18 @@ impl NodeRows {
 
     /// The row of `node_id` at `name`, `status`, its config seeded from the previous row at the
     /// `path.name` (another node's row there: the store adapter refuses it unless it is `Deleted`),
-    /// else the `<name>.old` row, else `own`. A row the same node holds already is left as it is.
+    /// else the `<name>.old` row, else `own`. A row the same node holds already, at whatever name, is
+    /// left as it is: it is found through the node's id index ([`WrittenRows::known_row`]), so a node
+    /// renamed while stopped (told nothing of it, R12) keeps its one row where the rename put it,
+    /// whatever name a view still lists it at.
     async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, span: &tracing::Span) -> Result<Claimed, RowRefused> {
         let me = &self.me;
-        let previous = self.storage.node_row_at(name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous row at {name} could not be read for {node_id}: {e}")))?;
-        if let Some(p) = previous.as_ref().filter(|p| p.node_id == *node_id) {
-            self.written.hold(p);
-            return Ok(Claimed::HeldByNode(p.clone()));
+        match self.written.known_row(&*self.storage, &name.mesh, node_id).await {
+            Ok(Some(held)) => return Ok(Claimed::HeldByNode(held)),
+            Ok(None) => {}
+            Err(e) => return Err(RowRefused::Unwritten(format!("{me}: the row {node_id} holds could not be read before its row at {name} was written: {e}"))),
         }
+        let previous = self.storage.node_row_at(name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous row at {name} could not be read for {node_id}: {e}")))?;
         let seed = match previous {
             Some(p) => Some(p),
             None => self.storage.node_row_at(&name.renamed()).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the .old row at {} could not be read for {node_id}: {e}", name.renamed())))?.filter(|p| p.node_id != *node_id),
