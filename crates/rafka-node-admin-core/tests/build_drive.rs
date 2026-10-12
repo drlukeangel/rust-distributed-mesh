@@ -940,13 +940,12 @@ impl OperationRunner for HeldOpen {
 }
 
 /// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer"): the committed seat row
-/// is the fence, and when the holder was the fabric-primary it ends the caller's outer stream with
-/// the new seat after the row. The fence is set while the drive waits on the executor's run: the
-/// drive ends `SeatLost` at the fence, without waiting for that run's stream to end, the callers'
-/// streams end naming the successor the transfer committed, and no later attempt is claimed (the
-/// successor resumes the same attempt).
+/// is the fence. The fence is set while the drive waits on an executor's run, and the record names
+/// another holder than that executor: the drive ends `SeatLost` at the fence, without waiting for
+/// that run's stream to end, the callers' streams end naming the holder the record names, and no
+/// later attempt is claimed.
 #[tokio::test]
-async fn a_fence_set_while_the_executor_runs_ends_the_drive_at_the_fence_naming_the_successor() {
+async fn a_fence_naming_another_holder_than_the_executor_ends_the_drive_at_the_fence_naming_that_holder() {
     let held = Arc::new(HeldOpen { began: tokio::sync::Notify::new() });
     let runner = held.clone();
     let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, move |_, _| -> Arc<dyn OperationRunner> { runner }).await;
@@ -956,16 +955,98 @@ async fn a_fence_set_while_the_executor_runs_ends_the_drive_at_the_fence_naming_
     let running = tokio::spawn(async move { env.run(&d).await });
     held.began.notified().await;
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is running at the executor");
-    r.switch.fence_to(Some("mesh1.admin.2"));
+    r.switch.fence_to(Some("mesh2.admin.1"));
     let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends at the fence while the executor's run is still open").unwrap();
     assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("no longer holds the fabric-primary seat: the committed seat row moved it")), "the fence ends the drive SeatLost: {end:?}");
     match next_within(&mut reader).await {
-        Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh1.admin.2"), "the stream names the committed successor: {loss:?}"),
+        Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh2.admin.1"), "the stream names the holder the record names: {loss:?}"),
         other => panic!("the reader ends with the seat loss, got {other:?}"),
     }
     let p = r.builds.read_build(&r.build).await.unwrap();
-    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "no later attempt was claimed: the successor resumes attempt 1");
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "no later attempt was claimed");
     assert_eq!(r.dispatch.dispatched.lock().unwrap().len(), 1, "nothing more was dispatched");
+}
+
+/// An executor's run the cell feeds item by item: `dispatch` hands the drive the stream and says so.
+struct Fed {
+    items: Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<rafka_node_admin_core::build_drive::InnerItem>>>,
+    dispatched: tokio::sync::Notify,
+}
+
+struct FedStream(tokio::sync::mpsc::UnboundedReceiver<rafka_node_admin_core::build_drive::InnerItem>);
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::build_drive::InnerStream for FedStream {
+    async fn next(&mut self) -> rafka_node_admin_core::build_drive::InnerItem {
+        self.0.recv().await.unwrap_or(rafka_node_admin_core::build_drive::InnerItem::Ended)
+    }
+}
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::build_drive::Dispatcher for Fed {
+    async fn dispatch(&self, _: &PathName, _: &BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
+        let items = self.items.lock().unwrap().take().expect("one dispatch");
+        self.dispatched.notify_one();
+        rafka_node_admin_core::build_drive::Dispatched::Stream(Box::new(FedStream(items)))
+    }
+}
+
+/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer": "after the row P ends the
+/// caller's outer stream with the typed new-seat frame, the caller resubmits the same build_id to N,
+/// and N resumes the same attempt as the new fabric-primary"; "The reply opens N's execution gate"):
+/// the fence is set while the drive waits on the executor's run, and the record names that executor:
+/// the transfer is the run's own SeatTransfer step. The executor is the fabric-primary once it has
+/// installed the committed seats, and it says so on the run's own stream, which it ends with
+/// SeatMoved naming itself. Until then the callers' streams carry the run's frames and no seat loss;
+/// on the executor's SeatMoved the drive ends `SeatLost` naming the executor, and no later attempt
+/// is claimed (the executor resumes the same attempt).
+/// Must NOT happen: a caller's stream ending with the seat loss, which sends the caller to the
+/// executor, before the executor's run said it holds the seat.
+#[tokio::test]
+async fn a_fence_naming_the_executor_ends_the_drive_on_the_executors_new_seat_frame_never_before() {
+    use rafka_node_admin_core::build_drive::InnerItem;
+    let r = rig().await;
+    let (feed, items) = tokio::sync::mpsc::unbounded_channel();
+    let fed = Arc::new(Fed { items: Mutex::new(Some(items)), dispatched: tokio::sync::Notify::new() });
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        accepted: e.accepted.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: fed.clone(),
+        gate: e.gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+    });
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    let (e, d) = (env.clone(), drive.clone());
+    let running = tokio::spawn(async move { e.run(&d).await });
+    tokio::time::timeout(Duration::from_secs(5), fed.dispatched.notified()).await.expect("attempt 1 is dispatched");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "attempt 1 runs at the executor");
+    // The executor's SeatTransfer step reached the holder, whose row is the fence.
+    r.switch.fence_to(Some("mesh1.admin.2"));
+    let step = BuildReply::Step { build_id: r.build.0.clone(), attempt: 1, operation: "stop-node:mesh1.admin.1".into(), step: "SeatTransfer".into() };
+    feed.send(InnerItem::Frame(step.clone())).unwrap();
+    match next_within(&mut reader).await {
+        Some(Read::Frame(f)) => assert_eq!(f, step, "the run's frame reaches the callers"),
+        other => panic!("before the executor says it holds the seat, the callers read the run's frames and no seat loss, got {other:?}"),
+    }
+    assert!(next_within(&mut reader).await.is_none(), "no seat loss before the executor's new-seat frame");
+    assert!(!running.is_finished(), "the drive waits for the executor's new-seat frame");
+    // The executor installed the committed seats: its run's stream ends with the new seat.
+    feed.send(InnerItem::Frame(BuildReply::SeatMoved { build_id: r.build.0.clone(), fabric_primary: Some("mesh1.admin.2".into()) })).unwrap();
+    let end = tokio::time::timeout(Duration::from_secs(5), running).await.expect("the drive ends on the executor's new-seat frame").unwrap();
+    assert!(matches!(&end, DriveEnd::SeatLost(why) if why.contains("no longer holds the fabric-primary seat: the committed seat row moved it")), "the fence ends the drive SeatLost: {end:?}");
+    match next_within(&mut reader).await {
+        Some(Read::SeatLost(loss)) => assert_eq!(loss.to.as_deref(), Some("mesh1.admin.2"), "the stream names the executor the transfer seated: {loss:?}"),
+        other => panic!("the reader ends with the seat loss, got {other:?}"),
+    }
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "no later attempt was claimed: the executor resumes attempt 1");
 }
 
 /// The terminal `drive` ends with, read from its first frame on.
