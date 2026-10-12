@@ -88,9 +88,15 @@ fn a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_goss
         let seq_at_all = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
         let mut digests = book.digest_changes();
         digests.borrow_and_update();
-        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_all) {
-            digests.changed().await.unwrap();
-        }
+        // A digest is published every gossip interval (500 ms at the gate's cadence): twenty intervals
+        // with none heard is a node no longer on gossip.
+        let heard = tokio::time::timeout(Duration::from_secs(10), async {
+            while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.digest_seq <= seq_at_all) {
+                digests.changed().await.unwrap();
+            }
+        })
+        .await;
+        assert!(heard.is_ok(), "the node is still heard on gossip after All: no digest of it past seq {seq_at_all} in twenty gossip intervals");
         assert_eq!(named(&spans, "rdm.mesh.connection.delete.via-channel-parked"), 0, "All parks no gossip channel");
         assert_eq!(named(&spans, "rdm.node_rpc.connection.delete.via-hard-cut"), 0, "All hard-cuts no Node RPC pool connection");
         let _ = std::fs::remove_dir_all(&dir);
