@@ -36,6 +36,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{watch, Notify};
 use tokio::time::Instant;
+use tracing::instrument::WithSubscriber;
 
 /// One pooled connection's identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -238,6 +239,11 @@ impl Pool {
                     // connection's driver task with the span current at that moment, and that task lives as
                     // long as the pooled connection, so a current dial span would stay open (and keep the
                     // call span above it open) until the connection closes. Its events name it as parent.
+                    // The task runs on the dispatcher of the call that started it: its events reach that
+                    // subscriber, and the dial span ends there. A span's end releases its parent's reference
+                    // through the dispatcher of the thread it ends on, so a dial span ending on a worker that
+                    // holds another dispatcher would leave the call span (and every span above it) open
+                    // for good.
                     let span = tracing::info_span!(
                         "rdm.node_rpc.connection.create.via-dial",
                         peer = %key.peer.fmt_short(),
@@ -256,7 +262,8 @@ impl Pool {
                         drop(span);
                         pool.inner.dials.lock().unwrap().remove(&key);
                         let _ = tx.send(Some(out));
-                    });
+                    }
+                    .with_current_subscriber());
                     rx
                 }
             }
