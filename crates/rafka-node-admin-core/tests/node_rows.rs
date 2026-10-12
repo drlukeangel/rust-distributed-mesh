@@ -326,6 +326,48 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
     assert_eq!(outcome("mesh1.admin.2"), vec!["row-written"], "{spans:#?}");
 }
 
+/// CONTRACT (R13: "Rebuild after a seat change reads the mesh's own rows", and a rebuild never
+/// overwrites a row a node holds; R12: a stopped node is told nothing of a rename): mesh1.rpc.1 was
+/// stopped and renamed by node.update while stopped, so the one row it holds is at
+/// `mesh1.rpc.1.old`. An admin that takes mesh1's primary seat over a view that still lists that
+/// stopped birth at the name it published (`mesh1.rpc.1`) writes no row for it: the node holds a
+/// row, found through its id index, and that row stays the node's only one. No second row at the
+/// bare name holds the name for a stopped birth, and the node's id index still names `.old`, where
+/// the fabric-primary's view lists it for its delete. One `via-node-row` span, `row-held-by-node`.
+#[test]
+fn a_seat_taken_over_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its_only_one() {
+    let cap = capture();
+    let (old_row, bare_row, indexed, renamed) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let records = Records::default();
+        let mut before = view();
+        let rpc1 = before.nodes.iter_mut().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap();
+        rpc1.status = NodeStatus::Leaving;
+        rpc1.parked = true;
+        rpc1.routable = false;
+        let rpc1 = rpc1.clone();
+        let topology = Arc::new(RwLock::new(before.clone()));
+        records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
+        // The rename its mesh's former primary wrote while the node was stopped: the row moved to `.old`.
+        let renamed = NodeRow { name: rpc1.name.renamed(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default() };
+        storage.put_node_row(&renamed).await.unwrap().unwrap();
+        install(&records, &topology, |t| {
+            for n in t.nodes.iter_mut() {
+                n.is_primary = n.name.to_string() == "mesh1.admin.1";
+            }
+        })
+        .await;
+        (storage.node_row_at(&rpc1.name.renamed()).await.unwrap(), storage.node_row_at(&rpc1.name).await.unwrap(), storage.node_row_name("mesh1", &rpc1.node_id).await.unwrap(), renamed)
+    });
+    assert_eq!(old_row, Some(renamed.clone()), "the renamed node's row stands at .old as written");
+    assert_eq!(bare_row, None, "no second row of the stopped node holds its former name");
+    assert_eq!(indexed, Some(renamed.name.clone()), "the node's id index names its one row, at .old");
+    let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+    let outcome = |name: &str| spans.iter().filter(|s| s["attributes"]["subject"] == name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+    assert_eq!(outcome("mesh1.rpc.1"), vec!["row-held-by-node"], "{spans:#?}");
+}
+
 type Rebuilt = (BTreeMap<String, Option<NodeRow>>, Option<NodeStatus>, NodeId, NodeId, NodeId, NodeId, String);
 
 /// The rebuild cell's story: P's writes, then N's seat taken over one shared root.
