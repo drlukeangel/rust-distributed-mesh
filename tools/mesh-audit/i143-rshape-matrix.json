@@ -674,20 +674,6 @@
       "source": "tools/mesh-audit/tests/rshape_definition.rs"
     },
     {
-      "test": "mock_replace_racing_proven_drift_births_the_path_once",
-      "issue": 2943,
-      "provider": "process",
-      "tier": "adversarial",
-      "job": "i143-rshape-adv-replace-race-process",
-      "covers": [
-        "C8"
-      ],
-      "canon": "fabric-mesh-ops.md section 6 and proof 10 (unplanned loss produces one NodeDeleted for the old identity, from the replacement attempt's executor); fabric-mesh-lifecycle.md FML-19 (a same-path replace against an unchanged accepted topology opens a new attempt of the Build Fabric.build_id names)",
-      "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-replace-race-process/mock_replace_racing_proven_drift_births_the_path_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_replace_racing_proven_drift_births_the_path_once -- --exact",
-      "dir": "target/i143-rshape/i143-rshape-adv-replace-race-process/mock_replace_racing_proven_drift_births_the_path_once",
-      "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs"
-    },
-    {
       "test": "mock_cut_refuses_what_it_cannot_prove_and_each_side_serves_its_own",
       "issue": 2943,
       "provider": "process",

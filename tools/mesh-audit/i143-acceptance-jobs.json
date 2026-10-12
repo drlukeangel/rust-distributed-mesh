@@ -1035,18 +1035,6 @@
         }
       ]
     },
-    "i143-rshape-adv-replace-race-process": {
-      "issue": 2943,
-      "layer": "chaos-process",
-      "cells": [
-        {
-          "name": "mock_replace_racing_proven_drift_births_the_path_once",
-          "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-adv-replace-race-process/mock_replace_racing_proven_drift_births_the_path_once/estate RDM_RSHAPE_TIER=fast RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_replace_racing_proven_drift_births_the_path_once -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-adv-replace-race-process/mock_replace_racing_proven_drift_births_the_path_once"
-        }
-      ]
-    },
     "i143-rshape-adv-cut-ops-process": {
       "issue": 2943,
       "layer": "chaos-process",
