@@ -4,15 +4,16 @@
 //! node `path.name`s per Mesh ([`FabricTopology`]). A submitted change ([`TopologyChange`]) is
 //! input only: [`compile`] applies it once to the current accepted topology and yields the next
 //! complete map; the change itself is kept on the Build as history, never read to plan. Planning
-//! is always `topology − observed` ([`plan`]). A restart or replacement changes no topology: it is
-//! an attempt of the current Build carrying its [`AttemptAction`].
+//! is always `topology − observed` ([`plan`]). A restart, a recovery or a recipe changes no topology:
+//! it is an attempt of the current Build carrying its [`AttemptAction`].
 //!
 //! Counts (`FabricDesired`, `MeshDesired`) stay API convenience: the compiler resolves them to
 //! exact paths before anything is persisted, so the executor never decides which node a count
 //! means.
 
 use rafka_mesh_entity::meta::NodeMeta;
-use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesired, MeshDesired};
+use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesired, MeshDesired, PinnedBirth};
+use rafka_node_rpc_contract::build::RecipeStep;
 use crate::build_state::{BuildProjection, BuildStateAdapter, BuildStateError};
 use crate::fabric_storage::{FabricIdentity, FabricPointer, FabricRecord, FabricStorage, FabricStorageError};
 use crate::model::{is_valid_mesh_name, IncarnationId, NodeId, NodeKind, NodeStatus, PathName};
@@ -194,8 +195,8 @@ pub enum TopologyChange {
     },
 }
 
-/// What one attempt of a Build does beyond realizing its topology: a same-path restart or
-/// replacement, fenced to the birth it acts on. Never part of the topology.
+/// What one attempt of a Build does beyond realizing its topology: a same-path restart, a standalone
+/// node op, a recovery or a recipe, fenced to the births it acts on. Never part of the topology.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AttemptAction {
@@ -204,13 +205,6 @@ pub enum AttemptAction {
         /// The node.
         path: PathName,
         /// The birth restarted.
-        from_incarnation: IncarnationId,
-    },
-    /// Replace the birth at a path with a new node.
-    Replace {
-        /// The node.
-        path: PathName,
-        /// The birth replaced.
         from_incarnation: IncarnationId,
     },
     /// Drain the exact birth at a path and keep it running (node-drain.md).
@@ -245,15 +239,92 @@ pub enum AttemptAction {
         /// The exited birth.
         from_incarnation: IncarnationId,
     },
-    /// Delete the parked exact birth a replacement left at `<path>.old` (node-decommission.md): its
-    /// stop steps are done; the provider's exact Exited is the proof, then `NodeDeleted` and its
-    /// Deleted row. The topology never names a `.old` path: this action is its only door.
+    /// Delete the stopped exact birth a rename left at `<path>.old` (node-delete.md): its stop steps
+    /// are done; the provider's exact Exited is the proof, then `NodeDeleted` and its Deleted row. The
+    /// topology never names a `.old` path: this action is its only door outside a recipe.
     Delete {
         /// The node's `.old` path.
         path: PathName,
         /// The birth deleted.
         from_incarnation: IncarnationId,
     },
+    /// A recipe (`BuildChange::Recipe`; build.md §1: "Rafka's replace recipe is submitted as one Build
+    /// of node primitives"; lifecycles/node-replace.md): its steps run in order, each as its op's own
+    /// operation ([`BuildOperation::RecipeStep`]), and a step whose `Complete` is receipted for this
+    /// recipe never runs again. `pinned` is the exact birth each path the recipe acts on held when it
+    /// was accepted; a path an earlier step creates holds no birth yet and is not pinned.
+    Recipe {
+        /// The steps, in order.
+        steps: Vec<RecipeStep>,
+        /// The birth each path a step acts on held at acceptance.
+        pinned: Vec<(PathName, PinnedBirth)>,
+    },
+}
+
+/// A recipe accepted against `observed` (the fabric-primary's view): refused by name when it has no
+/// step, names one operation twice, or acts on a path that holds no birth and that no earlier step
+/// creates or renames a node to; otherwise the action that pins every path's birth.
+pub(crate) fn recipe_action(steps: Vec<RecipeStep>, observed: &Topology) -> Result<AttemptAction, BuildReject> {
+    if steps.is_empty() {
+        return Err(BuildReject::EmptyRecipe);
+    }
+    let mut keys = BTreeSet::new();
+    for step in &steps {
+        let key = crate::build::recipe_step_key(step);
+        if !keys.insert(key.clone()) {
+            return Err(BuildReject::RecipeStepRepeated { operation: key });
+        }
+    }
+    // Each path a step acts on before any earlier step makes a node there is pinned to the birth the
+    // view holds at it now.
+    let mut pinned: Vec<(PathName, PinnedBirth)> = Vec::new();
+    let mut made: BTreeSet<PathName> = BTreeSet::new();
+    for step in &steps {
+        let path = step.node();
+        if !made.contains(path) && !pinned.iter().any(|(p, _)| p == path) {
+            if let Some((node_id, incarnation)) = observed.node(path).and_then(|n| n.incarnation_id.clone().map(|i| (n.node_id.clone(), i))) {
+                pinned.push((path.clone(), PinnedBirth { node_id, incarnation }));
+            }
+        }
+        match step {
+            RecipeStep::Create { node } => {
+                made.insert(node.clone());
+            }
+            RecipeStep::Update { name, .. } => {
+                made.insert(name.clone());
+            }
+            _ => {}
+        }
+    }
+    recipe_births(&steps, &pinned)?;
+    Ok(AttemptAction::Recipe { steps, pinned })
+}
+
+/// The exact birth each step of a recipe is fenced to: the pinned birth of the node its path names
+/// when the step runs, followed through the recipe's own creates and renames; `None` for a node an
+/// earlier step creates (its executor resolves it at its path). `Err` names the first step acting on
+/// a path that holds no node when it runs.
+pub(crate) fn recipe_births(steps: &[RecipeStep], pinned: &[(PathName, PinnedBirth)]) -> Result<Vec<Option<PinnedBirth>>, BuildReject> {
+    let mut at: BTreeMap<PathName, Option<PinnedBirth>> = pinned.iter().map(|(p, b)| (p.clone(), Some(b.clone()))).collect();
+    let mut out = Vec::with_capacity(steps.len());
+    for (i, step) in steps.iter().enumerate() {
+        let unknown = || BuildReject::RecipeNodeUnknown { step: i as u32 + 1, node: step.node().to_string() };
+        let birth = match step {
+            RecipeStep::Create { node } => {
+                at.insert(node.clone(), None);
+                None
+            }
+            RecipeStep::Update { node, name } => {
+                let birth = at.remove(node).ok_or_else(unknown)?;
+                at.insert(name.clone(), birth.clone());
+                birth
+            }
+            RecipeStep::Delete { node } => at.remove(node).ok_or_else(unknown)?,
+            RecipeStep::Stop { node } | RecipeStep::Start { node } => at.get(node).cloned().ok_or_else(unknown)?,
+        };
+        out.push(birth);
+    }
+    Ok(out)
 }
 
 fn validate_counts(m: &MeshDesired) -> Result<(), BuildReject> {
@@ -375,29 +446,22 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
 /// what observed reality already satisfies is not planned. Creates come before retirements, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
-    plan_with(topology, observed, action, false, ReplaceProgress::default(), &BTreeSet::new())
+    plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new())
 }
 
-/// [`plan`] for an attempt of the Build's `reason`: a requested replacement (`Replace`) of a birth
-/// the view does not hold at all is still a replacement of that exact birth, which the operation
-/// resolves from the durable records.
-#[cfg(test)]
-pub(crate) fn plan_for(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, reason: crate::build_state::AttemptReason) -> BuildPlan {
-    plan_with(topology, observed, action, reason == crate::build_state::AttemptReason::Replace, ReplaceProgress::default(), &BTreeSet::new())
-}
-
-/// How far the `replace-node:<path>` operation of a Replace attempt's exact birth got, from the
-/// Build's receipts. The view alone cannot say: once the predecessor is parked it leaves every book,
-/// and once the successor holds the path the view names another birth.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct ReplaceProgress {
-    /// The operation began for this birth: a replace's `DrainNode`, or a receipt naming the exact
-    /// birth (a recovery's `NodeDeleting`, the `RenamePredecessor` of either).
+/// How far an attempt's action got, from the Build's receipts. The view alone cannot say: a stopped
+/// birth leaves every book, and a recovered or renamed path names another birth.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ActionProgress {
+    /// A standalone drain, stop, start or delete began for its birth: its first step's receipt.
     started: bool,
-    /// The operation's `Complete` is receipted, at or after the attempt it began in.
+    /// Its `Complete` is receipted for the birth.
     finished: bool,
     /// How far a recovery's three operations got for its exited birth.
     recovery: RecoveryProgress,
+    /// Per step of a recipe, whether its operation's `Complete` is receipted in an attempt that
+    /// carried the recipe.
+    recipe: Vec<bool>,
 }
 
 /// How far a node recovery's three operations (node-recovery.md "Steps") got for its exited birth,
@@ -415,8 +479,8 @@ pub(crate) enum RecoveryProgress {
     Recovered,
 }
 
-impl ReplaceProgress {
-    /// The progress of `build`'s Replace action, `default` for any other.
+impl ActionProgress {
+    /// The progress of `build`'s action, `default` for an attempt that carries none.
     pub(crate) fn of(build: &crate::build_state::BuildProjection) -> Self {
         // A standalone drain, stop, start or parked delete: the receipts of its operation in an
         // attempt that carried this exact action (its `Opened` fact fenced the attempt to the birth)
@@ -437,23 +501,21 @@ impl ReplaceProgress {
         // A recovery: how far its three operations got for the exited birth.
         if let Some(AttemptAction::Recover { path, node_id, from_incarnation }) = &build.action {
             let recovery = recovery_progress(build, path, node_id, from_incarnation).0;
-            return Self { started: false, finished: recovery == RecoveryProgress::Recovered, recovery };
+            return Self { started: false, finished: recovery == RecoveryProgress::Recovered, recovery, ..Self::default() };
         }
-        let Some(AttemptAction::Replace { path, from_incarnation }) = &build.action else { return Self::default() };
-        let operation = format!("replace-node:{path}");
-        let birth = serde_json::to_value(from_incarnation).unwrap_or_default();
-        let done = |step: &str, only_birth: bool| {
-            build
-                .steps
+        // A recipe: each step is done once its operation's `Complete` is receipted in an attempt that
+        // carried this recipe (a recipe names each operation once, `recipe_action`).
+        if let Some(action @ AttemptAction::Recipe { steps, .. }) = &build.action {
+            let recipe = steps
                 .iter()
-                .filter(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete)
-                .filter(|s| !only_birth || s.output.as_ref().and_then(|o| o.get("incarnation")) == Some(&birth))
-                .map(|s| s.attempt)
-                .min()
-        };
-        let began = [done("DrainNode", false), done("NodeDeleting", true), done("RenamePredecessor", true)].into_iter().flatten().min();
-        let finished = began.is_some_and(|began| build.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= began));
-        Self { started: began.is_some(), finished, ..Self::default() }
+                .map(|step| {
+                    let operation = crate::build::recipe_step_key(step);
+                    build.steps.iter().any(|s| s.operation == operation && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action))
+                })
+                .collect();
+            return Self { recipe, ..Self::default() };
+        }
+        Self::default()
     }
 }
 
@@ -505,7 +567,7 @@ pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName
 
 /// [`plan`] for `build`'s current attempt, given what its receipts say already ran.
 pub(crate) fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
-    plan_with(&build.topology, observed, build.action.as_ref(), build.reason == crate::build_state::AttemptReason::Replace, ReplaceProgress::of(build), &open_mesh_deletes(build, observed))
+    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed))
 }
 
 /// The meshes, by name, whose mesh.delete `build` admitted (its `AcceptedRoster` receipt) and has not
@@ -523,7 +585,7 @@ fn open_mesh_deletes(build: &crate::build_state::BuildProjection, observed: &Top
         .collect()
 }
 
-fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, decommission_unheard: bool, replace_progress: ReplaceProgress, open_deletes: &BTreeSet<String>) -> BuildPlan {
+fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, progress: ActionProgress, open_deletes: &BTreeSet<String>) -> BuildPlan {
     let mut ops = Vec::new();
     // A standalone drain or stop is its one operation and nothing else: the topology is unchanged,
     // and the path it acts on is neither created nor repaired by this attempt. It is planned while
@@ -533,14 +595,14 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
         AttemptAction::Drain { path, from_incarnation } | AttemptAction::Stop { path, from_incarnation } | AttemptAction::Start { path, from_incarnation } | AttemptAction::Delete { path, from_incarnation },
     ) = action
     {
-        // A delete of a parked `<path>.old` is admitted from the record the fabric-primary holds of
-        // that exact birth, never from a view (only its replace's executor's view names the path):
+        // A delete of a stopped `<path>.old` is admitted from the record the fabric-primary holds of
+        // that exact birth, never from a view (only the renaming executor's view names the path):
         // it is planned until its `Complete` names the birth. A delete of the last admin of a deleted
         // mesh (mesh-delete.md step 7) is the ordinary node.delete of that exact birth, planned while
         // the view holds it.
         let parked_old = matches!(action, Some(AttemptAction::Delete { .. })) && path.old;
         let held = parked_old || observed.node(path).is_some_and(|n| n.incarnation_id.as_ref() == Some(from_incarnation));
-        if !replace_progress.finished && (held || replace_progress.started) {
+        if !progress.finished && (held || progress.started) {
             let (node, from_incarnation) = (path.clone(), from_incarnation.clone());
             ops.push(match action {
                 Some(AttemptAction::Drain { .. }) => BuildOperation::DrainNode { node, from_incarnation },
@@ -560,7 +622,7 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     // it is done, so a later attempt runs only what is left and never deletes again.
     if let Some(AttemptAction::Recover { path, node_id, from_incarnation }) = action {
         let exited = crate::build::ExitedBirth { node_id: node_id.clone(), incarnation: from_incarnation.clone() };
-        let done = replace_progress.recovery;
+        let done = progress.recovery;
         if done < RecoveryProgress::Deleted {
             ops.push(BuildOperation::RetireNode { node: path.clone(), exited: Some(exited.clone()) });
         }
@@ -572,28 +634,29 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
         }
         return BuildPlan { operations: ops };
     }
+    // A recipe is its steps, in order, each its op's own operation, until the receipts say it is done.
+    // The topology is unchanged, the generic loop plans nothing beside it, and no other member is
+    // swept. A step on a node an earlier step creates carries no birth: its executor resolves the node
+    // at its path when the step runs.
+    if let Some(AttemptAction::Recipe { steps, pinned }) = action {
+        match recipe_births(steps, pinned) {
+            Ok(births) => {
+                for (i, (step, birth)) in steps.iter().zip(births).enumerate() {
+                    if !progress.recipe.get(i).copied().unwrap_or(false) {
+                        ops.push(BuildOperation::RecipeStep { step: step.clone(), birth });
+                    }
+                }
+            }
+            Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-recipe-node-unknown", reason = %e).in_scope(|| tracing::info!("the recipe's steps name a node no step can act on: nothing is planned")),
+        }
+        return BuildPlan { operations: ops };
+    }
     let mesh_exists = |m: &str| observed.meshes.iter().any(|x| x.name == m);
     // A restart's birth: the one the attempt is fenced to, when the view still holds exactly it and
     // it is not already leaving (a leaving birth keeps the path to its departure). The action owns
     // its path: the generic create below never plans it a second time.
     let restarted: Option<&PathName> = match action {
         Some(AttemptAction::Restart { path, from_incarnation }) => observed.node(path).filter(|n| n.incarnation_id.as_ref() == Some(from_incarnation) && n.status != NodeStatus::Leaving).map(|_| path),
-        _ => None,
-    };
-    // One replace operation for the exact birth, never a retirement followed by a creation. The
-    // operation is planned while the view holds that birth, while its receipts say it began (the
-    // view then holds the successor, or nothing, at the path: a parked predecessor has left every
-    // book), and for a birth the view never held again that a requested replacement names (resolved
-    // from the durable records). It owns its path: the generic create below never plans it a second
-    // time.
-    let replaced: Option<(&PathName, &IncarnationId)> = match action {
-        Some(AttemptAction::Replace { path, from_incarnation }) if !replace_progress.finished => {
-            let planned = match observed.node(path) {
-                Some(n) => n.incarnation_id.as_ref() == Some(from_incarnation) || replace_progress.started,
-                None => (decommission_unheard && topology.contains(path)) || replace_progress.started,
-            };
-            planned.then_some((path, from_incarnation))
-        }
         _ => None,
     };
     for (name, m) in &topology.meshes {
@@ -604,12 +667,12 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
             // A path whose birth the view holds live is satisfied; any other path is planned and the
             // create pipeline's fence decides against the world (a running runtime at the path is
             // held, never replaced: `AdminRunner::fence_predecessor`).
-            if restarted == Some(p) || replaced.is_some_and(|(r, _)| r == p) {
+            if restarted == Some(p) {
                 continue;
             }
             // An attempt that carries an action repairs exactly its birth. Another unheard birth is
             // that birth's own proven drift, repaired by its own attempt, never swept up here.
-            if let Some(AttemptAction::Restart { path, .. } | AttemptAction::Replace { path, .. }) = action {
+            if let Some(AttemptAction::Restart { path, .. }) = action {
                 if path != p || observed.node(p).is_some_and(|n| matches!(n.status, NodeStatus::PendingReconnect | NodeStatus::Dead)) {
                     continue;
                 }
@@ -622,18 +685,18 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
     if let Some(path) = restarted {
         ops.push(BuildOperation::RestartNode { node: path.clone() });
     }
-    if let Some((path, from_incarnation)) = replaced {
-        ops.push(BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from_incarnation.clone() });
-    }
     // A live or stopped (parked) node of a kept mesh that the topology no longer names is retired
     // (a node.delete of a stopped node retires it: node-decommission.md); a node leaving under
     // another operation is that operation's. A mesh the topology no longer names is retired whole
     // (every member, dead or live, by the retire pipeline), never member by member.
     // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
     // repairs exactly its birth.
+    // A `<name>.new` successor is its recipe's, never surplus: a recipe that failed stops at its step,
+    // and resuming it or running its compensation steps is the caller's (lifecycles/node-replace.md
+    // "Rollback").
     let mut extra: Vec<&PathName> = observed
         .members()
-        .filter(|n| action.is_none() && (n.status.is_live() || n.parked) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
+        .filter(|n| action.is_none() && !n.name.new && (n.status.is_live() || n.parked) && topology.meshes.contains_key(&n.mesh) && !topology.contains(&n.name))
         .map(|n| &n.name)
         .collect();
     extra.sort();
@@ -944,7 +1007,7 @@ mod tests {
         assert_eq!(plan(&cur, &o, None).operations, vec![], "a deleted mesh with its last admin alive is planned by no Build");
         let open: BTreeSet<String> = ["mesh2".to_string()].into();
         assert_eq!(
-            plan_with(&cur, &o, None, false, ReplaceProgress::default(), &open).operations,
+            plan_with(&cur, &o, None, ActionProgress::default(), &open).operations,
             vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2.clone() }],
             "the Build that admitted its mesh.delete and holds no completion resumes it"
         );
@@ -969,8 +1032,8 @@ mod tests {
         let path: PathName = "mesh2.admin.1".parse().unwrap();
         let delete = AttemptAction::Delete { path: path.clone(), from_incarnation: birth.clone() };
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![BuildOperation::RetireNode { node: path.clone(), exited: None }]);
-        let finished = ReplaceProgress { started: true, finished: true, ..ReplaceProgress::default() };
-        assert_eq!(plan_with(&cur, &o, Some(&delete), false, finished, &BTreeSet::new()).operations, vec![], "nothing once its Complete names the birth");
+        let finished = ActionProgress { started: true, finished: true, ..ActionProgress::default() };
+        assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new()).operations, vec![], "nothing once its Complete names the birth");
         o.nodes.retain(|n| n.name != path);
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![], "nothing once the view no longer holds it");
         let old: PathName = "mesh1.rpc.3.old".parse().unwrap();
@@ -1027,17 +1090,10 @@ mod tests {
         let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
         let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
         assert_eq!(plan(&cur, &o, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }]);
-        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
-        assert_eq!(
-            plan(&cur, &o, Some(&replace)).operations,
-            vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }],
-            "a replace is one operation, never a retire then a create"
-        );
         // Once the path runs another birth, the action is satisfied: a re-plan does nothing.
         let mut later = mn();
         later.nodes.iter_mut().find(|x| x.name == path).unwrap().incarnation_id = Some(IncarnationId::mint());
         assert_eq!(plan(&cur, &later, Some(&restart)).operations, vec![]);
-        assert_eq!(plan(&cur, &later, Some(&replace)).operations, vec![]);
         // Day 0 roots one admin; a topology without an admin is refused.
         assert_eq!(paths(FabricTopology::root("fabric1", "mesh1").mesh("mesh1").unwrap()), ["mesh1.admin.1"]);
         let mut bad = cur.clone();
@@ -1045,11 +1101,10 @@ mod tests {
         assert_eq!(bad.validate(), Err(BuildReject::MeshWithoutAdmin { mesh: "mesh1".into() }));
     }
 
-    /// CONTRACT: an action fenced to a birth the view holds exited plans that path exactly once, as
-    /// the action says: a Restart re-creates the SAME identity (no fresh create beside it); a Replace
-    /// is the one `replace-node` operation fenced to the exact birth, whatever reason opened it. A
-    /// birth already leaving keeps its path to its departure: a restart plans the create, a replace
-    /// resumes its operation.
+    /// CONTRACT: a restart fenced to a birth the view holds exited plans that path exactly once: it
+    /// re-creates the SAME identity (no fresh create beside it). A restart of another birth at the path
+    /// is satisfied, and the unheard birth is not swept up by it (its own proven drift opens its own
+    /// attempt). A birth already leaving keeps its path to its departure: a restart plans the create.
     #[test]
     fn an_action_on_an_exited_birth_plans_its_path_once() {
         let cur = t(&[("mesh1", 2, 3)]);
@@ -1060,15 +1115,7 @@ mod tests {
             let from = o.node(&path).unwrap().incarnation_id.clone().unwrap();
             let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
             assert_eq!(plan(&cur, &o, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }], "{dead:?}");
-            let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
-            let replace_op = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
-            assert_eq!(plan(&cur, &o, Some(&replace)).operations, replace_op, "{dead:?}");
-            for reason in [crate::build_state::AttemptReason::Replace, crate::build_state::AttemptReason::ProvenDrift] {
-                assert_eq!(plan_for(&cur, &o, Some(&replace), reason).operations, replace_op, "{dead:?} {reason:?}");
-            }
-            // Another birth at the path: the action is satisfied, and the unheard birth is not swept
-            // up by it (its own proven drift opens its own attempt).
-            let other = AttemptAction::Replace { path: path.clone(), from_incarnation: IncarnationId::mint() };
+            let other = AttemptAction::Restart { path: path.clone(), from_incarnation: IncarnationId::mint() };
             assert_eq!(plan(&cur, &o, Some(&other)).operations, vec![], "{dead:?}");
             assert_eq!(plan(&cur, &o, None).operations, vec![BuildOperation::CreateNode { node: path.clone(), over: None }], "no action: the generic create decides");
         }
@@ -1076,37 +1123,14 @@ mod tests {
         let mut surplus = mn();
         surplus.nodes.push(n("mesh1.rpc.7", NodeStatus::ReadyForTraffic, false));
         let from = surplus.node(&path).unwrap().incarnation_id.clone().unwrap();
-        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
+        let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
         assert_eq!(plan(&cur, &surplus, None).operations, vec![BuildOperation::RetireNode { node: "mesh1.rpc.7".parse().unwrap(), exited: None }]);
-        assert_eq!(plan(&cur, &surplus, Some(&replace)).operations, vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }]);
+        assert_eq!(plan(&cur, &surplus, Some(&restart)).operations, vec![BuildOperation::RestartNode { node: path.clone() }]);
         let mut leaving = mn();
         leaving.nodes.iter_mut().find(|x| x.name == path).unwrap().status = NodeStatus::Leaving;
         let from = leaving.node(&path).unwrap().incarnation_id.clone().unwrap();
         let restart = AttemptAction::Restart { path: path.clone(), from_incarnation: from.clone() };
         assert_eq!(plan(&cur, &leaving, Some(&restart)).operations, vec![BuildOperation::CreateNode { node: path.clone(), over: None }]);
-        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
-        assert_eq!(plan(&cur, &leaving, Some(&replace)).operations, vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }]);
-    }
-
-    /// CONTRACT (node-admin-lifecycle.md 4.2): a replacement of a birth the view does not hold at
-    /// all (it is silent past every window the view keeps) is still the one replace operation: the
-    /// exact runtime is resolved from the durable records and replaced. The generic create alone would
-    /// find the runtime still running and hold the path forever. A view that holds another birth at
-    /// the path satisfies the action, and a restart of an absent birth plans nothing (its identity is
-    /// not held to re-create).
-    #[test]
-    fn a_replace_of_a_birth_the_view_lacks_is_still_one_replace_operation() {
-        let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.rpc.3".parse().unwrap();
-        let mut o = mn();
-        o.nodes.retain(|x| x.name != path);
-        let from = IncarnationId::mint();
-        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
-        let want = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
-        assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::Replace).operations, want);
-        // Proven drift names a birth from a view that has since lost it: nothing to replace, the path
-        // is missing and the generic create fills it.
-        assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::ProvenDrift).operations, vec![BuildOperation::CreateNode { node: path.clone(), over: None }]);
     }
 
     /// CONTRACT: an attempt that carries an action repairs exactly its birth, from whichever admin's
@@ -1118,14 +1142,110 @@ mod tests {
     fn an_action_plans_only_its_birth_whatever_other_members_the_view_lacks() {
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.3".parse().unwrap();
-        let from = IncarnationId::mint();
-        let replace = AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() };
+        let exited = crate::build::ExitedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        let recover = AttemptAction::Recover { path: path.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation.clone() };
         let mut o = mn();
         o.nodes.retain(|x| x.name != path && x.name.to_string() != "mesh1.rpc.2" && x.name.to_string() != "mesh1.admin.2");
-        let want = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
-        assert_eq!(plan_for(&cur, &o, Some(&replace), crate::build_state::AttemptReason::Replace).operations, want);
+        let want = vec![
+            BuildOperation::RetireNode { node: path.clone(), exited: Some(exited.clone()) },
+            BuildOperation::CreateNode { node: path.clone(), over: Some(exited.clone()) },
+            BuildOperation::UpdateNode { node: path.clone(), from: exited },
+        ];
+        assert_eq!(plan(&cur, &o, Some(&recover)).operations, want);
         // With no action the generic create still plans every missing member.
         assert!(plan(&cur, &o, None).operations.len() >= 3);
+    }
+
+    /// The replace recipe of `node` (lifecycles/node-replace.md 1-4 and the predecessor's delete).
+    fn replace_recipe(node: &PathName) -> Vec<RecipeStep> {
+        vec![
+            RecipeStep::Create { node: node.successor() },
+            RecipeStep::Stop { node: node.clone() },
+            RecipeStep::Update { node: node.clone(), name: node.renamed() },
+            RecipeStep::Stop { node: node.successor() },
+            RecipeStep::Update { node: node.successor(), name: node.clone() },
+            RecipeStep::Start { node: node.clone() },
+            RecipeStep::Delete { node: node.renamed() },
+        ]
+    }
+
+    /// CONTRACT (build.md §1: "Rafka's replace recipe is submitted as one Build of node primitives";
+    /// lifecycles/node-replace.md; the Build carrier: completed steps are not rerun): an accepted recipe
+    /// pins the birth its predecessor path holds and plans its steps in order, each its op's own
+    /// operation (`create-node:<name>.new`, `stop-node:<name>`, `update-node:<name>`,
+    /// `stop-node:<name>.new`, `update-node:<name>.new`, `start-node:<name>`,
+    /// `delete-node:<name>.old`), never a replace operation and never a generic create or retire beside
+    /// them. The predecessor's steps carry its pinned birth, followed through its rename to `.old`; the
+    /// successor's carry none (its executor resolves the node its create made). A step whose `Complete`
+    /// is receipted in an attempt that carried this recipe is not planned again; a `Complete` of the
+    /// same operation in an attempt that carried another action is no progress. Refused by name: an
+    /// empty recipe, an operation named twice, and a step on a path no birth holds and no earlier step
+    /// makes.
+    #[test]
+    fn a_recipe_plans_its_steps_in_order_and_never_reruns_a_completed_one() {
+        use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
+        let cur = t(&[("mesh1", 2, 3)]);
+        let o = mn();
+        let path: PathName = "mesh1.rpc.1".parse().unwrap();
+        let held = o.node(&path).unwrap();
+        let pin = PinnedBirth { node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().unwrap() };
+        let steps = replace_recipe(&path);
+        let action = recipe_action(steps.clone(), &o).unwrap();
+        assert_eq!(action, AttemptAction::Recipe { steps: steps.clone(), pinned: vec![(path.clone(), pin.clone())] }, "only the predecessor's path holds a birth at acceptance");
+        let births = [None, Some(pin.clone()), Some(pin.clone()), None, None, None, Some(pin.clone())];
+        let all: Vec<BuildOperation> = steps.iter().zip(births.iter()).map(|(s, b)| BuildOperation::RecipeStep { step: s.clone(), birth: b.clone() }).collect();
+        assert_eq!(plan(&cur, &o, Some(&action)).operations, all);
+        let keys: Vec<String> = all.iter().map(BuildOperation::key).collect();
+        assert_eq!(
+            keys,
+            ["create-node:mesh1.rpc.1.new", "stop-node:mesh1.rpc.1", "update-node:mesh1.rpc.1", "stop-node:mesh1.rpc.1.new", "update-node:mesh1.rpc.1.new", "start-node:mesh1.rpc.1", "delete-node:mesh1.rpc.1.old"]
+        );
+        assert!(!keys.iter().any(|k| k.starts_with("replace-node:")));
+        let receipt = |attempt: u32, operation: &str| BuildStepReceipt {
+            build_id: crate::build::BuildId("b1".into()),
+            attempt,
+            operation: operation.into(),
+            step: "Complete".into(),
+            outcome: StepOutcome::Complete,
+            output: None,
+            executor: None,
+        };
+        let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
+            build_id: crate::build::BuildId("b1".into()),
+            topology: cur.clone(),
+            submitted_change: None,
+            submitted_at_ms: 0,
+            state: BuildState::Running,
+            attempt: 4,
+            executor: None,
+            steps,
+            last_failure: None,
+            reason: AttemptReason::Recipe,
+            action: Some(action.clone()),
+            attempt_actions: [(3, AttemptAction::Restart { path: path.clone(), from_incarnation: pin.incarnation.clone() }), (4, action.clone())].into(),
+            attempt_executors: Default::default(),
+            opened: 4,
+            reported: Default::default(),
+        };
+        assert_eq!(plan_for_build(&build(vec![]), &o).operations, all, "nothing receipted: every step");
+        let first_three = vec![receipt(4, &keys[0]), receipt(4, &keys[1]), receipt(4, &keys[2])];
+        assert_eq!(plan_for_build(&build(first_three.clone()), &o).operations, all[3..].to_vec(), "a resume runs only what is left");
+        assert_eq!(plan_for_build(&build(vec![receipt(3, &keys[1])]), &o).operations, all, "another action's Complete of the same operation is no progress");
+        let mut done = first_three;
+        done.extend(keys[3..].iter().map(|k| receipt(4, k)));
+        assert_eq!(plan_for_build(&build(done), &o).operations, vec![], "every step receipted: the recipe is done");
+        // Refusals.
+        assert_eq!(recipe_action(vec![], &o), Err(BuildReject::EmptyRecipe));
+        assert_eq!(
+            recipe_action(vec![RecipeStep::Stop { node: path.clone() }, RecipeStep::Stop { node: path.clone() }], &o),
+            Err(BuildReject::RecipeStepRepeated { operation: "stop-node:mesh1.rpc.1".into() })
+        );
+        assert_eq!(recipe_action(vec![RecipeStep::Start { node: "mesh1.rpc.9".parse().unwrap() }], &o), Err(BuildReject::RecipeNodeUnknown { step: 1, node: "mesh1.rpc.9".into() }));
+        assert_eq!(
+            recipe_action(vec![RecipeStep::Update { node: path.clone(), name: path.renamed() }, RecipeStep::Stop { node: path.clone() }], &o),
+            Err(BuildReject::RecipeNodeUnknown { step: 2, node: "mesh1.rpc.1".into() }),
+            "the node left the path at its rename: nothing is at it for the stop"
+        );
     }
 
     /// CONTRACT: a standalone drain or stop plans its one operation (`drain-node:<path>` /
@@ -1260,71 +1380,6 @@ mod tests {
         assert_eq!(plan_for_build(&build(vec![step(7, "StopNode"), step(7, "Complete")]), &gone).operations, vec![], "completed for this birth");
         assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete")]), &gone).operations, vec![], "another birth's stop neither began nor completed this one");
         assert_eq!(plan_for_build(&build(vec![step(6, "StopNode"), step(6, "Complete"), step(7, "StopNode")]), &gone).operations, stop, "another birth's Complete is not this stop's");
-    }
-
-    /// CONTRACT: the replace operation is planned until its `Complete` is receipted. Once it began
-    /// (a replace's `DrainNode`, or a receipt naming the exact birth: a recovery's `NodeDeleting`, the
-    /// `RenamePredecessor` of either) it is planned whatever the view holds at the path (the
-    /// successor, or nothing: a parked predecessor has left every book). A receipt of another birth of
-    /// the path is not this replace's progress.
-    #[test]
-    fn a_replace_is_planned_until_the_operation_is_complete() {
-        use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
-        let cur = t(&[("mesh1", 2, 3)]);
-        let path: PathName = "mesh1.rpc.3".parse().unwrap();
-        let from = IncarnationId::mint();
-        let step = |attempt: u32, step: &str, birth: Option<&IncarnationId>| BuildStepReceipt {
-            build_id: crate::build::BuildId("b1".into()),
-            attempt,
-            operation: format!("replace-node:{path}"),
-            step: step.into(),
-            outcome: StepOutcome::Complete,
-            output: birth.map(|b| serde_json::json!({ "incarnation": b })),
-            executor: None,
-        };
-        let build = |steps: Vec<BuildStepReceipt>| BuildProjection {
-            build_id: crate::build::BuildId("b1".into()),
-            topology: cur.clone(),
-            submitted_change: None,
-            submitted_at_ms: 0,
-            state: BuildState::Pending,
-            attempt: 7,
-            executor: None,
-            steps,
-            last_failure: None,
-            reason: AttemptReason::ProvenDrift,
-            action: Some(AttemptAction::Replace { path: path.clone(), from_incarnation: from.clone() }),
-            attempt_actions: Default::default(),
-            attempt_executors: Default::default(),
-            opened: 0,
-            reported: Default::default(),
-        };
-        let replace = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
-        // The view holds the successor (another birth) at the path.
-        let mut o = mn();
-        o.nodes.iter_mut().find(|x| x.name == path).unwrap().incarnation_id = Some(IncarnationId::mint());
-        assert_eq!(plan_for_build(&build(vec![]), &o).operations, vec![], "no receipt of this birth: the path runs another birth, nothing to replace");
-        assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&IncarnationId::mint()))]), &o).operations, vec![], "another birth's receipt is not this replace's");
-        assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&from))]), &o).operations, replace, "begun: the successor holds the path, the departure is owed");
-        let deleted = vec![step(6, "NodeDeleting", Some(&from)), step(6, "NodeDeleted", Some(&from))];
-        assert_eq!(plan_for_build(&build(deleted.clone()), &o).operations, replace, "NodeDeleted without Complete: the successor's Complete is owed");
-        let mut finished = deleted;
-        finished.push(step(6, "Complete", None));
-        assert_eq!(plan_for_build(&build(finished), &o).operations, vec![], "finished");
-        // The view holds nothing at the path.
-        let mut gone = mn();
-        gone.nodes.retain(|x| x.name != path);
-        assert_eq!(plan_for_build(&build(vec![step(6, "NodeDeleting", Some(&from))]), &gone).operations, replace);
-        // A replace of a live birth (node-replace.md): it began at its drain, the parked predecessor
-        // left the view, the rename names the birth, and it finishes at Complete with no NodeDeleted.
-        assert_eq!(plan_for_build(&build(vec![step(6, "DrainNode", None)]), &gone).operations, replace, "begun at the drain: the parked predecessor left the view");
-        assert_eq!(plan_for_build(&build(vec![step(6, "RenamePredecessor", Some(&IncarnationId::mint()))]), &o).operations, vec![], "another birth's rename is not this replace's");
-        let renamed = vec![step(6, "DrainNode", None), step(6, "RenamePredecessor", Some(&from))];
-        assert_eq!(plan_for_build(&build(renamed.clone()), &o).operations, replace, "renamed, the successor not complete");
-        let mut complete = renamed;
-        complete.push(step(7, "Complete", None));
-        assert_eq!(plan_for_build(&build(complete), &o).operations, vec![], "the replace is complete: the predecessor stays parked at <path>.old");
-        assert_eq!(plan_for_build(&build(vec![step(5, "Complete", None), step(6, "DrainNode", None)]), &o).operations, replace, "a Complete before the operation began is not its end");
     }
 
     /// CONTRACT (node-recovery.md, Operation summary "Steps"; rdm-code-conformance.md §0.1 and §2

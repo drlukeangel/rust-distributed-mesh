@@ -31,17 +31,17 @@ fn main() {
     println!("=== AttemptOpened (Restart) ===");
     println!("{}", to_string_pretty(&opened_restart).unwrap());
 
-    // 2. AttemptOpened with Replace
-    let opened_replace = AttemptOpened {
+    // 2. AttemptOpened with Delete
+    let opened_delete = AttemptOpened {
         build_id: build_id.clone(),
         attempt: 1,
-        reason: AttemptReason::ProvenDrift,
-        action: Some(AttemptAction::Replace { path: path_1.clone(), from_incarnation: inc.clone() }),
+        reason: AttemptReason::Delete,
+        action: Some(AttemptAction::Delete { path: path_1.renamed(), from_incarnation: inc.clone() }),
         opened_by: "mesh1.admin.1".into(),
         opened_at_ms: 1718290000000,
     };
-    println!("=== AttemptOpened (Replace) ===");
-    println!("{}", to_string_pretty(&opened_replace).unwrap());
+    println!("=== AttemptOpened (Delete) ===");
+    println!("{}", to_string_pretty(&opened_delete).unwrap());
 
     // 3. BuildAttemptClaim
     let claim = BuildAttemptClaim {

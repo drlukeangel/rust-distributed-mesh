@@ -434,7 +434,7 @@ async fn the_successor_answers_the_command_with_its_view_naming_it_the_fabric_pr
 async fn both_views_name_the_executor_once_the_seat_row_is_committed() {
     let f = seats_fabric().await;
     let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
-    f.n.door.take_seats(&p_node, "b1", 1, "replace-node:mesh1.admin.1").await.expect("the transfer commits");
+    f.n.door.take_seats(&p_node, "b1", 1, "stop-node:mesh1.admin.1").await.expect("the transfer commits");
     for a in [&f.p, &f.n] {
         let t = a.door.topology.read().await;
         assert_eq!(fabric_primary_of(&t).as_deref(), Some("mesh1.admin.2"), "{}: the fabric-primary is N", a.resolved.name);
@@ -850,7 +850,7 @@ async fn a_seat_holder_commits_both_seats_to_the_executor_in_one_row() {
     let spans = capture();
     let f = seats_fabric().await;
     let p_node = f.n.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
-    let out = f.n.door.take_seats(&p_node, "b1", 1, "replace-node:mesh1.admin.1").await.expect("the transfer commits");
+    let out = f.n.door.take_seats(&p_node, "b1", 1, "stop-node:mesh1.admin.1").await.expect("the transfer commits");
     assert_eq!(out, SeatTransferOutcome::Committed { seats: committed_to(&f.n, 4, 8) });
     for a in [&f.p, &f.n] {
         assert_eq!((a.door.membership.seats().mesh("mesh1"), a.door.membership.seats().fabric()), (Some(holder_of(&f.n, 4)), Some(holder_of(&f.n, 8))), "{} holds both committed seats", a.resolved.name);
@@ -955,7 +955,7 @@ async fn an_identical_retry_answers_the_same_seats_and_another_payload_is_refuse
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_retry_after_the_holder_drained_is_answered_from_the_row() {
     let f = seats_fabric().await;
-    let op = "replace-node:mesh1.admin.1";
+    let op = "stop-node:mesh1.admin.1";
     let first = send(&f.n, &f.p, take_seats(&f.p, &f.n, 3, 7, "b1", op)).await;
     assert_eq!(first, Reply::SeatsCommitted { seats: committed_to(&f.n, 4, 8) });
     f.p.server.drain();
@@ -1096,7 +1096,7 @@ async fn an_executor_of_another_mesh_refuses_to_take_the_fabric_seat_by_name() {
     let view = f.n.door.topology.read().await.clone();
     let member = |name: &str| view.members().find(|x| x.name.to_string() == name).cloned().unwrap();
     let p_node = member("mesh1.admin.1");
-    let e = f.x.door.take_seats(&p_node, "b1", 1, "replace-node:mesh1.admin.1").await.expect_err("an executor of mesh2 cannot take mesh1's fabric-primary seats");
+    let e = f.x.door.take_seats(&p_node, "b1", 1, "stop-node:mesh1.admin.1").await.expect_err("an executor of mesh2 cannot take mesh1's fabric-primary seats");
     assert!(e.contains("mesh1.admin.1") && e.contains("mesh1") && e.contains("mesh2.admin.1") && e.contains("TakeFabricPrimary") && e.contains("mesh-leave"), "the refusal names the holder, its mesh, the executor and the one way the fabric seat leaves: {e}");
     until("the executor's refusal span", || !spans.named(SEATS_REJECTED).is_empty()).await;
     let r = &spans.named(SEATS_REJECTED)[0];
@@ -1313,7 +1313,7 @@ async fn a_take_seats_call_from_an_endpoint_the_holder_never_heard_of_is_decided
     let spans = capture();
     let f = seats_fabric().await;
     let stranger = stranger_to(&[&f.p]).await;
-    let op = "replace-node:mesh1.admin.1";
+    let op = "stop-node:mesh1.admin.1";
     assert!(matches!(send(&stranger, &f.p, take_seats(&f.p, &f.m, 3, 7, "b1", op)).await, Reply::RejectedNotEligible { .. }), "the Won claim of b1 names N, not M");
     let mut wrong = take_seats(&f.p, &f.n, 3, 7, "b1", op);
     if let Request::TakeSeats { successor, .. } = &mut wrong {

@@ -33,7 +33,6 @@ mod process_pipeline_failure;
 mod rafka_time_handle;
 mod ready_prerequisites;
 mod recover_pipeline;
-mod replace_pipeline;
 mod retire_admission;
 mod retire_pipeline;
 mod status_probe_apply;

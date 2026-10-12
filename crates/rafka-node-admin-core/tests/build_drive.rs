@@ -134,7 +134,6 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         gate: switch.clone(),
         departure: proofs.clone(),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new("mesh1.admin.1".parse().unwrap(), fp_id, topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
     });
     Rig { builds, env, switch, dispatch, proofs, ran, build: opened.build_id }
 }
@@ -660,7 +659,6 @@ async fn a_remote_executors_completed_operation_is_never_dispatched_again_before
         gate: e.gate.clone(),
         departure: e.departure.clone(),
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: r.builds.clone() }),
-        rows: e.rows.clone(),
     });
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-remote-receipt");
     let drive = Drive::detached(r.build.clone());

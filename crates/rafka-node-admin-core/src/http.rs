@@ -3,7 +3,7 @@
 //! Every topology route is a front door that submits one [`TopologyChange`]
 //! to the fabric-primary, which compiles it once against the accepted topology
 //! into the next complete Build, persists it, moves `Fabric.build_id` and
-//! answers `202 {"build_id"}`. A restart or replacement changes no topology:
+//! answers `202 {"build_id"}`. A restart, a node op, a recovery or a recipe changes no topology:
 //! it opens the next attempt of the current Build with its action. A route
 //! never spawns, kills or restarts anything itself: there is no lifecycle
 //! handle in [`ControlPlane`] for it to call. `/api/shutdown` and runtime fault
@@ -47,13 +47,8 @@ pub struct ControlPlane {
     pub view_now: std::sync::OnceLock<Arc<dyn Fn() -> Topology + Send + Sync>>,
     /// What the fabric-primary's investigation holds of a peer mesh it has heard on the backbone
     /// (`crate::investigate::Ladder::peer_mesh`): a node of a mesh held unheard is not restarted,
-    /// replaced or deleted from here (R-D1). Set once by the admin that owns the ladder.
+    /// stopped or deleted from here (R-D1). Set once by the admin that owns the ladder.
     pub peer_mesh: std::sync::OnceLock<Arc<dyn Fn(&str) -> Option<crate::investigate::PeerMesh> + Send + Sync>>,
-    /// The record the fabric-primary holds of the parked predecessor a replace left at a `<path>.old`
-    /// (`crate::node_rows::NodeRows::parked_at`): what admits its `node.delete`, fenced to that exact
-    /// birth. No view names the path but the replace's executor's (set once by the admin that owns
-    /// the row writer).
-    pub parked_old: std::sync::OnceLock<Arc<dyn Fn(&PathName) -> Option<crate::model::Node> + Send + Sync>>,
     /// The connection facts this admin holds (set once by the admin that owns its connections
     /// writer): the active Directs of the fleet, and this admin's own latest Directs and Proxies.
     pub connections: std::sync::OnceLock<Arc<std::sync::Mutex<rafka_mesh_entity::connections::ConnectionsHeld>>>,
@@ -106,7 +101,6 @@ impl ControlPlane {
             connections: std::sync::OnceLock::new(),
             loads: std::sync::OnceLock::new(),
             peer_mesh: std::sync::OnceLock::new(),
-            parked_old: std::sync::OnceLock::new(),
             contexts: Arc::new(crate::build_claim::AttemptContexts::in_memory()),
             time,
             admission: Arc::new(tokio::sync::Mutex::new(())),
@@ -193,7 +187,6 @@ impl ControlPlane {
                 let (node, action) = match op {
                     crate::build::BuildOperation::RetireNode { node, .. } => (node, "retire"),
                     crate::build::BuildOperation::RestartNode { node } => (node, "restart"),
-                    crate::build::BuildOperation::ReplaceNode { node, .. } => (node, "replace"),
                     crate::build::BuildOperation::DrainNode { node, .. } => (node, "drain"),
                     crate::build::BuildOperation::StopNode { node, .. } => (node, "stop"),
                     _ => return None,
@@ -265,22 +258,71 @@ impl ControlPlane {
         Ok(Opened { build_id: current.build_id.clone(), attempt: opened.attempt })
     }
 
-    /// Open the next attempt of the accepted Build with a fenced action (a restart or a
-    /// replacement of one birth). The topology is unchanged; `Fabric.build_id` stays.
-    pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind, named_birth: Option<crate::model::IncarnationId>) -> Result<Opened, Refusal> {
+    /// Open the next attempt of the accepted Build with a fenced action (a restart, drain, stop, start
+    /// or delete of one birth). The topology is unchanged; `Fabric.build_id` stays.
+    pub async fn open_attempt(&self, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind) -> Result<Opened, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-rest", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path);
-        self.open_attempt_in(span, route, reason, path, kind, named_birth).await
+        self.open_attempt_in(span, route, reason, path, kind).await
     }
 
-    /// [`ControlPlane::open_attempt`] under `span`, which names the surface the request came through.
-    pub async fn open_attempt_in(&self, span: tracing::Span, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind, named_birth: Option<crate::model::IncarnationId>) -> Result<Opened, Refusal> {
-        let replace = kind == ActionKind::Replace;
+    /// Open the next attempt of the accepted Build as the recipe `steps` (`BuildChange::Recipe`;
+    /// build.md §1: "Rafka's replace recipe is submitted as one Build of node primitives";
+    /// lifecycles/node-replace.md), under `span`. The topology is unchanged; `Fabric.build_id` stays.
+    /// Refused by name: a recipe with no step, one naming an operation twice, or one acting on a path
+    /// that holds no birth and that no earlier step makes ([`crate::accepted::recipe_action`]); a step
+    /// on a node of a peer mesh this fabric-primary holds unheard (R-D1); a stop or delete of the
+    /// fabric-primary while no other live node-admin of its mesh can take its seats.
+    pub async fn open_recipe_in(&self, span: tracing::Span, route: &'static str, steps: Vec<rafka_node_rpc_contract::build::RecipeStep>) -> Result<Opened, Refusal> {
         let outer = tracing::Span::current();
         async {
             self.authority(route).await?;
             let (_admitted, current) = self.current_settled().await?;
-            // The topology never names a `.old` path: the parked predecessor a replacement left there
-            // is found in the view alone, and only a delete acts on it.
+            let t = match self.view_now.get() {
+                Some(project) => project(),
+                None => self.topology.read().await.clone(),
+            };
+            for step in &steps {
+                let node = step.node();
+                if node.mesh != self.me.mesh {
+                    if let Some(unheard_ms) = self.peer_mesh.get().and_then(|f| f(&node.mesh)).and_then(|p| p.unheard_ms) {
+                        let reject = BuildReject::UnheardMesh { node: node.to_string(), mesh: node.mesh.clone(), unheard_ms };
+                        outer.in_scope(|| reject_span(route, &reject));
+                        return Err(Refusal::Reject(reject));
+                    }
+                }
+                let action = match step {
+                    rafka_node_rpc_contract::build::RecipeStep::Stop { .. } => Some("stop"),
+                    rafka_node_rpc_contract::build::RecipeStep::Delete { .. } => Some("delete"),
+                    _ => None,
+                };
+                if let Some(reject) = action.and_then(|a| last_admin(node, a, &t)) {
+                    outer.in_scope(|| reject_span(route, &reject));
+                    return Err(Refusal::Reject(reject));
+                }
+            }
+            let summary = steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(" ");
+            let action = match crate::accepted::recipe_action(steps, &t) {
+                Ok(a) => a,
+                Err(reject) => {
+                    outer.in_scope(|| reject_span(route, &reject));
+                    return Err(Refusal::Reject(reject));
+                }
+            };
+            drop(t);
+            self.open_with(&current, AttemptReason::Recipe, action, route, &outer, &summary, span.clone()).await
+        }
+        .instrument(span.clone())
+        .await
+    }
+
+    /// [`ControlPlane::open_attempt`] under `span`, which names the surface the request came through.
+    pub async fn open_attempt_in(&self, span: tracing::Span, route: &'static str, reason: AttemptReason, path: PathName, kind: ActionKind) -> Result<Opened, Refusal> {
+        let outer = tracing::Span::current();
+        async {
+            self.authority(route).await?;
+            let (_admitted, current) = self.current_settled().await?;
+            // The topology never names a `.old` path: the stopped birth a rename left there is found in
+            // the view alone, and only a delete acts on it.
             let parked_old = kind == ActionKind::Delete && path.old;
             // A birth of a mesh deleted at mesh.deleted (its last admin, alive): no accepted Build names
             // the mesh, and only a delete acts on it (mesh-delete.md step 7).
@@ -291,29 +333,16 @@ impl ControlPlane {
                 return Err(Refusal::Reject(reject));
             }
             let from_incarnation = {
-                // The parked predecessor at a `.old` path is admitted from the record the
-                // fabric-primary holds of it (ops-naming "Node data": the fabric-primary holds the whole
-                // record of every node), never from a view: only the replace's executor's view names it.
+                // A stopped birth at a `.old` path is admitted from the view, which reads a renamed
+                // birth by its node id through the node-row id index (R12).
                 let t = match self.view_now.get() {
                     Some(project) => project(),
                     None => self.topology.read().await.clone(),
                 };
-                let held = if parked_old { self.parked_old.get().and_then(|held| held(&path)) } else { t.node(&path).cloned() };
+                let held = t.node(&path).cloned();
                 let Some(n) = held else {
-                    // A node being replaced is the node nobody hears: the Build names it, the heard
-                    // view need not. The caller names the exact birth to retire.
-                    if let (true, Some(birth)) = (replace, named_birth) {
-                        drop(t);
-                        outer.in_scope(|| {
-                            tracing::info_span!("rdm.node_admin.build.update.via-named-birth", route, node = %path, incarnation_id = %birth.0)
-                                .in_scope(|| tracing::info!("the node is in the accepted Build and silent in the view: the caller's named birth is fenced"))
-                        });
-                        let named_path = path.to_string();
-                        let action = AttemptAction::Replace { path, from_incarnation: birth };
-                        return self.open_with(&current, reason, action, route, &outer, &named_path, span.clone()).await;
-                    }
                     let why = if parked_old {
-                        format!("{}: this fabric-primary holds no record of a parked predecessor at {path} (no replace it drove moved a row there, or its Deleted row is written)", self.me)
+                        format!("{}: this fabric-primary's view holds no stopped birth at {path} (no node.update renamed one to it, or its Deleted row is written)", self.me)
                     } else {
                         self.absence.get().map(|f| f(&path)).unwrap_or_else(|| "no absence reporter".to_string())
                     };
@@ -325,18 +354,14 @@ impl ControlPlane {
                     });
                     return Err(Refusal::Reject(reject));
                 };
-                // A requested replacement may name a birth that does not answer (PendingReconnect,
-                // Dead): the decommission retires its exact runtime before the new node is created.
-                let unheard = matches!(n.status, crate::model::NodeStatus::PendingReconnect | crate::model::NodeStatus::Dead);
                 // A start is the transition out of Leaving, and only for a parked process; every other action needs a live node.
                 let startable = kind == ActionKind::Start && n.parked;
                 // A delete acts on the parked predecessor, or on one whose exit is already proven, or on
                 // the last admin of a deleted mesh, live or stopped: its node.delete stops it first.
                 let deletable = kind == ActionKind::Delete && (n.parked || n.status == crate::model::NodeStatus::Dead || deleted_mesh);
                 let needs_live = !matches!(kind, ActionKind::Start | ActionKind::Delete);
-                if (kind == ActionKind::Start && !startable) || (kind == ActionKind::Delete && !deletable) || (needs_live && !n.status.is_live() && !(replace && unheard)) {
+                if (kind == ActionKind::Start && !startable) || (kind == ActionKind::Delete && !deletable) || (needs_live && !n.status.is_live()) {
                     let reason = match kind {
-                        ActionKind::Replace => "the node's status is neither live nor an unheard birth a replacement may retire",
                         ActionKind::Restart => "a restart needs a live node",
                         ActionKind::Drain => "a drain needs a live node",
                         ActionKind::Stop => "a stop needs a live node",
@@ -345,7 +370,7 @@ impl ControlPlane {
                     };
                     return Err(not_live(&outer, route, &path, n.status, reason));
                 }
-                // A node of a peer mesh this fabric-primary holds unheard is not its to restart, replace or delete:
+                // A node of a peer mesh this fabric-primary holds unheard is not its to restart, stop or delete:
                 // the mesh's own authority, once heard again, reconciles it (R-D1).
                 if path.mesh != self.me.mesh {
                     if let Some(unheard_ms) = self.peer_mesh.get().and_then(|f| f(&path.mesh)).and_then(|p| p.unheard_ms) {
@@ -370,7 +395,6 @@ impl ControlPlane {
             let node_name = path.to_string();
             let action = match kind {
                 ActionKind::Restart => AttemptAction::Restart { path, from_incarnation },
-                ActionKind::Replace => AttemptAction::Replace { path, from_incarnation },
                 ActionKind::Drain => AttemptAction::Drain { path, from_incarnation },
                 ActionKind::Stop => AttemptAction::Stop { path, from_incarnation },
                 ActionKind::Start => AttemptAction::Start { path, from_incarnation },
@@ -402,7 +426,7 @@ impl ControlPlane {
     ///
     /// Keyed on the exited birth: once a node workflow that deletes a birth completed for that exact
     /// birth (its recovery, whose last operation `update-node:<path>` completed, or a
-    /// `replace-node:<path>` / `retire-node:<path>` the birth exited inside), a submit answers
+    /// `retire-node:<path>` the birth exited inside), a submit answers
     /// [`Recovery::AlreadyApplied`] naming that workflow's attempt, and nothing is opened. A node-admin is node-recovered only while its mesh holds
     /// another live admin to recover it (mesh-recovery.md:8-9); otherwise it is mesh recovery.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
@@ -411,7 +435,7 @@ impl ControlPlane {
         let r = async {
             self.authority(route).await?;
             // Keyed on the exited birth across the Build log: a birth a node workflow already
-            // deleted (its recovery, or a replace or retire it exited inside: node-recovery.md
+            // deleted (its recovery, or a retire it exited inside: node-recovery.md
             // "Failure and receipts") is answered as applied by that workflow's attempt, whatever
             // Build is accepted or in flight now (a later topology Build holds none of its
             // receipts), and nothing is opened.
@@ -481,8 +505,6 @@ impl ControlPlane {
 pub enum ActionKind {
     /// `restart-node:<path>`.
     Restart,
-    /// `replace-node:<path>`.
-    Replace,
     /// `drain-node:<path>`.
     Drain,
     /// `stop-node:<path>`.
@@ -498,7 +520,6 @@ impl ActionKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::Restart => "restart",
-            Self::Replace => "replace",
             Self::Drain => "drain",
             Self::Stop => "stop",
             Self::Start => "start",
@@ -518,7 +539,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     (holder.node_id == target.node_id && crate::executor::seat_successor(node, t).is_none()).then(|| BuildReject::LastAdmin { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string() })
 }
 
-/// The restart/replace refusal `node-not-live`, spanned beside the request with the node, the
+/// The restart/drain/stop refusal `node-not-live`, spanned beside the request with the node, the
 /// status the live view holds for it and why that status refuses the operation
 /// (`rdm.node_admin.node.reject.via-not-live`).
 fn not_live(outer: &tracing::Span, route: &'static str, path: &PathName, status: crate::model::NodeStatus, reason: &'static str) -> Refusal {
@@ -691,41 +712,29 @@ async fn spawn_node(State(cp): State<Shared>, raw: String) -> Result<Response, R
 
 async fn delete_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    // `node.delete` of the parked predecessor a replacement left at `<path>.old`, or of the last
+    // `node.delete` of the stopped birth a rename left at `<path>.old`, or of the last
     // admin of a deleted mesh (mesh-delete.md step 7: a separate node.delete after mesh.deleted): the
     // topology never names that path, so the delete is the next attempt of the accepted Build, fenced
     // to the exact birth (node-decommission.md).
     if node.old || cp.of_deleted_mesh(&node).await {
-        return Ok(accepted(cp.open_attempt("DELETE /api/nodes/{name}", AttemptReason::Delete, node, ActionKind::Delete, None).await?));
+        return Ok(accepted(cp.open_attempt("DELETE /api/nodes/{name}", AttemptReason::Delete, node, ActionKind::Delete).await?));
     }
     Ok(accepted(cp.submit("DELETE /api/nodes/{name}", TopologyChange::RemoveNode { node }).await?))
 }
 
 async fn restart_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, node, ActionKind::Restart, None).await?))
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, node, ActionKind::Restart).await?))
 }
 
 async fn drain_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/drain", AttemptReason::Drain, node, ActionKind::Drain, None).await?))
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/drain", AttemptReason::Drain, node, ActionKind::Drain).await?))
 }
 
 async fn stop_node(State(cp): State<Shared>, Path(name): Path<String>) -> Result<Response, Refusal> {
     let node = parse_path(&name)?;
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, node, ActionKind::Stop, None).await?))
-}
-
-#[derive(Deserialize)]
-struct ReplaceQuery {
-    /// The exact birth to retire, for a node the Build names that the view does not hold.
-    incarnation: Option<String>,
-}
-
-async fn replace_node(State(cp): State<Shared>, Path(name): Path<String>, Query(q): Query<ReplaceQuery>) -> Result<Response, Refusal> {
-    let node = parse_path(&name)?;
-    let birth = q.incarnation.map(crate::model::IncarnationId);
-    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/replace", AttemptReason::Replace, node, ActionKind::Replace, birth).await?))
+    Ok(accepted(cp.open_attempt("POST /api/nodes/{name}/stop", AttemptReason::Stop, node, ActionKind::Stop).await?))
 }
 
 async fn get_nodes(State(cp): State<Shared>) -> Json<Value> {
@@ -844,7 +853,6 @@ pub fn router(cp: Arc<ControlPlane>, runtime_routes: Router) -> Router {
         .route("/api/nodes/spawn", post(spawn_node))
         .route("/api/nodes/{name}", delete(delete_node))
         .route("/api/nodes/{name}/restart", post(restart_node))
-        .route("/api/nodes/{name}/replace", post(replace_node))
         .route("/api/nodes/{name}/drain", post(drain_node))
         .route("/api/nodes/{name}/stop", post(stop_node))
         .route("/api/meshes", post(create_mesh))

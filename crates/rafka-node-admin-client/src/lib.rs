@@ -143,7 +143,7 @@ pub struct BuildView {
     pub steps: Vec<StepView>,
     /// The reason the last attempt failed, when one did.
     pub last_failure: Option<String>,
-    /// Why the current attempt exists (`requested`, `proven-drift`, `restart`, `replace`, ...).
+    /// Why the current attempt exists (`requested`, `proven-drift`, `restart`, `recipe`, ...).
     pub reason: String,
     /// The fenced action the current attempt carries, if any.
     #[serde(default)]
@@ -294,20 +294,6 @@ impl NodeAdminClient {
     /// `GET /api/connections`: the connection facts the answering admin holds.
     pub async fn connections(&self) -> Result<ConnectionsView, ClientError> {
         self.get("/api/connections").await
-    }
-
-    /// `POST /api/nodes/{name}/replace`: the next attempt of the accepted Build retires the live
-    /// birth and creates a new node at the path.
-    pub async fn replace(&self, node: &PathName) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.post(&format!("/api/nodes/{node}/replace"), None).await?;
-        Ok(a)
-    }
-
-    /// `POST /api/nodes/{name}/replace?incarnation=`: [`replace`](Self::replace) of the exact birth
-    /// `incarnation`, for a node the Build names that the admin does not hear.
-    pub async fn replace_birth(&self, node: &PathName, incarnation: &str) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.post(&format!("/api/nodes/{node}/replace?incarnation={incarnation}"), None).await?;
-        Ok(a)
     }
 
     /// `POST /api/build`: reconcile the whole fabric to `desired`.

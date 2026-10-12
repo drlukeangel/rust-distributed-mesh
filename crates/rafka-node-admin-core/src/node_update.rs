@@ -7,7 +7,9 @@
 //! `Busy` naming the held status and the connections, nothing claimed (the node's own `Busy` on the
 //! apply is the node-side half); the name is claimed by insert-and-fail in the store adapter (`NameHeld { by }`,
 //! nothing written) and the old key released, through the one writer of a row's move
-//! (`node_rows::move_row`); the view entry moves with the row; a live birth is
+//! (`node_rows::move_row`); a node taking `<name>` from `<name>.new` carries the config of the
+//! `<name>.old` row (lifecycles/node-replace.md step 4: "the mesh-primary seeds the successor's config
+//! from the `<name>.old` row"); the view entry moves with the row; a live birth is
 //! told `ApplyNodeName`, a stopped one nothing (its join answer hands it the name); `NodeUpdated`
 //! answers only after the apply answered.
 
@@ -27,7 +29,7 @@ pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwL
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
         node = %me, node_id = %node_id, incarnation_id = %incarnation.0, from = tracing::field::Empty, to = %name,
-        traffic = tracing::field::Empty, connections = tracing::field::Empty, outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
+        traffic = tracing::field::Empty, connections = tracing::field::Empty, seeded_from = tracing::field::Empty, outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
     let reply = tracing::Instrument::instrument(put(me, me_id, view, storage, client, moved, deleted, node_id, incarnation, name, &span), span.clone()).await;
     span.record("outcome", reply.name());
@@ -115,7 +117,24 @@ async fn put(
         let Some(moved) = moved.get() else {
             return StatusReply::NotReady { reason: format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name) };
         };
-        match crate::node_rows::move_row(storage, me, &held, held.config.clone(), &held.name, &to).await {
+        // A successor taking the name from `<name>.new` carries the predecessor's config, read from
+        // the `<name>.old` row it left (lifecycles/node-replace.md step 4); any other rename keeps the
+        // node's own config.
+        let mut config = held.config.clone();
+        if held.name.new && to == held.name.base() {
+            let old = to.renamed();
+            match storage.node_row_at(&old).await {
+                Ok(Some(row)) => {
+                    span.record("seeded_from", row.node_id.to_string().as_str());
+                    config = row.config;
+                }
+                Ok(None) => {
+                    span.record("seeded_from", "none");
+                }
+                Err(e) => return StatusReply::node_row_refused(&to.to_string(), &format!("{me}: the row at {old} could not be read to seed the config of {} taking {to}: {e}; nothing is written", held.node_id)),
+            }
+        }
+        match crate::node_rows::move_row(storage, me, &held, config, &held.name, &to).await {
             Ok(_) => {}
             Err(RenameRefused::NameHeld(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
             Err(RenameRefused::Unwritten(why)) => return StatusReply::node_row_refused(&to.to_string(), &why),
@@ -138,4 +157,79 @@ async fn put(
     };
     span.record("answered", answered).record("detail", detail.as_str());
     StatusReply::name_not_applied(&to.to_string(), answered, &detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Fabric, FabricId, IncarnationId, Mesh, MeshId, NodeId, ProviderKind, ScopeStatus};
+    use crate::storage::{MemoryNodesStorage, NodeRow};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    fn tier(t: &str) -> BTreeMap<String, String> {
+        [("tier".to_string(), t.to_string())].into()
+    }
+
+    /// The mesh-primary `mesh1.admin.1`'s view holding `node` stopped, and a moved-row hook that
+    /// takes the move.
+    fn fixture(node: &Node) -> (PathName, NodeId, RwLock<Topology>, crate::status_rpc::RowMoved) {
+        let mut me = Node::allocated("mesh1.admin.1".parse().unwrap());
+        me.is_primary = true;
+        me.is_fabric_primary = true;
+        me.status = NodeStatus::ReadyForTraffic;
+        me.incarnation_id = Some(IncarnationId::mint());
+        let (name, id) = (me.name.clone(), me.node_id.clone());
+        let view = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            nodes: vec![me, node.clone()],
+        };
+        let moved: crate::status_rpc::RowMoved = Arc::new(std::sync::OnceLock::new());
+        let _ = moved.set(Arc::new(|_, _, _, _| Box::pin(async {})));
+        (name, id, RwLock::new(view), moved)
+    }
+
+    fn stopped(name: &str, config: BTreeMap<String, String>) -> Node {
+        let mut n = Node::allocated(name.parse().unwrap());
+        n.status = NodeStatus::Leaving;
+        n.parked = true;
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.config = config;
+        n
+    }
+
+    /// CONTRACT (lifecycles/node-replace.md step 4: "the mesh-primary seeds the successor's config
+    /// from the `<name>.old` row"; R12/R13): node.update of the stopped successor from `<name>.new` to
+    /// `<name>` at its mesh-primary writes its row at `<name>` carrying the config of the `<name>.old`
+    /// row and lets go of `<name>.new`. A rename that is not a successor taking the name (the
+    /// predecessor giving it up to `<name>.old`) keeps the node's own config. Must NOT happen: the
+    /// successor taking the name with its own `.new` config while the predecessor's row holds the
+    /// path's config.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_successor_taking_the_name_from_new_carries_the_old_rows_config() {
+        let storage = MemoryNodesStorage::default();
+        let successor = stopped("mesh1.rpc.1.new", tier("fresh"));
+        let predecessor = NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Leaving, config: tier("gold") };
+        storage.put_node_row(&predecessor).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: successor.name.clone(), node_id: successor.node_id.clone(), status: NodeStatus::Leaving, config: tier("fresh") }).await.unwrap().unwrap();
+        let (me, me_id, view, moved) = fixture(&successor);
+        let req = StatusRequest::UpdateNode { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), name: "mesh1.rpc.1".into() };
+        let reply = update(&me, &me_id, &view, &storage, None, &moved, None, &req).await;
+        assert_eq!(reply, StatusReply::NodeUpdated { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap() });
+        let row = storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap().expect("the successor holds the name");
+        assert_eq!((row.node_id, row.config), (successor.node_id.clone(), tier("gold")), "the successor's row carries the .old row's config");
+        assert_eq!(storage.node_row_at(&successor.name).await.unwrap(), None, "the successor let go of .new");
+
+        // The predecessor giving up the name keeps its own config.
+        let storage = MemoryNodesStorage::default();
+        let held = stopped("mesh1.rpc.2", tier("silver"));
+        storage.put_node_row(&NodeRow { name: held.name.clone(), node_id: held.node_id.clone(), status: NodeStatus::Leaving, config: tier("silver") }).await.unwrap().unwrap();
+        let (me, me_id, view, moved) = fixture(&held);
+        let req = StatusRequest::UpdateNode { node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().unwrap(), name: "mesh1.rpc.2.old".into() };
+        assert!(matches!(update(&me, &me_id, &view, &storage, None, &moved, None, &req).await, StatusReply::NodeUpdated { .. }));
+        let row = storage.node_row_at(&"mesh1.rpc.2.old".parse().unwrap()).await.unwrap().expect("the predecessor's row moved");
+        assert_eq!(row.config, tier("silver"), "a rename that is not a successor taking the name keeps the node's own config");
+    }
 }

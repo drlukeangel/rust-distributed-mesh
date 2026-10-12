@@ -144,7 +144,7 @@ fn frames() -> Vec<Frame> {
         Frame::Concern { seat: rafka_mesh_entity::Seat::FabricPrimary, node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
         Frame::NewFabricPrimary { holder: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
         Frame::SeatedTogether {
-            op: op("replace-node:mesh2.admin.1"),
+            op: op("stop-node:mesh2.admin.1"),
             successor: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 5 },
             seats: [rafka_mesh_entity::Seat::MeshPrimary, rafka_mesh_entity::Seat::FabricPrimary].into_iter().map(|seat| rafka_mesh_entity::seat::transfer::CommittedSeat::of(seat, &rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 5 })).collect(),
         },
@@ -200,7 +200,31 @@ fn facts() -> Vec<BuildFact> {
     let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { build_id: bid("bld-1"), attempt: 2, reason: AttemptReason::Restart, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
     out.push(action(None));
     out.push(action(Some(AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
-    out.push(action(Some(AttemptAction::Replace { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
+    // A recipe (build.md §1; lifecycles/node-replace.md): its steps and the births it pinned.
+    {
+        use rafka_node_rpc_contract::build::RecipeStep;
+        let node: rafka_node_admin_core::model::PathName = "mesh2.rpc.1".parse().unwrap();
+        let pin = rafka_node_admin_core::build::PinnedBirth { node_id: NodeId::mint(), incarnation: IncarnationId::mint() };
+        out.push(BuildFact::Opened(AttemptOpened {
+            build_id: bid("bld-1"),
+            attempt: 2,
+            reason: AttemptReason::Recipe,
+            action: Some(AttemptAction::Recipe {
+                steps: vec![
+                    RecipeStep::Create { node: node.successor() },
+                    RecipeStep::Stop { node: node.clone() },
+                    RecipeStep::Update { node: node.clone(), name: node.renamed() },
+                    RecipeStep::Stop { node: node.successor() },
+                    RecipeStep::Update { node: node.successor(), name: node.clone() },
+                    RecipeStep::Start { node: node.clone() },
+                    RecipeStep::Delete { node: node.renamed() },
+                ],
+                pinned: vec![(node, pin)],
+            }),
+            opened_by: "mesh1.admin.1".into(),
+            opened_at_ms: 56,
+        }));
+    }
     // A member's recovery (node-recovery.md): the attempt the mesh-primary's submit opens.
     out.push(BuildFact::Opened(AttemptOpened {
         build_id: bid("bld-1"),

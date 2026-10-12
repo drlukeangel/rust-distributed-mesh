@@ -8,21 +8,16 @@
 //! `mesh1.rpc.1`, which carries config.
 
 use rafka_node_admin_core::admin::Records;
-use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
+use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build::BuildId;
-use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
-use rafka_node_admin_core::build_drive::{Dispatched, Dispatcher, Drive, DriveEnd, DriveEnv, InnerItem, InnerStream, OpenGate};
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
-use rafka_node_admin_core::http::ControlPlane;
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::node_rows::NodeRows;
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
 use rafka_node_admin_core::topology::Topology;
-use rafka_node_rpc_contract::build::BuildReply;
-use rafka_node_rpc_contract::context::CallContext;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// A cell's own span capture: the product span pipeline (`rafka_mesh_telemetry::span_capture`: its
@@ -93,93 +88,12 @@ fn view() -> Topology {
     }
 }
 
-/// What the executor fixture does on its dispatch, in order: change the fabric-primary's view (a
-/// departure heard, a birth heard) or stream a frame.
-enum Act {
-    Frame(&'static str, &'static str),
-    View(Box<dyn FnOnce(&mut Topology) + Send>),
-}
-
-struct Script {
-    acts: Mutex<Option<Vec<Act>>>,
-    view: Arc<RwLock<Topology>>,
-    records: Arc<Records>,
-}
-
-struct Played {
-    acts: VecDeque<Act>,
-    view: Arc<RwLock<Topology>>,
-    records: Arc<Records>,
-    build_id: String,
-    attempt: u32,
-    done: bool,
-}
-
-#[async_trait::async_trait]
-impl InnerStream for Played {
-    async fn next(&mut self) -> InnerItem {
-        loop {
-            match self.acts.pop_front() {
-                Some(Act::View(f)) => install(&self.records, &self.view, f).await,
-                Some(Act::Frame(operation, step)) => return InnerItem::Frame(BuildReply::Step { build_id: self.build_id.clone(), attempt: self.attempt, operation: operation.into(), step: step.into() }),
-                None if !self.done => {
-                    self.done = true;
-                    return InnerItem::Frame(BuildReply::Complete { build_id: self.build_id.clone(), attempt: self.attempt });
-                }
-                None => return InnerItem::Ended,
-            }
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl Dispatcher for Script {
-    async fn dispatch(&self, _executor: &PathName, build_id: &BuildId, attempt: u32, _context: CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
-        let acts = self.acts.lock().unwrap().take().expect("one dispatch");
-        Dispatched::Stream(Box::new(Played { acts: acts.into(), view: self.view.clone(), records: self.records.clone(), build_id: build_id.0.clone(), attempt, done: false }))
-    }
-}
-
-struct Rig {
-    env: Arc<DriveEnv>,
-    storage: Arc<MemoryNodesStorage>,
-    build: BuildId,
-}
-
 /// A view change as the product makes one: the projection installed through
 /// `Records::install_projected`, the one door every view change of an admin goes through.
 async fn install(records: &Records, view: &RwLock<Topology>, f: impl FnOnce(&mut Topology)) {
     let mut t = view.read().await.clone();
     f(&mut t);
     records.install_projected(view, || t.clone()).await;
-}
-
-async fn rig(change: TopologyChange, acts: Vec<Act>, storage: Arc<MemoryNodesStorage>) -> Rig {
-    let t = view();
-    let builds = Arc::new(MemoryBuildStateAdapter::new());
-    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
-    let topology = Arc::new(RwLock::new(t.clone()));
-    let mut cp = ControlPlane::new(builds.clone(), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time());
-    cp.topology = topology.clone();
-    let opened = cp.submit("test", change).await.unwrap();
-    let me: PathName = "mesh1.admin.1".parse().unwrap();
-    let me_id = topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone();
-    let rows = Arc::new(NodeRows::new(me.clone(), me_id.clone(), topology.clone(), storage.clone()));
-    let records = Arc::new(Records::default());
-    records.set_rows(rows.clone());
-    let env = Arc::new(DriveEnv {
-        me: me.clone(),
-        topology: topology.clone(),
-        accepted,
-        builds: builds.clone(),
-        door: Arc::new(ClaimDoor { me, node_id: me_id, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
-        dispatcher: Arc::new(Script { acts: Mutex::new(Some(acts)), view: topology, records: records.clone() }),
-        gate: Arc::new(OpenGate),
-        departure: Arc::new(crate::loopback::Proofs::default()),
-        verdicts: Arc::new(crate::loopback::NoVerdicts),
-        rows,
-    });
-    Rig { env, storage, build: opened.build_id }
 }
 
 /// The writer of `mesh1`'s rows, its primary `mesh1.admin.2`, over `storage`, its view the fixture
@@ -436,7 +350,7 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
 /// predecessor's rows (Node rows, `.old`, Deleted, config)"): the predecessor P and the successor N
 /// are two admins with their own data dirs and their own store instances over one shared root. P
 /// held the seat and wrote the rows: a live member's row (status Draining, config platinum), a
-/// replaced predecessor's row moved to `mesh1.rpc.2.old` (Deleted, config bronze) and a deleted
+/// renamed predecessor's row moved to `mesh1.rpc.2.old` (Deleted, config bronze) and a deleted
 /// node's row at `mesh1.rpc.3` (Deleted, config silver). N takes the seat over a view whose live
 /// digests hold mesh1.rpc.1 ready, a successor at mesh1.rpc.2 and a new node at mesh1.rpc.3. N's
 /// rebuild reads P's rows from the shared root: the live member's row stands untouched, the new
@@ -487,102 +401,6 @@ fn a_node_lets_go_only_of_its_own_row() {
     });
 }
 
-/// CONTRACT: a replace moves the predecessor's row to `<path.name>.old`, where it stays the parked
-/// predecessor's row (node-replace.md: the predecessor stays parked as `<name>.old`; its delete is a
-/// later step of the recipe), and the successor created at the `path.name` seeds its config from the
-/// `.old` row (ops-naming "Node data": "a Deleted row, or the `<name>.old` row"). The mesh-primary
-/// executing the replace writes `<path>.old` at `RenamePredecessor` from the exact predecessor record
-/// it acts on and releases `<path>`; the successor's claim takes `<path>` seeded from the `.old` row.
-/// No row says `Deleted`: the replace deletes nothing.
-#[test]
-fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
-    let cap = capture();
-    let (old_row, row, pred, succ) = cap.run(async {
-        let storage = Arc::new(MemoryNodesStorage::default());
-        let mp = mesh_primary(&storage);
-        let pred = held(&mp, "mesh1.rpc.1").await;
-        storage.put_node_row(&row_of(&pred)).await.unwrap().unwrap();
-        let op = "replace-node:mesh1.rpc.1";
-        mp.rows.moved_to_old(&pred, op).await.expect("the predecessor's row moves");
-        let succ = NodeId::mint();
-        mp.rows.claim(&pred.name, &succ, op).await.expect("the freed name is claimed");
-        (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
-    });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold") }), "the predecessor's row moved to .old, parked, and stays its row, its config kept");
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::Pending, config: tier("gold") }), "the successor holds the path.name with the .old row's config");
-    let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
-    assert_eq!(renames.len(), 1, "{renames:#?}");
-    let a = &renames[0]["attributes"];
-    assert_eq!((a["node"].as_str(), a["from"].as_str(), a["to"].as_str(), a["outcome"].as_str()), (Some("mesh1.admin.2"), Some("mesh1.rpc.1"), Some("mesh1.rpc.1.old"), Some("renamed")), "{a:#?}");
-    assert!(cap.spans_named("rdm.node_admin.node.delete.via-node-row").is_empty(), "a replace writes no Deleted row");
-    let seeded: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == succ.as_str()).collect();
-    assert_eq!(seeded.len(), 1, "{seeded:#?}");
-    let a = &seeded[0]["attributes"];
-    assert_eq!((a["subject"].as_str(), a["seeded_from"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1"), Some(pred.as_str()), Some("row-seeded")), "{a:#?}");
-}
-
-/// CONTRACT: the recovery of a proven-terminal birth (the replace operation's `NodeDeleting` branch)
-/// moves the predecessor's row to `<path.name>.old`, the successor's claim takes the `path.name`
-/// seeded from the `.old` row, and the predecessor's departure leaves a `Deleted` row at `.old`, its
-/// config kept: the mesh-primary executing it writes each from the exact predecessor record.
-#[test]
-fn a_recovered_nodes_row_moves_to_old_ends_deleted_and_its_successor_is_seeded_from_it() {
-    let cap = capture();
-    let (old_row, row, pred, succ) = cap.run(async {
-        let storage = Arc::new(MemoryNodesStorage::default());
-        let mp = mesh_primary(&storage);
-        let pred = held(&mp, "mesh1.rpc.1").await;
-        storage.put_node_row(&row_of(&pred)).await.unwrap().unwrap();
-        let op = "replace-node:mesh1.rpc.1";
-        mp.rows.moved_to_old(&pred, op).await.expect("the predecessor's row moves");
-        let succ = NodeId::mint();
-        mp.rows.claim(&pred.name, &succ, op).await.expect("the freed name is claimed");
-        mp.rows.deleted(&Node { name: pred.name.renamed(), ..pred.clone() }, op).await.expect("the .old row says Deleted");
-        (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
-    });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Deleted, config: tier("gold") }), "the predecessor's row moved to .old and says Deleted, its config kept");
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::Pending, config: tier("gold") }), "the successor holds the path.name with the .old row's config");
-    let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
-    assert_eq!(deleted.len(), 1, "{deleted:#?}");
-    let a = &deleted[0]["attributes"];
-    assert_eq!((a["subject"].as_str(), a["node_id"].as_str(), a["outcome"].as_str()), (Some("mesh1.rpc.1.old"), Some(pred.as_str()), Some("row-deleted")), "{a:#?}");
-}
-
-/// CONTRACT: a successor never takes a name its predecessor's row still holds (R13: two nodes never
-/// hold one name; the store adapter's insert-and-fail refuses `NameHeld`). Here the successor enters
-/// the writer's view at the path.name before the replace's `RenamePredecessor`: its row is refused
-/// `name-held` naming the predecessor, and nothing of it is written. `RenamePredecessor` then moves
-/// the predecessor's row to `.old` and lets go of the path.name, which no row holds after.
-#[test]
-fn a_successor_heard_before_the_predecessor_lets_go_is_refused_name_held_and_the_rename_frees_the_name() {
-    let cap = capture();
-    let (old_row, row, pred, succ) = cap.run(async {
-        let storage = Arc::new(MemoryNodesStorage::default());
-        let mp = mesh_primary(&storage);
-        let pred = held(&mp, "mesh1.rpc.1").await;
-        storage.put_node_row(&row_of(&pred)).await.unwrap().unwrap();
-        let successor = node("mesh1.rpc.1", false, false);
-        let succ = successor.node_id.clone();
-        install(&mp.records, &mp.view, move |v| {
-            v.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.1");
-            v.nodes.push(successor);
-        })
-        .await;
-        mp.rows.moved_to_old(&Node { status: NodeStatus::Leaving, parked: true, ..pred.clone() }, "replace-node:mesh1.rpc.1").await.expect("the predecessor's row moves");
-        (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
-    });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold") }), "the predecessor's row moved to .old, parked, its config kept");
-    assert_eq!(row, None, "the successor was refused while the predecessor held the name, and the rename let it go");
-    let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
-    assert_eq!(renames.len(), 1, "{renames:#?}");
-    assert_eq!(renames[0]["attributes"]["outcome"].as_str(), Some("renamed"), "{renames:#?}");
-    let claims: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == succ.as_str()).collect();
-    let outcomes: Vec<&str> = claims.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
-    assert_eq!(outcomes, vec!["name-held"], "{claims:#?}");
-    assert!(claims[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains(pred.as_str())), "the refusal names the predecessor: {claims:#?}");
-    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.1 outcome=name-held before the rename; trace {}: via-rename outcome=renamed", claims[0]["trace_id"].as_str().unwrap_or(""), renames[0]["trace_id"].as_str().unwrap_or(""));
-}
-
 /// CONTRACT: the writer writes a birth's row when its view holds the birth for the first time in its
 /// tenure (ops-naming "Node data": the row is written once, from the held record), never again on a
 /// later view install. A birth that left the view (a departure the projection dropped) and is put
@@ -607,99 +425,6 @@ fn a_birth_that_leaves_the_view_and_returns_is_written_once() {
     let claims: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
     assert_eq!(claims.len(), 1, "one row write for one birth in one tenure: {claims:#?}");
     assert_eq!(claims[0]["attributes"]["outcome"], "row-written", "{claims:#?}");
-}
-
-/// CONTRACT: the rename is the predecessor letting go of its own key, never anyone else's: a
-/// `RenamePredecessor` run again after the move (the predecessor's row at `<path>.old` already, the
-/// successor holding `<path>` with a config of its own) leaves both rows exactly as they are. The
-/// successor's row is not released and rewritten.
-#[test]
-fn a_rename_handled_again_after_the_successor_took_the_name_leaves_its_row() {
-    let cap = capture();
-    let (old_row, row, held_old, held_new) = cap.run(async {
-        let storage = Arc::new(MemoryNodesStorage::default());
-        let mp = mesh_primary(&storage);
-        let pred = held(&mp, "mesh1.rpc.1").await;
-        let held_old = NodeRow { name: pred.name.renamed(), node_id: pred.node_id.clone(), status: pred.status, config: tier("gold") };
-        let held_new = NodeRow { name: pred.name.clone(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("platinum") };
-        storage.put_node_row(&held_old).await.unwrap().unwrap();
-        storage.put_node_row(&held_new).await.unwrap().unwrap();
-        mp.rows.moved_to_old(&pred, "replace-node:mesh1.rpc.1").await.expect("a move made before is no refusal");
-        (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), held_old, held_new)
-    });
-    assert_eq!(old_row, Some(held_old), "the predecessor's .old row stands");
-    assert_eq!(row, Some(held_new), "the successor's row, its own config, stands: the rename released no key the predecessor does not hold");
-    let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
-    let outcomes: Vec<&str> = renames.iter().map(|s| s["attributes"]["outcome"].as_str().unwrap_or("")).collect();
-    assert_eq!(outcomes, vec!["already-moved"], "{renames:#?}");
-}
-
-/// CONTRACT: the fabric-primary holds the record of the parked predecessor a replace left at
-/// `<path>.old` although its view never names that path (a fabric-primary in another mesh than the
-/// replace's executor: its view drops the parked predecessor under the successor at `<path>`), fed
-/// from the replace's frames its drive reads. From that held record it admits
-/// `DELETE /api/nodes/<path>.old` as the next attempt fenced to the exact old birth; at the delete's
-/// `NodeDeleted` it holds the record no more. It writes no row of `mesh1`, which has a primary: the
-/// mesh primary that executes the delete writes the Deleted row (node-decommission.md 3; R13).
-#[test]
-fn a_fabric_primary_whose_view_never_names_the_old_path_admits_the_parked_predecessors_delete_and_writes_no_row() {
-    let cap = capture();
-    let (pred, held, opened, row, held_after) = cap.run(async {
-        let storage = Arc::new(MemoryNodesStorage::default());
-        let successor = node("mesh1.rpc.1", false, false);
-        let op = "replace-node:mesh1.rpc.1";
-        // This fabric-primary's view, as a peer's: the stop drops the predecessor, the successor arrives
-        // at the path; nothing here names `<path>.old`.
-        let heard = Act::View(Box::new(move |v: &mut Topology| {
-            v.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.1");
-            v.nodes.push(successor);
-        }));
-        let acts = vec![
-            Act::Frame(op, "DrainNode"),
-            Act::Frame(op, "AwaitNodeDrained"),
-            Act::Frame(op, "StopNode"),
-            Act::Frame(op, "AwaitNodeLeft"),
-            Act::Frame(op, "RenamePredecessor"),
-            Act::Frame(op, "AllocateIdentity"),
-            heard,
-            Act::Frame(op, "WaitForNodeReady"),
-            Act::Frame(op, "Complete"),
-        ];
-        let r = rig(TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }, acts, storage).await;
-        let pred = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        r.storage.put_node_row(&NodeRow { name: pred.name.clone(), node_id: pred.node_id.clone(), status: pred.status, config: pred.config.clone() }).await.unwrap().unwrap();
-        assert_eq!(r.env.run(&Drive::detached(r.build.clone())).await, DriveEnd::Terminal);
-        let old: PathName = "mesh1.rpc.1.old".parse().unwrap();
-        assert!(r.env.topology.read().await.node(&old).is_none(), "the view never names {old}");
-        let held = r.env.rows.parked_at(&old);
-        // The replace's attempt converged, as its executor's attempt receipt says.
-        let attempt = r.env.builds.read_build(&r.build).await.unwrap().attempt;
-        let converged = rafka_node_admin_core::build_state::BuildAttemptReceipt { build_id: r.build.clone(), attempt, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged };
-        r.env.builds.append_attempt_receipt(&converged).await.unwrap();
-        // The door: the next attempt of the accepted Build, fenced to the held record's exact birth.
-        let mut cp = ControlPlane::new(r.env.builds.clone(), r.env.accepted.clone(), "mesh1.admin.1".parse().unwrap(), r.env.topology.read().await.clone(), crate::adopted_time());
-        cp.topology = r.env.topology.clone();
-        let rows = r.env.rows.clone();
-        let _ = cp.parked_old.set(Arc::new(move |p: &PathName| rows.parked_at(p)));
-        let opened = cp.open_attempt("DELETE /api/nodes/{name}", rafka_node_admin_core::build_state::AttemptReason::Delete, old.clone(), rafka_node_admin_core::http::ActionKind::Delete, None).await;
-        let opened = opened.map(|o| o.build_id).map_err(|e| format!("{e:?}"));
-        let read = r.env.builds.read_build(&r.build).await.unwrap();
-        let opened = opened.map(|_| serde_json::to_value(&read.action).unwrap());
-        // The delete's frames, as the executor streams them: the view still names no `.old` path.
-        let del = "delete-node:mesh1.rpc.1.old";
-        r.env.rows.on_step(&r.env.topology, del, "NodeDeleting", None).await;
-        r.env.rows.on_step(&r.env.topology, del, "NodeDeleted", None).await;
-        (pred, held, opened, r.storage.node_row_at(&old).await.unwrap(), r.env.rows.parked_at(&old))
-    });
-    let held = held.expect("the fabric-primary holds the parked predecessor's record at mesh1.rpc.1.old");
-    assert_eq!((&held.node_id, &held.incarnation_id, held.parked, held.status), (&pred.node_id, &pred.incarnation_id, true, NodeStatus::Leaving), "the exact old birth, parked: {held:?}");
-    let action = opened.unwrap_or_else(|e| panic!("the delete is admitted from the held record: {e}"));
-    assert_eq!((action["action"].as_str(), action["path"].as_str()), (Some("delete"), Some("mesh1.rpc.1.old")), "{action}");
-    assert_eq!(action["from_incarnation"].as_str(), pred.incarnation_id.as_ref().map(|i| i.0.as_str()), "fenced to the exact old birth: {action}");
-    assert_eq!(row, None, "the fabric-primary writes no row at .old of a mesh that has a primary");
-    assert!(held_after.is_none(), "the record is held no more once its delete's NodeDeleted is read");
-    assert!(cap.spans_named("rdm.node_admin.node.delete.via-node-row").is_empty(), "the fabric-primary writes no Deleted row of mesh1");
-    assert!(cap.spans_named("rdm.node_admin.node.update.via-rename").is_empty(), "the fabric-primary moves no row of mesh1");
 }
 
 // The writer of a mesh's rows (R13): the mesh's primary node-admin, the fabric-primary only as the

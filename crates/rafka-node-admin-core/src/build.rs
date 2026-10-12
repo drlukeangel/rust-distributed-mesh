@@ -154,11 +154,6 @@ pub enum BuildIntent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from_incarnation: Option<IncarnationId>,
     },
-    /// Replace the node's live birth with a new logical node at the same path.
-    ReplaceNode {
-        /// The node to replace.
-        node: PathName,
-    },
     /// `POST /api/meshes`.
     CreateMesh {
         /// The mesh's desired counts.
@@ -196,18 +191,6 @@ pub enum BuildOperation {
         /// The node to restart.
         node: PathName,
     },
-    /// Replace the exact birth `from_incarnation` of `node` with a new logical node at the same
-    /// path (node-replace.md, node-recovery.md): the old birth drains and is renamed
-    /// `<path>.old`, the successor is created at the path, the old birth is stopped with exact
-    /// terminal proof and its storage handed over, the successor starts and is admitted and
-    /// ready, and only then is the old identity deleted. One operation, never a retire followed
-    /// by a create.
-    ReplaceNode {
-        /// The path the successor takes.
-        node: PathName,
-        /// The birth the replacement is fenced to.
-        from_incarnation: IncarnationId,
-    },
     /// Drain the exact birth `from_incarnation` of `node` and keep it running (node-drain.md): the
     /// operation is `drain-node` and the birth's `node-drained`, nothing else.
     DrainNode {
@@ -232,8 +215,8 @@ pub enum BuildOperation {
         /// The birth started.
         from_incarnation: IncarnationId,
     },
-    /// Delete the parked exact birth `from_incarnation` a replacement left at `node`, a `.old` path
-    /// (node-decommission.md): its stop steps are done; `NodeDeleting`, the provider's exact Exited
+    /// Delete the stopped exact birth `from_incarnation` at `node`, a `.old` path a recipe renamed it
+    /// to (node-delete.md): its stop steps are done; `NodeDeleting`, the provider's exact Exited
     /// proof, `NodeDeleted`, and `Complete` naming the birth. Storage is kept.
     DeleteNode {
         /// The parked node's `.old` path.
@@ -259,6 +242,19 @@ pub enum BuildOperation {
         /// The exited birth whose caller-owned meta is copied.
         from: ExitedBirth,
     },
+    /// One step of a recipe (`BuildChange::Recipe`; build.md §1, lifecycles/node-replace.md): its op's
+    /// own workflow on the node its path names when it runs, `create-node`, `stop-node`,
+    /// `update-node` (node.update's own core at the node's mesh-primary), `start-node`, or
+    /// `delete-node` / `retire-node` (node.delete). `birth` fences it to the exact birth its node was
+    /// when the recipe was accepted; `None` for a node an earlier step of the recipe created, which
+    /// the executor resolves at its path when the step runs.
+    RecipeStep {
+        /// The step.
+        step: rafka_node_rpc_contract::build::RecipeStep,
+        /// The exact birth the step is fenced to, for a node the recipe did not create.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        birth: Option<PinnedBirth>,
+    },
     /// Shut a whole mesh down (mesh-leave.md): the fabric-primary owns the workflow, the mesh's
     /// primary drains and stops every other member, and the fabric-primary stops the final primary
     /// and records the departure. The operation key names the mesh by its minted id.
@@ -274,7 +270,8 @@ impl BuildOperation {
     /// The node the operation acts on; `None` for a mesh operation.
     pub fn node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::ReplaceNode { node, .. } | Self::RestartNode { node } | Self::DrainNode { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::UpdateNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::RestartNode { node } | Self::DrainNode { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::UpdateNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::RecipeStep { step, .. } => Some(step.node()),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } => None,
         }
     }
@@ -284,17 +281,41 @@ impl BuildOperation {
         match self {
             Self::CreateMesh { mesh } => format!("create-mesh:{mesh}"),
             Self::CreateNode { node, .. } => format!("create-node:{node}"),
-            Self::ReplaceNode { node, .. } => format!("replace-node:{node}"),
             Self::RestartNode { node } => format!("restart-node:{node}"),
             Self::DrainNode { node, .. } => format!("drain-node:{node}"),
             Self::StopNode { node, .. } => format!("stop-node:{node}"),
             Self::StartNode { node, .. } => format!("start-node:{node}"),
             Self::UpdateNode { node, .. } => format!("update-node:{node}"),
+            Self::RecipeStep { step, .. } => recipe_step_key(step),
             Self::DeleteNode { node, .. } => format!("delete-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
         }
     }
+}
+
+/// The operation key of a recipe step: its op's own key, the one that op's workflow receipts under
+/// (a stopped node at a `.old` path is deleted by `delete-node`, any other by node.delete's
+/// `retire-node`).
+pub fn recipe_step_key(step: &rafka_node_rpc_contract::build::RecipeStep) -> String {
+    use rafka_node_rpc_contract::build::RecipeStep as S;
+    match step {
+        S::Create { node } => format!("create-node:{node}"),
+        S::Stop { node } => format!("stop-node:{node}"),
+        S::Update { node, .. } => format!("update-node:{node}"),
+        S::Start { node } => format!("start-node:{node}"),
+        S::Delete { node } if node.old => format!("delete-node:{node}"),
+        S::Delete { node } => format!("retire-node:{node}"),
+    }
+}
+
+/// The exact birth a recipe step is fenced to: the birth its node was when the recipe was accepted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PinnedBirth {
+    /// The node.id.
+    pub node_id: NodeId,
+    /// The incarnation.
+    pub incarnation: IncarnationId,
 }
 
 /// The exact exited birth a node recovery acts for: the node.id and incarnation its mesh-primary
@@ -405,7 +426,7 @@ pub enum BuildReject {
         /// The node-admin named.
         node: String,
     },
-    /// The Build would drain, stop, restart, replace or retire the fabric-primary while no other
+    /// The Build would drain, stop, restart or retire the fabric-primary while no other
     /// live node-admin of its mesh can take its seats: TakeSeats moves seats inside the holder's
     /// mesh only, and the fabric seat leaves a mesh whose last admin holds it only through the
     /// holder-initiated TakeFabricPrimary inside mesh-leave (node-rpc-envelope.md, "TakeSeats:
@@ -415,7 +436,7 @@ pub enum BuildReject {
         node: String,
         /// Its mesh.
         mesh: String,
-        /// What the Build would do to it (`restart`, `replace`, `drain`, `stop`, `retire`).
+        /// What the Build would do to it (`restart`, `drain`, `stop`, `retire`).
         action: String,
     },
     /// The stopped-node garbage collector's delete of a birth that is no longer the one stopped
@@ -434,6 +455,23 @@ pub enum BuildReject {
         node: String,
         /// The open Build.
         build_id: String,
+    },
+    /// A recipe with no step: a Build of nothing.
+    EmptyRecipe,
+    /// A recipe naming one operation twice: a step's receipts are keyed by its operation
+    /// (`<op>:<path.name>`), so two steps of one key cannot be told apart and a resume could not say
+    /// which one completed.
+    RecipeStepRepeated {
+        /// The operation named twice.
+        operation: String,
+    },
+    /// A recipe step acting on a `path.name` that holds no birth when the recipe is accepted and that
+    /// no earlier step of the recipe creates or renames a node to.
+    RecipeNodeUnknown {
+        /// The step, numbered from 1.
+        step: u32,
+        /// The `path.name` it names.
+        node: String,
     },
 }
 
@@ -459,6 +497,9 @@ impl BuildReject {
             Self::LastAdmin { .. } => "last-admin",
             Self::NodeNotStopped { .. } => "node-not-stopped",
             Self::ReferencedByOpenBuild { .. } => "referenced-by-open-build",
+            Self::EmptyRecipe => "empty-recipe",
+            Self::RecipeStepRepeated { .. } => "recipe-step-repeated",
+            Self::RecipeNodeUnknown { .. } => "recipe-node-unknown",
         }
     }
 }
@@ -488,6 +529,9 @@ impl fmt::Display for BuildReject {
             ),
             Self::NodeNotStopped { node, found } => write!(f, "node `{node}` is not the birth the stopped-node collector selected at its delete's admission: {found}; nothing is deleted from the scan's decision"),
             Self::ReferencedByOpenBuild { node, build_id } => write!(f, "node `{node}`'s stopped birth is referenced by open Build {build_id}: it keeps it, and the stopped-node collector deletes nothing it holds"),
+            Self::EmptyRecipe => write!(f, "a recipe needs at least one step"),
+            Self::RecipeStepRepeated { operation } => write!(f, "the recipe names operation `{operation}` twice: each step's receipts are keyed by its operation, so a recipe names each operation once"),
+            Self::RecipeNodeUnknown { step, node } => write!(f, "step {step} of the recipe acts on `{node}`, which holds no birth now and which no earlier step creates or renames a node to"),
             Self::LastAdmin { node, mesh, action } => write!(
                 f,
                 "node `{node}` holds the fabric-primary seat and no other live node-admin of mesh `{mesh}` can take its seats: a {action} of it is refused; TakeSeats moves seats inside the holder's mesh only, and the fabric seat leaves mesh `{mesh}` only through TakeFabricPrimary inside a mesh-leave"
@@ -649,11 +693,6 @@ pub fn plan(intent: &BuildIntent, observed: &Topology) -> Result<BuildPlan, Buil
             if !already {
                 ops.push(BuildOperation::RestartNode { node: node.clone() });
             }
-        }
-        BuildIntent::ReplaceNode { node } => {
-            let birth = find_live(observed, node)?;
-            let from_incarnation = birth.incarnation_id.clone().ok_or_else(|| BuildReject::NodeNotLive { node: node.to_string() })?;
-            ops.push(BuildOperation::ReplaceNode { node: node.clone(), from_incarnation });
         }
         BuildIntent::CreateMesh { desired } => {
             validate_mesh(desired)?;
@@ -871,7 +910,7 @@ mod tests {
     }
 
     #[test]
-    fn spawn_delete_restart_and_replace_each_plan_one_shape() {
+    fn spawn_delete_and_restart_each_plan_one_shape() {
         let t = mn();
         let add = plan(&BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode, target: None }, &t).unwrap();
         assert_eq!(add.operations, vec![create("mesh1.rpc.4")]);
@@ -879,10 +918,6 @@ mod tests {
         assert_eq!(del.operations, vec![retire("mesh1.rpc.2")]);
         let rs = plan(&BuildIntent::RestartNode { node: p("mesh1.rpc.2"), from_incarnation: None }, &t).unwrap();
         assert_eq!(rs.operations, vec![BuildOperation::RestartNode { node: p("mesh1.rpc.2") }]);
-        let t = with_incarnations(t);
-        let rp = plan(&BuildIntent::ReplaceNode { node: p("mesh1.rpc.2") }, &t).unwrap();
-        let birth = t.node(&p("mesh1.rpc.2")).unwrap().incarnation_id.clone().unwrap();
-        assert_eq!(rp.operations, vec![BuildOperation::ReplaceNode { node: p("mesh1.rpc.2"), from_incarnation: birth }], "a replace is one operation, never a retire then a create");
     }
 
     #[test]
@@ -922,7 +957,6 @@ mod tests {
             BuildIntent::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::NodeAdmin, target: None },
             BuildIntent::RemoveNode { node: p("mesh1.rpc.3"), incarnation: None },
             BuildIntent::RestartNode { node: p("mesh1.rpc.1"), from_incarnation: None },
-            BuildIntent::ReplaceNode { node: p("mesh1.rpc.1") },
             BuildIntent::CreateMesh { desired: MeshDesired::of("mesh9".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) },
         ];
         for i in &intents {

@@ -666,11 +666,11 @@ impl Records {
             if let Some(fold) = self.status.get() {
                 fold.on_install(&t, &self.declared).await;
             }
-            // A replaced predecessor this view now names `<path>.old` (the executor's own view; its
-            // digest still says `<path>`): one span as it enters, with the member that took the path.
+            // A renamed predecessor this view now names `<path>.old` (its row's name; its digest still
+            // says `<path>`): one span as it enters.
             for old in t.predecessors().filter(|o| !held.predecessors().any(|h| h.node_id == o.node_id && h.incarnation_id == o.incarnation_id)) {
                 tracing::info_span!("rdm.node_admin.topology.update.via-predecessor-held", node = %old.name, node_id = %old.node_id, status = ?old.status)
-                    .in_scope(|| tracing::info!("the view names a replaced predecessor under its .old path"));
+                    .in_scope(|| tracing::info!("the view names a renamed predecessor under its .old path"));
             }
             // The births the fabric-primary's view holds for the first time: their rows are written
             // from this held record once the view is installed (`crate::node_rows`).
@@ -721,13 +721,6 @@ impl TopologySink for Records {
             nodes.remove(name);
         }
         self.removed.lock().unwrap().insert((name.clone(), Some(incarnation.clone())));
-    }
-    fn rename_predecessor(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
-        let mut nodes = self.nodes.lock().unwrap();
-        if nodes.get(name).is_some_and(|n| n.incarnation_id.as_ref() == Some(incarnation)) {
-            nodes.remove(name);
-        }
-        self.renamed.lock().unwrap().insert((node_id.clone(), incarnation.clone()), name.renamed());
     }
     fn node_rows(&self) -> Option<Arc<crate::node_rows::NodeRows>> {
         self.rows.get().cloned()
@@ -2024,7 +2017,7 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 }
 
 /// What a drift opening decides on, as one comparable string: for a repair, the exited birth and
-/// the completed receipts under its `replace-node:<path>`; for surplus, each live birth by
+/// the completed receipts of its recovery (`retire-node:`, `create-node:`, `update-node:<path>`); for surplus, each live birth by
 /// incarnation and, per removed mesh's `shutdown-mesh:<mesh id>`, the mesh's seated node-admin, its
 /// live node-admins by birth and status, and the completed receipts under the workflow and its
 /// member operations (an exit, an amendment, a roster recorded since moves it).
@@ -2035,7 +2028,8 @@ fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], re
     };
     let birth = |n: &Node| format!("{}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("-"));
     if let Some((path, incarnation)) = repair {
-        return format!("repair {path}:{} receipts={}", incarnation.0, complete(&format!("replace-node:{path}")));
+        let receipts: usize = ["retire-node", "create-node", "update-node"].iter().map(|op| complete(&format!("{op}:{path}"))).sum();
+        return format!("repair {path}:{} receipts={receipts}", incarnation.0);
     }
     surplus
         .iter()
@@ -2223,7 +2217,8 @@ pub async fn reconcile_drift(
     // taken only once no exited birth is left to repair.
     let mut surplus: Vec<String> = t
         .members()
-        .filter(|n| n.status.is_live() && current.topology.meshes.contains_key(&n.mesh) && !current.topology.contains(&n.name))
+        // A `<name>.new` successor is its recipe's, never surplus (lifecycles/node-replace.md "Rollback").
+        .filter(|n| n.status.is_live() && !n.name.new && current.topology.meshes.contains_key(&n.mesh) && !current.topology.contains(&n.name))
         .filter(|n| n.mesh == me.mesh || hold(&n.mesh).is_none())
         // A birth whose retirement the Build already receipted (`NodeDeleting` of this exact birth) is
         // not surplus: that operation retires it, and this view is only late in hearing it go.
@@ -2268,8 +2263,10 @@ pub async fn reconcile_drift(
         Some((path, birth)) => {
             // Only a node-admin of a mesh that lost its mesh-primary reaches here (every other member is
             // its mesh-primary's to recover), and a proven-exited birth has no process to restart
-            // (node-restart.md): it is replaced.
-            let action = crate::accepted::AttemptAction::Replace { path: path.clone(), from_incarnation: birth.incarnation.clone() };
+            // (node-restart.md): it is recovered, node.delete of the exited instance then node.create
+            // at its path.name (node-recovery.md "Steps"), executed by this fabric-primary for a mesh
+            // with no node-admin left (mesh-investigation.md "A node-admin joins the live mesh").
+            let action = crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: birth.node_id.clone(), from_incarnation: birth.incarnation.clone() };
             let scope = short.iter().filter(|s| s.exited.iter().any(|e| *e == path.to_string())).map(ToString::to_string).collect::<Vec<_>>().join("; ");
             (vec![path.to_string()], scope, Some(action))
         }
@@ -2316,7 +2313,7 @@ pub async fn reconcile_drift(
         authority = %authority.name,
         authority_node_id = %authority.node_id,
         reason = "proven-drift",
-        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover", crate::accepted::AttemptAction::Delete { .. } => "delete" }).unwrap_or("none"),
+        action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart",  crate::accepted::AttemptAction::Drain { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover", crate::accepted::AttemptAction::Delete { .. } => "delete", crate::accepted::AttemptAction::Recipe { .. } => "recipe" }).unwrap_or("none"),
         exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
         exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
     );
@@ -3456,13 +3453,16 @@ impl AdminRunner {
             FenceOutcome::Alive | FenceOutcome::Held => return Ok(()),
             // Nothing proves the path free: the create fails, naming what could not be read.
             FenceOutcome::RecordsUnreadable { reason } => return Err(format!("{node}: the runtimes recorded at this path cannot be read, so no birth is created over them: {reason}")),
-            // A birth the provider proves terminal is replaced at its path: the old identity is
-            // deleted (its terminal proof, NodeDeleted, its Deleted row), then the successor is
-            // created (node-recovery.md "Steps").
-            FenceOutcome::Clear { gone: Some(prev) } => match prev.incarnation_id {
-                Some(birth) => return self.replace(build_id, attempt, node, &birth).await,
-                None => {}
-            },
+            // A birth the provider proves terminal holds the path's name until it is deleted (only a
+            // delete releases a name, R-MN1): its exit proof is recorded, node.delete deletes it as a
+            // crashed target (NodeDeleted, its Deleted row), then the create runs (node-recovery.md
+            // "Steps": node.delete of the exited instance, then node.create at the same path.name).
+            FenceOutcome::Clear { gone: Some(prev) } => {
+                if let Some(incarnation) = prev.incarnation_id.clone() {
+                    self.records.put_exit(&prev, None, "provider").await.map_err(|e| format!("{node}: the provider proves birth {} at {} exited, and its exit-proof row is not written, so it is not deleted and nothing is created over it: {e}", prev.node_id, incarnation.0))?;
+                    self.delete_exited(build_id, attempt, node, &crate::build::ExitedBirth { node_id: prev.node_id.clone(), incarnation }).await?;
+                }
+            }
             FenceOutcome::Clear { gone: None } => {}
         }
         let mut template = self.template_for(node.kind, &node.mesh).await?;
@@ -3500,31 +3500,6 @@ impl AdminRunner {
                 apply_mesh_state(&client, &resolver, &me, &me_id, &topology, &mesh, &mesh_id, state, &target).await.map(|()| state)
             })
         }))
-    }
-
-    /// `replace-node:<path>`: the exact birth `from` is replaced by a new node at its path
-    /// (`DeploymentPipeline::replace`). The successor is created here, never through `create`: that
-    /// door fences against a birth at the path, and the predecessor is the one being replaced.
-    async fn replace(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId) -> Result<(), String> {
-        let (predecessor, handle) = self.predecessor_of(build_id, node, from).await?;
-        // A mesh's only admin replaced leaves the mesh without a live admin: its successor is that
-        // mesh's first admin and receives the fabric primary's Pending hand-off (e4.s11).
-        let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live());
-        let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
-        let mut template = self.template_for(node.kind, &node.mesh).await?;
-        if node.kind == NodeKind::NodeAdmin && first_admin {
-            template = self.with_mesh_issuer(template, &node.mesh)?;
-        }
-        let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
-        let req = crate::deployment::pipeline::ReplaceRequest { build_id: build_id.clone(), attempt, predecessor, handle, spec: spec_for(node.kind), held_runtimes };
-        let created = self.pipeline(&template).replace(&req, before_ready, |ready| async move { self.bring_into_traffic(&ready).await }).await.map_err(|e| e.to_string())?;
-        // A recovered predecessor's exit is proven; a replaced one is parked at `<path>.old`, its
-        // process alive: nothing is retired about its paths or its birth.
-        if matches!(self.provider.inspect(&req.handle).await, crate::deployment::provider::DeploymentStatus::Exited { .. }) {
-            self.after_exit(&req.predecessor);
-        }
-        self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
-        Ok(())
     }
 
     /// The exact exited birth `from` at `node` a node recovery acts for (node-recovery.md), and its
@@ -3586,10 +3561,19 @@ impl AdminRunner {
     /// before that launch) cuts none of that runtime's paths.
     async fn create_over(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(), String> {
         let (exited, _) = self.exited_birth("create-node", node, from).await?;
+        // A node-admin created into a mesh with no other live node-admin is that mesh's first admin, as
+        // every node.create of one is: it takes the mesh's issuing material and the fabric primary's
+        // Pending hand-off before it is asked to be Ready (e4.s11; mesh-investigation.md "A node-admin
+        // joins the live mesh").
+        let first_admin = node.kind == NodeKind::NodeAdmin && self.topology.read().await.cohort(&node.mesh, NodeKind::NodeAdmin).filter(|n| n.name != *node).all(|n| !n.status.is_live());
+        let before_ready = if first_admin { Some(self.mesh_state_hook(node, rafka_node_rpc_contract::status::MeshState::Pending)?) } else { None };
         // The launch is the kind's template, as every create's: the new node's config is seeded
         // from the exited birth's Deleted row by the create's name claim (`NodeRows::claim`) and told
         // to it when its row is written at its arrival (`NodeRows::write_arrivals`).
-        let template = self.template_for(node.kind, &node.mesh).await?;
+        let mut template = self.template_for(node.kind, &node.mesh).await?;
+        if first_admin {
+            template = self.with_mesh_issuer(template, &node.mesh)?;
+        }
         let pipeline = self.pipeline(&template);
         let data_dir = pipeline.birth_dir(&exited);
         // The key the fence names is the one the kept data dir holds (a record resolved from the
@@ -3603,7 +3587,7 @@ impl AdminRunner {
         // birth is.
         let held_runtimes = if node.kind == NodeKind::NodeAdmin { self.held_runtimes().await } else { Vec::new() };
         let req = CreateRequest { build_id: build_id.clone(), attempt, node: node.clone(), spec: spec_for(node.kind), data_dir: Some(data_dir), held_runtimes };
-        let created = pipeline.create_with(&req, None, Some(Box::pin(self.fence_exited(&fenced)))).await.map_err(|e| e.to_string())?;
+        let created = pipeline.create_with(&req, before_ready, Some(Box::pin(self.fence_exited(&fenced)))).await.map_err(|e| e.to_string())?;
         self.bring_into_traffic(&created.node).await?;
         self.handles.lock().unwrap().insert(node.clone(), (created.node, created.handle));
         Ok(())
@@ -3653,18 +3637,7 @@ impl AdminRunner {
         }
     }
 
-    /// The birth `from` at `node` to replace, and its exact runtime: the view's, else (a birth the
-    /// view no longer holds, or a replacement an earlier attempt began) the durable records the
-    /// Build and the data root hold.
-    async fn predecessor_of(&self, build_id: &crate::build::BuildId, node: &PathName, from: &IncarnationId) -> Result<(Node, DeploymentHandle), String> {
-        let seen = self.topology.read().await.node(node).cloned().filter(|n| n.incarnation_id.as_ref() == Some(from));
-        match seen {
-            Some(n) => self.handle_for(&n).await,
-            None => self.rebuild_absent_birth(build_id, node).await,
-        }
-    }
-
-    /// What follows a birth's proven exit, for a removal and a replacement alike: the resolver names
+    /// What follows a birth's proven exit: the resolver names
     /// no current birth for it, and its direct paths are retired. A later birth that keeps the key
     /// binds a port the operating system assigns, so this endpoint holds no path to the key until
     /// that birth reports one (R-I1's replacement, with no address left).
@@ -3713,7 +3686,7 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// `delete-node:<path>.old` (node-decommission.md): the parked birth `from` a replacement left at
+    /// `delete-node:<path>.old` (node-delete.md): the stopped birth `from` a rename left at
     /// `node`, fenced by incarnation, ended with the provider's exact Exited proof and deleted
     /// (`DeploymentPipeline::delete_parked`); what follows its proven exit follows.
     async fn delete_parked(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId) -> Result<(), String> {
@@ -3850,87 +3823,6 @@ impl AdminRunner {
         self.pipeline(&template).start(&req).await.map_err(|e| e.to_string())
     }
 
-    /// The target of a retire the view cannot name: the accepted Build's `Replace` action names the
-    /// exact birth, and the one data dir recorded for the path under this provider's data root
-    /// names its node and its exact runtime. Refused by name when no record names that birth; a
-    /// stored contact of the node, when this admin holds one, must agree on the incarnation.
-    async fn rebuild_absent_birth(&self, build_id: &crate::build::BuildId, path: &PathName) -> Result<(Node, DeploymentHandle), String> {
-        use tracing::Instrument;
-        let span = tracing::info_span!("rdm.node_admin.node.update.via-rebuilt-birth", build_id = %build_id, node = %path, outcome = tracing::field::Empty);
-        self.rebuild_absent_birth_in(build_id, path).instrument(span).await
-    }
-
-    async fn rebuild_absent_birth_in(&self, build_id: &crate::build::BuildId, path: &PathName) -> Result<(Node, DeploymentHandle), String> {
-        let span = tracing::Span::current();
-        let refuse = |why: String| {
-            span.record("outcome", "refused");
-            format!("{path} is not in this admin's view and no durable record names the birth to retire: {why}")
-        };
-        let build = self.builds.read_build(build_id).await.map_err(|e| refuse(format!("the Build {build_id} could not be read: {e}")))?;
-        let from = match &build.action {
-            Some(crate::accepted::AttemptAction::Replace { path: p, from_incarnation }) if p == path => from_incarnation.clone(),
-            other => return Err(refuse(format!("the Build's action is {other:?}, not a replace of this path"))),
-        };
-        // A replacement an earlier attempt began receipted the exact birth it replaces (a recovery's
-        // NodeDeleting, the RenamePredecessor of either): its node id names the directory.
-        let operation = format!("replace-node:{path}");
-        let named: Option<NodeId> = build
-            .steps
-            .iter()
-            .filter(|s| s.operation == operation && matches!(s.step.as_str(), "NodeDeleting" | "RenamePredecessor") && s.outcome == crate::build_state::StepOutcome::Complete)
-            .filter_map(|s| s.output.clone())
-            .filter_map(|v| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v).ok())
-            .find(|op| op.incarnation == from)
-            .map(|op| op.node_id);
-        let (dir, node_id) = match named {
-            Some(id) => {
-                let dir = self.template.data_root.join(format!("{path}-{id}"));
-                let look = dir.clone();
-                let exists = crate::record_store::blocking_io(move || look.try_exists()).await.map_err(|e| refuse(format!("{}: {e}", dir.display())))?;
-                if !exists {
-                    return Err(refuse(format!("{} does not exist", dir.display())));
-                }
-                (dir, id)
-            }
-            None => {
-                let prefix = format!("{path}-");
-                let dirs = crate::fence::recorded_dirs(&self.template.data_root, path).await.map_err(refuse)?;
-                let dir = match dirs.as_slice() {
-                    [one] => one.clone(),
-                    [] => return Err(refuse(format!("no data dir {prefix}* under {}", self.template.data_root.display()))),
-                    many => return Err(refuse(format!("{} data dirs match {prefix}*: {many:?}", many.len()))),
-                };
-                let node_id = dir
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .and_then(|n| n.strip_prefix(&prefix))
-                    .and_then(|id| NodeId::parse(id).ok())
-                    .ok_or_else(|| refuse(format!("{} does not end in a node id", dir.display())))?;
-                (dir, node_id)
-            }
-        };
-        let fact = match crate::fence::runtime_record(&dir).await.map_err(refuse)? {
-            Some(f) => f,
-            None => return Err(refuse(format!("{} holds no runtime record", dir.display()))),
-        };
-        if let Some(store) = self.records.contacts.get() {
-            if let Some(c) = store.contacts().await.ok().and_then(|rows| rows.into_iter().find(|c| c.node_id == node_id)) {
-                if c.incarnation_id != from {
-                    return Err(refuse(format!("this admin's stored contact holds incarnation {}, the Build names {}", c.incarnation_id.0, from.0)));
-                }
-            }
-        }
-        let handle = crate::deployment::provider::adopt(&*self.provider, &fact).map_err(|r| refuse(format!("the runtime record is not adoptable: {r}")))?;
-        let mut record = Node::allocated(path.clone());
-        record.node_id = node_id;
-        record.incarnation_id = Some(from.clone());
-        record.deployment_id = Some(handle.deployment_id.clone());
-        record.data_dir = Some(dir.display().to_string());
-        span.record("outcome", "rebuilt");
-        tracing::info!(node = %path, incarnation_id = %from.0, deployment_id = %fact.deployment_id, "the birth to retire is rebuilt from the Build's replace action and its exact runtime record");
-        Ok((record, handle))
-    }
-
     async fn retire(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName) -> Result<Option<Node>, String> {
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match &seen {
@@ -3939,9 +3831,7 @@ impl AdminRunner {
                 let held = self.handles.lock().unwrap().get(node).cloned();
                 match held {
                     Some(h) => h,
-                    // Silent past every window the view keeps: the Build names the birth, the
-                    // durable runtime record names its exact runtime (node-admin-lifecycle.md 4.2).
-                    None => self.rebuild_absent_birth(build_id, node).await?,
+                    None => return Err(format!("retire-node:{node}: {} holds no birth at {node} in its view and no runtime handle of one", self.me)),
                 }
             }
         };
@@ -4082,18 +3972,13 @@ impl AdminRunner {
             }
             BuildOperation::RestartNode { node } => {
                 // node-restart.md: the live process parks and rejoins; there is no relaunch. A member
-                // proven exited is node recovery's (node-recovery.md), a node-admin the drift's replace.
+                // proven exited is node recovery's (node-recovery.md).
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 self.restart_in_place(build_id, attempt, node).instrument(span).await
             }
             BuildOperation::StartNode { node, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
                 self.start_parked(build_id, attempt, node, from_incarnation).instrument(span).await
-            }
-            BuildOperation::ReplaceNode { node, from_incarnation } => {
-                // node-replace.md names the operation's span `node.update.via-build`.
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
-                self.replace(build_id, attempt, node, from_incarnation).instrument(span).await
             }
             BuildOperation::DrainNode { node, from_incarnation } => {
                 let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt);
@@ -4120,6 +4005,61 @@ impl AdminRunner {
                 self.update_from(build_id, attempt, node, from).instrument(span).await
             }
             BuildOperation::ShutdownMesh { mesh, mesh_id } => self.shutdown_mesh(build_id, attempt, mesh, mesh_id).await,
+            BuildOperation::RecipeStep { step, birth } => Box::pin(self.recipe_step(build_id, attempt, step, birth.as_ref())).await,
+        }
+    }
+
+    /// One step of a recipe (`BuildChange::Recipe`; lifecycles/node-replace.md): the op it names, run
+    /// as that op's own workflow on the exact birth the step acts on, the one it is fenced to, or for a
+    /// node an earlier step of the recipe created, the birth this executor holds at the step's path.
+    /// node.create is the create workflow; node.stop the standalone stop; node.update node.update's
+    /// own core at this admin as the node's mesh-primary; node.start the start of the stopped birth;
+    /// node.delete the delete of the stopped birth at a `.old` path, or node.delete's workflow.
+    async fn recipe_step(&self, build_id: &crate::build::BuildId, attempt: u32, step: &rafka_node_rpc_contract::build::RecipeStep, birth: Option<&crate::build::PinnedBirth>) -> Result<(), String> {
+        use rafka_node_rpc_contract::build::RecipeStep as S;
+        let node = step.node();
+        let key = crate::build::recipe_step_key(step);
+        if let S::Create { node } = step {
+            return self.run_op(build_id, attempt, &BuildOperation::CreateNode { node: node.clone(), over: None }).await;
+        }
+        let birth = match birth {
+            Some(b) => b.clone(),
+            None => {
+                let seen = self.topology.read().await.node(node).cloned();
+                let held = seen.or_else(|| self.handles.lock().unwrap().get(node).map(|(n, _)| n.clone()));
+                match held.and_then(|n| n.incarnation_id.clone().map(|incarnation| crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation })) {
+                    Some(b) => b,
+                    None => return Err(format!("{key}: the step acts on the node an earlier step of the recipe made at {node}, and {} holds no birth at {node}", self.me)),
+                }
+            }
+        };
+        let from_incarnation = birth.incarnation.clone();
+        match step {
+            S::Create { .. } => unreachable!("a create returned above"),
+            S::Stop { node } => self.run_op(build_id, attempt, &BuildOperation::StopNode { node: node.clone(), from_incarnation }).await,
+            S::Start { node } => self.run_op(build_id, attempt, &BuildOperation::StartNode { node: node.clone(), from_incarnation }).await,
+            S::Delete { node } if node.old => self.run_op(build_id, attempt, &BuildOperation::DeleteNode { node: node.clone(), from_incarnation }).await,
+            S::Delete { node } => self.run_op(build_id, attempt, &BuildOperation::RetireNode { node: node.clone(), exited: None }).await,
+            S::Update { node, name } => {
+                use tracing::Instrument;
+                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt, node_id = %birth.node_id, incarnation_id = %birth.incarnation.0, to = %name);
+                async {
+                    let template = self.template_for(node.kind, &node.mesh).await?;
+                    let put = async {
+                        let Some(authority) = self.observer.authority.get() else {
+                            return Err(format!("{key}: {} holds no status authority yet to serve node.update; nothing is written", self.me));
+                        };
+                        let req = rafka_node_rpc_contract::status::StatusRequest::UpdateNode { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
+                        match authority.update_node(&req).await {
+                            rafka_node_rpc_contract::status::StatusReply::NodeUpdated { .. } => Ok(()),
+                            refused => Err(format!("{key}: node.update of {node} ({}) to {name} answered {refused:?}", birth.node_id)),
+                        }
+                    };
+                    self.pipeline(&template).update_name(build_id, attempt, node, put).await.map_err(|e| e.to_string())
+                }
+                .instrument(span)
+                .await
+            }
         }
     }
 }
@@ -5358,14 +5298,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         },
                                         book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
                                     verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
-                                    rows: {
-                                        let rows = Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()).with_written(written.clone()));
-                                        records.set_rows(rows.clone());
-                                        let held = rows.clone();
-                                        let _ = control.parked_old.set(Arc::new(move |old: &PathName| held.parked_at(old)));
-                                        rows
-                                    },
                                 });
+                                records.set_rows(Arc::new(crate::node_rows::NodeRows::new(name.clone(), node_id.clone(), control.topology.clone(), nodes_storage.clone()).with_configs(configs_slot.clone()).with_written(written.clone())));
                                 let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.seats().clone(), incarnation: incarnation.clone() }));
                                 env
                             };
@@ -7456,17 +7390,15 @@ mod tests {
     /// member to recover, however exited its exact runtime is proven: no exit-proof row, no
     /// recovery submit, one `rdm.node_admin.build.reject.via-exit-inside-workflow` span naming the
     /// workflow. A recovery's own node.delete of the exited birth (`retire-node:<path>`) is such a
-    /// workflow while its overlay stands. Must NOT happen: the
-    /// recover-node of the predecessor a replace retired (trace 3b983b72926d8d5e3629d7e3d1f264cf:
-    /// the tick's ladder round 2 at 12:38:13.028 over the view it read before the replace's
-    /// NodeDeleting at 12.808, inspection exited at 13.049 by the replace's own TerminateRuntime,
-    /// submit at 13.059, recover-node failed NodeDeleting "the inherited data dir ... does not
-    /// exist": HandoffStorage had given it to the successor).
+    /// workflow while its overlay stands. Must NOT happen: a recovery submitted for a birth whose
+    /// own workflow's delete announced its removal (trace 3b983b72926d8d5e3629d7e3d1f264cf: the
+    /// tick's ladder round 2 read the view before the workflow's NodeDeleting, inspected the exit
+    /// that workflow's own TerminateRuntime made, and submitted).
     // @feature: node-lifecycle
     #[tokio::test]
     async fn a_proven_exit_of_a_birth_whose_removal_was_announced_submits_no_recovery() {
         let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-removal-announced").unwrap();
-        for (case, announced, workflow) in [("replace-deleting", "node-deleting", "replace-node"), ("replace-deleted", "node-deleted", "replace-node"), ("recovery-delete-deleting", "node-deleting", "retire-node")] {
+        for (case, announced, workflow) in [("delete-deleting", "node-deleting", "retire-node"), ("delete-deleted", "node-deleted", "retire-node")] {
             let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
             member.node.runtime = Some(fact.clone());
             let book = DigestBook::default();
@@ -7585,7 +7517,7 @@ mod tests {
         let op = rafka_mesh_entity::LifecycleOp {
             build_id: "bld-failed-removal".into(),
             attempt: 2,
-            operation: "replace-node:mesh2.rpc.1".into(),
+            operation: "retire-node:mesh2.rpc.1".into(),
             node_id: member.node.node_id.clone(),
             incarnation: member.node.incarnation.clone(),
             name: member.node.name.clone(),
@@ -7614,7 +7546,7 @@ mod tests {
         assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
         let a = &closed[0].attributes;
         let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
-        assert_eq!((attr("operation"), attr("build_id"), attr("attempt"), attr("by")), ("replace-node:mesh2.rpc.1".to_string(), "bld-failed-removal".to_string(), "2".to_string(), "attempt-failed".to_string()), "the attempt the facts ended: {a:?}");
+        assert_eq!((attr("operation"), attr("build_id"), attr("attempt"), attr("by")), ("retire-node:mesh2.rpc.1".to_string(), "bld-failed-removal".to_string(), "2".to_string(), "attempt-failed".to_string()), "the attempt the facts ended: {a:?}");
         eprintln!("span rdm.mesh.membership.update.via-deleting-closed-by-facts trace_id={} {a:?}", closed[0].trace_id);
         // A late copy of the closed attempt's overlay (a frame, an aggregate) is applied once, not again.
         assert!(!book.deleting(op.clone()), "the closed overlay is not opened again by a copy of it");

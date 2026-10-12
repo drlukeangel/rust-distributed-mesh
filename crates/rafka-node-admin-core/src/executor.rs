@@ -36,50 +36,59 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // Every operation of a node recovery (its node.delete, node.create and node.update) is
         // executed by the exited birth's recoverer (node-recovery.md "Reconciler", R-ON8): a member's
         // mesh-primary; for a lost node-admin of a mesh with a live mesh-primary, that mesh-primary,
-        // and a mesh primary's own recovery by the admin its mesh seats in its place
-        // (mesh-recovery.md:8-9). A mesh with no other live admin lost its mesh-primary: that is the
-        // fabric-primary's mesh recovery, no node recovery, and no admin executes one.
+        // and a mesh primary's own recovery by the admin its mesh seats in its place. A mesh with no
+        // node-admin left that is not proven gone has no mesh-primary to recover it: the fabric
+        // primary does, the node-admin it creates joining the live mesh (mesh-investigation.md "A
+        // node-admin joins the live mesh").
         BuildOperation::RetireNode { node, exited: Some(_) } | BuildOperation::CreateNode { node, over: Some(_) } | BuildOperation::UpdateNode { node, .. } => {
             if node.kind == NodeKind::NodeAdmin {
-                node_admin_recoverer(node, t)
+                node_admin_recoverer(node, t).or_else(|| held_admins(&node.mesh, Some(node), t).is_empty().then(fabric).flatten())
             } else {
                 mesh_executor(&node.mesh, None, t)
             }
         }
+        // A recipe step is executed as the op it calls: a create as node.create, every other step as
+        // the node op on its node (the mesh-primary of the node's mesh writes its row, R13).
+        BuildOperation::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Create { node }, .. } => mesh_executor(&node.mesh, None, t),
+        BuildOperation::RecipeStep { step, .. } => node_op_executor(step.node(), t),
         // A member node of any kind is born, restarted and retired by its own mesh's primary
         // admin (the fabric primary when the mesh has none): the rule names no role, so a
         // product's kinds get the same executor as the proof product's rpc node.
-        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. }
-            if node.kind != NodeKind::NodeAdmin =>
-        {
-            mesh_executor(&node.mesh, None, t)
-        }
-        // A mesh's missing node-admin is created by that mesh's primary node-admin, its claim
-        // fenced at the fabric primary (node-admin-lifecycle.md §4.3); the fabric primary creates
-        // only the first admin of a mesh that has none.
-        BuildOperation::CreateNode { node, .. } if node.kind == NodeKind::NodeAdmin => mesh_executor(&node.mesh, None, t),
-        // The fabric primary is never the executor of its own retire, restart or replace: the
-        // operation's terminate step would stop the executor mid-step. It is a hand-off: the admin
-        // the election seats once the target drains (a Draining birth is no candidate,
-        // fabric-node-lifecycle-elections.md section 2) executes it, and drains the target first.
-        BuildOperation::RetireNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. }
-            if t.fabric_primary().is_some_and(|fp| fp.name == *node) =>
-        {
-            successor_of(node, t)
-        }
-        // A node-admin's restart, retire and replace belong to its mesh's primary admin, like every
-        // other member of the mesh (Master Event Matrix: the executing Mesh admin is the owning
-        // mesh-admin). The mesh primary never executes its own: the admin its mesh seats once it
-        // drains does. A mesh with no other admin has no mesh admin to execute it: the fabric
-        // primary, which owns what happens to a mesh that has none.
-        BuildOperation::RetireNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. } => {
-            if t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == *node) {
-                mesh_successor_of(node, t).or_else(|| held_admins(&node.mesh, Some(node), t).is_empty().then(fabric).flatten())
-            } else {
-                mesh_executor(&node.mesh, Some(node), t)
-            }
-        }
-        BuildOperation::CreateNode { .. } | BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } => fabric(),
+        // A member node of any kind is born by its own mesh's primary admin (the fabric primary when
+        // the mesh has none): the rule names no role, so a product's kinds get the same executor as
+        // the proof product's rpc node. A mesh's missing node-admin is created by that mesh's primary
+        // node-admin, its claim fenced at the fabric primary (node-admin-lifecycle.md §4.3); the
+        // fabric primary creates only the first admin of a mesh that has none.
+        BuildOperation::CreateNode { node, .. } => mesh_executor(&node.mesh, None, t),
+        BuildOperation::RetireNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. } => node_op_executor(node, t),
+        BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } => fabric(),
+    }
+}
+
+/// The executor of a node op (restart, retire, drain, stop, start, delete, and a recipe's update) on
+/// `node` in view `t`.
+fn node_op_executor(node: &PathName, t: &Topology) -> Option<PathName> {
+    let fabric = || t.fabric_primary().map(|n| n.name.clone());
+    // A member node of any kind belongs to its own mesh's primary admin (the fabric primary when the
+    // mesh has none).
+    if node.kind != NodeKind::NodeAdmin {
+        return mesh_executor(&node.mesh, None, t);
+    }
+    // The fabric primary is never the executor of its own op: the operation's terminate step would
+    // stop the executor mid-step. It is a hand-off: the admin the election seats once the target
+    // drains (a Draining birth is no candidate, fabric-node-lifecycle-elections.md section 2)
+    // executes it, and drains the target first.
+    if t.fabric_primary().is_some_and(|fp| fp.name == *node) {
+        return successor_of(node, t);
+    }
+    // A node-admin's ops belong to its mesh's primary admin, like every other member of the mesh
+    // (Master Event Matrix: the executing Mesh admin is the owning mesh-admin). The mesh primary never
+    // executes its own: the admin its mesh seats once it drains does. A mesh with no other admin has
+    // no mesh admin to execute it: the fabric primary, which owns what happens to a mesh that has none.
+    if t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.name == *node) {
+        mesh_successor_of(node, t).or_else(|| held_admins(&node.mesh, Some(node), t).is_empty().then(fabric).flatten())
+    } else {
+        mesh_executor(&node.mesh, Some(node), t)
     }
 }
 
@@ -114,7 +123,8 @@ pub fn held_admins<'a>(mesh: &str, target: Option<&PathName>, t: &'a Topology) -
 /// that the view seats no admin at all.
 pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
     let node = match op {
-        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::UpdateNode { node, .. } | BuildOperation::DeleteNode { node, .. } => node,
+        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::DrainNode { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::UpdateNode { node, .. } | BuildOperation::DeleteNode { node, .. } => node,
+        BuildOperation::RecipeStep { step, .. } => step.node(),
         _ => return format!("{}: no admin holds the seat that executes it in this view", op.key()),
     };
     let held: Vec<String> = held_admins(&node.mesh, Some(node), t).into_iter().map(|n| format!("{} ({:?})", n.name, n.status)).collect();
@@ -125,10 +135,9 @@ pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
     }
 }
 
-/// The mesh-primary that recovers node-admin `node` (node-recovery.md, mesh-recovery.md:8-9): its
-/// mesh's live primary admin, or, when `node` itself holds the seat, the admin its mesh seats in its
-/// place. `None` when no other live admin of the mesh is left: the mesh lost its mesh-primary, which
-/// is the fabric-primary's mesh recovery.
+/// The mesh-primary that recovers node-admin `node` (node-recovery.md): its mesh's live primary
+/// admin, or, when `node` itself holds the seat, the admin its mesh seats in its place. `None` when
+/// no other live admin of the mesh is left: the mesh lost its mesh-primary.
 ///
 /// The seat is read from the view's election, not from liveness: a silent holder keeps its seat until
 /// it is proven gone (`crate::election`), and its own recovery is still its mesh's to run.
@@ -427,11 +436,12 @@ mod tests {
     /// member's recovery (its node.delete, node.create and node.update), a secondary node-admin's
     /// included, is executed by its own mesh's primary admin, never by the fabric-primary of another
     /// mesh. A mesh primary's own recovery is executed by the admin its mesh seats in its place, the
-    /// view still seating the exited primary included. A node-admin with no other admin in its mesh is
-    /// no node recovery (its mesh lost its mesh-primary: the fabric-primary's mesh recovery), so no
-    /// admin executes one.
-    /// Must NOT happen: a recovery's operation routed to the fabric-primary by a fall-through arm, or
-    /// its create routed to the exited mesh primary the view still seats.
+    /// view still seating the exited primary included. A node-admin whose mesh holds no other admin
+    /// that is not proven gone has no mesh-primary to recover it: the fabric-primary executes its
+    /// recovery, the node-admin it creates joining the live mesh (mesh-investigation.md "A node-admin
+    /// joins the live mesh"). A mesh whose other admin is held but silent waits for its own seat.
+    /// Must NOT happen: a member's recovery routed to the fabric-primary of another mesh, or its create
+    /// routed to the exited mesh primary the view still seats.
     #[test]
     fn a_members_recovery_is_executed_by_its_mesh_primary_a_secondary_node_admins_included() {
         let recovery = |n: &str| {
@@ -446,7 +456,7 @@ mod tests {
         let t = mm(true);
         assert_eq!(recovered_by("mesh2.rpc.1", &t), "mesh2.admin.1", "a member of mesh2 is recovered by mesh2's primary");
         assert_eq!(recovered_by("mesh1.rpc.1", &t), "mesh1.admin.1", "a member of the fabric-primary's own mesh is recovered by that mesh's primary");
-        assert_eq!(recovered_by("mesh2.admin.1", &t), "", "mesh2's only node-admin: its loss is mesh recovery, never node recovery");
+        assert_eq!(recovered_by("mesh2.admin.1", &t), "mesh1.admin.1", "mesh2's only node-admin: no mesh-primary is left to recover it, the fabric primary does");
         let mut t3 = mm(true);
         t3.nodes.push(node("mesh2.admin.2", false, false));
         t3.nodes.push(node("mesh1.admin.2", false, false));
@@ -455,7 +465,7 @@ mod tests {
         assert_eq!(recovered_by("mesh2.admin.1", &t3), "mesh2.admin.2", "a mesh primary's own recovery is executed by the admin its mesh seats in its place");
         let mut silent = t3.clone();
         silent.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1").for_each(|n| n.status = NodeStatus::PendingReconnect);
-        assert_eq!(recovered_by("mesh2.admin.2", &silent), "", "no live node-admin of mesh2 is left to recover it: mesh recovery");
+        assert_eq!(recovered_by("mesh2.admin.2", &silent), "", "mesh2's primary is held but silent: the recovery waits for mesh2's own seat");
     }
 
     #[test]
@@ -478,10 +488,15 @@ mod tests {
         assert_eq!(who(&BuildOperation::RestartNode { node: m2.parse().unwrap() }, &t3), p2, "a non-primary admin's restart is its mesh primary's");
         assert_eq!(who(&BuildOperation::RestartNode { node: p2.parse().unwrap() }, &t3), m2, "a mesh primary's own restart is handed to the admin its mesh seats once it drains");
         assert_eq!(who(&BuildOperation::RetireNode { node: p2.parse().unwrap(), exited: None }, &t3), m2, "a mesh primary's own retire is handed to the admin its mesh seats once it drains");
-        let replace = |n: &str| BuildOperation::ReplaceNode { node: n.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() };
-        assert_eq!(who(&replace("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's replace is its mesh primary's");
-        assert_eq!(who(&replace(m2), &t3), p2, "a non-primary admin's replace is its mesh primary's");
-        assert_eq!(who(&replace(p2), &t3), m2, "a mesh primary's own replace is handed to the admin its mesh seats once it drains");
+        let rename = |n: &str| {
+            let node: PathName = n.parse().unwrap();
+            BuildOperation::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Update { name: node.renamed(), node }, birth: None }
+        };
+        let make = |n: &str| BuildOperation::RecipeStep { step: rafka_node_rpc_contract::build::RecipeStep::Create { node: n.parse().unwrap() }, birth: None };
+        assert_eq!(who(&rename("mesh2.rpc.1"), &t), "mesh2.admin.1", "a recipe's update of a member is its mesh primary's, the writer of its row");
+        assert_eq!(who(&rename(m2), &t3), p2, "a recipe's update of a non-primary admin is its mesh primary's");
+        assert_eq!(who(&rename(p2), &t3), m2, "a recipe's update of a mesh primary is the admin its mesh seats once it is stopped");
+        assert_eq!(who(&make("mesh2.rpc.1.new"), &t), "mesh2.admin.1", "a recipe's create is node.create's executor");
         let drain = |n: &str| BuildOperation::DrainNode { node: n.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() };
         let stop = |n: &str| BuildOperation::StopNode { node: n.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() };
         assert_eq!(who(&drain("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's drain is its mesh primary's");
@@ -598,7 +613,6 @@ mod tests {
         let p: PathName = "mesh1.admin.1".parse().unwrap();
         let birth = || crate::model::IncarnationId::mint();
         for op in [
-            BuildOperation::ReplaceNode { node: p.clone(), from_incarnation: birth() },
             BuildOperation::RetireNode { node: p.clone(), exited: None },
             BuildOperation::RestartNode { node: p.clone() },
             BuildOperation::DrainNode { node: p.clone(), from_incarnation: birth() },
@@ -608,7 +622,7 @@ mod tests {
         }
         // mesh1's only admin: no birth of mesh1 survives, so the seat leaves the mesh.
         t.nodes.retain(|n| n.name.to_string() != "mesh1.admin.2");
-        assert_eq!(who(&BuildOperation::ReplaceNode { node: p.clone(), from_incarnation: birth() }, &t), "mesh2.admin.1");
+        assert_eq!(who(&BuildOperation::StopNode { node: p.clone(), from_incarnation: birth() }, &t), "mesh2.admin.1");
     }
 
     #[test]

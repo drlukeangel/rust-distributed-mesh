@@ -239,7 +239,6 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     assert!(at(&format!("NodeDeleting:{old}:{delete}")) < at(&format!("NodeDeleted:{old}:{delete}")), "{log:?}");
     assert!(at(&format!("NodeDeleted:{old}:{delete}")) < at(&format!("fenced:{old}")) && at(&format!("fenced:{old}")) < at(&format!("ready:{new}")), "node.deleted, the fence, then the new node: {log:?}");
     assert_eq!(log.iter().filter(|l| l.starts_with("NodeDeleted")).count(), 1, "{log:?}");
-    assert!(rig.sink.renamed.lock().unwrap().is_empty(), "no rename: the exited instance is deleted, never renamed");
     assert!(rig.sink.removed.lock().unwrap().is_empty(), "no path-keyed removal: only the exact exited birth leaves");
     assert_eq!(*rig.sink.removed_births.lock().unwrap(), vec![(path(), first.node.node_id.clone(), old_inc.clone())], "the exited instance leaves the path once");
 

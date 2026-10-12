@@ -251,16 +251,12 @@ impl Drive {
     }
 
     /// The `Step` frame of every `Complete` receipt of `steps` from attempt `from` to before attempt
-    /// `to`, with the node the receipt names (the lifecycle op a `NodeDeleting` or `NodeDeleted`
-    /// decided): a read of receipts, never a run.
-    fn receipt_frames(&self, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) -> Vec<(BuildReply, Option<crate::model::NodeId>)> {
+    /// `to`: a read of receipts, never a run.
+    fn receipt_frames(&self, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) -> Vec<BuildReply> {
         steps
             .iter()
             .filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && s.attempt >= from && s.attempt < to)
-            .map(|s| {
-                let subject = s.output.clone().and_then(|o| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(o).ok()).map(|op| op.node_id);
-                (BuildReply::Step { build_id: self.build_id.0.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() }, subject)
-            })
+            .map(|s| BuildReply::Step { build_id: self.build_id.0.clone(), attempt: s.attempt, operation: s.operation.clone(), step: s.step.clone() })
             .collect()
     }
 
@@ -411,10 +407,6 @@ pub struct DriveEnv {
     pub departure: Arc<dyn DepartureProof>,
     /// Records an executor's verdict on this admin's log.
     pub verdicts: Arc<dyn VerdictSink>,
-    /// The record of each parked predecessor a replace left at `<path>.old`, which admits its
-    /// `node.delete`: the live `Step` frames of a replace and a delete feed it, and write no row
-    /// (`crate::node_rows::NodeRows::on_step`).
-    pub rows: Arc<crate::node_rows::NodeRows>,
 }
 
 /// The drives this admin holds, by Build.
@@ -956,14 +948,10 @@ impl DriveEnv {
     }
 
     /// A `Step` frame new to `drive`, live from the executor or read from a receipt (a completed
-    /// step's receipt is the same event as its frame): the parked-predecessor record is fed from it
-    /// once, from what this fabric-primary holds, before any reader of the drive sees the frame.
-    async fn step(&self, drive: &Drive, frame: BuildReply, subject: Option<crate::model::NodeId>) {
+    /// step's receipt is the same event as its frame), published once.
+    async fn step(&self, drive: &Drive, frame: BuildReply) {
         if !drive.take_key(&frame) {
             return;
-        }
-        if let BuildReply::Step { operation, step, .. } = &frame {
-            self.rows.on_step(&self.topology, operation, step, subject.as_ref()).await;
         }
         drive.publish(frame);
     }
@@ -971,8 +959,8 @@ impl DriveEnv {
     /// The frame of every `Complete` receipt of `steps` from attempt `from` to before attempt `to`,
     /// each through [`Self::step`]: a read of receipts, never a run.
     async fn replay(&self, drive: &Drive, steps: &[crate::build_state::BuildStepReceipt], from: u32, to: u32) {
-        for (frame, subject) in drive.receipt_frames(steps, from, to) {
-            self.step(drive, frame, subject).await;
+        for frame in drive.receipt_frames(steps, from, to) {
+            self.step(drive, frame).await;
         }
     }
 
@@ -992,7 +980,7 @@ impl DriveEnv {
             };
             match item {
                 InnerItem::Frame(f) => match f {
-                    BuildReply::Step { .. } => self.step(drive, f, None).await,
+                    BuildReply::Step { .. } => self.step(drive, f).await,
                     BuildReply::Blocked { .. } => {
                         drive.push(f);
                     }

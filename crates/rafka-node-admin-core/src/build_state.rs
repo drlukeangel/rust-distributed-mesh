@@ -51,8 +51,6 @@ pub enum AttemptReason {
     ProvenDrift,
     /// A restart of an exact birth was requested.
     Restart,
-    /// A replacement of a birth that does not answer was requested.
-    Replace,
     /// The previous attempt's executor is gone; another admin continues the Build.
     AuthorityMoved,
     /// A standalone drain of an exact birth was requested (`drain-node:<path>`).
@@ -66,6 +64,8 @@ pub enum AttemptReason {
     Recovery,
     /// The delete of a parked birth at its `.old` path was requested (`delete-node:<path>.old`).
     Delete,
+    /// A recipe was submitted: one Build of node primitives (build.md §1).
+    Recipe,
 }
 
 impl AttemptReason {
@@ -75,13 +75,13 @@ impl AttemptReason {
             Self::Requested => "requested",
             Self::ProvenDrift => "proven-drift",
             Self::Restart => "restart",
-            Self::Replace => "replace",
             Self::AuthorityMoved => "authority-moved",
             Self::Drain => "drain",
             Self::Stop => "stop",
             Self::Start => "start",
             Self::Recovery => "recovery",
             Self::Delete => "delete",
+            Self::Recipe => "recipe",
         }
     }
 }
@@ -673,7 +673,7 @@ pub trait BuildStateAdapter: Send + Sync {
     /// The Build, attempt and operation of the node workflow at `path` that deleted the exited
     /// birth `(node_id, incarnation)` and completed: a recovery of that birth (its `retire-node:<path>`
     /// in an attempt the recovery opened, answered at the attempt its last operation,
-    /// `update-node:<path>`, completed), or a `replace-node:<path>` or `retire-node:<path>` (the birth
+    /// `update-node:<path>`, completed), or a `retire-node:<path>` (the birth
     /// exited inside that workflow, node-recovery.md "Failure and receipts", so it is no drift to
     /// recover). Read from every
     /// Build's step receipts in the log (a forgotten Build's receipts included: forgetting leaves
@@ -717,7 +717,7 @@ pub struct OwedExit {
 
 /// The node workflows whose operation deletes a birth at its path.name: `<kind>:<path>`. A birth
 /// one of them deleted is answered by it in the recovery index ([`BuildStateAdapter::recovery_of`]).
-const DELETING_WORKFLOWS: [&str; 2] = ["replace-node:", "retire-node:"];
+const DELETING_WORKFLOWS: [&str; 1] = ["retire-node:"];
 
 /// The last operation of a node recovery (node-recovery.md "Steps"): node.update of the new node at
 /// the exited birth's path.name. A recovery's deletion is answered once it completes.
@@ -728,7 +728,7 @@ fn deleting_workflow_path(operation: &str) -> Option<&str> {
     DELETING_WORKFLOWS.iter().find_map(|kind| operation.strip_prefix(kind))
 }
 
-/// The birth a deleting workflow's (`replace-node`, `retire-node`) `NodeDeleted`
+/// The birth a deleting workflow's (`retire-node`) `NodeDeleted`
 /// receipt names: its output is the lifecycle operation of the node.delete of that birth,
 /// `(path, node_id, incarnation)`.
 pub(crate) fn recovery_deleted(s: &BuildStepReceipt) -> Option<(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)> {
@@ -763,12 +763,12 @@ fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, cra
 fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
         Some(crate::accepted::AttemptAction::Restart { path, from_incarnation }) => format!("restart of {path} from {from_incarnation}"),
-        Some(crate::accepted::AttemptAction::Replace { path, from_incarnation }) => format!("replace of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Drain { path, from_incarnation }) => format!("drain of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Delete { path, from_incarnation }) => format!("delete of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::Recipe { steps, .. }) => format!("recipe of {} step(s): {}", steps.len(), steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(", ")),
         None => "no fenced action".to_string(),
     };
     format!("{} ({action}, opened by {})", o.reason.as_str(), o.opened_by)
@@ -785,7 +785,7 @@ struct FactLog {
     /// The recovery index, in three parts the facts fill in whatever order they arrive (gossip and
     /// catch-up deliver in any order; once all three are held the answer is the same in every
     /// order, while a log that holds a recovery's deletion and its `Complete` but not yet its
-    /// `Opened` answers it as a standalone retire's): every deleting workflow's (`replace-node`, `retire-node`)
+    /// `Opened` answers it as a standalone retire's): every deleting workflow's (`retire-node`)
     /// `NodeDeleted` by the birth `(node_id, incarnation)` it names, to its path, operation, Build
     /// and attempt...
     recovery_deletes: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(crate::model::PathName, String, BuildId, u32)>>,
@@ -1597,11 +1597,11 @@ mod tests {
         m.publish_accepted(&intent("b1")).await.unwrap();
         m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         let (inc, other) = (crate::model::IncarnationId::mint(), crate::model::IncarnationId::mint());
-        let act = |path: &str, from: &crate::model::IncarnationId| Some(AttemptAction::Replace { path: path.parse().unwrap(), from_incarnation: from.clone() });
+        let act = |path: &str, from: &crate::model::IncarnationId| Some(AttemptAction::Restart { path: path.parse().unwrap(), from_incarnation: from.clone() });
         let mut first = opened("b1", 2, AttemptReason::ProvenDrift);
         first.action = act("mesh1.rpc.2", &inc);
         m.open_attempt(&first).await.unwrap();
-        let mut same = opened("b1", 2, AttemptReason::Replace);
+        let mut same = opened("b1", 2, AttemptReason::Restart);
         same.action = act("mesh1.rpc.2", &inc);
         same.opened_by = "mesh2.admin.1".into();
         m.open_attempt(&same).await.expect("the same action asked again is the same attempt");
@@ -1611,12 +1611,12 @@ mod tests {
         match &err {
             BuildStateError::AttemptTaken { build_id, attempt, held, wanted } => {
                 assert_eq!((build_id.0.as_str(), *attempt), ("b1", 2));
-                assert!(held.contains("replace of mesh1.rpc.2") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
+                assert!(held.contains("restart of mesh1.rpc.2") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
                 assert!(wanted.contains("restart of mesh2.rpc.1"), "the refusal names what was asked: {wanted}");
             }
             other => panic!("not AttemptTaken: {other:?}"),
         }
-        let mut other_birth = opened("b1", 2, AttemptReason::Replace);
+        let mut other_birth = opened("b1", 2, AttemptReason::Restart);
         other_birth.action = act("mesh1.rpc.2", &other);
         assert!(matches!(m.open_attempt(&other_birth).await, Err(BuildStateError::AttemptTaken { .. })), "the same path fenced to another birth is another action");
         assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1, "the refused opens appended nothing");
@@ -1826,12 +1826,12 @@ mod tests {
 
     /// CONTRACT (node-recovery.md:5-7, recovery is for "a member that exits outside any workflow";
     /// "Failure and receipts": "An exit during a workflow belongs to that workflow"): a birth a
-    /// `replace-node` or `retire-node` operation deleted (its `NodeDeleted` receipt names the exact
+    /// `retire-node` operation deleted (its `NodeDeleted` receipt names the exact
     /// birth, and the operation's `Complete` at that attempt or later is held) is answered by the
     /// recovery index as that workflow's attempt, folded on append, journal replay and absorb alike.
     /// Must NOT happen: `None` for a birth a workflow deleted, which admits a recovery of it.
     #[tokio::test]
-    async fn a_birth_a_replace_or_a_retire_deleted_is_answered_by_that_workflow() {
+    async fn a_birth_a_retire_deleted_is_answered_by_that_workflow() {
         let path: crate::model::PathName = "mesh2.rpc.2".parse().unwrap();
         let receipt = |kind: &str, attempt: u32, step: &str, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId| BuildStepReceipt {
             build_id: BuildId("b1".into()),
@@ -1850,22 +1850,22 @@ mod tests {
         {
             let j = FileJournal::open(&dir).await.unwrap();
             j.publish_accepted(&intent("b1")).await.unwrap();
-            j.append_step_receipt(&receipt("replace-node", 2, "NodeDeleted", &replaced.0, &replaced.1)).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "deleted, the replace not complete: its next attempt finishes it");
-            j.append_step_receipt(&receipt("replace-node", 2, "Complete", &replaced.0, &replaced.1)).await.unwrap();
+            j.append_step_receipt(&receipt("retire-node", 2, "NodeDeleted", &replaced.0, &replaced.1)).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "deleted, the retire not complete: its next attempt finishes it");
+            j.append_step_receipt(&receipt("retire-node", 2, "Complete", &replaced.0, &replaced.1)).await.unwrap();
             j.append_step_receipt(&receipt("retire-node", 3, "NodeDeleted", &retired.0, &retired.1)).await.unwrap();
             j.append_step_receipt(&receipt("retire-node", 3, "Complete", &retired.0, &retired.1)).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("replace-node:{path}"))), "own append: the replace that deleted the birth");
+            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("retire-node:{path}"))), "own append: the first retire that deleted its birth");
             assert_eq!(j.recovery_of(&path, &retired.0, &retired.1).await.unwrap(), Some((BuildId("b1".into()), 3, format!("retire-node:{path}"))), "own append: the retire that deleted the birth");
         }
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("replace-node:{path}"))), "journal replay");
+        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("retire-node:{path}"))), "journal replay");
         assert_eq!(j.recovery_of(&"mesh2.rpc.1".parse().unwrap(), &replaced.0, &replaced.1).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
-        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("replace-node", 2, "Complete", &replaced.0, &replaced.1))]);
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("retire-node", 2, "Complete", &replaced.0, &replaced.1))]);
         assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "a Complete alone names no birth");
-        m.absorb(&[BuildFact::Step(receipt("replace-node", 2, "NodeDeleted", &replaced.0, &replaced.1))]);
-        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("replace-node:{path}"))), "absorbed, in either order");
+        m.absorb(&[BuildFact::Step(receipt("retire-node", 2, "NodeDeleted", &replaced.0, &replaced.1))]);
+        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("retire-node:{path}"))), "absorbed, in either order");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -680,40 +680,31 @@ mod tests {
         }
     }
 
-    /// CONTRACT (node-replace.md 2): a replace's `RenamePredecessor` receipt names the exact old
-    /// birth (its output is the `LifecycleOp` of the predecessor) and travels the Build topic like
-    /// every other committed output: the fabric-primary's append of it succeeds, so its live `Step`
-    /// frame is made (`FramedBuilds` frames a receipt only after the append returned), and a peer
-    /// folds the same receipt with the same old birth.
+    /// CONTRACT (build.md §1: "Rafka's replace recipe is submitted as one Build of node primitives";
+    /// lifecycles/node-replace.md): the attempt a recipe opens travels the Build topic with its steps
+    /// and the births it pinned, so every admin folds the same recipe and plans the same remaining
+    /// steps from it.
     #[test]
-    fn a_replace_rename_receipt_naming_the_old_birth_travels_the_build_topic() {
-        let op = rafka_mesh_entity::LifecycleOp {
-            build_id: "bld-1".into(),
-            attempt: 2,
-            operation: "replace-node:mesh1.rpc.1".into(),
-            node_id: rafka_mesh_entity::NodeId::mint(),
-            incarnation: rafka_mesh_entity::IncarnationId::mint(),
-            name: "mesh1.rpc.1".parse().unwrap(),
-            event_at_rafka_ms: 7,
-        };
-        let receipt = BuildStepReceipt {
+    fn a_recipe_attempt_travels_the_build_topic_with_its_steps_and_pinned_births() {
+        use rafka_node_rpc_contract::build::RecipeStep;
+        let node: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
+        let pin = crate::build::PinnedBirth { node_id: rafka_mesh_entity::NodeId::mint(), incarnation: rafka_mesh_entity::IncarnationId::mint() };
+        let opened = crate::build_state::AttemptOpened {
             build_id: BuildId("bld-1".into()),
             attempt: 2,
-            operation: op.operation.clone(),
-            step: crate::deployment::pipeline::ReplaceStep::RenamePredecessor.name().into(),
-            outcome: crate::build_state::StepOutcome::Complete,
-            output: Some(serde_json::to_value(&op).unwrap()),
-            executor: Some("mesh1.admin.1".into()),
+            reason: crate::build_state::AttemptReason::Recipe,
+            action: Some(crate::accepted::AttemptAction::Recipe {
+                steps: vec![RecipeStep::Create { node: node.successor() }, RecipeStep::Stop { node: node.clone() }, RecipeStep::Update { node: node.clone(), name: node.renamed() }, RecipeStep::Delete { node: node.renamed() }],
+                pinned: vec![(node.clone(), pin)],
+            }),
+            opened_by: "mesh1.admin.1".into(),
+            opened_at_ms: 7,
         };
-        let bytes = match encode(vec![BuildFact::Step(receipt.clone())]) {
+        let bytes = match encode(vec![BuildFact::Opened(opened.clone())]) {
             Ok(b) => b,
-            Err(e) => panic!("the rename receipt must have a wire shape: {e}"),
+            Err(e) => panic!("the recipe's Opened fact must have a wire shape: {e}"),
         };
-        let back = BuildMessage::from_bytes(&bytes).unwrap().facts;
-        assert_eq!(back, vec![BuildFact::Step(receipt)], "a peer folds the same receipt");
-        let BuildFact::Step(s) = &back[0] else { unreachable!() };
-        let named: rafka_mesh_entity::LifecycleOp = serde_json::from_value(s.output.clone().unwrap()).unwrap();
-        assert_eq!((named.node_id, named.incarnation), (op.node_id, op.incarnation), "the receipt names the exact old birth");
+        assert_eq!(BuildMessage::from_bytes(&bytes).unwrap().facts, vec![BuildFact::Opened(opened)], "a peer folds the same recipe");
     }
 
     /// CONTRACT (node-rpc-envelope.md TakeSeats: "The row is the fence: P's execution authority ends

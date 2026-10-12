@@ -3,7 +3,7 @@
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 use rafka_mesh_entity::NodeKind;
-use rafka_node_rpc_contract::build::{Build, BuildChange, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
+use rafka_node_rpc_contract::build::{Build, BuildChange, RecipeStep, BuildPhase, BuildReply, BuildRequest, BuildSubmit, Disposition, StepReceipt, StepResult};
 use rafka_node_rpc_contract::context::CallContext;
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::{DecodeFailure, NodeProtocol};
@@ -21,7 +21,21 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }) }, "00 00 06 0b 6d657368312e7270632e31"),
         (
             BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: "mesh1.rpc.1".parse().unwrap(), node_id: rafka_mesh_entity::NodeId::parse("0123456789ab").unwrap(), incarnation: rafka_mesh_entity::IncarnationId("i".into()) }) },
-            "00 00 0b 0b 6d657368312e7270632e31 0c 303132333435363738396162 01 69",
+            "00 00 0a 0b 6d657368312e7270632e31 0c 303132333435363738396162 01 69",
+        ),
+        (
+            BuildRequest::Create {
+                submit: BuildSubmit::Change(BuildChange::Recipe {
+                    steps: vec![
+                        RecipeStep::Create { node: "m.rpc.1.new".parse().unwrap() },
+                        RecipeStep::Stop { node: "m.rpc.1".parse().unwrap() },
+                        RecipeStep::Update { node: "m.rpc.1".parse().unwrap(), name: "m.rpc.1.old".parse().unwrap() },
+                        RecipeStep::Start { node: "m.rpc.1".parse().unwrap() },
+                        RecipeStep::Delete { node: "m.rpc.1.old".parse().unwrap() },
+                    ],
+                }),
+            },
+            "00 00 0b 05 00 0b 6d2e7270632e312e6e6577 01 07 6d2e7270632e31 02 07 6d2e7270632e31 0b 6d2e7270632e312e6f6c64 03 07 6d2e7270632e31 04 0b 6d2e7270632e312e6f6c64",
         ),
         (BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: "b".into(), from_attempt: 3 } }, "00 01 01 62 03"),
         (BuildRequest::AttemptRun { build_id: "b".into(), attempt: 2, executor: "e".into(), context: CallContext::default(), intent: vec![vec![0xAA, 0xBB], vec![]], operations: vec![b"{}".to_vec()], hand_off_to: Some("n".into()) }, "01 01 62 02 01 65 00 00 00 00 02 02 aabb 00 01 02 7b7d 01 01 6e"),

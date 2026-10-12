@@ -214,7 +214,7 @@ fn birth(world: &World, book: &DigestBook, fabric_id: &FabricId, path: &str, sup
     n
 }
 
-/// Realises `CreateNode` and `ReplaceNode` as the admin does: the real fence first; a birth only when it clears.
+/// Realises `CreateNode` as the admin does: the real fence first; a birth only when it clears.
 struct Runner {
     world: Arc<World>,
     view: Arc<RwLock<Topology>>,
@@ -290,9 +290,9 @@ impl OperationRunner for Runner {
             }
             _ => {}
         }
-        // A replacement is realised like a creation at a path whose exact birth the provider's proof
-        // clears: the fence stands for the exact terminal proof the replace's stop step obtains.
-        let (BuildOperation::CreateNode { node: path, over: None } | BuildOperation::ReplaceNode { node: path, .. }) = op else { return Err(format!("unexpected {op:?}")) };
+        // A creation at a path whose exact birth the provider's proof clears: the fence stands for the
+        // exact terminal proof.
+        let BuildOperation::CreateNode { node: path, over: None } = op else { return Err(format!("unexpected {op:?}")) };
         let prev = self.view.read().await.node(path).cloned();
         let out = fence(path, prev.clone(), &Probe(self.world.clone())).await;
         self.ran.lock().unwrap().push((path.to_string(), op.clone(), out.clone()));
@@ -406,7 +406,6 @@ impl Estate {
             gate: Arc::new(OpenGate),
             departure: Arc::new(crate::loopback::Proofs::default()),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
-            rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(primary, primary_id, self.view.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
         })
     }
 
@@ -859,7 +858,7 @@ async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row()
     let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &exit_records()).await;
     assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
     let action = e.accepted.current(&*e.builds).await.unwrap().action;
-    assert!(matches!(&action, Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, .. }) if path.to_string() == lost), "the mesh-recovery repair of the durable row's birth: {action:?}");
+    assert!(matches!(&action, Some(rafka_node_admin_core::accepted::AttemptAction::Recover { path, node_id, .. }) if path.to_string() == lost && node_id.as_str() == old), "the recovery (node.delete then node.create) of the durable row's birth, never a replace: {action:?}");
 }
 
 #[tokio::test]
@@ -1102,7 +1101,7 @@ mod one_attempt_number {
             _ = g.arrived.notified() => {}
             ended = &mut drift => panic!("the drift pass ended without reaching the Build log's door to open attempt {}: it proved no loss ({ended:?})", k + 1),
         }
-        let rest = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None).await;
+        let rest = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart).await;
         g.release.notify_one();
         let drift = drift.await;
         let rest = rest.expect("the restart took the free number");
@@ -1123,7 +1122,7 @@ mod one_attempt_number {
         let k = lose_a_node(&e).await;
         let g = gate(&e, Holds::Attempt(AttemptReason::Restart));
         let cp = door(&e, g.clone()).await;
-        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None), async {
+        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart), async {
             g.arrived.notified().await;
             let d = drift_pass(&e, &*e.builds).await;
             g.release.notify_one();
@@ -1260,7 +1259,7 @@ mod one_attempt_number {
         let rebirth = |m: &str| decided(m).is_some_and(|p| p.rebirth_decided);
         let restart = tokio::spawn({
             let (cp, path): (_, PathName) = (cp.clone(), format!("{own}.rpc.1").parse().unwrap());
-            async move { cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, path, rafka_node_admin_core::http::ActionKind::Restart, None).await }
+            async move { cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, path, rafka_node_admin_core::http::ActionKind::Restart).await }
         });
         g.arrived.notified().await;
         let t = e.view.read().await.clone();
@@ -1287,7 +1286,7 @@ mod one_attempt_number {
         let t = e.view.read().await.clone();
         let opened = rafka_node_admin_core::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &rebirth, &exit_records()).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
-        let Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Replace") };
+        let Some(rafka_node_admin_core::accepted::AttemptAction::Recover { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Recover: the first recovering node-admin is node.delete of its exited birth then node.create") };
         assert_eq!(path.to_string(), admins[0], "the first admin in path order");
     }
 }
@@ -1444,7 +1443,7 @@ mod unheard_mesh_hold {
     }
 
     #[tokio::test]
-    async fn only_the_first_recovering_node_admin_of_a_reborn_mesh_is_replaced_from_here() {
+    async fn only_the_first_recovering_node_admin_of_a_reborn_mesh_is_recovered_from_here() {
         let e = estate().await;
         let (_, peer_mesh) = meshes(&e).await;
         let admins = [format!("{peer_mesh}.admin.1"), format!("{peer_mesh}.admin.2")];
@@ -1464,7 +1463,7 @@ mod unheard_mesh_hold {
         let decided = |_: &str| Some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true });
         let opened = pass(&e, &mut started, &mut held, &decided).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision releases the first recovering node-admin");
-        let Some(rafka_node_admin_core::accepted::AttemptAction::Replace { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Replace") };
+        let Some(rafka_node_admin_core::accepted::AttemptAction::Recover { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Recover: the first recovering node-admin is node.delete of its exited birth then node.create") };
         assert_eq!(path.to_string(), admins[0], "the first admin in path order");
         let first = e.node_id(&admins[0]).await;
         assert!(!held.iter().any(|(n, _)| n.as_str() == first), "the admin the decision released is not held");
@@ -1476,7 +1475,7 @@ mod unheard_mesh_hold {
         let fp = e.fabric_primary().await;
         assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { build_id: before.build_id.clone(), attempt: restore, executor: fp }).await.unwrap(), ClaimOutcome::Won);
         e.builds
-            .append_step_receipt(&BuildStepReceipt { build_id: before.build_id.clone(), attempt: restore, operation: format!("replace-node:{}", admins[0]), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None })
+            .append_step_receipt(&BuildStepReceipt { build_id: before.build_id.clone(), attempt: restore, operation: format!("create-node:{}", admins[0]), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None })
             .await
             .unwrap();
         e.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: before.build_id.clone(), attempt: restore, outcome: AttemptOutcome::Converged }).await.unwrap();
@@ -1491,7 +1490,7 @@ mod unheard_mesh_hold {
         // nothing of the earlier passes (a fresh `started`) reads it there, so the second node-admin's exit
         // is evidence, not an attempt, until the mesh is heard again.
         let mut fresh = HashSet::new();
-        assert_eq!(pass(&e, &mut fresh, &mut held, &decided).await, None, "no second node-admin of the reborn mesh is replaced from here");
+        assert_eq!(pass(&e, &mut fresh, &mut held, &decided).await, None, "no second node-admin of the reborn mesh is recovered from here");
         let second = e.node_id(&admins[1]).await;
         assert!(held.iter().any(|(n, _)| n.as_str() == second), "the second node-admin's exit is held as evidence: {held:?}");
         assert_eq!(e.accepted.current(&*e.builds).await.unwrap().attempt, restore, "no attempt was opened after the restore");

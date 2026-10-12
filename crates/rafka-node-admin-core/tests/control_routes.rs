@@ -182,31 +182,6 @@ async fn a_change_compiles_to_the_next_build_one_at_a_time_and_a_restart_opens_a
     assert_eq!(*h.cp.topology.read().await, before, "no route touched the observed topology");
 }
 
-/// CONTRACT: `POST /api/nodes/{name}/replace` mints no Build. It opens the next attempt of the
-/// accepted Build, reason `replace`, fenced to the exact birth the view holds at the path, and
-/// leaves `Fabric.build_id` and the topology alone. An unknown path is refused by name.
-#[tokio::test]
-async fn a_replace_opens_the_next_attempt_of_the_accepted_build_fenced_to_the_live_birth() {
-    let h = harness(Router::new()).await;
-    let b0 = h.cp.accepted.build_id().await.unwrap().0;
-    let seed = h.facts().await.len();
-    let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.9/replace", None).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "{v}");
-    let birth = h.cp.topology.read().await.node(&"mesh1.rpc.2".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
-    let (status, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.2/replace", None).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{v}");
-    assert_eq!(v["build_id"], b0.as_str(), "no Build is minted: {v}");
-    assert_eq!(v["attempt"], 2, "the replace answers the attempt it opened: {v}");
-    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b0}"), None).await;
-    assert_eq!((b["state"].as_str(), b["reason"].as_str(), b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("pending"), Some("replace"), Some("replace"), Some("mesh1.rpc.2")), "{b}");
-    assert_eq!(b["action"]["from_incarnation"], serde_json::to_value(&birth).unwrap(), "fenced to the held birth: {b}");
-    assert_eq!(h.facts().await.len(), seed + 1, "exactly one fact: the opened attempt");
-    assert!(matches!(h.facts().await.last(), Some(BuildFact::Opened(o)) if o.build_id.0 == b0 && o.attempt == 2));
-    assert!(h.span_with_build("rdm.node_admin.build.update.via-rest", &b0));
-    let (_, f) = call(&h.app, "GET", "/api/fabric", None).await;
-    assert_eq!(f["build_id"], b0.as_str(), "Fabric.build_id is unchanged by a replace");
-}
-
 #[tokio::test]
 async fn post_build_and_mesh_routes_submit_build() {
     let h = harness(Router::new()).await;
@@ -360,7 +335,6 @@ async fn a_node_admin_that_is_not_the_fabric_primary_refuses_every_topology_chan
         ("POST", "/api/nodes/spawn", Some(json!({"mesh": "mesh1", "kind": "rpc_node"}))),
         ("POST", "/api/meshes", Some(json!({"name": "mesh2", "node_admin": 1, "rpc_node": 1}))),
         ("POST", "/api/nodes/mesh1.rpc.1/restart", None),
-        ("POST", "/api/nodes/mesh1.rpc.1/replace", None),
     ] {
         let (s, v) = call(&app, method, uri, body).await;
         assert_eq!(s, StatusCode::CONFLICT, "{method} {uri}: {v}");
@@ -452,12 +426,11 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
     }
 }
 
-/// CONTRACT: a restart or replace of a node the live view does not hold live is refused 422
-/// `node-not-live`, and the refusal is spanned `rdm.node_admin.node.reject.via-not-live` with the
-/// node, the status the view holds for it and the reason, so the refusal is diagnosed from its
-/// own span. A replace of an unheard birth (`dead`) is legal; of a `restarting` one it is refused.
-/// Canon: fabric-node-lifecycle.md (a restarting node is owned by its executor; a dead birth is
-/// replaced), rafka-v2 CLAUDE.md "an error state carries every non-leaking detail".
+/// CONTRACT: a restart of a node the live view does not hold live is refused 422 `node-not-live`,
+/// and the refusal is spanned `rdm.node_admin.node.reject.via-not-live` with the node, the status
+/// the view holds for it and the reason, so the refusal is diagnosed from its own span. Canon:
+/// fabric-node-lifecycle.md (a restarting node is owned by its executor), rafka-v2 CLAUDE.md "an
+/// error state carries every non-leaking detail".
 #[tokio::test]
 async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_status() {
     let fields = SpanFields::default();
@@ -477,50 +450,25 @@ async fn a_restart_of_a_node_that_is_not_live_is_refused_by_a_span_naming_its_st
     let seed = builds.facts().await.unwrap().len();
     let (s, v) = call(&app, "POST", "/api/nodes/mesh1.rpc.2/restart", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("node-not-live")), "{v}");
-    let (s, v) = call(&app, "POST", "/api/nodes/mesh1.rpc.2/replace", None).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("node-not-live")), "a restarting birth is its executor's, never replaced: {v}");
     let (s, v) = call(&app, "POST", "/api/nodes/mesh1.rpc.3/restart", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("node-not-live")), "{v}");
     assert_eq!(builds.facts().await.unwrap().len(), seed, "refusals publish nothing");
     let spans = fields.0.lock().unwrap();
     let rejects: Vec<_> = spans.iter().filter(|(n, _)| n == "rdm.node_admin.node.reject.via-not-live").map(|(_, f)| f).collect();
-    assert_eq!(rejects.len(), 3, "one span per refusal: {spans:?}");
+    assert_eq!(rejects.len(), 2, "one span per refusal: {spans:?}");
     let by = |node: &str| rejects.iter().filter(|f| f.get("node").map(String::as_str) == Some(node)).collect::<Vec<_>>();
-    assert_eq!(by("mesh1.rpc.2").len(), 2);
+    assert_eq!(by("mesh1.rpc.2").len(), 1);
     assert!(by("mesh1.rpc.2").iter().all(|f| f.get("status").map(String::as_str) == Some("restarting") && f.get("reason").is_some_and(|r| !r.is_empty())), "{rejects:?}");
     assert_eq!(by("mesh1.rpc.3").len(), 1);
     assert_eq!(by("mesh1.rpc.3")[0].get("status").map(String::as_str), Some("dead"), "{rejects:?}");
 }
 
-/// CONTRACT: a node being replaced is the node nobody hears, so the replace resolves it from the
-/// accepted Build, never from the heard view. A path the Build names, absent from the view,
-/// is replaced when the caller names the exact birth (`?incarnation=`): the attempt is fenced to
-/// that birth. Without a named birth the view lacks the node and it is refused `unknown-node`; a
-/// path the Build does not name is `unknown-node` whatever birth is named.
+/// CONTRACT (R-D1): a stop of a node of a peer mesh this fabric-primary holds unheard is refused 422
+/// `unheard-mesh` and publishes nothing. A node of the fabric-primary's own mesh is never held. When the
+/// mesh is heard again the same stop is accepted. Canon: the R-D1 ruling (loss of peer-mesh control-plane
+/// visibility fences lifecycle mutation for every node of that mesh).
 #[tokio::test]
-async fn a_silent_node_absent_from_the_view_is_replaced_by_the_birth_the_caller_names() {
-    let h = harness(Router::new()).await;
-    let b0 = h.cp.accepted.build_id().await.unwrap().0;
-    let birth = h.cp.topology.read().await.node(&"mesh1.rpc.3".parse().unwrap()).unwrap().incarnation_id.clone().unwrap();
-    h.cp.topology.write().await.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.3");
-    let (s, v) = call(&h.app, "POST", "/api/nodes/mesh1.rpc.3/replace", None).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "no birth named: {v}");
-    let (s, v) = call(&h.app, "POST", &format!("/api/nodes/mesh1.rpc.9/replace?incarnation={}", birth.0), None).await;
-    assert_eq!((s, v["error"].as_str()), (StatusCode::NOT_FOUND, Some("unknown-node")), "not in the Build: {v}");
-    let (status, v) = call(&h.app, "POST", &format!("/api/nodes/mesh1.rpc.3/replace?incarnation={}", birth.0), None).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "{v}");
-    let (_, b) = call(&h.app, "GET", &format!("/api/builds?id={b0}"), None).await;
-    assert_eq!((b["action"]["action"].as_str(), b["action"]["path"].as_str()), (Some("replace"), Some("mesh1.rpc.3")), "{b}");
-    assert_eq!(b["action"]["from_incarnation"], serde_json::to_value(&birth).unwrap(), "fenced to the named birth: {b}");
-}
-
-/// CONTRACT (R-D1): a restart or replace of a node of a peer mesh this fabric-primary holds unheard is refused
-/// 422 `unheard-mesh` and publishes nothing, whatever the node's status (a replace of an unheard birth is
-/// otherwise legal). A node of the fabric-primary's own mesh is never held. When the mesh is heard again the
-/// same replace is accepted. Canon: the R-D1 ruling (loss of peer-mesh control-plane visibility fences lifecycle
-/// mutation for every node of that mesh).
-#[tokio::test]
-async fn a_replace_of_a_node_of_a_peer_mesh_held_unheard_is_refused_by_name_and_opens_nothing() {
+async fn a_stop_of_a_node_of_a_peer_mesh_held_unheard_is_refused_by_name_and_opens_nothing() {
     use rafka_node_admin_core::investigate::PeerMesh;
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let mut t = mn();
@@ -528,7 +476,6 @@ async fn a_replace_of_a_node_of_a_peer_mesh_held_unheard_is_refused_by_name_and_
     t.nodes.push(node("mesh2.admin.1", false));
     t.nodes.push(node("mesh2.rpc.1", false));
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
-    t.nodes.iter_mut().find(|n| n.name.to_string() == "mesh2.rpc.1").unwrap().status = NodeStatus::Dead;
     let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
     let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let h = heard.clone();
@@ -537,13 +484,13 @@ async fn a_replace_of_a_node_of_a_peer_mesh_held_unheard_is_refused_by_name_and_
     }));
     let app = router(cp.clone(), Router::new());
     let seed = builds.facts().await.unwrap().len();
-    let (s, v) = call(&app, "POST", "/api/nodes/mesh2.rpc.1/replace", None).await;
+    let (s, v) = call(&app, "POST", "/api/nodes/mesh2.rpc.1/stop", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unheard-mesh")), "{v}");
     assert!(v["detail"].as_str().is_some_and(|d| d.contains("mesh2") && d.contains("7000")), "the refusal names the mesh and how long it has gone unheard: {v}");
     assert_eq!(builds.facts().await.unwrap().len(), seed, "the refusal publishes nothing");
     heard.store(true, std::sync::atomic::Ordering::SeqCst);
-    let (s, v) = call(&app, "POST", "/api/nodes/mesh2.rpc.1/replace", None).await;
-    assert_eq!(s, StatusCode::ACCEPTED, "the mesh is heard again: the replace is accepted: {v}");
+    let (s, v) = call(&app, "POST", "/api/nodes/mesh2.rpc.1/stop", None).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "the mesh is heard again: the stop is accepted: {v}");
 }
 
 #[tokio::test]
@@ -615,8 +562,8 @@ async fn last_admin_plane(second: Option<NodeStatus>) -> (Arc<ControlPlane>, Arc
 }
 
 /// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary; R-EL1a point 7):
-/// TakeSeats moves seats inside the holder's mesh only, so a Build that would restart, replace,
-/// drain, stop or retire the fabric-primary while no other live node-admin of its mesh can take its
+/// TakeSeats moves seats inside the holder's mesh only, so a Build that would restart, drain, stop
+/// or retire the fabric-primary while no other live node-admin of its mesh can take its
 /// seats is refused by name, 422 `last-admin` with `rdm.node_admin.build.reject.via-last-admin`,
 /// before any attempt opens or any executor is picked: nothing is published. The fabric seat leaves
 /// such a mesh only through TakeFabricPrimary inside mesh-leave. A retire of a mesh's only admin
@@ -639,11 +586,11 @@ async fn a_build_that_would_end_the_fabric_primarys_last_admin_is_refused_by_nam
     // mesh1's only admin is the fabric-primary.
     let (_, builds, app) = last_admin_plane(None).await;
     let seed = builds.facts().await.unwrap().len();
-    for action in ["restart", "replace", "drain", "stop"] {
+    for action in ["restart", "drain", "stop"] {
         let (s, v) = call(&app, "POST", &format!("/api/nodes/mesh1.admin.1/{action}"), None).await;
         last_admin(action, s, &v);
     }
-    assert_eq!(refused(), 4, "each refusal is spanned by name");
+    assert_eq!(refused(), 3, "each refusal is spanned by name");
     let (s, v) = call(&app, "DELETE", "/api/nodes/mesh1.admin.1", None).await;
     assert_eq!((s, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("would-leave-mesh-without-admin")), "a retire of a mesh's only admin is refused at compile: {v}");
     assert_eq!(builds.facts().await.unwrap().len(), seed, "the refusals publish nothing: no attempt, no Build");
@@ -655,7 +602,7 @@ async fn a_build_that_would_end_the_fabric_primarys_last_admin_is_refused_by_nam
     last_admin("retire", s, &v);
     let (s, v) = call(&app, "POST", "/api/nodes/mesh1.admin.1/stop", None).await;
     last_admin("stop", s, &v);
-    assert_eq!(refused(), 6, "each refusal is spanned by name");
+    assert_eq!(refused(), 5, "each refusal is spanned by name");
     assert_eq!(builds.facts().await.unwrap().len(), seed, "the refusals publish nothing: no attempt, no Build");
 
     // A second live admin in mesh1: its same-mesh successor executes the restart.

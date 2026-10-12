@@ -58,7 +58,7 @@ pub struct MeshCounts {
 
 /// What a caller submits. The fabric-primary compiles it once against the accepted topology (a
 /// topology change opens a new Build) or opens the next attempt of the accepted Build (a restart,
-/// replacement, drain or stop fenced to one birth).
+/// drain, stop, start, recovery or recipe, fenced to the births it acts on).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildChange {
     /// The whole fabric's meshes and counts.
@@ -99,14 +99,6 @@ pub enum BuildChange {
     Restart {
         /// The node.
         node: PathName,
-    },
-    /// Replace the birth at `node` with a new node. `incarnation` names the exact birth to retire
-    /// when the view does not hold the node.
-    Replace {
-        /// The node.
-        node: PathName,
-        /// The exact birth to retire, for a node the view does not hold.
-        incarnation: Option<IncarnationId>,
     },
     /// Drain the live birth at `node` and keep it running.
     Drain {

@@ -6728,7 +6728,7 @@ mod tests {
     /// Its publisher carries it in every aggregate for the retention (it never held the departure this
     /// book holds), so each later copy of the same refused departure is a copy of a refusal already
     /// made: refused again, opening no second span. Must NOT happen: one refusal span per aggregate
-    /// copy (canonical_ids: 44 refusals of one replace-node departure at one admin).
+    /// copy (canonical_ids: 44 refusals of one departure at one admin).
     #[test]
     fn a_departure_refused_by_the_departed_fence_is_refused_by_name_once_and_its_copies_silently() {
         use tracing_subscriber::layer::SubscriberExt;
@@ -6742,13 +6742,13 @@ mod tests {
         d.mesh_id = Some(mesh_id.clone());
         assert!(book.record(d));
         assert_eq!(book.mesh_left(&mesh_id, Some("mesh2"), "b1", 1, 1).departed, 1);
-        let replaced = LifecycleOp { build_id: "b2".into(), attempt: 2, ..op_at("mesh2.admin.2", &id, &inc, "replace-node:mesh2.admin.2") };
+        let replaced = LifecycleOp { build_id: "b2".into(), attempt: 2, ..op_at("mesh2.admin.2", &id, &inc, "retire-node:mesh2.admin.2") };
         for copy in 0..3 {
             assert!(!book.depart(replaced.clone()), "copy {copy} of the refused departure departs nothing again");
         }
         let refused = spans.named("rdm.mesh.membership.reject.via-departed-birth");
         assert_eq!(refused.len(), 1, "one refusal by name, its copies silent: {refused:?}");
-        assert_eq!((refused[0]["frame"].as_str(), refused[0]["operation"].as_str(), refused[0]["build_id"].as_str()), ("node-deleted", "replace-node:mesh2.admin.2", "b2"));
+        assert_eq!((refused[0]["frame"].as_str(), refused[0]["operation"].as_str(), refused[0]["build_id"].as_str()), ("node-deleted", "retire-node:mesh2.admin.2", "b2"));
         // Another departure of the same birth is a fact of its own: refused by name once.
         let retired = op_at("mesh2.admin.2", &id, &inc, "retire-node:mesh2.admin.2");
         assert!(!book.depart(retired.clone()) && !book.depart(retired));

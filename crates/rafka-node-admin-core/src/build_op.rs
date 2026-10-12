@@ -107,21 +107,25 @@ impl BuildDoor {
             BuildChange::ReconcileFabric { fabric, meshes } => topology(TopologyChange::ReconcileFabric { desired: FabricDesired { fabric: fabric.clone(), meshes: meshes.iter().map(counts).collect() } }).await,
             BuildChange::ReconcileMesh { mesh } => topology(TopologyChange::ReconcileMesh { desired: counts(mesh) }).await,
             BuildChange::AddNode { mesh, node_kind } => topology(TopologyChange::AddNode { mesh: mesh.clone(), node_kind: *node_kind }).await,
-            // The parked predecessor a replacement left at `<path>.old` is deleted by the next attempt of
-            // the accepted Build, fenced to its exact birth: the topology never names that path.
-            BuildChange::RemoveNode { node } if node.old => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Delete, node.clone(), ActionKind::Delete, None).await,
+            // A stopped birth a rename left at `<path>.old` is deleted by the next attempt of the
+            // accepted Build, fenced to its exact birth: the topology never names that path.
+            BuildChange::RemoveNode { node } if node.old => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Delete, node.clone(), ActionKind::Delete).await,
             BuildChange::RemoveNode { node } => topology(TopologyChange::RemoveNode { node: node.clone() }).await,
             BuildChange::CreateMesh { mesh } => topology(TopologyChange::CreateMesh { desired: counts(mesh) }).await,
             BuildChange::RemoveMesh { mesh } => topology(TopologyChange::RemoveMesh { mesh: mesh.clone() }).await,
-            BuildChange::Restart { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Restart, node.clone(), ActionKind::Restart, None).await,
-            BuildChange::Replace { node, incarnation } => {
-                cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Replace, node.clone(), ActionKind::Replace, incarnation.clone()).await
-            }
-            BuildChange::Drain { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Drain, node.clone(), ActionKind::Drain, None).await,
-            BuildChange::Stop { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Stop, node.clone(), ActionKind::Stop, None).await,
-            BuildChange::Start { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Start, node.clone(), ActionKind::Start, None).await,
+            BuildChange::Restart { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Restart, node.clone(), ActionKind::Restart).await,
+            BuildChange::Drain { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Drain, node.clone(), ActionKind::Drain).await,
+            BuildChange::Stop { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Stop, node.clone(), ActionKind::Stop).await,
+            BuildChange::Start { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Start, node.clone(), ActionKind::Start).await,
             BuildChange::Recipe { steps } => {
-                return Err(BuildReply::Rejected { reason: "recipe-not-served".into(), detail: format!("{}: no door runs a recipe of {} node primitive step(s) as one Build", self.me, steps.len()) });
+                let span = tracing::info_span!(
+                    "rdm.node_admin.build.update.via-recipe",
+                    route = "build.create",
+                    build_id = tracing::field::Empty,
+                    attempt = tracing::field::Empty,
+                    steps = %steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(" "),
+                );
+                cp.open_recipe_in(span, "build.create", steps.clone()).await
             }
             BuildChange::Recover { node, node_id, incarnation } => {
                 return match cp.open_recovery("build.create", node.clone(), node_id.clone(), incarnation.clone()).await {

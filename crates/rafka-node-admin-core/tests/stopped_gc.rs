@@ -101,6 +101,25 @@ async fn settle(builds: &MemoryBuildStateAdapter, id: &BuildId) {
     builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
 }
 
+/// The replace recipe of the birth `b` (lifecycles/node-replace.md), pinned to it: a successor at
+/// `.new`, `b` stopped and renamed `.old`, the successor renamed and started, `b` deleted.
+fn replace_recipe(b: &(PathName, NodeId, IncarnationId)) -> AttemptAction {
+    use rafka_node_rpc_contract::build::RecipeStep;
+    let node = b.0.clone();
+    AttemptAction::Recipe {
+        steps: vec![
+            RecipeStep::Create { node: node.successor() },
+            RecipeStep::Stop { node: node.clone() },
+            RecipeStep::Update { node: node.clone(), name: node.renamed() },
+            RecipeStep::Stop { node: node.successor() },
+            RecipeStep::Update { node: node.successor(), name: node.clone() },
+            RecipeStep::Start { node: node.clone() },
+            RecipeStep::Delete { node: node.renamed() },
+        ],
+        pinned: vec![(node, rafka_node_admin_core::build::PinnedBirth { node_id: b.1.clone(), incarnation: b.2.clone() })],
+    }
+}
+
 fn birth(t: &Topology, p: &str) -> (PathName, NodeId, IncarnationId) {
     let n = t.node(&p.parse().unwrap()).unwrap();
     (n.name.clone(), n.node_id.clone(), n.incarnation_id.clone().unwrap())
@@ -215,11 +234,11 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     let refused = cp.collect_stopped(&candidates[0], TTL).await;
     assert!(matches!(&refused, Err(Refusal::Reject(r)) if r.reason() == "node-not-stopped"), "{refused:?}");
 
-    // After the scan: the accepted Build opens a replacement of mesh1.rpc.2's birth, whose attempt
-    // fails mid-transfer: the Build is open, not in flight, and keeps the birth as its rollback point.
+    // After the scan: the accepted Build opens the replace recipe of mesh1.rpc.2's birth, whose attempt
+    // fails mid-recipe: the Build is open, not in flight, and keeps the birth as its rollback point.
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Replace, action: Some(AttemptAction::Replace { path: other.0.clone(), from_incarnation: other.2.clone() }), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
+        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Recipe, action: Some(replace_recipe(&other)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
         BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
         BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
     ]);
@@ -236,10 +255,10 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
 
 /// CONTRACT (§6.9 Selection: "except a birth an open Build still references (a replace
 /// mid-transfer keeps its rollback point)"): `mesh1.rpc.1`, stopped past the ttl, is the birth a
-/// replacement left mid-transfer (its attempt failed, the Build is not settled). The scan says it is
+/// replace recipe left mid-recipe (its attempt failed, the Build is not settled). The scan says it is
 /// referenced by that Build and the sweep submits nothing for it.
 #[tokio::test]
-async fn a_stopped_birth_an_open_replace_references_is_skipped() {
+async fn a_stopped_birth_an_open_replace_recipe_references_is_skipped() {
     let (spans, _g) = capture("i143-3072-referenced");
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let t = view("mesh1.admin.1");
@@ -251,7 +270,7 @@ async fn a_stopped_birth_an_open_replace_references_is_skipped() {
     period(&cp, &builds, &young, true, now(&cp)).await;
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Replace, action: Some(AttemptAction::Replace { path: old.0.clone(), from_incarnation: old.2.clone() }), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
+        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Recipe, action: Some(replace_recipe(&old)), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
         BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
         BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
     ]);

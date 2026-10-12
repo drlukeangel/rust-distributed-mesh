@@ -19,8 +19,9 @@
 //!   `NameHeld { by }` and nothing launched. The row's config is seeded from the previous row at
 //!   the `path.name` (a `Deleted` row) or the `<name>.old` row. A create that fails after its claim
 //!   withdraws it ([`NodeRows::withdraw`]), the holder's own key only.
-//! - A replace's `RenamePredecessor`: the predecessor's row moves to `<path>.old` and it lets go
-//!   of `<path>` ([`NodeRows::moved_to_old`]).
+//! - `node.update` of a name (R13, `crate::node_update`): the row moves to the new name and the
+//!   node lets go of the old one ([`move_row`]); a node taking `<name>` from `<name>.new` has its
+//!   config seeded from the `<name>.old` row (lifecycles/node-replace.md step 4).
 //! - `NodeDeleted`: the row with status `Deleted`, the record and its config kept
 //!   ([`NodeRows::deleted`]).
 //! - A mesh delete (R-MN1, mesh-delete.md steps 3 and 7): each member's row `Deleted` on its exact
@@ -31,11 +32,6 @@
 //!   admin took its mesh's seat): written when the writer's view first holds it
 //!   ([`NodeRows::arrivals`]); an admin that takes a mesh's seat writes every member's row of that
 //!   mesh, and a row a node already holds is never overwritten.
-//!
-//! The fabric-primary admits `node.delete` of a parked predecessor at `<path>.old` from the record
-//! it holds of it ([`NodeRows::parked_at`]): no view names that path but the replace's executor's.
-//! It holds that record from the replace's frames as its drive reads them ([`NodeRows::on_step`]),
-//! and writes nothing from them.
 
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::storage::{NameHeld, NodeRow, NodesStorage};
@@ -44,12 +40,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
-/// The writer of a mesh's node rows, and the fabric-primary's record of parked predecessors.
+/// The writer of a mesh's node rows.
 pub struct NodeRows {
     /// This admin's `path.name`, the name its spans and refusals carry.
     me: PathName,
     /// The node id this admin was born with: it writes a mesh's rows only while its view names that
-    /// birth the mesh's primary (never by path.name: a replace keeps the path.name and mints a new
+    /// birth the mesh's primary (never by path.name: a successor takes the path.name with a new
     /// node id).
     me_id: NodeId,
     /// This admin's view, read at each write to decide whether it is the writer of the row's mesh.
@@ -57,17 +53,10 @@ pub struct NodeRows {
     storage: Arc<dyn NodesStorage>,
     /// The config door a seeded birth is told its config through (`crate::node_config`).
     configs: Option<crate::node_config::NodeConfigsSlot>,
-    /// The record held when each removal was announced (`NodeDeleting`), by operation, until the
-    /// replace's rename or the removal's `NodeDeleted` (the fabric-primary's drive).
-    announced: Mutex<HashMap<String, Node>>,
     /// Per mesh whose rows this admin writes, the births its views have held in that tenure: each
     /// row is written once, when a view first holds it, and a later view install that holds it
     /// again is not an arrival.
     held: Mutex<BTreeMap<String, HashSet<(NodeId, IncarnationId)>>>,
-    /// The record of each parked predecessor a replace left at `<path>.old`, by that `.old` path,
-    /// from the replace's `RenamePredecessor` until its `NodeDeleted`: the fabric-primary's held
-    /// record of a node no view names, which admits its `node.delete`.
-    parked_old: Mutex<HashMap<PathName, Node>>,
     /// This writer's record of each node's row: what it last wrote for the node, or found the node
     /// holding at a claim. A later row of the node takes its config from here, never from a record
     /// that does not carry it.
@@ -164,7 +153,7 @@ impl NodeRows {
     /// The writer of the admin `me`, born as `me_id`, deciding over its view `view`, writing to
     /// `storage`, its nodes store.
     pub fn new(me: PathName, me_id: NodeId, view: Arc<RwLock<Topology>>, storage: Arc<dyn NodesStorage>) -> Self {
-        Self { me, me_id, view, storage, configs: None, announced: Mutex::new(HashMap::new()), held: Mutex::new(BTreeMap::new()), parked_old: Mutex::new(HashMap::new()), written: Arc::new(WrittenRows::default()) }
+        Self { me, me_id, view, storage, configs: None, held: Mutex::new(BTreeMap::new()), written: Arc::new(WrittenRows::default()) }
     }
 
     /// Share `written`, the record the config door holds its puts in, as this writer's record.
@@ -191,12 +180,6 @@ impl NodeRows {
     /// The store the rows are written to.
     pub fn storage(&self) -> &Arc<dyn NodesStorage> {
         &self.storage
-    }
-
-    /// The record this fabric-primary holds of the parked predecessor at `old` (a `<path>.old`): the
-    /// exact birth a `node.delete` of that path is fenced to.
-    pub fn parked_at(&self, old: &PathName) -> Option<Node> {
-        self.parked_old.lock().unwrap().get(old).cloned()
     }
 
     /// Why this admin does not write `mesh`'s rows in view `t` (the row at `subject`), naming the
@@ -303,55 +286,6 @@ impl NodeRows {
         span.in_scope(|| tracing::info!("node.create: the claim is withdrawn"));
     }
 
-    /// A replace's `RenamePredecessor` (node-replace.md 2): the predecessor `record` (held at its
-    /// `path.name`) gives up the name, its row moved to `<path>.old`, parked, a blind put of its
-    /// record, then it lets go of `<path>`. One `via-rename` span.
-    pub async fn moved_to_old(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
-        let name = PathName { old: false, ..record.name.clone() };
-        let to = name.renamed();
-        let span = tracing::info_span!(
-            "rdm.node_admin.node.update.via-rename",
-            node = %self.me,
-            node_id = %record.node_id,
-            from = %name,
-            to = %to,
-            operation,
-            outcome = tracing::field::Empty,
-            detail = tracing::field::Empty,
-            "otel.kind" = "internal",
-        );
-        let r: Result<Moved, RowRefused> = tracing::Instrument::instrument(
-            async {
-                self.writer_check(&name.mesh, &name).await?;
-                let parked = parked_record(record, &to);
-                let (config, _) = self.known_config(&parked);
-                let (moved, written) = move_row(&*self.storage, &self.me, &parked, config, &name, &to).await.map_err(|e| match e {
-                    RenameRefused::NameHeld(h) => RowRefused::NameHeld(h),
-                    RenameRefused::Unwritten(why) => RowRefused::Unwritten(why),
-                })?;
-                if let Some(row) = &written {
-                    self.written.hold(row);
-                }
-                Ok(moved)
-            },
-            span.clone(),
-        )
-        .await;
-        match &r {
-            Ok(Moved::Renamed) => {
-                span.record("outcome", "renamed");
-            }
-            Ok(Moved::AlreadyMoved) => {
-                span.record("outcome", "already-moved").record("detail", format!("{}: the predecessor {} holds {to} and no longer holds {name}; nothing is written", self.me, record.node_id).as_str());
-            }
-            Err(e) => {
-                span.record("outcome", e.outcome()).record("detail", e.to_string().as_str());
-            }
-        }
-        span.in_scope(|| tracing::info!("node.replace: the predecessor's row moved"));
-        r.map(|_| ())
-    }
-
     /// `NodeDeleted` (node-decommission.md step 3): the row at the node's `path.name` (its `.old`
     /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on
     /// and its config kept, a blind put. One `via-node-row` span.
@@ -443,53 +377,6 @@ impl NodeRows {
         }
     }
 
-    /// A completed step of a Build the fabric-primary drives, over its held view, handled once per
-    /// drive: its live `Step` frame, or its receipt read back. It writes nothing: it holds the record
-    /// of a replace's predecessor from the replace's first step, and the parked predecessor at
-    /// `<path>.old` from its `RenamePredecessor` until its delete's `NodeDeleted`, which is what
-    /// admits that delete ([`Self::parked_at`]). `subject` is the node a receipt names; a live frame
-    /// names none, and the node is the one the view holds at the operation's `path.name`.
-    pub async fn on_step(&self, view: &RwLock<Topology>, operation: &str, step: &str, subject: Option<&NodeId>) {
-        let Some((verb, path)) = operation.split_once(':') else { return };
-        let Ok(name) = path.parse::<PathName>() else { return };
-        let is_subject = |n: &Node| subject.is_none_or(|id| &n.node_id == id);
-        match (verb, step) {
-            ("replace-node", "NodeDeleting" | "DrainNode") => {
-                let held = match subject {
-                    Some(id) => held_by(view, id).await,
-                    None => held_at(view, &name).await,
-                };
-                if let Some(n) = held {
-                    self.announced.lock().unwrap().entry(operation.to_string()).or_insert(n);
-                }
-            }
-            ("replace-node", "RenamePredecessor") => {
-                let to = name.renamed();
-                let announced = self.announced.lock().unwrap().get(operation).cloned().filter(|n| is_subject(n));
-                let record = match announced {
-                    Some(n) => Some(n),
-                    None => match subject {
-                        Some(id) => held_by(view, id).await,
-                        None => match held_at(view, &to).await {
-                            Some(n) => Some(n),
-                            None => held_at(view, &name).await,
-                        },
-                    },
-                };
-                if let Some(n) = record {
-                    self.parked_old.lock().unwrap().entry(to.clone()).or_insert_with(|| parked_record(&n, &to));
-                }
-            }
-            ("delete-node", "NodeDeleted") => {
-                self.parked_old.lock().unwrap().retain(|old, n| !(old == &name && is_subject(n)));
-            }
-            ("replace-node", "Complete" | "NodeDeleted") => {
-                self.announced.lock().unwrap().remove(operation);
-            }
-            _ => {}
-        }
-    }
-
     /// The births of `now`, the view being installed over `prev`, whose rows this admin writes: the
     /// members of each mesh it writes for in `now` (its primary, or the fabric-primary's for a mesh
     /// with none), never its own birth. Every member of a mesh whose writing it took with this
@@ -498,9 +385,6 @@ impl NodeRows {
     /// per tenure: one the view dropped and holds again was written when it first arrived. Read
     /// under the view lock, so of two installs each sees the arrivals its own change made.
     pub fn arrivals(&self, prev: &Topology, now: &Topology) -> Vec<Node> {
-        if !now.holds_fabric_seat(&self.me_id) {
-            self.parked_old.lock().unwrap().clear();
-        }
         let me = &self.me_id;
         let mut held = self.held.lock().unwrap();
         held.retain(|mesh, _| writes_for(now, me, mesh));
@@ -601,8 +485,7 @@ pub enum RenameRefused {
 /// with `config` (a put the store adapter refuses `NameHeld` when another node's live row holds
 /// `to`; a row the node holds there already is left as it is), then the node lets go of `from`
 /// (only its own row there goes). The one writer of a rename (R13: `node.update` is one write
-/// path): `node.update` at the node's mesh-primary (`crate::node_update`) and a replace's
-/// `RenamePredecessor` ([`NodeRows::moved_to_old`]) both move here. Answers what it did and the
+/// path): `node.update` at the node's mesh-primary (`crate::node_update`) moves here. Answers what it did and the
 /// row written, if it wrote one.
 pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, config: BTreeMap<String, String>, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
     if from == to {
@@ -630,26 +513,3 @@ pub(crate) enum Moved {
     AlreadyMoved,
 }
 
-/// The record of a replace's predecessor at its rename to `to`: parked there. A live branch's
-/// predecessor was held live at its `DrainNode`, and its stop (`StopNode`, `AwaitNodeLeft`) precedes
-/// the rename, so it is `Leaving` and parked now; a recovery's predecessor keeps the status it was held
-/// with (its exit is what the recovery proves).
-fn parked_record(record: &Node, to: &PathName) -> Node {
-    let mut n = record.clone();
-    n.name = to.clone();
-    if n.status.is_live() {
-        n.status = NodeStatus::Leaving;
-        n.parked = true;
-    }
-    n
-}
-
-/// The record the view holds of the node `id`.
-async fn held_by(view: &RwLock<Topology>, id: &NodeId) -> Option<Node> {
-    view.read().await.nodes.iter().find(|n| &n.node_id == id).cloned()
-}
-
-/// The record the view holds at `name`.
-async fn held_at(view: &RwLock<Topology>, name: &PathName) -> Option<Node> {
-    view.read().await.nodes.iter().find(|n| &n.name == name).cloned()
-}

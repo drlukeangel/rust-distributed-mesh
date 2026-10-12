@@ -157,16 +157,17 @@ pub enum Swept {
     },
 }
 
-/// The birth an attempt's fenced action acts on.
-fn acts_on(action: &AttemptAction) -> &IncarnationId {
+/// Whether an attempt's fenced action acts on the birth `incarnation`: the one birth a node op is
+/// fenced to, or any birth a recipe pinned.
+fn acts_on(action: &AttemptAction, incarnation: &IncarnationId) -> bool {
     match action {
         AttemptAction::Restart { from_incarnation, .. }
-        | AttemptAction::Replace { from_incarnation, .. }
         | AttemptAction::Drain { from_incarnation, .. }
         | AttemptAction::Stop { from_incarnation, .. }
         | AttemptAction::Start { from_incarnation, .. }
         | AttemptAction::Recover { from_incarnation, .. }
-        | AttemptAction::Delete { from_incarnation, .. } => from_incarnation,
+        | AttemptAction::Delete { from_incarnation, .. } => from_incarnation == incarnation,
+        AttemptAction::Recipe { pinned, .. } => pinned.iter().any(|(_, b)| b.incarnation == *incarnation),
     }
 }
 
@@ -186,7 +187,7 @@ pub fn stop_age(facts: &[BuildFact], node_id: &NodeId, incarnation: &Incarnation
             continue;
         }
         let action = actions.get(&(s.build_id.clone(), s.attempt)).copied();
-        let ours = action.is_some_and(|a| acts_on(a) == incarnation);
+        let ours = action.is_some_and(|a| acts_on(a, incarnation));
         if s.operation.starts_with("stop-node:") {
             match s.output.as_ref().map(|v| serde_json::from_value::<LifecycleOp>(v.clone())) {
                 Some(Ok(op)) if op.node_id == *node_id && op.incarnation == *incarnation => current = Some(Age::StoppedAt(op.event_at_rafka_ms)),
@@ -222,7 +223,7 @@ impl crate::http::ControlPlane {
                 open.push(current);
             }
         }
-        Ok(open.into_iter().find(|p| p.action.as_ref().is_some_and(|a| acts_on(a) == incarnation)).map(|p| p.build_id))
+        Ok(open.into_iter().find(|p| p.action.as_ref().is_some_and(|a| acts_on(a, incarnation))).map(|p| p.build_id))
     }
 
     /// The scan: every stopped birth this admin's view holds, with its verdict at `now_ms`.

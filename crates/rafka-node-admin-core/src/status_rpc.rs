@@ -440,6 +440,15 @@ impl StatusAuthority {
         self.apply_from(peer, sender, req).await
     }
 
+    /// `node.update` at this admin as the node's mesh-primary (`crate::node_update`): the one write
+    /// path of a node's record, whoever asks, a caller's 0x1B call and a recipe's update step alike.
+    pub async fn update_node(&self, req: &StatusRequest) -> StatusReply {
+        let StatusRequest::UpdateNode { node_id, incarnation, .. } = req else { unreachable!("update_node is called for UpdateNode only") };
+        // A stopped node is told nothing: only a live birth's apply needs the node-RPC client.
+        let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
+        crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| c.client()), &self.row_moved, deleted.as_ref(), req).await
+    }
+
     /// [`Self::apply`] of a call whose transport-proven endpoint is `peer` (`PeerContext`): the
     /// connection a command spares is the call's own, whether or not the view holds a birth for it.
     pub async fn apply_from(&self, peer: Option<iroh::PublicKey>, sender: Option<crate::model::Node>, req: &StatusRequest) -> StatusReply {
@@ -471,11 +480,7 @@ impl StatusAuthority {
                     None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
                 };
             }
-            StatusRequest::UpdateNode { node_id, incarnation, .. } => {
-                // A stopped node is told nothing: only a live birth's apply needs the node-RPC client.
-                let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
-                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| c.client()), &self.row_moved, deleted.as_ref(), req).await;
-            }
+            StatusRequest::UpdateNode { .. } => return self.update_node(req).await,
             StatusRequest::UpdateNodeConfig { .. } => {
                 return match self.configs.get() {
                     Some(configs) => configs.update(&self.me, &self.node_id, &view, &*self.nodes_storage, req).await,
