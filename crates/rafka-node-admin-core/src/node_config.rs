@@ -94,7 +94,7 @@ impl NodeConfigs {
             Some(_) => {}
         }
         let _one = self.one_at_a_time.lock().await;
-        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone() };
+        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags: Default::default() };
         let refused = match storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);

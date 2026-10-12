@@ -7031,6 +7031,9 @@ mod tests {
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.0.release_node_row(name, holder).await
         }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
+            self.0.tagged(label).await
+        }
     }
 
     fn contact_names(dir: &std::path::Path) -> usize {
@@ -7401,6 +7404,9 @@ mod tests {
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.0.release_node_row(name, holder).await
         }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
+            self.0.tagged(label).await
+        }
     }
 
     /// A nodes.storage over memory that counts every list of the runtime rows and answers the point
@@ -7456,6 +7462,9 @@ mod tests {
         }
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.inner.release_node_row(name, holder).await
+        }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
+            self.inner.tagged(label).await
         }
     }
 
@@ -8388,7 +8397,7 @@ mod tests {
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
+        crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }).await.unwrap().unwrap();
         let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-final-exit-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
@@ -8477,7 +8486,7 @@ mod tests {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
             let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
             let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
+            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }).await.unwrap().unwrap();
             prove_exit(&book, &records, &last).await;
             records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
             let status = crate::status_storage::MemoryStatusStorage::default();
@@ -8527,7 +8536,7 @@ mod tests {
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let member = with_id(digest("mesh2.rpc.1", MemberStatus::Leaving), "210000000000");
         let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
+        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }).await.unwrap().unwrap();
         let contact = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: fabric1(), name: d.node.name.clone(), mesh_id: mesh_id(&d.node.name.mesh), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new() };
         // mesh2's primary wrote its members' contacts while it held the seat; mesh1's own stays.
         for d in [&last, &member, &fp] {
@@ -9062,7 +9071,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new() };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default() };
         assert_eq!(crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap(), Ok(()));
         crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), &held.node.name, &to).await.unwrap();
         // This admin: the same book, its own store on the same root, no rename of its own.
@@ -9320,6 +9329,9 @@ mod tests {
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.inner.release_node_row(name, holder).await
         }
+        async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
+            self.inner.tagged(label).await
+        }
     }
 
     /// `mesh1.rpc.1`, born `mesh1.rpc.1.new` and stopped there, its row moved twice by its mesh-primary
@@ -9346,7 +9358,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new() };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default() };
         assert_eq!(crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap(), Ok(()));
         let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), held.node.name.base());
         crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), &held.node.name, &base).await.unwrap();

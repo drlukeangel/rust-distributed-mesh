@@ -78,6 +78,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>) 
         parked: n.parked,
         load,
         gossip,
+        tags: Default::default(),
     }
 }
 
@@ -93,6 +94,7 @@ pub fn nodes(view: &Topology, loads: &BTreeMap<String, (Option<NodeLoad>, Option
         .filter(|n| match select {
             NodeSelect::Id(id) => &n.node_id == id,
             NodeSelect::Mesh(mesh) => &n.mesh == mesh,
+            NodeSelect::Tags(_) => false,
         })
         .map(|n| {
             let (load, gossip) = loads.get(n.node_id.as_str()).cloned().unwrap_or((None, None));

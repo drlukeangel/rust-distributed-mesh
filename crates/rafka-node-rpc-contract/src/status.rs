@@ -33,7 +33,7 @@ use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
 use crate::views::{ConnectionsView, FabricView, MeshView, NodeView};
 use rafka_mesh_entity::{ConfigOverCap, ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS, OPAQUE_ID_LEN};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 /// The Status protocol: declare, apply and probe lifecycle state.
@@ -351,12 +351,14 @@ pub enum StatusRequest {
         name: String,
     },
     /// Upward: a caller asks the node's mesh-primary, the only writer of its mesh's rows, to put
-    /// the exact birth's record with `name` (`node.update`; node-rpc-envelope.md "Meta and
-    /// config", R13). The mesh-primary validates against the record it holds
-    /// ([`StatusReply::RejectedMetaFieldIsRdmOwned`]), claims a changed name by insert-and-fail in
-    /// its store adapter ([`StatusReply::NameHeld`]), puts the row, sends a live birth
-    /// `ApplyNodeName` (a stopped one nothing) and answers [`StatusReply::NodeUpdated`]
-    /// (`node.updated`) only after the apply answered. A single call, never a Build.
+    /// the exact birth's record with `name` and `tags` (`node.update`; node-rpc-envelope.md "Meta
+    /// and config", R13, R-TG1). The mesh-primary validates against the record it holds
+    /// ([`StatusReply::RejectedMetaFieldIsRdmOwned`], [`StatusReply::RejectedTags`]), claims a
+    /// changed name by insert-and-fail in its store adapter ([`StatusReply::NameHeld`]), puts each
+    /// label's row of the node store's tags index and tombstones each label the put drops, puts the
+    /// row, sends a live birth whose name changed `ApplyNodeName` (a stopped one nothing) and
+    /// answers [`StatusReply::NodeUpdated`] (`node.updated`) only after the apply answered; a put
+    /// that changes no name completes once the row is written. A single call, never a Build.
     UpdateNode {
         /// The birth whose record is put.
         node_id: NodeId,
@@ -364,6 +366,9 @@ pub enum StatusRequest {
         incarnation: IncarnationId,
         /// The `path.name` the record is put with.
         name: String,
+        /// The node's whole set of tag labels: a put replaces it, it never merges. At most
+        /// [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
+        tags: BTreeSet<String>,
     },
     /// `node.connections.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact
     /// birth's mesh-primary, which commands the birth with the same request and holds its completion
@@ -417,6 +422,9 @@ pub enum NodeSelect {
     Id(NodeId),
     /// Every node of the mesh with this name.
     Mesh(String),
+    /// Every node carrying the tag labels the filter names (R-TG1), read through the node store's
+    /// tags index: one point read per label.
+    Tags(TagFilter),
 }
 
 impl NodeSelect {
@@ -425,8 +433,79 @@ impl NodeSelect {
         match self {
             Self::Id(_) => "id",
             Self::Mesh(_) => "mesh",
+            Self::Tags(_) => "tags",
         }
     }
+}
+
+/// Which tag labels a `node.get` filter requires (node-rpc-envelope.md, node.get: "all of the given
+/// tags or any of them"). Positional order is part of the wire schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TagFilter {
+    /// The node carries every one of these labels.
+    All(BTreeSet<String>),
+    /// The node carries at least one of these labels.
+    Any(BTreeSet<String>),
+}
+
+impl TagFilter {
+    /// The labels the filter names.
+    pub fn labels(&self) -> &BTreeSet<String> {
+        match self {
+            Self::All(l) | Self::Any(l) => l,
+        }
+    }
+
+    /// The filter's name in spans and evidence.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::All(_) => "all",
+            Self::Any(_) => "any",
+        }
+    }
+
+    /// Why the filter is refused, by name, or `None` when it names labels a node can carry: it names
+    /// at least one label, at most [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
+    pub fn refusal(&self) -> Option<String> {
+        if self.labels().is_empty() {
+            return Some(format!("node.get's tag filter ({}) names no label: it needs at least one", self.name()));
+        }
+        tags_refusal(self.labels())
+    }
+}
+
+/// The most tag labels one node carries (R-TG1): a set at the cap, each label at
+/// [`MAX_TAG_BYTES`], fits the Status request bound with an `UpdateNode`'s other fields.
+pub const MAX_NODE_TAGS: usize = 32;
+
+/// The longest tag label, in bytes.
+pub const MAX_TAG_BYTES: usize = 64;
+
+/// Why `label` is not a tag label, by name, or `None` when it is one: 1 to [`MAX_TAG_BYTES`] bytes
+/// of lowercase ASCII letters, digits and `-`, starting with a letter or a digit (`rabbit`, `red`,
+/// `zone-a`). A label keys one row of the node store's tags index, so it is a key every store can
+/// hold.
+pub fn tag_refusal(label: &str) -> Option<String> {
+    let b = label.as_bytes();
+    if b.is_empty() {
+        return Some("a tag label is empty".into());
+    }
+    if b.len() > MAX_TAG_BYTES {
+        return Some(format!("the tag label {:?} is {} bytes, over the {MAX_TAG_BYTES}-byte cap", within(label, MAX_TAG_BYTES), b.len()));
+    }
+    if !(b[0].is_ascii_lowercase() || b[0].is_ascii_digit()) || !b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-') {
+        return Some(format!("the tag label {label:?} is not lowercase ASCII letters, digits and '-' starting with a letter or a digit"));
+    }
+    None
+}
+
+/// Why the tag set `tags` is refused, by name, or `None`: at most [`MAX_NODE_TAGS`] labels, each a
+/// label ([`tag_refusal`]).
+pub fn tags_refusal(tags: &BTreeSet<String>) -> Option<String> {
+    if tags.len() > MAX_NODE_TAGS {
+        return Some(format!("{} tag labels, over the {MAX_NODE_TAGS} one node carries", tags.len()));
+    }
+    tags.iter().find_map(|t| tag_refusal(t))
 }
 
 /// The most connection ids one `node.connections.delete { scope: Connections }` names: a request at
@@ -900,6 +979,13 @@ pub enum StatusReply {
         /// does not name. Within [`MAX_SOURCE_FAILED_CAUSE_BYTES`].
         cause: String,
     },
+    /// An `UpdateNode`'s tags, or a `GetNodes` tag filter, name something that is not a node's tag
+    /// set (R-TG1): an empty filter, more than [`MAX_NODE_TAGS`] labels, or a label that is not a
+    /// label ([`tag_refusal`]). Nothing is written or read.
+    RejectedTags {
+        /// Why, by name, naming the label; within [`MAX_REFUSAL_REASON_BYTES`].
+        reason: String,
+    },
 }
 
 /// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -1007,6 +1093,11 @@ impl StatusReply {
         Self::Blocked { node_id, incarnation, reason: within(reason, MAX_BLOCKED_REASON_BYTES), retry_on }
     }
 
+    /// `RejectedTags` naming why, within its budget so the reply always fits the Status reply bound.
+    pub fn rejected_tags(reason: &str) -> Self {
+        Self::RejectedTags { reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
+    }
+
     /// `NodeRowRefused` for `node`, each field within its budget (as [`Self::config_row_refused`]).
     pub fn node_row_refused(node: &str, reason: &str) -> Self {
         Self::NodeRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
@@ -1092,6 +1183,7 @@ impl StatusReply {
             Self::RejectedConflictingRound { .. } => "rejected-conflicting-round",
             Self::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
             Self::RejectedSourceFailed { .. } => "rejected-source-failed",
+            Self::RejectedTags { .. } => "rejected-tags",
         }
     }
 }
@@ -1110,7 +1202,7 @@ impl NodeProtocol for Status {
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 26;
-    const REPLY_VARIANTS: u32 = 43;
+    const REPLY_VARIANTS: u32 = 44;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1153,7 +1245,8 @@ impl NodeProtocol for Status {
             | StatusReply::RejectedStaleRound { .. }
             | StatusReply::RejectedConflictingRound { .. }
             | StatusReply::RejectedIncompleteManifest { .. }
-            | StatusReply::RejectedSourceFailed { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::RejectedSourceFailed { .. }
+            | StatusReply::RejectedTags { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -1257,6 +1350,7 @@ mod tests {
             (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "bld_1".into(), attempt: 1, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "bld_2".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::ProtocolRefusal),
             (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts bld_1", "unreached: no path"), ReplyKind::ProtocolRefusal),
+            (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -1294,9 +1388,9 @@ mod tests {
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
-            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
+            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into(), tags: ["rabbit".to_string(), "red".to_string()].into() },
             StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },
-            StatusRequest::GetNodes { select: NodeSelect::Mesh("mesh1".into()) },
+            StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::All(["rabbit".to_string(), "red".to_string()].into())) },
             StatusRequest::GetMeshes { mesh: None },
             StatusRequest::GetFabric,
             StatusRequest::GetConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
@@ -1326,6 +1420,40 @@ mod tests {
                 assert!(len <= MAX_CONFIG_REQUEST_BYTES, "{len} over the derived {MAX_CONFIG_REQUEST_BYTES}");
             }
         }
+    }
+
+    /// CONTRACT (R-TG1; node-rpc-envelope.md node.get: a tag filter names labels): an `UpdateNode`
+    /// carrying the most labels one node carries, each at its longest, with the longest `path.name`,
+    /// encodes within the Status request bound, as does a `GetNodes` filter naming as many. A label is
+    /// lowercase letters, digits and `-` starting with a letter or a digit, 1 to `MAX_TAG_BYTES`
+    /// bytes; anything else, a set past `MAX_NODE_TAGS` and an empty filter are refused by name, the
+    /// label named.
+    #[test]
+    fn a_tag_set_at_its_cap_encodes_within_the_status_request_bound_and_a_non_label_is_refused_by_name() {
+        let at_cap: BTreeSet<String> = (0..MAX_NODE_TAGS).map(|i| format!("{i:0>width$}", width = MAX_TAG_BYTES)).collect();
+        assert_eq!((at_cap.len(), tags_refusal(&at_cap)), (MAX_NODE_TAGS, None));
+        let longest_name = format!("{}.broker.4294967295.old", "m".repeat(64));
+        for q in [
+            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: longest_name.clone(), tags: at_cap.clone() },
+            StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::Any(at_cap.clone())) },
+        ] {
+            let len = Status::encode_request(&q).unwrap().len();
+            assert!(len <= Status::MAX_REQUEST_FRAME_BYTES, "{} encodes to {len}, over {}", q.op(), Status::MAX_REQUEST_FRAME_BYTES);
+        }
+        for ok in ["rabbit", "red", "zone-a", "7", "a-1-b"] {
+            assert_eq!(tag_refusal(ok), None, "{ok}");
+        }
+        for (bad, says) in [("", "empty"), ("Rabbit", "\"Rabbit\""), ("-red", "\"-red\""), ("zone_a", "\"zone_a\""), ("a.b", "\"a.b\""), ("a/b", "\"a/b\"")] {
+            assert!(tag_refusal(bad).is_some_and(|r| r.contains(says)), "{bad:?}: {:?}", tag_refusal(bad));
+        }
+        assert!(tag_refusal(&"x".repeat(MAX_TAG_BYTES + 1)).is_some_and(|r| r.contains("over the 64-byte cap")));
+        let over: BTreeSet<String> = (0..=MAX_NODE_TAGS).map(|i| format!("t{i}")).collect();
+        assert!(tags_refusal(&over).is_some_and(|r| r.contains("33 tag labels, over the 32")));
+        assert!(TagFilter::All(BTreeSet::new()).refusal().is_some_and(|r| r.contains("names no label")));
+        assert!(TagFilter::Any(["Red".to_string()].into()).refusal().is_some_and(|r| r.contains("\"Red\"")));
+        let long = "x".repeat(4 * Status::MAX_REPLY_FRAME_BYTES);
+        let len = Status::encode_reply(&StatusReply::rejected_tags(&long)).unwrap().len();
+        assert!(len <= 1024, "rejected-tags encodes to {len}, over 1024");
     }
 
     /// CONTRACT (an error carries every detail it can, and still reaches the caller): a config refusal
@@ -1413,6 +1541,7 @@ mod tests {
             parked: false,
             load: Some(rafka_mesh_entity::NodeLoad { cpu_used_millicores: 2400, cpu_budget_millicores: 16000, ram_used_bytes: 123_456_789, ram_budget_bytes: 64_000_000_000 }),
             gossip: Some(rafka_mesh_entity::GossipStats { heard: 20, neighbours: 5, frames_sent: 123_456, frames_received: 654_321 }),
+            tags: ["rabbit".to_string(), "zone-a".to_string()].into(),
         }
     }
 

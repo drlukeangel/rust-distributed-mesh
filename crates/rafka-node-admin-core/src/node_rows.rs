@@ -392,7 +392,7 @@ impl NodeRows {
                 let Some((config, _)) = known else {
                     return Err(RowRefused::Unwritten(format!("{}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know", self.me)));
                 };
-                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config };
+                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags: Default::default() };
                 match self.storage.put_node_row(&row).await {
                     Ok(Ok(())) => {
                         self.written.hold(&row);
@@ -432,7 +432,7 @@ impl NodeRows {
             span.record("seeded_from", p.node_id.as_str());
         }
         span.record("keys", config.len() as u64);
-        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config };
+        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags: Default::default() };
         match self.storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);
@@ -612,7 +612,7 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
     let held_there = storage.hold_node_row(to, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read or named for the rename of {} from {from}: {e}", record.node_id)))?;
     let mut written = None;
     if !held_there {
-        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config };
+        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags: Default::default() };
         storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
         written = Some(row);
     }
