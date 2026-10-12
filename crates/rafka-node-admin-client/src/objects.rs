@@ -304,12 +304,12 @@ impl Nodes {
     /// Submit a workflow call. Its span opens here and closes with the returned stream; a call the
     /// fabric-primary did not accept ends here, with the span saying how.
     async fn workflow(&self, kind: WorkflowKind, change: BuildChange) -> Result<WorkflowStream, CallEnd> {
-        let span = kind.op().span();
+        let span = kind.span();
         match tracing::Instrument::instrument(self.carrier.create(change), span.clone()).await {
             Ok(inner) => Ok(WorkflowStream::new(inner, kind, span)),
             Err(end) => {
                 span.record("outcome", end.outcome());
-                span.in_scope(|| tracing::info!(op = kind.op().name(), reason = %end, "the workflow call was not accepted"));
+                span.in_scope(|| tracing::info!(op = kind.name(), reason = %end, "the workflow call was not accepted"));
                 Err(end)
             }
         }
@@ -319,12 +319,12 @@ impl Nodes {
     /// complete Build answers `AlreadyApplied` with its frames and terminal; a running one streams
     /// from where it is; a failed one takes its next attempt.
     pub async fn resume(&self, kind: WorkflowKind, accepted: &Accepted) -> Result<WorkflowStream, CallEnd> {
-        let span = kind.op().span();
+        let span = kind.span();
         match tracing::Instrument::instrument(self.carrier.resubmit(&accepted.build_id, accepted.attempt), span.clone()).await {
             Ok(inner) => Ok(WorkflowStream::new(inner, kind, span)),
             Err(end) => {
                 span.record("outcome", end.outcome());
-                span.in_scope(|| tracing::info!(op = kind.op().name(), reason = %end, "the workflow re-submit was not accepted"));
+                span.in_scope(|| tracing::info!(op = kind.name(), reason = %end, "the workflow re-submit was not accepted"));
                 Err(end)
             }
         }
@@ -437,6 +437,14 @@ impl Nodes {
     /// `node.delete` of `node`.
     pub async fn delete(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Delete(node.clone()), BuildChange::RemoveNode { node: node.clone() }).await
+    }
+
+    /// A recipe: one Build of node primitives (`BuildChange::Recipe`), each step its op's own
+    /// workflow, run in order by RDM (build.md §1; lifecycles/node-replace.md). The caller owns the
+    /// recipe. The stream is `Started`, then every step's events in step order, ending `Complete`
+    /// or `Failed { step, reason }` naming the step that failed; a resume never runs a completed step.
+    pub async fn recipe(&self, steps: Vec<rafka_node_rpc_contract::build::RecipeStep>) -> Result<WorkflowStream, CallEnd> {
+        self.workflow(WorkflowKind::Recipe(steps.clone()), BuildChange::Recipe { steps }).await
     }
 }
 

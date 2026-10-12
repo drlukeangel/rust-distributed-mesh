@@ -181,6 +181,8 @@ pub enum NodeEvent {
     Restarting,
     /// `node.restarted`: the restart finished.
     Restarted,
+    /// `node.updated`: the node's row holds what the update put (node-update.md).
+    Updated,
 }
 
 impl NodeEvent {
@@ -197,6 +199,7 @@ impl NodeEvent {
             Self::Deleted => "node.deleted",
             Self::Restarting => "node.restarting",
             Self::Restarted => "node.restarted",
+            Self::Updated => "node.updated",
         }
     }
 
@@ -213,6 +216,7 @@ impl NodeEvent {
             Self::Deleted => tracing::info_span!("rdm.node_admin.node.deleted.via-reply-frame", event = "node.deleted"),
             Self::Restarting => tracing::info_span!("rdm.node_admin.node.restarting.via-reply-frame", event = "node.restarting"),
             Self::Restarted => tracing::info_span!("rdm.node_admin.node.restarted.via-reply-frame", event = "node.restarted"),
+            Self::Updated => tracing::info_span!("rdm.node_admin.node.updated.via-reply-frame", event = "node.updated"),
         }
     }
 }
@@ -235,6 +239,8 @@ pub enum NodeStep {
     Restart,
     /// `node.delete`.
     Delete,
+    /// `node.update`.
+    Update,
 }
 
 impl NodeStep {
@@ -248,6 +254,7 @@ impl NodeStep {
             Self::Stop => "node.stop",
             Self::Restart => "node.restart",
             Self::Delete => "node.delete",
+            Self::Update => "node.update",
         }
     }
 }

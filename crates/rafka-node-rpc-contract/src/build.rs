@@ -135,6 +135,60 @@ pub enum BuildChange {
         /// The exited instance's incarnation.
         incarnation: IncarnationId,
     },
+    /// A recipe: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's
+    /// replace recipe is submitted as one Build of node primitives"; lifecycles/node-replace.md).
+    /// The caller owns the recipe; RDM executes each step as its op's own workflow and records the
+    /// step's receipts. A resumed recipe never runs a completed step again. The topology is unchanged:
+    /// a recipe is the next attempt of the accepted Build.
+    Recipe {
+        /// The steps, in the order they run.
+        steps: Vec<RecipeStep>,
+    },
+}
+
+/// One step of a [`BuildChange::Recipe`]: one node primitive acting on the node a `path.name` names
+/// when the step runs. A path an earlier step of the same recipe creates or renames to names the node
+/// that step left there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RecipeStep {
+    /// node.create at `node`: a new node.id, incarnation and data dir at that exact `path.name`
+    /// (`<name>.new` for a replace's successor), claimed by insert-and-fail before anything is launched.
+    Create {
+        /// The `path.name` the node is created at.
+        node: PathName,
+    },
+    /// node.stop of the live node at `node`: it is stopped, its process and data kept.
+    Stop {
+        /// The node.
+        node: PathName,
+    },
+    /// node.update of the node at `node`: its `path.name` becomes `name` (node-update.md, under the
+    /// rename precondition: the node is stopped, or drained with `node.connections.deleted`).
+    Update {
+        /// The node.
+        node: PathName,
+        /// The `path.name` it takes.
+        name: PathName,
+    },
+    /// node.start of the stopped node at `node`: the same process rejoins under the name its row holds.
+    Start {
+        /// The node.
+        node: PathName,
+    },
+    /// node.delete of the node at `node`: its identity and name are released, its storage kept.
+    Delete {
+        /// The node.
+        node: PathName,
+    },
+}
+
+impl RecipeStep {
+    /// The `path.name` the step acts on when it runs.
+    pub fn node(&self) -> &PathName {
+        match self {
+            Self::Create { node } | Self::Stop { node } | Self::Update { node, .. } | Self::Start { node } | Self::Delete { node } => node,
+        }
+    }
 }
 
 /// What `Create` asks.

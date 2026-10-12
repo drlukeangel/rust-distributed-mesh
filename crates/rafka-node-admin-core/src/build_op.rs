@@ -120,6 +120,9 @@ impl BuildDoor {
             BuildChange::Drain { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Drain, node.clone(), ActionKind::Drain, None).await,
             BuildChange::Stop { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Stop, node.clone(), ActionKind::Stop, None).await,
             BuildChange::Start { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Start, node.clone(), ActionKind::Start, None).await,
+            BuildChange::Recipe { steps } => {
+                return Err(BuildReply::Rejected { reason: "recipe-not-served".into(), detail: format!("{}: no door runs a recipe of {} node primitive step(s) as one Build", self.me, steps.len()) });
+            }
             BuildChange::Recover { node, node_id, incarnation } => {
                 return match cp.open_recovery("build.create", node.clone(), node_id.clone(), incarnation.clone()).await {
                     Ok(crate::http::Recovery::Opened(o)) => Ok(Admitted::Opened(o)),

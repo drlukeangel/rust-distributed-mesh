@@ -8,6 +8,9 @@
 //! running is never recovered; a repeat submit is answered, never run twice; an exit during a
 //! workflow fails that workflow and the next tick recovers the member.
 
+use rafka_mesh_entity::PathName;
+use rafka_node_admin_client::{Frame, NodeAdminClient, NodeEvent, NodeSelector, NodeStatus, Peers};
+use rafka_node_rpc_contract::build::RecipeStep;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::process_faults::{ExactRuntime, Fault};
 use serde_json::{json, Value};
@@ -571,162 +574,155 @@ fn end(sp: &Value) -> u64 {
     sp["end_unix_nano"].as_u64().expect("a span end")
 }
 
-/// The steps of a planned replace of a live birth, in the order node-replace.md numbers them: the old
-/// birth drains (drain-node, node-drained) and stops (stop-node, node-left, its NodeStopped) and is
-/// parked (1), is renamed `<path>.old` while parked (2), and node.create starts the successor at the
-/// freed name (3). The predecessor stays parked with its data.
-const REPLACE_ORDER: [&str; 11] = [
-    "DrainNode",
-    "AwaitNodeDrained",
-    "StopNode",
-    "AwaitNodeLeft",
-    "RenamePredecessor",
-    "AllocateIdentity",
-    "DeployRuntime",
-    "WaitForBind",
-    "WaitForMeshJoin",
-    "WaitForNodeReady",
-    "Complete",
-];
-
-/// The steps a planned replace never runs: it deletes nothing, proves no exit and moves no data.
-const NOT_IN_A_REPLACE: [&str; 5] = ["NodeDeleting", "TerminateRuntime", "HandoffStorage", "NodeDeleted", "ReleaseStorage"];
-
-/// The replace of `node` in `attempt` of `build` ran as ONE operation `replace-node:<node>`, its steps in
-/// `order`, and the predecessor was renamed `<node>.old` before the successor's identity was allocated.
-fn assert_replace_followed_the_spec(spans: &[Value], build: &str, attempt: &str, node: &str, old: &Value, order: &[&str]) {
-    let reconcile = reconcile_span(spans, build, attempt)
-        .unwrap_or_else(|| panic!("the attempt's reconcile span is exported"));
-    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("replace-node:{node}"), "one replace operation, never retire then create: {reconcile}");
-    let mut last = 0u64;
-    for step in order {
-        let sp = step_span(spans, build, attempt, node, step).unwrap_or_else(|| panic!("step {step} ran"));
-        assert!(start(sp) >= last, "step {step} starts before the step it follows: {sp}");
-        last = start(sp);
-    }
-    // The rename is spanned, names the predecessor's id, and happens before the successor's identity exists.
-    let rename = named(spans, "rdm.node_admin.node.update.via-replace-rename").into_iter().find(|sp| sp["attributes"]["node_id"] == old["node_id"]).expect("the rename span");
-    assert_eq!(s(&rename["attributes"]["from"]), node);
-    assert_eq!(s(&rename["attributes"]["to"]), format!("{node}.old"));
-    let allocate = step_span(spans, build, attempt, node, "AllocateIdentity").unwrap();
-    assert!(end(rename) <= start(allocate), "the predecessor is renamed before the successor is created: {rename} vs {allocate}");
-}
-
-/// A planned replace of `old` at `node` deleted nothing, proved no exit and moved no data: none of
-/// [`NOT_IN_A_REPLACE`] ran, and no NodeDeleted was published for the old identity.
-fn assert_replace_deleted_nothing(spans: &[Value], build: &str, attempt: &str, node: &str, old: &Value) {
-    for step in NOT_IN_A_REPLACE {
-        assert!(step_span(spans, build, attempt, node, step).is_none(), "a replace runs no {step}: the predecessor stays parked, its delete is the recipe's own later step");
-    }
-    let deleted: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == old["node_id"]).collect();
-    assert!(deleted.is_empty(), "no NodeDeleted for the parked predecessor: {deleted:?}");
+fn events(frames: &[Frame]) -> Vec<NodeEvent> {
+    frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect()
 }
 
 fn alive(pid: u64) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// CONTRACT: `POST /api/nodes/{name}/replace` replaces a live node as the next attempt of the
-/// accepted Build (reason replace, no Build minted) by Rafka's recipe (node-replace.md 1-3): one
-/// operation `replace-node:<path>`; the old birth drains and stops, its NodeStopped drops it from
-/// every admin's book, and it is renamed `<path>.old` while parked; node.create then starts the
-/// successor at the freed name, a new NodeId with a new transport key and its own directory. No
-/// admin's view holds two live births at the path at any step. The predecessor stays parked with its
-/// data: when the successor is ready, and after the operation completes, its process is alive and its
-/// data is where it was ("Rafka transfers its data as its own recipe step"). The replace deletes
-/// nothing (no NodeDeleting, terminal proof, storage hand-over or NodeDeleted): the predecessor's
-/// row moves to `<path>.old` and stays its row, and the successor's row is seeded from it.
+/// Every frame of `stream`, in order, up to and including the terminal one.
+async fn frames(mut stream: rafka_node_admin_client::WorkflowStream) -> Vec<Frame> {
+    let mut out = Vec::new();
+    while let Some(f) = stream.next().await {
+        let f = f.unwrap_or_else(|e| panic!("the reply stream broke: {e}"));
+        let terminal = f.is_terminal();
+        out.push(f);
+        if terminal {
+            break;
+        }
+    }
+    out
+}
+
+/// The replace recipe of `node` (lifecycles/node-replace.md "Numbered end-to-end sequence" 1-4 and
+/// the predecessor's delete): node.create(`<name>.new`), node[1].stop, node[1].update(`<name>.old`),
+/// node[2].stop, node[2].update(`<name>`), node[2].start, node[1].delete.
+fn replace_recipe(node: &PathName) -> Vec<RecipeStep> {
+    vec![
+        RecipeStep::Create { node: node.successor() },
+        RecipeStep::Stop { node: node.clone() },
+        RecipeStep::Update { node: node.clone(), name: node.renamed() },
+        RecipeStep::Stop { node: node.successor() },
+        RecipeStep::Update { node: node.successor(), name: node.clone() },
+        RecipeStep::Start { node: node.clone() },
+        RecipeStep::Delete { node: node.renamed() },
+    ]
+}
+
+/// CONTRACT (lifecycles/node-replace.md: "Replace is Rafka's recipe, submitted as one Build. RDM
+/// executes its primitives and records their receipts; it has no replace opcode"; build.md §1:
+/// "Rafka's replace recipe is submitted as one Build of node primitives"): the caller submits the
+/// replace of `mesh1.rpc.1` as ONE recipe over the `node` object, and RDM runs its steps in order,
+/// each as its own op's operation: node.create(`mesh1.rpc.1.new`), node[1].stop,
+/// node[1].update(`mesh1.rpc.1.old`), node[2].stop, node[2].update(`mesh1.rpc.1`), node[2].start,
+/// node[1].delete. The stream is `Started`, every step's events in that order, `Complete`; the
+/// Build's operations are exactly those seven keys in that order, and no replace operation exists.
+/// The successor is born at `.new` (a new node.id, transport key and data dir), is stopped before it
+/// takes the name and renamed by the mesh-primary while stopped (R-CR1a), its config seeded from the
+/// `.old` row (R12/R13), and started under `mesh1.rpc.1`: its join is admitted under that name. The
+/// predecessor is stopped before it gives up its name, and deleted at `.old` on the provider's exit
+/// proof (NodeDeleted once, its Deleted row at `.old`, its data dir kept). RDM moves no data. At the
+/// end `mesh1.rpc.1` is the successor, ready, and nothing is held at `.new` or `.old`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_data() {
-    let (estate, birth_build) = estate("a_planned_replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_data").await;
+async fn a_replace_recipe_runs_as_one_build_of_node_primitives_in_order() {
+    let (mut estate, _birth) = estate("a_replace_recipe_runs_as_one_build_of_node_primitives_in_order").await;
     const NODE: &str = "mesh1.rpc.1";
-    let before = estate.node(NODE).await;
-    // The predecessor's process and data: Rafka's to move after the create, never RDM's.
+    let path: PathName = NODE.parse().unwrap();
+    let peers = Peers::of(&[]).await;
+    let nodes = peers.nodes(NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
+    let mesh = nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get");
+    let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
     let pid = estate.pid_of(NODE).await;
     let old_dir = std::path::PathBuf::from(estate.data_dir_of(NODE).await);
     let segment = old_dir.join("app-data").join("seg-0");
     std::fs::create_dir_all(segment.parent().unwrap()).unwrap();
     std::fs::write(&segment, b"records").unwrap();
-    let (status, r) = estate.post(&format!("/api/nodes/{NODE}/replace"), &json!({})).await;
-    assert_eq!(status, 202, "{r}");
-    assert_eq!(s(&r["build_id"]), birth_build, "no Build is minted: {r}");
-    // The attempt is the Build's current attempt as the admin at the control API learns it.
-    let opened = wait_for("the replace attempt is the Build's current attempt", Duration::from_secs(30), || async {
-        let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
-        (b["reason"] == "replace").then_some(b)
-    })
-    .await;
-    assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("replace", NODE), "{opened}");
-    assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "fenced to the live birth: {opened}");
-    let attempt_no = Estate::attempt_of(&r);
-    // While the replace runs, no admin's view holds two live births at the path at any step
-    // (node-replace.md: the predecessor is parked and renamed before node.create claims the freed
-    // name). That the view named the predecessor `<path>.old` is read from the span below.
-    let admins: Vec<String> = estate.nodes().await.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["admin_api_base"])).collect();
-    assert_eq!(admins.len(), 2, "both admins serve a view");
-    let old_name = format!("{NODE}.old");
-    let (after, parked_at_ready, data_at_ready) = wait_for(&format!("{NODE} ready under a new NodeId"), SETTLE, || async {
-        at_most_one_live_birth(&admins, NODE).await;
-        let nodes = estate.nodes().await;
-        assert!(nodes.iter().filter(|n| n["name"] == NODE).count() <= 1, "two births at {NODE}: {nodes:#?}");
-        let after = nodes.into_iter().find(|n| n["name"] == NODE && ready(n) && n["node_id"] != before["node_id"])?;
-        Some((after, alive(pid), std::fs::read(&segment).ok()))
-    })
-    .await;
-    assert!(parked_at_ready, "the predecessor's process {pid} is alive, parked, when the successor is ready");
-    assert_eq!(data_at_ready.as_deref(), Some(&b"records"[..]), "the predecessor's data is in its own directory when the successor is ready: {segment:?}");
 
-    estate.await_attempt(&birth_build, attempt_no, SETTLE).await;
-    assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new node has a new transport key");
-    let attempt = attempt_no.to_string();
-    let spans = wait_for("the replace operation's last step, its reconcile span and the successor's boot span are exported", Duration::from_secs(60), || async {
-        let spans = estate.spans();
-        (step_span(&spans, &birth_build, &attempt, NODE, "Complete").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some() && booted(&spans, &after)).then_some(spans)
-    })
-    .await;
-    assert_replace_followed_the_spec(&spans, &birth_build, &attempt, NODE, &before, &REPLACE_ORDER);
-    assert_replace_deleted_nothing(&spans, &birth_build, &attempt, NODE, &before);
-    assert_parked_before_the_successor(&spans, &birth_build, &attempt, NODE, &before, admins.len());
-    let held_old = named(&spans, "rdm.node_admin.topology.update.via-predecessor-held")
-        .into_iter()
-        .find(|sp| sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["node_id"] == before["node_id"])
-        .unwrap_or_else(|| panic!("the executor's view never named the predecessor {old_name}"));
-    let complete = step_span(&spans, &birth_build, &attempt, NODE, "Complete").expect("Complete ran");
-    assert!(start(held_old) < start(complete), "the view named the predecessor {old_name} before the replace completed: {held_old}");
-    // The node's row (ops-naming "Node data": "a Deleted row, or the <name>.old row"): at the
-    // executor's RenamePredecessor the mesh's primary, which executes it, moves the predecessor's row
-    // to `<path>.old`, where it stays the parked predecessor's row, and the successor's create claims
-    // its row at the path.name, seeded from the .old row, before it is launched (R13).
-    let moved: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-rename").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
-    assert_eq!(moved.len(), 1, "one move of the predecessor's row: {moved:?}");
-    assert_eq!((s(&moved[0]["attributes"]["from"]), s(&moved[0]["attributes"]["to"]), s(&moved[0]["attributes"]["outcome"])), (NODE.to_string(), old_name.clone(), "renamed".to_string()), "{}", moved[0]);
-    let old_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == old_name.as_str()).collect();
-    assert!(old_deleted.is_empty(), "no Deleted row at {old_name}: the predecessor is parked, not deleted: {old_deleted:?}");
-    let seeded: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == NODE && sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "claim").collect();
-    assert_eq!(seeded.len(), 1, "the successor claims its row once: {seeded:?}");
-    assert_eq!((s(&seeded[0]["attributes"]["outcome"]), s(&seeded[0]["attributes"]["seeded_from"])), ("row-seeded".to_string(), s(&before["node_id"])), "{}", seeded[0]);
-    assert!(start(moved[0]) < start(seeded[0]), "the predecessor's row moved before the successor claimed the path.name");
-    estate.artifact("node-rows.json", &json!({"moved": moved[0], "seeded": seeded[0]}));
-    let op = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt && sp["attributes"]["node"] == NODE).expect("the node operation span");
-    estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
-    // After the operation: the predecessor is parked with its data, the successor has none of it.
-    assert!(alive(pid), "the predecessor's process {pid} is alive, parked, after the replace completed");
-    assert_eq!(std::fs::read(&segment).unwrap(), b"records", "the predecessor's data stays where it was: {segment:?}");
+    let stream = nodes.recipe(replace_recipe(&path)).await.expect("the recipe was accepted");
+    let accepted = stream.accepted().clone();
+    let got = frames(stream).await;
+    assert!(matches!(got.first(), Some(Frame::Started { .. })), "{got:?}");
+    use NodeEvent::*;
+    let stop = [Draining, Drained, ConnectionsDeleted, Stopped];
+    let mut want = vec![Joined, Started, Created];
+    want.extend(stop);
+    want.push(Updated);
+    want.extend(stop);
+    want.extend([Updated, Joined, Started, Deleted]);
+    assert_eq!(events(&got), want, "every step's events, in step order: {got:?}");
+    assert_eq!(got.last(), Some(&Frame::Complete), "{got:?}");
+
+    // The Build's operations: the seven steps, each its own op's operation, in order; no replace.
+    let build = accepted.build_id.0.clone();
+    let (_, b) = estate.get(&format!("/api/builds?id={build}")).await;
+    let steps = b["steps"].as_array().cloned().unwrap_or_default();
+    let mut operations: Vec<String> = Vec::new();
+    for r in steps.iter().filter(|r| r["attempt"].as_u64().unwrap_or(0) >= accepted.attempt as u64) {
+        let op = s(&r["operation"]);
+        if !operations.contains(&op) {
+            operations.push(op);
+        }
+    }
+    let keys = [
+        format!("create-node:{NODE}.new"),
+        format!("stop-node:{NODE}"),
+        format!("update-node:{NODE}"),
+        format!("stop-node:{NODE}.new"),
+        format!("update-node:{NODE}.new"),
+        format!("start-node:{NODE}"),
+        format!("delete-node:{NODE}.old"),
+    ];
+    assert_eq!(operations, keys.to_vec(), "the recipe's operations, in order: {b:#}");
+    assert!(!steps.iter().any(|r| s(&r["operation"]).starts_with("replace-node:")), "no replace operation exists: {b:#}");
+
+    // The end state: the successor holds the name, ready; nothing at `.new` or `.old`.
+    let after = nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get");
+    let successor = after.iter().find(|n| n.name == path).cloned().expect("node.get lists the successor at the name");
+    assert!(successor.status == NodeStatus::ReadyForTraffic && !successor.parked, "{successor:?}");
+    assert_ne!(successor.node_id, before.node_id, "a new node.id");
+    assert_ne!(successor.endpoint_id, before.endpoint_id, "a new transport key");
+    assert!(!after.iter().any(|n| n.name == path.successor() || n.name == path.renamed()), "nothing is held at .new or .old: {after:#?}");
+    assert!(!alive(pid), "the predecessor's process {pid} exited at its delete");
+    assert_eq!(std::fs::read(&segment).unwrap(), b"records", "node.delete keeps storage, and RDM moved no data: {segment:?}");
     let new_dir = std::path::PathBuf::from(estate.data_dir_of(NODE).await);
-    assert_ne!(new_dir, old_dir, "the successor has its own directory");
-    assert!(!new_dir.join("app-data").exists(), "RDM handed nothing to the successor's directory: {new_dir:?}");
-    // The shape is whole: two admins and three rpc nodes ready, the successor the one birth at the
-    // path; the parked predecessor is no live birth.
-    let settled = wait_for("mesh1 holds 2 admins and 3 rpc nodes ready besides the parked predecessor", Duration::from_secs(30), || async {
-        let nodes = estate.nodes().await;
-        let rest: Vec<&Value> = nodes.iter().filter(|n| n["node_id"] != before["node_id"]).collect();
-        let count = |kind: &str| rest.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == kind).count();
-        (count("node_admin") == 2 && count("rpc_node") == 3 && rest.iter().all(|n| ready(n))).then_some(nodes)
-    })
-    .await;
-    assert_eq!(settled.iter().filter(|n| n["name"] == NODE).count(), 1, "exactly one birth at {NODE}");
-    assert!(!settled.iter().any(|n| n["node_id"] == before["node_id"] && live(n)), "the parked predecessor is no live birth: {settled:#?}");
-    estate.shutdown().await;
+    assert_ne!(new_dir, old_dir, "the successor has its own data dir");
+    assert!(!new_dir.join("app-data").exists(), "RDM handed nothing to the successor: {new_dir:?}");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let of = |name: &str, id: &rafka_mesh_entity::NodeId| -> Vec<Value> { named(&spans, name).into_iter().filter(|sp| s(&sp["attributes"]["node_id"]) == id.to_string()).cloned().collect() };
+    // The predecessor: stopped (its NodeStopped) before it gives up its name, renamed while stopped.
+    let stopped1 = of("rdm.node_admin.node.update.via-node-stopped", &before.node_id);
+    assert_eq!(stopped1.len(), 1, "the predecessor's NodeStopped once: {stopped1:#?}");
+    let renames1 = of("rdm.node_admin.node.update.via-update-node", &before.node_id);
+    assert_eq!(renames1.len(), 1, "{renames1:#?}");
+    let r1 = &renames1[0];
+    assert_eq!((s(&r1["attributes"]["from"]), s(&r1["attributes"]["to"]), s(&r1["attributes"]["traffic"]), s(&r1["attributes"]["outcome"])), (NODE.to_string(), format!("{NODE}.old"), "Stopped".into(), "node-updated".into()), "{r1:#}");
+    assert!(end(&stopped1[0]) <= start(r1), "the predecessor is stopped before it gives up its name");
+    // The successor: stopped before it takes the name, renamed while stopped, its config seeded from
+    // the `.old` row, then started under the name.
+    let stopped2 = of("rdm.node_admin.node.update.via-node-stopped", &successor.node_id);
+    assert_eq!(stopped2.len(), 1, "the successor's NodeStopped once: {stopped2:#?}");
+    let renames2 = of("rdm.node_admin.node.update.via-update-node", &successor.node_id);
+    assert_eq!(renames2.len(), 1, "{renames2:#?}");
+    let r2 = &renames2[0];
+    assert_eq!((s(&r2["attributes"]["from"]), s(&r2["attributes"]["to"]), s(&r2["attributes"]["traffic"]), s(&r2["attributes"]["outcome"])), (format!("{NODE}.new"), NODE.to_string(), "Stopped".into(), "node-updated".into()), "{r2:#}");
+    assert_eq!(s(&r2["attributes"]["seeded_from"]), before.node_id.to_string(), "the successor's config is seeded from the .old row: {r2:#}");
+    assert!(end(r1) <= start(r2) && end(&stopped2[0]) <= start(r2), "the name is free and the successor stopped before it takes it");
+    let join = of("rdm.node_admin.node.update.via-join", &successor.node_id).into_iter().filter(|sp| s(&sp["attributes"]["outcome"]) == "installed" && start(sp) > end(r2)).collect::<Vec<_>>();
+    assert!(join.iter().any(|j| s(&j["attributes"]["admitted_as"]) == NODE), "the started successor's join is admitted under {NODE}: {join:#?}");
+    // The predecessor's delete at `.old`: the provider's exit proof, NodeDeleted once, the Deleted row.
+    let deleted = of("rdm.node_admin.node.delete.via-node-deleted", &before.node_id);
+    assert_eq!(deleted.len(), 1, "NodeDeleted once for the predecessor: {deleted:#?}");
+    assert_eq!(s(&deleted[0]["attributes"]["operation"]), format!("delete-node:{NODE}.old"));
+    let rows: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| s(&sp["attributes"]["subject"]) == format!("{NODE}.old")).collect();
+    assert!(rows.len() == 1 && s(&rows[0]["attributes"]["outcome"]) == "row-deleted" && s(&rows[0]["attributes"]["node_id"]) == before.node_id.to_string(), "one Deleted row at .old for the predecessor: {rows:#?}");
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").is_empty(), "nothing of the recipe is drift");
+    let create = named(&spans, "rdm.node_admin.node.create.via-build").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == build && s(&sp["attributes"]["node"]) == format!("{NODE}.new")).cloned().expect("the successor's create operation span");
+    estate.artifact("recipe.json", &json!({"operations": keys, "rename_old": r1, "rename_new": r2, "node_deleted": deleted[0], "deleted_row": rows[0]}));
+    estate.record_trace_url(create["trace_id"].as_str().unwrap_or(""));
 }
 
 /// The steps of `node.delete` of a parked birth (node-decommission.md: its stop steps are already done,

@@ -23,7 +23,7 @@ use crate::names::{NodeEvent, NodeOp, NodeStep};
 use crate::build_stream::{BuildFrame, BuildReceipts, BuildStream};
 use crate::{Accepted, BuildId, BuildView, CallEnd, StepView};
 use rafka_mesh_entity::{NodeKind, PathName};
-use rafka_node_rpc_contract::build::StepResult;
+use rafka_node_rpc_contract::build::{RecipeStep, StepResult};
 
 /// A frame of a workflow's reply stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +84,9 @@ pub enum WorkflowKind {
     Restart(PathName),
     /// `node.delete` of this node: `retire-node:<path.name>`.
     Delete(PathName),
+    /// A recipe: one Build of node primitives, each step its own op's operation, in order
+    /// (`BuildChange::Recipe`; build.md §1, lifecycles/node-replace.md).
+    Recipe(Vec<RecipeStep>),
 }
 
 /// One row of the mapping from a Build receipt to the canonical names.
@@ -94,10 +97,23 @@ struct Row {
     /// The step events the step's `Complete` receipt announces, in order.
     events: &'static [NodeEvent],
     terminal: bool,
+    /// The exact operation key the row belongs to, for a recipe's step: two steps of one recipe
+    /// share an operation prefix (a stop of the predecessor and of the successor) and differ by path.
+    key: Option<String>,
 }
 
 const fn row(operation: &'static str, step: &'static str, node_step: NodeStep, events: &'static [NodeEvent], terminal: bool) -> Row {
-    Row { operation, step, node_step, events, terminal }
+    Row { operation, step, node_step, events, terminal, key: None }
+}
+
+impl Row {
+    /// Whether the receipt key `key` is this row's operation in workflow `kind`.
+    fn matches(&self, kind: &WorkflowKind, key: &str) -> bool {
+        match &self.key {
+            Some(k) => k == key,
+            None => kind.operation_matches(self.operation, key),
+        }
+    }
 }
 
 /// The SeatTransfer row under `operation`, a row of the workflow only when `target` is a node-admin:
@@ -157,33 +173,108 @@ fn shutdown_rows(operation: &'static str, target: &PathName) -> Vec<Row> {
     rows
 }
 
+/// The rows of one recipe step, in pipeline order, each keyed to the step's exact operation. Each
+/// step is its op's own workflow: the same rows that op's call streams.
+fn recipe_step_rows(step: &RecipeStep) -> Vec<Row> {
+    let mut rows: Vec<Row> = match step {
+        RecipeStep::Create { .. } => create_rows!("create-node", &[NodeEvent::Created]).into(),
+        RecipeStep::Stop { node } => stop_rows(node),
+        RecipeStep::Update { .. } => vec![row("update-node", "UpdateNode", NodeStep::Update, &[], false), row("update-node", "Complete", NodeStep::Update, &[NodeEvent::Updated], false)],
+        RecipeStep::Start { .. } => start_rows!("start-node", &[], NodeStep::Start).into(),
+        // A stopped node at a `.old` path is deleted by its own operation (its stop steps are done);
+        // any other node by node.delete's own workflow.
+        RecipeStep::Delete { node } if node.old => vec![
+            row("delete-node", "NodeDeleting", NodeStep::Delete, &[], false),
+            row("delete-node", "TerminateRuntime", NodeStep::Stop, &[], false),
+            row("delete-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
+            row("delete-node", "Complete", NodeStep::Delete, &[], false),
+        ],
+        RecipeStep::Delete { node } => delete_rows(node),
+    };
+    for r in &mut rows {
+        r.terminal = false;
+        r.key = Some(format!("{}:{}", r.operation, step.node()));
+    }
+    rows
+}
+
+/// The workflow step a recipe step is, for a failure no row names.
+fn recipe_node_step(step: &RecipeStep) -> NodeStep {
+    match step {
+        RecipeStep::Create { .. } => NodeStep::Create,
+        RecipeStep::Stop { .. } => NodeStep::Stop,
+        RecipeStep::Update { .. } => NodeStep::Update,
+        RecipeStep::Start { .. } => NodeStep::Start,
+        RecipeStep::Delete { .. } => NodeStep::Delete,
+    }
+}
+
+/// The stop's rows under `stop-node`: its one call drains, cuts the mesh connections and answers
+/// `stopped`, so its receipts announce all four events, and no runtime exits.
+fn stop_rows(n: &PathName) -> Vec<Row> {
+    let mut rows: Vec<Row> = seat_transfer_row("stop-node", NodeStep::Stop, n).into_iter().collect();
+    rows.extend([
+        row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted], false),
+        row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
+        row("stop-node", "Complete", NodeStep::Stop, &[], true),
+    ]);
+    rows
+}
+
+/// node.delete's rows under `retire-node`.
+fn delete_rows(n: &PathName) -> Vec<Row> {
+    let mut rows = vec![row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false)];
+    rows.extend(shutdown_rows("retire-node", n));
+    rows.extend([
+        row("retire-node", "TerminateRuntime", NodeStep::Stop, &[], false),
+        row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
+        row("retire-node", "RemoveTopologyMembership", NodeStep::Delete, &[], false),
+        row("retire-node", "Complete", NodeStep::Delete, &[], true),
+    ]);
+    rows
+}
+
 impl WorkflowKind {
-    /// The node call this workflow is.
-    pub fn op(&self) -> NodeOp {
-        match self {
+    /// The node call this workflow is; `None` for a recipe, which is a Build of several.
+    pub fn op(&self) -> Option<NodeOp> {
+        Some(match self {
             Self::Create => NodeOp::Create,
             Self::Stop(_) => NodeOp::Stop,
             Self::Start(_) => NodeOp::Start,
             Self::Restart(_) => NodeOp::Restart,
             Self::Delete(_) => NodeOp::Delete,
+            Self::Recipe(_) => return None,
+        })
+    }
+
+    /// The span of the call: the node op's own, or for a recipe
+    /// `rdm.node_admin.build.create.via-recipe` naming its steps.
+    pub fn span(&self) -> tracing::Span {
+        match (self.op(), self) {
+            (Some(op), _) => op.span(),
+            (None, Self::Recipe(steps)) => tracing::info_span!(
+                "rdm.node_admin.build.create.via-recipe",
+                op = "build.create",
+                steps = %steps.iter().map(|s| format!("{}:{}", recipe_node_step(s).name(), s.node())).collect::<Vec<_>>().join(" "),
+                outcome = tracing::field::Empty,
+                failed_step = tracing::field::Empty,
+                build_id = tracing::field::Empty,
+                attempt = tracing::field::Empty,
+            ),
+            (None, _) => unreachable!("only a recipe names no node op"),
         }
+    }
+
+    /// The name the call is spanned and refused under.
+    pub fn name(&self) -> &'static str {
+        self.op().map(NodeOp::name).unwrap_or("build.create")
     }
 
     /// The pipeline rows of the workflow in order.
     fn rows(&self) -> Vec<Row> {
         match self {
             Self::Create => create_rows!("create-node", &[NodeEvent::Created]).into(),
-            // The stop's one call drains, cuts the mesh connections and answers `stopped`: its receipts
-            // announce all four events, and no runtime exits.
-            Self::Stop(n) => {
-                let mut rows: Vec<Row> = seat_transfer_row("stop-node", NodeStep::Stop, n).into_iter().collect();
-                rows.extend([
-                    row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted], false),
-                    row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
-                    row("stop-node", "Complete", NodeStep::Stop, &[], true),
-                ]);
-                rows
-            }
+            Self::Stop(n) => stop_rows(n),
             Self::Start(_) => start_rows!("start-node", &[], NodeStep::Start).into(),
             // A restart is one operation: the birth is held, drains and stops (it parks), then the
             // same process starts, and its one `Complete` ends it.
@@ -193,15 +284,14 @@ impl WorkflowKind {
                 rows.extend(start_rows!("restart-node", &[NodeEvent::Restarted], NodeStep::Restart));
                 rows
             }
-            Self::Delete(n) => {
-                let mut rows = vec![row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false)];
-                rows.extend(shutdown_rows("retire-node", n));
-                rows.extend([
-                    row("retire-node", "TerminateRuntime", NodeStep::Stop, &[], false),
-                    row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
-                    row("retire-node", "RemoveTopologyMembership", NodeStep::Delete, &[], false),
-                    row("retire-node", "Complete", NodeStep::Delete, &[], true),
-                ]);
+            Self::Delete(n) => delete_rows(n),
+            // A recipe's rows are its steps' own, each keyed to its exact operation; only the last
+            // row of the last step ends the workflow.
+            Self::Recipe(steps) => {
+                let mut rows: Vec<Row> = steps.iter().flat_map(recipe_step_rows).collect();
+                if let Some(last) = rows.last_mut() {
+                    last.terminal = true;
+                }
                 rows
             }
         }
@@ -212,6 +302,19 @@ impl WorkflowKind {
         match self {
             Self::Create => prefix == "create-node" && key.starts_with("create-node:"),
             Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) => key == format!("{prefix}:{n}"),
+            Self::Recipe(steps) => steps.iter().any(|s| key == format!("{prefix}:{}", s.node())),
+        }
+    }
+
+    /// The workflow step a failure of operation `key` names when no row does.
+    fn fallback_step(&self, key: &str) -> NodeStep {
+        match self {
+            Self::Create => NodeStep::Create,
+            Self::Stop(_) => NodeStep::Stop,
+            Self::Start(_) => NodeStep::Start,
+            Self::Restart(_) => NodeStep::Restart,
+            Self::Delete(_) => NodeStep::Delete,
+            Self::Recipe(steps) => steps.iter().find(|s| key.split_once(':').is_some_and(|(_, p)| p == s.node().to_string())).map(recipe_node_step).unwrap_or(NodeStep::Create),
         }
     }
 }
@@ -256,16 +359,13 @@ pub fn fold_receipts(kind: &WorkflowKind, receipts: &BuildReceipts, from_attempt
 /// [`fold`] over bare receipts.
 pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) -> Result<Folded, CallEnd> {
     let rows = kind.rows();
-    let prefixes: Vec<&str> = {
-        let mut p: Vec<&str> = rows.iter().map(|r| r.operation).collect();
-        p.dedup();
-        p
-    };
     // The latest receipt of each (operation, step) among the attempts this call opened.
     let mut latest: Vec<(String, String, u32, Option<String>)> = Vec::new();
     for s in steps.iter().filter(|s| s.attempt >= from_attempt) {
-        let Some(prefix) = prefixes.iter().find(|p| kind.operation_matches(p, &s.operation)) else { continue };
-        if !rows.iter().any(|r| r.operation == *prefix && r.step == s.step) {
+        if !rows.iter().any(|r| r.matches(kind, &s.operation)) {
+            continue;
+        }
+        if !rows.iter().any(|r| r.matches(kind, &s.operation) && r.step == s.step) {
             return Err(CallEnd::UnrecognisedReceipt { operation: s.operation.clone(), step: s.step.clone() });
         }
         let failure = match &s.outcome {
@@ -286,7 +386,7 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
     let mut completed = Vec::new();
     let mut next = None;
     for r in &rows {
-        let held = latest.iter().find(|(op, st, ..)| r.operation == op.split(':').next().unwrap_or_default() && *st == r.step);
+        let held = latest.iter().find(|(op, st, ..)| r.matches(kind, op) && *st == r.step);
         match held {
             Some((op, st, _, None)) => {
                 completed.push((op.clone(), st.clone()));
@@ -303,7 +403,7 @@ pub fn fold_steps(kind: &WorkflowKind, steps: &[StepView], from_attempt: u32) ->
             }
             None => {
                 if next.is_none() {
-                    next = Some((r.operation.to_string(), r.step.to_string()));
+                    next = Some((r.key.clone().unwrap_or_else(|| r.operation.to_string()), r.step.to_string()));
                 }
                 break;
             }
@@ -410,8 +510,10 @@ impl WorkflowStream {
                     if attempt < self.accepted.attempt {
                         continue;
                     }
-                    let Some(prefix) = rows.iter().map(|r| r.operation).find(|p| self.kind.operation_matches(p, &operation)) else { continue };
-                    let Some(row) = rows.iter().find(|r| r.operation == prefix && r.step == step) else {
+                    if !rows.iter().any(|r| r.matches(&self.kind, &operation)) {
+                        continue;
+                    }
+                    let Some(row) = rows.iter().find(|r| r.matches(&self.kind, &operation) && r.step == step) else {
                         return Some(Err(self.broke(CallEnd::UnrecognisedReceipt { operation, step })));
                     };
                     if !self.delivered.insert((operation.clone(), step.clone())) {
@@ -439,17 +541,7 @@ impl WorkflowStream {
                 }
                 BuildFrame::Failed { operation, step, reason, .. } => {
                     self.ended = true;
-                    let node_step = rows
-                        .iter()
-                        .find(|r| r.step == step && operation.split(':').next() == Some(r.operation))
-                        .map(|r| r.node_step)
-                        .unwrap_or(match self.kind {
-                            WorkflowKind::Create => NodeStep::Create,
-                            WorkflowKind::Stop(_) => NodeStep::Stop,
-                            WorkflowKind::Start(_) => NodeStep::Start,
-                            WorkflowKind::Restart(_) => NodeStep::Restart,
-                            WorkflowKind::Delete(_) => NodeStep::Delete,
-                        });
+                    let node_step = rows.iter().find(|r| r.step == step && r.matches(&self.kind, &operation)).map(|r| r.node_step).unwrap_or_else(|| self.kind.fallback_step(&operation));
                     self.span.record("outcome", "failed");
                     self.span.record("failed_step", node_step.name());
                     self.span.in_scope(|| tracing::info!(step = node_step.name(), reason = %reason, "the workflow failed at a step"));
