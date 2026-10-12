@@ -76,6 +76,13 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!(status, 202, "{a}");
     estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
     let before = estate.settled(&names(&["mesh1", "mesh2", "mesh3"]), Duration::from_secs(30)).await;
+    // The rows mesh1's primary writes are durable only once the fabric's first state-commit
+    // published them (states.md, Rounds: "Before state-commit, RDM holds its rows in the
+    // scratchpad"; R14 item 9): the fabric is ready-for-traffic under this Build before mesh1 goes.
+    wait_for("the fabric is ready-for-traffic: its state-commit published every node's rows", Duration::from_secs(90), || async {
+        (estate.get("/api/fabric").await.1["status"] == "ready-for-traffic").then_some(())
+    })
+    .await;
     let (_, fabric) = estate.get("/api/fabric").await;
     let fabric_id = s(&fabric["id"]);
     let (_, m1) = estate.get("/api/meshes/mesh1").await;

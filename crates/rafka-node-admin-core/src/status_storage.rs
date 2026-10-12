@@ -338,11 +338,11 @@ impl FileStatusStorage {
     pub async fn open(root: &crate::store_root::StoreRoot, mesh: &str, writer: &IncarnationId) -> Result<Self, StorageError> {
         let base = root.status(mesh);
         Ok(Self {
-            meshes: FileRecords::open(&base, "meshes", writer).await?,
-            fabric: FileRecords::open(&base, "fabric", writer).await?,
-            declared: FileRecords::open(&base, "declared", writer).await?,
-            silence: FileRecords::open(&base, "silence", writer).await?,
-            exits: FileRecords::open(&base, "exits", writer).await?,
+            meshes: root.records(&base, "meshes", writer).await?,
+            fabric: root.records(&base, "fabric", writer).await?,
+            declared: root.records(&base, "declared", writer).await?,
+            silence: root.records(&base, "silence", writer).await?,
+            exits: root.records(&base, "exits", writer).await?,
             mesh: mesh.to_string(),
             root: root.clone(),
             writer: writer.clone(),
@@ -364,7 +364,7 @@ impl FileStatusStorage {
         if let Some(m) = self.others.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
             return Ok(m.clone());
         }
-        let opened = std::sync::Arc::new(FileRecords::open(&self.root.status(mesh), dir, &self.writer).await?);
+        let opened = std::sync::Arc::new(self.root.records(&self.root.status(mesh), dir, &self.writer).await?);
         let mut others = self.others.lock().unwrap_or_else(|e| e.into_inner());
         let m = others.entry(key).or_insert(opened).clone();
         if let Some(reason) = self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()).clone() {
@@ -385,13 +385,21 @@ impl FileStatusStorage {
         crate::record_store::cut_off_and_drain(&stores, reason).await;
     }
 
-    /// Lift [`Self::cut_off_other_meshes`]: the transfer it was set for committed nothing.
-    pub fn lift_other_meshes(&self) {
-        let others = self.others.lock().unwrap_or_else(|e| e.into_inner());
-        *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        for m in others.values() {
-            m.lift_cut_off();
+    /// Lift [`Self::cut_off_other_meshes`]: the transfer it was set for committed nothing. The
+    /// first store whose kept rows could not be written is named; every store is lifted.
+    pub async fn lift_other_meshes(&self) -> Result<(), StorageError> {
+        let opened: Vec<std::sync::Arc<FileRecords>> = {
+            let others = self.others.lock().unwrap_or_else(|e| e.into_inner());
+            *self.others_cut_off.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            others.values().cloned().collect()
+        };
+        let mut first = Ok(());
+        for s in opened {
+            if let (Err(e), true) = (s.lift_cut_off().await, first.is_ok()) {
+                first = Err(e);
+            }
         }
+        first
     }
 }
 

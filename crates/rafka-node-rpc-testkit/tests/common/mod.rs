@@ -222,6 +222,16 @@ impl TopologySink for Published {
 pub use rafka_node_rpc_testkit::rig::*;
 
 /// A launch template for `rafka-rpc-node` with a fresh data root.
+/// The fabric `fabric`'s store under `store`, as its first state-commit left it: the fabric-primary
+/// published the Fabric row, so a node of the fabric opened on it writes to it directly
+/// (`StoreRoot::open`; states.md, Rounds). A cell that reads a node's rows from the store root runs
+/// its node in a fabric past its first state-commit.
+pub async fn store_past_state_commit(store: &std::path::Path, fabric: &FabricId) {
+    let root = rafka_node_admin_core::store_root::StoreRoot::at(&store.join(fabric.to_string()));
+    let fabric_store = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &rafka_mesh_entity::IncarnationId::mint()).await.expect("the fabric store opens");
+    rafka_node_admin_core::fabric_storage::FabricStorage::put_identity(&fabric_store, &rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric.clone(), name: "fabric1".into() }).await.expect("the Fabric row is published");
+}
+
 pub fn template(fabric: &FabricId, seed: (String, SocketAddr), launcher: rafka_mesh_entity::launch::Launcher) -> LaunchTemplate {
     let data_root = std::env::temp_dir().join(format!("i143-e2-{}", NodeId::mint()));
     // The fabric's one store root, handed to every launch (R14).

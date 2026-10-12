@@ -274,8 +274,18 @@ pub enum WriteCutOff {
         /// The fabric-primary seat moves too.
         fabric_seat: bool,
     },
-    /// The seat row was not written: nothing moved, and the writes are this admin's again.
+    /// The seat row was not written: nothing moved, and the writes are this admin's again; the
+    /// rows its stores held through the cut-off are still its own (fabric_handover's TakeSeats door,
+    /// on a failed seat-transfer write).
     Lift,
+    /// The seat row was written: this admin's authority over the moving seats' keys ended at it
+    /// (R14 item 4), so every row the cut-off stores still hold is dropped and named, never written.
+    Committed {
+        /// The cut-off's reason: the transfer, naming the successor and the operation.
+        reason: String,
+        /// The fabric-primary seat moved too.
+        fabric_seat: bool,
+    },
 }
 
 /// Applies a [`WriteCutOff`] to this admin's stores (`crate::admin`'s wiring).
@@ -311,11 +321,38 @@ impl SeatStores {
                 crate::record_store::cut_off_and_drain(&seat, &reason).await;
             }
             WriteCutOff::Lift => {
+                // A lifted store writes the rows it held through a publication made while it was
+                // cut off; one that cannot keeps holding them, and says which.
                 for s in seat.into_iter().chain(self.fabric.fabric_primary_records()) {
-                    s.lift_cut_off();
+                    if let Err(e) = s.lift_cut_off().await {
+                        tracing::info!(error = %e, "a store whose cut-off was lifted could not write the rows it held: they stay held");
+                    }
                 }
-                self.nodes.lift_other_meshes();
-                self.status.lift_other_meshes();
+                if let Err(e) = self.nodes.lift_other_meshes().await {
+                    tracing::info!(error = %e, "another mesh's rows whose cut-off was lifted could not write the rows they held: they stay held");
+                }
+                if let Err(e) = self.status.lift_other_meshes().await {
+                    tracing::info!(error = %e, "another mesh's status rows whose cut-off was lifted could not write the rows they held: they stay held");
+                }
+            }
+            WriteCutOff::Committed { reason, fabric_seat } => {
+                if fabric_seat {
+                    seat.extend(self.fabric.fabric_primary_records());
+                }
+                let mut dropped: Vec<String> = Vec::new();
+                for s in seat {
+                    let n = s.drop_held().await;
+                    if n > 0 {
+                        dropped.push(format!("{} {n}", s.store_name()));
+                    }
+                }
+                if fabric_seat {
+                    dropped.extend(self.nodes.drop_other_meshes().await.into_iter().map(|(store, n)| format!("{store} {n}")));
+                }
+                if !dropped.is_empty() {
+                    tracing::info_span!("rdm.node_admin.seat.reject.via-held-rows", reason = %reason, fabric_seat, dropped = %dropped.join(","))
+                        .in_scope(|| tracing::info!("the seat row ended this admin's authority over the moving seats' keys: the rows its stores still held are dropped, never written"));
+                }
             }
         }
     }
@@ -832,7 +869,7 @@ impl HandoverDoor {
         // seat lands after the row.
         let fabric_seat = committed.iter().any(|c| c.seat.kind() == Seat::FabricPrimary);
         let reason = format!("the seats of {} moved to {} {} by {}", self.me, t.successor.mesh, t.successor.node_id, t.operation);
-        (self.cut_off_writes)(WriteCutOff::Set { reason, fabric_seat }).await;
+        (self.cut_off_writes)(WriteCutOff::Set { reason: reason.clone(), fabric_seat }).await;
         tracing::info_span!("rdm.node_admin.seat.update.via-writes-drained", fabric = %t.fabric, operation = %t.operation, build_id = %t.build_id, attempt = t.attempt, holder = %births(&t.holder), successor = %births(&t.successor), fabric_seat)
             .in_scope(|| tracing::info!("the holder cut off the writes its moving seats authorize and every issued one finished before the seat row"));
         // The one row: the fence and the commit. Before it nothing has moved; after it the row is the answer.
@@ -849,6 +886,9 @@ impl HandoverDoor {
         let successor = committed[0].record();
         book.take_together(&op, &successor, &committed, true);
         drop(decisions);
+        // The row ended this admin's authority over the moving seats' keys: what its cut-off stores
+        // still hold is dropped, never written.
+        (self.cut_off_writes)(WriteCutOff::Committed { reason, fabric_seat }).await;
         (self.project_view)().await;
         self.committed_span(&t, &committed, false);
         self.backbone.announce_seats_together(op, successor, committed.clone()).await;

@@ -1,9 +1,10 @@
 //! Fabric shutdown (fabric-mesh-lifecycle.md §11.1, FML-21..27).
 //!
 //! Only the fabric-primary accepts `/api/shutdown`. It persists [`FabricShutdown`] through
-//! `fabric.storage` and disseminates it on the fabric control channel. Every admin that learns it
-//! persists its own copy, stops reconciling (no Build attempt, no drift recovery, no rebirth) and
-//! gossips `Draining`. The record holds no drain progress: every admin derives the freeze barrier
+//! `fabric.storage`, whose one writer it is (R14 item 2), and disseminates it on the fabric control
+//! channel. Every admin that learns it holds it, stops reconciling (no Build attempt, no drift
+//! recovery, no rebirth) and gossips `Draining`; an admin that starts during one reads the
+//! fabric-primary's row on the store root. The record holds no drain progress: every admin derives the freeze barrier
 //! (every current live admin birth in its view is `Draining`) from its own view.
 //!
 //! Once the barrier holds, each mesh-primary drains its own Mesh: ordinary members, then its
@@ -115,13 +116,20 @@ impl ShutdownControl {
         }
     }
 
-    /// Hold `shutdown` heard `via` from `from`: persisted through `fabric.storage` before anything
-    /// waits on it. Returns whether this admin learned it now (it held none before).
+    /// Hold `shutdown` heard `via` from `from` (an entry answer, the fabric control channel): the
+    /// fabric-primary wrote it to `fabric.storage` before it disseminated it, so this admin holds it
+    /// as its own runtime state and writes nothing (R14 item 2). Returns whether this admin learned it
+    /// now (it held none before).
     pub async fn learn(&self, shutdown: FabricShutdown, via: &str, from: &str) -> Result<bool, FabricStorageError> {
         if self.held().is_some() {
             return Ok(false);
         }
-        let held = self.storage.put_shutdown(&shutdown).await?;
+        self.hold(shutdown, via, from);
+        Ok(true)
+    }
+
+    /// Hold `held` heard `via` from `from`, before anything waits on it.
+    fn hold(&self, held: FabricShutdown, via: &str, from: &str) {
         *self.progress.lock().unwrap() =
             Some(ShutdownProgress { initiated_by: held.initiated_by.clone(), phase: ShutdownPhase::Frozen, incomplete: Vec::new() });
         tracing::info_span!(
@@ -133,13 +141,16 @@ impl ShutdownControl {
         )
         .in_scope(|| tracing::info!("fabric shutdown held; reconciliation freezes"));
         self.tx.send_replace(Some(held));
-        Ok(true)
     }
 
-    /// The fabric-primary begins a shutdown: hold it, then broadcast it.
+    /// The fabric-primary begins a shutdown: persist it through `fabric.storage` (the first one held
+    /// is kept), hold it, then broadcast it.
     pub(crate) async fn initiate(&self, shutdown: FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
-        self.learn(shutdown, "initiated", "self").await?;
-        let held = self.held().expect("held after learn");
+        if self.held().is_none() {
+            let held = self.storage.put_shutdown(&shutdown).await?;
+            self.hold(held, "initiated", "self");
+        }
+        let held = self.held().expect("held once initiated");
         if let Some(p) = self.publish.get() {
             p(held.clone());
         }
