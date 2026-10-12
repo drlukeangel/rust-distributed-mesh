@@ -673,12 +673,14 @@ pub enum StatusReply {
         /// Why the call is refused.
         reason: String,
     },
-    /// A completion call (`node-drained`, `node-left`) names no open command of the receiver: the
-    /// first field that differs from the command the receiver holds for that birth is named, with
-    /// the value the receiver holds and the value the completion reported.
+    /// A completion call (`node-drained`) names no open command of the receiver: the first field
+    /// that differs from the command the receiver holds for that birth is named, with the value the
+    /// receiver holds and the value the completion reported. A `node-left` is never a call and
+    /// completes no command, whatever is open for the birth: it is refused with `command`.
     RejectedUnmatchedCompletion {
         /// The field that differs: `build_id`, `attempt`, `operation`, or `command` when the
-        /// receiver holds no open command for the birth at all.
+        /// receiver holds no open command the call completes (none for the birth at all, or the call
+        /// is a `node-left`).
         field: String,
         /// What the receiver holds for it.
         expected: String,
