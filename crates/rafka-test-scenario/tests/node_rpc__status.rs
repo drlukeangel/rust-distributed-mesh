@@ -3,7 +3,7 @@
 //! node) and the estate's span evidence only.
 //!
 //! 0. Born ready, every rpc node declares `ReadyForTraffic` to its mesh-primary by itself
-//!    (i143.e4.s11), and the non-primary admin declares its own to the fabric-primary: the
+//!    (i143.e4.s11), and the non-primary admin declares its own to its mesh-primary: the
 //!    authority's view shows them as `declared` before any probe asks.
 //! 1. The node's `ReadyForTraffic` asked again through the oracle: `AlreadyApplied` (one logical
 //!    event); membership's `status` is untouched.
@@ -70,7 +70,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     assert_eq!(view["status"], "ready-for-traffic", "membership's status is untouched");
     // The authority itself: its own ReadyForTraffic goes through the same door, applied by itself.
     let self_declared = declared_by_birth.iter().find(|n| n["name"] == primary["name"]).unwrap();
-    assert_eq!(self_declared["declared"], "ReadyForTraffic", "the fabric primary declared its own birth to itself: {self_declared}");
+    assert_eq!(self_declared["declared"], "ReadyForTraffic", "the mesh primary declared its own birth to itself: {self_declared}");
 
     // 1. The same declaration asked again: one logical event.
     let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "ready-for-traffic"]);
@@ -137,7 +137,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     assert_eq!(root_pending.len(), 1, "exactly one Pending, self-applied by the Day-0 root: {root_pending:?}");
     assert_eq!(root_pending[0]["attributes"]["sender"], root_pending[0]["attributes"]["node"], "{root_pending:?}");
     assert_eq!(root_pending[0]["attributes"]["receiver_is_primary"], "false", "applied before any election: {root_pending:?}");
-    // The other admin's own birth was applied by the fabric-primary (this primary) too.
+    // The other admin's own birth was applied by its mesh's primary (this primary) too.
     assert!(decided.iter().any(|s| s["attributes"]["sender"] == other_admin["name"] && s["attributes"]["outcome"] == "applied"), "{decided:?}");
     // And the primary's own birth: the sender is the authority, through the same door.
     assert!(

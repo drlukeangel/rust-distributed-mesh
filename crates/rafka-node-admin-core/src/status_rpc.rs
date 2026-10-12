@@ -308,12 +308,10 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             let Some(subject) = view.births().find(|n| n.node_id == *node_id) else {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, None);
             };
-            // The receiver's seat: a node-admin declares to the fabric-primary, every other kind
-            // to its mesh's primary.
-            let needed = if subject.kind == NodeKind::NodeAdmin { me.is_fabric_primary } else { me.is_primary && me.mesh == subject.mesh };
-            if !needed {
-                let seat = if subject.kind == NodeKind::NodeAdmin { "fabric-primary" } else { "mesh-primary" };
-                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("{seat} of {}", subject.mesh) } }, None);
+            // The receiver's seat: every kind, a node-admin included, reports to its mesh's primary,
+            // which sets its status (node-status.md "Status report").
+            if !(me.is_primary && me.mesh == subject.mesh) {
+                return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("mesh-primary of {}", subject.mesh) } }, None);
             }
             // The exact birth: a declaration for an incarnation the view no longer holds is stale.
             match subject.incarnation_id.as_ref() {

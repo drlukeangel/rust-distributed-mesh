@@ -206,7 +206,8 @@ impl Declarer {
             .iter()
             .filter(|(key, (_, by, by_birth))| {
                 let now = match key {
-                    Key::OwnState(..) | Key::Mesh(..) | Key::Round(..) => view.fabric_primary(),
+                    Key::OwnState(..) => view.cohort_primary(&me.mesh, NodeKind::NodeAdmin),
+                    Key::Mesh(..) | Key::Round(..) => view.fabric_primary(),
                     Key::FabricEventAt(mesh, _) => view.cohort_primary(mesh, NodeKind::NodeAdmin),
                 };
                 now.is_some_and(|n| &n.node_id != by || matches!((&n.incarnation_id, by_birth), (Some(now), Some(then)) if now != then))
@@ -384,12 +385,13 @@ fn completion_span(p: &Pending, target: &crate::model::Node) -> tracing::Span {
 /// state this admin's own committed Mesh status row holds for its mesh, when it holds one.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_incarnation: &str, own_ready: bool, mesh_round_done: bool, own_mesh_held: Option<MeshState>, view: &Topology, mesh_ids: &BTreeMap<String, String>) {
-    // This admin's own birth, once it is ready: to the fabric-primary.
+    // This admin's own birth, once it is ready (its node.started): to its own mesh's primary, which
+    // sets its status (node-status.md "Status report").
     if own_ready {
         if let Some(my) = view.own(me_id) {
             d.owe(
                 Key::OwnState(me_incarnation.to_string(), NodeState::ReadyForTraffic),
-                Authority::FabricPrimary,
+                Authority::MeshPrimaryOf(me.mesh.clone()),
                 StatusRequest::DeclareNodeState { node_id: my.node_id.clone(), incarnation: crate::model::IncarnationId(me_incarnation.to_string()), state: NodeState::ReadyForTraffic },
             );
         }
@@ -469,7 +471,7 @@ mod tests {
     }
 
     fn owe_all(d: &Declarer) {
-        d.owe(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareNodeState { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId("inc".into()), state: NodeState::ReadyForTraffic });
+        d.owe(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), Authority::MeshPrimaryOf("mesh1".into()), StatusRequest::DeclareNodeState { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId("inc".into()), state: NodeState::ReadyForTraffic });
         d.owe(Key::Mesh("m1".into(), MeshState::ReadyForTraffic), Authority::FabricPrimary, StatusRequest::DeclareMeshState { mesh_id: crate::model::MeshId::mint(), state: MeshState::ReadyForTraffic });
         d.owe(Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into()), Authority::MeshPrimaryOf("mesh2".into()), StatusRequest::ApplyFabricEvent { fabric_id: crate::model::FabricId::mint(), event: FabricEvent::ReadyForTraffic });
     }
