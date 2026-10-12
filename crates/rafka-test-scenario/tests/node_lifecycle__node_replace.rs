@@ -84,6 +84,8 @@ async fn estate(test: &str) -> (Estate, String) {
     let build = s(&a["build_id"]);
     estate.await_build(&build, SETTLE).await;
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
+    // The initial fabric refuses a node replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(SETTLE).await;
     (estate, build)
 }
 
@@ -444,6 +446,8 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
     let birth_build = s(&a["build_id"]);
     estate.await_build(&birth_build, SETTLE).await;
     estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+    // The initial fabric refuses a node replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(SETTLE).await;
     let nodes = estate.nodes().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
@@ -788,6 +792,8 @@ async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_execute
     let birth_build = s(&a["build_id"]);
     estate.await_build(&birth_build, SETTLE).await;
     estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+    // The initial fabric refuses a node replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(SETTLE).await;
     let parked = replace_and_park(&estate, &birth_build, "mesh2.rpc.1").await;
     let first_primary = parked.replaced_by.clone();
     assert!(first_primary.starts_with("mesh2.admin."), "mesh2's primary ran the replace: {first_primary}");

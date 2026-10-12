@@ -186,6 +186,8 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let rpc_p = primary_of(&nodes, &rpc).unwrap();
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some(boot.0.as_str()), "the Day-0 admin keeps the fabric seat whatever NodeId its mesh's second admin drew (R-A2)");
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // restart a non-primary -> it keeps its NodeId; the seats stay computed
     let other_rpc: Vec<String> = nodes.iter().filter(|n| n["kind"] == "rpc_node" && n["is_primary"] == false).map(|n| s(&n["name"])).collect();
     let before = id_of(&nodes, &other_rpc[1]);
@@ -361,6 +363,8 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     settle(&estate, &base1, "mesh2's killed admin is back").await;
     steady(&estate, &base1, "mesh2's killed admin is back", hold).await;
 
+    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // legal removal of the mesh2 admin primary -> the next-lowest succeeds
     let nodes = estate.nodes().await;
     let removed = primary_of(&nodes, &admin2).unwrap();

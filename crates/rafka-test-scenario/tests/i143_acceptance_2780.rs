@@ -382,6 +382,8 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // A lone admin hears no other member and is cut off, so it executes nothing: the mesh holds two
     // admins before any cut is armed, and either may hold the seats.
     let shape = run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await.build_id.0;
+    // The initial fabric refuses a node delete and a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    run.estate.until_fabric_ready(Duration::from_secs(120)).await;
     run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
     run.note_build(&shape, 1);
 

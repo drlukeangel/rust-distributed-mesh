@@ -62,6 +62,8 @@ async fn fabric_skewing(cell: &str, skewed: Option<&str>) -> (Estate, Vec<Value>
     assert_eq!(status, 202, "{a}");
     estate.await_attempt(&s(&a["build_id"]), Estate::attempt_of(&a), Duration::from_secs(120)).await;
     let nodes = estate.settled(&names(), Duration::from_secs(30)).await;
+    // The initial fabric refuses a node replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     (estate, nodes)
 }
 

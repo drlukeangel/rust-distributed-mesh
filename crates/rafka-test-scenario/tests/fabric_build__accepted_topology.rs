@@ -154,6 +154,8 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     assert_eq!(back["endpoint_id"], lost["endpoint_id"], "over the inherited data dir and its endpoint key");
 
     // 8. A restart is an attempt of the accepted Build, under the same id.
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let restarted_from = estate.node("mesh1.rpc.1").await;
     let (status, r) = estate.post("/api/nodes/mesh1.rpc.1/restart", &json!({})).await;
     assert_eq!((status, r["build_id"].as_str()), (202, Some(r4.as_str())), "{r}");

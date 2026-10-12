@@ -12,6 +12,7 @@ use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::time::Duration;
 
 const NODE: &str = "mesh1.rpc.1";
 
@@ -52,6 +53,8 @@ async fn restart_one_member(test: &str) -> (Value, Value, Value, u64, Vec<Value>
     let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     let nodes = estate.settled_views(&[("mesh1", 1, 2)]).await;
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let admin = nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").cloned().expect("the launching admin");
     let before = nodes.iter().find(|n| n.name.to_string() == NODE).cloned().expect("the member to restart");
     let restart_at = now_nano();

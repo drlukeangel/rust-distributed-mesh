@@ -103,6 +103,8 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let fabric_base = estate.admin.clone();
     estate.admin = mesh2_base.clone();
 
+    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Grow and shrink mesh2 directly.
     let (status, a) = estate.post("/api/nodes/spawn", &json!({"mesh": "mesh2", "kind": "rpc_node"})).await;
     assert_eq!(status, 202, "{a}");

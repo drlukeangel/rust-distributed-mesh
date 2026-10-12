@@ -298,6 +298,8 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
 
     // 8. Restart mesh2.rpc.1: it rejoins as the same birth (node-restart.md: "Same node.id, incarnation, ...")
     // and is ready again holding both meshes.
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let before = s(&estate.node("mesh2.rpc.1").await["incarnation_id"]);
     let ready_before = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "incarnation_id") == before).count();
     let (status, a) = estate.post("/api/nodes/mesh2.rpc.1/restart", &json!({})).await;

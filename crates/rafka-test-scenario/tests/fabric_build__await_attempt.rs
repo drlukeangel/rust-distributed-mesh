@@ -53,6 +53,8 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
 
     let cut = "restart:NodeRestarting";
     door.arm(cut, json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "restart-node", "node": node})).await;
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let (status, r) = estate.post(&format!("/api/nodes/{node}/restart"), &Value::Null).await;
     assert_eq!(status, 202, "{r}");
     assert_eq!(r["build_id"], build_id.as_str(), "a restart opens an attempt of the accepted Build: {r}");

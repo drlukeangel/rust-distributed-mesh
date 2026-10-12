@@ -76,6 +76,8 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
             peers.fact(peer, &target_view.mesh, "it holds the restart target's mesh including the target", |v| v.birth(&target_view.node_id).is_some()).await;
         }
     }
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mut pids = std::collections::BTreeMap::new();
     for n in &names {
         let pid = match estate.bootstrap_pid() {

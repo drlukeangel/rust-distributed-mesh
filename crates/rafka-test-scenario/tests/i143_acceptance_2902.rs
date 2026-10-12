@@ -156,6 +156,8 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     let nodes: Vec<Value> = estate.settled_views(&shape).await.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
+    // The initial fabric refuses a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Every admin of both meshes holds all eight members ready before anything is cut.
     let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
     let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();

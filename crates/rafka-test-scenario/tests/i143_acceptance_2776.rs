@@ -11,6 +11,7 @@ use rafka_test_scenario::estate::{descends_from, named, Estate, Owner, RUNTIME_I
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 fn provider() -> String {
     std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into())
@@ -277,6 +278,8 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let get = estate.probe(&["get", "--target", "path:mesh1.broker.1", "--key", "7"]);
     assert_eq!((get["outcome"].as_str(), get["reply"]["result"]["value"].as_str()), (Some("Reply"), Some("bound")), "{get}");
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Restarts through the same binding: a role node, and the admin that launched the nodes.
     let mut restarts = Vec::new();
     for node in ["mesh1.broker.1", "mesh1.admin.2"] {

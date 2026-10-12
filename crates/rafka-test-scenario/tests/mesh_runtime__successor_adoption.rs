@@ -64,6 +64,8 @@ async fn a_successor_manages_births_it_never_launched() {
     // Only now is the successor born: A is no longer active.
     build(&estate, 2, 3).await;
     let nodes = estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
+    // The initial fabric refuses a node restart and a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let successor = nodes.iter().find(|n| n["name"] == "mesh1.admin.2").cloned().unwrap();
     let launcher = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").cloned().unwrap();
     let base = s(&successor["admin_api_base"]);

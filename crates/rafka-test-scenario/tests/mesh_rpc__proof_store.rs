@@ -78,6 +78,8 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let absent = estate.probe(&["get", "--target", &path, "--key", &"k".repeat(256)]);
     assert_eq!(absent["reply"]["result"], json!({"found": false}));
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 2. A same-node restart keeps the store.
     let (status, r) = estate.post(&format!("/api/nodes/{NODE}/restart"), &json!({})).await;
     assert_eq!(status, 202, "{r}");

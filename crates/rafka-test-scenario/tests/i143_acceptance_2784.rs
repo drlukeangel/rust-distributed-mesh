@@ -688,6 +688,8 @@ async fn container_primary_mesh_retired_hands_off_authority_before_its_container
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
     estate.reconcile_shape("fabric1", &shape).await;
     let before = values(&estate.settled_views(&shape).await);
+    // The initial fabric refuses a mesh delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let lost_mesh = holder.split('.').next().unwrap().to_string();
     let survivor_mesh = if lost_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();

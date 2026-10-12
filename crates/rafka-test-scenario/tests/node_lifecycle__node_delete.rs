@@ -70,6 +70,8 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let victim_dir = std::path::PathBuf::from(estate.data_dir_of(VICTIM).await);
     assert!(victim_dir.join("node-key").is_file(), "the victim's data dir holds its endpoint key before the delete: {victim_dir:?}");
 
+    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 1. The removal.
     let (status, d) = estate.delete(&format!("/api/nodes/{VICTIM}")).await;
     assert_eq!(status, 202, "{d}");

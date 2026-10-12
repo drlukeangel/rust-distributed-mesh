@@ -84,6 +84,8 @@ async fn stop_then_start(test: &str, node: &str) {
     assert_eq!(status, 202, "{a}");
     estate.await_build(&s(&a["build_id"]), SETTLE).await;
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let peers = Peers::of(&[]).await;
     let nodes = peers.nodes(NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
     let path: PathName = node.parse().unwrap();
@@ -161,6 +163,8 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
     assert_eq!(status, 202, "{a}");
     estate.await_build(&s(&a["build_id"]), SETTLE).await;
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let peers = Peers::of(&[]).await;
     let nodes = peers.nodes(NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
     let path: PathName = NODE.parse().unwrap();
@@ -255,6 +259,8 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
     assert_eq!(status, 202, "{a}");
     estate.await_build(&s(&a["build_id"]), SETTLE).await;
     estate.settled_shape(&[("mesh1", 3, 1)], Duration::from_secs(60)).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let peers = Peers::of(&[]).await;
     let nodes = peers.nodes(NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
     let path: PathName = "mesh1.admin.3".parse().unwrap();
@@ -351,6 +357,8 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     let birth_build = s(&a["build_id"]);
     estate.await_build(&birth_build, SETTLE).await;
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
 
     let before = estate.node(NODE).await;
     let pid = estate.pid_of(NODE).await;
@@ -423,6 +431,8 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
     assert_eq!(status, 202, "{a}");
     estate.await_build(&s(&a["build_id"]), SETTLE).await;
     estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let peers = Peers::of(&[]).await;
     let nodes = peers.nodes(NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
     let path: PathName = NODE.parse().unwrap();
