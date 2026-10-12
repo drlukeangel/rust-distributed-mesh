@@ -870,6 +870,32 @@ mod tests {
         assert_eq!(due, vec![(Key::OwnState("inc".into(), NodeState::ReadyForTraffic), "mesh1.admin.1".to_string())], "its node.started, owed to mesh1's primary by its exact birth");
     }
 
+    /// CONTRACT (wire.md `ApplyFabricEvent`: "the fabric-primary applies a Fabric event at a mesh primary";
+    /// fabric-ready-for-traffic.md: "the fabric is ready-for-traffic"): the fabric-primary owes the
+    /// ready-for-traffic fabric event to every mesh's primary once its view holds the fabric
+    /// ready-for-traffic, its own mesh's primary (itself) included: the row that event leaves is the one
+    /// durable fact that the fabric first reached ready-for-traffic, and the fabric-primary's mesh holds
+    /// it as every other mesh does. Must NOT happen: the event owed to every mesh but the fabric-primary's own.
+    #[test]
+    fn the_fabric_primary_owes_the_ready_for_traffic_event_to_every_mesh_primary_its_own_included() {
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let v = view("mesh1.admin.1", "mesh1.admin.1");
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let none = BTreeSet::new();
+        let d = Declarer::new();
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", rafka_mesh_entity::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
+        let mut events: Vec<(Key, String)> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().filter(|(p, _)| matches!(p.key, Key::FabricEventAt(..))).map(|(p, to)| (p.key, to.name.to_string())).collect();
+        events.sort();
+        assert_eq!(
+            events,
+            vec![
+                (Key::FabricEventAt("mesh1".into(), "ready-for-traffic".into()), "mesh1.admin.1".to_string()),
+                (Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into()), "mesh2.admin.1".to_string()),
+            ],
+            "the event is owed at each mesh's primary, the fabric-primary's own mesh included"
+        );
+    }
+
     /// CONTRACT: an obligation newly created by this admin's own readiness or the declare gate,
     /// with no topology change, is due at once (the wake that finds it is the declarer's input).
     #[test]
