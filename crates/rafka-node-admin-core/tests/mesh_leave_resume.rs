@@ -15,7 +15,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, MeshLeaveEvent, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{await_handoff, LeaveBook, HANDOFF_WAIT, birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rafka_node_admin_core::mesh_leave::{await_handoff, settle_handoff, LeaveBook, HANDOFF_WAIT, birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::node_rows::{Claimed, NodeRows, RowRefused};
@@ -1853,4 +1853,60 @@ fn the_owners_wait_is_still_open_an_hour_after_it_began_and_ends_on_the_handoff_
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
     assert!(open_after_an_hour, "no event ended the wait, so no timer may: it ended on its own with {end:?}");
     assert_eq!(end.ok(), Some(manifest), "the handoff that arrives ends the wait with its manifest");
+}
+
+/// CONTRACT: the one handoff the owner awaits, answered by a refusal, ends the owner's wait at once
+/// (node-rpc-envelope.md, "Caller execution and certainty": "A step that answers Indeterminate or a
+/// refusal leaves the workflow incomplete. A later attempt resumes from the recorded receipts"): the
+/// attempt ends incomplete, naming the refusal and what failed, and the next attempt resumes. A
+/// reply that accepts the handoff ends nothing here: its manifest ends the wait. Must NOT happen:
+/// the owner left waiting for a handoff it refused and the sender will not send again (here a read of
+/// the sender's Build facts that decided nothing: the sender is told `RejectedSourceFailed`).
+#[test]
+fn a_handoff_the_owner_refuses_by_name_ends_its_wait_incomplete_at_once() {
+    let cap = capture();
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let book = LeaveBook::default();
+    let (key, handoff, final_primary) = open_leave(&book, &records);
+    let (open_after_accepted, refusal, ended, end, trace_id) = run_paused(&cap, async {
+        let root = tracing::info_span!("cell.owner-wait-refused-handoff", operation = %key.operation);
+        let trace_id = trace_id(&root);
+        let (_view_tx, view_rx) = tokio::sync::watch::channel(0u64);
+        let named = format!("{} {}", final_primary.node, final_primary.incarnation_id);
+        let (k, primary) = (key.clone(), named.clone());
+        let wait = tokio::spawn(tracing::Instrument::instrument(async move { await_handoff(&k, &primary, handoff, view_rx, || std::future::ready(None)).await }, root.clone()));
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        // A reply that accepts a handoff settles nothing against the leave.
+        assert_eq!(settle_handoff(&book, &key, &named, StatusReply::AlreadyApplied), StatusReply::AlreadyApplied);
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        let open_after_accepted = !wait.is_finished();
+        // The owner's read of the sender's Build facts decided nothing: the call is refused by name.
+        let refused = StatusReply::source_failed("the Build log of mesh2.admin.1 (the final primary)", "fetch-build-facts for the manifest", "not ready: hydrating");
+        let refusal = settle_handoff(&book, &key, &named, refused.clone());
+        assert_eq!(refusal, refused, "the sender is told the refusal unchanged");
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        let ended = wait.is_finished();
+        let end = if ended { Some(wait.await.unwrap()) } else { None };
+        (open_after_accepted, refusal, ended, end, trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("owner-wait-refused-handoff");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+    assert!(open_after_accepted, "an accepted handoff's reply ends nothing against the leave");
+    assert!(matches!(refusal, StatusReply::RejectedSourceFailed { .. }), "{refusal:?}");
+    assert!(ended, "the refused handoff ended the owner's wait at once; it is still open");
+    match end {
+        Some(Err(rafka_node_admin_core::executor::RunEnd::Incomplete(reason))) => {
+            assert!(reason.contains("refused") && reason.contains("hydrating") && reason.contains(FINAL), "the end names the refusal and what failed: {reason}");
+        }
+        other => panic!("the attempt ends incomplete on the refusal: {other:?}"),
+    }
 }

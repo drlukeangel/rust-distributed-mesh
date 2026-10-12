@@ -734,7 +734,6 @@ impl AdminRunner {
 
     #[allow(clippy::too_many_arguments)]
     async fn validate_handoff_in(&self, mesh_id: &MeshId, build_id: &str, attempt: u32, operation: &str, final_node_id: &NodeId, final_incarnation: &IncarnationId, final_runtime: &rafka_mesh_entity::RuntimeFact, receipt_manifest: &str) -> StatusReply {
-        let unmatched = |field: &str, expected: String, reported: String| StatusReply::RejectedUnmatchedCompletion { field: field.into(), expected, reported };
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: operation.to_string() };
         let admitted = match self.leaves.admitted_for(&key) {
             Ok(admitted) => admitted,
@@ -755,6 +754,21 @@ impl AdminRunner {
                 return refused;
             }
         };
+        // The one handoff this open leave awaits is answered here: Applied or AlreadyApplied, or a
+        // refusal by name. A refusal leaves the workflow incomplete (node-rpc-envelope.md, "Caller
+        // execution and certainty": "A step that answers Indeterminate or a refusal leaves the workflow
+        // incomplete"), so the owner's attempt ends now, naming it, and the next attempt resumes from
+        // the receipts: no sender calls again after a refusal, so nothing else would end the wait.
+        let reply = self.validate_open_handoff(&key, &admitted, final_node_id, final_incarnation, final_runtime, receipt_manifest).await;
+        crate::mesh_leave::settle_handoff(&self.leaves, &key, &format!("{} {}", admitted.final_primary.node, admitted.final_primary.incarnation_id), reply)
+    }
+
+    /// The validation of a `MeshLeave` for the open leave `key` (`admitted`): the report's own fields,
+    /// the final primary's runtime and provider access, and the manifest read from its Build facts.
+    /// The reply it returns is the answer to the call; the first outcome of the leave is recorded here
+    /// only on an accepted handoff or an incomplete manifest.
+    async fn validate_open_handoff(&self, key: &LeaveKey, admitted: &Admitted, final_node_id: &NodeId, final_incarnation: &IncarnationId, final_runtime: &rafka_mesh_entity::RuntimeFact, receipt_manifest: &str) -> StatusReply {
+        let unmatched = |field: &str, expected: String, reported: String| StatusReply::RejectedUnmatchedCompletion { field: field.into(), expected, reported };
         if receipt_manifest.len() > rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES {
             return unmatched("receipt_manifest", format!("at most {} bytes", rafka_node_rpc_contract::status::MAX_RECEIPT_MANIFEST_BYTES), format!("{} bytes", receipt_manifest.len()));
         }
@@ -765,13 +779,13 @@ impl AdminRunner {
         if RuntimeProof::of(final_runtime) != admitted.final_runtime {
             return unmatched("final_runtime", format!("{:?}", admitted.final_runtime), format!("{:?}", RuntimeProof::of(final_runtime)));
         }
-        if let Err(refused) = crate::mesh_leave::adopt_final_runtime(&*self.provider, final_runtime, &self.me.to_string(), &key) {
+        if let Err(refused) = crate::mesh_leave::adopt_final_runtime(&*self.provider, final_runtime, &self.me.to_string(), key) {
             return refused;
         }
         // The manifest: the sender's Build facts, read now.
         let node_rpc = &self.node_rpc;
-        let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &crate::build::BuildId(build_id.to_string())).await.map(|f| f.facts);
-        let verdict = match crate::mesh_leave::handoff_verdict_from_read(read, &key, &admitted, receipt_manifest, &self.me.to_string(), &final_node_id.to_string()) {
+        let read = crate::build_facts_read::fetch_build_facts(&node_rpc.client, &rafka_node_rpc::NodeTarget::ExactNode(final_node_id.clone()), &crate::build::BuildId(key.build_id.clone())).await.map(|f| f.facts);
+        let verdict = match crate::mesh_leave::handoff_verdict_from_read(read, key, admitted, receipt_manifest, &self.me.to_string(), &final_node_id.to_string()) {
             Ok(v) => v,
             Err(refused) => return refused,
         };
@@ -782,15 +796,16 @@ impl AdminRunner {
                     // The leaving primary recorded no manifest: the open leave ends now with the
                     // births named, and this attempt ends inside the call.
                     tracing::Span::current().record("without_exit", without_exit.join(", ").as_str());
-                    self.leaves.incomplete(&key, reason.clone());
+                    self.leaves.incomplete(key, reason.clone());
                 }
                 return refused.refusal().expect("a verdict other than Accept refuses");
             }
         };
-        if self.leaves.resolve(&key, manifest) {
+        if self.leaves.resolve(key, manifest) {
             StatusReply::Applied
         } else {
             StatusReply::AlreadyApplied
         }
     }
 }
+

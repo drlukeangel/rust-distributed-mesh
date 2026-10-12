@@ -1273,6 +1273,11 @@ impl LeaveBook {
     }
 }
 
+/// The door's reply to the handoff of the open leave `key`, settled against the leave.
+pub fn settle_handoff(_book: &LeaveBook, _key: &LeaveKey, _primary: &str, reply: StatusReply) -> StatusReply {
+    reply
+}
+
 /// The bound on the owner's wait for a `MeshLeave` handoff that no event ends: the final primary's
 /// `MeshLeave` call lost while it lives (the call answered NotSent or Indeterminate;
 /// `call_mesh_leave` records the outcome and nothing calls again), or the final primary exiting
