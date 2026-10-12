@@ -50,11 +50,15 @@ pub fn hydrate_knob_dir(root: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// Record `text` as node `name`'s `hydrate_before_ready` knob under `root` ([`hydrate_knob_dir`]).
-/// The node's hook reads the knob on every attempt, while the scenario rewrites it.
+/// The node's hook reads the knob on every attempt, while the scenario rewrites it, so the text is
+/// written to `<path.name>.staged` beside the knob and renamed over it: a read opens the old file or
+/// the new one, each whole, and never a knob truncated before its new text is written.
 pub fn write_hydrate_knob(root: &std::path::Path, name: &str, text: &str) -> std::io::Result<()> {
     let dir = hydrate_knob_dir(root);
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(name), text)
+    let staged = dir.join(format!("{name}.staged"));
+    std::fs::write(&staged, text)?;
+    std::fs::rename(&staged, dir.join(name))
 }
 
 /// The directory under an estate's data root where a scenario records a rafka-time knob for one
