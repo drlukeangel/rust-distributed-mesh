@@ -48,7 +48,7 @@ async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &Statu
 struct Rig {
     primary: crate::common::AdminSide,
     commander: crate::common::AdminSide,
-    _carried: crate::common::Carried,
+    _carried: Option<crate::common::Carried>,
     running: node::RunningNode,
     launch: Launch,
     key: iroh::SecretKey,
@@ -61,6 +61,12 @@ struct Rig {
 }
 
 async fn rig(tag: &str) -> Rig {
+    rig_carried(tag, true).await
+}
+
+/// [`rig`], with the commander carried in the primary's member projection only when `carry` holds:
+/// otherwise no record the node holds names the commander, as for an admin born after its stop.
+async fn rig_carried(tag: &str, carry: bool) -> Rig {
     let fabric = rafka_mesh_entity::FabricId::mint();
     let primary = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
     let commander = crate::common::admin_side_silent_as("127.0.0.1".parse().unwrap(), &primary, "mesh1.admin.2").await;
@@ -96,18 +102,22 @@ async fn rig(tag: &str) -> Rig {
     .await
     .expect("the node never reached ReadyForTraffic at its primary");
 
-    // From here on the primary carries the commander in the member projection it publishes; the
-    // commander itself says nothing on the mesh channel.
-    let carried = primary.carry_in_projection(&commander);
+    // From here on the primary carries the commander in the member projection it publishes (when
+    // `carry`); the commander itself says nothing on the mesh channel.
     let commander_key = commander.seed.0.clone();
     let commander_id = commander.launcher.node_id.clone();
-    tokio::time::timeout(NEVER, async {
-        while running.membership.projected_member_at(&commander_key).is_none() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the node never installed a projection of its primary carrying the commander");
+    let carried = carry.then(|| primary.carry_in_projection(&commander));
+    if carry {
+        tokio::time::timeout(NEVER, async {
+            while running.membership.projected_member_at(&commander_key).is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the node never installed a projection of its primary carrying the commander");
+    } else {
+        assert!(running.membership.projected_member_at(&commander_key).is_none(), "a projection the node holds names the commander: the cell proves nothing");
+    }
     assert!(running.membership.book.get(commander_id.as_str()).is_none(), "the node's heartbeat book holds the commander: the cell proves nothing");
 
     // The commander reaches the node by its birth, as the primary's book holds it.
@@ -169,6 +179,44 @@ fn a_stopped_node_whose_heartbeat_book_lacks_its_commander_starts_and_joins_it_t
             let commanded = spans_of(&spans, name, "mesh1.rpc.1");
             assert!(!commanded.is_empty() && commanded.iter().all(|f| f.get("commander") == Some(&commander_id.to_string())), "{name} names the commander {commander_id}: {commanded:?}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// CONTRACT (R-UC1, Luke 2026-10-12, rulings page: "A stopped node told to start joins back over the
+/// endpoint and path of the call that commanded it. It holds no record of the commander, and never
+/// needs one. The `commander-unrecorded` refusal is an identity check inside a workflow, so it goes.
+/// Who answered is learned from the join answer. No new field on `StartNode`."): the rpc node is
+/// stopped and started by an admin of its mesh that no record the node holds names (neither its
+/// heartbeat book nor any projection it installed: an admin born after its stop). The stop is
+/// answered `Stopped` and the start `Started`: the start joined the admin through the call's endpoint
+/// and path, and the node is the same birth, ReadyForTraffic again. Must NOT happen: the start
+/// refused `commander-unrecorded`.
+#[test]
+fn a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_joins_it_through_the_call() {
+    let cell = "a_stopped_node_commanded_by_an_admin_no_record_it_holds_names_starts_and_joins_it_through_the_call";
+    let cap = crate::common::capture(cell);
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), cell) {
+            return;
+        }
+        let Rig { primary: _primary, commander, _carried, running, launch, key, dir, target, node_id, incarnation, commander_id, .. } = rig_carried("rejoin-unrecorded", false).await;
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_unrecorded".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_unrecorded".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        let left = call(&commander, &target, &stop).await;
+        assert!(matches!(left, StatusReply::Stopped { .. }), "the commander's stop is answered Stopped: {left:?}");
+        assert!(running.membership.book.get(commander_id.as_str()).is_none(), "the node's heartbeat book holds the commander: the cell proves nothing");
+        commander.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
+        let started = call(&commander, &target, &start).await;
+        assert_eq!(started, StatusReply::Started, "the node starts after its stop, joining the admin that commanded it through the call, with no record of it");
+        tokio::time::timeout(NEVER, async {
+            while !matches!(call(&commander, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the started node never answered ReadyForTraffic");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
