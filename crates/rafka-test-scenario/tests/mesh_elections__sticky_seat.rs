@@ -39,6 +39,45 @@ fn names() -> BTreeSet<String> {
     ["mesh1", "mesh2"].iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=3).map(move |i| format!("{m}.rpc.{i}")))).collect()
 }
 
+/// The replace recipe of `p` (lifecycles/node-replace.md: one Build of node primitives) submitted to
+/// the fabric-primary the admin at `base` names, over the `node` objects: the Build it runs on, and
+/// the caller's reply stream read to its end on a task of its own (its frames).
+async fn replace_by_recipe(base: &str, p: &str) -> (String, tokio::task::JoinHandle<Vec<rafka_node_admin_client::Frame>>) {
+    use rafka_node_admin_client::{NodeAdminClient, NodeSelector, Peers};
+    use rafka_node_rpc_contract::build::RecipeStep;
+    let peers = Peers::of(&[]).await;
+    let nodes = peers.nodes(NodeAdminClient::new(base.to_string())).await.expect("the fabric-primary is named");
+    for mesh in ["mesh1", "mesh2"] {
+        if let Ok(held) = nodes.get(&NodeSelector::Mesh(mesh.into())).await {
+            peers.learn(&held);
+        }
+    }
+    let node: rafka_mesh_entity::PathName = p.parse().unwrap();
+    let recipe = vec![
+        RecipeStep::Create { node: node.successor() },
+        RecipeStep::Stop { node: node.clone() },
+        RecipeStep::Update { node: node.clone(), name: node.renamed() },
+        RecipeStep::Stop { node: node.successor() },
+        RecipeStep::Update { node: node.successor(), name: node.clone() },
+        RecipeStep::Start { node: node.clone() },
+        RecipeStep::Delete { node: node.renamed() },
+    ];
+    let mut stream = nodes.recipe(recipe).await.expect("the replace recipe was accepted");
+    let build = stream.accepted().build_id.0.clone();
+    let frames = tokio::spawn(async move {
+        let mut out = Vec::new();
+        while let Some(Ok(f)) = stream.next().await {
+            let end = f.is_terminal() || matches!(f, rafka_node_admin_client::Frame::SeatMoved { .. });
+            out.push(f);
+            if end {
+                break;
+            }
+        }
+        out
+    });
+    (build, frames)
+}
+
 async fn fabric(cell: &str) -> (Estate, Vec<Value>) {
     fabric_skewing(cell, None).await
 }
@@ -242,8 +281,8 @@ fn at_ns(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().unwrap_or(0)
 }
 
-/// CONTRACT: the fabric primary P is replaced through the control API (a Build attempt the
-/// rectifier executes: install, transfer, retire; never a signal). The executor N (P's same-mesh
+/// CONTRACT: the fabric primary P is replaced by the replace recipe (lifecycles/node-replace.md: one
+/// Build of node primitives the rectifier executes; never a signal); its stop of P is executed by N. The executor N (P's same-mesh
 /// successor) takes both seats by TakeSeats before P drains (R-EL1a): P's one seat row fences its
 /// Build log before N does anything as fabric primary, P decides no claim after its fence, no view
 /// ever shows two holders, no observer ever resolves P's mesh or the fabric with no primary (no
@@ -264,9 +303,7 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     estate.admin = n_base.clone();
     let (_, before_build) = estate.get("/api/fabric").await;
     let replaced_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
-    let (status, r) = estate.post(&format!("/api/nodes/{p}/replace"), &json!({})).await;
-    assert_eq!(status, 202, "{r}");
-    let build = s(&r["build_id"]);
+    let (build, outer) = replace_by_recipe(&n_base, &p).await;
     // Sampled while the hand-over runs: no admin's view ever shows two fabric primaries.
     let mut worst = 0usize;
     let until = std::time::Instant::now() + Duration::from_secs(120);
@@ -322,9 +359,11 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     let transfer_attempt = num(committed[0], "attempt").unwrap();
     let p_drive: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(p_drive.iter().any(|sp| attr(sp, "outcome") == "seat-lost"), "P's drive ends at its seat row: {p_drive:#?}");
-    // The replace came in by REST, so no caller holds P's outer stream; what a stream attached there
-    // would end with is the seat loss P's drive records at its fence (`via-fenced`, its `to` is the
-    // SeatMoved frame's seat), and the inner stream N ends carries the same new seat.
+    // The caller holds P's outer stream: it ends with the seat loss P's drive records at its fence
+    // (`via-fenced`, its `to` is the SeatMoved frame's seat), and the inner stream N ends carries the
+    // same new seat.
+    let outer = outer.await.expect("the caller's stream task");
+    assert!(matches!(outer.last(), Some(rafka_node_admin_client::Frame::SeatMoved { fabric_primary: Some(to) }) if *to == n_name), "the caller's stream ends SeatMoved naming N: {outer:?}");
     let p_fenced: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(!p_fenced.is_empty() && p_fenced.iter().all(|sp| attr(sp, "to") == n_name), "P's drive lost the seat at its fence naming N: {p_fenced:#?}");
     let moved: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-moved").into_iter().filter(|sp| attr(sp, "build_id") == build).collect();
@@ -365,7 +404,7 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
 }
 
 /// CONTRACT: the same hand-over while the fabric primary P is deciding claims of a running Build
-/// (mesh2 grows by two rpc nodes as P is replaced). P's seat row is its fence: a claim P won
+/// (mesh2 grows by two rpc nodes as P is replaced by the replace recipe). P's seat row is its fence: a claim P won
 /// committed wholly before the row moved its record, and P wins none after it. One winner per
 /// attempt, no birth twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -383,8 +422,7 @@ async fn a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_deci
     ]});
     let (status, g) = estate.post("/api/build", &grow).await;
     assert_eq!(status, 202, "{g}");
-    let (status, r) = estate.post(&format!("/api/nodes/{p}/replace"), &json!({})).await;
-    assert_eq!(status, 202, "{r}");
+    let (replace, _outer) = replace_by_recipe(&s(&node(&nodes, &n_name)["admin_api_base"]), &p).await;
     let all: BTreeSet<String> = names().into_iter().chain(["mesh2.rpc.4".to_string(), "mesh2.rpc.5".to_string()]).collect();
     // The replace is part of the story: the fabric is stopped only once P's path is ready again under
     // a new birth, so the fabric's own shutdown never races the seat transfer.
@@ -399,7 +437,6 @@ async fn a_claim_in_flight_commits_before_the_old_holder_fences_and_none_is_deci
     // R-EL1a: P's seat row is the fence and the commit, one write (node-rpc-envelope.md TakeSeats:
     // "no separate fence write precedes or follows it"). The row (`via-seats-committed`, not a
     // replay) is written under P's Build-log decision lock, before N is answered.
-    let replace = s(&r["build_id"]);
     let row: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seats-committed").into_iter().filter(|sp| attr(sp, "build_id") == replace && attr(sp, "replay") == "false").collect();
     assert_eq!(row.len(), 1, "P wrote one seat row for the replace: {row:#?}");
     assert!(named(&spans, "rdm.node_admin.build.update.via-seat-fence-at-handover").is_empty() && named(&spans, "rdm.node_admin.build.update.via-seat-fence").is_empty(), "no fence is written beside the row");

@@ -553,7 +553,7 @@ fn check_formation_chain(f: &Formed, spans: &[Value], inv: &mut Invariants) -> V
         if descends_from(spans, r, &rest) {
             continue;
         }
-        // A later attempt is opened by a REST request of the same Build (a restart, a replace) and descends from it.
+        // A later attempt is opened by a REST request of the same Build (a restart) and descends from it.
         let from_later_request = named(spans, "rdm.node_admin.build.update.via-rest").into_iter().any(|q| q["attributes"]["build_id"] == bid && descends_from(spans, r, q));
         // Or a later attempt the rectifier opened itself, on its own trace, naming why (a proven drift, a takeover).
         let own_reason = r["attributes"]["reason"].as_str().is_some_and(|x| !x.is_empty());
@@ -1750,6 +1750,39 @@ impl Authority {
         build_id
     }
 
+    /// Submit the replace recipe of `node` (lifecycles/node-replace.md: one Build of node primitives)
+    /// to the fabric-primary over the `node` objects: the Build it runs on. The attempt it opened is
+    /// what [`Self::finish`] waits for. The caller's stream is read on a task of its own.
+    async fn write_recipe(&mut self, st: &Stable, what: &str, node: &str) -> String {
+        use rafka_node_admin_client::{NodeAdminClient, NodeSelector, Peers};
+        use rafka_node_rpc_contract::build::RecipeStep;
+        let t0 = now_ms();
+        let peers = Peers::of(&[]).await;
+        let nodes = peers.nodes(NodeAdminClient::new(st.fp_base())).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary is not named: {e}"));
+        for mesh in ["mesh1", "mesh2"] {
+            if let Ok(held) = nodes.get(&NodeSelector::Mesh(mesh.into())).await {
+                peers.learn(&held);
+            }
+        }
+        let path: rafka_mesh_entity::PathName = node.parse().unwrap();
+        let recipe = vec![
+            RecipeStep::Create { node: path.successor() },
+            RecipeStep::Stop { node: path.clone() },
+            RecipeStep::Update { node: path.clone(), name: path.renamed() },
+            RecipeStep::Stop { node: path.successor() },
+            RecipeStep::Update { node: path.successor(), name: path.clone() },
+            RecipeStep::Start { node: path.clone() },
+            RecipeStep::Delete { node: path.renamed() },
+        ];
+        let mut stream = nodes.recipe(recipe).await.unwrap_or_else(|e| panic!("{what}: the fabric-primary {} refused the replace recipe of {node}: {e}", st.fp_name()));
+        let (build_id, attempt) = (stream.accepted().build_id.0.clone(), stream.accepted().attempt);
+        tokio::spawn(async move { while let Some(Ok(f)) = stream.next().await { if f.is_terminal() { break; } } });
+        self.attempts.insert(build_id.clone(), u64::from(attempt));
+        self.actions.push(json!({"t_ms": t0, "action": what, "via": format!("build.create recipe {node}"), "status": "started", "build_id": build_id, "accepted_by": st.fp["name"]}));
+        progress(&format!("{what}: the replace recipe of {node} accepted by {} as {build_id} attempt {attempt}", st.fp_name()));
+        build_id
+    }
+
     /// Keep the seeded traffic going until the Build is complete and `until` holds in the view.
     async fn finish(&mut self, f: &mut Formed, build_id: &str, until: Until, window: &'static str) -> Value {
         let attempt = *self.attempts.get(build_id).unwrap_or_else(|| panic!("REFUSED: finish({build_id}) without the attempt its opening 202 named; every wait is for the request's own attempt"));
@@ -2080,25 +2113,24 @@ fn check_writes_and_fence(f: &Formed, a: &Authority, spans: &[Value], inv: &mut 
     let mut want_updates: Vec<(String, String)> = a
         .writes
         .iter()
-        .filter(|w| s(&w["path"]).ends_with("/restart") || s(&w["path"]).ends_with("/replace"))
-        .map(|w| (s(&w["build_id"]), s(&w["path"]).trim_start_matches("/api/nodes/").trim_end_matches("/restart").trim_end_matches("/replace").to_string()))
+        .filter(|w| s(&w["path"]).ends_with("/restart"))
+        .map(|w| (s(&w["build_id"]), s(&w["path"]).trim_start_matches("/api/nodes/").trim_end_matches("/restart").to_string()))
         .collect();
     got_updates.sort();
     want_updates.sort();
-    assert_eq!(got_updates, want_updates, "the accepted attempt-opening writes are the restarts and replaces the cell sent");
+    assert_eq!(got_updates, want_updates, "the accepted attempt-opening REST writes are the restarts the cell sent");
     // The formation request may be refused once before the Day-0 admin holds the seat: the harness's
     // topology request waits that out (`Estate::topology_request`); those are recorded, not counted
     // against the probes. Every rejected DELETE is a probe answer or a refusal the cell asked for.
     let formation_rejections = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty() && s(&sp["attributes"]["route"]).starts_with("POST /api/build")).count();
     let rejected_creates = creates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty() && !s(&sp["attributes"]["route"]).starts_with("POST /api/build")).count();
     let probe_answers: usize = a.probes.iter().map(|p| p["answers"].as_array().unwrap().len()).sum();
-    // A refused replace is refused on the attempt-opening door (`build.update.via-rest`), every other refused write on the create door.
-    let refused_replaces = a.refused_writes.iter().filter(|r| r["route"] == "replace").count();
+    // A refused restart is refused on the attempt-opening door (`build.update.via-rest`), every other refused write on the create door.
     let refused_restarts = a.refused_writes.iter().filter(|r| r["route"] == "restart").count();
     let rejected_updates = updates.iter().filter(|sp| s(&sp["attributes"]["build_id"]).is_empty()).count();
     let refused_retired_restarts = a.events.iter().filter(|e| e["event"] == "retired.restart-refused").count();
-    assert_eq!(rejected_updates, refused_replaces + refused_restarts + refused_retired_restarts, "every rejected attempt-opening write is a replace or restart the cell sent to be refused, or a restart of a retired path, each asked for by the cell");
-    assert_eq!(rejected_creates, probe_answers + a.refused_writes.len() - refused_replaces - refused_restarts, "every rejected topology write is a fence probe answer or a write the cell sent to a non-writer to see it refused");
+    assert_eq!(rejected_updates, refused_restarts + refused_retired_restarts, "every rejected attempt-opening write is a restart the cell sent to be refused, or a restart of a retired path, each asked for by the cell");
+    assert_eq!(rejected_creates, probe_answers + a.refused_writes.len() - refused_restarts, "every rejected topology write is a fence probe answer or a write the cell sent to a non-writer to see it refused");
     let mut rounds = Vec::new();
     for p in &a.probes {
         let path = s(&p["path"]);
@@ -3207,22 +3239,20 @@ async fn admin_views_of(a: &mut Authority, f: &Formed, name: &str) -> Vec<Value>
 async fn refused_by_a_non_writer(f: &Formed, a: &mut Authority, st: &Stable, path: &str, how: Removal) -> Value {
     let non_writer = st.admins.iter().find(|n| n["name"] != st.fp["name"]).expect("an admin that is not the fabric-primary").clone();
     let base = s(&non_writer["admin_api_base"]);
-    let (status, v) = match how {
-        Removal::Delete => f.estate.delete_at(&base, &format!("/api/nodes/{path}")).await,
-        Removal::Replace => f.estate.http_post(&base, &format!("/api/nodes/{path}/replace"), &json!({})).await,
-    };
+    // A replace recipe is no REST write: the non-writer's refusal of a topology write is the delete's.
+    let _ = how;
+    let (status, v) = f.estate.delete_at(&base, &format!("/api/nodes/{path}")).await;
     assert_eq!((status, v["error"].as_str(), &v["fabric_primary"]), (409, Some("rejected-not-authority"), &st.fp["name"]), "a retire sent to {} is refused naming the fabric-primary: {v}", non_writer["name"]);
-    let rec = json!({"sent_to": non_writer["name"], "status": status, "error": v["error"], "fabric_primary": v["fabric_primary"], "path": path, "route": match how { Removal::Delete => "delete", Removal::Replace => "replace" }, "t_ms": now_ms()});
+    let rec = json!({"sent_to": non_writer["name"], "status": status, "error": v["error"], "fabric_primary": v["fabric_primary"], "path": path, "route": "delete", "t_ms": now_ms()});
     a.refused_writes.push(rec.clone());
     rec
 }
 
 /// How a node's birth is ended through the rectifier: `DELETE /api/nodes/<node>` (a retirement, the
-/// topology changes: a new accepted Build) or the replace recipe (node-replace.md): `POST
-/// /api/nodes/<node>/replace` (the next attempt of the accepted Build parks the live birth, renames it
-/// `<node>.old` and creates a new node at the path: no Build is minted), then the recipe's
-/// `node[1].delete`, `DELETE /api/nodes/<node>.old` (the attempt after it: the parked birth's exit is
-/// proven and NodeDeleted published, node-decommission.md).
+/// topology changes: a new accepted Build) or the replace recipe (node-replace.md: one Build of node
+/// primitives, the next attempt of the accepted Build, no Build minted): a successor at
+/// `<node>.new`, the live birth stopped and renamed `<node>.old`, the successor renamed to the path
+/// and started, and the old birth deleted at `<node>.old` (its exit proven, NodeDeleted published).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Removal {
     Delete,
@@ -3263,15 +3293,12 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
             (build_id, fin)
         }
         Removal::Replace => {
-            let build_id = a.write(f, st, &format!("{label}: authorized replace"), "POST", &format!("/api/nodes/{node}/replace"), &json!({})).await;
-            assert_eq!(build_id, before_build, "{node}: a replace changes no topology, so it is the next attempt of the accepted Build and mints none");
+            let build_id = a.write_recipe(st, &format!("{label}: authorized replace recipe"), node).await;
+            assert_eq!(build_id, before_build, "{node}: a recipe changes no topology, so it is the next attempt of the accepted Build and mints none");
             a.finish(f, &build_id, Until::Joined { node: node.into(), not_node_id: node_id.clone() }, "during-replace").await;
-            // The recipe's next step: the parked predecessor at `<node>.old` is deleted, the attempt
-            // after the replace (node-decommission.md: its exit proven, NodeDeleted published).
-            let old_name = format!("{node}.old");
-            let delete_build = a.write(f, st, &format!("{label}: the recipe's delete of the parked {old_name}"), "DELETE", &format!("/api/nodes/{old_name}"), &Value::Null).await;
-            assert_eq!(delete_build, before_build, "{old_name}: the delete of a parked predecessor changes no topology, so it is the next attempt of the accepted Build and mints none");
-            let fin = a.finish(f, &delete_build, Until::Gone { node: old_name }, "during-delete-of-the-parked-predecessor").await;
+            // The recipe's last step deleted the predecessor at `<node>.old` (its exit proven,
+            // NodeDeleted published): nothing is held at that path.
+            let fin = a.finish(f, &build_id, Until::Gone { node: format!("{node}.old") }, "during-delete-of-the-predecessor").await;
             (build_id, fin)
         }
     };
@@ -3303,7 +3330,7 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     let rec = json!({
         "label": label, "node": node, "kind": kind, "mesh": mesh, "node_id": node_id, "old_incarnation_id": old_inc, "endpoint_id": n["endpoint_id"], "data_dir": n["data_dir"],
         "build_id": build_id, "fabric_build_id_before": before_build, "request_ns": t0, "wall_ms": fin["wall_ms"], "attempt_after": fin["build"]["attempt"], "executor_after": fin["build"]["executor"],
-        "opened_by": match how { Removal::Delete => "rdm.node_admin.build.create.via-rest", Removal::Replace => "rdm.node_admin.build.update.via-rest" },
+        "opened_by": match how { Removal::Delete => "rdm.node_admin.build.create.via-rest", Removal::Replace => "rdm.node_admin.build.update.via-recipe" },
         "runtime_before": rt_before.record(), "old_birth_terminal": terminal, "non_writer_refusal": refusal, "canary_key": ckey, "canary_value": cval,
         "absence": {"window_ms": window, "looks": looks, "views_at_end": views}, "call_after_removal": {"outcome": g["outcome"], "reason": g["reason"]},
     });
@@ -3659,9 +3686,9 @@ async fn replacement_run(cell: &str, shape: Shape) {
     a.traffic.burst(&f, 12, "steady-before").await;
     let formation_build = f.build_id.clone();
 
-    // 1. A planned logical replacement: `POST /api/nodes/<broker>/replace` on the fabric-primary opens the
-    //    next attempt of the accepted Build; its executor retires the live birth and creates a new node at
-    //    the path. No Build is minted.
+    // 1. A planned logical replacement: the replace recipe of the broker (node-replace.md), one Build of
+    //    node primitives on the fabric-primary, opens the next attempt of the accepted Build: a successor at
+    //    `<path>.new` takes the path, the live birth is stopped, renamed `.old` and deleted. No Build is minted.
     let victim = format!("mesh2.broker.{}", f.shape.broker);
     let old = at(&st, &victim).clone();
     let old_id = s(&old["node_id"]);

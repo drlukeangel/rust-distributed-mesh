@@ -8,9 +8,10 @@
 //!    logical node serves the value written before it.
 //! 3. A killed node is recovered by its mesh-primary (node-recovery.md): a new logical node at
 //!    the same path.name over the inherited data dir and endpoint key, so it keeps the store.
-//! 4. A planned replacement (node-replace.md) does not inherit it: `path:` reaches the successor,
-//!    whose store is empty; the predecessor is parked at `<path>.old`, and once node.delete of it
-//!    publishes its departure, `exact:<old>` resolves Gone and never follows the replacement.
+//! 4. The replace recipe (node-replace.md: one Build of node primitives) does not inherit it:
+//!    `path:` reaches the successor, whose store is empty; the recipe's node.delete of the predecessor
+//!    at `<path>.old` publishes its departure, so `exact:<old>` resolves Gone and never follows the
+//!    replacement.
 //! 5. A key or value over its limit is refused by name, and writes nothing.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
@@ -109,11 +110,37 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     landed_on(&inherited, &recovered, "get");
     assert_eq!(inherited["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the recovered node serves the store it inherited: {inherited}");
 
-    // 4. A planned replacement does not inherit it: the successor's data dir is its own.
+    // 4. The replace recipe does not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
-    let (status, r) = estate.post(&format!("/api/nodes/{NODE}/replace"), &json!({})).await;
-    assert_eq!(status, 202, "{r}");
-    estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
+    {
+        use rafka_node_admin_client::{Frame, NodeAdminClient, NodeSelector, Peers};
+        use rafka_node_rpc_contract::build::RecipeStep;
+        let peers = Peers::of(&[]).await;
+        let nodes = peers.nodes(NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
+        peers.learn(&nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get"));
+        let node: rafka_mesh_entity::PathName = NODE.parse().unwrap();
+        let recipe = vec![
+            RecipeStep::Create { node: node.successor() },
+            RecipeStep::Stop { node: node.clone() },
+            RecipeStep::Update { node: node.clone(), name: node.renamed() },
+            RecipeStep::Stop { node: node.successor() },
+            RecipeStep::Update { node: node.successor(), name: node.clone() },
+            RecipeStep::Start { node: node.clone() },
+            RecipeStep::Delete { node: node.renamed() },
+        ];
+        let mut stream = nodes.recipe(recipe).await.expect("the replace recipe was accepted");
+        loop {
+            match stream.next().await {
+                Some(Ok(f)) if f.is_terminal() => {
+                    assert_eq!(f, Frame::Complete, "the replace recipe completes");
+                    break;
+                }
+                Some(Ok(_)) => {}
+                Some(Err(e)) => panic!("the recipe's stream broke: {e}"),
+                None => panic!("the recipe's stream ended with no terminal frame"),
+            }
+        }
+    }
     let replacement = wait_for("a new logical node holds the path", Duration::from_secs(60), || async {
         let n = estate.node_opt(NODE).await?;
         (n["status"] == "ready-for-traffic" && n["node_id"] != recovered["node_id"]).then_some(n)
@@ -123,14 +150,9 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
     assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
-    // The replace parks the predecessor at `<path>.old`, stopped, with its data (node-replace.md
-    // step 3); node.delete of that parked birth is the recipe's step that releases its identity,
-    // and its NodeDeleted is the departure (node-rpc.md: Gone comes only from NodeDeleted).
-    let old_name = format!("{NODE}.old");
-    let (status, d) = estate.delete(&format!("/api/nodes/{old_name}")).await;
-    assert_eq!(status, 202, "node.delete of the parked {old_name} is accepted: {d}");
-    estate.await_attempt(d["build_id"].as_str().unwrap(), Estate::attempt_of(&d), Duration::from_secs(120)).await;
-    // A node's own live resolver knows more: the parked predecessor's delete published the old
+    // The recipe stopped the predecessor and renamed it `<path>.old`; its node.delete there is the
+    // recipe's step that releases its identity, and its NodeDeleted is the departure (node-rpc.md:
+    // Gone comes only from NodeDeleted). A node's own live resolver knows more: that delete published the old
     // birth's departure, so the other rpc node answers Gone for the old id, the new holder for
     // the path, and Unknown for an id nobody ever saw.
     let other = "path:mesh1.rpc.2";
