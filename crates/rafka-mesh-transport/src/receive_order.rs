@@ -1,0 +1,235 @@
+//! The one ordering check of the gossip receive path (rafka-v2
+//! docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md, R-RX3, Luke 2026-10-12): "a message
+//! received out of order with a previous, earlier version is ignored". Every frame a channel decodes
+//! passes here before any handler reads it; a frame whose order key is earlier than the newest the
+//! channel holds for the frame's source is ignored, and nothing else is decided here.
+//!
+//! The order keys are the ones already on the wire:
+//! - `Members` and `MembersDelta`: `published_at_rafka_ms` then `topology_version`, per mesh;
+//! - `Digest`: `digest_seq`, per exact birth (a new incarnation starts its sequence again at 1,
+//!   gossip.md §3.1);
+//! - the lifecycle facts `NodeDeleting`, `NodeRestarting` and `NodeStopped`: `topology_version`,
+//!   per publisher and subject mesh, for that is whose counter the version is (the publisher's
+//!   version of the subject's mesh, [`crate::membership::Frame::NodeStopped`]); a successor publisher
+//!   counts from 1 again.
+//!
+//! Every other frame carries none of these keys and is taken as it arrives; its handler applies the
+//! data rules it already has (a seat record's epoch, a status's `changed_at_rafka_ms`, a lifecycle
+//! key already applied).
+//!
+//! A frame whose key equals the held one is taken: the chunks of one publication share its key, and
+//! a copy is the handler's to absorb (a chunk already held, a delta already applied). Each channel
+//! holds its own keys: a forwarded frame is stamped by its forwarder, never comparable with the
+//! source's own stamp on the backbone.
+
+use crate::membership::Frame;
+use std::collections::HashMap;
+
+/// The source a frame's order key orders within.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Source {
+    /// One exact birth's heartbeats.
+    Birth { node_id: String, incarnation: String },
+    /// One mesh's publications.
+    Mesh(String),
+    /// One publisher's lifecycle facts of one mesh.
+    Lifecycle { publisher: String, mesh: String },
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Source::Birth { node_id, incarnation } => write!(f, "{node_id}/{incarnation}"),
+            Source::Mesh(mesh) => f.write_str(mesh),
+            Source::Lifecycle { publisher, mesh } => write!(f, "{publisher} {mesh}"),
+        }
+    }
+}
+
+/// A frame's order key. One source only ever holds one kind of key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Key {
+    DigestSeq(u64),
+    Publication { published_at_rafka_ms: u64, topology_version: u64 },
+    TopologyVersion(u64),
+}
+
+impl std::fmt::Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Key::DigestSeq(seq) => write!(f, "digest_seq={seq}"),
+            Key::Publication { published_at_rafka_ms, topology_version } => write!(f, "published_at_rafka_ms={published_at_rafka_ms} topology_version={topology_version}"),
+            Key::TopologyVersion(v) => write!(f, "topology_version={v}"),
+        }
+    }
+}
+
+/// The frame's name in spans, its source and its order key; `None` for a frame with no order key.
+fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
+    match f {
+        Frame::Digest { digest } => Some(("digest", Source::Birth { node_id: digest.node.node_id.to_string(), incarnation: digest.node.incarnation.0.clone() }, Key::DigestSeq(digest.digest_seq))),
+        Frame::Members { mesh, topology_version, published_at_rafka_ms, .. } => {
+            Some(("members", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
+        }
+        Frame::MembersDelta { mesh, topology_version, published_at_rafka_ms, .. } => {
+            Some(("members-delta", Source::Mesh(mesh.clone()), Key::Publication { published_at_rafka_ms: *published_at_rafka_ms, topology_version: *topology_version }))
+        }
+        Frame::NodeDeleting { op, publisher, topology_version, .. } => Some(("node-deleting", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
+        Frame::NodeRestarting { op, publisher, topology_version, .. } => Some(("node-restarting", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
+        Frame::NodeStopped { op, publisher, topology_version, .. } => Some(("node-stopped", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
+        _ => None,
+    }
+}
+
+/// A frame the receive path ignores: received after a newer one of its source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Earlier {
+    /// The frame's name.
+    pub frame: &'static str,
+    /// The source its key orders within.
+    pub source: String,
+    /// The newest key this channel holds for the source.
+    pub held: String,
+    /// The frame's key.
+    pub offered: String,
+}
+
+/// The newest order key one channel holds for each source.
+#[derive(Debug, Default)]
+pub(crate) struct ReceiveOrder {
+    newest: HashMap<Source, Key>,
+}
+
+impl ReceiveOrder {
+    /// Whether `f` is taken: `Err` names the frame ignored, its source and both keys. A taken frame's
+    /// key is held when it is newer than the held one.
+    pub(crate) fn admit(&mut self, f: &Frame) -> Result<(), Earlier> {
+        let Some((frame, source, key)) = order_of(f) else { return Ok(()) };
+        match self.newest.get(&source) {
+            Some(held) if key < *held => Err(Earlier { frame, source: source.to_string(), held: held.to_string(), offered: key.to_string() }),
+            Some(held) if key == *held => Ok(()),
+            _ => {
+                self.newest.insert(source, key);
+                Ok(())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::membership::StatusEvent;
+    use crate::snapshot::PublisherId;
+    use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshNode, NodeId};
+
+    fn birth(path: &str) -> MeshDigest {
+        MeshDigest {
+            fabric_id: FabricId::parse("fab000000001").unwrap(),
+            node: MeshNode { node_id: NodeId::mint(), name: path.parse().unwrap(), endpoint_id: EndpointId(format!("key-{path}")), transport_addr: "127.0.0.1:1".parse().unwrap(), incarnation: IncarnationId::mint(), supersedes: None, runtime: None },
+            status: MemberStatus::ReadyForTraffic,
+            node_state: Default::default(),
+            admin_api_base: None,
+            digest_seq: 1,
+            emitted_at_rafka_ms: 1,
+            data_dir: None,
+            mesh_id: None,
+            in_flight: None,
+            load: None,
+            gossip: None,
+            config: Default::default(),
+        }
+    }
+
+    fn members(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, topology_version: u64, chunk_index: u32) -> Frame {
+        Frame::Members { mesh: mesh.into(), publisher: publisher.clone(), forwarded_by: None, topology_version, published_at_rafka_ms, snapshot_id: published_at_rafka_ms, chunk_index, chunk_count: 2, digests: vec![], in_flight: vec![], departed: vec![] }
+    }
+
+    fn delta(mesh: &str, publisher: &PublisherId, published_at_rafka_ms: u64, base_version: u64, topology_version: u64) -> Frame {
+        Frame::MembersDelta { mesh: mesh.into(), source_publisher: publisher.clone(), base_version, topology_version, published_at_rafka_ms, changed: vec![], removed: vec![], in_flight: vec![], departed: vec![] }
+    }
+
+    fn publisher(path: &str) -> PublisherId {
+        PublisherId { node: path.into(), incarnation: IncarnationId::mint() }
+    }
+
+    fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
+        LifecycleOp { build_id: "bld-1".into(), attempt: 1, operation: format!("{operation}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
+    }
+
+    /// CONTRACT (R-RX3: Members and MembersDelta order by `published_at_rafka_ms` then
+    /// `topology_version`, per mesh; R-RX2: no cross-publisher rule): on one channel, both chunks of
+    /// one publication are taken (they share its key); a full of another publisher stamped later is
+    /// taken whatever its version; a delta stamped later is taken; then a full and a delta stamped
+    /// before what is held are ignored, each naming the mesh, the key held and the key offered, while
+    /// another mesh's publication of any stamp is taken. Must NOT happen: a later chunk of a held
+    /// publication ignored; a publication ordered against another mesh's.
+    #[test]
+    fn a_publication_stamped_before_the_newest_held_of_its_mesh_is_ignored_and_one_publications_chunks_are_all_taken() {
+        let mut order = ReceiveOrder::default();
+        let (p1, p2) = (publisher("mesh1.admin.1"), publisher("mesh1.admin.2"));
+        assert_eq!(order.admit(&members("mesh1", &p1, 100, 7, 0)), Ok(()));
+        assert_eq!(order.admit(&members("mesh1", &p1, 100, 7, 1)), Ok(()), "the second chunk of the same publication is taken");
+        assert_eq!(order.admit(&members("mesh1", &p2, 150, 1, 0)), Ok(()), "a later publication is taken whatever its version and publisher");
+        assert_eq!(order.admit(&delta("mesh1", &p2, 160, 1, 2)), Ok(()));
+        let ignored_full = order.admit(&members("mesh1", &p1, 120, 9, 0)).unwrap_err();
+        assert_eq!(ignored_full, Earlier { frame: "members", source: "mesh1".into(), held: "published_at_rafka_ms=160 topology_version=2".into(), offered: "published_at_rafka_ms=120 topology_version=9".into() });
+        let ignored_delta = order.admit(&delta("mesh1", &p1, 110, 7, 8)).unwrap_err();
+        assert_eq!((ignored_delta.frame, ignored_delta.offered.as_str()), ("members-delta", "published_at_rafka_ms=110 topology_version=8"));
+        assert_eq!(order.admit(&delta("mesh1", &p2, 160, 1, 3)), Ok(()), "the same stamp at a later version is newer");
+        assert_eq!(order.admit(&members("mesh2", &p1, 1, 1, 0)), Ok(()), "another mesh is another source");
+    }
+
+    /// CONTRACT (R-RX3: Digest orders by `digest_seq`, per birth; gossip.md §3.1: a new incarnation's
+    /// `digest_seq` starts again at 1): a heartbeat below the held `digest_seq` of its exact birth is
+    /// ignored, naming the birth and both sequences; a copy of the held one is taken (the book absorbs
+    /// it); a new incarnation of the same node at sequence 1 is taken. Must NOT happen: a restarted
+    /// node's heartbeats ignored against its previous birth's sequence.
+    #[test]
+    fn a_heartbeat_below_the_held_digest_seq_of_its_birth_is_ignored_and_a_new_incarnation_starts_again() {
+        let mut order = ReceiveOrder::default();
+        let d = birth("mesh1.rpc.1");
+        let at = |seq: u64| Frame::Digest { digest: MeshDigest { digest_seq: seq, ..d.clone() } };
+        assert_eq!(order.admit(&at(7)), Ok(()));
+        assert_eq!(order.admit(&at(7)), Ok(()), "a copy of the held heartbeat is the book's to absorb");
+        assert_eq!(order.admit(&at(3)), Err(Earlier { frame: "digest", source: format!("{}/{}", d.node.node_id, d.node.incarnation.0), held: "digest_seq=7".into(), offered: "digest_seq=3".into() }));
+        let restarted = MeshDigest { node: MeshNode { incarnation: IncarnationId::mint(), ..d.node.clone() }, digest_seq: 1, ..d.clone() };
+        assert_eq!(order.admit(&Frame::Digest { digest: restarted }), Ok(()), "a new incarnation is another source");
+    }
+
+    /// CONTRACT (R-RX3: lifecycle facts order by `topology_version`; the version is the publisher's
+    /// own counter of the subject's mesh, so the source is the publisher and that mesh): a fact below
+    /// the held version of its publisher and mesh is ignored, naming both versions; two facts at one
+    /// version (different subjects) are both taken; another publisher's fact at a lower version is
+    /// taken (a successor counts from 1 again), and so is the same publisher's fact of another mesh.
+    /// Must NOT happen: a successor's facts ignored against its predecessor's counter.
+    #[test]
+    fn a_lifecycle_fact_below_the_held_version_of_its_publisher_and_mesh_is_ignored() {
+        let mut order = ReceiveOrder::default();
+        let (primary, successor, acting) = (publisher("mesh1.admin.1"), publisher("mesh1.admin.2"), publisher("mesh2.admin.1"));
+        let (a, b, c) = (birth("mesh1.rpc.1"), birth("mesh1.rpc.2"), birth("mesh3.rpc.1"));
+        assert_eq!(order.admit(&StatusEvent::Deleting.frame(op(&a, "delete-node"), primary.clone(), 8)), Ok(()));
+        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&b, "stop-node"), primary.clone(), 8)), Ok(()), "a second fact at the held version is taken");
+        assert_eq!(
+            order.admit(&StatusEvent::Restarting.frame(op(&b, "restart-node"), primary.clone(), 7)),
+            Err(Earlier { frame: "node-restarting", source: format!("{primary} mesh1"), held: "topology_version=8".into(), offered: "topology_version=7".into() })
+        );
+        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&b, "stop-node"), successor, 1)), Ok(()), "another publisher counts its own versions");
+        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&c, "stop-node"), acting.clone(), 9)), Ok(()));
+        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&a, "stop-node"), acting, 2)), Ok(()), "the same publisher's fact of another mesh is another source");
+    }
+
+    /// CONTRACT (R-RX3 names three order keys; nothing else is ordered here): a frame with no order
+    /// key (a seat record, a status, a NodeDeleted) is taken however often it arrives.
+    #[test]
+    fn a_frame_with_no_order_key_is_always_taken() {
+        let mut order = ReceiveOrder::default();
+        let d = birth("mesh1.rpc.1");
+        let deleted = Frame::NodeDeleted { op: op(&d, "delete-node"), forwarded_by: None };
+        let status = Frame::MeshStatus { mesh: "mesh1".into(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
+        for _ in 0..2 {
+            assert_eq!(order.admit(&deleted), Ok(()));
+            assert_eq!(order.admit(&status), Ok(()));
+        }
+    }
+}

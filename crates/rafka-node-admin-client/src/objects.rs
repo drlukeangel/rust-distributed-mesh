@@ -300,6 +300,8 @@ pub enum BuildSpec {
         /// The fabric it reconciles.
         fabric: String,
     },
+    /// A new mesh with these counts, beside the meshes the fabric holds.
+    CreateMesh(MeshDesired),
 }
 
 /// A preset `build.create` expands.
@@ -598,6 +600,7 @@ impl Builds {
         let desired = match spec {
             BuildSpec::Fabric(d) => d.clone(),
             BuildSpec::Preset { preset, fabric } => preset.desired(fabric),
+            BuildSpec::CreateMesh(mesh) => return self.call(BuildOp::Create, self.carrier.create(BuildChange::CreateMesh { mesh: counts(mesh) })).await,
         };
         self.call(BuildOp::Create, self.carrier.create(BuildChange::ReconcileFabric { fabric: desired.fabric.clone(), meshes: desired.meshes.iter().map(counts).collect() })).await
     }

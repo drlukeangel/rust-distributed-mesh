@@ -281,10 +281,13 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
 // CHAOS-PROCESS: real stalls of a real estate, judged by the same detector.
 // ---------------------------------------------------------------------------------------------
 
+use crate::build_log;
+use rafka_node_admin_client::{BuildSpec, BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, Nodes, PathName, WorkflowStream};
+use rafka_node_admin_core::build_state::BuildState;
 use rafka_node_admin_core::deployment::pipeline::{CreateStep, RetireStep};
 use rafka_node_admin_core::lifecycle::HookPhase;
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
-use rafka_test_scenario::estate::{named, wait_for, wait_for_observed, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -306,14 +309,13 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
+fn path(name: &str) -> PathName {
+    name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"))
+}
+
 /// The steps of `operation` at `attempt` the Build holds a `complete` receipt for, in order.
 fn done_steps(build: &Value, operation: &str, attempt: u64) -> Vec<String> {
     build["steps"].as_array().into_iter().flatten().filter(|r| r["operation"] == operation && r["outcome"] == "complete" && r["attempt"] == attempt).map(|r| s(&r["step"])).collect()
-}
-
-/// The steps of `operation` at `attempt` the Build holds a `failed` receipt for, in order, each with its reason.
-fn failed_steps(build: &Value, operation: &str, attempt: u64) -> Vec<String> {
-    build["steps"].as_array().into_iter().flatten().filter(|r| r["operation"] == operation && r["attempt"] == attempt).filter_map(|r| r["outcome"].get("failed").map(|f| format!("{}: {}", s(&r["step"]), s(&f["reason"])))).collect()
 }
 
 /// How many receipts each step of `operation` holds at `attempt`.
@@ -370,6 +372,14 @@ enum Trigger {
     CreateMesh(String),
 }
 
+/// What a trigger opened: the Build's stream, or the accepting call that has not answered yet.
+enum Triggered {
+    Workflow(WorkflowStream),
+    Build(BuildStream),
+    /// The accepting `node.create`, unanswered until its cut is released.
+    Request(tokio::task::JoinHandle<Result<WorkflowStream, CallEnd>>),
+}
+
 /// Which pipeline's documented receipts the Build holds.
 enum Shape {
     Create { node: Option<String> },
@@ -387,23 +397,25 @@ struct Run {
 }
 
 impl Run {
+    /// Build `id` as the admin behind `door` holds it: that admin's own Build log, read over
+    /// `FetchBuildFacts` (op `0x1F`).
     async fn build(&self, door: &Door, id: &str) -> Value {
-        let (status, b) = self.estate.http_get(&door.api, &format!("/api/builds?id={id}")).await;
-        assert_eq!(status, 200, "GET {}/api/builds?id={id}: {b}", door.api);
-        b
+        build_log::build_value(&self.estate.carrier_at(&path(&door.name)).await, id).await
     }
 
-    async fn fabric(&self) -> Value {
-        self.estate.get("/api/fabric").await.1
+    /// `Fabric.build_id` as the admin the estate asks holds it (`fabric.get`).
+    async fn fabric_build_id(&self) -> String {
+        self.estate.accepted_build_id().await
     }
 
-    /// The highest attempt of Build `id` any admin holds: an unaccepted Build has none.
+    /// The highest attempt of Build `id` any admin holds: an unaccepted Build has none, and an admin whose
+    /// log holds no fact of it ends the read `unknown build`.
     async fn attempt_anywhere(&self, id: &str) -> u64 {
         let mut max = 0;
-        for api in self.estate.nodes().await.iter().filter(|n| n["kind"] == "node_admin").filter_map(|n| n["admin_api_base"].as_str().map(String::from)) {
-            let (st, b) = self.estate.http_get(&api, &format!("/api/builds?id={id}")).await;
-            if st == 200 {
-                max = max.max(b["attempt"].as_u64().unwrap_or(0));
+        for admin in self.estate.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
+            let Ok(facts) = build_log::log_read(&self.estate.carrier_at(&admin.name).await, id).await else { continue };
+            if let Some(held) = build_log::projection(&facts, id) {
+                max = max.max(u64::from(held.attempt));
             }
         }
         max
@@ -413,61 +425,81 @@ impl Run {
         if let Some(d) = self.doors.lock().unwrap().get(name) {
             return d.clone();
         }
-        let api = self.estate.nodes().await.iter().find(|n| n["name"] == name).and_then(|n| n["admin_api_base"].as_str().map(String::from)).unwrap_or_else(|| panic!("{name} advertises its control API"));
+        let api = self.estate.node_view(name).await.admin_api_base.unwrap_or_else(|| panic!("{name} advertises its control API"));
         let d = Door::open(&self.root, name, &api).await;
         self.doors.lock().unwrap().insert(name.to_string(), d.clone());
         d
     }
 
     async fn member_door(&self, mesh: &str) -> Door {
-        let nodes = self.estate.nodes().await;
-        let primary = nodes.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["is_primary"] == true).unwrap_or_else(|| panic!("{mesh} has an admin primary: {nodes:?}"));
-        self.door_of(primary["name"].as_str().unwrap()).await
+        let nodes = self.estate.node_views().await;
+        let primary = nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == mesh && n.is_primary).unwrap_or_else(|| panic!("{mesh} has an admin primary: {nodes:?}"));
+        self.door_of(&primary.name.to_string()).await
     }
 
     async fn fabric_door(&self) -> Door {
-        let nodes = self.estate.nodes().await;
-        let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));
-        self.door_of(primary["name"].as_str().unwrap()).await
+        let nodes = self.estate.node_views().await;
+        let primary = nodes.iter().find(|n| n.is_fabric_primary).unwrap_or_else(|| panic!("the fabric has a primary: {nodes:?}"));
+        self.door_of(&primary.name.to_string()).await
     }
 
-    async fn complete(&self, build_id: &str) -> Value {
-        self.estate.await_build(build_id, Duration::from_secs(120)).await
+    /// The workflow's stream to its `Complete`, and then Build `id` complete in the log of the admin the
+    /// estate asks. A Build that log holds as failed fails the cell with the Build.
+    async fn complete(&self, stream: &mut WorkflowStream) -> Value {
+        let id = Self::id_of(stream);
+        Estate::complete(stream).await;
+        self.built(&id).await
     }
 
-    async fn spawn(&self, kind: &str) -> String {
-        let (status, a) = self.estate.post("/api/nodes/spawn", &json!({"mesh": "mesh1", "kind": kind})).await;
-        assert_eq!(status, 202, "spawn {kind}: {a}");
-        s(&a["build_id"])
+    /// Build `id` complete in the log of the admin the estate asks.
+    async fn built(&self, id: &str) -> Value {
+        let build = build_log::build_fact(&self.estate.carrier().await, id, "complete", Duration::from_secs(120), |b| {
+            assert!(b.state != BuildState::Failed, "Build {id} failed: {b:#?}");
+            b.state == BuildState::Complete
+        })
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
+        serde_json::to_value(build).expect("a Build view serializes")
     }
 
-    async fn delete(&self, node: &str) -> String {
-        let (status, a) = self.estate.delete(&format!("/api/nodes/{node}")).await;
-        assert_eq!(status, 202, "delete {node}: {a}");
-        s(&a["build_id"])
+    /// The Build a workflow call opened or joined.
+    fn id_of(stream: &WorkflowStream) -> String {
+        stream.accepted().build_id.0.clone()
+    }
+
+    /// `node.create` of a `kind` node in mesh1, accepted: the stream of the Build that runs it.
+    async fn spawn(&self, kind: NodeKind) -> WorkflowStream {
+        self.estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of a {kind:?} in mesh1: {e}"))
+    }
+
+    /// `node.delete` of `node`, accepted: the stream of the Build that runs it.
+    async fn delete(&self, node: &str) -> WorkflowStream {
+        self.estate.nodes_obj().await.delete(&path(node)).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {node}: {e}"))
     }
 
     async fn names(&self) -> Vec<String> {
-        self.estate.nodes().await.iter().map(|n| s(&n["name"])).collect()
+        self.estate.node_views().await.iter().map(|n| n.name.to_string()).collect()
     }
 
+    /// `node` once the admin the estate asks lists it ready for traffic.
     async fn node_ready(&self, node: &str) -> Value {
-        wait_for(&format!("{node} ready for traffic"), Duration::from_secs(60), || async { self.estate.node_opt(node).await.filter(|n| n["status"] == "ready-for-traffic") }).await
+        let ready = self.estate.until_node(node, &format!("{node} ready for traffic"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::ReadyForTraffic).cloned()).await;
+        serde_json::to_value(ready).expect("a view serializes")
     }
 
+    /// Wait until the admin the estate asks lists no `node`.
     async fn node_gone(&self, node: &str) {
-        wait_for(&format!("{node} left the view"), Duration::from_secs(60), || async { self.estate.node_opt(node).await.is_none().then_some(()) }).await
+        self.estate.until_node(node, &format!("{node} left the view"), Duration::from_secs(60), |v| v.is_none().then_some(())).await
     }
 
     /// An unarmed create: the node it makes, once ready.
-    async fn plain_create(&self, kind: &str) -> String {
+    async fn plain_create(&self, kind: NodeKind) -> String {
         let before = self.names().await;
-        let id = self.spawn(kind).await;
-        self.complete(&id).await;
-        wait_for("the created node is ready", Duration::from_secs(60), || async {
-            self.estate.nodes().await.iter().find(|n| !before.contains(&s(&n["name"])) && n["status"] == "ready-for-traffic").map(|n| s(&n["name"]))
-        })
-        .await
+        let mut stream = self.spawn(kind).await;
+        self.complete(&mut stream).await;
+        self.estate
+            .until_view("the created node is ready", Duration::from_secs(60), |views| views.iter().find(|n| !before.contains(&n.name.to_string()) && n.status == NodeStatus::ReadyForTraffic).map(|n| n.name.to_string()))
+            .await
     }
 
     fn runtimes(&self, node: &str) -> usize {
@@ -483,7 +515,7 @@ impl Run {
 
     /// Whether the nodes `watch` names are routable in the public view now, and what it showed.
     async fn routable(&self, watch: &Watch) -> (bool, String) {
-        let nodes = self.estate.nodes().await;
+        let nodes = self.estate.node_values().await;
         match watch {
             Watch::NewNodes(before) => {
                 let new: Vec<&Value> = nodes.iter().filter(|n| !before.contains(&s(&n["name"]))).collect();
@@ -502,7 +534,7 @@ async fn read(run: &Run, door: &Door, build_id: &str, op: &Option<String>) -> (S
     let b = run.build(door, build_id).await;
     let attempt = b["attempt"].as_u64().unwrap_or(0);
     let done = op.as_ref().map(|o| done_steps(&b, o, attempt)).unwrap_or_default();
-    let marker = json!({"state": b["state"], "attempt": attempt, "done": done, "pointer": s(&run.fabric().await["build_id"]), "attempt_anywhere": run.attempt_anywhere(build_id).await}).to_string();
+    let marker = json!({"state": b["state"], "attempt": attempt, "done": done, "pointer": run.fabric_build_id().await, "attempt_anywhere": run.attempt_anywhere(build_id).await}).to_string();
     (marker, b["state"] == "complete", attempt)
 }
 
@@ -510,32 +542,34 @@ async fn read(run: &Run, door: &Door, build_id: &str, op: &Option<String>) -> (S
 #[allow(clippy::too_many_arguments)]
 async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door, trigger: Trigger, shape: Shape, watch: Watch, expect_routable: bool) {
     let mut ev = Evidence::new(family, id);
-    let nodes_before = run.estate.nodes().await;
+    let nodes_before = run.estate.node_values().await;
     let (seats_before, seats_detail_before) = seats(&nodes_before);
     let admin_view = |nodes: &[Value]| nodes.iter().find(|n| n["name"] == door.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), admin_view(&nodes_before));
-    let pointer_before = s(&run.fabric().await["build_id"]);
+    let pointer_before = run.fabric_build_id().await;
     let pid_before = run.admin_pid(&door.name);
     let may_move = matches!(trigger, Trigger::CreateMesh(_));
 
     // Arm: the injector's own success, which proves nothing alone.
     let ack = door.arm(id, spec.clone()).await;
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
-    let (build_id, request) = match &trigger {
-        Trigger::Spawn => (run.spawn("rpc_node").await, None),
-        Trigger::Delete(node) => (run.delete(node).await, None),
+    let (build_id, triggered) = match &trigger {
+        Trigger::Spawn => {
+            let stream = run.spawn(NodeKind::RpcNode).await;
+            (Run::id_of(&stream), Triggered::Workflow(stream))
+        }
+        Trigger::Delete(node) => {
+            let stream = run.delete(node).await;
+            (Run::id_of(&stream), Triggered::Workflow(stream))
+        }
         Trigger::CreateMesh(mesh) => {
-            let (status, a) = run.estate.post("/api/meshes", &json!({"name": mesh, "node_admin": 1})).await;
-            assert_eq!(status, 202, "create {mesh}: {a}");
-            (s(&a["build_id"]), None)
+            let stream = run.estate.submit(&BuildSpec::CreateMesh(MeshDesired::of(mesh.as_str(), [(NodeKind::NodeAdmin, 1)]))).await;
+            (stream.build_id().0.clone(), Triggered::Build(stream))
         }
         Trigger::SpawnRequest => {
-            let (url, http) = (format!("{}/api/nodes/spawn", door.api), reqwest::Client::new());
-            let task = tokio::spawn(async move {
-                let r = http.post(url).json(&json!({"mesh": "mesh1", "kind": "rpc_node"})).send().await.expect("the accepting request is sent");
-                (r.status().as_u16(), r.json::<Value>().await.unwrap_or(Value::Null))
-            });
-            (String::new(), Some(task))
+            let nodes = Nodes::new(run.estate.carrier_at(&path(&door.name)).await);
+            let task = tokio::spawn(async move { nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await });
+            (String::new(), Triggered::Request(task))
         }
     };
 
@@ -574,7 +608,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
 
     let (routable, shown) = run.routable(&watch).await;
     ev.routing = Some(Routing { expected_routable: expect_routable, observed_routable: routable, observed: shown });
-    let nodes_during = run.estate.nodes().await;
+    let nodes_during = run.estate.node_values().await;
     let (seats_during, seats_detail_during) = seats(&nodes_during);
     let (fp_during, inc_during) = (fabric_primary(&nodes_during), admin_view(&nodes_during));
     let held_pid = run.admin_pid(&door.name);
@@ -584,18 +618,25 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
 
     // Release.
     let rel = door.release(id).await;
-    let ended = wait_for(&format!("`{id}` hold ended"), Duration::from_secs(30), || async { (door.cut(id).await["held"] == false).then_some(true) }).await;
+    let ended = door.wait_released(id).await;
     ev.release = Some(Release { acked: rel["released"] == id, hold_ended: ended });
-    if let Some(r) = request {
-        let (status, body) = r.await.unwrap();
-        assert_eq!((status, body["build_id"].as_str()), (202, Some(build_id.as_str())), "release answers the accepting request: {body}");
-    }
-    let done = run.complete(&build_id).await;
+    let done = match triggered {
+        Triggered::Workflow(mut stream) => run.complete(&mut stream).await,
+        Triggered::Build(stream) => {
+            run.estate.follow(stream).await;
+            run.built(&build_id).await
+        }
+        Triggered::Request(task) => {
+            let mut accepted = task.await.unwrap().unwrap_or_else(|e| panic!("`{id}`: release did not answer the accepting request with the Build: {e}"));
+            assert_eq!(Run::id_of(&accepted), build_id, "release answers the accepting request with the Build the cut named");
+            run.complete(&mut accepted).await
+        }
+    };
 
     // Recovery and the reconciled final state.
     let (after_marker, complete_after, _) = read(run, door, &build_id, &op).await;
     ev.recovery = Some(Recovery { work_complete: complete_after, marker_after: after_marker });
-    let nodes_after = run.estate.nodes().await;
+    let nodes_after = run.estate.node_values().await;
     let (seats_after, seats_detail_after) = seats(&nodes_after);
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
@@ -610,8 +651,8 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
     rec.check("the Build completed at one attempt", done["state"] == "complete" && attempt == 1, format!("state {} attempt {attempt}", done["state"]));
-    let fabric = run.fabric().await;
-    rec.check("Fabric.build_id names the Build", fabric["build_id"] == build_id.as_str(), format!("{} vs {}", fabric["build_id"], build_id));
+    let pointer = run.fabric_build_id().await;
+    rec.check("Fabric.build_id names the Build", pointer == build_id, format!("{pointer} vs {build_id}"));
     rec.check("the pointer moved off the previous Build", pointer_before != build_id, format!("previous {pointer_before}"));
     match &shape {
         Shape::Create { .. } => create_checks(run, &mut rec, &done).await,
@@ -646,10 +687,9 @@ async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
 
 /// A joining node-admin held at a boot cut (armed from `<root>/faults/<name>.boot.json`, before its
 /// first line runs): the create Build waits on it, and it is not Ready until the release. `stops_at`
-/// is the create step the held admin stops the Build at: with `exact`, the Build holds a complete
-/// receipt for every step before it and none after.
-#[allow(clippy::too_many_arguments)]
-async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str, stops_at: CreateStep, exact: bool) {
+/// is the create step the held admin stops the Build at: the Build holds a complete receipt for every
+/// step before it and none after.
+async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str, stops_at: CreateStep) {
     let mut ev = Evidence::new(family, id);
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
     let faults = run.root.join("faults");
@@ -659,30 +699,23 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     spec["id"] = json!(id);
     std::fs::write(faults.join(format!("{admin}.boot.json")), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
     let exec = run.fabric_door().await;
-    let nodes_before = run.estate.nodes().await;
+    let nodes_before = run.estate.node_values().await;
     let (seats_before, detail_before) = seats(&nodes_before);
     let (fp_before, inc_before) = (fabric_primary(&nodes_before), nodes_before.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default());
-    let pointer_before = s(&run.fabric().await["build_id"]);
+    let pointer_before = run.fabric_build_id().await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
-    let build_id = run.spawn("node_admin").await;
+    let mut stream = run.spawn(NodeKind::NodeAdmin).await;
+    let build_id = Run::id_of(&stream);
     let door = Door::open(&run.root, admin, "").await;
     let held = door.wait_held(id).await;
     let op = format!("create-node:{admin}");
     let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
-    let wanted = if exact { format!("complete receipts exactly {want:?}") } else { format!("at least the complete receipts of every step before {}", CreateStep::WaitForBind.name()) };
-    wait_for_observed(&format!("`{id}`: the Build reaches the held admin ({wanted})"), Duration::from_secs(60), || async {
-        let b = run.build(&exec, &build_id).await;
-        let d = done_steps(&b, &op, 1);
-        let reached = if exact { d == want } else { d.len() >= create_order.iter().position(|x| x == CreateStep::WaitForBind.name()).unwrap() };
-        if reached {
-            Ok(())
-        } else {
-            Err(format!("attempt {} state {}: complete receipts {d:?}; failed {:?}", b["attempt"], b["state"], failed_steps(&b, &op, 1)))
-        }
-    })
-    .await;
+    let carrier = run.estate.carrier_at(&path(&exec.name)).await;
+    build_log::build_fact(&carrier, &build_id, &format!("the Build reaches the held admin (complete receipts exactly {want:?})"), Duration::from_secs(60), |b| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, 1) == want)
+        .await
+        .unwrap_or_else(|end| panic!("`{id}`: {end}"));
     let mut reads = Vec::new();
     let mut complete_while_held = false;
     let mut attempts = [0u64; 2];
@@ -702,19 +735,19 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     ev.progress = Some(Progress { reads, complete_while_held });
     let (routable, shown) = run.routable(&Watch::Node(admin.into())).await;
     ev.routing = Some(Routing { expected_routable: false, observed_routable: routable, observed: shown });
-    let nodes_during = run.estate.nodes().await;
+    let nodes_during = run.estate.node_values().await;
     let (seats_during, detail_during) = seats(&nodes_during);
     let alive = run.admin_pid(admin).and_then(proc_state).is_some_and(|c| c != 'Z');
     let inc_during = nodes_during.iter().find(|n| n["name"] == exec.name.as_str()).map(|n| s(&n["incarnation_id"])).unwrap_or_default();
     let fp_during = fabric_primary(&nodes_during);
 
     let rel = door.release(id).await;
-    let ended = wait_for(&format!("`{id}` hold ended"), Duration::from_secs(30), || async { (door.cut(id).await["held"] == false).then_some(true) }).await;
+    let ended = door.wait_released(id).await;
     ev.release = Some(Release { acked: rel["released"] == id, hold_ended: ended });
-    let done = run.complete(&build_id).await;
+    let done = run.complete(&mut stream).await;
     let (after_marker, complete_after, _) = read(run, &exec, &build_id, &Some(op.clone())).await;
     ev.recovery = Some(Recovery { work_complete: complete_after, marker_after: after_marker });
-    let nodes_after = run.estate.nodes().await;
+    let nodes_after = run.estate.node_values().await;
     let (seats_after, detail_after) = seats(&nodes_after);
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
@@ -729,7 +762,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let mut rec = Reconciliation::default();
     let attempt = done["attempt"].as_u64().unwrap_or(0);
     rec.check("the Build completed at one attempt", done["state"] == "complete" && attempt == 1, format!("state {} attempt {attempt}", done["state"]));
-    rec.check("Fabric.build_id names the Build", run.fabric().await["build_id"] == build_id.as_str() && pointer_before != build_id, format!("previous {pointer_before}"));
+    rec.check("Fabric.build_id names the Build", run.fabric_build_id().await == build_id && pointer_before != build_id, format!("previous {pointer_before}"));
     create_checks(run, &mut rec, &done).await;
     rec.check("the advertised seats equal the public candidates' after the release", seats_after, detail_after);
     ev.reconciliation = Some(rec);
@@ -749,15 +782,15 @@ async fn silent_case(run: &Run) {
     let floor = rafka_mesh_transport::membership::staleness_floor();
     let id = "silent-runtime:sigstop-rpc-node";
     let mut ev = Evidence::new(Family::SilentRuntime, id);
-    let nodes = run.estate.nodes().await;
+    let nodes = run.estate.node_values().await;
     let target = nodes.iter().find(|n| n["kind"] == "rpc_node" && n["is_primary"] == false && n["status"] == "ready-for-traffic").cloned().unwrap_or_else(|| panic!("a ready non-primary rpc node: {nodes:?}"));
     let (name, node_id, incarnation) = (s(&target["name"]), s(&target["node_id"]), s(&target["incarnation_id"]));
     let exact = format!("exact:{node_id}");
     let pid = run.estate.pid_of(&name).await;
-    let data_dir = run.estate.data_dir_of(&name).await;
-    let fabric_build = s(&run.fabric().await["build_id"]);
+    let data_dir = run.estate.data_dir(&name).await;
+    let fabric_build = run.fabric_build_id().await;
     let attempt_of = |b: &Value| b["attempt"].as_u64().unwrap_or(0);
-    let attempt_before = attempt_of(&run.estate.get(&format!("/api/builds?id={fabric_build}")).await.1);
+    let attempt_before = attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await);
 
     // The held proof mutation: stored by the live node before it is frozen.
     let put = run.estate.probe(&["put", "--target", &exact, "--key", "77", "--value", "before-freeze"]);
@@ -766,17 +799,17 @@ async fn silent_case(run: &Run) {
     let (seats_before, detail_before) = seats(&nodes);
     let (fp_before, inc_before) = (fabric_primary(&nodes), incarnation.clone());
 
-    // The fault: SIGSTOP, acknowledged by the OS process state.
+    // The fault: SIGSTOP, acknowledged by the OS process state. The kernel is the only source of this
+    // fact (a signal to a process that is not this cell's child has no reply), so it is read from
+    // `/proc` until it holds.
     assert!(signal(pid, "-STOP"), "SIGSTOP {pid} ({name})");
     let state_after_stop = wait_for(&format!("{name} (pid {pid}) is stopped"), Duration::from_secs(10), || async { (proc_state(pid) == Some('T')).then_some('T') }).await;
     let primitive = json!({"signal": "SIGSTOP", "pid": pid, "node": name});
     ev.primitive = Some(Primitive { armed: true, ack: primitive.clone() });
 
     // The membership consequence: the view stops calling it ready, within the staleness window.
-    let silent_view = wait_for(&format!("{name} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), || async {
-        run.estate.node_opt(&name).await.filter(|n| n["status"] != "ready-for-traffic")
-    })
-    .await;
+    let silent_view = run.estate.until_node(&name, &format!("{name} no longer ready in the public view"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.status != NodeStatus::ReadyForTraffic).cloned()).await;
+    let silent_view = serde_json::to_value(silent_view).expect("a view serializes");
 
     // Reads while stopped: process state, CPU use and the typed outcome of a call to the exact node.
     let mut reads = Vec::new();
@@ -790,13 +823,13 @@ async fn silent_case(run: &Run) {
     ev.fault = Some(FaultAck { held: state_after_stop == 'T', names: Some(json!({"pid": pid, "proc_state": "T", "view_status": silent_view["status"]})), held_at_last_read });
     ev.progress = Some(Progress { reads, complete_while_held: outcomes.iter().any(|o| o["outcome"] == "Reply") });
     ev.routing = Some(Routing { expected_routable: false, observed_routable: outcomes.iter().any(|o| o["outcome"] == "Reply"), observed: format!("view {}; calls {}", silent_view["status"], outcomes.iter().map(|o| s(&o["outcome"])).collect::<Vec<_>>().join(",")) });
-    let nodes_during = run.estate.nodes().await;
+    let nodes_during = run.estate.node_values().await;
     let (seats_during, detail_during) = seats(&nodes_during);
     let during_node = nodes_during.iter().find(|n| n["name"] == name.as_str()).cloned();
-    let attempt_during = attempt_of(&run.estate.get(&format!("/api/builds?id={fabric_build}")).await.1);
+    let attempt_during = attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await);
     let alive = proc_state(pid).is_some_and(|c| c != 'Z');
     let inc_during = during_node.as_ref().map(|n| s(&n["incarnation_id"])).unwrap_or_default();
-    let replaced = during_node.as_ref().is_none_or(|n| s(&n["node_id"]) != node_id) || s(&run.fabric().await["build_id"]) != fabric_build;
+    let replaced = during_node.as_ref().is_none_or(|n| s(&n["node_id"]) != node_id) || run.fabric_build_id().await != fabric_build;
 
     // Thaw.
     let acked = signal(pid, "-CONT");
@@ -804,13 +837,14 @@ async fn silent_case(run: &Run) {
     ev.release = Some(Release { acked, hold_ended: ended });
 
     // Recovery: the same birth is ready again and serves the value stored before the freeze.
-    let back = wait_for(&format!("{name} back as {incarnation}"), floor * 2 + Duration::from_secs(30), || async {
-        run.estate.node_opt(&name).await.filter(|n| n["incarnation_id"] == incarnation.as_str() && n["status"] == "ready-for-traffic")
-    })
-    .await;
+    let back = run
+        .estate
+        .until_node(&name, &format!("{name} back as {incarnation}"), floor * 2 + Duration::from_secs(30), |v| v.filter(|n| n.incarnation_id.as_ref().is_some_and(|i| i.to_string() == incarnation) && n.status == NodeStatus::ReadyForTraffic).cloned())
+        .await;
+    let back = serde_json::to_value(back).expect("a view serializes");
     let kept = run.estate.probe(&["get", "--target", &exact, "--key", "77"]);
     ev.recovery = Some(Recovery { work_complete: kept["outcome"] == "Reply", marker_after: json!({"proc_state": proc_state(pid).map(String::from), "outcome": kept["outcome"]}).to_string() });
-    let nodes_after = run.estate.nodes().await;
+    let nodes_after = run.estate.node_values().await;
     let (seats_after, detail_after) = seats(&nodes_after);
     ev.control = Some(Control {
         seats_as_expected: [seats_before, seats_during, seats_after],
@@ -825,9 +859,9 @@ async fn silent_case(run: &Run) {
     let mut rec = Reconciliation::default();
     rec.check("the value stored before the freeze is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-freeze"}), kept.to_string());
     rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == incarnation.as_str() && kept["reply"]["executing_node"] == node_id.as_str(), kept.to_string());
-    rec.check("the node keeps its process and its data dir", run.estate.pid_of(&name).await == pid && run.estate.data_dir_of(&name).await == data_dir, format!("pid {pid}, {data_dir}"));
+    rec.check("the node keeps its process and its data dir", run.estate.pid_of(&name).await == pid && run.estate.data_dir(&name).await == data_dir, format!("pid {pid}, {data_dir}"));
     rec.check("exactly one runtime serves the node", run.runtimes(&name) == 1, format!("{}", run.runtimes(&name)));
-    rec.check("Fabric.build_id is the Build it was and that Build gained no attempt", s(&run.fabric().await["build_id"]) == fabric_build && attempt_of(&run.estate.get(&format!("/api/builds?id={fabric_build}")).await.1) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
+    rec.check("Fabric.build_id is the Build it was and that Build gained no attempt", run.fabric_build_id().await == fabric_build && attempt_of(&build_log::build_value(&run.estate.carrier().await, &fabric_build).await) == attempt_before, format!("{fabric_build} attempts {attempt_before}"));
     rec.check("the advertised seats equal the public candidates' after the thaw", seats_after, detail_after);
     ev.reconciliation = Some(rec);
     run.rows.lock().unwrap().push(json!({
@@ -862,22 +896,22 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     let root = estate.root.clone();
     let run = Run { estate, root, doors: Default::default(), evidence: Default::default(), rows: Default::default(), holds: Default::default() };
     // A lone admin hears no other member and is cut off, so it executes nothing: two admins first.
-    let (status, a) = run.estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2}]})).await;
-    assert_eq!(status, 202, "{a}");
-    run.complete(&s(&a["build_id"])).await;
-    run.estate.settled(&["mesh1.admin.1", "mesh1.admin.2"].iter().map(|n| n.to_string()).collect(), Duration::from_secs(60)).await;
+    run.estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
+    run.estate.settles_to(&[("mesh1", 2, 0)], Duration::from_secs(60)).await;
 
     let node = "mesh1.rpc.1";
     // The healthy control, in the same capture: an unarmed create and removal of the same node
     // complete with every documented receipt once. Every cut below is judged against what they did.
-    let control_create = run.spawn("rpc_node").await;
+    let mut control_stream = run.spawn(NodeKind::RpcNode).await;
+    let control_create = Run::id_of(&control_stream);
     let control_door = run.member_door("mesh1").await;
-    let b = run.complete(&control_create).await;
+    let b = run.complete(&mut control_stream).await;
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
     assert_eq!(done_steps(&b, &format!("create-node:{node}"), 1), create_order, "the healthy create runs every documented step once: {b}");
     run.node_ready(node).await;
-    let control_delete = run.delete(node).await;
-    let b = run.complete(&control_delete).await;
+    let mut control_stream = run.delete(node).await;
+    let control_delete = Run::id_of(&control_stream);
+    let b = run.complete(&mut control_stream).await;
     let retire_order: Vec<String> = RetireStep::ORDER.iter().map(|x| x.name().to_string()).collect();
     assert_eq!(done_steps(&b, &format!("retire-node:{node}"), 1), retire_order, "the healthy removal runs every documented step once: {b}");
     run.node_gone(node).await;
@@ -932,7 +966,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     .await;
 
     // A second rpc node, so the frozen one is not the cohort's only member; then the frozen node.
-    run.plain_create("rpc_node").await;
+    run.plain_create(NodeKind::RpcNode).await;
     silent_case(&run).await;
 
     // The fabric-primary admin held while it accepts a Build: durable before the pointer, then in the pointer's write.
@@ -982,9 +1016,8 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     )
     .await;
 
-    // A joining admin held at its hydration of the Fabric record, and at its Ready gate on the provider domain.
-    join_case(&run, Family::RuntimeMetadataHydration, "hydration:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "mesh1.admin.3", CreateStep::WaitForNodeReady, false).await;
-    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), "mesh1.admin.4", CreateStep::WaitForNodeReady, true).await;
+    // A joining admin held at its Ready gate on the provider domain.
+    join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), "mesh1.admin.3", CreateStep::WaitForNodeReady).await;
 
     finish(run, &dir).await;
 }
@@ -1026,7 +1059,14 @@ async fn finish(run: Run, dir: &std::path::Path) {
     let not_run: Vec<Value> = Family::ALL
         .iter()
         .filter(|f| !covered.contains(&f.name()))
-        .map(|f| json!({"family": f.name(), "judged_by": "wedge_detector_rejects_fault_without_progress_consequence (planted evidence)", "run_here": false}))
+        .map(|f| {
+            // The hydration family's cut parks a joining admin's write of the Fabric record. R14 item 2 (rafka-v2
+            // docs/plans/rulings/i143-r14-rdm-shared-store.md: "Writers are exactly the ladder. Fabric-primary:
+            // `fabric/`") leaves a joiner with no such write: `AcceptedStore::learn` (accepted.rs) writes nothing and
+            // `FabricRowsWriter::round` (admin.rs) writes only while its admin holds the fabric seat.
+            let why = (*f == Family::RuntimeMetadataHydration).then_some("a joining admin writes nothing to fabric/ (R14 item 2): no call of a joiner reaches FabricStorage::put_pointer");
+            json!({"family": f.name(), "judged_by": "wedge_detector_rejects_fault_without_progress_consequence (planted evidence)", "run_here": false, "why_not_on_the_estate": why})
+        })
         .collect();
     let result = json!({
         "cell": CHAOS_CELL,

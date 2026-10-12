@@ -5,8 +5,8 @@
 //! (`Builds`, `Nodes`) over Node RPC and awaits their reply streams. The one exception is cell 6,
 //! which sends `build.attempt.run` itself because that call is the fabric-primary's own, never a
 //! caller's. The one read made outside the client's typed objects is cell 8's precondition: the surviving
-//! admin's own Build log, read over `FetchBuildFacts` (op `0x1F`, `fetch_build_facts`) and awaited through the
-//! client's `await_fact`. The spans an estate exports are the flame of each cell; no cell asserts behaviour
+//! admin's own Build log, read over `FetchBuildFacts` (op `0x1F`) and awaited through the shared
+//! `build_log::log_fact`. The spans an estate exports are the flame of each cell; no cell asserts behaviour
 //! from them.
 //!
 //! The estate: `mesh1` (two node-admins, one rpc node) holds the fabric-primary seat, and `mesh2`
@@ -15,8 +15,7 @@
 
 use iroh::SecretKey;
 use rafka_mesh_entity::{NodeKind, PathName};
-use rafka_node_admin_client::{await_fact, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeAdminClient, NodeEvent, Nodes, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
-use rafka_node_admin_core::build_facts_read::{fetch_build_facts, FetchFailure};
+use rafka_node_admin_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeAdminClient, NodeEvent, Nodes, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
 use rafka_node_admin_core::build_state::{BuildFact, StepOutcome};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::build::{Build, BuildReply, BuildRequest, StepResult};
@@ -493,33 +492,6 @@ impl Caller {
             .unwrap_or_else(|end| panic!("{end}"));
         view.fabric_primary.expect("the awaited view names a fabric-primary").to_string()
     }
-
-    /// Await the typed fact `holds` of Build `id` in node-admin `at`'s own Build log, read over
-    /// `FetchBuildFacts` (op `0x1F`), which every node-admin serves from its own log
-    /// (`BuildFactsDoor::serve`; build.md "Each node-admin keeps its own Build journal"). The Build family
-    /// (`build.get`) is the fabric-primary's alone, so `at`'s log is read through this op, one exact admin by
-    /// path. `fact` names it. The read is `await_fact`'s: an admin whose log does not hold it within `within`
-    /// ends the call `Indeterminate`, naming the fact, the admin and the last thing its log held or how the
-    /// last read ended.
-    async fn log_fact(&self, at: &str, id: &BuildId, fact: &str, within: Duration, holds: impl Fn(&[BuildFact]) -> bool) -> Result<Vec<BuildFact>, CallEnd> {
-        let (target, build) = (NodeTarget::CurrentPath(path(at)), rafka_node_admin_core::build::BuildId(id.0.clone()));
-        let read = || async { fetch_build_facts(&self.client, &target, &build).await.map(|fetched| fetched.facts).map_err(log_read_ended) };
-        let report = |facts: &Vec<BuildFact>| {
-            let last = facts.iter().rev().find_map(|f| if let BuildFact::Step(r) = f { Some(format!("{} {} of attempt {}", r.operation, r.step, r.attempt)) } else { None }).unwrap_or_else(|| "none".into());
-            format!("{} facts, the last step receipt {last}", facts.len())
-        };
-        await_fact("build log", at, &format!("{fact} of Build {id}"), within, read, |facts: &Vec<BuildFact>| holds(facts), report).await
-    }
-}
-
-/// How a read of a node-admin's Build log over `FetchBuildFacts` ended, as the call ends: a responder that
-/// refused by another name or does not serve the op is `Rejected`; any other failure is a read that proved
-/// nothing, `Indeterminate`, and carries the failure's own words.
-fn log_read_ended(failure: FetchFailure) -> CallEnd {
-    match failure {
-        FetchFailure::Refused(_) => CallEnd::Rejected { reason: failure.reason().into(), detail: failure.to_string() },
-        other => CallEnd::Indeterminate { reason: other.to_string() },
-    }
 }
 
 /// The next `Blocked` frame of `stream`. A terminal frame or a broken stream before it is a defect of
@@ -655,8 +627,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     // the survivor's log is read over `FetchBuildFacts`, which every node-admin serves from its own.
     if let Some(operation) = survivor_holds {
         let survivor = caller.survivor_of(&fp);
-        caller
-            .log_fact(&survivor, &build_id, &format!("{operation} Complete at attempt {attempt}"), Duration::from_secs(60), |facts| {
+        crate::build_log::log_fact(&caller.carrier_at(&survivor), &build_id.0, &format!("{operation} Complete at attempt {attempt}"), Duration::from_secs(60), |facts| {
                 facts.iter().any(|f| matches!(f, BuildFact::Step(r) if r.operation == operation && r.step == "Complete" && r.attempt == attempt && r.outcome == StepOutcome::Complete))
             })
             .await

@@ -82,7 +82,7 @@ impl Caller {
         let mut at = None;
         while let Some(named) = seat {
             let to: rafka_mesh_entity::PathName = named.ok_or_else(|| format!("a stream ended SeatMoved naming no fabric-primary: {first:?} {streams:?}"))?.parse().map_err(|e| format!("SeatMoved names {e:?}, which is not a path.name"))?;
-            let carrier = self.peers.carrier_at(&self.admin, &to).await.map_err(|e| format!("the caller cannot reach {to}, the fabric-primary SeatMoved names: {e}"))?;
+            let carrier = self.peers.carrier_following(&self.admin, &to).await.map_err(|e| format!("the caller cannot reach {to}, the fabric-primary SeatMoved names: {e}"))?;
             let mut stream = Nodes::new(carrier.clone()).resume(self.kind.clone(), &self.accepted).await.map_err(|e| format!("Build {} was not resumed at {to}: {e}", self.accepted.build_id))?;
             let mut frames: Vec<Frame> = Vec::new();
             seat = loop {

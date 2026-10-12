@@ -17,6 +17,7 @@ pub mod runner;
 pub mod scenario;
 pub mod sim;
 pub mod soak;
+pub mod typed;
 pub mod wedge;
 
 pub use rafka_chaos::{container_faults, disk_faults, link_faults, netfault, process_faults};

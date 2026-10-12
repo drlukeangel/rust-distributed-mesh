@@ -232,8 +232,10 @@ impl BuildCarrier {
         Self { client, fabric_primary }
     }
 
-    /// The node-RPC client the carrier calls with.
-    pub(crate) fn client(&self) -> &NodeRpcClient {
+    /// The node-RPC client the carrier calls with: a caller that reads a node-admin's own log (the
+    /// Build journal over `FetchBuildFacts`, which only the node-admin's core can decode) reaches the
+    /// admin the carrier starts at through it.
+    pub fn client(&self) -> &NodeRpcClient {
         &self.client
     }
 

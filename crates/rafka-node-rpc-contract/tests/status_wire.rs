@@ -126,8 +126,9 @@ fn replies_match_the_frozen_forty_four_variant_wire_schema() {
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31")),
         (
-            Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![] } },
-            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00"),
+            // id | name | status | provider | fabric_primary | admin_api_base | meshes | build_id Some("b")
+            Fabric { fabric: FabricView { id: fabric(), name: "fabric1".into(), status: ScopeStatus::StateSync, provider: ProviderKind::Process, fabric_primary: None, admin_api_base: None, meshes: vec![], build_id: Some("b".into()) } },
+            concat!("23", "0c323132333435363738396162", "0766616272696331", "05", "00", "00", "00", "00", "010162"),
         ),
         (
             Connections {

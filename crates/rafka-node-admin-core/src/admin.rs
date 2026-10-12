@@ -740,7 +740,7 @@ impl Records {
             // The seat of this admin's mesh taken with this view: its status rows are folded in
             // before the view is installed, so no decision reads the view against an empty record.
             if let Some(fold) = self.status.get() {
-                fold.on_install(&t, &self.declared).await;
+                fold.on_install(&t, &self.declared, self.book.get()).await;
             }
             // A renamed predecessor this view now names `<path>.old` (its row's name; its digest still
             // says `<path>`): one span as it enters.
@@ -800,29 +800,6 @@ impl TopologySink for Records {
     }
     fn node_rows(&self) -> Option<Arc<crate::node_rows::NodeRows>> {
         self.rows.get().cloned()
-    }
-}
-
-/// The executor an attempt's Won claim names: the claim fact this admin's Build log holds, else the
-/// one the fabric-primary's log holds (a claim the Build topic has not delivered here yet is read
-/// from the admin that decided it, `FetchBuildFacts`).
-struct AdminClaims {
-    me: PathName,
-    builds: Arc<dyn BuildStateAdapter>,
-    topology: Arc<RwLock<Topology>>,
-    client: Arc<rafka_node_rpc::NodeRpcClient>,
-}
-
-#[async_trait::async_trait]
-impl crate::fabric_handover::WonClaims for AdminClaims {
-    async fn executor(&self, build_id: &str, attempt: u32) -> Result<Option<String>, crate::fabric_handover::SourceFailure> {
-        let local = self.builds.facts().await.map_err(|e| crate::fabric_handover::SourceFailure { source: format!("the Build log of {}", self.me), op: format!("read the claim of attempt {attempt} of Build {build_id}"), cause: e.to_string() })?;
-        if let Some(e) = crate::fabric_handover::won_claim_in(&local, build_id, attempt) {
-            return Ok(Some(e));
-        }
-        let Some(fp) = self.topology.read().await.fabric_primary().cloned() else { return Ok(None) };
-        let read = crate::build_facts_read::fetch_build_facts(&self.client, &rafka_node_rpc::NodeTarget::ExactNode(fp.node_id.clone()), &crate::build::BuildId(build_id.to_string())).await.map(|f| f.facts);
-        crate::fabric_handover::won_claim_from_read(read, build_id, attempt, &format!("{} ({})", fp.name, fp.node_id))
     }
 }
 
@@ -3754,9 +3731,8 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     async fn stopped(&self, op: &rafka_mesh_entity::LifecycleOp) {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-node-stopped", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.0, build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            // This admin executed the stop and holds its matching stopped reply: the overlay its own
-            // book takes rides an aggregate it publishes for a mesh with no primary (R-NS1), and the
-            // event carries the version at which its stop changed the birth.
+            // This admin executed the stop and holds its matching stopped reply: the event carries the
+            // version at which its stop changed the birth.
             self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Stopped, op).await;
             tracing::info!("the node is stopped: every mesh drops it from its book; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
         }
@@ -3856,9 +3832,6 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
             }
-            // This admin executed the delete and holds the provider's exit proof: the departure its own
-            // view just took rides an aggregate it publishes for a mesh with no primary (R-NS1).
-            self.membership.book.executed_delete(op);
             tracing::info!("the exact birth is proven terminal: it has left");
         }
         .instrument(span)
@@ -5794,6 +5767,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     },
                                     loads: control.loads.get().cloned(),
                                     book: Some(book.clone()),
+                                    accepted: control.accepted.clone(),
                                 }));
                             }
                             // The Node RPC door: opened by the first view installed that holds this admin's exact birth
@@ -5872,7 +5846,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 contacts: crate::fabric_handover::OwnContacts { endpoint_id: key.public().to_string(), transport_addr: mesh_addr, admin_api_base: Some(api_base.clone()) },
                                 handovers: Default::default(),
                                 decisions: builds.decisions(),
-                                claims: Arc::new(AdminClaims { me: name.clone(), builds: builds_dyn.clone(), topology: control.topology.clone(), client: node_rpc.client.clone() }),
                                 project_view: view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone()),
                                 cut_off_writes: Arc::new(crate::fabric_handover::SeatStores { mesh: mesh_files.clone(), nodes: nodes_files.clone(), fabric: fabric_files.clone(), status: status_files.clone() }).cut_off_writes(),
                             });
@@ -6810,17 +6783,16 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     let anti_entropy;
                                     // What the hierarchy hands the Members anti-entropy: a role it took is held for
                                     // writing until its seat is announced (`roles`), the anti-entropy is told once it
-                                    // is (`roles_moved`), and the meshes its view names a primary for (`primaries`).
+                                    // is (`roles_moved`).
                                     let roles = Arc::new(tokio::sync::RwLock::new(()));
                                     let roles_moved = Arc::new(tokio::sync::Notify::new());
-                                    let primaries: Arc<Mutex<BTreeMap<String, String>>> = Arc::default();
                                     // The hierarchy decides this admin's roles: its mesh's primary forwards the other
                                     // meshes onto its mesh channel; the fabric primary publishes the fabric's status and
                                     // climbs the fabric states. It joins the backbone through every admin it knows and
                                     // its mesh channel through every member of its mesh it knows. It publishes no
                                     // Members aggregate: that is the anti-entropy's timer, below.
                                     {
-                                        let (roles, roles_moved, primaries) = (roles.clone(), roles_moved.clone(), primaries.clone());
+                                        let (roles, roles_moved) = (roles.clone(), roles_moved.clone());
                                         let (backbone, membership, topology, me, mesh, builds) = (backbone.clone(), membership.clone(), control.topology.clone(), name.clone(), cfg.mesh.clone(), builds.clone());
                                         let (view_fabric, view_fabric_id, view_provider, view_book) = (cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone());
                                         let (seat_node_id, seat_incarnation) = (node_id.clone(), incarnation.clone());
@@ -6878,11 +6850,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 was_mesh_primary = mesh_primary;
                                                 backbone.set_mesh_primary(mesh_primary);
                                                 backbone.set_fabric_primary(fabric_primary);
-                                                // The meshes this view names a primary for: a mesh with none is one the fabric
-                                                // primary publishes as acting primary (R-NS1).
-                                                // A stopped seat holder is no primary (R-NS1 item 2: from its stop on the
-                                                // fabric-primary is the mesh's publisher of record).
-                                                *primaries.lock().unwrap() = t.meshes.iter().filter_map(|m| t.cohort_primary(&m.name, NodeKind::NodeAdmin).filter(|p| !p.parked).map(|p| (m.name.clone(), p.name.to_string()))).collect();
                                                 // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
                                                 // new holder authors no ready on a topology reading.
                                                 if fabric_primary && !was_fabric_primary {
@@ -6991,8 +6958,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // it: a peer's t of this mesh (mesh-investigation.md) is the publication's own
                                     // interval, never the store's. While this admin is its mesh's primary it publishes
                                     // its mesh's members on the backbone (and puts the same source into its own mesh);
-                                    // while it is the fabric primary, each mesh with no primary whose births it stopped
-                                    // or deleted (R-NS1). Held at its own wait while the admin is parked.
+                                    // no admin publishes another mesh on its behalf (R-RX4). Held at its own wait while
+                                    // the admin is parked.
                                     {
                                         let (backbone, membership, park) = (backbone.clone(), membership.clone(), park_gate.clone());
                                         anti_entropy = tokio::spawn(async move {
@@ -7001,8 +6968,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 {
                                                     let _announced = roles.read().await;
                                                     backbone.publish(&membership, backbone.own_members(&membership)).await;
-                                                    let primaries = primaries.lock().unwrap().clone();
-                                                    backbone.publish_for_primaryless(&membership, |m| primaries.get(m).cloned()).await;
                                                 }
                                                 drop(turn);
                                                 tokio::select! {
@@ -9652,6 +9617,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         let _ = Declared::default();
 

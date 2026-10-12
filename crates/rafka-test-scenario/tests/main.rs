@@ -33,6 +33,7 @@ pub fn node_recovery_due() -> std::time::Duration {
 
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
+mod build_log;
 mod chaos_kit__restored_faults;
 mod estate_teardown;
 mod fabric_build__accepted_topology;

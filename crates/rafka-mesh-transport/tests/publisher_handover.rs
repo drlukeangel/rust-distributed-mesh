@@ -1,17 +1,19 @@
-//! i143.e12.s52 (rafka-v2 #3082), R-HB1 part 2, §A.3: the handover of a mesh's projection between
-//! publishers, over real gossip.
+//! i143.e12.s53 (rafka-v2 PRD row e12.s53), R-RX3: a gossip frame received out of order, with an
+//! earlier version than the one the receiver holds for its source, is ignored, once, in the gossip
+//! framework's receive path, over real gossip.
 //!
-//! The design (rafka-v2 docs/plans/proposal/node-status-heartbeat-connections.md §A.3): "Author
-//! ordering reuses publisher epochs and the LeadershipView. A new source primary begins a new epoch;
-//! a receiver installs a full of that epoch before its deltas; a forwarder that takes the seat
-//! publishes a full first. The one new contract is the handover step: the successor acquires the
-//! held member statuses and publishes a complete projection under its own epoch before any delta,
-//! and a delayed predecessor publication cannot switch receivers back." gossip.md §3.3: "the source
-//! publisher's exact identity is its epoch".
+//! The design (rafka-v2 docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md, R-RX3, Luke
+//! 2026-10-12): "One check in the gossip receive path, for every frame kind. A frame whose order key
+//! is older than ... the newest the receiver holds for the same source is ignored. Order keys already
+//! on the wire, so no new field: Members and MembersDelta: `published_at_rafka_ms` then
+//! `topology_version`, per mesh; Digest: `digest_seq`, per birth; lifecycle facts:
+//! `topology_version`." R-RX2: "One mesh has one publisher on the backbone: its mesh-primary ... No
+//! cross-publisher ordering rule and no seat-epoch field are added." R-RX1: no receiver refuses an
+//! input because of who sent it.
 
 use iroh::protocol::Router;
-use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
-use rafka_mesh_transport::membership::{learn_addresses, Backbone, Membership};
+use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, Seat, SeatHolder};
+use rafka_mesh_transport::membership::{learn_addresses, Backbone, Frame, Membership, StatusEvent};
 use rafka_mesh_transport::snapshot::PublisherId;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -107,24 +109,38 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
     }
 }
 
-/// CONTRACT (§A.3; gossip.md §3.3): through real gossip on mesh1's channel, the ordinary member
-/// mesh1.rpc.1 holds mesh1's projection from mesh1.admin.1, its seated primary. The seat moves to
-/// mesh1.admin.2 (epoch 2, announced on the channel). mesh1.admin.2's first publication into the
-/// mesh is a complete projection under its own epoch (a full, `full-due`), before any delta of its
-/// own; the member installs it, then its delta. mesh1.admin.1, its publication delayed (it still
-/// publishes as a primary would: a full, then a delta), is refused by name at the member, naming the
-/// seat holder, and marks the source for GetTopology repair (an unknown source epoch, gossip.md
-/// §3.1); the member never holds mesh1.admin.1's epoch again. Must NOT happen: the member switched
-/// back to the predecessor's epoch, a delta of the successor before its full, or a predecessor's delta
-/// read as a version gap.
+fn op_of(d: &MeshDigest, operation: &str) -> LifecycleOp {
+    LifecycleOp { build_id: "bld-s53".into(), attempt: 1, operation: format!("{operation}:{}", d.node.name), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
+}
+
+fn with_seq(d: &MeshDigest, digest_seq: u64) -> MeshDigest {
+    MeshDigest { digest_seq, ..d.clone() }
+}
+
+/// CONTRACT (R-RX3; R-RX2; R-RX1): through real gossip on mesh1's channel, the ordinary member
+/// mesh1.rpc.1 holds mesh1's projection from its primary mesh1.admin.1, then from mesh1.admin.2 once
+/// the seat moved (its full, then its delta). Four frames, each published before what the member
+/// holds of its source and each sent once, arrive after it:
+/// - mesh1.admin.1's full of mesh1, stamped (`published_at_rafka_ms`) before the successor's, at a
+///   higher `topology_version` than the successor holds;
+/// - mesh1.admin.1's delta of mesh1, stamped the same;
+/// - mesh1.admin.2's NodeStopped of mesh1.rpc.4 at a `topology_version` below its NodeDeleting of
+///   mesh1.rpc.3, which the member already holds;
+/// - mesh1.rpc.2's heartbeat at a `digest_seq` below the one the member holds.
+/// The receive path ignores each by name (`rdm.mesh.membership.reject.via-earlier-version`), naming
+/// the channel, the frame, its source, the key held and the key offered. The member keeps the
+/// successor's projection at its version, holds no stop of mesh1.rpc.4, holds mesh1.rpc.2 at the
+/// newer heartbeat, and marks no source desynchronized. Must NOT happen: a frame refused for who
+/// published it (`via-predecessor-publisher`, `via-unseated-publisher`), an unknown-epoch repair, the
+/// member switched back to the predecessor's projection, a late stop held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_successor_publishes_a_full_first_and_a_delayed_predecessor_publication_is_refused_by_name() {
-    let cell = "the_successor_publishes_a_full_first_and_a_delayed_predecessor_publication_is_refused_by_name";
+async fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_the_receive_path() {
+    let cell = "a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignored_by_the_receive_path";
     if crate::own_process::delegated(module_path!(), cell) {
         return;
     }
     let dir = evidence(cell);
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-s52-handover");
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-s53-receive-order");
 
     let (n1, n2, nm) = (node().await, node().await, node().await);
     let a1 = addr_of(&n1.ep);
@@ -133,7 +149,7 @@ async fn the_successor_publishes_a_full_first_and_a_delayed_predecessor_publicat
     }
     let mesh_id = MeshId::mint();
     let clock = rafka_mesh_transport::clock::os_clock;
-    let (p1_d, p2_d, rpc1, rpc2) = (digest("mesh1.admin.1", 41_001), digest("mesh1.admin.2", 41_002), digest("mesh1.rpc.1", 41_011), digest("mesh1.rpc.2", 41_012));
+    let (p1_d, p2_d, rpc1, rpc2, rpc3, rpc4) = (digest("mesh1.admin.1", 41_001), digest("mesh1.admin.2", 41_002), digest("mesh1.rpc.1", 41_011), digest("mesh1.rpc.2", 41_012), digest("mesh1.rpc.3", 41_013), digest("mesh1.rpc.4", 41_014));
     let m1 = Membership::join(&n1.gossip, &n1.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
     let m2 = Membership::join(&n2.gossip, &n2.ep, &fabric(), "mesh1", &mesh_id, "mesh1.admin.2", clock(), vec![a1.clone()]).await.unwrap();
     let m = Membership::join(&nm.gossip, &nm.ep, &fabric(), "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![a1.clone()]).await.unwrap();
@@ -143,6 +159,7 @@ async fn the_successor_publishes_a_full_first_and_a_delayed_predecessor_publicat
     m.wait_for_neighbour().await;
     let (pub1, pub2) = (PublisherId { node: "mesh1.admin.1".into(), incarnation: p1_d.node.incarnation.clone() }, PublisherId { node: "mesh1.admin.2".into(), incarnation: p2_d.node.incarnation.clone() });
     let held_at_member = || m.held_source_version("mesh1");
+    let seq_at_member = |d: &MeshDigest| m.book.get(d.node.node_id.as_str()).map(|(h, _)| h.digest_seq);
     for book in [&m1.book, &m2.book] {
         for d in [&p1_d, &p2_d, &rpc1] {
             book.record(d.clone());
@@ -151,14 +168,17 @@ async fn the_successor_publishes_a_full_first_and_a_delayed_predecessor_publicat
 
     // mesh1.admin.1 is seated and publishes: the member holds its projection.
     bb1.announce_seat(Seat::MeshPrimary, seat_of(&p1_d, 1)).await;
-    until("the member to hold mesh1.admin.1's seat", || m.book.seats.mesh("mesh1") == Some(seat_of(&p1_d, 1))).await;
     bb1.set_mesh_primary(true);
     bb1.publish(&m1, bb1.own_members(&m1)).await;
     until("the member to hold mesh1.admin.1's projection", || held_at_member().is_some_and(|(p, _)| p == pub1)).await;
+    let (_, pred_version) = held_at_member().unwrap();
+    // The instant mesh1.admin.1's late frames are stamped with: before the successor publishes.
+    let pred_stamp = m1.clock().now_rafka_ms();
+    tokio::time::sleep(Duration::from_millis(5)).await;
 
-    // The seat moves to mesh1.admin.2: its first publication is a full under its own epoch, then a delta.
+    // The seat moves to mesh1.admin.2: its full, then its delta.
+    bb1.set_mesh_primary(false);
     bb2.announce_seat(Seat::MeshPrimary, seat_of(&p2_d, 2)).await;
-    until("the member to hold mesh1.admin.2's seat", || m.book.seats.mesh("mesh1") == Some(seat_of(&p2_d, 2))).await;
     bb2.set_mesh_primary(true);
     bb2.publish(&m2, bb2.own_members(&m2)).await;
     until("the member to install the successor's full", || held_at_member().is_some_and(|(p, _)| p == pub2)).await;
@@ -168,22 +188,44 @@ async fn the_successor_publishes_a_full_first_and_a_delayed_predecessor_publicat
     until("the member to apply the successor's delta", || held_at_member().is_some_and(|(p, v)| p == pub2 && v > v1)).await;
     let (_, v2) = held_at_member().unwrap();
 
-    // mesh1.admin.1's delayed publications: a full (it publishes as a primary that just took the seat
-    // would), then a delta of a change it holds. The member keeps the successor's epoch throughout.
-    for round in 0..5u16 {
-        bb1.set_mesh_primary(false);
-        bb1.set_mesh_primary(true);
-        bb1.publish(&m1, bb1.own_members(&m1)).await;
-        m1.book.record(digest(&format!("mesh1.rpc.{}", 20 + round), 41_020 + round));
-        bb1.publish(&m1, bb1.own_members(&m1)).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(held_at_member(), Some((pub2.clone(), v2)), "round {round}: the member keeps the successor's epoch");
-    }
-    assert_eq!(
-        m.desynced_sources().iter().map(|(mesh, g)| (mesh.clone(), g.to_string())).collect::<Vec<_>>(),
-        vec![("mesh1".to_string(), "unknown-epoch".to_string())],
-        "a predecessor's publication is refused, not read as a version gap: its unknown epoch marks the source for GetTopology repair"
-    );
+    // mesh1.admin.2 executes mesh1.rpc.3's delete: its NodeDeleting at the version it moved to.
+    let deleting = op_of(&rpc3, "delete-node");
+    let (_, deleting_version) = bb2.publish_status_event(StatusEvent::Deleting, &deleting).await;
+    until("the member to hold mesh1.rpc.3's NodeDeleting", || m.book.in_flight().contains(&deleting)).await;
+    // mesh1.rpc.2's heartbeat at digest_seq 7.
+    m2.forward(&Frame::Digest { digest: with_seq(&rpc2, 7) }).await.unwrap();
+    until("the member to hold mesh1.rpc.2 at digest_seq 7", || seq_at_member(&rpc2) == Some(7)).await;
+
+    // The late frames, each published before what the member holds of its source.
+    let late_full = Frame::Members {
+        mesh: "mesh1".into(),
+        publisher: pub1.clone(),
+        forwarded_by: Some("mesh1.admin.1".into()),
+        topology_version: v2 + 7,
+        published_at_rafka_ms: pred_stamp,
+        snapshot_id: 9_001,
+        chunk_index: 0,
+        chunk_count: 1,
+        digests: vec![p1_d.clone(), rpc1.clone()],
+        in_flight: vec![],
+        departed: vec![],
+    };
+    let late_delta = Frame::MembersDelta { mesh: "mesh1".into(), source_publisher: pub1.clone(), base_version: pred_version, topology_version: pred_version + 1, published_at_rafka_ms: pred_stamp, changed: vec![], removed: vec![rpc1.node.node_id.to_string()], in_flight: vec![], departed: vec![] };
+    let late_stop = StatusEvent::Stopped.frame(op_of(&rpc4, "stop-node"), pub2.clone(), deleting_version - 1);
+    let late_heartbeat = Frame::Digest { digest: with_seq(&rpc2, 3) };
+    m1.forward(&late_full).await.unwrap();
+    m1.forward(&late_delta).await.unwrap();
+    m2.forward(&late_stop).await.unwrap();
+    m2.forward(&late_heartbeat).await.unwrap();
+    // A newer heartbeat from each sender, after its late frames: once the member holds it, the late
+    // frames ahead of it on the same channel were received.
+    m1.forward(&Frame::Digest { digest: with_seq(&p1_d, 5) }).await.unwrap();
+    m2.forward(&Frame::Digest { digest: with_seq(&rpc2, 9) }).await.unwrap();
+    until("the member to hold each sender's newer heartbeat", || seq_at_member(&p1_d) == Some(5) && seq_at_member(&rpc2) == Some(9)).await;
+
+    assert_eq!(held_at_member(), Some((pub2.clone(), v2)), "the member keeps the successor's projection at its version");
+    assert!(!m.book.in_flight().iter().any(|op| op.node_id == rpc4.node.node_id), "the late stop is not held: {:?}", m.book.in_flight());
+    assert!(m.desynced_sources().is_empty(), "no source is marked desynchronized: {:?}", m.desynced_sources());
 
     drop((bb1, bb2));
     for n in [&n1, &n2, &nm] {
@@ -192,27 +234,32 @@ async fn the_successor_publishes_a_full_first_and_a_delayed_predecessor_publicat
     drop(telemetry);
     let spans = spans_of(&dir);
     let at = |name: &str, node: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && attr(s, "node") == node).collect() };
-    // The successor: a full of its own mesh under its epoch before any delta of its own.
-    let fulls = at("rdm.mesh.membership.update.via-forwarded-full", "mesh1.admin.2");
-    let deltas: Vec<&Value> = at("rdm.mesh.membership.update.via-forwarded-delta", "mesh1.admin.2").into_iter().filter(|s| attr(s, "source_publisher") == pub2.to_string()).collect();
-    assert!(!fulls.is_empty() && !deltas.is_empty(), "the successor published a full and a delta: {fulls:#?} {deltas:#?}");
-    assert_eq!(attr(fulls[0], "reason"), "full-due", "the successor's first publication into the mesh is the full owed on taking the seat");
-    assert!(fulls[0]["start_unix_nano"].as_u64() < deltas[0]["start_unix_nano"].as_u64(), "its full comes before any delta of its own");
-    assert_eq!((attr(deltas[0], "base_version"), attr(deltas[0], "topology_version")), (v1.to_string(), v2.to_string()));
-    // The member: the successor's full installed as a new epoch.
-    let installed: Vec<&Value> = at("rdm.mesh.membership.update.via-snapshot-installed", "mesh1.rpc.1").into_iter().filter(|s| attr(s, "publisher") == pub2.to_string()).collect();
-    assert!(installed.first().is_some_and(|s| attr(s, "new_epoch") == "true"), "{installed:#?}");
-    // The member: each delayed predecessor publication refused by name, naming the seat holder.
-    let refused = at("rdm.mesh.membership.reject.via-predecessor-publisher", "mesh1.rpc.1");
-    let kinds: std::collections::BTreeSet<String> = refused.iter().map(|s| attr(s, "frame")).collect();
-    assert_eq!(kinds, ["members".to_string(), "members-delta".to_string()].into_iter().collect(), "the predecessor's full and delta are each refused: {refused:#?}");
-    assert!(
-        refused.iter().all(|s| attr(s, "publisher") == pub1.to_string() && attr(s, "held_publisher") == pub2.to_string() && attr(s, "reason") == "not-seated" && attr(s, "seat_holder") == seat_of(&p2_d, 2).to_string() && attr(s, "channel") == "mesh-channel" && attr(s, "repair") == "get-topology"),
-        "{refused:#?}"
-    );
+    let ignored = at("rdm.mesh.membership.reject.via-earlier-version", "mesh1.rpc.1");
+    let mut said: Vec<(String, String, String, String, String)> = ignored.iter().map(|s| (attr(s, "channel"), attr(s, "frame"), attr(s, "source"), attr(s, "held"), attr(s, "offered"))).collect();
+    let birth = |d: &MeshDigest| format!("{}/{}", d.node.node_id, d.node.incarnation.0);
+    let mut expected = vec![
+        ("mesh:mesh1".to_string(), "members".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", v2 + 7)),
+        ("mesh:mesh1".to_string(), "members-delta".to_string(), "mesh1".to_string(), String::new(), format!("published_at_rafka_ms={pred_stamp} topology_version={}", pred_version + 1)),
+        ("mesh:mesh1".to_string(), "node-stopped".to_string(), format!("{pub2} mesh1"), format!("topology_version={deleting_version}"), format!("topology_version={}", deleting_version - 1)),
+        ("mesh:mesh1".to_string(), "digest".to_string(), birth(&rpc2), "digest_seq=7".to_string(), "digest_seq=3".to_string()),
+    ];
+    // The successor's delta stamp is the member's held key of mesh1: read it from the span itself.
+    let held_stamp = ignored.iter().find(|s| attr(s, "frame") == "members").map(|s| attr(s, "held")).unwrap_or_default();
+    for e in expected.iter_mut().take(2) {
+        e.3 = held_stamp.clone();
+    }
+    // Two senders: the receive order across them is gossip's own.
+    said.sort();
+    expected.sort();
+    assert_eq!(said, expected, "each late frame is ignored by the receive path, by name: {ignored:#?}");
+    let held_published_at: u64 = held_stamp.strip_prefix("published_at_rafka_ms=").and_then(|r| r.split(' ').next()).and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!(held_published_at > pred_stamp && held_stamp.ends_with(&format!(" topology_version={v2}")), "the held key of mesh1 is the successor's, stamped after the late frames: {held_stamp}");
+    for refusal in ["rdm.mesh.membership.reject.via-predecessor-publisher", "rdm.mesh.membership.reject.via-unseated-publisher"] {
+        assert!(spans.iter().all(|s| s["name"] != refusal), "no frame is refused for who published it: {refusal}");
+    }
     let mut lines = String::new();
-    for (what, s) in fulls.iter().take(1).map(|s| ("successor-full", *s)).chain(deltas.iter().take(1).map(|s| ("successor-delta", *s))).chain(installed.iter().take(1).map(|s| ("member-installed", *s))).chain(refused.iter().map(|s| ("refused", *s))) {
-        lines.push_str(&format!("{what} {} {} frame={} reason={} topology_version={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "frame"), attr(s, "reason"), attr(s, "topology_version")));
+    for s in &ignored {
+        lines.push_str(&format!("ignored {} {} frame={} source={} held={} offered={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "frame"), attr(s, "source"), attr(s, "held"), attr(s, "offered")));
     }
     std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
 }

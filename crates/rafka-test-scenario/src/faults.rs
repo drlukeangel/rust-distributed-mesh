@@ -56,6 +56,11 @@ impl Door {
         .await
     }
 
+    /// The acknowledgement that the hold ended after a release: the cut no longer holds a call.
+    pub async fn wait_released(&self, id: &str) -> bool {
+        wait_for(&format!("{}: the hold of cut `{id}` ended", self.name), Duration::from_secs(30), || async { (self.cut(id).await["held"] == false).then_some(true) }).await
+    }
+
     pub async fn release(&self, id: &str) -> Value {
         let r = self.http.post(format!("{}/faults/release", self.base)).json(&json!({"id": id})).send().await.unwrap_or_else(|e| panic!("{}: release {id}: {e}", self.name));
         let status = r.status().as_u16();

@@ -172,7 +172,14 @@ impl SeatFold {
     /// a seat change reads the shared root). Every other admin of the mesh folds none of them: what
     /// it holds is only what it applied itself. Called under the view's write lock, so two installs
     /// never fold at once. A read that fails leaves the tenure unfolded, named in the span.
-    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>) {
+    ///
+    /// The fold is the successor's acquisition of the held member statuses (node-status-heartbeat-
+    /// connections.md §A.3), and `book`, this admin's digest book, is what its member projection is
+    /// published from: each folded birth of the mesh whose state is ahead of what the book holds for
+    /// it is adopted there ([`DigestBook::adopt_status`]), before the view naming this admin primary is
+    /// installed and so before its first projection (fabric-authority.md §7: hydration, not
+    /// transition). One `rdm.node_admin.status.update.via-seat-fold` per birth adopted or refused.
+    pub async fn on_install(&self, now: &Topology, declared: &Mutex<Declared>, book: Option<&rafka_mesh_transport::membership::DigestBook>) {
         let holds = now.holds_mesh_seat(&self.mesh, &self.me);
         {
             let mut folded = self.folded.lock().unwrap();
@@ -208,12 +215,77 @@ impl SeatFold {
                 declared.lock().unwrap().fold_rows(meshes, events, rows);
                 *self.folded.lock().unwrap() = true;
                 span.in_scope(|| tracing::info!("this admin took its mesh's seat: the mesh's status rows are folded into what it applied"));
+                if let Some(book) = book {
+                    span.in_scope(|| self.adopt_into(declared, book));
+                }
             }
             Err(e) => {
                 span.record("error", e.as_str());
                 span.in_scope(|| tracing::info!("this admin took its mesh's seat and could not read the mesh's status rows: it holds only what it applied"));
             }
         }
+    }
+}
+
+impl SeatFold {
+    /// Adopt into `book` every birth of this admin's mesh that `declared` holds a state for ahead of
+    /// what `book` holds for that exact birth: the status its predecessor set, held by the successor.
+    fn adopt_into(&self, declared: &Mutex<Declared>, book: &rafka_mesh_transport::membership::DigestBook) {
+        let held: Vec<(NodeId, IncarnationId, crate::model::PathName, NodeState)> = {
+            let declared = declared.lock().unwrap();
+            declared
+                .nodes
+                .iter()
+                .filter(|((node_id, _), _)| *node_id != self.me)
+                .filter_map(|((node_id, incarnation), state)| declared.names.get(&(node_id.clone(), incarnation.clone())).filter(|n| n.mesh == self.mesh).map(|n| (node_id.clone(), incarnation.clone(), n.clone(), *state)))
+                .collect()
+        };
+        for (node_id, incarnation, name, state) in held {
+            let prior = book.member_status(&node_id, &incarnation);
+            if transition(prior.map(declared_of_member), state) != Transition::Apply {
+                continue;
+            }
+            let status = member_of_declared(state);
+            let outcome = match book.adopt_status(&node_id, &incarnation, &name, status) {
+                Ok(_) => "adopted",
+                Err(why) => why,
+            };
+            tracing::info_span!(
+                "rdm.node_admin.status.update.via-seat-fold",
+                node = %self.name,
+                member = %name,
+                node_id = %node_id,
+                incarnation_id = %incarnation.0,
+                status = ?status,
+                prior = prior.map(|p| format!("{p:?}")).unwrap_or_default(),
+                outcome,
+                "otel.kind" = "internal"
+            )
+            .in_scope(|| tracing::info!("the seat taker holds the status its predecessor set for the member: its projection carries it"));
+        }
+    }
+}
+
+/// What a node declared, as its mesh-primary's book holds it: the one mapping from the declaration
+/// vocabulary to the member status ([`declared_of_member`] is its inverse).
+pub fn member_of_declared(s: NodeState) -> rafka_mesh_entity::MemberStatus {
+    use rafka_mesh_entity::MemberStatus as M;
+    match s {
+        NodeState::Pending => M::Pending,
+        NodeState::ReadyForTraffic => M::ReadyForTraffic,
+        NodeState::Draining => M::Draining,
+        NodeState::Leaving => M::Leaving,
+    }
+}
+
+/// A member status in the declaration vocabulary: the inverse of [`member_of_declared`].
+pub fn declared_of_member(s: rafka_mesh_entity::MemberStatus) -> NodeState {
+    use rafka_mesh_entity::MemberStatus as M;
+    match s {
+        M::Pending => NodeState::Pending,
+        M::ReadyForTraffic => NodeState::ReadyForTraffic,
+        M::Draining => NodeState::Draining,
+        M::Leaving => NodeState::Leaving,
     }
 }
 
@@ -280,6 +352,9 @@ pub struct StatusAuthority {
     /// member's applied report (`DigestBook::started` for its node.started, `DigestBook::reported`
     /// otherwise). `None` only where no admin owns a digest book.
     pub book: Option<rafka_mesh_transport::membership::DigestBook>,
+    /// This admin's fabric record (`fabric.storage` folded with what it learned): `fabric.get`
+    /// answers its `Fabric.build_id` from it (node-identity-and-state.md §2.8).
+    pub accepted: Arc<crate::accepted::AcceptedStore>,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -503,6 +578,14 @@ impl StatusAuthority {
                 if self.loads.is_none() {
                     return StatusReply::NotReady { reason: format!("{me} reads no digest book; {} is refused", req.op()) };
                 }
+                if matches!(req, StatusRequest::GetFabric) {
+                    // `Fabric.build_id` is the fabric's own field (node-identity-and-state.md §2.8): read from
+                    // this admin's fabric record, a read that fails named rather than answered as no Build.
+                    return match self.accepted.record().await {
+                        Ok(record) => crate::views::fabric_answer(&me, &view, record.and_then(|r| r.build_id).map(|b| b.0)),
+                        Err(e) => StatusReply::source_failed("fabric.storage", "fabric.get", &format!("{me} could not read its fabric record: {e}")),
+                    };
+                }
                 return crate::views::view_answer(&me, &view, req).unwrap_or_else(|| StatusReply::NotReady { reason: format!("{me} answers no {} from its view", req.op()) });
             }
             StatusRequest::GetConnections { node_id, incarnation } => return self.read_connections(&view, node_id, incarnation).await,
@@ -667,8 +750,11 @@ impl StatusAuthority {
             scope = scope.name(), status_at_cut = tracing::field::Empty, closed = tracing::field::Empty, held = tracing::field::Empty, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal"
         );
         let reply = async {
+            // A subject this receiver does not hold is the receiver's own fact (`SubjectUnknown`), never
+            // a peer that did not resolve.
             let Some(subject) = view.nodes.iter().find(|n| n.node_id == *node_id) else {
-                return StatusReply::PeerUnresolved { reason: format!("{}: node {node_id} is not in the mesh-primary's view; its connections cannot be deleted through it", self.me) };
+                tracing::Span::current().record("detail", format!("{}: node {node_id} is not in the mesh-primary's view; its connections cannot be deleted through it", self.me).as_str());
+                return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
             };
             tracing::Span::current().record("subject", subject.name.to_string().as_str()).record("status_at_cut", format!("{:?}", subject.status).as_str());
             if !view.own(&self.node_id).is_some_and(|n| n.is_primary && n.mesh == subject.mesh) {
@@ -677,7 +763,10 @@ impl StatusAuthority {
             if subject.incarnation_id.as_ref() != Some(incarnation) {
                 return match subject.incarnation_id.clone() {
                     Some(held) => StatusReply::RejectedStaleIncarnation { held },
-                    None => StatusReply::PeerUnresolved { reason: format!("{}: {} has no known birth; its connections cannot be deleted", self.me, subject.name) },
+                    None => {
+                        tracing::Span::current().record("detail", format!("{}: {} has no known birth; its connections cannot be deleted", self.me, subject.name).as_str());
+                        StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }
+                    }
                 };
             }
             if let Some(reason) = scope.refusal() {
@@ -781,14 +870,8 @@ impl StatusAuthority {
                     NodeState::ReadyForTraffic => {
                         book.started(&row.node_id, &row.incarnation_id);
                     }
-                    NodeState::Pending => {
-                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Pending);
-                    }
-                    NodeState::Draining => {
-                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Draining);
-                    }
-                    NodeState::Leaving => {
-                        book.reported(&row.node_id, &row.incarnation_id, rafka_mesh_entity::MemberStatus::Leaving);
+                    state => {
+                        book.reported(&row.node_id, &row.incarnation_id, member_of_declared(state));
                     }
                 }
             }
@@ -1073,6 +1156,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1189,6 +1273,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         let birth = rpc.incarnation_id.clone().unwrap();
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
@@ -1248,6 +1333,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         }
     }
 
@@ -1539,6 +1625,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         for n in [&restarted, &deleted, &standing] {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1629,6 +1716,7 @@ mod tests {
             row_moved: Default::default(),
             loads: None,
             book: None,
+            accepted: std::sync::Arc::new(crate::accepted::AcceptedStore::new(std::sync::Arc::new(crate::fabric_storage::MemoryFabricStorage::new()), "test")),
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);

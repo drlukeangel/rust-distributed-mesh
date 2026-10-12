@@ -114,8 +114,11 @@ async fn put(
     span: &tracing::Span,
 ) -> StatusReply {
     let now = view.read().await.clone();
+    // A subject this receiver does not hold is the receiver's own fact (`SubjectUnknown`), never a
+    // peer that did not resolve.
     let Some(held) = now.nodes.iter().find(|n| n.node_id == *node_id).cloned() else {
-        return StatusReply::PeerUnresolved { reason: format!("{me}: node {node_id} is not in the mesh-primary's view; its record cannot be put") };
+        span.record("detail", format!("{me}: node {node_id} is not in the mesh-primary's view; its record cannot be put").as_str());
+        return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown };
     };
     span.record("from", held.name.to_string().as_str());
     if !now.own(me_id).is_some_and(|n| n.is_primary && n.mesh == held.mesh) {
@@ -124,7 +127,10 @@ async fn put(
     if held.incarnation_id.as_ref() != Some(incarnation) {
         return match held.incarnation_id.clone() {
             Some(h) => StatusReply::RejectedStaleIncarnation { held: h },
-            None => StatusReply::PeerUnresolved { reason: format!("{me}: {} has no known birth; its record cannot be put", held.name) },
+            None => {
+                span.record("detail", format!("{me}: {} has no known birth; its record cannot be put", held.name).as_str());
+                StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }
+            }
         };
     }
     let Ok(to) = name.parse::<PathName>() else {

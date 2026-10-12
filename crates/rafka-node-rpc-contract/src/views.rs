@@ -149,6 +149,10 @@ pub struct FabricView {
     pub admin_api_base: Option<String>,
     /// The fabric's meshes.
     pub meshes: Vec<MeshView>,
+    /// `Fabric.build_id` (node-identity-and-state.md §2.8, a field of the fabric moved only by the
+    /// fabric-primary): the Build whose topology the fabric accepted, as the answering node-admin's
+    /// fabric record holds it; `None` while it holds no accepted Build.
+    pub build_id: Option<String>,
 }
 
 /// One connection fact a node holds (`node.connections.get`).
