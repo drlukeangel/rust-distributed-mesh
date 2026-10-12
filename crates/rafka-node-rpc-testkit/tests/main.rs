@@ -38,6 +38,7 @@ mod retire_admission;
 mod retire_pipeline;
 mod status_probe_apply;
 mod park_start;
+mod rejoin_commander;
 mod gossip_shutdown_once;
 mod mesh_leave_member;
 mod rig_teardown;
