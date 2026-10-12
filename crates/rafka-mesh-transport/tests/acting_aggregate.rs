@@ -18,7 +18,11 @@ use std::time::Duration;
 const CELL: &str = "the_acting_aggregate_carries_the_held_digests_of_a_living_mesh_and_none_of_a_dead_one";
 
 fn evidence_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s41").join(CELL)
+    evidence_dir_of(CELL)
+}
+
+fn evidence_dir_of(cell: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s41").join(cell)
 }
 
 fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
@@ -220,4 +224,115 @@ async fn the_acting_aggregate_carries_the_held_digests_of_a_living_mesh_and_none
         assert_eq!(digests, Some(want), "the acting span of {mesh} names its digest count: {span}");
         println!("{CELL}: {mesh} acting span trace {} digests {want}", span["trace_id"]);
     }
+}
+
+const AGES_OUT: &str = "a_living_mesh_with_no_primary_ages_out_at_a_peer_while_the_fabric_primary_acts_for_it";
+
+/// CONTRACT: mesh2 (its primary mesh2.admin.1 and two rpc members) published its aggregate, and the
+/// fabric-primary mesh1.admin.1 and a peer mesh primary mesh4.admin.1 hold it from the backbone. Then
+/// mesh2's primary is lost (it publishes nothing more), the fabric-primary deletes it as executor and,
+/// as acting primary of the living mesh with no primary, publishes mesh2's aggregate every round for
+/// two staleness floors, carrying the rpc members it holds. The peer takes those digests as topology:
+/// it keeps holding both rpc members, and they age out of what it hears within the floor, since
+/// liveness for a birth comes only from that birth's own word ("For an own-mesh birth, liveness,
+/// endpoints with freshness and the runtime fact come from its Digest", gossip.md section 3.1, Members)
+/// or its own mesh's primary, which "only forwards a member it hears" (`record_forwarded`); mesh
+/// investigation: "Remote liveness comes only from direct backbone receipt [...] never forwarded
+/// topology". The peer's book names each rpc member stale (`via-member-stale`). Must NOT happen: the
+/// fabric-primary's acting round, which hears none of mesh2's members, keeps them heard at the peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_living_mesh_with_no_primary_ages_out_at_a_peer_while_the_fabric_primary_acts_for_it() {
+    if crate::own_process::delegated(module_path!(), AGES_OUT) {
+        return;
+    }
+    // A staleness floor the cell can outlast; this process is the cell's own.
+    std::env::set_var("RDM_STALENESS_MS", "1500");
+    let dir = evidence_dir_of(AGES_OUT);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-acting-ages-out");
+
+    let (n2, fp_n, peer_n) = (node().await, node().await, node().await);
+    let seed = addr_of(&fp_n.ep);
+    for n in [&n2, &peer_n] {
+        learn_addresses(&n.ep, &[seed.clone()]).unwrap();
+    }
+    let fab = fabric();
+    let clock = rafka_mesh_transport::clock::os_clock;
+    let m2 = Membership::join(&n2.gossip, &n2.ep, &fab, "mesh2", &MeshId::mint(), "mesh2.admin.1", clock(), vec![]).await.unwrap();
+    let fp_m = Membership::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock(), vec![]).await.unwrap();
+    let peer_m = Membership::join(&peer_n.gossip, &peer_n.ep, &fab, "mesh4", &MeshId::mint(), "mesh4.admin.1", clock(), vec![]).await.unwrap();
+    let bb2 = Backbone::join(&n2.gossip, &n2.ep, &m2, "mesh2", "mesh2.admin.1", IncarnationId::mint(), vec![seed.clone()]).await.unwrap();
+    let fp_own = digest("mesh1.admin.1", 41_001);
+    let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", "mesh1.admin.1", fp_own.node.incarnation.clone(), vec![]).await.unwrap();
+    let peer_own = digest("mesh4.admin.1", 44_001);
+    let peer_bb = Backbone::join(&peer_n.gossip, &peer_n.ep, &peer_m, "mesh4", "mesh4.admin.1", peer_own.node.incarnation.clone(), vec![seed.clone()]).await.unwrap();
+    for bb in [&bb2, &fp_bb, &peer_bb] {
+        bb.set_mesh_primary(true);
+    }
+    let floor = peer_m.book.staleness_floor();
+    assert_eq!(floor, Duration::from_millis(1500), "the cell runs at its own staleness floor");
+
+    let admin2 = digest("mesh2.admin.1", 42_001);
+    let rpc = [digest("mesh2.rpc.1", 42_101), digest("mesh2.rpc.2", 42_102)];
+    for d in std::iter::once(&admin2).chain(rpc.iter()) {
+        assert!(m2.book.record(d.clone()));
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    loop {
+        bb2.publish(&m2, bb2.own_members(&m2)).await;
+        if fp_bb.held_source("mesh2").is_some() && peer_bb.held_source("mesh2").is_some() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "the backbone never carried mesh2 to the fabric-primary and the peer");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let heard_of = |m: &Membership| -> Vec<String> {
+        let mut v: Vec<String> = m.book.current(floor).into_iter().filter(|d| d.node.name.mesh == "mesh2").map(|d| d.node.name.to_string()).collect();
+        v.sort();
+        v
+    };
+    let held_of = |m: &Membership| -> Vec<String> {
+        let mut v: Vec<String> = m.book.all().into_iter().filter(|d| d.node.name.mesh == "mesh2").map(|d| d.node.name.to_string()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(heard_of(&peer_m), vec!["mesh2.admin.1", "mesh2.rpc.1", "mesh2.rpc.2"], "the peer hears mesh2 from its primary's aggregate");
+
+    // mesh2's primary is lost: nothing of mesh2 is published again but by the fabric-primary.
+    drop(bb2);
+    n2.ep.close().await;
+    let lost_at = std::time::Instant::now();
+    let deleted = op("delete-node", &admin2);
+    assert!(fp_m.book.depart(deleted.clone()));
+    fp_m.book.executed_delete(&deleted);
+    fp_bb.set_fabric_primary(true);
+    while lost_at.elapsed() < floor * 2 {
+        let published = fp_bb.publish_for_primaryless(&fp_m, |_| None).await;
+        assert_eq!(published, vec!["mesh2".to_string()], "mesh2 is published by its acting primary every round");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let (publisher, _) = peer_bb.held_source("mesh2").expect("the peer holds mesh2");
+    assert_eq!(publisher.node, "mesh1.admin.1", "the peer holds mesh2 as its acting primary publishes it");
+    assert_eq!(held_of(&peer_m), vec!["mesh2.rpc.1", "mesh2.rpc.2"], "the peer holds the living mesh's members as topology");
+    assert!(heard_of(&peer_m).is_empty(), "two floors after mesh2's last word, the acting primary's rounds keep none of its members heard at the peer: {:?}", heard_of(&peer_m));
+    let unheard = peer_m.book.mesh_unheard("mesh2", std::time::Instant::now());
+    assert!(unheard.is_some_and(|u| u > floor), "the peer last heard mesh2 itself more than a floor ago: {unheard:?}");
+
+    for bb in [fp_bb, peer_bb] {
+        drop(bb);
+    }
+    for n in [&fp_n, &peer_n] {
+        n.ep.close().await;
+    }
+    drop(telemetry);
+    let spans = collect_spans(&dir);
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    for member in ["mesh2.rpc.1", "mesh2.rpc.2"] {
+        let stale = spans.iter().find(|s| s["name"] == "rdm.mesh.membership.update.via-member-stale" && s["attributes"]["node"] == "mesh4.admin.1" && s["attributes"]["member"] == member);
+        let stale = stale.unwrap_or_else(|| panic!("the peer names {member} stale"));
+        println!("{AGES_OUT}: {member} stale at mesh4.admin.1, trace {}", stale["trace_id"]);
+    }
+    let acting = spans.iter().find(|s| s["name"] == "rdm.mesh.backbone.update.via-acting-primary" && s["attributes"]["mesh"] == "mesh2").expect("the acting publish of mesh2 is spanned");
+    println!("{AGES_OUT}: acting primary of mesh2 trace {}", acting["trace_id"]);
 }
