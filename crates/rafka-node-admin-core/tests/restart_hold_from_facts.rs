@@ -83,7 +83,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
         let dir = std::env::temp_dir().join(format!("restart-hold-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
-        let build_id = running.control.accepted.build_id().await.expect("the Day-0 admin holds its accepted Build");
+        let build_id = running.control.builds.current_build().await.unwrap().into_build_id().expect("the Day-0 admin holds its accepted Build");
         let book = running.membership.book.clone();
         let builds = running.runner.builds.clone();
 
@@ -164,7 +164,7 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
         let dir = std::env::temp_dir().join(format!("restart-hold-frame-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
-        let build_id = running.control.accepted.build_id().await.expect("the Day-0 admin holds its accepted Build");
+        let build_id = running.control.builds.current_build().await.unwrap().into_build_id().expect("the Day-0 admin holds its accepted Build");
         let book = running.membership.book.clone();
         let builds = running.runner.builds.clone();
 
@@ -263,7 +263,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
         let dir = std::env::temp_dir().join(format!("restart-hold-converged-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
-        let build_id = running.control.accepted.build_id().await.expect("the Day-0 admin holds its accepted Build");
+        let build_id = running.control.builds.current_build().await.unwrap().into_build_id().expect("the Day-0 admin holds its accepted Build");
         let book = running.membership.book.clone();
         let builds = running.runner.builds.clone();
 

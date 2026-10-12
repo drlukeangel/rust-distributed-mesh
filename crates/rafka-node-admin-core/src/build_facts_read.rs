@@ -1,8 +1,7 @@
 //! The Build-facts read (`FetchBuildFacts`, op `0x1F`; node-rpc-envelope.md "Build facts, op
 //! `0x1F`, rdm"; i143 R-G6).
 //!
-//! A node-admin that holds the Fabric record but not the facts of the Build it points at asks
-//! another node-admin for them. The responder ([`BuildFactsDoor`]) reads its own local Build log
+//! A node-admin that does not hold the facts of a Build asks another node-admin for them. The responder ([`BuildFactsDoor`]) reads its own local Build log
 //! once and streams the facts of the one Build, packed by the method the Build topic's catch-up
 //! uses ([`crate::fabric_builds::encode_chunks`]): it provides what it holds and decides nothing.
 //! The caller ([`fetch_build_facts`]) returns the facts only for a stream that ended with its `End`,
@@ -29,8 +28,6 @@ pub struct BuildFactsDoor {
     pub me: crate::model::PathName,
     /// The Build state this admin holds (its local log, through whatever decorates it).
     pub builds: Arc<dyn BuildStateAdapter>,
-    /// This admin's `Fabric.build_id` holder.
-    pub accepted: Arc<crate::accepted::AcceptedStore>,
     /// The attempt floor this admin's entry named, when it was served one.
     pub floor: Arc<std::sync::Mutex<Option<(BuildId, u32)>>>,
 }
@@ -70,7 +67,7 @@ impl BuildFactsDoor {
             let facts = held.len() as u32;
             let (messages, refused) = encode_chunks(held);
             let floor = self.floor.lock().unwrap().clone();
-            let whole = refused.is_empty() && crate::admin::hydration_blocker(&self.me, &self.accepted, &*self.builds, floor).await.is_none();
+            let whole = refused.is_empty() && crate::admin::hydration_blocker(&self.me, &*self.builds, floor).await.is_none();
             for e in &refused {
                 tracing::info_span!("rdm.node_admin.build.reject.via-unservable-fact", node = %self.me, build_id = %build_id, detail = %e)
                     .in_scope(|| tracing::info!("a held Build fact fits no chunk: this answer is not complete"));

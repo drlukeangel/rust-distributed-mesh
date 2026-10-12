@@ -148,7 +148,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         loads: None,
         book: Some(membership.book.clone()),
         first_ready: Default::default(),
-        accepted: std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test")),
+        builds: std::sync::Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
     };
     let status = || membership.book.get(member.node.node_id.as_str()).map(|(h, _)| h.status);
     let declare = |state| StatusRequest::DeclareNodeState { node_id: member.node.node_id.clone(), incarnation: member.node.incarnation.clone(), state };

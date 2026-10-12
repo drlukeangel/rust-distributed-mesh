@@ -14,11 +14,47 @@ use crate::topology::Topology;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// How a run of one operation ended short of complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunEnd {
+    /// The operation's own logic ended it with a named failure. The attempt ends `Failed`, and a
+    /// Build whose attempt ended so is failed: the current-Build read skips it and a caller
+    /// resubmits it (R-BI3, R-BI4).
+    Failed(String),
+    /// A participant of the operation was lost, or the proof its resume needs is not in yet: the
+    /// operation is incomplete and its receipts stand. The attempt ends handed back to the
+    /// fabric-primary, no terminal verdict is recorded, the Build stays in progress and the next
+    /// attempt resumes from the receipts (R-BI4; mesh-delete.md, "Failure and receipts").
+    Incomplete(String),
+}
+
+impl RunEnd {
+    /// Why the run ended short of complete.
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Failed(r) | Self::Incomplete(r) => r,
+        }
+    }
+}
+
+impl From<String> for RunEnd {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+impl std::fmt::Display for RunEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason())
+    }
+}
+
 /// Realises one planned operation (the deployment and lifecycle pipelines).
 #[async_trait::async_trait]
 pub trait OperationRunner: Send + Sync {
-    /// Realise `op` of `attempt` of `build_id`; `Err` names why it failed.
-    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String>;
+    /// Realise `op` of `attempt` of `build_id`; `Err` names how it ended short of complete
+    /// ([`RunEnd`]).
+    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), RunEnd>;
 
     /// What `op` owes before its executor is decided, once its turn comes: a mesh retire whose
     /// fabric-primary sits inside the leaving mesh hands the fabric seat to an outside
@@ -301,6 +337,7 @@ impl BuildExecutor {
             reason = previous.as_ref().map(|b| b.reason.as_str()).unwrap_or(""),
             action = %previous.as_ref().and_then(|b| b.action.as_ref()).map(|a| serde_json::to_string(a).unwrap_or_default()).unwrap_or_default(),
             operations = tracing::field::Empty,
+            incomplete = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
         if let Some(tp) = &context.traceparent {
@@ -348,14 +385,29 @@ impl BuildExecutor {
                     return self.hand_off(&build, attempt, operations[..i].to_vec(), to.to_string()).await;
                 }
             }
-            if let Err(e) = self.runner.run(&build.build_id, attempt, op).await {
-                return self.finish(&build, attempt, Err((op.key(), e))).await;
+            match self.runner.run(&build.build_id, attempt, op).await {
+                Ok(()) => {}
+                Err(RunEnd::Failed(reason)) => return self.finish(&build, attempt, Err((op.key(), reason))).await,
+                Err(RunEnd::Incomplete(reason)) => return self.hand_back(&build, attempt, operations[..i].to_vec(), op, reason, span).await,
             }
         }
         match &plan.hand_off_to {
             Some(to) => self.hand_off(&build, attempt, operations.clone(), to.clone()).await,
             None => self.finish(&build, attempt, Ok(operations.clone())).await,
         }
+    }
+
+    /// `op` ended incomplete (R-BI4): a participant of it was lost, or the proof its resume needs is
+    /// not in. Its receipts stand and no terminal verdict is recorded. The attempt ends the way a run
+    /// that stops at another executor's operation ends: handed to the fabric-primary of the view the
+    /// run ends with, which claims the next attempt, and that attempt resumes from the receipts. The
+    /// Build stays in progress. The reason is the attempt's blocker, framed to the caller.
+    async fn hand_back(&self, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, op: &BuildOperation, reason: String, span: &tracing::Span) -> Reconciled {
+        span.record("incomplete", reason.as_str());
+        let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or_else(|| self.executor.clone());
+        self.builds.note_blocked(&build.build_id, attempt, &op.key(), "incomplete", &reason).await;
+        tracing::info!(operation = %op.key(), reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
+        self.hand_off(build, attempt, ran, to).await
     }
 
     async fn hand_off(&self, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {

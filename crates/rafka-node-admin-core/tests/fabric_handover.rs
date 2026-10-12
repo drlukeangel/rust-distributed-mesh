@@ -12,7 +12,7 @@ use rafka_node_admin_core::election::{resolve_with, Incumbency};
 use rafka_node_admin_core::build_facts_read::{BuildFactsDoor, BuildFactsSlot};
 use rafka_node_admin_core::build_op::{BuildDoor, BuildSlot};
 use rafka_node_admin_core::fabric_handover::{HandoverDoor, HandoverError, HandoverSlot, OwnContacts, ProjectView, SeatTransferOutcome, Stage, WriteCutOff};
-use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage, SeatRow, SeatTransferRow};
+use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, HandoverRow, HandoverStage, MemoryFabricStorage, SeatRow, SeatTransferRow};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
@@ -114,13 +114,9 @@ impl FailingStorage {
 
 #[async_trait::async_trait]
 impl FabricStorage for FailingStorage {
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
+    async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
         self.check("fabric")?;
         self.inner.fabric().await
-    }
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
-        self.check("fabric_rows")?;
-        self.inner.fabric_rows().await
     }
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         self.check("claim_identity")?;
@@ -128,10 +124,6 @@ impl FabricStorage for FailingStorage {
     }
     async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
         self.inner.release_name(identity).await
-    }
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        self.check("put_pointer")?;
-        self.inner.put_pointer(pointer).await
     }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         self.check("shutdown")?;
@@ -512,12 +504,12 @@ struct NoRuns;
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::executor::OperationRunner for NoRuns {
-    async fn run(&self, _: &rafka_node_admin_core::build::BuildId, _: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), String> {
-        Err(format!("the cell runs no operation, not {op:?}"))
+    async fn run(&self, _: &rafka_node_admin_core::build::BuildId, _: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        Err(format!("the cell runs no operation, not {op:?}").into())
     }
 }
 
-/// `a`'s Build door over the Build log `builds` and the `Fabric.build_id` holder `accepted`: its
+/// `a`'s Build door over the Build log `builds` and the Fabric identity holder `accepted`: its
 /// control plane reads the view `a`'s handover door projects (so a committed seat names `a` the
 /// fabric-primary there too), its seat book is `a`'s, and the incumbent it reads an unheard
 /// re-submitted Build from is the one `a`'s committed transfer names.
@@ -533,7 +525,6 @@ async fn build_door(a: &Admin, builds: Arc<rafka_node_admin_core::build_state::M
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
-        accepted,
         builds: dyn_builds.clone(),
         door: Arc::new(rafka_node_admin_core::build_claim::ClaimDoor { me: me.clone(), node_id: a.resolved.node_id.clone(), topology: control.topology.clone(), builds: dyn_builds.clone(), contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()) }),
         dispatcher: Arc::new(Held),
@@ -553,7 +544,7 @@ const FACTS_SERVED: &str = "rdm.node_admin.build.serve.via-fetch-facts";
 /// attempt as the new fabric-primary. No new attempt is claimed and no receipt is re-run"; build.md
 /// §5.2: "the fabric-primary's claim log reaches every admin through the Build topic and
 /// FetchBuildFacts (`0x1F`)"): the incumbent P accepted Build B, claimed its attempt 1 on its own log
-/// and moved `Fabric.build_id` to it on the fabric's one store; the fabric seat moves to N by the
+/// (accepted, it is the current Build there); the fabric seat moves to N by the
 /// handover (op `0x21`); N's own log has heard nothing of B (no Build topic runs between them, as
 /// when the re-submit outruns the gossip). The caller's re-submit of B to N is admitted: N reads B's
 /// facts once from P, the incumbent its committed handover names, absorbs them into its own log and
@@ -568,14 +559,12 @@ fn the_new_seat_resumes_a_resubmitted_build_it_has_not_heard_from_its_incumbents
         let storage: Arc<dyn FabricStorage> = Arc::new(MemoryFabricStorage::new());
         let (f, _) = fabric_with(NodeStatus::ReadyForTraffic, false, true, || storage.clone()).await;
         storage.claim_identity(&FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
-        // P accepts B: the Build durable on its own log first, then the pointer moved on the store.
+        // P accepts B: the Build durable on its own log, where it is the current Build.
         let b = rafka_node_admin_core::build::BuildId::mint();
         let (p_log, n_log) = (Arc::new(MemoryBuildStateAdapter::new()), Arc::new(MemoryBuildStateAdapter::new()));
-        let p_accepted = Arc::new(AcceptedStore::new(storage.clone(), "mesh1.admin.1"));
         p_log.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 1 }).await.unwrap();
         p_log.claim_attempt(&BuildAttemptClaim { build_id: b.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-        p_accepted.point(&b, 1, "accepted").await.unwrap();
-        let _ = f.incumbent.facts_slot.set(Arc::new(BuildFactsDoor { me: f.incumbent.resolved.name.clone(), builds: p_log.clone(), accepted: p_accepted, floor: Arc::default() }));
+        let _ = f.incumbent.facts_slot.set(Arc::new(BuildFactsDoor { me: f.incumbent.resolved.name.clone(), builds: p_log.clone(), floor: Arc::default() }));
         let n_door = build_door(&f.successor, n_log.clone(), Arc::new(AcceptedStore::new(storage.clone(), "mesh2.admin.1"))).await;
         let _ = f.successor.build_slot.set(n_door);
         // The seat moves to N; N's own log still holds nothing of B.

@@ -1878,7 +1878,7 @@ async fn restart_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node:
     let attempt_before = try_json(&st.fp_base(), &format!("/api/builds?id={fabric_build}")).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), "POST", &format!("/api/nodes/{node}/restart"), &Value::Null).await;
-    assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (Fabric.build_id stays)");
+    assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
     let fin = a.finish(f, &build_id, Until::Reborn { node: node.into(), old_incarnation: s(&n["incarnation_id"]) }, "during-restart").await;
     let now = f.estate.node(node).await;
     assert_eq!(now["node_id"], n["node_id"], "{node}: a restart keeps the logical node");
@@ -2480,7 +2480,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
         assert_eq!(ev["build_id"], json!(b0), "R{round}: the restart is an attempt of the accepted Build, not a new one");
         assert_eq!(ev["attempt_after"].as_u64(), ev["attempt_before"].as_u64().map(|x| x + 1), "R{round}: the attempt advanced by exactly one: {ev}");
         st = a.stable(&mut f, &format!("R{round}: {node} restarted"), &both(2), &mut inv).await;
-        assert_eq!(s(&st.fabric["build_id"]), b0, "R{round}: Fabric.build_id stays the formation Build");
+        assert_eq!(s(&st.fabric["build_id"]), b0, "R{round}: the current build_id stays the formation Build");
         trail.push(json!({"after": format!("R{round}"), "fabric_build_id": st.fabric["build_id"], "attempt": ev["attempt_after"]}));
     }
 
@@ -2874,7 +2874,7 @@ async fn restart_node(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
     let attempt_before = try_json(&st.fp_base(), &format!("/api/builds?id={fabric_build}")).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), "POST", &format!("/api/nodes/{node}/restart"), &Value::Null).await;
-    assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (Fabric.build_id stays)");
+    assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
     let fin = a.finish(f, &build_id, Until::Reborn { node: node.into(), old_incarnation: s(&n["incarnation_id"]) }, "during-restart").await;
     let ev = json!({
         "event": "node.restart", "scenario": scenario, "node": node, "kind": n["kind"], "node_id": n["node_id"], "endpoint_id": n["endpoint_id"], "was_primary": n["is_primary"],
@@ -3282,7 +3282,7 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     }
     let st2 = a.stable(f, &format!("{label}: {node} retired"), &both(2), inv).await;
     assert!(st2.nodes.iter().all(|x| x["node_id"] != n["node_id"]), "{node}: the retired NodeId is in the settled view");
-    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node}: Fabric.build_id names the retiring Build (a replace leaves it as it was)");
+    assert_eq!(s(&st2.fabric["build_id"]), build_id, "{node}: the current build_id names the retiring Build (a replace leaves it as it was)");
     let terminal = terminal_proof(node, &rt_before);
     // Terminal retire + held removal, then absence: a full staleness window with the removal held.
     let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
@@ -3586,7 +3586,7 @@ async fn hold_phase(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, 
             assert!(v["lists_path"] == true && v["node_id"] == json!(node_id), "{node}: an admin stopped listing the held node under its NodeId within the silence window: {v}");
         }
         let fabric = a.get(f, "/api/fabric").await.unwrap_or(Value::Null);
-        assert_eq!(s(&fabric["build_id"]), fabric_build, "{node}: Fabric.build_id moved while the node was held: {fabric}");
+        assert_eq!(s(&fabric["build_id"]), fabric_build, "{node}: the current build_id moved while the node was held: {fabric}");
         looks.push(json!({"t_ns": now_ns(), "statuses": views.iter().map(|v| v["status"].clone()).collect::<Vec<_>>()}));
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -5108,7 +5108,7 @@ async fn build_attempt(st: &Stable, build_id: &str) -> Value {
 
 /// One path stays one birth for a full staleness window after a replacement settled: every admin
 /// that answers lists the path under the successor's NodeId and incarnation, the Build is on the
-/// attempt the replacement opened, and `Fabric.build_id` is the formation's.
+/// attempt the replacement opened, and the current build_id is the formation's.
 async fn hold_one_birth(f: &Formed, a: &mut Authority, st: &Stable, node: &str, node_id: &str, incarnation: &str, build_id: &str, attempt: u64, label: &str) -> Value {
     let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
     let until = Instant::now() + Duration::from_millis(window);
@@ -5219,7 +5219,7 @@ async fn replace_race_run(cell: &str, shape: Shape) {
     let rt_y2 = exact_runtime(&f, &y).await;
     live_and_distinct(&y, &rt_y, &rt_y2);
     let hold_y = hold_one_birth(&f, &mut a, &st2, &y, &s(&born_y["node_id"]), &s(&born_y["incarnation_id"]), &formation, attempt1 + 1, "C8 race leg 2").await;
-    assert_eq!(s(&st2.fabric["build_id"]), formation, "Fabric.build_id is the formation's after both legs: no Build was minted");
+    assert_eq!(s(&st2.fabric["build_id"]), formation, "the current build_id is the formation's after both legs: no Build was minted");
     legs.push(json!({"leg": 2, "node": y, "old_node_id": y_id, "old_incarnation_id": y_inc, "new_node_id": born_y["node_id"], "kill": kill_y, "kill_ns": kill_y_ns, "unheard_at_ns": heard, "replace_posted_ns": posted_ns, "replace_answer": {"status": code, "body": v}, "attempt_opened_by": winner, "attempt": attempt1 + 1, "wall_ms": fin_y["wall_ms"], "hold": hold_y}));
     inv.holds(
         &format!("C8 race leg 2: {y}'s exact runtime was killed and the replace requested the moment the fabric-primary held it unheard; the attempt came from the {winner} and the other was refused by name or never opened; one new NodeId stands at the path and held its one birth for a staleness window"),
@@ -5281,7 +5281,7 @@ async fn replace_race_run(cell: &str, shape: Shape) {
 /// attempt that made it. Canon: fabric-mesh-ops.md section 6 and proof 10 (unplanned loss produces one
 /// NodeDeleted for the old identity, from the replacement attempt's executor), fabric-mesh-lifecycle.md
 /// FML-19 (a same-path replace against an unchanged accepted topology opens a new attempt of the
-/// Build `Fabric.build_id` names). What must NOT happen: a second create at the path, a second birth
+/// Build the current build_id names). What must NOT happen: a second create at the path, a second birth
 /// left running, a new Build for a death's recovery, two attempts for one death.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_replace_racing_proven_drift_births_the_path_once() {
@@ -6742,7 +6742,7 @@ async fn mock_soak_routing_preserves_continuous_invariants() {
 /// limited to node-admins: restarts, kills and holds of a non-primary admin and mesh-primary
 /// hand-offs (the fabric-primary's included, only through the hand-off Build). After every action
 /// each live admin holds the same births, there is exactly one fabric-primary, the seats equal
-/// the public candidates', and `Fabric.build_id` is the accepted Build's. The fabric-primary is
+/// the public candidates', and the current build_id is the accepted Build's. The fabric-primary is
 /// never signalled and no mesh loses every node-admin. What must NOT happen: two effective
 /// writers, a fabric without a mesh primary after convergence, a minted Build for drift, or an
 /// operation without an outcome.

@@ -109,7 +109,7 @@ impl Run {
         build_log::build_value(&self.estate.carrier_at(&path(&door.name)).await, id).await
     }
 
-    /// `Fabric.build_id` as the fabric primary holds it: `fabric.get` at the admin behind its door.
+    /// the current build_id as the fabric primary holds it: `fabric.get` at the admin behind its door.
     async fn fabric_build_id(&self) -> String {
         let door = self.fabric_door().await;
         let at = path(&door.name);
@@ -275,7 +275,7 @@ impl Run {
     }
 
     /// After a released create: the Build is complete once, each documented step has one receipt,
-    /// one runtime serves the node and `Fabric.build_id` names this Build.
+    /// one runtime serves the node and the current build_id names this Build.
     async fn after_create(&self, door: &Door, build_id: &str, node: &str, order: &[String]) -> Value {
         let b = self.build_complete(door, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
@@ -288,7 +288,7 @@ impl Run {
         let ident = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == op.as_str() && r["step"] == "AllocateIdentity").map(|r| r["output"]["node_id"].clone()).unwrap();
         assert_eq!(ident, view["node_id"], "the node the Build decided is the node that serves: one birth");
         assert_eq!(self.runtimes(node), 1, "exactly one runtime serves {node}: release made no second birth");
-        assert_eq!(self.fabric_build_id().await, build_id, "Fabric.build_id names the accepted Build");
+        assert_eq!(self.fabric_build_id().await, build_id, "the current build_id names the accepted Build");
         json!({"build_state": b["state"], "attempt": 1, "step_receipts": counts, "node": {"status": view["status"], "node_id": view["node_id"], "incarnation_id": view["incarnation_id"]}, "runtimes": 1, "fabric_build_id": build_id})
     }
 
@@ -303,7 +303,7 @@ impl Run {
         assert!(counts.values().all(|n| *n == 1) && counts.len() == order.len(), "no step receipt is recorded twice: {counts:?}");
         self.node_gone(node).await;
         assert_eq!(self.runtimes(node), 0, "no runtime of {node} is left");
-        assert_eq!(self.fabric_build_id().await, build_id, "Fabric.build_id names the accepted Build");
+        assert_eq!(self.fabric_build_id().await, build_id, "the current build_id names the accepted Build");
         json!({"build_state": b["state"], "attempt": 1, "step_receipts": counts, "node_in_view": false, "runtimes": 0, "fabric_build_id": build_id})
     }
 }
@@ -356,20 +356,20 @@ async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     run.push(row(h, "retire-step", &id, &spec, rel, after));
 }
 
-/// CONTRACT (#2780): every documented Build/deployment step, lifecycle hook, accepted-Build
-/// persist-before-pointer cut, runtime publication cut and Pending gate of a real
+/// CONTRACT (#2780): every documented Build/deployment step, lifecycle hook,
+/// accepted-Build persistence cut, runtime publication cut and Pending gate of a real
 /// node-admin is held independently at its one point and released. For each cut: the testkit door
 /// acknowledges the arming and then the active hold (naming the exact call that parked: Build,
 /// attempt, operation, step); while it holds, the Build holds exactly the receipts before the cut
-/// and is not complete, the later steps have not begun, no admin executes an unaccepted Build, and
+/// and is not complete, the later steps have not begun, and
 /// the runtime count is the one the cut position implies; release alone completes the Build with
-/// each step's receipt exactly once, one runtime (none after a retire), `Fabric.build_id` on the
+/// each step's receipt exactly once, one runtime (none after a retire), the current build_id on the
 /// Build that was accepted (a restart on the same Build, one attempt later) and no other Build or
 /// attempt. The exported spans put the held step's span before the hold and the next step's span
-/// after the release, and each witness event (a lifecycle event, the pointer move, a node's Ready)
+/// after the release, and each witness event (a lifecycle event, the Build's acceptance, a node's Ready)
 /// after the release. What must NOT happen: a step receipt recorded twice, a second runtime born by
-/// the release, a new unchanged-topology Build, a Build that completes while its cut holds, a
-/// Build executed before `Fabric.build_id` names it, or a hook skipped for a re-born node.
+/// the release, a new unchanged-topology Build, a Build that completes while its cut holds, or a
+/// hook skipped for a re-born node.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     let dir = acceptance_dir();
@@ -433,11 +433,11 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
         run.plain_delete(node).await;
     }
 
-    // The accepted Build is durable before Fabric.build_id names it: stalled between the two, and
-    // inside the pointer's own write.
-    accept_cut(&run, &create_order, "accept:build-durable-before-pointer", json!({"kind": "accepted-build"}), "persist-before-pointer", node).await;
-    run.plain_delete(node).await;
-    accept_cut(&run, &create_order, "pointer:fabric-record-write", json!({"kind": "pointer-write", "moves_pointer": true}), "persist-before-pointer", node).await;
+    // The accepted Build is its own entity, written once and current from the moment it is durable
+    // (R-BI3: "Each accepted Build is its own entity in the builds store, written once"; "The Fabric
+    // row carries no pointer to the newest Build"): stalled at that one write, with the accepting
+    // request unanswered.
+    accept_cut(&run, &create_order, "accept:build-durable", json!({"kind": "accepted-build"}), "persist-accepted-build", node).await;
     run.plain_delete(node).await;
 
     // A mesh's first admin and the Pending gate.
@@ -492,12 +492,7 @@ async fn finish(run: Run, dir: &Path, create_order: &[String], retire_order: &[S
             "why": "no admin path runs a transition into Draining, so no hook of the drain phases can be reached; building one would be a new transition, not a stall."
         },
         {
-            "cuts": ["hydration:fabric-record-write (a joining admin held at its write of the Fabric record)"],
-            "where": "crates/rafka-node-admin-core/src/accepted.rs `AcceptedStore::learn` (holds the record it hears as runtime state and writes nothing); crates/rafka-node-admin-core/src/admin.rs `FabricRowsWriter::round` (writes the learned pointer only while this admin holds the fabric seat); the cut parks `FaultedFabricStorage::put_pointer` (crates/rafka-node-rpc-testkit/src/admin_faults.rs)",
-            "why": "R14 item 2 (rafka-v2 docs/plans/rulings/i143-r14-rdm-shared-store.md): \"Writers are exactly the ladder. Fabric-primary: `fabric/`. ... Keys never overlap across writers.\" A joining admin writes nothing to `fabric/`, so it never calls `FabricStorage::put_pointer`: the cut cannot hold a call of a joiner. The joiner's hydration is the Build facts it reads (FetchBuildFacts), covered by the rg6 and 2783 cells."
-        },
-        {
-            "cuts": ["day-0 first Build acceptance and first pointer at boot"],
+            "cuts": ["day-0 first Build acceptance at boot"],
             "where": "crates/rafka-node-admin-core/src/admin.rs:1660-1661",
             "why": "runs inside the Day-0 admin's start(), before the estate harness can reach any door: crates/rafka-test-scenario/src/estate.rs `born` removes and recreates the estate root (so no boot cut can be placed before it) and blocks on the admin's control API (so a held Day-0 start stalls the harness itself)."
         }
@@ -533,7 +528,7 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
     let hold_cut = c["hold_cut"].as_str().unwrap_or(cut);
     let holds: Vec<&Value> = named(spans, "rdm.testkit.fault.update.via-hold").into_iter().filter(|s| attr(s, "cut") == hold_cut).collect();
     assert!(!holds.is_empty(), "`{cut}`: a hold span was exported for the cut");
-    // Every call a cut parks has its own hold span (a pointer cut may park two writers): the hold is
+    // Every call a cut parks has its own hold span (a cut may park several writers): the hold is
     // from the first one's start to the last one's end.
     let first = holds.iter().min_by_key(|s| span_start(s)).unwrap();
     let last = holds.iter().max_by_key(|s| span_end(s)).unwrap();
@@ -559,15 +554,13 @@ fn check_spans(spans: &[Value], c: &Value) -> Value {
             assert_eq!(attr(hooks[0], "outcome"), "complete");
             return json!({"cut": cut, "hold_span_id": hold["span_id"], "hook_span_id": hooks[0]["span_id"], "hook_phase": attr(hooks[0], "phase"), "hold_ms": hold_ms});
         }
-        "pointer" => {
-            let moved: Vec<&Value> = named(spans, "rdm.node_admin.fabric.update.via-build-accepted").into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap()).collect();
-            assert!(!moved.is_empty(), "`{cut}`: Fabric.build_id moved to the Build");
-            // The accepting admin's move spans its own write (so it began inside the hold and ends after
-            // the release); every other admin moves its pointer only on hearing the record, which the
-            // accepting admin broadcasts after its write.
-            assert!(moved.iter().all(|s| span_end(s) >= span_end(hold)), "`{cut}`: no pointer move completed before the release");
-            assert!(moved.iter().filter(|s| attr(s, "via").starts_with("gossip")).all(|s| span_start(s) >= span_end(hold)), "`{cut}`: no other admin heard the record before the release");
-            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "pointer_span_id": moved[0]["span_id"], "pointer_moves": moved.iter().map(|s| json!({"node": attr(s, "node"), "via": attr(s, "via").chars().take(8).collect::<String>(), "ended_ms_after_release": (span_end(s) as i64 - span_end(hold) as i64) / 1_000_000})).collect::<Vec<_>>()});
+        "accepted" => {
+            let written: Vec<&Value> = named(spans, "rdm.node_admin.build.create.via-accepted").into_iter().filter(|s| attr(s, "build_id") == c["build_id"].as_str().unwrap()).collect();
+            assert_eq!(written.len(), 1, "`{cut}`: the Build was written once");
+            // The acceptance spans the one write (R-BI3: the Build is current once durable), so the hold
+            // before the write ends before the span does.
+            assert!(span_end(written[0]) >= span_end(hold), "`{cut}`: the acceptance did not end before the release");
+            return json!({"cut": cut, "hold_span_id": hold["span_id"], "parked_calls": parked_calls, "hold_ms": hold_ms, "accepted_span_id": written[0]["span_id"], "node": attr(written[0], "node"), "ended_ms_after_release": (span_end(written[0]) as i64 - span_end(hold) as i64) / 1_000_000});
         }
         "ready-after" => {
             let node = c["node"].as_str().unwrap();
@@ -684,11 +677,11 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     let door = run.member_door("mesh1").await;
     let before = run.node_ready(node).await;
     let process_before = run.processes(node);
-    let pointer_before = run.fabric_build_id().await;
+    let current_before = run.fabric_build_id().await;
     let ack = door.arm(id, spec.clone()).await;
     let mut stream = run.estate.nodes_obj().await.restart(&path(node)).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));
     let build_id = Run::id_of(&stream);
-    assert_eq!(build_id, pointer_before, "a restart opens an attempt of the accepted Build; it makes no Build");
+    assert_eq!(build_id, current_before, "a restart opens an attempt of the accepted Build; it makes no Build");
     assert_eq!(u64::from(stream.accepted().attempt), attempt, "the call opened attempt {attempt} of the Build");
     let op = format!("restart-node:{node}");
     let mut h = run.hold(&door, id, ack, &build_id, &op, Some(order[..receipts_before].to_vec()), Some((node, 1))).await;
@@ -707,7 +700,7 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     assert_eq!(after_node["incarnation_id"], before["incarnation_id"], "a restart keeps the incarnation: it is stop then start on the parked birth");
     assert_eq!(run.processes(node), process_before, "a restart is stop then start on the same process");
     assert_eq!(run.runtimes(node), 1, "exactly one runtime serves {node} after the restart");
-    assert_eq!(run.fabric_build_id().await, pointer_before, "Fabric.build_id is unchanged by a restart");
+    assert_eq!(run.fabric_build_id().await, current_before, "the current build_id is unchanged by a restart");
     run.note_build(&build_id, attempt);
     // One restart pipeline span holds every step, in order (DeploymentPipeline::restart).
     let restart_steps: Vec<String> = order.clone();
@@ -717,7 +710,7 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     } else {
         run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": node, "pipeline": "restart", "attempt": attempt, "steps": restart_steps, "held_step": RetireStep::NodeRestarting.name()}));
     }
-    let after = json!({"build_state": b["state"], "attempt": attempt, "operation": op, "steps": order, "node": {"node_id": after_node["node_id"], "incarnation_id": after_node["incarnation_id"]}, "processes": process_before, "runtimes": 1, "fabric_build_id": pointer_before});
+    let after = json!({"build_state": b["state"], "attempt": attempt, "operation": op, "steps": order, "node": {"node_id": after_node["node_id"], "incarnation_id": after_node["incarnation_id"]}, "processes": process_before, "runtimes": 1, "fabric_build_id": current_before});
     run.push(row(h, group, id, &spec, rel, after));
 }
 
@@ -742,56 +735,55 @@ async fn hook_cut(run: &Run, create_order: &[String], phase: &str, node: &str) {
     run.push(row(h, "lifecycle-hook", &id, &spec, rel, after));
 }
 
-// ---- accepted-Build persistence and the pointer ------------------------------------------------------
+// ---- accepted-Build persistence ------------------------------------------------------
 
-/// The Build is durable and `Fabric.build_id` has not moved: stalled at `spec`, with the accepting
-/// request unanswered. The request is made from a task, because it does not return until release.
+/// The Build's one durable write is held: stalled at `spec`, with the accepting request unanswered.
+/// Until the release the Build is held by no admin and is the current Build of none (R-BI3: "Each
+/// accepted Build is its own entity in the builds store, written once"; it is current from the moment
+/// it is durable), and no admin executes it; the release makes it durable, current and run. The
+/// request is made from a task, because it does not return until release.
 async fn accept_cut(run: &Run, create_order: &[String], id: &str, spec: Value, group: &str, node: &str) {
     let door = run.fabric_door().await;
-    let pointer_before = run.fabric_build_id().await;
+    let previous = run.fabric_build_id().await;
     let ack = door.arm(id, spec.clone()).await;
     let request = {
         let nodes = Nodes::new(run.estate.carrier_at(&path(&door.name)).await);
         tokio::spawn(async move { nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await })
     };
     let held = door.wait_held(id).await;
-    let build_id = held["hit"]["build_id"].as_str().or(held["hit"]["pointer_to_build_id"].as_str()).expect("the cut names the Build").to_string();
-    let b = run.build(&door, &build_id).await;
-    assert_eq!(run.fabric_build_id().await, pointer_before, "`{id}`: the Build is durable and Fabric.build_id still names the previous Build");
-    // Does anything execute a Build the pointer does not name yet? Every admin's own record of it,
-    // read for a few executor rounds (a round is 300 ms) while the cut holds.
-    let mut executed_during_hold = Value::Null;
+    let build_id = held["hit"]["build_id"].as_str().expect("the cut names the Build").to_string();
+    // Does any admin hold, or execute, a Build whose write is held? Every admin's own log, read for a
+    // few executor rounds (a round is 300 ms) while the cut holds.
+    let mut held_by = Value::Null;
     for _ in 0..12 {
+        assert_eq!(run.fabric_build_id().await, previous, "`{id}`: the Build is not durable, so it is not the current Build");
         for admin in run.estate.node_views().await.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
-            // An admin whose log holds no fact of the Build ends the read `unknown build`: it has not run it.
+            // An admin whose log holds no fact of the Build ends the read `unknown build`.
             let Ok(facts) = build_log::log_read(&run.estate.carrier_at(&admin.name).await, &build_id).await else { continue };
-            if let Some(seen) = build_log::projection(&facts, &build_id).filter(|seen| seen.attempt > 0 || !seen.steps.is_empty()) {
-                executed_during_hold = json!({"admin": admin.name.to_string(), "state": seen.state, "attempt": seen.attempt, "executor": seen.executor, "receipts": seen.steps.len()});
+            if let Some(seen) = build_log::projection(&facts, &build_id) {
+                held_by = json!({"admin": admin.name.to_string(), "state": seen.state, "attempt": seen.attempt, "executor": seen.executor, "receipts": seen.steps.len()});
             }
         }
-        if !executed_during_hold.is_null() {
+        if !held_by.is_null() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     assert!(!request.is_finished(), "`{id}`: the accepting request is unanswered while the cut holds");
-    assert!(
-        executed_during_hold.is_null(),
-        "`{id}`: an unaccepted Build (Fabric.build_id still names the previous one) is executed by no admin; one claimed it: {executed_during_hold}"
-    );
+    assert!(held_by.is_null(), "`{id}`: a Build whose one write is held is held by no admin's log; one holds it: {held_by}");
     let during = json!({
-        "build_readable": true, "build_state": b["state"], "attempt": b["attempt"], "receipts_while_held": b["steps"].as_array().map(|s| s.len()),
-        "fabric_build_id": pointer_before, "previous_build_id": pointer_before, "accepting_request_answered": false, "executed_before_the_pointer_named_it": executed_during_hold,
+        "build_held_by_an_admin": false, "current_build_id": previous, "previous_build_id": previous, "accepting_request_answered": false,
     });
-    let h = Hold { arm_ack: ack, held, build_id: build_id.clone(), attempt: b["attempt"].as_u64().unwrap_or(0), during };
+    let h = Hold { arm_ack: ack, held, build_id: build_id.clone(), attempt: 0, during };
     let rel = door.release(id).await;
     let mut accepted = request.await.unwrap().unwrap_or_else(|e| panic!("`{id}`: release did not answer the accepting request with the Build: {e}"));
     assert_eq!(Run::id_of(&accepted), build_id, "release answers the accepting request with the Build the cut named");
+    assert_eq!(run.fabric_build_id().await, build_id, "`{id}`: the Build is durable once released, so it is the current Build");
     run.complete(&mut accepted).await;
     let exec = run.member_door("mesh1").await;
     let after = run.after_create(&exec, &build_id, node, create_order).await;
     run.note_build(&build_id, 1);
-    run.span_check(json!({"kind": "pointer", "cut": id, "build_id": build_id}));
+    run.span_check(json!({"kind": "accepted", "cut": id, "build_id": build_id}));
     run.push(row(h, group, id, &spec, rel, after));
 }
 

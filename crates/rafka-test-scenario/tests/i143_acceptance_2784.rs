@@ -138,7 +138,7 @@ fn births(nodes: &[Value]) -> BTreeSet<(String, String)> {
 }
 
 /// Healed: every admin the entry view names ready holds the same births as the entry view, every
-/// mesh of the fabric ready-for-traffic in its own `fabric.get`, and the same Fabric.build_id.
+/// mesh of the fabric ready-for-traffic in its own `fabric.get`, and the same the current build_id.
 /// `Err` names what a view still lacks.
 async fn converged(estate: &Estate, want: &BTreeSet<(String, String)>, meshes: &[&str], build_id: &str) -> Result<Vec<String>, String> {
     let nodes = estate.node_values().await;
@@ -153,7 +153,7 @@ async fn converged(estate: &Estate, want: &BTreeSet<(String, String)>, meshes: &
         }
         let Some(f) = fabric_at(estate, &name).await else { return Err(format!("{name} does not answer fabric.get")) };
         if f.build_id.as_deref() != Some(build_id) {
-            return Err(format!("{name} holds Fabric.build_id {:?} not {build_id}", f.build_id));
+            return Err(format!("{name} holds the current build_id {:?} not {build_id}", f.build_id));
         }
         let heard: BTreeSet<String> = f.meshes.iter().filter(|m| m.status == ScopeStatus::ReadyForTraffic).map(|m| m.name.clone()).collect();
         if let Some(m) = meshes.iter().find(|m| !heard.contains(**m)) {
@@ -186,7 +186,7 @@ fn span_row(sp: &Value, keys: &[&str]) -> Value {
 /// carrier's lost edge (`CarrierEdgeLost`, every time, never `Indeterminate`), a NoActiveRoute call is
 /// `NotSent`, and no serve span exists for them; the advertised seats equal what the public
 /// candidates compute, the fabric-primary stays put, and the Build gains no attempt and
-/// `Fabric.build_id` does not move; the control plane creates, retires and re-births nothing. After
+/// the current build_id does not move; the control plane creates, retires and re-births nothing. After
 /// the release every silenced node is back as the same birth (same incarnation, same container),
 /// every admin's view holds the same births and every mesh ready-for-traffic, and a Direct and a
 /// ViaPeer call to the silenced node are served by the same birth with the value stored before the
@@ -246,7 +246,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let want_births = births(&nodes);
     let fabric_before = fabric_json(&estate).await;
     let fabric_build = s(&fabric_before["build_id"]);
-    assert_eq!(fabric_build, build_id, "Fabric.build_id names the creation Build: {fabric_before}");
+    assert_eq!(fabric_build, build_id, "the current build_id names the creation Build: {fabric_before}");
     let attempt_before = estate.attempt_of_build(&fabric_build).await;
     let (seats_before, seats_detail_before) = match seats_as_expected(&nodes) { Ok(()) => (true, String::new()), Err(e) => (false, e) };
 
@@ -347,7 +347,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     ev.release = Some(Release { acked: true, hold_ended });
 
     // Convergence: coverage (every mesh heard by every admin), topology (the same births, the
-    // same Build pointer), routes (the formerly isolated node served by the same birth).
+    // same current Build), routes (the formerly isolated node served by the same birth).
     let conv_started = std::time::Instant::now();
     let agreeing = wait_for("every admin holds the healed fabric", Duration::from_secs(150), || async { converged(&estate, &want_births, &["mesh1", "mesh2"], &fabric_build).await.ok() }).await;
     let converged_ms = conv_started.elapsed().as_millis() as u64;
@@ -381,7 +381,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     );
     rec.check("every birth is back, the same set the cut found", births(&nodes_after) == want_births, format!("{:?}", births(&nodes_after).symmetric_difference(&want_births).collect::<Vec<_>>()));
     rec.check("the value stored before the cut is served by the same birth after the heal", kept["reply"]["result"] == json!({"found": true, "value": "before-isolation"}) && kept["reply"]["incarnation_id"] == target_inc.as_str() && kept["reply"]["executing_node"] == target_id.as_str(), kept.to_string());
-    rec.check("Fabric.build_id is the Build it was, and that Build gained no attempt", s(&fabric_after["build_id"]) == fabric_build && attempt_after == attempt_before, format!("attempts {attempt_before} -> {attempt_during} -> {attempt_after}"));
+    rec.check("the current build_id is the Build it was, and that Build gained no attempt", s(&fabric_after["build_id"]) == fabric_build && attempt_after == attempt_before, format!("attempts {attempt_before} -> {attempt_during} -> {attempt_after}"));
     rec.check("the fabric primary is the seat holder it was", fp_of(&nodes_after) == fabric_primary, fp_of(&nodes_after));
     rec.check("every admin's view agrees on the healed fabric", !agreeing.is_empty(), format!("{agreeing:?}"));
     rec.check("the advertised seats equal the public candidates' after the heal", seats_after, seats_detail_after.clone());
@@ -511,7 +511,7 @@ const LOSS_CELL: &str = "container_peer_mesh_lost_recovers_under_same_mesh_id";
 /// primary creates the second admin. A mesh whose every container is gone has no member to say so and is
 /// held, never reborn (the process cell `peer_mesh_whose_members_all_stay_silent_is_held_not_reborn`).
 /// Afterwards both admins are new births in new containers, the lost mesh's rpc nodes and the surviving
-/// mesh's births are the births they were (never re-created), `Fabric.build_id` is the accepted Build, no
+/// mesh's births are the births they were (never re-created), the current build_id is the accepted Build, no
 /// MeshId is minted, and a call to an rpc node of the recovered mesh is served. What must NOT happen: the
 /// fabric primary killed, a new Build or MeshId, a surviving member re-created, the seat moving.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -586,7 +586,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     .await;
     let after = values(&estate.settled_named(&all).await);
     let fabric_after = fabric_json(&estate).await;
-    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new topology Build: Fabric.build_id is the accepted Build");
+    assert_eq!(s(&fabric_after["build_id"]), accepted, "no new topology Build: the current build_id is the accepted Build");
     assert_eq!(mesh_id_of(&estate, &lost_mesh).await, lost_mesh_id, "{lost_mesh} recovered under its own MeshId");
     assert_eq!(mesh_id_of(&estate, &kept_mesh).await, kept_mesh_id);
     assert_eq!(after.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])), Some(holder.clone()), "the seat stayed in {kept_mesh}");
@@ -1064,7 +1064,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     assert!(untouched.iter().all(|id| survivors_after.contains(*id)), "no other node was replaced: before {survivors_before:?} after {survivors_after:?}");
     let seats_end = seats(&nodes_end);
     assert!(seats_end.0, "{}", seats_end.1);
-    assert_eq!(estate.accepted_build_id().await, build_id, "Fabric.build_id is the Build it was");
+    assert_eq!(estate.accepted_build_id().await, build_id, "the current build_id is the Build it was");
     estate.stop().await;
 
     // ---- Evidence: the estate's exported spans and this process's own.

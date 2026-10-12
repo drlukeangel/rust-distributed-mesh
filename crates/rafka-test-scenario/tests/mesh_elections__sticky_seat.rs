@@ -48,7 +48,7 @@ const OS_CLOCK_SKEW_MS: i64 = 3_600_000;
 
 /// [`fabric`], with the OS clock of the ordinary node `skewed` (if any) an hour ahead from its start.
 async fn fabric_skewing(cell: &str, skewed: Option<&str>) -> (Estate, Vec<Value>) {
-    let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     if let Some(node) = skewed {
         let dir = rafka_node_rpc_testkit::os_clock_skew_dir(&estate.root);
         std::fs::create_dir_all(&dir).unwrap();

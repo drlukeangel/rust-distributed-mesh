@@ -1,14 +1,16 @@
 //! `fabric.storage`: node-admin's Fabric control state behind a storage boundary
 //! (fabric-mesh-lifecycle.md §11.1, §13).
 //!
-//! It holds the Fabric's identity and pointer rows, the seat records and, once a fabric shutdown
-//! begins, the [`FabricShutdown`] record. `fabric/` on the fabric's store root has one writer, the
-//! fabric-primary (R14 item 2: "Fabric-primary: `fabric/`. ... Keys never overlap across writers"):
-//! it writes the identity, each pointer move, the seat records and the shutdown it initiates. Every
-//! other admin reads them there, and holds what it learns before the fabric's first state-commit
-//! (its join answer, the Build topic) as its own runtime state, never as a row here. A shutdown is
-//! never deleted while its Fabric lives, and an admin that starts on a store root holding one comes
-//! up frozen.
+//! It holds the Fabric's identity row, the seat records and, once a fabric shutdown begins, the
+//! [`FabricShutdown`] record. The Fabric row carries no pointer to the newest Build (R-BI3): the
+//! current Build is read from the Build entities themselves
+//! ([`crate::build_state::BuildStateAdapter::current_build`]). `fabric/` on the fabric's store root
+//! has one writer, the fabric-primary (R14 item 2: "Fabric-primary: `fabric/`. ... Keys never
+//! overlap across writers"): it writes the identity, the seat records and the shutdown it initiates.
+//! Every other admin reads them there, and holds the identity it learns before the fabric's first
+//! state-commit (its join answer, the Build topic) as its own runtime state, never as a row here. A
+//! shutdown is never deleted while its Fabric lives, and an admin that starts on a store root holding
+//! one comes up frozen.
 //!
 //! A handover of the fabric seat (`fabric_handover`) leaves one [`HandoverRow`] per stage it reached.
 //! A Build-driven seat transfer (TakeSeats) is ONE [`SeatTransferRow`] at the holder that committed
@@ -17,10 +19,10 @@
 //! root (`meshes/<holder mesh>/seat-transfers/`, the writer ladder): an executor that cannot reach a
 //! proven-lost holder point-reads it there (node-rpc-envelope.md, TakeSeats).
 //!
-//! The state is three kinds of row, each its own fact written on its own and never read back to be
-//! written again: the [`FabricIdentity`] (written once), one [`FabricPointer`] row per move of
-//! `Fabric.build_id` (a blind put ordered by the Build's submission time, folded to the newest by
-//! every reader), and the [`FabricShutdown`] (first one kept).
+//! The Fabric's own state is two kinds of row, each its own fact written on its own and never read
+//! back to be written again: the [`FabricIdentity`] (written once) and the [`FabricShutdown`] (first
+//! one kept). The pointer rows an older build wrote (`fabric/pointers/`, `fabric-pointer/1`) are
+//! retired: a store root holding one is refused by name.
 //!
 //! Two implementations: [`MemoryFabricStorage`] for runs that need no restart survival, and
 //! [`FileFabricStorage`], one record per file on the fabric's store root, each write a temp file,
@@ -33,19 +35,6 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::Mutex;
 
-/// The Fabric record as a reader sees it: the identity row and the newest pointer row folded. It
-/// is never written whole.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FabricRecord {
-    /// The fabric's minted id.
-    pub fabric_id: FabricId,
-    /// The fabric's name.
-    pub name: String,
-    /// The Build the pointer names, when one was accepted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub build_id: Option<crate::build::BuildId>,
-}
-
 /// The Fabric's immutable identity row: written once, by Day 0 or by the admin that first hears it,
 /// and never rewritten.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,27 +43,6 @@ pub struct FabricIdentity {
     pub fabric_id: FabricId,
     /// The fabric's name.
     pub name: String,
-}
-
-/// One pointer row: `Fabric.build_id` moved to `build_id`. `submitted_at_ms` is the Build's own
-/// submission time, the ordering key: a reader folds the rows to the greatest `(submitted_at_ms,
-/// build_id)`, so a row written late by a lagging writer never moves the pointer back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FabricPointer {
-    /// The Build the pointer moved to.
-    pub build_id: crate::build::BuildId,
-    /// When the Build was submitted, in milliseconds since the Unix epoch.
-    pub submitted_at_ms: u64,
-}
-
-impl FabricPointer {
-    pub(crate) fn order(&self) -> (u64, &str) {
-        (self.submitted_at_ms, self.build_id.0.as_str())
-    }
-
-    fn key(&self) -> String {
-        format!("{:020}-{}", self.submitted_at_ms, self.build_id.0)
-    }
 }
 
 /// What a claim of the fabric's name wrote.
@@ -113,14 +81,6 @@ fn claim_fabric_against(held: Option<&FabricIdentity>, identity: &FabricIdentity
         Some(h) if h.fabric_id == identity.fabric_id => Ok(FabricClaim::Held),
         Some(h) => Err(FabricNameHeld { name: identity.name.clone(), by: h.fabric_id.clone() }),
     }
-}
-
-fn newest(rows: impl IntoIterator<Item = FabricPointer>) -> Option<FabricPointer> {
-    rows.into_iter().max_by(|a, b| a.order().cmp(&b.order()))
-}
-
-fn folded(identity: Option<FabricIdentity>, pointer: Option<FabricPointer>) -> Option<FabricRecord> {
-    identity.map(|i| FabricRecord { fabric_id: i.fabric_id, name: i.name, build_id: pointer.map(|p| p.build_id) })
 }
 
 /// One seat record this admin held: who held a seat, and from which epoch. Each is its own row
@@ -287,15 +247,12 @@ pub struct FabricShutdown {
 /// Why a `fabric.storage` read or write failed.
 pub use crate::record_store::StorageError as FabricStorageError;
 
-/// node-admin's Fabric control state: three kinds of row, each written on its own and never read
-/// back to be written again.
+/// node-admin's Fabric control state: each kind of row written on its own and never read back to be
+/// written again.
 #[async_trait]
 pub trait FabricStorage: Send + Sync {
-    /// The identity row and the newest pointer row folded; `None` while no identity is held.
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError>;
-    /// The identity row and the newest pointer row, unfolded: what a reader folds with the pointer
-    /// it holds itself ([`crate::accepted::AcceptedStore`]).
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError>;
+    /// The Fabric's identity row; `None` while no identity is held.
+    async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError>;
     /// Claim the fabric's name for `identity.fabric_id` and keep `identity` as the Fabric's identity row:
     /// the claim is here, inside the adapter (node-identity-and-state.md §2.8): insert-and-fail on the
     /// fabric's `(path, name)`, at the path level above the per-fabric roots (R-FN1:
@@ -309,8 +266,6 @@ pub trait FabricStorage: Send + Sync {
     /// it is. Returns whether it went. The hook s59's fabric.delete calls; nothing else releases a
     /// fabric's name.
     async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError>;
-    /// Put the pointer row for one move: a blind put of its own key.
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError>;
     /// The shutdown held, when one is.
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError>;
     /// Hold `shutdown` if none is held (insert-and-fail on its key): the first shutdown held is
@@ -339,7 +294,6 @@ pub trait FabricStorage: Send + Sync {
 #[derive(Debug, Default)]
 pub struct MemoryFabricStorage {
     identity: Mutex<Option<FabricIdentity>>,
-    pointers: Mutex<Vec<FabricPointer>>,
     shutdown: Mutex<Option<FabricShutdown>>,
     seats: Mutex<Vec<SeatRow>>,
     handovers: Mutex<Vec<HandoverRow>>,
@@ -355,12 +309,8 @@ impl MemoryFabricStorage {
 
 #[async_trait]
 impl FabricStorage for MemoryFabricStorage {
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        let (identity, pointer) = self.fabric_rows().await?;
-        Ok(folded(identity, pointer))
-    }
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
-        Ok((self.identity.lock().unwrap().clone(), newest(self.pointers.lock().unwrap().iter().cloned())))
+    async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        Ok(self.identity.lock().unwrap().clone())
     }
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         // The look and the insert are one step under the identity's lock.
@@ -379,12 +329,6 @@ impl FabricStorage for MemoryFabricStorage {
             *held = None;
         }
         Ok(ours)
-    }
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        let mut rows = self.pointers.lock().unwrap();
-        rows.retain(|r| r.key() != pointer.key());
-        rows.push(pointer.clone());
-        Ok(())
     }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         Ok(self.shutdown.lock().unwrap().clone())
@@ -428,7 +372,10 @@ impl FabricStorage for MemoryFabricStorage {
 
 /// The directory inside the fabric's store root.
 pub const FABRIC_DIR: &str = "fabric";
-const POINTERS_DIR: &str = "fabric/pointers";
+/// The retired pointer rows (`fabric-pointer/1`, one per move of the pointer an older build kept on
+/// the Fabric row): a store root holding one is refused by name (R-BI3).
+const RETIRED_POINTERS_DIR: &str = "fabric/pointers";
+const RETIRED_POINTER_FORMAT: &str = "fabric-pointer/1";
 const SEATS_DIR: &str = "fabric/seats";
 const SEAT_FORMAT: &str = "fabric-seat/1";
 const HANDOVERS_DIR: &str = "fabric/handovers";
@@ -438,17 +385,16 @@ const TRANSFERS_DIR: &str = "seat-transfers";
 const TRANSFER_FORMAT: &str = "fabric-seat-transfer/1";
 const IDENTITY_KEY: &str = "identity";
 const SHUTDOWN_KEY: &str = "shutdown";
-/// The retired whole-record file (`fabric.json`, format `fabric-record/1`): identity and pointer in
+/// The retired whole-record file (`fabric.json`, format `fabric-record/1`): identity and a Build in
 /// one row. A data dir holding it is refused by name.
 const RETIRED_RECORD_KEY: &str = "fabric";
 const IDENTITY_FORMAT: &str = "fabric-identity/1";
 /// A fabric's claim of its name at `<store_dir>/fabrics/<name>` (R-FN1): the claiming Fabric's identity.
 const NAME_FORMAT: &str = "fabric-name/1";
-const POINTER_FORMAT: &str = "fabric-pointer/1";
 const SHUTDOWN_FORMAT: &str = "fabric-shutdown/1";
 
-/// One row per file under `<store root>/fabric/` (`crate::store_root`): `identity.json`, `shutdown.json`, and one
-/// `pointers/<submitted_at_ms>-<build_id>.json` per pointer move (`crate::record_store`); the
+/// One row per file under `<store root>/fabric/` (`crate::store_root`): `identity.json`,
+/// `shutdown.json`, the seat records and the handover stages (`crate::record_store`); the
 /// seat-transfer rows under `<store root>/meshes/<holder mesh>/seat-transfers/`.
 #[derive(Debug)]
 pub struct FileFabricStorage {
@@ -456,7 +402,6 @@ pub struct FileFabricStorage {
     /// fabric's claim of its name is the first of its rows.
     names: crate::record_store::FileRecords,
     records: crate::record_store::FileRecords,
-    pointers: crate::record_store::FileRecords,
     seats: crate::record_store::FileRecords,
     handovers: crate::record_store::FileRecords,
     /// `<store root>/meshes/`: each mesh's seat-transfer rows under it.
@@ -471,8 +416,7 @@ pub struct FileFabricStorage {
     seat: SeatSlot,
 }
 
-/// The fabric seat source a [`FileFabricStorage`] reads before it puts a pointer, and when its
-/// held `fabric/` rows are published.
+/// The fabric seat source a [`FileFabricStorage`] reads when its held `fabric/` rows are published.
 #[derive(Default, Clone)]
 struct SeatSlot(std::sync::Arc<std::sync::OnceLock<crate::fabric_builds::SeatSource>>);
 
@@ -507,13 +451,13 @@ impl FileFabricStorage {
         if records.holds(RETIRED_RECORD_KEY).await? {
             return Err(FabricStorageError::Unrecognised {
                 file: own_data_dir.join(FABRIC_DIR).join("fabric.json").display().to_string(),
-                reason: format!("the whole-record format fabric-record/1 is retired; this build reads {IDENTITY_FORMAT} and {POINTER_FORMAT} rows"),
+                reason: format!("the whole-record format fabric-record/1 is retired; this build reads {IDENTITY_FORMAT} rows"),
             });
         }
+        refuse_retired_pointers(&own_data_dir.join(RETIRED_POINTERS_DIR)).await?;
         Ok(Self {
             names,
             records,
-            pointers: root.records(own_data_dir, POINTERS_DIR, writer).await?,
             seats: root.records(own_data_dir, SEATS_DIR, writer).await?,
             handovers: root.records(own_data_dir, HANDOVERS_DIR, writer).await?,
             meshes_dir: own_data_dir.join("meshes"),
@@ -524,10 +468,10 @@ impl FileFabricStorage {
         })
     }
 
-    /// The committed fabric seat record this writer reads before it puts a pointer (set once). The
-    /// `fabric/` rows it holds in its scratchpad (its Fabric identity, pointers and seat records,
-    /// written while it held the fabric seat) are published only while the record still says it
-    /// does; a writer whose seat moved before the publication drops them, named (R14 item 2).
+    /// The committed fabric seat record this writer reads (set once). The `fabric/` rows it holds in
+    /// its scratchpad (its Fabric identity and seat records, written while it held the fabric seat)
+    /// are published only while the record still says it does; a writer whose seat moved before the
+    /// publication drops them, named (R14 item 2).
     pub fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
         let _ = self.seat.0.set(seat);
         for store in self.fabric_primary_records() {
@@ -562,25 +506,20 @@ impl FileFabricStorage {
     }
 
     /// The records the fabric-primary seat writes (R14 item 2): the fabric's claim of its name, the
-    /// Fabric identity and shutdown, its pointers and the seat records. What a seat transfer moving that seat cuts off, and what a
-    /// publication writes only while the committed fabric seat record names this writer. Handover
-    /// rows are each party's own stage (node-rpc-envelope.md, TakeFabricPrimary: the successor
-    /// durably commits the transfer before it answers), and seat-transfer rows live under the
-    /// holder's own mesh.
-    pub fn fabric_primary_records(&self) -> [&crate::record_store::FileRecords; 4] {
-        [&self.names, &self.records, &self.pointers, &self.seats]
+    /// Fabric identity and shutdown, and the seat records. What a seat transfer moving that seat cuts
+    /// off, and what a publication writes only while the committed fabric seat record names this
+    /// writer. Handover rows are each party's own stage (node-rpc-envelope.md, TakeFabricPrimary: the
+    /// successor durably commits the transfer before it answers), and seat-transfer rows live under
+    /// the holder's own mesh.
+    pub fn fabric_primary_records(&self) -> [&crate::record_store::FileRecords; 3] {
+        [&self.names, &self.records, &self.seats]
     }
 }
 
 #[async_trait]
 impl FabricStorage for FileFabricStorage {
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        let (identity, pointer) = self.fabric_rows().await?;
-        Ok(folded(identity, pointer))
-    }
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
-        let identity = self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?;
-        Ok((identity, newest(self.pointers.list::<FabricPointer>(POINTER_FORMAT).await?)))
+    async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await
     }
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         // R-FN1: the fabric's (path, name) claim, an insert-and-fail at `<store_dir>/fabrics/<name>`
@@ -603,15 +542,6 @@ impl FabricStorage for FileFabricStorage {
             self.names.remove_released(&identity.name, NAME_FORMAT, move |h: &FabricIdentity| h.fabric_id == fabric_id).await?;
         }
         Ok(ours)
-    }
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        // The fabric-primary alone writes `fabric/` (R14 item 2): the committed fabric seat record
-        // is read under the store's write lock before the put is held or reaches the store root. It
-        // is open to this birth when it names it, names none (Day 0, before any record) or names a
-        // birth proven gone.
-        let file = format!("{}/{}.json", POINTERS_DIR, pointer.key());
-        let seat = || self.seat.open(&self.writer).map_err(|reason| crate::record_store::StorageError::NotSeatHolder { file: file.clone(), reason });
-        self.pointers.write_gated(&pointer.key(), POINTER_FORMAT, pointer, seat).await
     }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT).await
@@ -653,6 +583,30 @@ impl FabricStorage for FileFabricStorage {
 /// (this Fabric's own: `Held`; another Fabric's: refused, naming it). Held before the fabric's first
 /// state-commit, the claim is decided again at the publication against the row then standing at the
 /// key. A key that is not one path segment is refused by name: it names no row of the store.
+/// A store root an older build left pointer rows on is refused by name, the first row and the retired
+/// format named (R-BI3: the Fabric row carries no pointer to the newest Build). An empty or absent
+/// directory holds no row.
+async fn refuse_retired_pointers(dir: &std::path::Path) -> Result<(), FabricStorageError> {
+    let dir = dir.to_path_buf();
+    crate::record_store::blocking_io(move || {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(FabricStorageError::Io { file: dir.display().to_string(), reason: e.to_string() }),
+        };
+        let mut rows: Vec<std::path::PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+        rows.sort();
+        match rows.first() {
+            None => Ok(()),
+            Some(row) => Err(FabricStorageError::Unrecognised {
+                file: row.display().to_string(),
+                reason: format!("the pointer row format {RETIRED_POINTER_FORMAT} is retired: the Fabric row carries no pointer to the newest Build, and the current Build is read from the builds store"),
+            }),
+        }
+    })
+    .await
+}
+
 async fn claimed_insert(records: &crate::record_store::FileRecords, key: &str, format: &str, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
     if key.is_empty() || key.starts_with('.') || key.contains(['/', '\\']) {
         return Err(FabricStorageError::Io { file: format!("{}/{key}", records.store_name()), reason: format!("the fabric name {key:?} is not one path segment, so it keys no claim of the fabric's name") });
@@ -811,10 +765,8 @@ mod tests {
         let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
         // The fabric seat holder: no seat record governs this fixture's writer.
         s.set_seat_source(crate::fabric_builds::SeatSource::unrecorded());
-        let fabric = FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), build_id: Some(crate::build::BuildId("bld-2".into())) };
-        assert_eq!(s.claim_identity(&FabricIdentity { fabric_id: fabric.fabric_id.clone(), name: fabric.name.clone() }).await.unwrap(), Ok(FabricClaim::Written));
-        s.put_pointer(&FabricPointer { build_id: crate::build::BuildId("bld-2".into()), submitted_at_ms: 20 }).await.unwrap();
-        s.put_pointer(&FabricPointer { build_id: crate::build::BuildId("bld-1".into()), submitted_at_ms: 10 }).await.unwrap();
+        let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
+        assert_eq!(s.claim_identity(&fabric).await.unwrap(), Ok(FabricClaim::Written));
         s.put_shutdown(&shutdown()).await.unwrap();
         let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
         assert_eq!(reopened.fabric().await.unwrap(), Some(fabric));
@@ -834,6 +786,19 @@ mod tests {
         assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("fabric.json") && reason.contains("fabric-record/1")), "{err}");
     }
 
+    /// CONTRACT (R-BI3: "The Fabric row carries no pointer to the newest Build"): the pointer rows
+    /// (`fabric/pointers/`, format `fabric-pointer/1`) are retired. A store root an older build left
+    /// them on is refused by name, the row and the retired format named, and is never read as a
+    /// Fabric with no pointer.
+    #[tokio::test]
+    async fn the_file_storage_refuses_a_retired_pointer_row_by_name() {
+        let d = tempdir();
+        std::fs::create_dir_all(d.join(FABRIC_DIR).join("pointers")).unwrap();
+        std::fs::write(d.join(FABRIC_DIR).join("pointers").join("00000000000000000010-bld-1.json"), br#"{"format":"fabric-pointer/1","record":{"build_id":"bld-1","submitted_at_ms":10}}"#).unwrap();
+        let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap_err();
+        assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("00000000000000000010-bld-1.json") && reason.contains("fabric-pointer/1")), "{err}");
+    }
+
     /// CONTRACT (node-identity-and-state.md §2.8: the fabric-primary claims the fabric's name "by
     /// insert-and-fail on its `(path, name)` ... idempotent for the same FabricId and `NameHeld` naming
     /// a different one"): a free key takes the identity; the same Fabric claiming again writes nothing;
@@ -847,7 +812,7 @@ mod tests {
             assert_eq!(s.claim_identity(&first).await.unwrap(), Ok(FabricClaim::Written));
             assert_eq!(s.claim_identity(&first).await.unwrap(), Ok(FabricClaim::Held), "the same Fabric claiming again writes nothing");
             assert_eq!(s.claim_identity(&other).await.unwrap(), Err(FabricNameHeld { name: "fabric1".into(), by: first.fabric_id.clone() }), "another Fabric's claim is refused naming the holder");
-            assert_eq!(s.fabric_rows().await.unwrap().0, Some(first.clone()), "the held identity is never rewritten");
+            assert_eq!(s.fabric().await.unwrap(), Some(first.clone()), "the held identity is never rewritten");
         }
     }
 

@@ -4,7 +4,7 @@
 //! manifest, rpc ledger and every process's spans land under it, feature `i143-2805`).
 //!
 //! A real two-mesh birth through the Build rectifier: `build.create` adds mesh2; the fabric
-//! primary births mesh2's bootstrap admin, which hydrates the Fabric pointer and its Build, then
+//! primary births mesh2's bootstrap admin, which hydrates the Fabric identity and the current Build, then
 //! receives MeshStatus::Pending from the fabric primary, and only then does any of mesh2's own
 //! membership get created; election alone supplies mesh2's primary afterwards.
 
@@ -47,7 +47,7 @@ fn end(sp: &Value) -> u64 {
     sp["end_unix_nano"].as_u64().unwrap_or(0)
 }
 
-/// CONTRACT (#2805): mesh2's bootstrap admin is born, hydrates the Fabric pointer and the complete
+/// CONTRACT (#2805): mesh2's bootstrap admin is born, hydrates the Fabric identity and the complete
 /// accepted Build (its entry join), and only then receives MeshStatus::Pending from the fabric
 /// primary, applied once through its status door without making it the elected primary; no create
 /// of mesh2's own membership starts before that Pending is applied; mesh2's primary is supplied by

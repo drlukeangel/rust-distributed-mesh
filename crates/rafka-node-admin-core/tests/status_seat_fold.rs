@@ -242,7 +242,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                     row_moved: Default::default(),
                     loads: None,
                     book: Some(membership.book.clone()),
-                    accepted: std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test")),
+                    builds: std::sync::Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
                     first_ready: Default::default(),
                 };
                 let declared = authority.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic }).await;

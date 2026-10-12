@@ -1,13 +1,13 @@
-//! i143 process E2E: `Fabric.build_id -> complete Build` is the one accepted topology (RDM #47).
+//! i143 process E2E: the current Build, a complete Build, is the one accepted topology (RDM #47).
 //!
 //! From public surfaces and the estate's evidence only:
 //! 1. Day 0 accepts the first Build; `GET /api/fabric` names it and `GET /api/builds?id=` holds
 //!    its exact topology.
-//! 2. A change compiles to the next complete Build and moves the pointer; a second change while
+//! 2. A change compiles to the next complete Build, current once it is written; a second change while
 //!    it reconciles is refused `409 build-in-progress`, naming it.
-//! 3. The Build the pointer names cannot be forgotten; older Builds are history and can.
-//! 4. An admin born later holds `Fabric.build_id` and the Build it names before Ready, and
-//!    none of the history: the pointer is the fabric-primary's row on the fabric's store root
+//! 3. The current Build cannot be forgotten; older Builds are history and can.
+//! 4. An admin born later holds the current build_id and the Build it names before Ready, and
+//!    none of the history: the current Build is read last in, first out from its own Build log
 //!    (R14: the fabric-primary is the one writer of `fabric/`), the Build its own Build log's copy.
 //! 5. A birth stopped (silent, its runtime alive) is held: nothing is reopened.
 //! 6. An admin that missed a Build while stopped catches up to the pointer: it reads the row the
@@ -43,11 +43,11 @@ fn signal(pid: u64, sig: &str) {
     assert!(ok, "kill {sig} {pid}");
 }
 
-async fn pointer(estate: &Estate) -> String {
-    estate.get("/api/fabric").await.1["build_id"].as_str().expect("Fabric.build_id").to_string()
+async fn current_build(estate: &Estate) -> String {
+    estate.get("/api/fabric").await.1["build_id"].as_str().expect("the current build_id").to_string()
 }
 
-async fn pointer_at(estate: &Estate, base: &str) -> Value {
+async fn current_build_at(estate: &Estate, base: &str) -> Value {
     estate.http_get(base, "/api/fabric").await.1["build_id"].clone()
 }
 
@@ -68,7 +68,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
 
     // 1. Day 0: the first Build, exact.
-    let b0 = pointer(&estate).await;
+    let b0 = current_build(&estate).await;
     // The fabric seat appears one gossip interval before the executor's next pass: wait for the
     // Build itself, never for the seat that precedes it.
     estate.await_build(&b0, Duration::from_secs(60)).await;
@@ -80,7 +80,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]})).await;
     assert_eq!(status, 202, "{a}");
     let a = a["build_id"].as_str().unwrap().to_string();
-    assert_eq!(pointer(&estate).await, a, "the pointer moves on acceptance, before the Build converges");
+    assert_eq!(current_build(&estate).await, a, "the Build is current on acceptance, before it converges");
     let (status, refused) = estate.post_raw("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 4}]})).await;
     assert_eq!((status, refused["error"].as_str(), refused["current_build_id"].as_str()), (409, Some("build-in-progress"), Some(a.as_str())), "{refused}");
     estate.await_build(&a, Duration::from_secs(120)).await;
@@ -95,14 +95,14 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let (status, _) = estate.delete(&format!("/api/builds?id={b0}")).await;
     assert_eq!(status, 204);
     assert_eq!(estate.get(&format!("/api/builds?id={b0}")).await.0, 404);
-    assert_eq!(pointer(&estate).await, a, "forget is history administration only");
+    assert_eq!(current_build(&estate).await, a, "forget is history administration only");
 
-    // 4. An admin born later hydrates the pointer and its Build, not the history.
+    // 4. An admin born later hydrates the current Build, not the history.
     let c = build(&estate, "/api/nodes/spawn", json!({"mesh": "mesh1", "kind": "node_admin"})).await;
     let nodes = estate.settled_shape(&[("mesh1", 3, 3)], Duration::from_secs(30)).await;
     let late = nodes.iter().find(|n| n["name"] == "mesh1.admin.3").cloned().unwrap();
     let late_base = late["admin_api_base"].as_str().unwrap().to_string();
-    assert_eq!(pointer_at(&estate, &late_base).await, c.as_str());
+    assert_eq!(current_build_at(&estate, &late_base).await, c.as_str());
     let (status, held) = estate.http_get(&late_base, &format!("/api/builds?id={c}")).await;
     assert_eq!(status, 200, "{held}");
     assert_eq!(paths(&held, "mesh1").len(), 6, "the late admin holds the accepted Build's topology: {held}");
@@ -118,17 +118,17 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
     let quiet_until = now_ns();
     wait_for("mesh1.rpc.3 is heard again", Duration::from_secs(20), || async { (estate.node_opt("mesh1.rpc.3").await?["status"] == "ready-for-traffic").then_some(()) }).await;
 
-    // 6. An admin that misses a Build catches up to the pointer when it is back.
+    // 6. An admin that misses a Build catches up to the current Build when it is back.
     let quiet = estate.nodes().await.into_iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1" && n["is_primary"] == false && n["is_fabric_primary"] == false).expect("a mesh1 admin that holds no seat");
     let (quiet_name, quiet_base) = (quiet["name"].as_str().unwrap().to_string(), quiet["admin_api_base"].as_str().unwrap().to_string());
     let stopped = estate.pid_of(&quiet_name).await;
     signal(stopped, "-STOP");
     let r4 = build(&estate, "/api/build", json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 3, "rpc_node": 4}]})).await;
-    assert_eq!(pointer(&estate).await, r4);
+    assert_eq!(current_build(&estate).await, r4);
     let resumed_at = now_ns();
     signal(stopped, "-CONT");
-    wait_for("the paused admin holds the pointer and the Build it names", Duration::from_secs(30), || async {
-        (pointer_at(&estate, &quiet_base).await == r4.as_str() && estate.http_get(&quiet_base, &format!("/api/builds?id={r4}")).await.0 == 200).then_some(())
+    wait_for("the paused admin holds the current Build", Duration::from_secs(30), || async {
+        (current_build_at(&estate, &quiet_base).await == r4.as_str() && estate.http_get(&quiet_base, &format!("/api/builds?id={r4}")).await.0 == 200).then_some(())
     })
     .await;
     estate.settled_shape(&[("mesh1", 3, 4)], Duration::from_secs(30)).await;
@@ -144,7 +144,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
         (n["status"] == "ready-for-traffic" && n["incarnation_id"] != lost["incarnation_id"]).then_some(n)
     })
     .await;
-    assert_eq!(pointer(&estate).await, r4, "recovery moves no pointer");
+    assert_eq!(current_build(&estate).await, r4, "recovery writes no Build");
     estate.await_attempt(&r4, attempts_before + 1, Duration::from_secs(120)).await;
     estate.settled_shape(&[("mesh1", 3, 4)], Duration::from_secs(30)).await;
     let (_, after) = estate.get(&format!("/api/builds?id={r4}")).await;
@@ -166,7 +166,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
         (n["status"] == "ready-for-traffic" && n["parked"] == false && n["incarnation_id"] == restarted_from["incarnation_id"] && n["node_id"] == restarted_from["node_id"]).then_some(())
     })
     .await;
-    assert_eq!(pointer(&estate).await, r4);
+    assert_eq!(current_build(&estate).await, r4);
 
     estate.stop().await;
     let spans = estate.spans();
@@ -224,23 +224,22 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
         .expect("the restart call's request span");
     assert_eq!(restart["parent_span_id"], rest["span_id"], "the restart's reconcile is the child of the restart call's request span: {restart}");
     assert_eq!(restart["trace_id"], rest["trace_id"]);
-    // 4 and 6: the fabric-primary moves the pointer on the fabric's store root; the late admin
-    // committed Ready holding it, and the paused admin caught up to the row written while it was
-    // stopped (R14: the fabric-primary writes `fabric/`, the shared store is authoritative).
-    let moved = named(&spans, "rdm.node_admin.fabric.update.via-build-accepted");
+    // 4 and 6: the fabric-primary writes each Build once; the late admin committed Ready holding the
+    // current Build, and the paused admin caught up to the Build written while it was stopped.
+    let moved = named(&spans, "rdm.node_admin.build.create.via-accepted");
     let late_ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| sp["attributes"]["node"] == "mesh1.admin.3" && sp["attributes"]["incarnation_id"] == late["incarnation_id"])
         .cloned()
         .expect("the late admin is ready");
-    assert_eq!(late_ready["attributes"]["build_id"], c.as_str(), "the late admin held the pointer when it committed Ready: {late_ready}");
+    assert_eq!(late_ready["attributes"]["build_id"], c.as_str(), "the late admin held the current Build when it committed Ready: {late_ready}");
     assert!(
         moved.iter().any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == c.as_str() && at(sp) < at(&late_ready)),
-        "the fabric-primary moved the pointer to {c} before the late admin was ready: {moved:?}"
+        "the fabric-primary wrote {c} before the late admin was ready: {moved:?}"
     );
     assert!(
         moved.iter().any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == r4.as_str() && at(sp) < resumed_at),
-        "the fabric-primary moved the pointer to {r4} while {quiet_name} was stopped: {moved:?}"
+        "the fabric-primary wrote {r4} while {quiet_name} was stopped: {moved:?}"
     );
     assert!(named(&spans, "rdm.node_admin.build.create.via-proven-drift").is_empty(), "no Build is minted for drift");
 }

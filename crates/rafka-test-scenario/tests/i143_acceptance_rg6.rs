@@ -30,15 +30,12 @@ fn arm_at_birth(estate: &Estate, admin: &str, id: &str, spec: Value) {
 }
 
 /// CONTRACT: every admin withholds the catch-up it owes a neighbour that comes up on the Build
-/// topic (the seam, nothing else). The two joining admins of the Build know the accepted Build from
-/// the fabric-primary's row on the fabric's store root once the fabric's first commit-state has
-/// published it there (fabric-state-commit.md step 2: each node writes what its scratchpad holds into
-/// the store; blocker `unreadable-build`), or, before that, from the Build their join's entry answer
-/// named (blocker `no-pointer-wanted`): which of the two a joiner meets is the order of its birth and
-/// the fabric's first commit-state, which nothing orders. They hold the Build's facts from none of
-/// their neighbours' catch-up: each one's own Build log cannot read that Build (the Build journal is
-/// per admin, R14 answer 1), so each fetches its facts with `FetchBuildFacts` (0x1F), absorbs them
-/// into its own Build log and is Ready, and the Build completes.
+/// topic (the seam, nothing else). The two joining admins of the Build know the current Build from
+/// the Build their join's entry answer named (blocker `no-current-build-wanted`: the Fabric row carries
+/// no pointer to the newest Build, R-BI3). They hold the Build's facts from none of their neighbours'
+/// catch-up: each one's own Build log cannot read that Build (the Build journal is per admin, R14
+/// answer 1), so each fetches its facts with `FetchBuildFacts` (0x1F), absorbs them into its own Build
+/// log and is Ready, and the Build completes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_completes() {
     let sha = candidate_sha();
@@ -58,15 +55,15 @@ async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_comp
     let withheld = named(&spans, "rdm.node_admin.build.reject.via-catch-up-withheld");
     assert!(!withheld.is_empty(), "the catch-up seam ran: no neighbour's catch-up was offered to the topic");
     // No joiner was caught up by a neighbour: each of the Build's two joining admins names the
-    // blocker it fetched for (the Build its pointer names, unreadable in its own Build log) and
+    // blocker it fetched for (the current Build its entry answer named, absent from its own Build log) and
     // absorbed a complete stream from a node-admin.
     let fetched = named(&spans, "rdm.node_admin.build.update.via-fetch-facts");
     for joiner in ["mesh1.admin.2", "mesh1.admin.3"] {
         let mine: Vec<&&Value> = fetched.iter().filter(|sp| sp["attributes"]["node"] == joiner && sp["attributes"]["outcome"] == "absorbed").collect();
         assert!(!mine.is_empty(), "{joiner} absorbed the Build's facts from a FetchBuildFacts read: {fetched:#?}");
         assert!(
-            mine.iter().all(|sp| (sp["attributes"]["blocker"] == "unreadable-build" || sp["attributes"]["blocker"] == "no-pointer-wanted") && sp["attributes"]["build_id"] == build.as_str()),
-            "{joiner} fetched for the accepted Build, named by the pointer on the store root or by its entry answer: {mine:#?}"
+            mine.iter().all(|sp| sp["attributes"]["blocker"] == "no-current-build-wanted" && sp["attributes"]["build_id"] == build.as_str()),
+            "{joiner} fetched for the current Build, named by its entry answer: {mine:#?}"
         );
         let served: Vec<Value> = named(&spans, "rdm.node_admin.build.serve.via-fetch-facts").into_iter().filter(|sp| sp["attributes"]["node"] == mine[0]["attributes"]["target"]).cloned().collect();
         assert!(served.iter().any(|sp| sp["attributes"]["complete"] == "true" && sp["attributes"]["outcome"] == "served"), "{joiner}'s responder served a complete snapshot: {served:#?}");

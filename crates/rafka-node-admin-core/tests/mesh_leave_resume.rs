@@ -15,7 +15,7 @@ use rafka_node_admin_core::fabric_builds::BuildMessage;
 use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, MeshLeaveEvent, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
-use rafka_node_admin_core::mesh_leave::{birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
+use rafka_node_admin_core::mesh_leave::{await_handoff, LeaveBook, HANDOFF_WAIT, birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, LeaveKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::node_rows::{Claimed, NodeRows, RowRefused};
@@ -118,6 +118,12 @@ impl BuildStateAdapter for WireBuilds {
     }
     async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.0.read_build(id).await
+    }
+    async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.0.newest_accepted_at_ms().await
     }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.0.list_active().await
@@ -1137,6 +1143,7 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
     let refusal = without_row.expect_err("no runtime row of the lost birth: the resume is refused");
+    let rafka_node_admin_core::executor::RunEnd::Incomplete(refusal) = refusal else { panic!("an unproven lost primary leaves the leave incomplete, not failed: {refusal:?}") };
     assert!(refusal.contains("not proven exited") && refusal.contains(FINAL) && refusal.contains("no durable runtime row"), "the refusal names the lost birth and the missing row: {refusal}");
     assert_eq!(before.final_primary, lost, "nothing is amended while the lost primary is unproven");
     assert_eq!(with_row, Ok(Amended::Applied), "with the durable runtime row the exit is proven and the amendment recorded");
@@ -1518,6 +1525,12 @@ impl BuildStateAdapter for CutBuilds<'_> {
     async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(id).await
     }
+    async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.inner.list_active().await
     }
@@ -1701,4 +1714,102 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
     let retained = named("rdm.node_admin.mesh.resolve.via-retained-receipts");
     assert!(retained.iter().any(|s| s["attributes"]["attempt"] == "2" && s["attributes"]["retained"] == "1" && s["attributes"]["retained_births"] == EXITING && s["attributes"]["remaining"] == "2"), "attempt 2 keeps the one finished delete and runs the other two members: {retained:?}");
     eprintln!("trace {trace_id}: attempt 2 via-step {FAILING} TerminateRuntime reused, NodeDeleted complete; via-retained-receipts retained 1 ({EXITING}) remaining 2");
+}
+
+/// The owner's open leave of mesh2, admitted over `records` with `FINAL` its final primary, and the
+/// receiver its handoff resolves.
+fn open_leave(book: &LeaveBook, records: &[Node]) -> (LeaveKey, tokio::sync::watch::Receiver<Option<rafka_node_admin_core::mesh_leave::LeaveOutcome>>, RosterBirth) {
+    let roster = live_roster(records).unwrap();
+    let final_primary = RosterBirth::of(records.iter().find(|n| n.name.to_string() == FINAL).unwrap()).unwrap();
+    let key = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint().0, attempt: 1, operation: String::new() };
+    let key = LeaveKey { operation: operation(&key.mesh_id), ..key };
+    let admitted = Admitted { roster, final_primary: final_primary.clone(), final_runtime: RuntimeProof::of(&handle(FINAL, 46_000).fact().unwrap()), amendments: Vec::new() };
+    let handoff = book.open(key.clone(), admitted);
+    (key, handoff, final_primary)
+}
+
+/// Run `f` on a current-thread runtime with its clock paused, under the cell's capture: a wait
+/// that runs to a timer finishes at once with the timer's elapsed virtual time.
+fn run_paused<F: std::future::Future>(cap: &Capture, f: F) -> F::Output {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().start_paused(true).build().unwrap();
+    let _g = tracing::dispatcher::set_default(&cap.dispatch);
+    rt.block_on(f)
+}
+
+/// CONTRACT: the owner's wait for the leaving mesh's handoff ends the moment its view holds the
+/// final primary proven exited (mesh-delete.md, "Resume after the primary's loss": the resume is
+/// ordered by the lost primary's exact provider Exited, step 1; "Forbidden proof: ... a timeout never
+/// proves a member exited"): the attempt ends incomplete, naming the final primary and the proof,
+/// its receipts standing for the next attempt, which resumes. A view change that proves nothing
+/// keeps the wait open: silence is not death. Must NOT happen: the wait running on to a timer
+/// (`HANDOFF_WAIT`) after the proof is in, the 120 s attempt 1 of the leave stems (trace
+/// b84c9abc66ec8a8cee045c1e871514cb).
+#[test]
+fn the_owners_wait_ends_when_the_final_primary_is_proven_exited_never_on_a_timer() {
+    let cap = capture();
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let book = LeaveBook::default();
+    let (key, handoff, final_primary) = open_leave(&book, &records);
+    let (end, open_after_silence, waited, trace_id) = run_paused(&cap, async {
+        let root = tracing::info_span!("cell.owner-wait-proven-exit", operation = %key.operation);
+        let trace_id = trace_id(&root);
+        let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
+        let proven: Arc<Mutex<Option<String>>> = Arc::default();
+        let held = proven.clone();
+        let (k, primary) = (key.clone(), format!("{} {}", final_primary.node, final_primary.incarnation_id));
+        let wait = tokio::spawn(tracing::Instrument::instrument(
+            async move { await_handoff(&k, &primary, handoff, view_rx, move || std::future::ready(held.lock().unwrap().clone())).await },
+            root.clone(),
+        ));
+        // The final primary goes silent: the view changes and proves nothing.
+        view_tx.send_modify(|t| *t += 1);
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        let open_after_silence = !wait.is_finished();
+        // Its exit-proof row enters the owner's view.
+        let began = tokio::time::Instant::now();
+        *proven.lock().unwrap() = Some(format!("its exit-proof row is read: {} {} exited", final_primary.node, final_primary.incarnation_id));
+        view_tx.send_modify(|t| *t += 1);
+        let end = wait.await.unwrap();
+        (end, open_after_silence, began.elapsed(), trace_id)
+    });
+    let spans = cap.spans();
+    let dir = artifact_dir().join("owner-wait-proven-exit");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
+
+    assert!(open_after_silence, "a view change that proves nothing keeps the wait open");
+    assert!(waited < HANDOFF_WAIT, "the wait ended on the proof, not on the {HANDOFF_WAIT:?} timer: it ended after {waited:?} with {end:?}");
+    match &end {
+        Err(rafka_node_admin_core::executor::RunEnd::Incomplete(reason)) => {
+            assert!(reason.contains(FINAL) && reason.contains("proven exited") && reason.contains("exit-proof row"), "the incomplete end names the final primary and its proof: {reason}");
+        }
+        other => panic!("the attempt ends incomplete on the final primary's proven exit: {other:?}"),
+    }
+    let named = |name: &str| spans.iter().filter(|s| s["name"] == name && s["trace_id"] == trace_id.as_str()).cloned().collect::<Vec<_>>();
+    let ended = named("rdm.node_admin.mesh.update.via-final-primary-exited");
+    assert_eq!(ended.len(), 1, "one span names the wait's end on the proof: {spans:?}");
+    assert_eq!(ended[0]["attributes"]["final_primary"], json!(format!("{} {}", final_primary.node, final_primary.incarnation_id)), "{}", ended[0]);
+    assert!(ended[0]["attributes"]["proof"].as_str().is_some_and(|p| p.contains("exit-proof row")), "{}", ended[0]);
+}
+
+/// CONTRACT: a handoff that arrives ends the owner's wait with its validated manifest, even when the
+/// final primary is proven exited afterwards (it reported mesh.deleted while it lived, then went):
+/// the handoff is read first. Must NOT happen: a proven exit discarding a handoff already held.
+#[test]
+fn a_handoff_held_ends_the_owners_wait_with_its_manifest_before_a_later_proven_exit() {
+    let cap = capture();
+    let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| node(n)).collect();
+    let book = LeaveBook::default();
+    let (key, handoff, final_primary) = open_leave(&book, &records);
+    let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: live_roster(&records).unwrap(), final_primary: final_primary.clone(), final_runtime: None, receipts: Vec::new() };
+    let end = run_paused(&cap, async {
+        let (view_tx, view_rx) = tokio::sync::watch::channel(0u64);
+        assert!(book.resolve(&key, manifest.clone()), "the first outcome of the leave");
+        view_tx.send_modify(|t| *t += 1);
+        await_handoff(&key, FINAL, handoff, view_rx, || std::future::ready(Some("its exit-proof row is read".to_string()))).await
+    });
+    assert_eq!(end.ok(), Some(manifest), "the handoff held ends the wait with its manifest");
 }

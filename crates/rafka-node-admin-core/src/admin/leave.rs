@@ -17,18 +17,11 @@
 
 use super::*;
 use crate::build_state::{BuildStepReceipt, StepOutcome};
+use crate::executor::RunEnd;
 use crate::deployment::pipeline::{MeshLeaveEvent, RuntimeProof, TerminalReceipt};
 use crate::mesh_leave::{accepted_roster, manifest_reference, members_exited, Admitted, ExitManifest, LeaveKey, MeshLeaver, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_MESH_DELETED, STEP_MESH_LEFT};
 use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
 use tracing::Instrument;
-
-/// How long the owner waits for the leaving mesh's `MeshLeave` handoff before its attempt ends
-/// incomplete. A deleting primary whose member workflows end incomplete says so inside a
-/// `MeshLeave` call, which ends the attempt at once; this bound covers a handoff that never
-/// arrives (a lost call, a lost primary). A failed attempt ends the Build; the fabric-primary's
-/// drift check (`crate::admin::reconcile_drift`) opens the next attempt while the removed mesh's
-/// mesh.delete holds no completion receipt, and that attempt resumes from the receipts.
-const HANDOFF_WAIT: Duration = Duration::from_secs(120);
 
 /// What serves `LeaveMesh` and `MeshLeave` for a running admin.
 pub struct LeaveDoor {
@@ -74,7 +67,7 @@ impl AdminRunner {
     }
 
     /// The owner's outer workflow `shutdown-mesh:<mesh_id>`.
-    pub(super) async fn shutdown_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), String> {
+    pub(super) async fn shutdown_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId) -> Result<(), crate::executor::RunEnd> {
         let outer = crate::mesh_leave::operation(mesh_id);
         let span = tracing::info_span!("rdm.node_admin.mesh.update.via-shutdown", mesh = %mesh, mesh_id = %mesh_id, build_id = %build_id, attempt, operation = %outer, outcome = tracing::field::Empty);
         let result = self.shutdown_mesh_in(build_id, attempt, mesh, mesh_id, &outer).instrument(span.clone()).await;
@@ -82,7 +75,7 @@ impl AdminRunner {
         result
     }
 
-    async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), String> {
+    async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), crate::executor::RunEnd> {
         // Where this owner resumes, from its own Build facts, before it calls anything.
         let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string() };
@@ -142,10 +135,11 @@ impl AdminRunner {
                     return Err(format!(
                         "{outer} is refused: {mesh}'s primary is {} {}, not the final primary {} {} admitted or amended; a resumed leave hands its workflow to no other birth",
                         final_primary.node, final_primary.incarnation_id, adm.final_primary.node, adm.final_primary.incarnation_id
-                    ));
+                    )
+                    .into());
                 }
                 if adm.final_runtime != final_runtime {
-                    return Err(format!("{outer} is refused before {mesh} is dismantled further: the final primary {}'s runtime is {final_runtime:?}, not the one admitted or amended for it {:?}", primary.name, adm.final_runtime));
+                    return Err(format!("{outer} is refused before {mesh} is dismantled further: the final primary {}'s runtime is {final_runtime:?}, not the one admitted or amended for it {:?}", primary.name, adm.final_runtime).into());
                 }
                 adm
             }
@@ -155,7 +149,7 @@ impl AdminRunner {
             }
         };
         if !admitted.roster.contains(&admitted.final_primary) {
-            return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id));
+            return Err(format!("{outer} is refused before {mesh} is dismantled: its primary {} {} is not a birth of the roster accepted at admission", admitted.final_primary.node, admitted.final_primary.incarnation_id).into());
         }
         let handoff = self.leaves.open(key.clone(), admitted.clone());
         let result = self.lead_leave(build_id, attempt, mesh_id, outer, node_rpc, &primary, &key, handoff).await;
@@ -173,30 +167,38 @@ impl AdminRunner {
     /// for the mesh on an unproven exit (R-D1); then the admin is created at a path no birth held,
     /// into the existing mesh under its existing MeshId. A live admin not yet seated is no loss:
     /// the attempt ends and the next one hands that admin the workflow.
-    async fn admin_for_leaving_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &LeaveKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<Node, String> {
+    async fn admin_for_leaving_mesh(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, key: &LeaveKey, steps: &[BuildStepReceipt], view: &Topology) -> Result<Node, RunEnd> {
         let outer = key.operation.as_str();
         let no_primary = format!("{outer} is refused: {mesh} holds no node-admin primary to hand the workflow to");
+        // Before admission the leave is refused by name: nothing was dismantled and nothing is resumed.
         let Some(adm) = crate::mesh_leave::admitted_of(steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))? else {
-            return Err(no_primary);
+            return Err(RunEnd::Failed(no_primary));
         };
         if let Some(live) = view.cohort(mesh, NodeKind::NodeAdmin).find(|n| n.status.is_live()) {
-            return Err(format!("{no_primary}: its admin {} is live and holds no seat yet, so it is not lost; the next attempt hands the workflow to the admin seated", live.name));
+            return Err(RunEnd::Incomplete(format!("{no_primary}: its admin {} is live and holds no seat yet, so it is not lost; the next attempt hands the workflow to the admin seated", live.name)));
         }
         let lost = adm.final_primary.clone();
         match crate::mesh_leave::exit_receipts(steps, outer, std::slice::from_ref(&lost)).remove(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
             Some(_recorded) => {}
             None => {
                 let store = self.records.contacts.get().ok_or_else(|| format!("{outer} is refused: {} holds no durable runtime rows to prove the lost final primary {} {}'s exit from", self.me, lost.node, lost.incarnation_id))?;
-                let row = self.lost_primary_row(&**store, &lost).await.map_err(|e| format!("{outer} is refused: the lost final primary's exit cannot be proven: {e}"))?;
+                let row = self.roster_birth_row(&**store, &lost).await.map_err(|e| format!("{outer} is refused: the lost final primary's exit cannot be proven: {e}"))?;
+                // Silence is not death: while the lost primary's exit is unproven the resume is refused
+                // by name, and the Build stays in progress (R-D1, R-BI4).
                 let terminal = crate::mesh_leave::prove_predecessor_exit(&*self.provider, row.as_ref(), &lost, &adm.final_runtime).await.map_err(|reason| {
                     crate::mesh_leave::span_unproven(key, &lost, &reason);
-                    format!("{outer} is refused: {mesh} has no live admin and its final primary {} {} is silent but not proven exited, so no admin is created for it: {reason}", lost.node, lost.incarnation_id)
+                    RunEnd::Incomplete(format!("{outer} is refused: {mesh} has no live admin and its final primary {} {} is silent but not proven exited, so no admin is created for it: {reason}", lost.node, lost.incarnation_id))
                 })?;
                 // Recorded durably before its receipt: the exit-proof row is the proven loss every
                 // projection reads.
                 self.records.put_exit_of_receipt(&terminal).await.map_err(|e| format!("{outer} is refused: the lost final primary's proven exit is not recorded: {e}"))?;
                 crate::mesh_leave::record_predecessor_exit(&*self.builds, key, &self.me.to_string(), &terminal).await?;
             }
+        }
+        // None survives, proven: every other node-admin of the roster, silent in this view, has its
+        // exact Exited before anything is created for the mesh.
+        for other in adm.roster.iter().filter(|b| **b != lost && b.node.parse::<PathName>().is_ok_and(|p| p.kind == NodeKind::NodeAdmin && p.mesh == mesh)) {
+            self.prove_admin_gone(key, mesh, other, steps).await?;
         }
         // The lost primary's proven exit, read from its exit-proof row, vacates its seat in this view
         // before the name of the admin created for the mesh is claimed: the claim's writer is the
@@ -211,7 +213,7 @@ impl AdminRunner {
         created.map_err(|e| format!("{outer}: the node-admin {path} created for {mesh}, which has no live admin: {e}"))?;
         self.refresh_view().await;
         let now = self.topology.read().await.clone();
-        now.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| format!("{outer}: {path} was created for {mesh} and holds no mesh-primary seat yet; the next attempt amends the roster for it"))
+        now.cohort_primary(mesh, NodeKind::NodeAdmin).cloned().ok_or_else(|| RunEnd::Incomplete(format!("{outer}: {path} was created for {mesh} and holds no mesh-primary seat yet; the next attempt amends the roster for it")))
     }
 
     /// node.create of `path`, the one node-admin of a leaving mesh no admin of which survives, into
@@ -245,24 +247,56 @@ impl AdminRunner {
     /// created for the mesh) is its primary now (mesh-leave.md, "Resume after the primary's loss",
     /// steps 1-2; [`crate::mesh_leave::resume_after_loss`]): the lost birth's exit is proven from
     /// this admin's durable runtime row of it, never from the view, which drops a departed birth.
-    async fn amend_after_loss(&self, key: &LeaveKey, adm: &Admitted, primary: &Node, held: &RosterBirth) -> Result<(), String> {
+    async fn amend_after_loss(&self, key: &LeaveKey, adm: &Admitted, primary: &Node, held: &RosterBirth) -> Result<(), RunEnd> {
         let outer = key.operation.as_str();
         if primary.kind != NodeKind::NodeAdmin {
-            return Err(format!("{outer} is refused: {} {} is not a node-admin and cannot be the final primary", held.node, held.incarnation_id));
+            return Err(format!("{outer} is refused: {} {} is not a node-admin and cannot be the final primary", held.node, held.incarnation_id).into());
         }
         let (_, handle) = self.handle_for(primary).await.map_err(|e| format!("{outer} is refused: no provider proof path for the new final primary {}: {e}", primary.name))?;
         let fact = handle.fact().ok_or_else(|| format!("{outer} is refused: the new final primary {} has no exact runtime handle", primary.name))?;
         let store = self.records.contacts.get().ok_or_else(|| format!("{outer} is refused: {} holds no durable runtime rows to prove the lost final primary {} {}'s exit from", self.me, adm.final_primary.node, adm.final_primary.incarnation_id))?;
-        let row = self.lost_primary_row(&**store, &adm.final_primary).await.map_err(|e| format!("{outer} is refused: the lost final primary's exit cannot be proven: {e}"))?;
+        let row = self.roster_birth_row(&**store, &adm.final_primary).await.map_err(|e| format!("{outer} is refused: the lost final primary's exit cannot be proven: {e}"))?;
         crate::mesh_leave::resume_after_loss(&*self.builds, &*self.provider, &self.records, row.as_ref(), key, &self.me.to_string(), adm, held, &RuntimeProof::of(&fact)).await.map(|_| ())
     }
 
-    /// The durable runtime row of the lost final primary `lost`, read by its key
-    /// ([`crate::admin::birth_runtime_row`]); a roster birth whose ids do not parse is refused by name.
-    async fn lost_primary_row(&self, store: &dyn crate::storage::NodesStorage, lost: &RosterBirth) -> Result<Option<crate::storage::RuntimeRow>, String> {
-        let node: PathName = lost.node.parse().map_err(|e| format!("the roster names the lost final primary by `{}`, which is not a path.name: {e}", lost.node))?;
-        let node_id = NodeId::parse(&lost.node_id).map_err(|e| format!("the roster names the lost final primary {} by node id `{}`, which does not parse: {e}", lost.node, lost.node_id))?;
-        crate::admin::birth_runtime_row(store, &self.me, &node, &node_id, &IncarnationId(lost.incarnation_id.clone())).await
+    /// The durable runtime row of the roster birth `b` (the lost final primary, or another
+    /// node-admin of the leaving mesh), read by its key ([`crate::admin::birth_runtime_row`]); a
+    /// roster birth whose ids do not parse is refused by name.
+    async fn roster_birth_row(&self, store: &dyn crate::storage::NodesStorage, b: &RosterBirth) -> Result<Option<crate::storage::RuntimeRow>, String> {
+        let node: PathName = b.node.parse().map_err(|e| format!("the roster names a birth by `{}`, which is not a path.name: {e}", b.node))?;
+        let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("the roster names {} by node id `{}`, which does not parse: {e}", b.node, b.node_id))?;
+        crate::admin::birth_runtime_row(store, &self.me, &node, &node_id, &IncarnationId(b.incarnation_id.clone())).await
+    }
+
+    /// "When none survives" (mesh-delete.md, "Resume after the primary's loss", step 2), for the
+    /// node-admin `b` of the leaving mesh `mesh` other than the lost final primary, which this view
+    /// holds silent: proven, never read from silence. Its exact Exited is a receipt of this leave,
+    /// its exit-proof row read in this view, or the provider's exact Exited of its durable runtime
+    /// row, which this fabric-primary proves and records as its exit-proof row. One not proven exited
+    /// may survive and take the mesh's seat: the attempt ends incomplete, named, and nothing is
+    /// created for the mesh.
+    async fn prove_admin_gone(&self, key: &LeaveKey, mesh: &str, b: &RosterBirth, steps: &[BuildStepReceipt]) -> Result<(), RunEnd> {
+        let outer = key.operation.as_str();
+        if crate::mesh_leave::exit_receipts(steps, outer, std::slice::from_ref(b)).contains_key(&(b.node_id.clone(), b.incarnation_id.clone())) {
+            return Ok(());
+        }
+        if NodeId::parse(&b.node_id).is_ok_and(|id| self.records.is_exited(&id, &IncarnationId(b.incarnation_id.clone()))) {
+            return Ok(());
+        }
+        let refused = |reason: String| {
+            tracing::info_span!("rdm.node_admin.mesh.reject.via-unproven-admin", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, admin = %format!("{} {}", b.node, b.incarnation_id), reason = %reason)
+                .in_scope(|| tracing::info!("a node-admin of the leaving mesh is silent and not proven exited: it may survive and take the seat, so no admin is created for the mesh"));
+            RunEnd::Incomplete(format!(
+                "{outer}: {mesh} holds no live admin in this view, but its node-admin {} {} is silent and not proven exited ({reason}): it may survive and take the mesh's seat, so no admin is created for the mesh; the next attempt hands the workflow to the admin seated or proves this one exited",
+                b.node, b.incarnation_id
+            ))
+        };
+        let store = self.records.contacts.get().ok_or_else(|| refused(format!("{} holds no durable runtime rows to prove its exit from", self.me)))?;
+        let row = self.roster_birth_row(&**store, b).await.map_err(|e| refused(e))?;
+        let runtime = row.as_ref().map(|r| RuntimeProof::of(&r.runtime)).ok_or_else(|| refused(format!("no durable runtime row of {} {} was ever written here: its runtime is unknown", b.node, b.incarnation_id)))?;
+        let terminal = crate::mesh_leave::prove_predecessor_exit(&*self.provider, row.as_ref(), b, &runtime).await.map_err(|r| refused(r))?;
+        self.records.put_exit_of_receipt(&terminal).await.map_err(|e| refused(format!("its proven exit is not recorded: {e}")))?;
+        Ok(())
     }
 
     /// Steps 2-5 of the owner's workflow, for the leave `key` opened at admission: `mesh.deleting`,
@@ -277,8 +311,8 @@ impl AdminRunner {
         node_rpc: &crate::node_rpc::ProcessNodeRpc,
         primary: &Node,
         key: &LeaveKey,
-        mut handoff: tokio::sync::watch::Receiver<Option<crate::mesh_leave::LeaveOutcome>>,
-    ) -> Result<(), String> {
+        handoff: tokio::sync::watch::Receiver<Option<crate::mesh_leave::LeaveOutcome>>,
+    ) -> Result<(), RunEnd> {
         let event = MeshLeaveEvent { mesh_id: mesh_id.clone(), build_id: build_id.to_string(), attempt, operation: outer.to_string(), receipt_manifest: None, final_primary: None };
         // Step 2: the accepted command's hook, then the command.
         self.lifecycle_events.mesh_leaving(&event).await;
@@ -286,23 +320,68 @@ impl AdminRunner {
         let (out, _) = node_rpc.client.call::<Status>(&rafka_node_rpc::NodeTarget::ExactNode(primary.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
         match &out {
             rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) if matches!(r.value(), StatusReply::Applied | StatusReply::AlreadyApplied) => {}
-            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => return Err(format!("{outer}: {} refused leave-mesh: {} ({:?})", primary.name, r.value().name(), r.value())),
-            other => return Err(format!("{outer}: leave-mesh to {} ended {} ({other:?}): the mesh may or may not have admitted it", primary.name, other.name())),
+            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => return Err(RunEnd::Failed(format!("{outer}: {} refused leave-mesh: {} ({:?})", primary.name, r.value().name(), r.value()))),
+            // The call did not come back: the primary is unreached or the stream broke. A broken stream
+            // proves neither a failed step nor a completed one (node-rpc-envelope.md, "Caller execution
+            // and certainty"): the leave is incomplete and its receipts stand.
+            other => return Err(RunEnd::Incomplete(format!("{outer}: leave-mesh to {} ended {} ({other:?}): the mesh may or may not have admitted it", primary.name, other.name()))),
         }
         // Steps 3-4 run at the mesh-primary; its validated handoff, mesh.deleted, is what this waits
         // for. The validation covered the accepted roster (and every amendment) exactly, every birth
         // but the final primary, which reports still running.
-        let manifest = match tokio::time::timeout(HANDOFF_WAIT, handoff.wait_for(|m| m.is_some())).await {
-            Ok(Ok(m)) => match m.clone().expect("waited for Some") {
-                Ok(manifest) => manifest,
-                Err(reason) => return Err(format!("{outer}: {} reported its member workflows incomplete: {reason}", primary.name)),
-            },
-            Ok(Err(_)) => return Err(format!("{outer}: the open leave was closed while its handoff was awaited")),
-            Err(_) => return Err(format!("{outer}: {} sent no valid mesh-leave within {HANDOFF_WAIT:?}; the workflow is incomplete and its receipts stand", primary.name)),
+        // The wait ends on the handoff, or on the final primary proven exited in this owner's view.
+        let Some(admitted) = self.leaves.admitted(key) else {
+            return Err(RunEnd::Incomplete(format!("{outer}: the open leave was closed before its handoff was awaited")));
         };
+        let named = format!("{} {}", admitted.final_primary.node, admitted.final_primary.incarnation_id);
+        let inspected = std::sync::Mutex::new(None);
+        let manifest = crate::mesh_leave::await_handoff(key, &named, handoff, self.records.subscribe_view(), || self.final_primary_exit(key, primary, &admitted, &inspected)).await?;
         // Step 5: mesh.deleted ends the mesh.delete. The final primary is not deleted inside its own
         // mesh.delete: it keeps publishing its aggregate until a separate node.delete (step 7).
-        self.record_mesh_deleted(key, manifest).await
+        self.record_mesh_deleted(key, manifest).await.map_err(RunEnd::Failed)
+    }
+
+    /// Whether the leave's final primary `primary` (the admitted or amended birth `admitted` names)
+    /// is proven exited, naming the proof: its exit-proof row read in this owner's view (put by
+    /// whichever admin proved it from the provider: the mesh's surviving admin's seat watch), or,
+    /// once the view holds it silent (no longer live, or gone from the view), the provider's exact
+    /// Exited of its durable runtime row, which this owner proves and records as its exit-proof row
+    /// (the proof "Resume after the primary's loss" step 1 records; with no surviving admin of the
+    /// mesh this owner is the only one that proves it). The provider is asked once per status the
+    /// view holds it at (`inspected`); an exit not proven is named on its span and keeps the wait
+    /// open: silence is not death.
+    async fn final_primary_exit(&self, key: &LeaveKey, primary: &Node, admitted: &crate::mesh_leave::Admitted, inspected: &std::sync::Mutex<Option<Option<NodeStatus>>>) -> Option<String> {
+        let lost = &admitted.final_primary;
+        let incarnation = IncarnationId(lost.incarnation_id.clone());
+        if self.records.is_exited(&primary.node_id, &incarnation) {
+            return Some("its exit-proof row is read in this fabric-primary's view".to_string());
+        }
+        let status = self.topology.read().await.nodes.iter().find(|n| n.node_id == primary.node_id && n.incarnation_id.as_ref() == Some(&incarnation)).map(|n| n.status);
+        if status.is_some_and(NodeStatus::is_live) {
+            return None;
+        }
+        if inspected.lock().unwrap().replace(status) == Some(status) {
+            return None;
+        }
+        let unproven = |reason: String| {
+            tracing::info_span!("rdm.node_admin.mesh.resolve.via-final-primary-unproven", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, final_primary = %format!("{} {}", lost.node, lost.incarnation_id), status = ?status, reason = %reason)
+                .in_scope(|| tracing::info!("the final primary is silent and not proven exited: the owner's wait stays open"));
+            None
+        };
+        let Some(store) = self.records.contacts.get() else {
+            return unproven(format!("{} holds no durable runtime rows to prove its exit from", self.me));
+        };
+        let row = match self.roster_birth_row(&**store, lost).await {
+            Ok(row) => row,
+            Err(e) => return unproven(e),
+        };
+        match crate::mesh_leave::prove_predecessor_exit(&*self.provider, row.as_ref(), lost, &admitted.final_runtime).await {
+            Ok(terminal) => match self.records.put_exit_of_receipt(&terminal).await {
+                Ok(_) => Some(format!("its provider proved it exited (exit code {:?}) and this fabric-primary put its exit-proof row", terminal.exit_code)),
+                Err(e) => Some(format!("its provider proved it exited (exit code {:?}); its exit-proof row was not put: {e}", terminal.exit_code)),
+            },
+            Err(reason) => unproven(reason),
+        }
     }
 
     /// mesh.deleted's completion (mesh-delete.md step 5): the validated manifest `manifest` (every

@@ -45,16 +45,17 @@ fn intent(id: &BuildId) -> BuildAccepted {
 async fn an_admin_joining_after_a_build_was_accepted_holds_it_and_only_active_builds() {
     let (a_ep, a_router, a) = admin(vec![]).await;
 
-    // A, alone on the topic, accepts an active Build (claimed) and a finished one.
-    let active = BuildId::mint();
-    a.publish_accepted(&intent(&active)).await.unwrap();
-    a.claim_attempt(&BuildAttemptClaim { build_id: active.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    // A, alone on the topic, accepted a Build that finished, then the active one (claimed) after it:
+    // the active one is the current Build (R-BI3), the finished one history.
     let finished = BuildId::mint();
-    a.publish_accepted(&intent(&finished)).await.unwrap();
+    a.publish_accepted(&BuildAccepted { submitted_at_ms: 1, ..intent(&finished) }).await.unwrap();
     a.claim_attempt(&BuildAttemptClaim { build_id: finished.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     a.append_attempt_receipt(&BuildAttemptReceipt { build_id: finished.clone(), attempt: 1, outcome: AttemptOutcome::Converged })
         .await
         .unwrap();
+    let active = BuildId::mint();
+    a.publish_accepted(&BuildAccepted { submitted_at_ms: 2, ..intent(&active) }).await.unwrap();
+    a.claim_attempt(&BuildAttemptClaim { build_id: active.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
 
     // C joins later.
     let (_c_ep, c_router, c) = admin(vec![addr(&a_ep)]).await;

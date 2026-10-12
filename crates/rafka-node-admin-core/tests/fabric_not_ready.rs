@@ -140,7 +140,7 @@ async fn a_mesh_delete_or_node_delete_before_the_fabric_first_reaches_ready_for_
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s23-deletes");
     let r = rig(ScopeStatus::StateSync).await;
     let before = r.facts().await;
-    let accepted = r.cp.accepted.build_id().await;
+    let current = r.builds.current_build().await.unwrap();
     let mesh1 = || MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 1)]);
     let cases: Vec<(TopologyChange, &str)> = vec![
         (TopologyChange::RemoveMesh { mesh: "mesh2".into() }, "mesh.delete mesh2"),
@@ -155,7 +155,7 @@ async fn a_mesh_delete_or_node_delete_before_the_fabric_first_reaches_ready_for_
         }
     }
     assert_eq!(r.facts().await, before, "no Build is accepted");
-    assert_eq!(r.cp.accepted.build_id().await, accepted, "Fabric.build_id does not move");
+    assert_eq!(r.builds.current_build().await.unwrap(), current, "the current Build does not move");
     let spans = capture.spans("rdm.node_admin.build.reject.via-fabric-not-ready");
     assert_eq!(spans.len(), 4, "{spans:?}");
     eprintln!("trace {}: rdm.node_admin.build.reject.via-fabric-not-ready x4 (RemoveMesh, RemoveNode, ReconcileFabric drop, ReconcileMesh drop) status=state-sync", spans[0].0);

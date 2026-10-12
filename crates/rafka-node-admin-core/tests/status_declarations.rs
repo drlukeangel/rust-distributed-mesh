@@ -113,7 +113,7 @@ async fn rig() -> (Rig, BTreeMap<&'static str, Birth>) {
         loads: None,
         book: None,
         first_ready: Default::default(),
-        accepted: std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test")),
+        builds: std::sync::Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
     });
     // The rig's view stands for the admin's projection: a moved row moves the birth's entry.
     let moved_view = topology.clone();
@@ -1518,26 +1518,29 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
     eprintln!("trace {trace_id}: rdm.node_admin.status.reject.via-node-left field=command reported=node-left stop-node:mesh1.rpc.1 (build bld_1, attempt 1)");
 }
 
-/// CONTRACT (node-identity-and-state.md §2.8: a fabric's fields "are `id`, `name`, `path`, `state`,
-/// `status` and `build_id`. `build_id` is `Fabric.build_id`, moved only by the fabric-primary";
-/// node-rpc-envelope.md typed objects: `fabric.get` answers the fabric): `fabric.get` (op 0x1B
-/// `GetFabric`) at a node-admin answers the fabric's `build_id`, the Build its fabric record names,
-/// and an admin whose record names no accepted Build answers none. Must NOT happen: a caller that
-/// needs the accepted Build reading it from anywhere but the fabric's own read.
+/// CONTRACT (build.md §4: the current Build is the first in progress or completed, read last in,
+/// first out; R-BI3, docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md: "Each accepted Build is its
+/// own entity in the builds store, written once" and "The Fabric row carries no pointer to the newest
+/// Build"; node-rpc-envelope.md typed objects: `fabric.get` answers the fabric): `fabric.get` (op 0x1B
+/// `GetFabric`) at a node-admin answers the fabric's `build_id`, the current Build its own builds store
+/// returns, skipping a failed Build, and an admin whose builds store holds no Build in progress or
+/// completed answers none. Must NOT happen: a caller that needs the current Build reading it from
+/// anywhere but the fabric's own read, or `fabric.get` naming a failed Build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fabric_get_answers_the_build_id_the_admins_fabric_record_names() {
+async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips_a_failed_one() {
     use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology};
+    use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter};
     let admin = birth("mesh1.admin.1", NodeKind::NodeAdmin, "mesh1", true, true);
     let view = Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: Vec::new(),
         nodes: vec![admin.node.clone()],
     };
-    let builds = rafka_node_admin_core::build_state::MemoryBuildStateAdapter::default();
-    let seeded = AcceptedStore::seeded(&builds, view.fabric.id.clone(), FabricTopology::of_observed(&view), "mesh1.admin.1").await.unwrap();
-    let held = seeded.build_id().await.expect("the seeded record names its Build").0;
-    let empty = Arc::new(AcceptedStore::new(Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "mesh1.admin.1"));
-    let answer = |accepted: Arc<AcceptedStore>| {
+    let builds = Arc::new(MemoryBuildStateAdapter::default());
+    AcceptedStore::seeded(&*builds, view.fabric.id.clone(), FabricTopology::of_observed(&view), "mesh1.admin.1").await.unwrap();
+    let held = builds.current_build().await.unwrap().into_build_id().expect("the seeded Build is current").0;
+    let empty = Arc::new(MemoryBuildStateAdapter::default());
+    let answer = |builds: Arc<dyn BuildStateAdapter>| {
         let view = view.clone();
         let admin = admin.node.clone();
         async move {
@@ -1564,7 +1567,7 @@ async fn fabric_get_answers_the_build_id_the_admins_fabric_record_names() {
                 row_moved: Default::default(),
                 loads: Some(Arc::new(BTreeMap::new)),
                 book: None,
-                accepted,
+                builds,
                 first_ready: Default::default(),
             };
             match authority.apply(None, &StatusRequest::GetFabric).await {
@@ -1573,8 +1576,15 @@ async fn fabric_get_answers_the_build_id_the_admins_fabric_record_names() {
             }
         }
     };
-    assert_eq!(answer(seeded.clone()).await.build_id, Some(held), "fabric.get answers the Build the admin's fabric record names");
-    assert_eq!(answer(empty).await.build_id, None, "an admin whose record names no accepted Build answers none");
+    assert_eq!(answer(builds.clone()).await.build_id, Some(held.clone()), "fabric.get answers the current Build the admin's builds store returns");
+    // A newer Build that failed is skipped: the older completed one is still the current Build.
+    let newer = rafka_node_admin_core::build::BuildId::mint();
+    builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), submitted_change: None, submitted_at_ms: u64::MAX - 1 }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { build_id: newer.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    assert_eq!(answer(builds.clone()).await.build_id, Some(newer.0.clone()), "the newer Build in progress is the current Build");
+    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }).await.unwrap();
+    assert_eq!(answer(builds).await.build_id, Some(held), "a failed Build is skipped: fabric.get answers the Build before it");
+    assert_eq!(answer(empty).await.build_id, None, "an admin whose builds store holds no Build in progress or completed answers none");
 }
 
 /// CONTRACT (node-rpc-envelope.md Status: "`RejectedNotAuthority` says the receiver is not the
