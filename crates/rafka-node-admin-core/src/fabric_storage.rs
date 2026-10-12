@@ -797,6 +797,50 @@ mod tests {
         }
     }
 
+    /// CONTRACT (R-FN1: "A name is unique per (path, kind) for every entity, the fabric included. The
+    /// fabric's (path, name) claim is an insert-and-fail at the path level, above the per-fabric store
+    /// roots (`<store_dir>/fabrics/<name>`). A second fabric of the same name under that path is refused
+    /// `NameHeld { by }`"; R14 item 1: the per-fabric root is unchanged, the index sits beside it;
+    /// CLAUDE.md: a refused claim writes nothing of the entity): under one store_dir, fabric A claims
+    /// fabric1 and its state-commit publishes the claim. Fabric B, another FabricId with its own root
+    /// under the same store_dir, claims fabric1: refused naming A, and nothing of B is written, neither
+    /// at the index nor under B's root, even once B's scratchpad is published. Fabric C claims fabric1
+    /// at once with A, both before their state-commit: C's claim wins against what C sees, and C's
+    /// publication, after A's, decides it again at the index: refused, naming A, the index row A's.
+    /// Must NOT happen: a second fabric of one name under one store_dir taking the name because its
+    /// identity row lives under its own root.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_second_fabric_of_a_held_name_under_one_store_dir_is_refused_naming_the_holder() {
+        let d = tempdir();
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let fabric = |name: &str| FabricIdentity { fabric_id: FabricId::mint(), name: name.into() };
+        let (a, b, c) = (fabric("fabric1"), fabric("fabric1"), fabric("fabric1"));
+        let open = |id: &FabricIdentity| {
+            let (store, id) = (store.clone(), id.fabric_id.clone());
+            async move {
+                let root = crate::store_root::StoreRoot::open(&store, &id).unwrap();
+                let s = FileFabricStorage::open(&root, &crate::model::IncarnationId::mint()).await.unwrap();
+                (root, s)
+            }
+        };
+        let ((root_a, store_a), (root_c, store_c)) = (open(&a).await, open(&c).await);
+        assert_eq!(store_a.claim_identity(&a).await.unwrap(), Ok(FabricClaim::Written), "A claims fabric1");
+        assert_eq!(store_c.claim_identity(&c).await.unwrap(), Ok(FabricClaim::Written), "C claims fabric1 at once with A, before either publishes");
+        root_a.scratchpad().expect("a root with no Fabric row holds a scratchpad").publish().await.unwrap();
+        let (root_b, store_b) = open(&b).await;
+        assert_eq!(store_b.claim_identity(&b).await.unwrap(), Err(FabricNameHeld { name: "fabric1".into(), by: a.fabric_id.clone() }), "B's claim of fabric1 under the same store_dir is refused naming A");
+        let published_b = root_b.scratchpad().expect("a root with no Fabric row holds a scratchpad").publish().await.unwrap();
+        assert_eq!(published_b.written(), 0, "nothing of B is written: {published_b:?}");
+        assert!(!store.join(b.fabric_id.to_string()).join(FABRIC_DIR).join("identity.json").exists(), "B's identity row is not written under its root");
+        let published_c = root_c.scratchpad().expect("a root with no Fabric row holds a scratchpad").publish().await.unwrap();
+        let summary = published_c.summary();
+        assert!(summary.contains("fabrics refused 1") && summary.contains(&a.fabric_id.to_string()), "C's held claim of fabric1 is refused at its publication, naming A: {summary}");
+        let index: serde_json::Value = serde_json::from_slice(&std::fs::read(store.join("fabrics").join("fabric1.json")).expect("the name's index row is on the store_dir")).unwrap();
+        assert_eq!(index["record"]["fabric_id"].as_str(), Some(a.fabric_id.to_string().as_str()), "the index row at <store_dir>/fabrics/fabric1 is A's: {index}");
+    }
+
     fn tempdir() -> std::path::PathBuf {
         crate::record_store::tempdir("fabric-storage")
     }
