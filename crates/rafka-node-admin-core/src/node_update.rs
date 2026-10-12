@@ -55,6 +55,11 @@ fn traffic_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDelete
     }
 }
 
+/// The meta entity this admin holds of `n`, at its own name.
+pub(crate) fn meta_of(n: &Node) -> NodeMeta {
+    meta(n, n.name.clone())
+}
+
 fn meta(n: &Node, name: PathName) -> NodeMeta {
     NodeMeta { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone(), endpoint: None, transport_addr: n.transport_addr, exe: None, runtime: None, status: rafka_node_admin_client::NodeStatus::Pending, name, mesh: n.mesh.clone(), kind: n.kind, otel_debug: false }
 }

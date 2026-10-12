@@ -185,7 +185,7 @@ impl ControlPlane {
             // its seats is refused before it exists (node-rpc-envelope.md, "TakeSeats", Boundary).
             if let Some(reject) = crate::accepted::plan(&topology, &observed, None).operations.iter().find_map(|op| {
                 let (node, action) = match op {
-                    crate::build::BuildOperation::RetireNode { node } => (node, "retire"),
+                    crate::build::BuildOperation::RetireNode { node, .. } => (node, "retire"),
                     crate::build::BuildOperation::RestartNode { node } => (node, "restart"),
                     crate::build::BuildOperation::ReplaceNode { node, .. } => (node, "replace"),
                     crate::build::BuildOperation::DrainNode { node, .. } => (node, "drain"),
@@ -363,10 +363,10 @@ impl ControlPlane {
     /// Build still Pending or Running answers `BuildInProgress`. No live-status check: the node is
     /// silent or absent by definition.
     ///
-    /// Keyed on the exited birth: once a node workflow that deletes a birth (`recover-node:<path>`,
-    /// or a `replace-node:<path>` / `retire-node:<path>` the birth exited inside) completed for that
-    /// exact birth, a submit answers [`Recovery::AlreadyApplied`] naming that workflow's attempt,
-    /// and nothing is opened. A node-admin is node-recovered only while its mesh holds
+    /// Keyed on the exited birth: once a node workflow that deletes a birth completed for that exact
+    /// birth (its recovery, whose last operation `update-node:<path>` completed, or a
+    /// `replace-node:<path>` / `retire-node:<path>` the birth exited inside), a submit answers
+    /// [`Recovery::AlreadyApplied`] naming that workflow's attempt, and nothing is opened. A node-admin is node-recovered only while its mesh holds
     /// another live admin to recover it (mesh-recovery.md:8-9); otherwise it is mesh recovery.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
         let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, node = %path, node_id = %node_id, incarnation_id = %incarnation.0, outcome = tracing::field::Empty);
@@ -381,7 +381,7 @@ impl ControlPlane {
             if let Some((build_id, attempt, operation)) = self.builds.recovery_of(&path, &node_id, &incarnation).await.map_err(Refusal::State)? {
                 outer.in_scope(|| {
                     tracing::info_span!("rdm.node_admin.build.reject.via-recovery-already-applied", route, build_id = %build_id, attempt, operation = %operation, node = %path, node_id = %node_id, incarnation_id = %incarnation.0)
-                        .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by this attempt's {operation}: its exit belongs to that workflow, nothing is opened"))
+                        .in_scope(|| tracing::info!(operation = %operation, "the exited birth was deleted by {operation} and its workflow completed at this attempt: its exit belongs to that workflow, nothing is opened"))
                 });
                 return Ok(Recovery::AlreadyApplied(Opened { build_id, attempt }));
             }
@@ -723,37 +723,14 @@ async fn get_fabric(State(cp): State<Shared>) -> Json<Value> {
 /// minted id, its source, destination, kind (`direct` or `proxy`, a proxy with its carrier), state and when it
 /// was observed. An admin that holds none lists none.
 async fn get_connections(State(cp): State<Shared>) -> Json<Value> {
-    use rafka_mesh_entity::connections::{ConnectionKind, ConnectionState, NodeConnection};
-    let mut facts: Vec<NodeConnection> = Vec::new();
-    let mut complete = false;
-    if let Some(held) = cp.connections.get() {
-        let held = held.lock().unwrap();
-        complete = held.is_complete();
-        facts.extend(held.active_directs().into_iter().cloned());
-        for own in held.own_latest_directs().into_iter().chain(held.own_active_proxies()) {
-            let key = own.index();
-            match facts.iter().position(|f| f.index() == key) {
-                Some(i) if facts[i].stamp() >= own.stamp() => {}
-                Some(i) => facts[i] = own.clone(),
-                None => facts.push(own.clone()),
-            }
+    let (facts, complete) = match cp.connections.get() {
+        Some(held) => {
+            let held = held.lock().unwrap();
+            (crate::views::held_connections(&held), held.is_complete())
         }
-    }
-    let connections: Vec<Value> = facts
-        .iter()
-        .map(|f| {
-            json!({
-                "id": f.id.to_string(),
-                "source": f.source.name.to_string(),
-                "destination": f.destination.name.to_string(),
-                "kind": match f.kind { ConnectionKind::Direct => "direct", ConnectionKind::Proxy => "proxy" },
-                "state": match f.state { ConnectionState::Connected => "connected", ConnectionState::Disconnected => "disconnected", ConnectionState::Failed => "failed" },
-                "carrier": f.carrier.as_ref().map(|c| c.name.to_string()),
-                "reason": f.reason,
-                "logged_at_ms": f.logged_at_ms,
-            })
-        })
-        .collect();
+        None => (Vec::new(), false),
+    };
+    let connections: Vec<Value> = facts.iter().map(|f| serde_json::to_value(crate::views::connection_view(f)).unwrap_or(Value::Null)).collect();
     Json(json!({"node": cp.me.to_string(), "complete": complete, "connections": connections}))
 }
 

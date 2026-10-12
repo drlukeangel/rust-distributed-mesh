@@ -6,7 +6,7 @@
 //! to another has one writer, [`move_row`]: a replace's `RenamePredecessor` here and `node.update`
 //! at the node's mesh-primary (`crate::node_update`, R13). A row is written here at two moments:
 //!
-//! - `node.delete` (`retire-node:<path>`, and the delete inside `recover-node:<path>`,
+//! - `node.delete` (`retire-node:<path>`, a node recovery's delete of the crashed target included,
 //!   lifecycles/node-recovery.md step 3), read off the step's `Step` frame (the one the executor
 //!   streams, or its receipt read back by a fabric-primary that took the seat since): at
 //!   `NodeDeleted` the row is written with status `Deleted`, the record and its config kept. The
@@ -25,9 +25,10 @@
 //! `<path>.old` at the executor's `RenamePredecessor`, and the successor's claim follows that move
 //! whichever reaches this admin first. A successor the view holds before the move waits on it
 //! (`awaits-rename`), and the move, once made, claims the path.name for the node the view holds there.
-//! A recovery's new node takes the `path.name` over from the exited node's `Deleted` row
-//! (node-recovery.md step 4); one the view holds before that `NodeDeleted` reaches this admin is
-//! refused (`name-held`) until it does, and the `NodeDeleted` claims the name for it.
+//! A node created at a deleted node's `path.name` (a recovery's new node, node-recovery.md step 4)
+//! takes it over from the deleted node's `Deleted` row; one the view holds before that
+//! `NodeDeleted` reaches this admin is refused (`name-held`) until it does, and the `NodeDeleted`
+//! claims the name for it.
 
 use crate::model::{IncarnationId, Node, NodeId, NodeStatus, PathName};
 use crate::storage::{Claimed, NodeRow, NodesStorage};
@@ -82,7 +83,7 @@ impl NodeRows {
         let Some((verb, path)) = operation.split_once(':') else { return };
         let Ok(name) = path.parse::<PathName>() else { return };
         match (verb, step) {
-            ("retire-node" | "replace-node" | "recover-node", "NodeDeleting") => {
+            ("retire-node" | "replace-node", "NodeDeleting") => {
                 // A receipt read after the step names its node by id: by then the view may hold a
                 // replace's successor at the path.name.
                 let held = match subject {
@@ -93,16 +94,13 @@ impl NodeRows {
                     self.announced.lock().unwrap().insert(operation.to_string(), n);
                 }
             }
+            // A delete (node-delete.md step 3; node-recovery.md steps 3-4): the deleted node's row
+            // says `Deleted` at its path.name, and a node created there takes the name over, seeded
+            // from it: a new node the view already holds (its claim met the deleted node's live
+            // row) claims it now, through the one claim every birth takes.
             ("retire-node", "NodeDeleted") => {
-                self.deleted(me, view, operation, &name, subject).await;
-            }
-            // A recovery (node-recovery.md steps 3-4): the exited node's row says `Deleted` at its
-            // path.name, and the new node created there takes the name over, seeded from it: a
-            // new node the view already holds (its claim met the exited node's live row) claims
-            // it now, through the one claim every birth takes.
-            ("recover-node", "NodeDeleted") => {
-                if let Some(exited) = self.deleted(me, view, operation, &name, subject).await {
-                    self.successor_at(view, &name, &exited).await;
+                if let Some(deleted) = self.deleted(me, view, operation, &name, subject).await {
+                    self.successor_at(view, &name, &deleted).await;
                 }
             }
             // A replace: the predecessor gives up its path.name (its row moves to `<path>.old`), and

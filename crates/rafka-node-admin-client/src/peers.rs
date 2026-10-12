@@ -39,10 +39,15 @@ impl Peers {
         }
     }
 
-    /// The node objects over this client: Build calls start at the fabric-primary `admin` names.
+    /// The node objects over this client: Build calls and view reads start at the fabric-primary
+    /// `admin` names. The control API is the handover that names it and its birth: the fabric-primary
+    /// becomes reachable here, and everything after goes over Node RPC.
     pub async fn nodes(&self, admin: crate::NodeAdminClient) -> Result<crate::Nodes, crate::CallEnd> {
         let fp = admin.fabric().await.map_err(crate::CallEnd::from)?.fabric_primary.ok_or_else(|| crate::CallEnd::Indeterminate { reason: "the admin's fabric names no fabric-primary".into() })?;
-        Ok(crate::Nodes::new(admin, crate::BuildCarrier::new(self.rpc.clone(), fp)))
+        let held = admin.nodes().await.map_err(crate::CallEnd::from)?;
+        let birth = held.iter().find(|n| n.name == fp).ok_or_else(|| crate::CallEnd::Indeterminate { reason: format!("the admin's fabric names {fp} its fabric-primary and its node list holds no {fp}") })?;
+        self.learn(std::slice::from_ref(birth));
+        Ok(crate::Nodes::new(crate::BuildCarrier::new(self.rpc.clone(), fp)))
     }
 
     /// Await the typed fact `fact` of `peer`'s held view of `mesh`; a peer that never reports it is named

@@ -198,7 +198,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
         .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["reason"] == "recovery" && sp["attributes"]["outcome"] == "converged")
         .unwrap_or_else(|| panic!("the recovery attempt of {r4} converged: {ran:?}"));
     assert_eq!(repaired["attributes"]["attempt"], attempt.as_str());
-    assert_eq!(repaired["attributes"]["operations"], "recover-node:mesh1.rpc.2", "one recovery operation: {repaired}");
+    assert_eq!(repaired["attributes"]["operations"], "retire-node:mesh1.rpc.2,create-node:mesh1.rpc.2,update-node:mesh1.rpc.2", "the recovery's three operations, in order: {repaired}");
     // The recovery attempt's context is the door's span that admitted it: its reconcile is that span's child.
     assert_eq!(repaired["parent_span_id"], opened["span_id"], "the recovery's reconcile is the child of the span that admitted it: {repaired}");
     assert_eq!(repaired["trace_id"], submit["trace_id"]);

@@ -81,6 +81,52 @@ impl NodeOp {
     }
 }
 
+/// A call on the `mesh` op family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MeshOp {
+    /// `mesh.get`: one mesh, or every mesh of the fabric.
+    Get,
+}
+
+impl MeshOp {
+    /// The canonical name of the call.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Get => "mesh.get",
+        }
+    }
+
+    /// The span of one call: `rdm.node_admin.mesh.<verb>.via-call`.
+    pub fn span(self) -> tracing::Span {
+        match self {
+            Self::Get => tracing::info_span!("rdm.node_admin.mesh.get.via-call", op = "mesh.get", outcome = tracing::field::Empty),
+        }
+    }
+}
+
+/// A call on the `fabric` op family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FabricOp {
+    /// `fabric.get`: the fabric as the answering admin holds it.
+    Get,
+}
+
+impl FabricOp {
+    /// The canonical name of the call.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Get => "fabric.get",
+        }
+    }
+
+    /// The span of one call: `rdm.node_admin.fabric.<verb>.via-call`.
+    pub fn span(self) -> tracing::Span {
+        match self {
+            Self::Get => tracing::info_span!("rdm.node_admin.fabric.get.via-call", op = "fabric.get", outcome = tracing::field::Empty),
+        }
+    }
+}
+
 /// A call on the `build` op family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuildOp {

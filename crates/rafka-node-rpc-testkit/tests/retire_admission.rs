@@ -132,6 +132,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
                 attempt: 1,
                 node: "mesh1.rpc.1".parse().unwrap(),
                 spec: &RPC_NODE,
+                data_dir: None,
                 held_runtimes: Vec::new(),
             })
             .await
@@ -148,6 +149,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
                 attempt: 1,
                 node: created.node.clone(),
                 handle: created.handle.clone(),
+                exit: None,
             })
             .await;
         assert_eq!(
@@ -194,6 +196,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
             attempt: 1,
             node: "mesh1.rpc.1".parse().unwrap(),
             spec: &RPC_NODE,
+            data_dir: None,
             held_runtimes: Vec::new(),
         };
 
@@ -228,6 +231,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
                 attempt: 1,
                 node: b.node.clone(),
                 handle: b.handle.clone(),
+                exit: None,
             })
             .await;
         // B is live and admits its node-admin: its drain-node was admitted and its stop-node answered

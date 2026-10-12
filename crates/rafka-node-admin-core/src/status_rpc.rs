@@ -265,6 +265,10 @@ pub struct StatusAuthority {
     /// This admin's view taking a node's row its `node.update` moved (R13): the view lists the birth
     /// at the row's name on every projection from now on. Filled with the view.
     pub row_moved: RowMoved,
+    /// Each member's load and gossip stats, as its latest digest carries them: what `node.get`
+    /// answers beside the view. `None` only where no admin owns a digest book; a view read there is
+    /// refused `NotReady` by name.
+    pub loads: Option<crate::views::Loads>,
 }
 
 /// What an `Applied` decision changes once its row is acknowledged. A decision never mutates
@@ -334,8 +338,8 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
         StatusRequest::ApplyNodeState { .. } | StatusRequest::ProbeNodeState { .. } | StatusRequest::ApplyNodeConfig { .. } | StatusRequest::ApplyNodeName { .. } => {
             (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, None)
         }
-        // Commands and completions are answered before the decision (`StatusAuthority::apply`).
-        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateNode { .. } | StatusRequest::DeleteConnections { .. } => {
+        // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`).
+        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateNode { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
             (StatusReply::NotReady { reason: format!("{} reached the declaration decision, which does not decide {}", auth.me, req.op()) }, None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -470,6 +474,15 @@ impl StatusAuthority {
                     None => StatusReply::NotReady { reason: format!("{} has no node-RPC client yet; {} is refused", self.me, req.op()) },
                 };
             }
+            // The reads: answered from what this admin holds, changing nothing.
+            StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric => {
+                let me = view.own(&self.node_id).map(|n| n.name.clone()).unwrap_or_else(|| self.me.clone());
+                return match self.loads.as_ref().and_then(|loads| crate::views::view_answer(&me, &view, loads, req)) {
+                    Some(reply) => reply,
+                    None => StatusReply::NotReady { reason: format!("{me} reads no digest book; {} is refused", req.op()) },
+                };
+            }
+            StatusRequest::GetConnections { node_id, incarnation } => return self.read_connections(&view, node_id, incarnation).await,
             _ => {}
         }
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
@@ -512,6 +525,29 @@ impl StatusAuthority {
         )
         .in_scope(|| tracing::info!("declaration decided by the authority"));
         reply
+    }
+}
+
+impl StatusAuthority {
+    /// `node.connections.get` of this admin's exact birth: the connections it holds, under the name
+    /// it holds. A request naming another node is not this receiver's; another incarnation of this
+    /// node is refused naming the one held.
+    async fn read_connections(&self, view: &Topology, node_id: &NodeId, incarnation: &IncarnationId) -> StatusReply {
+        let Some(me) = view.own(&self.node_id) else {
+            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
+        };
+        if *node_id != self.node_id {
+            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } };
+        }
+        match me.incarnation_id.as_ref() {
+            None => return StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown },
+            Some(held) if held != incarnation => return StatusReply::RejectedStaleIncarnation { held: held.clone() },
+            Some(_) => {}
+        }
+        match self.own.get() {
+            Some(own) => own.connections_get().await,
+            None => StatusReply::NotReady { reason: format!("{} is still starting: it holds no connections writer yet, so node.connections.get is refused", me.name) },
+        }
     }
 }
 
@@ -991,6 +1027,7 @@ mod tests {
             hydration: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            loads: None,
         };
         crate::offline::put_silence_status(&*status, &rpc, Some(crate::model::NodeStatus::PendingReconnect)).await.unwrap();
         let declare = StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: rpc.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1093,6 +1130,7 @@ mod tests {
             hydration: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            loads: None,
         };
         let birth = rpc.incarnation_id.clone().unwrap();
         let declare = |state| StatusRequest::DeclareNodeState { node_id: rpc.node_id.clone(), incarnation: birth.clone(), state };
@@ -1150,6 +1188,7 @@ mod tests {
             hydration: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            loads: None,
         }
     }
 
@@ -1404,6 +1443,7 @@ mod tests {
             hydration: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            loads: None,
         };
         for n in [&restarted, &deleted, &standing] {
             let declare = StatusRequest::DeclareNodeState { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
@@ -1417,7 +1457,7 @@ mod tests {
         book.depart(rafka_mesh_entity::LifecycleOp {
             build_id: "build1".into(),
             attempt: 1,
-            operation: "recover-node:mesh1.rpc.2".into(),
+            operation: "retire-node:mesh1.rpc.2".into(),
             node_id: deleted.node_id.clone(),
             incarnation: deleted.incarnation_id.clone().unwrap(),
             name: deleted.name.clone(),
@@ -1492,6 +1532,7 @@ mod tests {
             hydration: Default::default(),
             rename: Default::default(),
             row_moved: Default::default(),
+            loads: None,
         };
         let declare = StatusRequest::DeclareNodeState { node_id: exited.node_id.clone(), incarnation: exited.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         assert_eq!(authority.apply(Some(exited.clone()), &declare).await, R::Applied);

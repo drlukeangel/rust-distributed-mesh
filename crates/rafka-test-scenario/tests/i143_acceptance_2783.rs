@@ -127,15 +127,15 @@ async fn attempt_of(estate: &Estate, id: &str) -> u64 {
 /// birth follows; the thaw returns the SAME birth, which serves the value stored before the hold
 /// (the semantic wedge detector judges it). A killed rpc node is recovered by its mesh-primary
 /// (node-recovery.md): on the provider's exact exit proof it submits one recovery as the next
-/// attempt of the SAME Build (reason recovery, operation `recover-node:<path>`, no Build minted);
-/// the exited instance is deleted and fenced, and a new NodeId/incarnation is created at the same
-/// path.name over the inherited data dir (same endpoint key, the stored value still served),
-/// every step a child of the recover pipeline. The exited birth's old NodeId resolves to nothing:
+/// attempt of the SAME Build (reason recovery, operations `retire-node:<path>`, `create-node:<path>`,
+/// `update-node:<path>`, no Build minted); the exited instance is deleted and fenced, and a new
+/// NodeId/incarnation is created at the same path.name over the inherited data dir (same endpoint
+/// key, the stored value still served), every step of the create a child of the create pipeline. The exited birth's old NodeId resolves to nothing:
 /// a call aimed at it is not sent (`Resolve(Unknown)`), never dialled to the successor that holds
 /// its key. A killed node-admin that is neither mesh-primary nor fabric-primary is a lost member of
 /// a mesh with a live mesh-primary (mesh-recovery.md:8-9), so it is node recovery the same way: its
-/// mesh-primary proves the exit and submits the recovery (reason recovery, `recover-node:<path>`,
-/// the recover pipeline), and the path comes back as a node-admin with a new NodeId over the
+/// mesh-primary proves the exit and submits the recovery (reason recovery, its delete, create and
+/// update operations, each its own pipeline), and the path comes back as a node-admin with a new NodeId over the
 /// inherited data dir and the same endpoint key; the Fabric's drift opens nothing for it. Exactly
 /// one runtime serves each path. What must NOT happen: a signal reaching a process the fact does not
 /// name, a held runtime replaced, a Build minted for drift, the fabric-primary node-admin
@@ -272,7 +272,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     assert_eq!(admin_new["endpoint_id"], admin_n["endpoint_id"], "the recovered node-admin holds the endpoint key of the data dir it inherited: {admin_new}");
     assert_eq!(estate.data_dir_of(&admin).await, admin_dir, "the recovered node-admin runs over the inherited data dir");
     // Ready in the view is the new birth's own digest; the recovery is done when its mesh-primary's
-    // submit followed the recover-node operation to its terminal frame.
+    // submit followed the recovery's operations to the attempt's terminal frame.
     wait_for("the node-admin's recovery is followed to its terminal", Duration::from_secs(60), || async {
         named(&estate.spans(), "rdm.node_admin.build.update.via-node-recovery").into_iter().any(|sp| attr(sp, "node") == admin && attr(sp, "outcome").starts_with("complete: attempt")).then_some(())
     })
@@ -301,7 +301,11 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     };
     // The rpc node and the secondary node-admin: each its mesh-primary's recovery (node-recovery.md,
     // mesh-recovery.md:8-9).
-    let (rpc_rec, admin_rec) = (recovery_for(&kill, "recovery", "recover-node"), recovery_for(&admin, "recovery", "recover-node"));
+    let (rpc_rec, admin_rec) = (recovery_for(&kill, "recovery", "create-node"), recovery_for(&admin, "recovery", "create-node"));
+    for rec in [&rpc_rec, &admin_rec] {
+        let path = attr(rec, "operations").rsplit(':').next().unwrap_or_default().to_string();
+        assert_eq!(attr(rec, "operations"), format!("retire-node:{path},create-node:{path},update-node:{path}"), "the recovery's three operations, in order: {rec}");
+    }
     for path in [&kill, &admin] {
         assert!(
             named(&spans, "rdm.node_admin.build.update.via-reconcile").iter().all(|r| !(attr(r, "reason") == "proven-drift" && attr(r, "operations").contains(&format!(":{path}")))),
@@ -321,7 +325,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
             .unwrap_or_else(|| panic!("a {kind} pipeline span of {path} at attempt {attempt}"))
     };
     let mut recoveries = Vec::new();
-    for (path, rec, kind) in [(&kill, &rpc_rec, "recover"), (&admin, &admin_rec, "recover")] {
+    for (path, rec, kind) in [(&kill, &rpc_rec, "create"), (&admin, &admin_rec, "create")] {
         let attempt = num(&rec["attributes"]["attempt"]);
         let pipe = pipeline_of(kind, path, attempt);
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipe["span_id"]).collect();

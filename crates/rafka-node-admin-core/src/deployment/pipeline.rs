@@ -12,7 +12,13 @@
 //!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (its `Stopped` reply, bounded, likewise)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
 //!   -> RemoveTopologyMembership -> Complete
+//! delete of a crashed target: NodeDeleting -> TerminateRuntime (the exact exit proof, nothing sent)
+//!   -> NodeDeleted (from the mesh-primary's recorded exit proof) -> RemoveTopologyMembership -> Complete
+//! update: UpdateNode (node recovery's copy of the caller-owned meta) -> Complete
 //! ```
+//!
+//! Node recovery (node-recovery.md "Steps") is three operations of these, never a sequence of its
+//! own: the delete of the crashed target, the create over its data dir, the update.
 //!
 //! A removal releases identity, never storage: the data dir and its endpoint key stay
 //! (node-delete.md "Storage"), and no step here deletes a node's storage.
@@ -156,6 +162,26 @@ impl StartStep {
     pub fn name(self) -> &'static str {
         match self {
             Self::StartNode => "StartNode",
+        }
+    }
+}
+
+/// The steps of node recovery's node.update (node-recovery.md sequence step 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateStep {
+    /// The caller-owned meta of the exited birth copied onto the new node (the frame name of
+    /// node.update on 0x1B, node-update.md "Wire").
+    UpdateNode,
+    /// The update is done.
+    Complete,
+}
+
+impl UpdateStep {
+    /// The step's name as it appears in receipts and spans.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::UpdateNode => "UpdateNode",
+            Self::Complete => "Complete",
         }
     }
 }
@@ -810,6 +836,10 @@ pub struct CreateRequest {
     pub node: PathName,
     /// The endpoint plan of the node's kind.
     pub spec: &'static KindSpec,
+    /// The data dir the create's spec names (node-recovery.md sequence step 4: node recovery's
+    /// create, over the exited birth's data dir): taken over whole, its endpoint key loaded and never
+    /// minted. `None`: a fresh data dir.
+    pub data_dir: Option<PathBuf>,
     /// The runtime rows this admin holds, handed to a node-admin's own nodes.storage before it
     /// starts: its durable map of the births a predecessor heard.
     pub held_runtimes: Vec<crate::storage::RuntimeRow>,
@@ -822,6 +852,14 @@ pub struct CreateRequest {
 /// downstream starts under an assumed state.
 pub(crate) type BeforeReady = std::sync::Arc<dyn Fn(Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<rafka_node_rpc_contract::status::MeshState, String>> + Send>> + Send + Sync>;
 
+/// Work a create awaits inside its `DeployRuntime` step right before it launches the new runtime,
+/// and only then: a step an earlier attempt receipted (its runtime still runs and is reused) and a
+/// runtime the provider finds this deployment already started run none of it. A create over an
+/// exited birth's data dir fences that birth here (node-recovery.md "Delete fences the old instance
+/// before the new join"): the new runtime carries the same endpoint key, so the fence is done before
+/// it exists and never once it does.
+pub(crate) type BeforeLaunch<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+
 /// A request to retire one node.
 #[derive(Debug, Clone)]
 pub struct RetireRequest {
@@ -833,6 +871,10 @@ pub struct RetireRequest {
     pub node: Node,
     /// The runtime handle of the birth.
     pub handle: DeploymentHandle,
+    /// A crashed target (node-delete.md "Crashed target"; node-recovery.md sequence step 3): the
+    /// mesh-primary's recorded exit proof of the exact birth. Its stop steps are already done:
+    /// nothing is sent to it, and node.deleted is published from this proof. `None`: a live target.
+    pub exit: Option<crate::status_storage::NodeExitRow>,
 }
 
 /// A request to start (or restart) a parked birth: the same process rejoins as itself.
@@ -894,25 +936,18 @@ pub struct ReplaceRequest {
     pub held_runtimes: Vec<crate::storage::RuntimeRow>,
 }
 
-/// A request to recover one node from its exact exited birth (node-recovery.md): node.delete of the
-/// exited instance, then node.create at the same path.name over its data dir.
+/// A request for node recovery's node.update (node-recovery.md sequence step 6): the caller-owned
+/// meta of the exited birth copied onto the new node created at its path.name.
 #[derive(Debug, Clone)]
-pub struct RecoverRequest {
+pub struct UpdateRequest {
     /// The Build.
     pub build_id: BuildId,
     /// The attempt.
     pub attempt: u32,
-    /// The exited birth's record: its node.id, incarnation, endpoint key and data dir.
-    pub exited: Node,
-    /// The exited birth's exact runtime handle.
-    pub handle: DeploymentHandle,
-    /// The mesh primary's durable exit proof of that birth, which node.deleted is published from.
-    pub exit: crate::status_storage::NodeExitRow,
-    /// The endpoint plan of the node's kind.
-    pub spec: &'static KindSpec,
-    /// The durable runtime rows a recovered node-admin is handed before it runs (empty for every
-    /// other kind), as every node-admin birth is.
-    pub held_runtimes: Vec<crate::storage::RuntimeRow>,
+    /// The node updated: the one the create made at the exited birth's path.name.
+    pub node: Node,
+    /// The exited birth's record, whose caller-owned meta is copied.
+    pub from: Node,
 }
 
 /// The predecessor a successor's create stops and takes the storage of, between its prepared
@@ -1052,7 +1087,7 @@ fn ensure_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String
 /// Read the transport key an existing data dir holds, minting none: a recovery's node takes the
 /// endpoint key of the data dir it inherits (node-recovery.md, "Retained"), so a dir with no key
 /// is refused by name, never given a new one.
-fn load_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
+pub(crate) fn load_transport_key(data_dir: &std::path::Path) -> Result<EndpointId, String> {
     let path = data_dir.join("node-key");
     let h = match std::fs::read_to_string(&path) {
         Ok(h) => h,
@@ -1205,20 +1240,21 @@ impl DeploymentPipeline<'_> {
 
     /// Create `req.node` through every step.
     pub async fn create(&self, req: &CreateRequest) -> Result<Created, PipelineError> {
-        self.create_with(req, None).await
+        self.create_with(req, None, None).await
     }
 
     /// `create`, with `before_ready` run as the `ApplyMeshPending` step once the birth has joined
-    /// its mesh and before it is asked to be Ready.
-    pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
+    /// its mesh and before it is asked to be Ready, and `before_launch` awaited right before the new
+    /// runtime is launched ([`BeforeLaunch`]).
+    pub(crate) async fn create_with(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("create", &req.build_id, &req.node, req.attempt);
-        self.create_steps(req, before_ready).instrument(span).await
+        self.create_steps(req, before_ready, before_launch).instrument(span).await
     }
 
-    async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>) -> Result<Created, PipelineError> {
+    async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("create-node:{}", req.node)).await;
-        let mut created = self.create_to_ready(&mut run, req, before_ready, None, None).await?;
+        let mut created = self.create_to_ready(&mut run, req, before_ready, None, before_launch).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         self.step(&mut run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
@@ -1232,8 +1268,10 @@ impl DeploymentPipeline<'_> {
     /// inside its own operation ([`Replacing`]): once the successor's identity, storage and network
     /// are decided, the predecessor (parked by its stop) is ended and its storage handed over, and only then does the
     /// successor start.
-    /// `inherited`: a recovery's data dir, the exited birth's, taken over whole (node-recovery.md).
-    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, replacing: Option<&Replacing<'_>>, inherited: Option<PathBuf>) -> Result<Created, PipelineError> {
+    /// `req.data_dir`: the data dir the spec names (the create over an exited birth's), taken over
+    /// whole (node-recovery.md sequence step 4). `before_launch`: awaited right before the new runtime
+    /// is launched, and only when it is ([`BeforeLaunch`]).
+    async fn create_to_ready(&self, run: &mut Run<'_>, req: &CreateRequest, before_ready: Option<BeforeReady>, replacing: Option<&Replacing<'_>>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
         let (run_build, run_operation, run_attempt) = (&req.build_id, run.operation.clone(), req.attempt);
         // A receipt names a runtime; its birth is reused only while that
         // runtime runs. A launch that has since died (its executor's mesh was
@@ -1282,8 +1320,8 @@ impl DeploymentPipeline<'_> {
         // reports at its join is the one this admin publishes for the birth.
         let bind_addr = SocketAddr::new(self.provider.bind_ip(&req.node), 0);
         let bind_listeners: Vec<(String, SocketAddr)> = req.spec.listeners.iter().map(|n| (n.to_string(), bind_addr)).collect();
-        let inherits = inherited.is_some();
-        let data_dir = match inherited {
+        let inherits = req.data_dir.is_some();
+        let data_dir = match req.data_dir.clone() {
             Some(d) => d,
             None => self.template.data_root.join(format!("{}-{}", req.node, id.node_id)),
         };
@@ -1349,6 +1387,9 @@ impl DeploymentPipeline<'_> {
                 if let Some(h) = self.provider.find(&spec).await {
                     tracing::info!(deployment_id = %spec.deployment_id, "adopting the runtime this deployment already started");
                     return Ok(h);
+                }
+                if let Some(before) = before_launch {
+                    before.await;
                 }
                 self.provider.spawn(&spec).await.map_err(|e| e.to_string())
             })
@@ -1706,6 +1747,22 @@ impl DeploymentPipeline<'_> {
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await;
         let mut node = req.node.clone();
         let handle = &req.handle;
+        // A crashed target is deleted only on the exit proof of exactly its birth: a proof of
+        // another birth is refused by name before anything is written.
+        if let Some(exit) = &req.exit {
+            if exit.node_id != node.node_id || node.incarnation_id.as_ref() != Some(&exit.incarnation_id) {
+                return Err(PipelineError {
+                    step: RetireStep::NodeDeleting.name(),
+                    reason: format!(
+                        "{name}: the exit proof names birth {} at {}, the delete is of {} at {}",
+                        exit.node_id,
+                        exit.incarnation_id.0,
+                        node.node_id,
+                        node.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")
+                    ),
+                });
+            }
+        }
         // The pre-notice: this executor's journal holds its Claim for the attempt (it runs nothing
         // before that) and now records this operation; every node hears the node is being removed
         // and stops routing to it, while it stays found.
@@ -1722,11 +1779,13 @@ impl DeploymentPipeline<'_> {
         // moment it is announced, so a successor derives it from the same facts.
         let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
         self.lifecycle.deleting(&op).await;
-        let _terminal = if node.parked {
+        let _terminal = if node.parked || req.exit.is_some() {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exit proof
-            // (node-decommission.md 1-2, node-stop.md 6).
+            // (node-decommission.md 1-2, node-stop.md 6). A crashed target likewise: its stop steps
+            // are already done, and no node reply or receipt is fabricated for the exited process
+            // (node-delete.md step 1); the provider's exact inspection is all that is asked.
             self.terminate_step(&mut run, &node, handle).await?
         } else {
             // The two halves of the shutdown leg are separate operations (node-drain.md, node-stop.md):
@@ -1737,14 +1796,35 @@ impl DeploymentPipeline<'_> {
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.1.expect("a stop that terminates yields the provider's receipt")
         };
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
-        // node's Leaving, its drained reply, the claim) is.
+        // node's Leaving, its drained reply, the claim) is. A crashed target's node.deleted is
+        // published from its mesh-primary's recorded exit proof (node-recovery.md sequence step 3).
         let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-        let op = self.step(&mut run, RetireStep::NodeDeleted.name(), async { Ok(op.clone()) }).await?;
+        let exit = req.exit.as_ref();
+        let op = self
+            .step(&mut run, RetireStep::NodeDeleted.name(), async {
+                if let Some(exit) = exit {
+                    tracing::info_span!(
+                        "rdm.node_admin.node.delete.via-exit-proof",
+                        build_id = %req.build_id,
+                        attempt = req.attempt,
+                        node = %name,
+                        node_id = %exit.node_id,
+                        incarnation_id = %exit.incarnation_id.0,
+                        exit_code = exit.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
+                        proof = %exit.proof,
+                        observed_at_ms = exit.observed_at_ms,
+                    )
+                    .in_scope(|| tracing::info!("the exited instance is deleted on the mesh primary's exit proof"));
+                }
+                Ok(op.clone())
+            })
+            .await?;
         self.lifecycle.deleted(&op).await;
         // node-delete.md step 3: the data dir, node-identity.json and endpoint key are retained; no
-        // step of the delete touches the birth's storage.
+        // step of the delete touches the birth's storage. Exactly the deleted birth leaves the
+        // executor's records, and stays out of its view even when the records never held it.
         self.step(&mut run, RetireStep::RemoveTopologyMembership.name(), async {
-            self.sink.remove(name);
+            self.sink.remove_birth(name, &op.node_id, &op.incarnation);
             Ok(())
         })
         .await?;
@@ -1981,7 +2061,7 @@ impl DeploymentPipeline<'_> {
 
     /// The directory of `node`'s birth as it is now: the data dir its record names, else the
     /// root's `<path>-<node_id>`.
-    fn birth_dir(&self, node: &Node) -> PathBuf {
+    pub(crate) fn birth_dir(&self, node: &Node) -> PathBuf {
         node.data_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", node.name, node.node_id)))
     }
 
@@ -2083,7 +2163,7 @@ impl DeploymentPipeline<'_> {
             Ok(())
         })
         .await?;
-        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, held_runtimes: req.held_runtimes.clone() };
+        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, data_dir: None, held_runtimes: req.held_runtimes.clone() };
         let replacing = Replacing { build_id: &req.build_id, predecessor: &old, handle: &req.handle, terminated: !parked };
         let mut created = self.create_to_ready(&mut run, &creq, before_ready, Some(&replacing), None).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
@@ -2101,112 +2181,33 @@ impl DeploymentPipeline<'_> {
         Ok(created)
     }
 
-    /// Recover `req.exited` as ONE operation `recover-node:<path>` (node-recovery.md, "Numbered
-    /// end-to-end sequence" steps 3-5):
-    ///
-    /// ```text
-    /// NodeDeleting -> TerminateRuntime (the exit proof, no RPC, no stop frames) -> NodeDeleted
-    ///   -> [after_deleted: the old birth fenced]
-    ///   -> AllocateIdentity (new node.id, no supersedes) -> PrepareStorage (the inherited data dir,
-    ///      the same endpoint key) -> ... -> WaitForMeshJoin -> WaitForNodeReady -> Complete
-    /// ```
-    ///
-    /// `after_deleted` fences the exited birth before the new one joins (the resolver and the direct
-    /// paths of the retained endpoint key); `after_ready` commits the new node's ReadyForTraffic.
-    /// The `NodeDeleted` receipt names the EXITED birth (its lifecycle operation), and the recovery
-    /// is keyed on it with the operation's `Complete`, which commits no output.
-    pub async fn recover<D, DFut, F, Fut>(&self, req: &RecoverRequest, after_deleted: D, after_ready: F) -> Result<Created, PipelineError>
-    where
-        D: FnOnce(Node) -> DFut,
-        DFut: std::future::Future<Output = ()>,
-        F: FnOnce(Node) -> Fut,
-        Fut: std::future::Future<Output = Result<(), String>>,
-    {
+    /// node.update of `req.node` in node recovery (node-recovery.md sequence step 6), as ONE
+    /// operation `update-node:<path>`: `UpdateNode`, the caller-owned meta of the exited birth
+    /// `req.from` copied onto the new node (only the caller-owned group moves:
+    /// `NodeMeta::with_caller_owned_of`), then `Complete`. The new node is the one its create made
+    /// at the exited birth's path.name, never the exited birth.
+    pub async fn update(&self, req: &UpdateRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("recover", &req.build_id, &req.exited.name, req.attempt);
-        self.recover_steps(req, after_deleted, after_ready).instrument(span).await
+        let span = self.pipeline_span("update", &req.build_id, &req.node.name, req.attempt);
+        self.update_steps(req).instrument(span).await
     }
 
-    async fn recover_steps<D, DFut, F, Fut>(&self, req: &RecoverRequest, after_deleted: D, after_ready: F) -> Result<Created, PipelineError>
-    where
-        D: FnOnce(Node) -> DFut,
-        DFut: std::future::Future<Output = ()>,
-        F: FnOnce(Node) -> Fut,
-        Fut: std::future::Future<Output = Result<(), String>>,
-    {
-        let name = &req.exited.name;
-        let mut run = self.begin(&req.build_id, req.attempt, name, format!("recover-node:{name}")).await;
-        let old = req.exited.clone();
-        let birth = old.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} ({}) has no known birth to recover", old.node_id) })?;
-        if req.exit.node_id != old.node_id || req.exit.incarnation_id != birth {
-            return Err(PipelineError {
-                step: RetireStep::NodeDeleting.name(),
-                reason: format!("{name}: the exit proof names birth {} at {}, the recovery is of {} at {}", req.exit.node_id, req.exit.incarnation_id.0, old.node_id, birth.0),
-            });
-        }
-        // The new node takes the endpoint key of the data dir it inherits: a dir that holds none is
-        // refused by name before anything of the exited birth changes.
-        let inherited = self.birth_dir(&old);
-        let inherited_key = load_transport_key(&inherited).map_err(|reason| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name}: {reason}") })?;
-        // node.delete of the exited instance: the receipt first, then the publish, as every delete.
-        let op = LifecycleOp {
-            build_id: req.build_id.to_string(),
-            attempt: req.attempt,
-            operation: run.operation.clone(),
-            node_id: old.node_id.clone(),
-            incarnation: birth.clone(),
-            name: name.clone(),
-            event_at_rafka_ms: self.lifecycle.now_rafka_ms(),
-        };
-        let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
-        self.lifecycle.deleting(&op).await;
-        // The provider's exact inspection, no RPC and no stop frame: the process already exited.
-        self.terminate_step(&mut run, &old, &req.handle).await?;
-        let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op };
-        let exit = &req.exit;
-        let op = self
-            .step(&mut run, RetireStep::NodeDeleted.name(), async {
-                tracing::info_span!(
-                    "rdm.node_admin.node.delete.via-exit-proof",
-                    build_id = %req.build_id,
-                    attempt = req.attempt,
-                    node = %name,
-                    node_id = %exit.node_id,
-                    incarnation_id = %exit.incarnation_id.0,
-                    exit_code = exit.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
-                    proof = %exit.proof,
-                    observed_at_ms = exit.observed_at_ms,
-                )
-                .in_scope(|| tracing::info!("the exited instance is deleted on the mesh primary's exit proof"));
-                Ok(op.clone())
-            })
-            .await?;
-        self.lifecycle.deleted(&op).await;
-        // The exited instance leaves the path, and is fenced before the new birth (same endpoint key)
-        // exists: no late old digest or dial returns the key to the old port. Only that exact birth
-        // leaves: on a rerun the new node may already hold the path, and it stays.
-        self.sink.remove_birth(name, &old.node_id, &birth);
-        // The key the fence names is the one in the inherited data dir (a record resolved from the
-        // durable runtime rows carries none): the new birth will load exactly it.
-        let mut fenced = old.clone();
-        if fenced.endpoint_id.is_none() {
-            fenced.endpoint_id = Some(inherited_key);
-        }
-        after_deleted(fenced).await;
-        // node.create at the same path.name over the inherited data dir: a new node.id and incarnation,
-        // the same endpoint key, no supersedes.
-        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, held_runtimes: req.held_runtimes.clone() };
-        let mut created = self.create_to_ready(&mut run, &creq, None, None, Some(inherited)).await?;
-        created.node.status = NodeStatus::ReadyForTraffic;
-        after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
-        // One Complete: the new node published. With the `NodeDeleted` above it says the exited
-        // birth is recovered.
-        self.step(&mut run, CreateStep::Complete.name(), async {
-            self.sink.publish(created.node.clone());
+    async fn update_steps(&self, req: &UpdateRequest) -> Result<(), PipelineError> {
+        let name = &req.node.name;
+        let mut run = self.begin(&req.build_id, req.attempt, name, format!("update-node:{name}")).await;
+        let (onto, from) = (&req.node, &req.from);
+        self.step(&mut run, UpdateStep::UpdateNode.name(), async {
+            if onto.node_id == from.node_id || onto.incarnation_id.is_none() {
+                return Err(format!("{name}: node.update copies the exited birth {}'s caller-owned meta onto the node its create made there, and the node held at the path is {} at {}", from.node_id, onto.node_id, onto.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")));
+            }
+            // The caller-owned group as this admin's records hold it of the exited birth: the node
+            // record carries no caller-owned field, so the group is its default and nothing is written.
+            let copied = crate::node_update::meta_of(onto).with_caller_owned_of(&crate::node_update::meta_of(from));
+            tracing::info!(node = %name, from = %from.node_id, onto = %onto.node_id, otel_debug = copied.otel_debug, written = false, "node.update onto the new node: the caller-owned group of the exited birth as held, no row written");
             Ok(())
         })
         .await?;
-        Ok(created)
+        self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
     }
 
     /// The predecessor, parked since its stop, is ended with the provider's exact terminal proof (one

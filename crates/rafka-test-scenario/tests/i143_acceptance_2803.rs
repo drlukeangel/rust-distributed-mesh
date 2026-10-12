@@ -57,8 +57,8 @@ fn births(nodes: &[Value]) -> BTreeMap<String, String> {
 /// (JoinNode), reads a local member's topology, becomes Ready and sweeps its own mesh once with a
 /// Ping: the two members that live answer, the one that died does not. The unreached member goes to
 /// node recovery (mesh-recovery.md step 6): the new mesh-primary's tickle, then the provider's exact
-/// exit proof, then one recovery under the same Build (`recover-node:<path>`: node.delete of the
-/// exited instance with no RPC to it, node.create at the same path.name); a missing Ping reply is the
+/// exit proof, then one recovery under the same Build (node.delete of the exited instance with no
+/// RPC to it, node.create at the same path.name, node.update); a missing Ping reply is the
 /// trigger, never the proof. The second admin is created by the NEW mesh primary. What must NOT
 /// happen: a new MeshId or Build id, a surviving member re-created, a member that answered
 /// recovered, the fabric primary creating the second admin.

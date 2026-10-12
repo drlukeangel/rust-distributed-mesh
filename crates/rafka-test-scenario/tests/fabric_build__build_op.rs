@@ -92,7 +92,7 @@ impl Caller {
     }
 
     fn nodes(&self, carrier: &BuildCarrier) -> Nodes {
-        Nodes::new(self.admin.clone(), carrier.clone())
+        Nodes::new(carrier.clone())
     }
 }
 

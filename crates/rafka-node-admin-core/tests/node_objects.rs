@@ -9,7 +9,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
-use rafka_node_admin_client::{BuildCarrier, Builds, CallEnd, Frame, NodeAdminClient, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
+use rafka_node_admin_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
 use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
 use rafka_node_admin_core::build_drive::{DepartureProof, Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
@@ -270,7 +270,7 @@ struct RigRunner {
 impl OperationRunner for RigRunner {
     async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         match op {
-            BuildOperation::CreateNode { node } => self.rig.pipeline_create(build_id, attempt, &node.to_string(), self.join).await,
+            BuildOperation::CreateNode { node, over: None } => self.rig.pipeline_create(build_id, attempt, &node.to_string(), self.join).await,
             other => Err(format!("the fixture creates nodes only, not {other:?}")),
         }
     }
@@ -299,9 +299,9 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     Served { router, carrier: BuildCarrier::new(client, "mesh1.admin.1".parse().unwrap()) }
 }
 
-/// The reads of the node objects go to one admin's control API; no cell of this file reads one.
+/// The node objects over `carrier`; no cell of this file reads a view.
 fn nodes_over(carrier: &BuildCarrier) -> Nodes {
-    Nodes::new(NodeAdminClient::new("http://127.0.0.1:1"), carrier.clone())
+    Nodes::new(carrier.clone())
 }
 
 struct Rig {
@@ -347,7 +347,7 @@ impl Rig {
             template: &self.template,
             timeouts: Timeouts { join, ..Timeouts::default() },
         };
-        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, held_runtimes: Vec::new() };
+        let req = CreateRequest { build_id: build.clone(), attempt, node: name.parse().unwrap(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() };
         pipeline.create(&req).await.map(|_| ()).map_err(|e| e.to_string())
     }
 
@@ -724,7 +724,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
 /// CONTRACT (node-recovery.md "Numbered end-to-end sequence" step 1: "A repeat submit answers
 /// AlreadyApplied or BuildInProgress, never a second recovery"): over op `0x20`, a recovery submit
 /// for an exited birth already recovered answers `Started { AlreadyApplied }` naming the Build and
-/// attempt whose `recover-node` operation recovered it, then the terminal `Complete` of that attempt
+/// attempt whose recovery (its delete, create and update) recovered it, then the terminal `Complete` of that attempt
 /// and nothing else. Must NOT happen: a drive made or started for the Build (a drive of an ended
 /// Build claims its next attempt), or an attempt opened.
 #[test]
@@ -751,12 +751,12 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
             Ok(rafka_node_admin_core::http::Recovery::Opened(o)) => o,
             other => panic!("the first recovery is admitted: {other:?}"),
         };
-        // The recovery's receipts as the pipeline writes them: NodeDeleted names the exited birth,
-        // Complete commits no output.
-        let deleted = rafka_mesh_entity::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("recover-node:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
-        for (step, output) in [("NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("Complete", None)] {
+        // The recovery's receipts as its three workflows write them: the delete's NodeDeleted names
+        // the exited birth, and each operation's Complete commits no output.
+        let deleted = rafka_mesh_entity::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("retire-node:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+        for (operation, step, output) in [("retire-node", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("retire-node", "Complete", None), ("create-node", "Complete", None), ("update-node", "Complete", None)] {
             rig.builds
-                .append_step_receipt(&BuildStepReceipt { build_id: b0.clone(), attempt: recovering.attempt, operation: format!("recover-node:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
+                .append_step_receipt(&BuildStepReceipt { build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
                 .await
                 .unwrap();
         }
