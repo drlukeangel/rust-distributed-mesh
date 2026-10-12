@@ -6103,8 +6103,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // gossip or readiness.
                                     {
                                         let declarer = declarer.clone();
-                                        let (digest, topology, records, me, me_id, incarnation, client, authority) =
-                                            (digest.clone(), control.topology.clone(), records.clone(), name.clone(), node_id.clone(), incarnation.0.clone(), node_rpc.client.clone(), authority.clone());
+                                        let (digest, topology, records, me_id, incarnation, client, authority) =
+                                            (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.0.clone(), node_rpc.client.clone(), authority.clone());
                                         let park = park_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             loop {
@@ -6112,7 +6112,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 let turn = park.turn("declarer").await;
                                                 let addressed = records.wake.take_addressed();
                                                 let view = topology.read().await.clone();
-                                                let own = digest.lock().unwrap().status;
+                                                // Named by the name it holds now: a start installs the name its join
+                                                // answer hands (R12, R-JN1), and its declarations say so.
+                                                let (me, own) = {
+                                                    let d = digest.lock().unwrap();
+                                                    (d.node.name.clone(), d.status)
+                                                };
                                                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
                                                 let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
