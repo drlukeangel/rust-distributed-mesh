@@ -100,6 +100,10 @@ pub enum CutSpec {
     /// The testkit application took the fabric's `sync_state` round and has not answered it: the
     /// fabric stays in state-sync until the release (`test_app` mode `hold`).
     StateSync,
+    /// A joining admin has joined and is about to make the topology read (op `0x1E`) of node-start.md
+    /// step 4, and has not made it: its start waits there, the node stays Pending and takes no traffic,
+    /// until the release. The joiner arms it from `<root>/faults/<name>.boot.json` before its first line.
+    TopologyRead,
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -171,6 +175,13 @@ pub enum Probe {
         /// The round's attempt.
         attempt: u32,
     },
+    /// A joining admin's topology read, about to be made.
+    TopologyRead {
+        /// The joining admin.
+        node: String,
+        /// The authority the read goes to: the admin that answered the join.
+        authority: String,
+    },
 }
 
 impl CutSpec {
@@ -188,6 +199,7 @@ impl CutSpec {
             (CutSpec::LeaveAnnouncement { announcements, channel }, Probe::LeaveAnnouncement { announcement, channel: c, .. }) => announcements.contains(announcement) && (channel == "any" || channel == c),
             (CutSpec::CatchUp, Probe::CatchUp { .. }) => true,
             (CutSpec::StateSync, Probe::StateSync { .. }) => true,
+            (CutSpec::TopologyRead, Probe::TopologyRead { .. }) => true,
             _ => false,
         }
     }
@@ -205,6 +217,7 @@ impl Probe {
             Probe::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
             Probe::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
             Probe::StateSync { build_id, attempt } => json!({"build_id": build_id, "attempt": attempt}),
+            Probe::TopologyRead { node, authority } => json!({"node": node, "authority": authority}),
         }
     }
 }

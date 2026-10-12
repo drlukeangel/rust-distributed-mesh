@@ -886,7 +886,9 @@ async fn silent_case(run: &Run) {
 /// by the semantic detector, never by a timeout. Cuts: a deployment step (create `WaitForBind`), a
 /// removal step on a serving node (retire `NodeDeleting`), a lifecycle hook (`BeforeEligibility`),
 /// the accepted Build durable, and current from then on (the
-/// fabric-primary admin held), and a non-primary rpc node frozen in place with SIGSTOP. Each: the
+/// fabric-primary admin held), a joining admin held at its Ready gate on the provider domain and another
+/// held at the topology read it makes while it hydrates (node-start.md step 4), and a non-primary rpc node
+/// frozen in place with SIGSTOP. Each: the
 /// injector acknowledged the active fault and named it; progress read three times (a Build's
 /// receipts and attempt on every admin, the current Build; a frozen node's process state, CPU use and the
 /// typed outcome of calls to it) stood still while held; the routing effect the cut's position
@@ -1016,6 +1018,9 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
 
     // A joining admin held at its Ready gate on the provider domain.
     join_case(&run, Family::ProviderDomain, "pending:provider-domain", json!({"kind": "provider-domain"}), "mesh1.admin.3", CreateStep::WaitForNodeReady).await;
+    // A joining admin held at the topology read it makes while it hydrates (node-start.md step 4, op 0x1E):
+    // it has joined and has not read, so the create Build waits at its Ready gate and the admin is not routable.
+    join_case(&run, Family::RuntimeMetadataHydration, "hydrate:topology-read", json!({"kind": "topology-read"}), "mesh1.admin.4", CreateStep::WaitForNodeReady).await;
 
     finish(run, &dir).await;
 }
@@ -1057,14 +1062,7 @@ async fn finish(run: Run, dir: &std::path::Path) {
     let not_run: Vec<Value> = Family::ALL
         .iter()
         .filter(|f| !covered.contains(&f.name()))
-        .map(|f| {
-            // The hydration family held a joining admin's write of the Fabric record. R14 item 2 (rafka-v2
-            // docs/plans/rulings/i143-r14-rdm-shared-store.md: "Writers are exactly the ladder. Fabric-primary:
-            // `fabric/`") leaves a joiner with no such write, and the Fabric row carries no pointer to the newest
-            // Build (R-BI3): the cut has no call to hold.
-            let why = (*f == Family::RuntimeMetadataHydration).then_some("a joining admin writes nothing to fabric/ (R14 item 2): it has no write of the Fabric record to hold");
-            json!({"family": f.name(), "judged_by": "wedge_detector_rejects_fault_without_progress_consequence (planted evidence)", "run_here": false, "why_not_on_the_estate": why})
-        })
+        .map(|f| json!({"family": f.name(), "judged_by": "wedge_detector_rejects_fault_without_progress_consequence (planted evidence)", "run_here": false}))
         .collect();
     let result = json!({
         "cell": CHAOS_CELL,
