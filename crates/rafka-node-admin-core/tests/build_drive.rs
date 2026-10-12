@@ -458,6 +458,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     }
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "only the first recovering node-admin ran");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), before.attempt + 1)], "the restore ran on the fabric-primary");
+    assert!(r.proofs.given.lock().unwrap().is_empty(), "a rebirth the ladder decided is told by the ladder, never by the proof of a fully crashed mesh");
     let second = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(second.len(), 2, "{second:?}");
     assert_eq!((second[1].1.get("target").map(String::as_str), second[1].1.get("rebirth_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{:?}", second[1].1);
@@ -519,6 +520,8 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
     }
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "only the mesh's first node-admin ran");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), before.attempt + 1)], "the create ran in process on the fabric-primary");
+    // R-DG1 (mesh-investigation.md steps 5-6): the fabric-primary gave the mesh a node-admin when it claimed the create, once.
+    assert_eq!(*r.proofs.given.lock().unwrap(), vec![("mesh2".to_string(), r.build.to_string(), before.attempt + 1)], "the claim of the fully crashed mesh's create told the proof the mesh was given a node-admin");
     let fenced = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(fenced.len(), 2, "the fence is named for the undecided admin.1 and then for admin.2: {fenced:?}");
     assert_eq!((fenced[1].1.get("target").map(String::as_str), fenced[1].1.get("rebirth_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("false")), "{:?}", fenced[1].1);

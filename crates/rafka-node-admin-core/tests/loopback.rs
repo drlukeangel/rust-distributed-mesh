@@ -114,6 +114,9 @@ pub struct Proofs {
     pub recorded: Mutex<BTreeSet<String>>,
     /// How many times `proven` was called.
     pub calls: std::sync::atomic::AtomicUsize,
+    /// The meshes the drive told it had been given a node-admin on the proof of a fully crashed mesh,
+    /// with the Build and attempt that claimed the create.
+    pub given: Mutex<Vec<(String, String, u32)>>,
 }
 
 #[async_trait::async_trait]
@@ -129,6 +132,9 @@ impl DepartureProof for Proofs {
     }
     async fn recorded(&self, executor: &PathName) -> bool {
         self.recorded.lock().unwrap().contains(&executor.to_string())
+    }
+    async fn mesh_given_node_admin(&self, mesh: &str, build_id: &rafka_node_admin_core::build::BuildId, attempt: u32, _from: std::time::Instant) {
+        self.given.lock().unwrap().push((mesh.to_string(), build_id.to_string(), attempt));
     }
     async fn exits_of(&self, nodes: &[PathName]) -> rafka_node_admin_core::build_drive::ExitProofs {
         let exited = self.exited.lock().unwrap();

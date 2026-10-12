@@ -141,6 +141,12 @@ pub trait DepartureProof: Send + Sync {
     async fn exits_of(&self, nodes: &[PathName]) -> ExitProofs {
         ExitProofs { proven: Vec::new(), unproven: nodes.iter().map(|a| format!("{a}: no provider proof is held here")).collect() }
     }
+    /// The fabric primary has claimed attempt `attempt` of `build_id`, whose create of the fully crashed
+    /// `mesh`'s first node-admin the provider's proof of every node admitted (mesh-investigation.md step
+    /// 5, "Fully crashed"), `from` being the instant before the claim: at that same moment it gives the
+    /// mesh a new node-admin and authors the fabric `degraded` (step 6, R-DG1), until the mesh's new
+    /// primary reports (step 7). A proof that holds no health records nothing.
+    async fn mesh_given_node_admin(&self, _mesh: &str, _build_id: &BuildId, _attempt: u32, _from: std::time::Instant) {}
 }
 
 /// Where the verdict an executor reported is recorded on the fabric-primary's own log, so the
