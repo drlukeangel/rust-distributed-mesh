@@ -63,14 +63,19 @@ pub(crate) enum Refusal {
 }
 
 pub(crate) trait Erased: Send + Sync {
-    fn call(&self, peer: PeerContext, payload: Vec<u8>) -> BoxFut<Result<Vec<u8>, HandlerFault>>;
+    /// The handler's future, with the serve span it runs under: the invocation names what follows the
+    /// handler (its fault or panic) under that span. `Span::none()` for a request that does not decode,
+    /// which is refused and opens no serve span.
+    fn call(&self, peer: PeerContext, payload: Vec<u8>) -> (tracing::Span, BoxFut<Result<Vec<u8>, HandlerFault>>);
     fn refusal(&self, r: Refusal) -> Vec<u8>;
     fn max_reply(&self) -> usize;
     /// A server-streaming handler: frames go out through `out` as the handler produces them.
     fn is_stream(&self) -> bool {
         false
     }
-    fn stream(&self, _peer: PeerContext, _payload: Vec<u8>, _out: crate::stream::StreamOut) -> Option<BoxFut<crate::stream::StreamEnd>> {
+    /// The streaming handler's future, with its serve span as [`Erased::call`] gives it: the stream's
+    /// end (its terminal or refusal) is written under that span.
+    fn stream(&self, _peer: PeerContext, _payload: Vec<u8>, _out: crate::stream::StreamOut) -> Option<(tracing::Span, BoxFut<crate::stream::StreamEnd>)> {
         None
     }
 }
@@ -86,32 +91,37 @@ where
     F: Fn(PeerContext, P::Request) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<P::Reply, HandlerFault>> + Send + 'static,
 {
-    fn call(&self, peer: PeerContext, payload: Vec<u8>) -> BoxFut<Result<Vec<u8>, HandlerFault>> {
+    fn call(&self, peer: PeerContext, payload: Vec<u8>) -> (tracing::Span, BoxFut<Result<Vec<u8>, HandlerFault>>) {
         let f = self.f.clone();
-        Box::pin(async move {
-            let req = match P::decode_request(&payload) {
-                Ok(r) => r,
-                Err(d) => {
+        let req = match P::decode_request(&payload) {
+            Ok(r) => r,
+            Err(d) => {
+                let refused = Box::pin(async move {
                     tracing::info_span!("rdm.node_rpc.request.reject.via-malformed", protocol = P::NAME, kind = ?d)
                         .in_scope(|| tracing::info!(?d, "request does not decode"));
-                    return P::encode_reply(&P::malformed(d.into())).map_err(|e| HandlerFault::invariant_broken(e.0));
-                }
-            };
-            let span = tracing::info_span!(
-                "rdm.node_rpc.request.serve.via-direct",
-                protocol = P::NAME,
-                op = P::OP,
-                peer = %peer.endpoint_id,
-                caller_system = tracing::field::Empty,
-                context_dropped = tracing::field::Empty,
-                test_case = tracing::field::Empty,
-                scenario = tracing::field::Empty,
-                operation = tracing::field::Empty,
-            );
-            apply_context(&span, &peer);
-            let reply = f(peer, req).instrument(span).await?;
+                    P::encode_reply(&P::malformed(d.into())).map_err(|e| HandlerFault::invariant_broken(e.0))
+                });
+                return (tracing::Span::none(), refused);
+            }
+        };
+        let span = tracing::info_span!(
+            "rdm.node_rpc.request.serve.via-direct",
+            protocol = P::NAME,
+            op = P::OP,
+            peer = %peer.endpoint_id,
+            caller_system = tracing::field::Empty,
+            context_dropped = tracing::field::Empty,
+            test_case = tracing::field::Empty,
+            scenario = tracing::field::Empty,
+            operation = tracing::field::Empty,
+        );
+        apply_context(&span, &peer);
+        let serve = span.clone();
+        let handler = Box::pin(async move {
+            let reply = f(peer, req).instrument(serve).await?;
             P::encode_reply(&reply).map_err(|e| HandlerFault::invariant_broken(e.0))
-        })
+        });
+        (span, handler)
     }
 
     fn refusal(&self, r: Refusal) -> Vec<u8> {
@@ -683,7 +693,7 @@ impl NodeRpcServer {
                 let ctx = PeerContext { endpoint_id: peer, context };
                 let out = crate::stream::StreamOut::new(send, h.max_reply());
                 if h.is_stream() {
-                    let Some(streaming) = h.stream(ctx, payload, out.clone()) else { return };
+                    let Some((serve, streaming)) = h.stream(ctx, payload, out.clone()) else { return };
                     let counted = InFlight::enter(&stats);
                     let joined = tokio::spawn(async move {
                         let _counted = counted;
@@ -691,12 +701,14 @@ impl NodeRpcServer {
                     })
                     .await;
                     drop(permit);
-                    out.finish(joined, &stats).await;
+                    // The stream's end is a step of its serve: its terminal (or refusal) is written and
+                    // named under the serve span, which ends once it is written.
+                    out.finish(joined, &stats).instrument(serve).await;
                     return;
                 }
                 let Some(mut send) = out.take().await else { return };
                 // Supervised: a panic is caught at this boundary.
-                let handler = h.call(ctx, payload);
+                let (serve, handler) = h.call(ctx, payload);
                 let counted = InFlight::enter(&stats);
                 let joined = tokio::spawn(async move {
                     let _counted = counted;
@@ -704,6 +716,15 @@ impl NodeRpcServer {
                 })
                 .await;
                 drop(permit);
+                // A fault or a panic is the end of the serve: named under the serve span, which ends here.
+                serve.in_scope(|| match &joined {
+                    Ok(Err(fault)) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
+                        .in_scope(|| tracing::info!("handler fault: 423")),
+                    Err(_panic) => tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
+                        .in_scope(|| tracing::info!("handler panicked: 423")),
+                    Ok(Ok(_)) => {}
+                });
+                drop(serve);
                 match joined {
                     Ok(Ok(reply)) if reply.len() <= h.max_reply() => {
                         let bytes = encode_frame(&reply);
@@ -721,16 +742,8 @@ impl NodeRpcServer {
                         stats.violations.fetch_add(1, Ordering::SeqCst);
                         let _ = send.reset(code(ResetCode::ProtocolViolation));
                     }
-                    Ok(Err(fault)) => {
+                    Ok(Err(_)) | Err(_) => {
                         stats.faults.fetch_add(1, Ordering::SeqCst);
-                        tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = fault.reason())
-                            .in_scope(|| tracing::info!("handler fault: 423"));
-                        let _ = send.reset(code(ResetCode::InternalRpcFailure));
-                    }
-                    Err(_panic) => {
-                        stats.faults.fetch_add(1, Ordering::SeqCst);
-                        tracing::info_span!("rdm.node_rpc.handler.reject.via-internal-rpc-failure", fault = "panic")
-                            .in_scope(|| tracing::info!("handler panicked: 423"));
                         let _ = send.reset(code(ResetCode::InternalRpcFailure));
                     }
                 }

@@ -454,6 +454,7 @@ async fn a_handler_fault_is_named_under_its_serve_span_in_the_callers_trace() {
     let p = process("mesh1.rpc.1").await;
     let (c, _) = client(None, &[&p.resolved]).await;
     let t = trace();
+    let _left = crate::common::TraceArtifact::new(&t.id);
     let req = ProbeRequest::Probe { payload: b"fault".to_vec() };
     let (out, _) = c.call::<Probe>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &req, &with(full(&t))).await;
     assert!(matches!(&out, RpcOutcome::Indeterminate(_)), "a fault after dispatch is indeterminate at the caller: {out:?}");

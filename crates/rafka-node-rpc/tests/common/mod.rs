@@ -231,3 +231,46 @@ pub fn spans_exporter() -> Spans {
         })
         .clone()
 }
+
+/// A cell's trace left on disk: when the guard drops, whether the cell passed or panicked, every span
+/// of `trace` the executable's capture holds goes to `target/i143-node-rpc/<cell>.<pid>.spans.json`,
+/// so a cell is read from its own trace and a red never needs a rerun.
+pub struct TraceArtifact {
+    trace: String,
+}
+
+impl TraceArtifact {
+    pub fn new(trace: &str) -> Self {
+        Self { trace: trace.to_string() }
+    }
+}
+
+impl Drop for TraceArtifact {
+    fn drop(&mut self) {
+        let spans = spans_exporter();
+        let flushed = spans.capture.flush(Duration::from_secs(10));
+        let rows: Vec<serde_json::Value> = spans
+            .exporter
+            .get_finished_spans()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| s.span_context.trace_id().to_string() == self.trace)
+            .map(|s| {
+                serde_json::json!({
+                    "name": s.name,
+                    "trace_id": s.span_context.trace_id().to_string(),
+                    "span_id": s.span_context.span_id().to_string(),
+                    "parent_span_id": s.parent_span_id.to_string(),
+                    "start_us": s.start_time.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0),
+                    "end_us": s.end_time.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0),
+                    "attributes": s.attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect::<std::collections::BTreeMap<_, _>>(),
+                })
+            })
+            .collect();
+        let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-node-rpc");
+        let path = dir.join(format!("{cell}.{}.spans.json", std::process::id()));
+        let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&rows).unwrap()));
+        eprintln!("node-rpc: trace {} ({} spans) -> {} (flush: {flushed:?}, write: {written:?})", self.trace, rows.len(), path.display());
+    }
+}
