@@ -377,10 +377,11 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
         .chain(named(&spans, "rdm.mesh.fabric.update.via-status-publisher").into_iter().filter(|sp| attr(sp, "node") == fp && attr(sp, "role") == "stop" && at_ns(sp) >= at_ns(rebirth_verdict)).map(at_ns))
         .min()
         .unwrap_or_else(|| panic!("{fp} heard {} again after the rebirth, or gave up the seat", f.lost));
-    let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| attr(sp, "authority") == fp && attr(sp, "scope").starts_with(&format!("{}.", f.lost))).collect();
+    let drifts: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-carrier-edge-lost").into_iter().filter(|sp| attr(sp, "authority") == fp && attr(sp, "mesh") == f.lost).collect();
     let while_unheard: Vec<&&Value> = drifts.iter().filter(|sp| at_ns(sp) >= at_ns(rebirth_verdict) && at_ns(sp) < heard_again).collect();
     assert_eq!(while_unheard.len(), 1, "one attempt while {} is held unheard, for its first recovering node-admin: {while_unheard:#?}", f.lost);
-    assert!(attr(while_unheard[0], "scope").contains(&format!("{}.admin.1", f.lost)) && attr(while_unheard[0], "action") == "recover", "the first node-admin in path order is recovered (node.delete then node.create): {:#?}", while_unheard[0]);
+    assert!(attr(while_unheard[0], "node") == format!("{}.admin.1", f.lost) && attr(while_unheard[0], "action") == "recipe" && attr(while_unheard[0], "reason") == "recipe", "the verdict runs node.create of the first node-admin in path order, a one-step recipe of the same Build: {:#?}", while_unheard[0]);
+    assert!(named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().all(|sp| !attr(sp, "scope").starts_with(&format!("{}.", f.lost))), "the verdict is no proven drift: nothing of {} is repaired from an exit proof", f.lost);
 
     // FabricStatus: never degraded before the verdict; degraded from it; ready again after.
     let degraded_at = statuses.iter().find(|(st, _)| st == "degraded").map(|(_, at)| *at).unwrap_or_else(|| panic!("the fabric primary showed degraded: {statuses:?}"));

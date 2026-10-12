@@ -859,7 +859,9 @@ async fn a_successor_proves_a_sibling_admins_exit_from_its_durable_runtime_row()
     let opened = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.accepted, &heard, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), std::slice::from_ref(&row), &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &exit_records()).await;
     assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the durable row's exact runtime exited: the next attempt of the same Build is open");
     let action = e.accepted.current(&*e.builds).await.unwrap().action;
-    assert!(matches!(&action, Some(rafka_node_admin_core::accepted::AttemptAction::Recover { path, node_id, .. }) if path.to_string() == lost && node_id.as_str() == old), "the recovery (node.delete then node.create) of the durable row's birth, never a replace: {action:?}");
+    assert_eq!(one_step_create_of(&action).as_deref(), Some(lost), "the durable row's birth was proven exited: the mesh that lost its mesh-primary gets node.create of its node-admin, a one-step recipe, never a Recover or a replace: {action:?}");
+    assert_eq!(e.accepted.current(&*e.builds).await.unwrap().reason, rafka_node_admin_core::build_state::AttemptReason::Recipe, "the attempt is a recipe's");
+    let _ = old;
 }
 
 #[tokio::test]
@@ -1091,7 +1093,7 @@ mod one_attempt_number {
     async fn a_drift_attempt_that_loses_its_number_to_a_requested_restart_opens_nothing() {
         let e = estate().await;
         let k = lose_a_node(&e).await;
-        let g = gate(&e, Holds::Attempt(AttemptReason::ProvenDrift));
+        let g = gate(&e, Holds::Attempt(AttemptReason::Recipe));
         let cp = door(&e, e.builds.clone()).await;
         // The drift pass either stops at the log's door with its number computed, or it ended
         // without opening anything: that is the cell's failure, named, never a wait.
@@ -1132,7 +1134,7 @@ mod one_attempt_number {
         assert_eq!(drift, Some((e.accepted.build_id().await.unwrap(), k + 1)), "the drift pass took the free number");
         let held = opened_facts(&e, k + 1).await;
         assert_eq!(held.len(), 1, "one Opened fact for attempt {}: {held:?}", k + 1);
-        assert_eq!(held[0].reason, AttemptReason::ProvenDrift, "the number is the drift attempt's: {held:?}");
+        assert_eq!(held[0].reason, AttemptReason::Recipe, "the number is the drift attempt's, a one-step node.create recipe: {held:?}");
         let refusal = rest.expect_err("the restart lost the number and was told so");
         let response = refusal.into_response();
         assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
@@ -1287,17 +1289,20 @@ mod one_attempt_number {
         let t = e.view.read().await.clone();
         let opened = rafka_node_admin_core::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &hold, &defers, &rebirth, &exit_records()).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
-        let Some(rafka_node_admin_core::accepted::AttemptAction::Recover { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Recover: the first recovering node-admin is node.delete of its exited birth then node.create") };
-        assert_eq!(path.to_string(), admins[0], "the first admin in path order");
+        let action = e.accepted.current(&*e.builds).await.unwrap().action;
+        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a one-step recipe: {action:?}");
     }
 }
 
-/// CONTRACT: a fabric primary that took the seat holds a peer mesh it never heard on the backbone as
-/// `ready` from topology alone (topology is not liveness). Once the ladder has decided that mesh's
-/// rebirth, its node-admins are proven from their exact runtimes and repaired like any unheard birth.
-/// Must NOT happen: the decided mesh waits forever because its view never says it is silent.
+/// CONTRACT (mesh-investigation.md step 6): a fabric primary that took the seat holds a peer mesh it
+/// never heard on the backbone as `ready` from topology alone (topology is not liveness). Once the
+/// ladder has decided that mesh's rebirth (`carrier-edge-lost`), the verdict opens the next attempt of
+/// the accepted Build with node.create of the mesh's first node-admin, a one-step recipe whose reason is
+/// the recipe's; the create's own fence asks the provider about the lost admin and deletes it only on its
+/// exact exit, so the opening recovers nothing. Must NOT happen: the decided mesh
+/// waits forever because its view never says it is silent, or the verdict opens a Recover.
 #[tokio::test]
-async fn a_decided_peer_mesh_held_ready_from_topology_is_proven_and_repaired() {
+async fn a_decided_peer_mesh_held_ready_from_topology_opens_the_one_step_create_recipe() {
     let e = estate().await;
     let before = e.accepted.current(&*e.builds).await.unwrap();
     let me: PathName = e.fabric_primary().await.parse().unwrap();
@@ -1312,19 +1317,11 @@ async fn a_decided_peer_mesh_held_ready_from_topology_is_proven_and_repaired() {
     let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
     let undecided = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|_| false, &exit_records()).await;
     assert_eq!(undecided, None, "nothing names the mesh's admins before the ladder decides");
-    let exits_store = Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default());
-    let exits = rafka_node_admin_core::admin::Records::default();
-    exits.set_status(exits_store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rafka_mesh_entity::NodeId::mint());
-    let decided = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &exits).await;
-    assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the decided mesh's exited admins open the next attempt");
-    let mut recorded = 0;
-    for i in 1..=2 {
-        let n = t.node(&format!("{lost}.admin.{i}").parse().unwrap()).unwrap();
-        if rafka_node_admin_core::status_storage::StatusStorage::node_exit_of(&*exits_store, lost, &n.node_id, n.incarnation_id.as_ref().unwrap()).await.unwrap().is_some() {
-            recorded += 1;
-        }
-    }
-    assert_eq!(recorded, 2, "both proven exits are recorded as exit-proof rows (the proven loss every projection reads), so neither dead admin holds the mesh's seat");
+    let decided = rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.accepted, &e.book, &e.provider, &*e.builds, &contexts, &tokio::sync::Mutex::new(()), &[], &mut started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, &exit_records()).await;
+    assert_eq!(decided, Some((before.build_id.clone(), before.attempt + 1)), "the verdict opens the next attempt of the same Build");
+    let opened = e.accepted.current(&*e.builds).await.unwrap();
+    assert_eq!(one_step_create_of(&opened.action).as_deref(), Some(format!("{lost}.admin.1").as_str()), "node.create of the mesh's first node-admin, a one-step recipe on the existing carrier: {:?}", opened.action);
+    assert_eq!(opened.reason, rafka_node_admin_core::build_state::AttemptReason::Recipe, "the attempt is a recipe's");
 }
 
 /// CONTRACT: a departure is not drift. A birth whose proven departure the authority holds
@@ -1464,8 +1461,8 @@ mod unheard_mesh_hold {
         let decided = |_: &str| Some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true });
         let opened = pass(&e, &mut started, &mut held, &decided).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision releases the first recovering node-admin");
-        let Some(rafka_node_admin_core::accepted::AttemptAction::Recover { path, .. }) = e.accepted.current(&*e.builds).await.unwrap().action else { panic!("not a Recover: the first recovering node-admin is node.delete of its exited birth then node.create") };
-        assert_eq!(path.to_string(), admins[0], "the first admin in path order");
+        let action = e.accepted.current(&*e.builds).await.unwrap().action;
+        assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a one-step recipe: {action:?}");
         let first = e.node_id(&admins[0]).await;
         assert!(!held.iter().any(|(n, _)| n.as_str() == first), "the admin the decision released is not held");
         // The restore runs on the same Build (mesh-investigation.md step 6): its attempt is claimed for the
@@ -1813,6 +1810,20 @@ fn a_removed_mesh_whose_final_primary_was_lost_before_mesh_deleted_opens_its_mes
 }
 
 /// The records a drift pass puts its exit proofs through: a status store held in memory.
+/// The node the attempt's action creates when it is the one-step recipe `node.create` of one node
+/// (mesh-investigation.md step 6: the node-admin joins the live mesh on the same accepted Build); `None`
+/// for any other action.
+fn one_step_create_of(action: &Option<rafka_node_admin_core::accepted::AttemptAction>) -> Option<String> {
+    use rafka_node_rpc_contract::build::RecipeStep;
+    match action {
+        Some(rafka_node_admin_core::accepted::AttemptAction::Recipe { steps, .. }) => match steps.as_slice() {
+            [RecipeStep::Create { node }] => Some(node.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn exit_records() -> rafka_node_admin_core::admin::Records {
     let r = rafka_node_admin_core::admin::Records::default();
     r.set_status(std::sync::Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rafka_mesh_entity::NodeId::mint());
