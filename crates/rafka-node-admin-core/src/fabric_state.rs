@@ -201,8 +201,10 @@ pub struct Expected {
 /// Where one planned birth's down op stands.
 #[derive(Debug, Clone)]
 enum Command {
-    /// The call is out: nothing is sent while it is.
-    Out { to: Destination, status: NodeStatus },
+    /// The call is out: nothing is sent while it is. `addressed`: the target addressed this primary
+    /// while it was out, an eligible event the call does not consume: if the call ends undelivered,
+    /// the command is due again on it.
+    Out { to: Destination, status: NodeStatus, addressed: bool },
     /// The birth answered (it admitted the op or refused it by name): the op is never sent again.
     Answered,
     /// The call was not delivered, or the birth said it is not ready. Sent again only on an eligible
@@ -319,7 +321,7 @@ impl RoundBook {
             };
             if let Some(event) = event {
                 let t = target.expect("a due birth is in the view");
-                r.commands.insert(slot, Command::Out { to: Destination::of(t), status: t.status });
+                r.commands.insert(slot, Command::Out { to: Destination::of(t), status: t.status, addressed: false });
                 due.push((n.clone(), e.clone(), event));
             }
         }
@@ -334,23 +336,36 @@ impl RoundBook {
     }
 
     /// The down op to this birth was not delivered (`typed`: the birth replied that it is not ready;
-    /// otherwise no reply came): it waits for an eligible event.
-    pub fn undelivered(&self, key: &RoundKey, node_id: &NodeId, incarnation: &IncarnationId, typed: bool) {
-        if let Some(r) = self.rounds.lock().unwrap().get_mut(key) {
-            let slot = (node_id.clone(), incarnation.clone());
-            if let Some(Command::Out { to, status }) = r.commands.get(&slot).cloned() {
-                r.commands.insert(slot, Command::Undelivered { sent: Sent { to, typed, route_lost: false }, status, addressed: false });
+    /// otherwise no reply came): it waits for an eligible event. Whether one already came while the
+    /// call was out (the target addressed this primary), so the op is due again now.
+    pub fn undelivered(&self, key: &RoundKey, node_id: &NodeId, incarnation: &IncarnationId, typed: bool) -> bool {
+        let due = match self.rounds.lock().unwrap().get_mut(key) {
+            Some(r) => {
+                let slot = (node_id.clone(), incarnation.clone());
+                match r.commands.get(&slot).cloned() {
+                    Some(Command::Out { to, status, addressed }) => {
+                        r.commands.insert(slot, Command::Undelivered { sent: Sent { to, typed, route_lost: false }, status, addressed });
+                        addressed
+                    }
+                    _ => false,
+                }
             }
+            None => false,
+        };
+        // Addressed while it was out: due again now, so the waiter is woken to send it.
+        if due {
+            self.bump();
         }
+        due
     }
 
     /// `node_id` addressed this primary (any Status call from it): an undelivered command to it is
-    /// eligible to be sent again.
+    /// eligible to be sent again, and so is one out now, should that call end undelivered.
     pub fn heard_from(&self, node_id: &NodeId) {
         let mut any = false;
         for r in self.rounds.lock().unwrap().values_mut() {
             for ((n, _), c) in r.commands.iter_mut() {
-                if let (true, Command::Undelivered { addressed, .. }) = (n == node_id, c) {
+                if let (true, Command::Undelivered { addressed, .. } | Command::Out { addressed, .. }) = (n == node_id, c) {
                     *addressed = true;
                     any = true;
                 }
@@ -622,6 +637,30 @@ mod tests {
         assert!(book.take_due(&k, &view).is_empty(), "a stranger addressing this primary is not the target");
         book.heard_from(&n.node_id);
         assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["addressed"], "the target addressed this primary");
+    }
+
+    /// CONTRACT (R-S2): the target addressing this primary while the command to it is out is an
+    /// eligible event the call does not consume: when that call ends undelivered (the target was not
+    /// ready when it took it), the command is sent again on the address. Must NOT happen: the address
+    /// dropped because no undelivered command stood when it arrived, so a target whose own
+    /// declaration (its last call to this primary) crossed a refused command is never commanded again
+    /// (gate red, tree b24a4303, fabric_states__rounds trace 95adb727: mesh1.admin.2's declaration
+    /// reached mesh1.admin.1 at 788604 while the commit-state sent at 788599 was out; it came back
+    /// NotReady and was next sent only 28 s later).
+    #[test]
+    fn an_address_that_arrives_while_the_command_is_out_sends_it_again_once_the_call_ends_undelivered() {
+        let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
+        let (book, k, n) = (RoundBook::default(), key("bld_1", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
+        book.open(&k);
+        book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
+        let view = view_of(vec![n.clone()]);
+        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"]);
+        book.heard_from(&n.node_id);
+        assert!(book.take_due(&k, &view).is_empty(), "the call is out: nothing is sent beside it");
+        book.undelivered(&k, &n.node_id, &inc, true);
+        assert_eq!(book.take_due(&k, &view).iter().map(|d| d.2).collect::<Vec<_>>(), ["addressed"], "the address made while the call was out sends the command again");
+        book.undelivered(&k, &n.node_id, &inc, true);
+        assert!(book.take_due(&k, &view).is_empty(), "the address counts once");
     }
 
     #[test]

@@ -41,3 +41,4 @@ mod node_reads;
 mod node_start_sequence;
 mod admin_top_up;
 mod admin_start_declares;
+mod admin_boot_name;

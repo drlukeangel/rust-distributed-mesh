@@ -527,6 +527,80 @@ fn a_round_sent_again_by_the_new_seat_holder_is_the_same_round_and_its_action_ru
     })
 }
 
+/// CONTRACT: a member checks in with the primary that commanded it (fabric-state-commit.md, round
+/// sequence: "M->>N: commit-state (exact planned birth)" then "N->>M: state-committed"; states.md,
+/// "The round checklist": "A new primary, through election or recovery, re-sends the current round.
+/// Members already done check in again, and the checklist rebuilds itself"). The seat moved to
+/// admin2, which commands the birth at once; the birth has not yet heard the seat move, so its seat
+/// book still names admin1. The command is admitted and the birth's check-in goes to admin2, the
+/// commander the call came from. What must NOT happen: the check-in addressed to the holder the
+/// birth's seat book names, which no longer holds the round, refuses it `RejectedNotAuthority` and
+/// never asks again: admin2's command was answered `Applied`, so it never re-sends and its
+/// checklist never completes (gate red, tree b24a4303, mesh_elections__sticky_seat trace
+/// 6bd35dbd: mesh1.rpc.1/2/3 checked in at the old holder 625kzaz0h98j, rejected-not-authority).
+#[test]
+fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_checked_in_to_that_commander() {
+    let cell = "a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_checked_in_to_that_commander";
+    let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        use rafka_node_admin_core::fabric_state::RoundKind;
+        let birth = Birth::up("round-unheard-commander").await;
+        let actions = HeldActions::new();
+        actions.gate.send_replace(true);
+        birth.running.own.set_round_actions(actions.clone());
+
+        // A second node-admin of mesh1 on the same gossip mesh, resolving the birth, and carried in
+        // admin1's member projection, so the birth names a call from it by its endpoint.
+        let admin2 = admin_side_serving_as("127.0.0.1".parse().unwrap(), &birth.launch.fabric_id, "mesh1.admin.2", MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin1_addr = iroh::EndpointAddr::new(birth.admin.seed.0.parse::<iroh::PublicKey>().unwrap()).with_ip_addr(birth.admin.seed.1);
+        admin2.observer.membership.join_peers(vec![admin1_addr]).await.expect("admin2 joins admin1's mesh channel");
+        let (d, _) = birth.admin.observer.membership.book.get(birth.launch.node_id.as_str()).unwrap();
+        admin2.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
+        let _carried = birth.admin.carry_in_projection(&admin2);
+        // The new primary has been a member all along: the birth hears its digest (its resolver dials it).
+        let book = &birth.running.membership.book;
+        let (mut heard, mut digests) = (book.heard_changes(), book.digest_changes());
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while book.get(admin2.launcher.node_id.as_str()).is_none() {
+                tokio::select! {
+                    r = heard.changed() => r.unwrap(),
+                    r = digests.changed() => r.unwrap(),
+                }
+            }
+        })
+        .await
+        .expect("the birth hears admin2's digest");
+        let admin2_endpoint = admin2.own_digest().node.endpoint_id.0.clone();
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while birth.running.membership.projected_member_at(&admin2_endpoint).is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the birth's member projection names admin2 at its endpoint");
+
+        // The birth's seat book names admin1; admin2, which took the seat, commands the round.
+        birth.seat(&birth.admin, 1).await;
+        assert_eq!(birth.round_from(&admin2, RoundKind::StateCommit, 1).await, StatusReply::Applied, "the round's first command is admitted, whoever sends it");
+        checked_in(&admin2, "state-committed", 1).await;
+        let at_admin1 = birth.admin.observer.check_ins.borrow().iter().filter(|r| r.op() == "state-committed").count();
+        assert_eq!(at_admin1, 0, "the check-in went to the commander, never to the holder the birth's seat book names");
+        // The completion call's span closes once its reply is back at the birth, after admin2 took it.
+        let admin2_id = admin2.launcher.node_id.to_string();
+        let named_admin2 = || spans_named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().any(|c| c.get("commander") == Some(&admin2_id) && c.get("answer").map(String::as_str) == Some("applied"));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !named_admin2() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the completion call names admin2 as its commander and was applied: {:?}", spans_named(&spans, "rdm.node_admin.status.update.via-completion-call")));
+        assert_eq!(actions.runs(), 1, "the action ran once");
+        let _ = std::fs::remove_dir_all(&birth.dir);
+    })
+}
+
 /// CONTRACT: `node.drain` observes the eligible in-flight work under the drain bound
 /// (node-drain.md step 3; Receipt: `Established { in_flight }`, or at the drain bound
 /// `Deadline { last_in_flight }`). A call that never finishes ends the drain at the bound with

@@ -331,6 +331,43 @@ pub struct Records {
     /// Where this admin's mesh's status rows live, read when this admin takes its mesh's seat
     /// (`crate::status_rpc::SeatFold`). Set once at start.
     status: std::sync::OnceLock<crate::status_rpc::SeatFold>,
+    /// This admin's Node RPC door, opened by an installed view ([`ServingDoor`]). Set once at start.
+    door: std::sync::OnceLock<ServingDoor>,
+}
+
+/// An admin's Node RPC readiness gate (node-rpc-envelope.md, "Node RPC readiness gate": "The router
+/// refuses every op, Ping included, with typed NotReady until the Node RPC door is ready. A node-admin
+/// waits until its Status authority is filled and its view holds it"): it opens once the authority is
+/// filled and a view this admin installs holds its exact birth, under whatever name it holds now (its
+/// join answer hands it its row's name, R-JN1), never by the name it booted under.
+pub struct ServingDoor {
+    /// The router's gate.
+    ready: Arc<std::sync::atomic::AtomicBool>,
+    /// This admin's exact birth.
+    birth: (NodeId, IncarnationId),
+    /// Whether the Status authority is filled.
+    authority_filled: Box<dyn Fn() -> bool + Send + Sync>,
+    /// The name this admin booted under, for the span.
+    boot_name: PathName,
+}
+
+impl ServingDoor {
+    /// The door over the router's gate `ready` for the birth `birth`, booted as `boot_name`.
+    pub fn new(ready: Arc<std::sync::atomic::AtomicBool>, birth: (NodeId, IncarnationId), authority_filled: Box<dyn Fn() -> bool + Send + Sync>, boot_name: PathName) -> Self {
+        Self { ready, birth, authority_filled, boot_name }
+    }
+
+    /// Open the door if it is closed, the authority is filled and `view` holds this admin's exact birth.
+    fn open_if_held(&self, view: &Topology) {
+        if self.ready.load(std::sync::atomic::Ordering::SeqCst) || !(self.authority_filled)() {
+            return;
+        }
+        if let Some(own) = view.births().find(|n| n.node_id == self.birth.0 && n.incarnation_id.as_ref() == Some(&self.birth.1)) {
+            self.ready.store(true, std::sync::atomic::Ordering::SeqCst);
+            tracing::info_span!("rdm.node_admin.node.serve.via-view-holds-birth", node = %own.name, node_id = %self.birth.0, incarnation_id = %self.birth.1.0, held_name = %own.name, boot_name = %self.boot_name)
+                .in_scope(|| tracing::info!("the Status authority is filled and this admin's view holds its exact birth: the Node RPC router serves"));
+        }
+    }
 }
 
 /// A peer mesh whose rebirth the fabric primary decided (`crate::investigate`).
@@ -373,6 +410,13 @@ impl Records {
     /// The writer of node rows the installed views feed (set once, at start).
     pub fn set_rows(&self, rows: Arc<crate::node_rows::NodeRows>) {
         let _ = self.rows.set(rows);
+    }
+
+    /// This admin's Node RPC door (set once, at start): every view installed from now on opens it
+    /// once it holds the birth, and `installed`, the view in place when it is set, is checked at once.
+    pub fn set_door(&self, door: ServingDoor, installed: &Topology) {
+        door.open_if_held(installed);
+        let _ = self.door.set(door);
     }
 
     /// The status rows of `mesh` this admin (`name`, born as `me`) folds when it takes `mesh`'s seat
@@ -673,8 +717,12 @@ impl Records {
         self.install(held, t).await
     }
 
-    /// Install `t` over the view `held` (its write lock held).
+    /// Install `t` over the view `held` (its write lock held). The door opens here, before the lock is
+    /// released, so no reader of the installed view sees this admin's birth while its door refuses.
     async fn install(&self, mut held: tokio::sync::RwLockWriteGuard<'_, Topology>, t: Topology) -> Topology {
+        if let Some(door) = self.door.get() {
+            door.open_if_held(&t);
+        }
         if *held != t {
             // The seat of this admin's mesh taken with this view: its status rows are folded in
             // before the view is installed, so no decision reads the view against an empty record.
@@ -1061,11 +1109,6 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
             continue;
         }
         let silent = age > book.staleness_floor();
-        // A graceful departure: a terminal `Leaving` digest, then nothing for one gossip interval.
-        // It leaves the view within one tick (fabric-node-lifecycle.md §6), never a staleness floor.
-        if !restarting && d.status == MemberStatus::Leaving && age > gossip_interval() {
-            continue;
-        }
         if let Some(id) = d.mesh_id.clone() {
             mesh_ids.entry(name.mesh.clone()).or_insert(id);
         }
@@ -1174,6 +1217,54 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         }
         nodes.entry(name).or_insert(n);
     }
+    // An own-mesh birth this admin holds only from its mesh-primary's projection (gossip.md §3.1
+    // `Members`: what every node-admin holds of every Mesh; the member's own Digest never reached this
+    // admin): listed as the projection carried it, never routable, its status the projection's while
+    // it is within the staleness floor of this admin first holding it, and past the floor marked
+    // `PendingReconnect` by this admin's own pruner (node-recovery.md "Detection and proof" step 1),
+    // so the window it keeps runs from that first hold, whichever admin takes the seat.
+    for (d, age) in book.projected_unheard_at(now) {
+        if &d.fabric_id != fabric_id {
+            continue;
+        }
+        heard.insert(d.node.incarnation.clone());
+        let Some(name) = rows.name_of(&d.node.node_id, &d.node.incarnation, &d.node.name) else { continue };
+        if removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
+            continue;
+        }
+        if let Some(id) = d.mesh_id.clone() {
+            mesh_ids.entry(name.mesh.clone()).or_insert(id);
+        }
+        let mut n = Node::allocated(name.clone());
+        n.node_id = d.node.node_id.clone();
+        n.endpoint_id = Some(d.node.endpoint_id.clone());
+        n.incarnation_id = Some(d.node.incarnation.clone());
+        n.provider = Some(provider);
+        n.status = if records.is_exited(&d.node.node_id, &d.node.incarnation) {
+            NodeStatus::Dead
+        } else if age <= book.staleness_floor() {
+            node_status(d.status)
+        } else if records.offline.lock().unwrap().contains(&(d.node.node_id.clone(), d.node.incarnation.clone())) {
+            NodeStatus::Dead
+        } else {
+            NodeStatus::PendingReconnect
+        };
+        n.routable = false;
+        n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
+        n.admin_api_base = d.admin_api_base.clone();
+        n.config = d.config.clone();
+        if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
+            n.listeners = vec![("control".to_string(), addr)];
+        }
+        n.transport_addr = Some(d.node.transport_addr);
+        n.data_dir = d.data_dir.clone();
+        n.deployment_id = d.node.runtime.as_ref().map(|f| DeploymentId(f.deployment_id.clone()));
+        if let Some(r) = launched(&recorded, &n.incarnation_id) {
+            n.deployment_id = r.deployment_id.clone().or(n.deployment_id.take());
+            n.data_dir = r.data_dir.clone();
+        }
+        nodes.entry(name).or_insert(n);
+    }
     // Births this admin started that have not reported yet. A launch record
     // stands in for a birth only until membership speaks for it: once heard,
     // it never revives the birth (another admin may have retired it since). A
@@ -1276,7 +1367,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
 }
 
 /// How often the view is rebuilt when no routing fact moved: the projection also reads the clock
-/// (a member silent past the staleness floor, a terminal `Leaving` one gossip interval old).
+/// (a member silent past the staleness floor).
 const VIEW_POLL: Duration = Duration::from_millis(200);
 
 /// The view's next rebuild is due: at once when a routing fact the book holds moved since the last
@@ -1484,28 +1575,123 @@ pub(crate) async fn claim_mesh_name(meshes: &dyn crate::storage::MeshStorage, me
     claimed
 }
 
-/// `create-mesh:<mesh>` at the fabric-primary `me` (lifecycles/node-create.md "Mesh absent ... Until
-/// the mesh has a primary, the fabric-primary writes its rows"; R13; CLAUDE.md: the claim is the first
-/// durable write of a create): `mesh_id`, the id the operation carries (minted once, when the mesh
-/// entered the accepted topology: node-identity-and-state.md §2.7, "Who mints it"), is claimed at the
-/// mesh's name before anything else of the mesh is written, and held in `records` (what every launch
-/// of the mesh carries) only once the claim won. Every run of the operation claims with that id, so
-/// a re-run (a later attempt, or a successor fabric-primary that holds nothing of the first run) finds
-/// the mesh's own row: the same MeshId re-claiming is idempotent. A refused claim fails the operation
-/// by name, holding nothing of the mesh: the Build runs no create of its nodes, so no node row of the
-/// mesh is claimed.
-pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<MeshId, String> {
+/// Why `create-mesh:<mesh>` did not claim the mesh's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CreateMeshError {
+    /// The mesh store answered and refused the claim by name: nothing of the mesh is written.
+    Refused(String),
+    /// The mesh store did not answer: nothing is decided, and nothing of the mesh is written.
+    Unanswered(String),
+}
+
+impl std::fmt::Display for CreateMeshError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(why) | Self::Unanswered(why) => f.write_str(why),
+        }
+    }
+}
+
+/// The mesh id the operation carries, held for what every launch of the mesh carries.
+fn hold_mesh_id(records: &Records, mesh: &str, mesh_id: &MeshId) {
+    records.meshes.lock().unwrap().insert(mesh.to_string(), mesh_id.clone());
+    records.wake.poke();
+}
+
+/// The claim `create-mesh:<mesh>` makes at the fabric-primary `me` (lifecycles/node-create.md "Mesh absent
+/// ... Until the mesh has a primary, the fabric-primary writes its rows"; R13; CLAUDE.md: the claim is
+/// the first durable write of a create): `mesh_id`, the id the operation carries (minted once, when the
+/// mesh entered the accepted topology: node-identity-and-state.md §2.7, "Who mints it"), is claimed at the
+/// mesh's name before anything else of the mesh is written, and held in `records` (what every launch of
+/// the mesh carries) only once the claim won. Every run of the operation claims with that id, so a run
+/// whose predecessor claimed and was lost finds the mesh's own row: the same MeshId re-claiming is
+/// idempotent. A refused claim fails the operation by name, holding nothing of the mesh: the Build runs
+/// no create of its nodes, so no node row of the mesh is claimed.
+pub(crate) async fn create_mesh(records: &Records, meshes: &dyn crate::storage::MeshStorage, me: &str, mesh: &str, mesh_id: &MeshId) -> Result<MeshId, CreateMeshError> {
     match claim_mesh_name(meshes, me, mesh, mesh_id).await {
         Ok(Ok(_)) => {
             // The won claim's id is the mesh's: it replaces any id held for the name before (a
             // removed mesh's), so no launch of this mesh carries another.
-            records.meshes.lock().unwrap().insert(mesh.to_string(), mesh_id.clone());
-            records.wake.poke();
+            hold_mesh_id(records, mesh, mesh_id);
             Ok(mesh_id.clone())
         }
-        Ok(Err(refused)) => Err(format!("{me}: create-mesh:{mesh}: the claim of the mesh's name for mesh {mesh_id} was refused, and nothing of the mesh is written: {refused}")),
-        Err(e) => Err(format!("{e}; nothing of the mesh is written")),
+        Ok(Err(refused)) => Err(CreateMeshError::Refused(format!("{me}: create-mesh:{mesh}: the claim of the mesh's name for mesh {mesh_id} was refused, and nothing of the mesh is written: {refused}"))),
+        Err(e) => Err(CreateMeshError::Unanswered(format!("{e}; nothing of the mesh is written"))),
     }
+}
+
+/// A step's receipt, its durable commit: the Build state takes it, or the step is not committed and the
+/// refusal is named with the step, its operation and its attempt.
+async fn commit_receipt(builds: &dyn BuildStateAdapter, me: &str, receipt: crate::build_state::BuildStepReceipt) -> Result<(), (&'static str, String)> {
+    builds
+        .append_step_receipt(&receipt)
+        .await
+        .map_err(|e| ("receipt-refused", format!("{me}: the {} receipt of {} (Build {}, attempt {}) was not written: {e}", receipt.step, receipt.operation, receipt.build_id, receipt.attempt)))
+}
+
+/// `create-mesh:<mesh>` as the Build runs it (node-rpc-envelope.md, Build op 0x20: "completed step
+/// receipts are read and replayed, never executed again"; Build carrier: "Completed steps are not
+/// rerun. Settle an idempotent uncertain step by its natural key"). The operation's one step is the
+/// claim of the mesh's name ([`create_mesh`]), and its `Complete` receipt, written by `executor`, is the
+/// step's durable commit.
+///
+/// - A `Complete` receipt of the operation in the Build's current run (from the attempt a reopen began,
+///   [`crate::build_state::BuildProjection::opened`], to this attempt) is the step done: it is replayed, which holds the operation's mesh id for this admin's launches and claims
+///   nothing and writes nothing.
+/// - No receipt is an uncertain step, run by its natural key: the claim finds the mesh free (written),
+///   or its own row standing (`row-held-by-mesh`: an earlier run claimed and was lost before it
+///   receipted), and the `Complete` receipt follows. A claim refused by name leaves a `Failed` receipt of
+///   `ClaimMeshName` naming the holder, and the step fails.
+/// - A mesh store that does not answer decides nothing and receipts nothing; a receipt the Build state
+///   does not take leaves the step uncommitted. Each fails the step by its own name.
+///
+/// One `rdm.node_admin.mesh.create.via-receipt` span per run; its `outcome` is `replayed`, `complete`,
+/// `refused`, `store-unanswered`, `receipt-refused` or `build-unreadable`, and the claim's own span is its
+/// child.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::storage::MeshStorage, builds: &dyn BuildStateAdapter, executor: &str, me: &str, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    use crate::build_state::{BuildStepReceipt, StepOutcome};
+    use crate::deployment::pipeline::CreateMeshStep;
+    let BuildOperation::CreateMesh { mesh, mesh_id } = op else { return Err(format!("{me}: {} is not a create-mesh operation", op.key())) };
+    let operation = op.key();
+    let span = tracing::info_span!(
+        "rdm.node_admin.mesh.create.via-receipt",
+        node = %me,
+        mesh = %mesh,
+        mesh_id = %mesh_id,
+        build_id = %build_id,
+        attempt,
+        operation = %operation,
+        outcome = tracing::field::Empty,
+        detail = tracing::field::Empty,
+        "otel.kind" = "internal",
+    );
+    let receipt = |step: CreateMeshStep, outcome: StepOutcome| BuildStepReceipt { build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.name().into(), outcome, output: None, executor: Some(executor.to_string()) };
+    let run = async {
+        let held = builds.read_build(build_id).await.map_err(|e| ("build-unreadable", format!("{me}: {operation}: the Build {build_id} could not be read for its receipts: {e}")))?;
+        if held.steps.iter().any(|r| r.operation == operation && r.step == CreateMeshStep::Complete.name() && r.outcome == StepOutcome::Complete && r.attempt >= held.opened && r.attempt <= attempt) {
+            hold_mesh_id(records, mesh, mesh_id);
+            return Ok("replayed");
+        }
+        match create_mesh(records, meshes, me, mesh, mesh_id).await {
+            Ok(_) => {
+                commit_receipt(builds, me, receipt(CreateMeshStep::Complete, StepOutcome::Complete)).await?;
+                Ok("complete")
+            }
+            Err(CreateMeshError::Refused(reason)) => {
+                commit_receipt(builds, me, receipt(CreateMeshStep::ClaimMeshName, StepOutcome::Failed { reason: reason.clone() })).await?;
+                Err(("refused", reason))
+            }
+            Err(CreateMeshError::Unanswered(reason)) => Err(("store-unanswered", reason)),
+        }
+    };
+    let r = tracing::Instrument::instrument(run, span.clone()).await;
+    match &r {
+        Ok(outcome) => span.record("outcome", *outcome),
+        Err((outcome, detail)) => span.record("outcome", *outcome).record("detail", detail.as_str()),
+    };
+    span.in_scope(|| tracing::info!("create-mesh: the operation's step is receipted, or replayed from its receipt"));
+    r.map(|_| ()).map_err(|(_, detail)| detail)
 }
 
 /// fabric.create's claim of the fabric's name (node-identity-and-state.md §2.8), by the fabric store's
@@ -1684,7 +1870,10 @@ impl RecoverySubmitter {
     /// birth carries, else the birth's own durable runtime row (a point read by its key).
     pub(crate) async fn inspect(&self, node: &Node) -> Inspected {
         let Some(incarnation) = node.incarnation_id.clone() else { return Inspected::NotExited(format!("{} holds no incarnation to inspect", node.name)) };
-        let held_row = self.book.get(node.node_id.as_str()).filter(|(dg, _)| dg.node.incarnation == incarnation);
+        // The birth's own digest, else the birth as its mesh-primary's projection carried it to this
+        // admin (gossip.md §3: the projection preserves the RuntimeFact an authority-bearing admin
+        // needs to manage the birth).
+        let held_row = self.book.get(node.node_id.as_str()).or_else(|| self.book.projected_at(node.node_id.as_str(), std::time::Instant::now())).filter(|(dg, _)| dg.node.incarnation == incarnation);
         let row = if held_row.as_ref().is_some_and(|(dg, _)| dg.node.runtime.is_some()) {
             None
         } else {
@@ -3155,8 +3344,7 @@ fn spawn_entry_sweep(
         // A reply proves a live exact birth: the view holds it (until membership speaks for
         // it), settled as ReadyForTraffic, in transition as its source held it (a Leaving
         // member that answers is alive and still leaving). A settled node that did not answer
-        // stays in the map as not yet reached; one in transition is left to its own last digest
-        // (a stopped member's terminal Leaving is a departure, never silence the tick watches).
+        // stays in the map as not yet reached; one in transition is left to its own last digest.
         for n in &report.reached {
             records.publish(n.as_node(n.transition.unwrap_or(NodeStatus::ReadyForTraffic), provider_kind));
         }
@@ -4243,7 +4431,7 @@ impl AdminRunner {
     async fn run_op(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
         use tracing::Instrument;
         match op {
-            BuildOperation::CreateMesh { mesh, mesh_id } => create_mesh(&self.records, &*self.mesh_storage, &self.me.to_string(), mesh, mesh_id).await.map(|_| ()),
+            BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor(), &self.me.to_string(), build_id, attempt, op).await,
             BuildOperation::CreateNode { node, over: Some(from) } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.0);
@@ -5414,6 +5602,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     accepted: control.accepted.clone(),
                                 }));
                             }
+                            // The Node RPC door: opened by the first view installed that holds this admin's exact birth
+                            // once the authority above is filled, whichever task installs it.
+                            {
+                                let authority = authority.clone();
+                                let door = ServingDoor::new(rpc_ready.clone(), (node_id.clone(), incarnation.clone()), Box::new(move || authority.get().is_some()), name.clone());
+                                records.set_door(door, &*control.topology.read().await);
+                            }
                             // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
                             // a fabric round is owed through it.
                             let declarer = crate::status_declare::Declarer::new();
@@ -5562,7 +5757,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         rows
                                     },
                                 });
-                                let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.seats().clone(), incarnation: incarnation.clone() }));
+                                let _ = build_slot.set(Arc::new(crate::build_op::BuildDoor { me: name.clone(), control: control.clone(), drives: drives.clone(), env: env.clone(), run: run_door, seats: membership.seats().clone(), incarnation: incarnation.clone(), incumbent: handover.clone() }));
                                 env
                             };
 
@@ -6412,7 +6607,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // once over the facts held before the hierarchy's first round, then on every fact.
                                     {
                                         let (book, named) = (membership.book.clone(), Mutex::new(NamedSteps::new()));
-                                        journal.derive_on_every_fact(Arc::new(move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap())));
+                                        journal.derive_on_every_fact(Arc::new(move |facts| overlays_from_facts(facts, &book, &mut named.lock().unwrap()))).await;
                                     }
 
                                     let hierarchy;
@@ -6626,7 +6821,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         let (topology, fabric, fabric_id, provider, book, records) = (control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
                                         let elections = ElectionLog::new(name.clone());
                                         let me = name.clone();
-                                        let (rpc_ready, authority) = (rpc_ready.clone(), authority.clone());
                                         // Not spawned behind the gate: the rebuild takes the view's lock, which every handler of a
                                         // parked admin reads (its start among them). It is held at its own wait instead
                                         // (`view_rebuild_due`), where it holds nothing.
@@ -6647,11 +6841,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                         .in_scope(|| tracing::info!("a name this admin's view held is excluded by the projection now"));
                                                 }
                                                 held = now;
-                                                // The router serves once the Status authority is filled and the view it decides
-                                                // from holds this admin.
-                                                if authority.get().is_some() && held.contains(&me) {
-                                                    rpc_ready.store(true, std::sync::atomic::Ordering::SeqCst);
-                                                }
                                                 drop(turn);
                                                 turn = view_rebuild_due(&mut facts, VIEW_POLL, &rebuild_gate).await;
                                             }
@@ -7166,6 +7355,7 @@ mod tests {
         assert_eq!(records.meshes.lock().unwrap().get("mesh2"), Some(&minted), "the won claim's id is what the mesh's launches carry");
         assert_eq!(create_mesh(&records, &meshes, "mesh1.admin.1", "mesh2", &carried).await, Ok(minted.clone()), "a re-run claims the same id");
         let refused = create_mesh(&records, &meshes, "mesh1.admin.1", "mesh3", &mesh3_carried).await.expect_err("mesh3's name is held by another mesh's live row");
+        let refused = refused.to_string();
         assert!(refused.contains("create-mesh:mesh3") && refused.contains(&holder.to_string()), "the refusal names the operation and the holder: {refused}");
         assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh3").await.unwrap(), Some(theirs), "the refused claim wrote nothing: mesh3's row is the holder's");
         assert_eq!(records.meshes.lock().unwrap().get("mesh3"), None, "no id is held for a mesh whose claim was refused: no launch of it can carry one");
@@ -7214,6 +7404,250 @@ mod tests {
         let said: Vec<(String, String, String)> = spans.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("mesh_id").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
         assert_eq!(said, vec![("mesh1.admin.1".to_string(), claimed.to_string(), "row-written".to_string()), ("mesh1.admin.2".to_string(), claimed.to_string(), "row-held-by-mesh".to_string())], "{spans:?}");
         eprintln!("span rdm.node_admin.mesh.create.via-mesh-row trace_id={} {:?}", spans[1].trace_id, spans[1].attributes);
+    }
+
+    /// The accepted Build that creates mesh2 beside mesh1, held by a Build log, and its `create-mesh:mesh2`
+    /// operation as the fabric-primary plans it.
+    async fn build_creating_mesh2(builds: &crate::build_state::MemoryBuildStateAdapter) -> (crate::build::BuildId, BuildOperation) {
+        let observed = view(&[digest("mesh1.admin.1", MemberStatus::ReadyForTraffic)]);
+        let current = crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap());
+        let change = crate::accepted::TopologyChange::CreateMesh { desired: crate::build::MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 1)]) };
+        let accepted = crate::accepted::compile(&current, &change, &observed).expect("mesh2 is accepted");
+        let op = crate::accepted::plan(&accepted, &observed, None).operations.into_iter().find(|op| matches!(op, BuildOperation::CreateMesh { .. })).expect("the plan creates mesh2");
+        let build_id = crate::build::BuildId("bld-create-mesh2".into());
+        builds.publish_accepted(&crate::build_state::BuildAccepted { build_id: build_id.clone(), topology: accepted, submitted_change: Some(change), submitted_at_ms: 0 }).await.expect("the Build is accepted");
+        (build_id, op)
+    }
+
+    /// The receipts of `operation` the Build holds: `(attempt, step, outcome, executor)`.
+    async fn receipts_of(builds: &crate::build_state::MemoryBuildStateAdapter, build_id: &crate::build::BuildId, operation: &str) -> Vec<(u32, String, crate::build_state::StepOutcome, Option<String>)> {
+        builds.read_build(build_id).await.expect("the Build is held").steps.into_iter().filter(|r| r.operation == operation).map(|r| (r.attempt, r.step, r.outcome, r.executor)).collect()
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: "completed step receipts are read and replayed, never
+    /// executed again"; Build carrier: "Completed steps are not rerun"): `create-mesh:mesh2` runs at the
+    /// fabric-primary, claims mesh2's name and commits its `Complete` receipt. A successor fabric-primary
+    /// that runs the same Build's `create-mesh:mesh2` reads that receipt: it makes no second claim, writes
+    /// no second receipt, and holds the MeshId the Build carries for its launches of mesh2. One
+    /// `rdm.node_admin.mesh.create.via-mesh-row` span (the first run's `row-written`), and a
+    /// `rdm.node_admin.mesh.create.via-receipt` span per run: `complete`, then `replayed`. Must NOT happen:
+    /// the successor claiming again (`row-held-by-mesh`), or a second `Complete` receipt of the step.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_completed_create_mesh_is_receipted_and_a_successor_replays_the_receipt_instead_of_claiming_again() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let (build_id, op) = build_creating_mesh2(&builds).await;
+        let BuildOperation::CreateMesh { mesh_id, .. } = &op else { unreachable!() };
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-receipt");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let (first, successor) = (Records::default(), Records::default());
+        create_mesh_step(&first, &meshes, &builds, "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect("the first run claims mesh2's free name");
+        create_mesh_step(&successor, &meshes, &builds, "key2@127.0.0.1:2", "mesh1.admin.2", &build_id, 2, &op).await.expect("the successor's run of the same step");
+        assert_eq!(
+            receipts_of(&builds, &build_id, "create-mesh:mesh2").await,
+            vec![(1, "Complete".to_string(), crate::build_state::StepOutcome::Complete, Some("key1@127.0.0.1:1".to_string()))],
+            "the step is receipted once, by the run that executed it"
+        );
+        assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(mesh_id), "the successor's launches of mesh2 carry the id the Build carries");
+        let claims = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
+        let claimed: Vec<(String, String)> = claims.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
+        assert_eq!(claimed, vec![("mesh1.admin.1".to_string(), "row-written".to_string())], "the successor makes no second claim: {claims:?}");
+        let steps = capture.named("rdm.node_admin.mesh.create.via-receipt");
+        let said: Vec<(String, String)> = steps.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
+        assert_eq!(said, vec![("mesh1.admin.1".to_string(), "complete".to_string()), ("mesh1.admin.2".to_string(), "replayed".to_string())], "{steps:?}");
+        eprintln!("span rdm.node_admin.mesh.create.via-receipt trace_id={} {:?}", steps[1].trace_id, steps[1].attributes);
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, Build carrier: "Settle an idempotent uncertain step by its natural
+    /// key"; node-identity-and-state.md §2.7: the same MeshId re-claiming its name is idempotent): the
+    /// fabric-primary claimed mesh2's name and was lost before it receipted the step, so the Build holds no
+    /// receipt of it. The successor's run is uncertain: it claims by the step's natural key, the mesh's
+    /// own row answers `row-held-by-mesh`, and the step is receipted `Complete` at the successor's
+    /// attempt. Must NOT happen: a refused claim, or a step that ends with no receipt.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_create_mesh_whose_receipt_was_never_written_settles_by_its_natural_key_and_is_receipted() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let (build_id, op) = build_creating_mesh2(&builds).await;
+        let BuildOperation::CreateMesh { mesh, mesh_id } = &op else { unreachable!() };
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-uncertain");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        // The lost fabric-primary: its claim landed, and its receipt did not.
+        create_mesh(&Records::default(), &meshes, "mesh1.admin.1", mesh, mesh_id).await.expect("the lost fabric-primary's claim");
+        assert_eq!(receipts_of(&builds, &build_id, "create-mesh:mesh2").await, vec![], "the lost run left no receipt");
+        let successor = Records::default();
+        create_mesh_step(&successor, &meshes, &builds, "key2@127.0.0.1:2", "mesh1.admin.2", &build_id, 2, &op).await.expect("the uncertain step settles by its natural key");
+        assert_eq!(receipts_of(&builds, &build_id, "create-mesh:mesh2").await, vec![(2, "Complete".to_string(), crate::build_state::StepOutcome::Complete, Some("key2@127.0.0.1:2".to_string()))]);
+        assert_eq!(successor.meshes.lock().unwrap().get("mesh2"), Some(mesh_id));
+        let claims = capture.named("rdm.node_admin.mesh.create.via-mesh-row");
+        let claimed: Vec<(String, String)> = claims.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
+        assert_eq!(claimed, vec![("mesh1.admin.1".to_string(), "row-written".to_string()), ("mesh1.admin.2".to_string(), "row-held-by-mesh".to_string())], "{claims:?}");
+        let steps = capture.named("rdm.node_admin.mesh.create.via-receipt");
+        let said: Vec<(String, String)> = steps.iter().map(|s| (s.attributes.get("node").cloned().unwrap_or_default(), s.attributes.get("outcome").cloned().unwrap_or_default())).collect();
+        assert_eq!(said, vec![("mesh1.admin.2".to_string(), "complete".to_string())], "{steps:?}");
+        eprintln!("span rdm.node_admin.mesh.create.via-receipt trace_id={} {:?}", steps[0].trace_id, steps[0].attributes);
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: a receipt is read and replayed by the run it belongs
+    /// to; `BuildProjection::opened`: a step receipt from the attempt a reopen opened on is the current
+    /// run's): `create-mesh:mesh2` completed in the Build's first run, which ended `Converged`; the Build
+    /// is reopened (attempt 2, a drift repair) and its plan names `create-mesh:mesh2` again because the
+    /// mesh is not yet in the executor's view. The earlier run's receipt is not this run's: the step runs
+    /// by its natural key (the mesh's own row answers `row-held-by-mesh`) and is receipted at attempt 2.
+    /// Must NOT happen: a receipt of a finished run replayed into the run a reopen began.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_reopened_builds_create_mesh_runs_by_its_natural_key_and_is_receipted_in_the_new_run() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let (build_id, op) = build_creating_mesh2(&builds).await;
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-reopened");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        let claim = |attempt: u32, executor: &str| crate::build_state::BuildAttemptClaim { build_id: build_id.clone(), attempt, executor: executor.into() };
+        assert_eq!(builds.claim_attempt(&claim(1, "key1@127.0.0.1:1")).await.unwrap(), crate::build_state::ClaimOutcome::Won);
+        create_mesh_step(&Records::default(), &meshes, &builds, "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect("the first run");
+        builds.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged }).await.unwrap();
+        builds
+            .open_attempt(&crate::build_state::AttemptOpened { build_id: build_id.clone(), attempt: 2, reason: crate::build_state::AttemptReason::ProvenDrift, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1 })
+            .await
+            .expect("the Build is reopened");
+        assert_eq!(builds.read_build(&build_id).await.unwrap().opened, 2, "attempt 2 begins the Build's current run");
+        assert_eq!(builds.claim_attempt(&claim(2, "key2@127.0.0.1:2")).await.unwrap(), crate::build_state::ClaimOutcome::Won);
+        create_mesh_step(&Records::default(), &meshes, &builds, "key2@127.0.0.1:2", "mesh1.admin.2", &build_id, 2, &op).await.expect("the reopened run");
+        let receipts = receipts_of(&builds, &build_id, "create-mesh:mesh2").await;
+        assert_eq!(receipts.iter().map(|r| (r.0, r.1.as_str())).collect::<Vec<_>>(), vec![(1, "Complete"), (2, "Complete")], "each run receipts its own step: {receipts:?}");
+        let claims: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-mesh-row").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        assert_eq!(claims, ["row-written", "row-held-by-mesh"], "the reopened run claims by the natural key");
+        let steps: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-receipt").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        assert_eq!(steps, ["complete", "complete"]);
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: "Durable step outcomes remain Complete and Failed"):
+    /// mesh2's name is held by another mesh's live row, so `create-mesh:mesh2` is refused by name. The
+    /// step `ClaimMeshName` is receipted `Failed` with the refusal's reason (the holder named), holds no id
+    /// for mesh2, and the operation is never receipted `Complete`. Must NOT happen: a `Complete` receipt beside a refused claim.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_create_mesh_refused_by_name_is_receipted_failed_naming_the_holder() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let builds = crate::build_state::MemoryBuildStateAdapter::new();
+        let (build_id, op) = build_creating_mesh2(&builds).await;
+        let holder = MeshId::mint();
+        crate::storage::MeshStorage::claim_mesh(&meshes, &crate::storage::MeshRecord { mesh_id: holder.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
+        let records = Records::default();
+        let refused = create_mesh_step(&records, &meshes, &builds, "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect_err("mesh2's name is held by another mesh");
+        assert!(refused.contains("create-mesh:mesh2") && refused.contains(&holder.to_string()), "{refused}");
+        let receipts = receipts_of(&builds, &build_id, "create-mesh:mesh2").await;
+        assert_eq!(receipts.len(), 1, "{receipts:?}");
+        let (attempt, step, outcome, executor) = &receipts[0];
+        assert_eq!((*attempt, step.as_str(), executor.as_deref()), (1, "ClaimMeshName", Some("key1@127.0.0.1:1")));
+        assert!(matches!(outcome, crate::build_state::StepOutcome::Failed { reason } if reason.contains(&holder.to_string())), "the Failed receipt names the holder: {outcome:?}");
+        assert_eq!(records.meshes.lock().unwrap().get("mesh2"), None, "no id is held for a mesh whose claim was refused");
+    }
+
+    /// A Build state over `0` whose step receipts are refused: nothing else differs.
+    struct RefusesReceipts(Arc<crate::build_state::MemoryBuildStateAdapter>);
+
+    #[async_trait::async_trait]
+    impl BuildStateAdapter for RefusesReceipts {
+        async fn publish_accepted(&self, a: &crate::build_state::BuildAccepted) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.publish_accepted(a).await
+        }
+        async fn open_attempt(&self, o: &crate::build_state::AttemptOpened) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.open_attempt(o).await
+        }
+        async fn read_build(&self, id: &crate::build::BuildId) -> Result<crate::build_state::BuildProjection, crate::build_state::BuildStateError> {
+            self.0.read_build(id).await
+        }
+        async fn list_active(&self) -> Result<Vec<crate::build_state::BuildProjection>, crate::build_state::BuildStateError> {
+            self.0.list_active().await
+        }
+        async fn claim_attempt(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, crate::build_state::BuildStateError> {
+            self.0.claim_attempt(c).await
+        }
+        async fn adopt_claim(&self, c: &crate::build_state::BuildAttemptClaim) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.adopt_claim(c).await
+        }
+        async fn append_step_receipt(&self, r: &crate::build_state::BuildStepReceipt) -> Result<(), crate::build_state::BuildStateError> {
+            Err(crate::build_state::BuildStateError::Io(format!("the journal refused the {} receipt of {}", r.step, r.operation)))
+        }
+        async fn append_attempt_receipt(&self, r: &crate::build_state::BuildAttemptReceipt) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.append_attempt_receipt(r).await
+        }
+        async fn facts(&self) -> Result<Vec<crate::build_state::BuildFact>, crate::build_state::BuildStateError> {
+            self.0.facts().await
+        }
+        async fn forget(&self, id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
+            self.0.forget(id).await
+        }
+        async fn recovery_of(&self, p: &crate::model::PathName, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {
+            self.0.recovery_of(p, n, i).await
+        }
+        async fn mesh_deleted_of(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {
+            self.0.mesh_deleted_of(n, i).await
+        }
+        async fn exits_owed(&self, id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, crate::build_state::BuildStateError> {
+            self.0.exits_owed(id, mesh).await
+        }
+    }
+
+    /// A mesh store that does not answer.
+    struct UnansweredMeshes;
+
+    #[async_trait::async_trait]
+    impl crate::storage::MeshStorage for UnansweredMeshes {
+        async fn mesh(&self, _: &str) -> Result<Option<crate::storage::MeshRecord>, crate::record_store::StorageError> {
+            Err(crate::record_store::StorageError::Io { file: "meshes".into(), reason: "the disk did not answer".into() })
+        }
+        async fn claim_mesh(&self, _: &crate::storage::MeshRecord) -> Result<Result<crate::storage::MeshClaim, crate::storage::MeshClaimRefused>, crate::record_store::StorageError> {
+            Err(crate::record_store::StorageError::Io { file: "meshes/mesh2.json".into(), reason: "the disk did not answer".into() })
+        }
+        async fn meshes(&self) -> Result<Vec<crate::storage::MeshRecord>, crate::record_store::StorageError> {
+            Err(crate::record_store::StorageError::Io { file: "meshes".into(), reason: "the disk did not answer".into() })
+        }
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, Build op 0x20: a step is committed by its receipt; CLAUDE.md: an
+    /// error state names what failed and where, distinct facts distinct arms): `create-mesh:mesh2` fails
+    /// by its own name when (1) the Build cannot be read for its receipts, so it claims nothing, (2) the
+    /// mesh store does not answer the claim, so it receipts nothing, and (3) the Build state refuses the
+    /// `Complete` receipt after the claim won: the step is uncommitted, and the next run settles it by its
+    /// natural key (`row-held-by-mesh`) and receipts it. One
+    /// `rdm.node_admin.mesh.create.via-receipt` span per run, `outcome` `build-unreadable`,
+    /// `store-unanswered`, `receipt-refused`, then `complete`. Must NOT happen: a `Complete` receipt of a
+    /// step that was not decided, or a step reported done whose receipt the Build state refused.
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_create_mesh_that_cannot_read_decide_or_commit_fails_by_name_and_the_next_run_settles_it() {
+        let meshes = crate::storage::MemoryMeshStorage::default();
+        let memory = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
+        let (build_id, op) = build_creating_mesh2(&memory).await;
+        let BuildOperation::CreateMesh { mesh_id, .. } = &op else { unreachable!() };
+        let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-cannot");
+        let _g = tracing::dispatcher::set_default(&capture.dispatch);
+        // (1) A Build the log never accepted: nothing is claimed.
+        let unknown = crate::build::BuildId("bld-never-accepted".into());
+        let unread = create_mesh_step(&Records::default(), &meshes, &*memory, "key1@127.0.0.1:1", "mesh1.admin.1", &unknown, 1, &op).await.expect_err("the Build is not held");
+        assert!(unread.contains("could not be read for its receipts") && unread.contains("bld-never-accepted"), "{unread}");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap(), None, "nothing was claimed beside a Build that could not be read");
+        // (2) The mesh store does not answer: nothing is receipted.
+        let unanswered = create_mesh_step(&Records::default(), &UnansweredMeshes, &*memory, "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect_err("the mesh store does not answer");
+        assert!(unanswered.contains("did not answer") && unanswered.contains("mesh2"), "{unanswered}");
+        assert_eq!(receipts_of(&memory, &build_id, "create-mesh:mesh2").await, vec![], "an undecided step is not receipted");
+        // (3) The claim won and the receipt is refused: the step is uncommitted.
+        let refused = create_mesh_step(&Records::default(), &meshes, &RefusesReceipts(memory.clone()), "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect_err("the Build state refuses the receipt");
+        assert!(refused.contains("Complete receipt of create-mesh:mesh2") && refused.contains("was not written") && refused.contains("journal refused"), "{refused}");
+        assert_eq!(crate::storage::MeshStorage::mesh(&meshes, "mesh2").await.unwrap().map(|m| m.mesh_id), Some(mesh_id.clone()), "the claim stands");
+        assert_eq!(receipts_of(&memory, &build_id, "create-mesh:mesh2").await, vec![], "the refused receipt is not in the log");
+        // The next run settles the uncertain step by its natural key.
+        create_mesh_step(&Records::default(), &meshes, &*memory, "key2@127.0.0.1:2", "mesh1.admin.2", &build_id, 2, &op).await.expect("the next run settles the step");
+        assert_eq!(receipts_of(&memory, &build_id, "create-mesh:mesh2").await.len(), 1);
+        let outcomes: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-receipt").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        assert_eq!(outcomes, ["build-unreadable", "store-unanswered", "receipt-refused", "complete"]);
+        let claims: Vec<String> = capture.named("rdm.node_admin.mesh.create.via-mesh-row").iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect();
+        assert_eq!(claims, ["row-refused", "row-written", "row-held-by-mesh"], "the claim made beside the unanswered store is refused by name; the settled run finds the mesh's own row");
     }
 
     /// CONTRACT (node-identity-and-state.md §2.8: "The fabric-primary claims the fabric's name by
@@ -7354,8 +7788,8 @@ mod tests {
         async fn signal_stop(&self, _: &crate::deployment::provider::DeploymentHandle) -> Result<(), crate::deployment::provider::DeployError> {
             Ok(())
         }
-        async fn find(&self, _: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<Option<crate::deployment::provider::DeploymentHandle>, crate::deployment::provider::DeployError> {
-            Ok(None)
+        async fn find(&self, _: &crate::deployment::provider::ResolvedNodeLaunch) -> Result<crate::deployment::provider::Found, crate::deployment::provider::DeployError> {
+            Ok(crate::deployment::provider::Found::NeverLaunched)
         }
     }
 
@@ -7727,7 +8161,7 @@ mod tests {
             crate::build_state::BuildFact::Step(deleted("NodeDeleted")),
             crate::build_state::BuildFact::Step(deleted("Complete")),
             crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }),
-        ]);
+        ]).await;
         let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         crate::fabric_storage::FabricStorage::claim_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
         crate::fabric_storage::FabricStorage::put_pointer(&*fabric, &crate::fabric_storage::FabricPointer { build_id: b1.clone(), submitted_at_ms: 1 }).await.unwrap();
@@ -8163,6 +8597,76 @@ mod tests {
         assert_eq!(watched, vec!["mesh1.rpc.1".to_string()], "only its own mesh's silent member is watched");
     }
 
+    /// CONTRACT (node-recovery.md, Detection: "The mesh-primary's tick (every gossip interval) reads
+    /// the members its view marks `PendingReconnect` (unheard past the staleness floor)"; "Detection
+    /// and proof" step 1: "Every node-admin keeps the silence bookkeeping (`first_seen`), so a
+    /// node-admin that takes the seat mid-window continues the window already running"): an admin of
+    /// mesh2 whose book holds mesh2.rpc.1 only from its mesh-primary's projection (the member's own
+    /// digest never reached it) lists the birth in its view, never routable: with the projected
+    /// status within one staleness floor of first holding it, and `PendingReconnect` past it. Its
+    /// tick watches the birth, and the silence mark is the instant it first held it plus the floor,
+    /// so the window it keeps began before any seat change. Must NOT happen: the view holding no birth
+    /// of the member, so an heir's tick watches nothing and the member is never recovered.
+    #[test]
+    fn an_admin_lists_and_watches_an_own_mesh_birth_held_only_from_its_primarys_projection() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        let me = with_id(digest("mesh2.admin.2", ReadyForTraffic), "200000000000");
+        assert!(book.record(me.clone()));
+        let member = with_id(digest("mesh2.rpc.1", ReadyForTraffic), "300000000000");
+        let t0 = std::time::Instant::now();
+        book.hold_projected_at(&member, t0);
+        let floor = book.staleness_floor();
+        let records = Records::default();
+        let path: PathName = "mesh2.rpc.1".parse().unwrap();
+        let early = project_at("fabric1", &fabric1(), ProviderKind::Process, &book, &records, t0 + floor / 2);
+        let n = early.node(&path).unwrap_or_else(|| panic!("the view holds the birth its primary's projection lists: {:?}", early.nodes));
+        assert_eq!((n.node_id.clone(), n.status, n.routable), (member.node.node_id.clone(), NodeStatus::ReadyForTraffic, false), "within the floor: the projected status, never routable (no liveness heard)");
+        let late_at = t0 + floor + Duration::from_millis(500);
+        let late = project_at("fabric1", &fabric1(), ProviderKind::Process, &book, &records, late_at);
+        assert_eq!(late.node(&path).map(|n| n.status), Some(NodeStatus::PendingReconnect), "unheard past the floor since it was first held");
+        let watched = watched_births(&late, &me.node.node_id, "mesh2", &[]);
+        assert_eq!(watched.keys().cloned().collect::<Vec<_>>(), vec![member.node.node_id.to_string()], "the tick watches it");
+        let now_ms = 1_000_000u64;
+        let silent = crate::offline::silent_set(watched.values(), &book, late_at, now_ms, floor);
+        assert_eq!(silent.iter().map(|s| s.marked_at_ms).collect::<Vec<_>>(), vec![Some(now_ms - 500)], "the mark: first held plus the floor");
+    }
+
+    /// CONTRACT (node-rpc-envelope.md, "Node RPC readiness gate": "A node-admin waits until its Status
+    /// authority is filled and its view holds it"): the admin's Node RPC door opens with the first view
+    /// installed that holds its exact birth once the authority is filled, whichever task installs that
+    /// view, so nothing that reads the installed view (the declarer that tells its primary it is ready
+    /// among them) sees its own birth while its door still refuses. A view without the birth, one
+    /// holding another birth of its name, and any view while the authority is not filled leave the
+    /// door closed. Must NOT happen: the door opened only by the view-rebuild task, which starts after
+    /// the declarer and a Build-log catch-up, so the admin declares itself ready to its primary while
+    /// its router answers every round command NotReady (gate red, tree b24a4303,
+    /// fabric_states__rounds trace 95adb727: mesh1.admin.2 declared ReadyForTraffic at 788604, its door
+    /// opened at 788637, and mesh1.admin.1's three commit-state sends had all come back NotReady).
+    #[tokio::test]
+    async fn an_admins_door_opens_with_the_first_installed_view_that_holds_its_exact_birth() {
+        let me = digest("mesh1.admin.2", MemberStatus::ReadyForTraffic);
+        let primary = digest("mesh1.admin.1", MemberStatus::ReadyForTraffic);
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let filled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let records = Records::default();
+        let authority = filled.clone();
+        let topology = RwLock::new(view(&[primary.clone()]));
+        records.set_door(ServingDoor::new(ready.clone(), (me.node.node_id.clone(), me.node.incarnation.clone()), Box::new(move || authority.load(std::sync::atomic::Ordering::SeqCst)), me.node.name.clone()), &*topology.read().await);
+        let mut other = me.clone();
+        other.node.incarnation = IncarnationId::mint();
+        let opened = || ready.load(std::sync::atomic::Ordering::SeqCst);
+        records.install_projected(&topology, || view(&[primary.clone(), me.clone()])).await;
+        assert!(!opened(), "the authority is not filled: the door stays closed");
+        filled.store(true, std::sync::atomic::Ordering::SeqCst);
+        records.install_projected(&topology, || view(&[primary.clone()])).await;
+        assert!(!opened(), "a view without this admin's birth leaves the door closed");
+        records.install_projected(&topology, || view(&[primary.clone(), other.clone()])).await;
+        assert!(!opened(), "another birth of its name is not this admin's birth");
+        records.install_projected(&topology, || view(&[primary.clone(), me.clone()])).await;
+        assert!(opened(), "the first installed view holding its exact birth, the authority filled, opens the door");
+    }
+
     /// CONTRACT (R-EL1, "a seat moves only by explicit yield": the election ignores a holder's
     /// status; seat_watch, R-A2: only a runtime found exited is a verified loss; fabric-node-lifecycle.md
     /// §7.3: every admin keeps the silence window, only the seat holder tickles): a mesh primary that
@@ -8398,7 +8902,7 @@ mod tests {
         let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }).await.unwrap().unwrap();
+        crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
         let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-final-exit-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
@@ -8487,7 +8991,7 @@ mod tests {
             let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
             let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
             let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }).await.unwrap().unwrap();
+            crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
             prove_exit(&book, &records, &last).await;
             records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
             let status = crate::status_storage::MemoryStatusStorage::default();
@@ -8537,7 +9041,7 @@ mod tests {
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let member = with_id(digest("mesh2.rpc.1", MemberStatus::Leaving), "210000000000");
         let (fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
-        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default() }).await.unwrap().unwrap();
+        storage.put_node_row(&crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
         let contact = |d: &MeshDigest| crate::storage::NodeRecord { node_id: d.node.node_id.clone(), fabric_id: fabric1(), name: d.node.name.clone(), mesh_id: mesh_id(&d.node.name.mesh), incarnation_id: d.node.incarnation.clone(), endpoint_id: d.node.endpoint_id.clone(), transport_addr: d.node.transport_addr, listeners: Vec::new() };
         // mesh2's primary wrote its members' contacts while it held the seat; mesh1's own stays.
         for d in [&last, &member, &fp] {
@@ -8578,12 +9082,12 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3068-leaving-mesh-admin-claim");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let created: PathName = "mesh2.admin.2".parse().unwrap();
-        let refused = rows.claim(&created, &NodeId::mint(), "create-node:mesh2.admin.2").await;
+        let refused = rows.claim(&created, &NodeId::mint(), "create-node:mesh2.admin.2", None).await;
         assert!(matches!(&refused, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "unheld, the lost holder still writes mesh2's rows: {refused:?}");
         prove_exit(&book, &records, &lost).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         let born = NodeId::mint();
-        match rows.claim(&created, &born, "create-node:mesh2.admin.2").await {
+        match rows.claim(&created, &born, "create-node:mesh2.admin.2", None).await {
             Ok(crate::node_rows::Claimed::Written { row, .. }) => assert_eq!((row.node_id, row.status), (born, NodeStatus::Pending)),
             other => panic!("the fabric-primary claims the created admin's name once the lost holder's exit is held: {other:?}"),
         }
@@ -9073,7 +9577,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default() };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None };
         assert_eq!(crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap(), Ok(()));
         crate::node_rows::move_row(&primary, &"mesh1.admin.1".parse().unwrap(), &record, BTreeMap::new(), Default::default(), &held.node.name, &to).await.unwrap();
         // This admin: the same book, its own store on the same root, no rename of its own.
@@ -9181,6 +9685,31 @@ mod tests {
         assert!(!routable(&of_pending_mesh), "a birth of a pending mesh is a routing stop");
         assert!(!routable(&of_leaving_mesh), "a birth of a leaving mesh is a routing stop");
         assert!(!routable(&of_unheard_mesh), "a birth of a mesh this admin holds no status of is not held ready-for-traffic");
+    }
+
+    /// CONTRACT (gossip.md §6.1: a stopped status by itself and silence are not departure proof;
+    /// node-identity-and-state.md §4.1: `Leaving` is a status the routing rule reads; §6: the
+    /// observer's inference evicts at the staleness floor): a member the book holds `Leaving` is
+    /// listed `Leaving` with the state it declared, whatever the age of its last heartbeat within the
+    /// staleness floor: a node declared Leaving that still heartbeats is a member of its mesh until it
+    /// is stopped or deleted. Past the floor it is the silent member any silent member is. Must NOT
+    /// happen: a `Leaving` member one gossip interval and a millisecond after its heartbeat absent from
+    /// the view, which is what makes `declared` unreadable at the authority that applied it.
+    #[test]
+    fn a_member_held_leaving_is_listed_leaving_with_its_declared_state_until_it_is_silent_past_the_staleness_floor() {
+        use rafka_node_rpc_contract::status::NodeState;
+        let book = DigestBook::default();
+        let records = Records::default();
+        let d = digest("mesh1.rpc.1", MemberStatus::Leaving);
+        let t0 = std::time::Instant::now();
+        assert!(book.record_at(d.clone(), t0));
+        records.declared.lock().unwrap().nodes.insert((d.node.node_id.clone(), d.node.incarnation.clone()), NodeState::Leaving);
+        let listed = |at: std::time::Instant| project_at("fabric1", &fabric1(), ProviderKind::Process, &book, &records, at).node(&d.node.name).cloned();
+
+        let within = listed(t0 + gossip_interval() + Duration::from_millis(1)).expect("a Leaving member one interval after its heartbeat is a member of the view");
+        assert_eq!((within.status, within.declared.as_deref(), within.routable, within.parked), (NodeStatus::Leaving, Some("Leaving"), false, false));
+        let silent = listed(t0 + book.staleness_floor() + Duration::from_millis(1)).expect("silent past the floor it is listed, not departed");
+        assert_eq!((silent.status, silent.declared.as_deref()), (NodeStatus::PendingReconnect, Some("Leaving")), "silent past the staleness floor it is the silent member any silent member is");
     }
 
     /// CONTRACT (states.md: a mesh is pending -> ready-for-traffic -> leaving -> dead; "Routing": a
@@ -9360,7 +9889,7 @@ mod tests {
         record.node_id = held.node.node_id.clone();
         record.incarnation_id = Some(held.node.incarnation.clone());
         record.status = NodeStatus::Leaving;
-        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default() };
+        let row = crate::storage::NodeRow { name: held.node.name.clone(), node_id: held.node.node_id.clone(), status: NodeStatus::Leaving, config: BTreeMap::new(), tags: Default::default(), allocated: None };
         assert_eq!(crate::storage::NodesStorage::put_node_row(&primary, &row).await.unwrap(), Ok(()));
         let (me, base) = ("mesh1.admin.1".parse::<PathName>().unwrap(), held.node.name.base());
         crate::node_rows::move_row(&primary, &me, &record, BTreeMap::new(), Default::default(), &held.node.name, &base).await.unwrap();
@@ -9440,8 +9969,9 @@ mod tests {
     #[test]
     fn a_launch_record_never_revives_a_birth_that_another_admin_retired() {
         // This admin launched mesh1.rpc.1; another admin (the primary) retired
-        // it: its last word is Leaving, then silence. This admin's own launch
-        // record must not bring it back as ready.
+        // it: its last word is Leaving, then silence. Membership speaks for the
+        // birth (silent past the floor), so this admin's own launch record must
+        // not bring it back as ready.
         let book = DigestBook::default();
         let left = digest("mesh1.rpc.1", MemberStatus::Leaving);
         book.record(left.clone());
@@ -9452,7 +9982,7 @@ mod tests {
         records.publish(n.clone());
         let past_floor = std::time::Instant::now() + book.staleness_floor() + Duration::from_millis(1);
         let t = project_at("fabric1", &fabric1(), ProviderKind::Process, &book, &records, past_floor);
-        assert!(t.node(&left.node.name).is_none(), "{:?}", t.node(&left.node.name));
+        assert_eq!(t.node(&left.node.name).map(|n| n.status), Some(NodeStatus::PendingReconnect), "the book speaks for the birth, silent past the floor; the launch record's ready never stands in: {:?}", t.node(&left.node.name));
         // A birth it launched that membership has not spoken for yet is shown.
         let fresh = Records::default();
         let mut pending = Node::allocated("mesh1.rpc.2".parse().unwrap());

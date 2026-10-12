@@ -1411,7 +1411,7 @@ impl RepairSchedule {
 }
 
 /// The held members of `book` that `pick` selects, each with how long it has gone unheard; a
-/// terminal `Leaving` is a graceful departure, never a repair target.
+/// member held `Leaving` is never a repair target.
 pub(crate) fn held_targets(book: &DigestBook, pick: impl Fn(&MeshDigest) -> bool) -> Vec<RepairTarget> {
     let now = Instant::now();
     // A member under an open restart or removal is held through it, but its address is a birth's
@@ -4273,6 +4273,14 @@ pub struct DigestBook {
     /// The status this book holds for each own-mesh birth, by NodeId: what the mesh-primary's
     /// projection said, or, while this book's holder is the primary, what it authored.
     member_statuses: Arc<Mutex<HashMap<String, (IncarnationId, rafka_mesh_entity::MemberStatus)>>>,
+    /// The own-mesh births this book holds only from its mesh-primary's projection, by NodeId: the
+    /// birth as the projection carried it (its identity, endpoint and runtime fact: gossip.md §3,
+    /// "needed by an authority-bearing admin to manage that birth"), and the instant this book first
+    /// held it. The member's own Digest never reached this book, so it is unheard since that instant
+    /// (node-recovery.md "Detection and proof" step 1). A projection carries no liveness: a later
+    /// entry of the same birth moves nothing of it, and a version that no longer lists it is no
+    /// departure. The member's own digest supersedes it; its departure or stop removes it.
+    projected: Arc<Mutex<HashMap<String, (MeshDigest, Instant)>>>,
     /// The stop and restart overlays that ended here (their birth rejoined), by operation key: a
     /// later copy of the same overlay (a snapshot built before the rejoin, the primary's round
     /// re-applying an operation whose `Complete` is not receipted yet) opens nothing.
@@ -4412,12 +4420,11 @@ fn reject_departed(d: &MeshDigest, via: &'static str) {
 }
 
 /// How long a member has gone unheard at `now`: the time since its receipt, a member heard directly
-/// or on the backbone alike. A member known only from forwarded topology never ages (R-G2:
-/// forwarded topology carries topology, never liveness); a terminal `Leaving` is a proven
-/// departure, not silence, so it ages from its receipt however it was heard.
-fn unheard(d: &MeshDigest, at: &Instant, heard: Heard, now: Instant) -> Duration {
+/// or on the backbone alike. A member known only from forwarded topology never ages, whatever status
+/// it is listed with (R-G2: forwarded topology carries topology, never liveness).
+fn unheard(at: &Instant, heard: Heard, now: Instant) -> Duration {
     match heard {
-        Heard::Topology if d.status != rafka_mesh_entity::MemberStatus::Leaving => Duration::ZERO,
+        Heard::Topology => Duration::ZERO,
         _ => now.saturating_duration_since(*at),
     }
 }
@@ -4466,6 +4473,7 @@ impl DigestBook {
             own_mesh: Arc::default(),
             own: Arc::default(),
             member_statuses: Arc::default(),
+            projected: Arc::default(),
             ended_overlays: Arc::default(),
             executed: Arc::default(),
             holder: Arc::default(),
@@ -4535,6 +4543,7 @@ impl DigestBook {
         self.in_flight.lock().unwrap().remove(&op.key());
         self.overlays_moved();
         self.member_statuses.lock().unwrap().remove(&id);
+        self.projected.lock().unwrap().remove(&id);
         let removed = self.inner.lock().unwrap().remove(&id).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-deleted",
@@ -4859,6 +4868,7 @@ impl DigestBook {
         self.stopped_marks.lock().unwrap().insert(op.node_id.to_string(), StopMark { incarnation: op.incarnation.clone(), held_seq: seq, held: held_digest, latest: None, carried: carried.clone() });
         // A stopped birth's status is the overlay: the status held for it ends with it.
         self.member_statuses.lock().unwrap().remove(op.node_id.as_str());
+        self.projected.lock().unwrap().remove(op.node_id.as_str());
         let removed = self.inner.lock().unwrap().remove(op.node_id.as_str()).is_some();
         tracing::info_span!(
             "rdm.mesh.membership.remove.via-node-stopped",
@@ -5261,6 +5271,8 @@ impl DigestBook {
         if !self.own_mesh_member(d) || self.is_departed(d.node.node_id.as_str()) || self.is_stopped(d) {
             return false;
         }
+        // The birth itself, as the projection carries it, when this book holds no digest of it.
+        self.hold_projected_at(d, Instant::now());
         let prior = {
             let mut statuses = self.member_statuses.lock().unwrap();
             let prior = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s);
@@ -5305,6 +5317,43 @@ impl DigestBook {
     /// (a late joiner) is not listed.
     pub fn parked(&self) -> Vec<MeshDigest> {
         self.stopped_marks.lock().unwrap().values().filter_map(|m| m.held.clone()).collect()
+    }
+
+    /// Hold the own-mesh birth `d` its mesh-primary's projection lists, received at `now`, when this
+    /// book holds no digest of it ([`DigestBook::projected`]): first held at `now`, or kept as first
+    /// held when this exact birth is held already (a projection is no liveness); a later birth of
+    /// the node replaces an earlier one, first held at `now`.
+    pub fn hold_projected_at(&self, d: &MeshDigest, now: Instant) {
+        if self.inner.lock().unwrap().contains_key(d.node.node_id.as_str()) {
+            return;
+        }
+        let mut projected = self.projected.lock().unwrap();
+        match projected.get_mut(d.node.node_id.as_str()) {
+            Some((held, _)) if held.node.incarnation == d.node.incarnation => {}
+            Some((held, _)) if held.node.supersedes.as_ref() == Some(&d.node.incarnation) => {}
+            _ => {
+                projected.insert(d.node.node_id.to_string(), (d.clone(), now));
+            }
+        }
+    }
+
+    /// The own-mesh birth of `node_id` this book holds only from its mesh-primary's projection, and
+    /// how long it has gone unheard at `now`: since this book first held it. `None` once the
+    /// member's own digest is held, or the node departed or stopped.
+    pub fn projected_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
+        let heard = self.inner.lock().unwrap().contains_key(node_id);
+        let stopped = self.stopped_marks.lock().unwrap().contains_key(node_id);
+        if heard || stopped || self.is_departed_at(node_id, now) {
+            return None;
+        }
+        self.projected.lock().unwrap().get(node_id).map(|(d, at)| (d.clone(), now.saturating_duration_since(*at)))
+    }
+
+    /// Every own-mesh birth this book holds only from its mesh-primary's projection
+    /// ([`DigestBook::projected_at`]), each with how long it has gone unheard at `now`.
+    pub fn projected_unheard_at(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
+        let ids: Vec<String> = self.projected.lock().unwrap().keys().cloned().collect();
+        ids.iter().filter_map(|id| self.projected_at(id, now)).collect()
     }
 
     /// The open stop overlays of stopped births this book never held a digest of (an admin that
@@ -5457,6 +5506,7 @@ impl DigestBook {
         self.in_flight.lock().unwrap().retain(|_, o| o.node_id != op.node_id);
         self.overlays_moved();
         self.member_statuses.lock().unwrap().remove(&id);
+        self.projected.lock().unwrap().remove(&id);
         self.inner.lock().unwrap().remove(&id);
         true
     }
@@ -5767,18 +5817,11 @@ impl DigestBook {
         self.current_at(fresh, Instant::now())
     }
 
-    /// Digests heard within `fresh` of `now`. A graceful departure (a terminal `Leaving`, then
-    /// nothing for one gossip interval) is gone within that tick (fabric-node-lifecycle.md §6): it
-    /// is not current, so no view and no aggregate carries it on.
+    /// Digests heard within `fresh` of `now`, whatever status each holds: a member held `Leaving`
+    /// is current like any member (gossip.md §6.1: a stopped status by itself and silence are not
+    /// departure proof), and every aggregate carries it as held.
     pub(crate) fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
-        self.inner
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|(d, at, fw)| unheard(d, at, *fw, now) <= fresh)
-            .filter(|(d, at, _)| !(d.status == rafka_mesh_entity::MemberStatus::Leaving && now.saturating_duration_since(*at) > gossip_interval()))
-            .map(|(d, _, _)| d.clone())
-            .collect()
+        self.inner.lock().unwrap().values().filter(|(_, at, fw)| unheard(at, *fw, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
     }
 
     /// The digests this node received straight from their members (their own word, on the channel
@@ -5795,7 +5838,7 @@ impl DigestBook {
 
     /// The member's latest digest and how long it has gone unheard at `now`.
     pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, now)))
+        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)))
     }
 
     /// Every digest held.
@@ -5840,7 +5883,7 @@ impl DigestBook {
 
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
     pub(crate) fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(d, at, *fw, now))).collect()
+        self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect()
     }
 }
 
@@ -6415,6 +6458,66 @@ mod tests {
         assert_eq!(view.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::ReadyForTraffic), "after it, by its NodeId: its own status stands");
     }
 
+    /// CONTRACT (gossip.md §3: "the aggregate/current birth projection preserves the current
+    /// RuntimeFact and required current runtime metadata needed by an authority-bearing admin to
+    /// manage that birth"; §3.1 `Members`: "what every node-admin holds of every Mesh", where "for an
+    /// own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and
+    /// status from the projection"; node-recovery.md "Detection and proof" step 1: "Every node-admin
+    /// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the seat mid-window
+    /// continues the window already running"): a node-admin of mesh1 that is not its primary, whose
+    /// primary's projection lists mesh1.rpc.1 though the member's own Digest never reached it, holds
+    /// the birth from that projection, unheard since it first held it. A later version listing it
+    /// again does not refresh its silence, and the primary dropping the silent member from its
+    /// projection (no departure) does not forget it. The member's own digest, once heard, is the
+    /// birth's word; a departure removes a projected birth. Must NOT happen: the book holding nothing
+    /// of a member its primary's projection listed, so an heir that never heard the member keeps no
+    /// window for it; or a projection refreshing a silence.
+    #[test]
+    fn an_admin_holds_an_own_mesh_birth_its_primarys_projection_lists_unheard_since_it_first_held_it() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = View::new("mesh1", "mesh1.admin.2");
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let members = |version: u64, digests: Vec<MeshDigest>, departed: Vec<LifecycleOp>| Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: publisher.clone(),
+            forwarded_by: Some("mesh1.admin.1".into()),
+            topology_version: version,
+            published_at_rafka_ms: version,
+            snapshot_id: version,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests,
+            in_flight: vec![],
+            departed,
+        };
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let (gone, gone_inc) = (NodeId::mint(), IncarnationId::mint());
+        let member = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 4);
+        let mut other = digest(&gone, &gone_inc, None, MemberStatus::ReadyForTraffic, 4);
+        other.node.name = "mesh1.rpc.2".parse().unwrap();
+        view.take_snapshot(&members(1, vec![member.clone(), other.clone()], vec![]), &fabric, Side::MeshChannel);
+        let first_held_by = Instant::now();
+        assert!(view.book.get(id.as_str()).is_none(), "a projection is no liveness: no digest of the member is held");
+        let held = |now: Instant| view.book.projected_at(id.as_str(), now).map(|(d, unheard)| (d.node.incarnation.clone(), now.checked_sub(unheard)));
+        let (incarnation, since) = held(Instant::now()).expect("the birth its primary's projection lists is held from that projection");
+        assert_eq!(incarnation, inc);
+        assert!(since.is_some_and(|s| s <= first_held_by), "unheard since it was first held");
+        std::thread::sleep(Duration::from_millis(20));
+        view.take_snapshot(&members(2, vec![member.clone(), other.clone()], vec![]), &fabric, Side::MeshChannel);
+        assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "a later version listing it again does not refresh its silence");
+        view.take_snapshot(&members(3, vec![other.clone()], vec![]), &fabric, Side::MeshChannel);
+        assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "the primary dropping the silent member from its projection is no departure: the birth stays held");
+        let listed: Vec<String> = view.book.projected_unheard_at(Instant::now()).into_iter().map(|(d, _)| d.node.name.to_string()).collect();
+        assert_eq!(listed.len(), 2, "both projected births are held: {listed:?}");
+        assert!(view.book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 5)), "the member's own digest is taken");
+        assert!(view.book.projected_at(id.as_str(), Instant::now()).is_none(), "its own digest is the birth's word: it is held from the projection no more");
+        let mut departure = op(&gone, &gone_inc, "retire-node:mesh1.rpc.2");
+        departure.name = "mesh1.rpc.2".parse().unwrap();
+        view.take_snapshot(&members(4, vec![], vec![departure]), &fabric, Side::MeshChannel);
+        assert!(view.book.projected_at(gone.as_str(), Instant::now()).is_none(), "a departure removes the projected birth");
+        assert!(view.book.projected_unheard_at(Instant::now()).is_empty(), "nothing is held from the projection any more");
+    }
+
     /// CONTRACT (gossip.md §3.1 `Members`; node-status-heartbeat-connections.md §A.3: "a delayed
     /// predecessor publication cannot switch receivers back"): the mesh-primary authors its own
     /// mesh's statuses. An aggregate of its own mesh from another publisher (a predecessor's last one,
@@ -6764,6 +6867,28 @@ mod tests {
         assert!(after >= Duration::from_secs(10), "the member stays as old as its last direct receipt");
     }
 
+    /// CONTRACT (R-G2: forwarded topology carries topology, never liveness; gossip.md §6.1: a stopped
+    /// status by itself and silence are not departure proof): a member known only from topology never
+    /// ages, whatever status the topology lists it with. One listed `Leaving` is held and current as
+    /// long as the topology holds it, like one listed ready. Must NOT happen: a topology-known member
+    /// that is `Leaving` and an hour old, silent past the staleness floor and absent from `current_at`
+    /// while a ready one of the same age stays.
+    #[test]
+    fn a_member_known_only_from_topology_never_ages_whatever_status_it_is_listed_with() {
+        let book = DigestBook::default();
+        let t0 = Instant::now();
+        let listed: Vec<(NodeId, MemberStatus)> = [MemberStatus::ReadyForTraffic, MemberStatus::Draining, MemberStatus::Leaving].into_iter().map(|s| (NodeId::mint(), s)).collect();
+        for (id, status) in &listed {
+            assert!(book.record_topology_at(digest(id, &IncarnationId::mint(), None, *status, 10), t0));
+        }
+        let far = t0 + Duration::from_secs(3600);
+        for (id, status) in &listed {
+            assert_eq!(book.get_at(id.as_str(), far).unwrap().1, Duration::ZERO, "a topology member listed {status:?} never ages");
+        }
+        let current = book.current_at(book.staleness_floor(), far);
+        assert!(listed.iter().all(|(id, _)| current.iter().any(|d| &d.node.node_id == id)), "every topology member stays current: {current:?}");
+    }
+
     #[test]
     fn a_forwarded_copy_keeps_a_member_heard_and_never_reverts_it() {
         let book = DigestBook::default();
@@ -6847,17 +6972,25 @@ mod tests {
         assert_eq!(silent, vec![floor + Duration::from_millis(1); 2], "every held member's silence is measured from its receipt");
     }
 
-    /// A graceful departure is not current one gossip interval after its last `Leaving`, whether
-    /// it was heard directly or forwarded: no aggregate carries a departed member on.
+    /// CONTRACT (gossip.md §6.1: a stopped status by itself and silence are not departure proof;
+    /// node-identity-and-state.md §4.1: `Leaving` is a status the routing rule reads; gossip.md §3.1:
+    /// `Members.digests` are the digests as held): a member held `Leaving` stays current, and so in
+    /// every aggregate, for as long as any member does: until it has been silent past the staleness
+    /// floor. One gossip interval and a millisecond after its last heartbeat it is current, heard
+    /// directly or forwarded. Must NOT happen: a member whose status is `Leaving` and whose heartbeat is
+    /// one interval old absent from `Members`, so a live node declared Leaving oscillates in and out of
+    /// every peer's list with its own heartbeat.
     #[test]
-    fn a_departed_member_is_not_current_one_gossip_interval_after_its_leaving() {
+    fn a_member_held_leaving_is_current_until_it_is_silent_past_the_staleness_floor() {
         let book = DigestBook::default();
         let (direct, forwarded) = (NodeId::mint(), NodeId::mint());
         let t0 = Instant::now();
         book.record_at(digest(&direct, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
         book.record_forwarded_at(digest(&forwarded, &IncarnationId::mint(), None, MemberStatus::Leaving, 100), t0);
-        assert_eq!(book.current_at(book.staleness_floor(), t0 + gossip_interval()).len(), 2, "within the tick it is still saying Leaving");
-        assert!(book.current_at(book.staleness_floor(), t0 + gossip_interval() + Duration::from_millis(1)).is_empty());
+        let floor = book.staleness_floor();
+        assert_eq!(book.current_at(floor, t0 + gossip_interval()).len(), 2, "within the interval it is current");
+        assert_eq!(book.current_at(floor, t0 + gossip_interval() + Duration::from_millis(1)).len(), 2, "a Leaving status is not a departure: one interval on it is still current");
+        assert!(book.current_at(floor, t0 + floor + Duration::from_millis(1)).is_empty(), "silent past the staleness floor it is no longer current, as any member");
     }
 
     /// The documented defaults: a 30 s staleness floor and 2 s gossip intervals.
