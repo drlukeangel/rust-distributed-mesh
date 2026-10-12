@@ -373,10 +373,10 @@ impl rafka_node_admin_core::deployment::pipeline::TopologySink for WithRows {
     }
 }
 
-/// A view in which `mesh1.admin.1` is `mesh1`'s primary node-admin: the writer of `mesh1`'s rows.
-fn view_with_primary() -> (rafka_node_admin_core::topology::Topology, PathName, NodeId) {
+/// A view in which the node-admin `admin` of `mesh1` is its primary: the writer of `mesh1`'s rows.
+fn view_with_primary(admin: &str) -> (rafka_node_admin_core::topology::Topology, PathName, NodeId) {
     use rafka_node_admin_core::model::{Fabric, Mesh, NodeStatus, ProviderKind, ScopeStatus};
-    let me: PathName = "mesh1.admin.1".parse().unwrap();
+    let me: PathName = admin.parse().unwrap();
     let mut admin = Node::allocated(me.clone());
     admin.status = NodeStatus::ReadyForTraffic;
     admin.is_primary = true;
@@ -388,6 +388,54 @@ fn view_with_primary() -> (rafka_node_admin_core::topology::Topology, PathName, 
         nodes: vec![admin],
     };
     (t, me, me_id)
+}
+
+/// What a recovery with tagged labels left after its delete and its create: the exited birth and the
+/// new node, the labels the exited node carried, and the recovery's Build.
+struct Recovered {
+    first: rafka_node_admin_core::deployment::pipeline::Created,
+    second: rafka_node_admin_core::deployment::pipeline::Created,
+    labels: std::collections::BTreeSet<String>,
+    build: rafka_node_admin_core::build::BuildId,
+}
+
+/// A node is created through `pipeline` and tagged (a put of its row through the writer `rows`, as
+/// node.update's puts are); its runtime exits; the recovery's node.delete of it and node.create over
+/// its data dir run through `pipeline`. The new node's row carries no labels yet.
+async fn recovered_up_to_the_update(rig: &Rig, pipeline: &DeploymentPipeline<'_>, storage: &Arc<rafka_node_admin_core::storage::MemoryNodesStorage>, rows: &Arc<rafka_node_admin_core::node_rows::NodeRows>) -> Recovered {
+    use rafka_node_admin_core::storage::NodesStorage;
+    let birth_build = publish_build(&rig.builds, add_node()).await;
+    let first = pipeline
+        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
+        .await
+        .unwrap_or_else(|e| panic!("create: {e}"));
+    let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
+    let labels: std::collections::BTreeSet<String> = ["rabbit".to_string(), "red".to_string()].into();
+    let claimed = storage.node_row_at(&path()).await.unwrap().expect("the create's claim left the node's row");
+    storage.put_node_row(&rafka_node_admin_core::storage::NodeRow { tags: labels.clone(), ..claimed }).await.unwrap().unwrap();
+    assert!(rows.hold_row_of(&path(), &first.node.node_id).await.unwrap(), "the writer holds the tagged row");
+    assert_eq!(storage.tagged("rabbit").await.unwrap(), [first.node.node_id.clone()].into(), "the tags index names the node under its label");
+
+    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+    let code = match rig.provider.inspect(&first.handle).await {
+        DeploymentStatus::Exited { code } => code,
+        other => panic!("the runtime exited: {other:?}"),
+    };
+    let old_inc = first.node.incarnation_id.clone().unwrap();
+    let exit = rafka_node_admin_core::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: old_inc, exit_code: code, proof: "provider".into(), observed_at_ms: 1 };
+    let build = publish_build(&rig.builds, add_node()).await;
+    pipeline
+        .retire(&RetireRequest { build_id: build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), exit: Some(exit) })
+        .await
+        .unwrap_or_else(|e| panic!("delete: {e}"));
+    let second = pipeline
+        .create(&CreateRequest { build_id: build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir), held_runtimes: Vec::new() })
+        .await
+        .unwrap_or_else(|e| panic!("create over the inherited data dir: {e}"));
+    let seeded = storage.node_row_at(&path()).await.unwrap().expect("the new node holds the row");
+    assert_eq!(seeded.node_id, second.node.node_id);
+    assert!(seeded.tags.is_empty(), "the create seeds the config only: the new node's row carries no labels yet: {seeded:?}");
+    Recovered { first, second, labels, build }
 }
 
 /// CONTRACT (node-recovery.md step 6: "node[2].update copies the exited node's caller-owned meta (such
@@ -410,45 +458,13 @@ async fn a_recovery_update_copies_the_exited_nodes_tag_labels_onto_the_new_nodes
     let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
     let recorder = Recorder(rig.log.clone());
     let storage = Arc::new(MemoryNodesStorage::default());
-    let (view, me, me_id) = view_with_primary();
+    let (view, me, me_id) = view_with_primary("mesh1.admin.1");
     let rows = Arc::new(NodeRows::new(me, me_id, Arc::new(tokio::sync::RwLock::new(view)), storage.clone()));
     let sink = WithRows { published: Published::default(), rows: rows.clone() };
     let pipeline = rig.pipeline_over(&observer, &recorder, &sink);
-
-    let birth_build = publish_build(&rig.builds, add_node()).await;
-    let first = pipeline
-        .create(&CreateRequest { build_id: birth_build, attempt: 1, node: path(), spec: &RPC_NODE, data_dir: None, held_runtimes: Vec::new() })
-        .await
-        .unwrap_or_else(|e| panic!("create: {e}"));
-    let old_dir = std::path::PathBuf::from(first.node.data_dir.clone().expect("the birth's directory"));
-    // The caller tagged the node: a put of its row through the writer, as node.update's puts are.
-    let labels: std::collections::BTreeSet<String> = ["rabbit".to_string(), "red".to_string()].into();
-    let claimed = storage.node_row_at(&path()).await.unwrap().expect("the create's claim left the node's row");
-    storage.put_node_row(&rafka_node_admin_core::storage::NodeRow { tags: labels.clone(), ..claimed }).await.unwrap().unwrap();
-    assert!(rows.hold_row_of(&path(), &first.node.node_id).await.unwrap(), "the writer holds the tagged row");
-    assert_eq!(storage.tagged("rabbit").await.unwrap(), [first.node.node_id.clone()].into(), "the tags index names the node under its label");
-
-    rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
-    let code = match rig.provider.inspect(&first.handle).await {
-        DeploymentStatus::Exited { code } => code,
-        other => panic!("the runtime exited: {other:?}"),
-    };
-    let old_inc = first.node.incarnation_id.clone().unwrap();
-    let exit = rafka_node_admin_core::status_storage::NodeExitRow { node_id: first.node.node_id.clone(), name: path(), incarnation_id: old_inc, exit_code: code, proof: "provider".into(), observed_at_ms: 1 };
-    let recover_build = publish_build(&rig.builds, add_node()).await;
+    let Recovered { first, second, labels, build } = recovered_up_to_the_update(&rig, &pipeline, &storage, &rows).await;
     pipeline
-        .retire(&RetireRequest { build_id: recover_build.clone(), attempt: 2, node: first.node.clone(), handle: first.handle.clone(), exit: Some(exit) })
-        .await
-        .unwrap_or_else(|e| panic!("delete: {e}"));
-    let second = pipeline
-        .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir), held_runtimes: Vec::new() })
-        .await
-        .unwrap_or_else(|e| panic!("create over the inherited data dir: {e}"));
-    let seeded = storage.node_row_at(&path()).await.unwrap().expect("the new node holds the row");
-    assert_eq!(seeded.node_id, second.node.node_id);
-    assert!(seeded.tags.is_empty(), "the create seeds the config only: the new node's row carries no labels yet: {seeded:?}");
-    pipeline
-        .update(&UpdateRequest { build_id: recover_build.clone(), attempt: 2, node: second.node.clone(), from: first.node.clone() })
+        .update(&UpdateRequest { build_id: build.clone(), attempt: 2, node: second.node.clone(), from: first.node.clone() })
         .await
         .unwrap_or_else(|e| panic!("update: {e}"));
 
@@ -458,7 +474,7 @@ async fn a_recovery_update_copies_the_exited_nodes_tag_labels_onto_the_new_nodes
     for label in &labels {
         assert_eq!(storage.tagged(label).await.unwrap(), [second.node.node_id.clone()].into(), "the tags index names the new node, and only it, under {label}");
     }
-    let view = rig.builds.read_build(&recover_build).await.unwrap();
+    let view = rig.builds.read_build(&build).await.unwrap();
     let update = format!("update-node:{}", path());
     assert_eq!(receipts(&view.steps, &update), UPDATE_ORDER.map(String::from).to_vec());
     assert!(view.steps.iter().filter(|r| r.operation == update).all(|r| r.output.is_none()), "the update's receipts carry no output: {:?}", view.steps.iter().filter(|r| r.operation == update).collect::<Vec<_>>());
@@ -469,6 +485,58 @@ async fn a_recovery_update_copies_the_exited_nodes_tag_labels_onto_the_new_nodes
     assert_eq!(f.get("from_node_id"), Some(&first.node.node_id.to_string()), "{f:?}");
     assert_eq!(f.get("node_id"), Some(&second.node.node_id.to_string()), "{f:?}");
     assert_eq!(f.get("tags").map(String::as_str), Some("rabbit,red"), "{f:?}");
+    rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+    let _ = std::fs::remove_dir_all(&rig.template.data_root);
+}
+
+/// CONTRACT (node-recovery.md "Failure and receipts": the Build is resumed by whichever executor holds
+/// the mesh-primary seat; CLAUDE.md read rule: node-local state that should be the durable answer is
+/// replaced by the read): the recovery's delete and create ran under one mesh-primary, `mesh1.admin.1`,
+/// and its update runs under the admin that took the seat, `mesh1.admin.2`, a writer that wrote none
+/// of the exited node's rows and holds nothing of them in memory. The exited node's `Deleted` row was
+/// replaced at its path.name by the new node's claim, so the update reads the row the exited node left
+/// by its own id from the nodes store: the new node ends carrying the exited node's tag labels, and
+/// the update's span names the second admin as the writer.
+/// Must NOT happen: an update that copies nothing, or refuses, for want of the first writer's
+/// memory, or an attempt that cannot complete on any executor but the one that deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recovery_update_run_by_the_admin_that_took_the_seat_copies_the_exited_nodes_tag_labels() {
+    use rafka_node_admin_core::node_rows::NodeRows;
+    use rafka_node_admin_core::storage::{MemoryNodesStorage, NodesStorage};
+    let spans = Spans::default();
+    let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+    let rig = rig().await;
+    let observer = Logged { inner: &rig.admin.observer, log: rig.log.clone() };
+    let recorder = Recorder(rig.log.clone());
+    let storage = Arc::new(MemoryNodesStorage::default());
+    let (view_a, me_a, me_a_id) = view_with_primary("mesh1.admin.1");
+    let rows_a = Arc::new(NodeRows::new(me_a, me_a_id, Arc::new(tokio::sync::RwLock::new(view_a)), storage.clone()));
+    let sink_a = WithRows { published: Published::default(), rows: rows_a.clone() };
+    let pipeline_a = rig.pipeline_over(&observer, &recorder, &sink_a);
+    let Recovered { first, second, labels, build } = recovered_up_to_the_update(&rig, &pipeline_a, &storage, &rows_a).await;
+
+    // The admin that took the seat: its own writer over the same nodes store, holding no record of either node.
+    let (view_b, me_b, me_b_id) = view_with_primary("mesh1.admin.2");
+    let rows_b = Arc::new(NodeRows::new(me_b, me_b_id, Arc::new(tokio::sync::RwLock::new(view_b)), storage.clone()));
+    let sink_b = WithRows { published: Published::default(), rows: rows_b.clone() };
+    let pipeline_b = rig.pipeline_over(&observer, &recorder, &sink_b);
+    pipeline_b
+        .update(&UpdateRequest { build_id: build.clone(), attempt: 3, node: second.node.clone(), from: first.node.clone() })
+        .await
+        .unwrap_or_else(|e| panic!("update by the admin that took the seat: {e}"));
+
+    let row = storage.node_row_at(&path()).await.unwrap().expect("the new node's row");
+    assert_eq!(row.node_id, second.node.node_id);
+    assert_eq!(row.tags, labels, "the update copied the exited node's tag labels although another writer deleted it");
+    for label in &labels {
+        assert_eq!(storage.tagged(label).await.unwrap(), [second.node.node_id.clone()].into(), "the tags index names the new node, and only it, under {label}");
+    }
+    let all = spans.0.lock().unwrap().clone();
+    let copied: Vec<_> = all.values().filter(|(n, _, _)| n == "rdm.node_admin.node.update.via-caller-owned-copy").collect();
+    assert_eq!(copied.len(), 1, "one caller-owned copy span: {copied:?}");
+    let f = &copied[0].2;
+    assert_eq!(f.get("node").map(String::as_str), Some("mesh1.admin.2"), "the admin that took the seat wrote it: {f:?}");
+    assert_eq!(f.get("outcome").map(String::as_str), Some("meta-copied"), "{f:?}");
     rig.provider.terminate(&second.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
     let _ = std::fs::remove_dir_all(&rig.template.data_root);
 }
