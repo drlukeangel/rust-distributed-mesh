@@ -454,7 +454,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     let join_digest = digest.clone();
     let enter: rafka_node_admin_core::workflows::node_start::EnterSeam<anyhow::Error> = {
         let (launch, boot, out, name) = (launch.clone(), boot.clone(), out.clone(), name.clone());
-        Box::new(move |step: tracing::Span, joined: Option<rafka_node_admin_core::wire::JoinAnswer>| -> rafka_node_admin_core::workflows::node_start::BoxFut<Result<(Membership, rafka_node_admin_core::workflows::node_start::InstalledSeam<anyhow::Error>), anyhow::Error>> {
+        Box::new(move |step: tracing::Span, joined: Option<rafka_node_admin_core::wire::JoinAnswer>| -> rafka_node_admin_core::workflows::node_start::BoxFut<Result<(Membership, rafka_node_admin_core::workflows::node_start::JoinedSeam<anyhow::Error>), anyhow::Error>> {
             Box::pin(async move {
                 let joined = joined.expect("a first start through its launcher enters its channel with the join answer");
                 let member_cert = joined.control.member_cert.clone();
@@ -491,25 +491,9 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                 )));
             }
                 let channel = membership.clone();
-                let installed: rafka_node_admin_core::workflows::node_start::InstalledSeam<anyhow::Error> = Box::new(
-                    move |read: Option<(tracing::Span, rafka_node_admin_core::topology_read::TopologyRead)>, _: Option<rafka_node_admin_core::wire::JoinAnswer>| -> rafka_node_admin_core::workflows::node_start::BoxFut<Result<(rafka_node_admin_core::workflows::node_start::HookParts, rafka_node_admin_core::workflows::node_start::AfterHook<anyhow::Error>), anyhow::Error>> {
+                let joined_seam: rafka_node_admin_core::workflows::node_start::JoinedSeam<anyhow::Error> = Box::new(
+                    move |_: Option<rafka_node_admin_core::workflows::node_start::JoinThrough>| -> rafka_node_admin_core::workflows::node_start::BoxFut<Result<(rafka_node_admin_core::workflows::node_start::HookParts, Option<rafka_node_admin_core::workflows::node_start::HookStarted<anyhow::Error>>), anyhow::Error>> {
                         Box::pin(async move {
-                            if let Some((topology_step, read)) = read {
-                                #[cfg(feature = "testkit-skew")]
-                                if let Some(root) = launch.data_dir.parent() {
-                                    crate::apply_rafka_time_knob(root, &launch.name.to_string(), &rafka_time, &boot);
-                                }
-                                let mesh_peers: Vec<EndpointAddr> = read
-                                    .installed
-                                    .iter()
-                                    .flat_map(|m| m.members.iter())
-                                    .filter(|d| d.fabric_id == launch.fabric_id && d.node.name != launch.name && d.node.name.mesh == launch.name.mesh)
-                                    .filter_map(rafka_mesh_transport::membership::gossip_addr)
-                                    .collect();
-                                let _ = membership.join_peers(mesh_peers).await;
-                                drop(topology_step);
-                            }
-
                             // A delta that does not follow what this node holds desynchronizes that source; the node tops
                             // up from its Mesh's own primary (gossip.md §3.3) with `GetTopology` of each such mesh.
                             membership.spawn_top_up(rafka_node_admin_core::topology_read::top_up_fetch(client.clone(), rafka_time.clone(), name.clone(), launch.node_id.clone()));
@@ -634,23 +618,23 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                 events: rafka_node_admin_core::app_hydration::Events::new(membership.book.clone(), addressed),
                                 cancel: cancel.token(),
                                 state: hydration_cell.clone(),
-                                runs: rafka_node_admin_core::workflows::node_start::HookRuns::Inline { report: becoming.report(), blocked: hydrating_cell.clone() },
+                                runs: rafka_node_admin_core::workflows::node_start::HookRuns::Inline { blocked: hydrating_cell.clone() },
+                                after: Box::new(RpcAfterHook {
+                                    fabric_id: launch.fabric_id.clone(),
+                                    node_id: launch.node_id.clone(),
+                                    name: launch.name.clone(),
+                                    becoming,
+                                    // A step that fails ends the node by name from its start, as an unaccepted join does.
+                                    ends: Some(out.clone()),
+                                    knob: rafka_time_knob(&launch, &rafka_time, &boot),
+                                }),
                             };
                             *out.lock().unwrap() = Some(RunningNode { rafka_time: rafka_time.clone(), member_cert, routers, membership, server, status, digest, node_rpc, owed_state, cancel, own, hydration: hydration_cell, hydrating: hydrating_cell, publisher, node_rpc_feed, declare_loop });
-                            // A hook that fails ends the node by name from its start, as an unaccepted join does.
-                            let on_failure: Box<dyn FnOnce() -> rafka_node_admin_core::workflows::node_start::BoxFut<()> + Send> = Box::new(move || {
-                                Box::pin(async move {
-                                    let running = out.lock().unwrap().take();
-                                    if let Some(running) = running {
-                                        running.close().await;
-                                    }
-                                })
-                            });
-                            Ok::<_, anyhow::Error>((parts, rafka_node_admin_core::workflows::node_start::AfterHook::OnFailure(on_failure)))
+                            Ok::<_, anyhow::Error>((parts, None))
                         })
                     },
                 );
-                Ok::<_, anyhow::Error>((channel, installed))
+                Ok::<_, anyhow::Error>((channel, joined_seam))
             })
         })
     };
@@ -659,10 +643,9 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         joining: Some(joining),
         resolve: Some(resolve),
         digest: Some(join_digest),
-        statuses_before_topology: true,
         enter: Some(enter),
-        installed: None,
-        after_hook: None,
+        joined: None,
+        hook_started: None,
     };
     rafka_node_admin_core::workflows::node_start::node_start(&mut start, rafka_node_admin_core::app_hydration::StartKind::FirstStart).await?;
     let running = out.lock().unwrap().take();
@@ -793,26 +776,15 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
         Ok(s.membership.clone())
     }
 
-    async fn topology_installed(
+    async fn joined(
         &mut self,
         membership: &Membership,
-        read: Option<(tracing::Span, rafka_node_admin_core::topology_read::TopologyRead)>,
-        _: Option<rafka_node_admin_core::wire::JoinAnswer>,
+        _: Option<&rafka_node_admin_core::workflows::node_start::JoinThrough>,
+        _: Option<&rafka_node_admin_core::wire::JoinAnswer>,
     ) -> Result<rafka_node_admin_core::workflows::node_start::HookParts, rafka_node_admin_core::node_self::StartFailed> {
         let s = self.session;
         // From here on it is named by the name it installed from its join answer (`enter_channel`).
         let me = s.membership.held_name(&s.name);
-        if let Some((step, read)) = read {
-            let mesh_peers: Vec<EndpointAddr> = read
-                .installed
-                .iter()
-                .flat_map(|m| m.members.iter())
-                .filter(|d| d.fabric_id == s.fabric_id && d.node.node_id != s.node_id && d.node.name.mesh == me.mesh)
-                .filter_map(rafka_mesh_transport::membership::gossip_addr)
-                .collect();
-            let _ = membership.join_peers(mesh_peers).await;
-            drop(step);
-        }
         // Back on the topic means a neighbour: only then does this node say it is back, once, as
         // Pending, so every node that held it parked or restarting hears the rejoin.
         membership.wait_for_neighbour().await;
@@ -836,14 +808,77 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
             client: s.client.clone(),
         };
         Ok(rafka_node_admin_core::workflows::node_start::HookParts {
-            birth: rafka_node_admin_core::app_hydration::Birth { name: me, node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
+            birth: rafka_node_admin_core::app_hydration::Birth { name: me.clone(), node_id: s.node_id.clone(), incarnation: s.incarnation.clone(), fabric_id: s.fabric_id.clone(), mesh_id: s.mesh_id.clone(), kind: s.name.kind },
             hydration: s.hydration.clone(),
             events: rafka_node_admin_core::app_hydration::Events::new(membership.book.clone(), s.addressed.clone()),
             cancel: self.retire.take().expect("the hook's token is handed once"),
             state: s.hydration_cell.clone(),
-            runs: rafka_node_admin_core::workflows::node_start::HookRuns::Inline { report: becoming.report(), blocked: s.hydrating.clone() },
+            runs: rafka_node_admin_core::workflows::node_start::HookRuns::Inline { blocked: s.hydrating.clone() },
+            after: Box::new(RpcAfterHook { fabric_id: s.fabric_id.clone(), node_id: s.node_id.clone(), name: me, becoming, ends: None, knob: None }),
         })
     }
+}
+
+/// An rpc node's steps after its hook: it reaches the peers of its mesh the topology names, owes no
+/// Build floor (it holds no Build log), and reports through [`Becoming`].
+struct RpcAfterHook {
+    fabric_id: rafka_mesh_entity::FabricId,
+    /// The birth's node id: the topology's members it reaches are every other node of its mesh.
+    node_id: NodeId,
+    /// The name the birth holds: its join answer's at a start after a stop (R-JN1).
+    name: rafka_mesh_entity::PathName,
+    becoming: Becoming,
+    /// What a step that fails inside the start ends: a first start's node (a start after a stop ends
+    /// nothing; its process stays stopped's).
+    ends: Option<Arc<Mutex<Option<RunningNode>>>>,
+    /// A scenario's rafka-time knob, applied once rafka-time is refreshed, before the report.
+    knob: Option<Box<dyn FnOnce() + Send>>,
+}
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::workflows::node_start::AfterHook for RpcAfterHook {
+    async fn topology_installed(&mut self, membership: &Membership, read: &rafka_node_admin_core::topology_read::TopologyRead) {
+        let mesh_peers: Vec<EndpointAddr> = read
+            .installed
+            .iter()
+            .flat_map(|m| m.members.iter())
+            .filter(|d| d.fabric_id == self.fabric_id && d.node.node_id != self.node_id && d.node.name.mesh == self.name.mesh)
+            .filter_map(rafka_mesh_transport::membership::gossip_addr)
+            .collect();
+        let _ = membership.join_peers(mesh_peers).await;
+    }
+
+    async fn report(self: Box<Self>) {
+        let RpcAfterHook { becoming, knob, .. } = *self;
+        if let Some(knob) = knob {
+            knob();
+        }
+        becoming.go().await;
+    }
+
+    async fn start_failed(self: Box<Self>, _: &rafka_node_admin_core::node_self::StartFailed, _: bool) {
+        let running = self.ends.and_then(|out| out.lock().unwrap().take());
+        if let Some(running) = running {
+            running.close().await;
+        }
+    }
+}
+
+/// A scenario's rafka-time knob for `launch` (the testkit-skew feature): this node's rafka-time put off
+/// its authority's, once its start refreshed it.
+#[cfg(feature = "testkit-skew")]
+fn rafka_time_knob(launch: &Launch, rafka_time: &rafka_mesh_transport::clock::RafkaTime, boot: &tracing::Span) -> Option<Box<dyn FnOnce() + Send>> {
+    let root = launch.data_dir.parent()?.to_path_buf();
+    let (name, rafka_time, boot) = (launch.name.to_string(), rafka_time.clone(), boot.clone());
+    Some(Box::new(move || {
+        crate::apply_rafka_time_knob(&root, &name, &rafka_time, &boot);
+    }))
+}
+
+/// Without the testkit-skew feature no scenario puts a node's rafka-time off.
+#[cfg(not(feature = "testkit-skew"))]
+fn rafka_time_knob(_: &Launch, _: &rafka_mesh_transport::clock::RafkaTime, _: &tracing::Span) -> Option<Box<dyn FnOnce() + Send>> {
+    None
 }
 
 /// What turns a Pending node whose hook passed into a ReadyForTraffic one: `via-ready` closes the
@@ -865,11 +900,7 @@ struct Becoming {
 }
 
 impl Becoming {
-    /// The report `node.start` makes once the hook passed.
-    fn report(self) -> rafka_node_admin_core::workflows::node_start::Report {
-        Box::new(move || Box::pin(async move { self.go().await }))
-    }
-
+    /// node.started: the report `node.start` makes once its steps after the hook ended.
     async fn go(&self) {
         // A node retired while its hook ran is not Pending any more and is not made Ready.
         if *self.status.lock().unwrap() != MemberStatus::Pending {
