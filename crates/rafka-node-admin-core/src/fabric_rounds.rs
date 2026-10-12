@@ -677,7 +677,10 @@ impl FabricRounds {
                 }
                 Delivery::Undelivered { why, typed } => {
                     span.record("outcome", why.as_str());
-                    book.undelivered(&key, &to, &expected.incarnation, typed);
+                    // Addressed while the call was out: due again now; a fabric-level op is sent by the climb's turn.
+                    if book.undelivered(&key, &to, &expected.incarnation, typed) && fabric_level {
+                        this.climb_wake.notify_one();
+                    }
                 }
             }
         });
