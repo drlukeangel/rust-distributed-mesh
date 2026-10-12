@@ -559,6 +559,9 @@ impl NodesStorage for RefusingRows {
     async fn release_node_row(&self, name: &rafka_node_admin_core::model::PathName, _holder: &rafka_node_admin_core::model::NodeId) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
         Err(rafka_node_admin_core::record_store::StorageError::Io { file: format!("nodes/rows/{name}"), reason: "disk refused the release".into() })
     }
+    async fn exited_row(&self, mesh: &str, node_id: &NodeId) -> Result<Option<rafka_node_admin_core::storage::NodeRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.0.exited_row(mesh, node_id).await
+    }
     async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, rafka_node_admin_core::record_store::StorageError> {
         self.0.tagged(label).await
     }

@@ -410,17 +410,18 @@ impl NodeRows {
 
     /// A recovery's `node.update` (node-recovery.md step 6: "node[2].update copies the exited node's
     /// caller-owned meta (such as `otel_debug`) as a blind put; config was seeded by the create"):
-    /// the caller-owned group of the exited birth `from`, as its `Deleted` row holds it, copied onto
-    /// the new node `onto` the create made at its path.name, through [`NodeMeta::with_caller_owned_of`]
-    /// (the declared copy: nothing RDM owns moves, the name least of all), and put as a blind write
-    /// of the new node's row ([`put_meta`]), one change to a node record at a time with the config
-    /// door. The row carries the tag labels; `otel_debug` has no row field, so nothing of it is put
+    /// the caller-owned group of the exited birth `from`, as the `Deleted` row it left holds it
+    /// ([`NodesStorage::exited_row`], a point read by the exited node's id: the new node's claim
+    /// replaced the row at the path.name, not that row), copied onto the new node `onto` the create
+    /// made at its path.name, through [`NodeMeta::with_caller_owned_of`] (the declared copy: nothing
+    /// RDM owns moves, the name least of all), and put as a blind write of the new node's row
+    /// ([`put_meta`]), one change to a node record at a time with the config door. The row carries
+    /// the tag labels; `otel_debug` has no row field, so nothing of it is put
     /// ([`rafka_node_admin_client::CallEnd::NotBackedToday`] says so to a caller that puts it).
     ///
-    /// The `Deleted` row is the writer's record of it: the create's claim replaced that row in the
-    /// store, so a writer that did not write it (the recovery ran on another executor after the
-    /// delete) holds none and refuses by name, writing nothing. One `via-caller-owned-copy` span
-    /// names the exited birth and the labels copied.
+    /// The read is the store's, so it holds whichever executor runs the step: the one that wrote the
+    /// `Deleted` row or the one that took its seat. A store that holds none refuses by name, writing
+    /// nothing. One `via-caller-owned-copy` span names the exited birth and the labels copied.
     pub async fn copy_caller_owned(&self, onto: &Node, from: &Node, operation: &str) -> Result<NodeRow, RowRefused> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.update.via-caller-owned-copy",
@@ -450,17 +451,15 @@ impl NodeRows {
     async fn copy_caller_owned_row(&self, onto: &Node, from: &Node) -> Result<NodeRow, RowRefused> {
         let me = &self.me;
         self.writer_check(&onto.name.mesh, &onto.name).await?;
-        let deleted = match self.written.known_row(&*self.storage, &from.mesh, &from.node_id).await {
-            Ok(Some(row)) if row.status == NodeStatus::Deleted => row,
-            Ok(held) => {
+        let deleted = match self.storage.exited_row(&from.mesh, &from.node_id).await {
+            Ok(Some(row)) => row,
+            Ok(None) => {
                 return Err(RowRefused::Unwritten(format!(
-                    "{me} holds no Deleted row of the exited birth {} at {}{}: the new node's claim replaced it in the store, so its caller-owned meta is not copied and nothing is written",
-                    from.node_id,
-                    from.name,
-                    held.map(|r| format!(" (it holds a {:?} row)", r.status)).unwrap_or_default()
+                    "{me}: nodes.storage holds no Deleted row of the exited birth {} at {}: its caller-owned meta is not copied onto {} and nothing is written",
+                    from.node_id, from.name, onto.node_id
                 )))
             }
-            Err(why) => return Err(RowRefused::Unwritten(format!("{me}: {why}: the caller-owned meta of the exited birth {} is not copied and nothing is written", from.node_id))),
+            Err(e) => return Err(RowRefused::Unwritten(format!("{me}: the Deleted row of the exited birth {} could not be read: {e}: nothing is written", from.node_id))),
         };
         let exited = NodeMeta { tags: deleted.tags.clone(), ..crate::node_update::meta_of(from) };
         let copied = crate::node_update::meta_of(onto).with_caller_owned_of(&exited);

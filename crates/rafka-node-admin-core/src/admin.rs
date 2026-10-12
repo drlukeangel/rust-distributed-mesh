@@ -7206,6 +7206,9 @@ mod tests {
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.0.release_node_row(name, holder).await
         }
+        async fn exited_row(&self, mesh: &str, node_id: &NodeId) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
+            self.0.exited_row(mesh, node_id).await
+        }
         async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
             self.0.tagged(label).await
         }
@@ -7824,6 +7827,9 @@ mod tests {
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.0.release_node_row(name, holder).await
         }
+        async fn exited_row(&self, mesh: &str, node_id: &NodeId) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
+            self.0.exited_row(mesh, node_id).await
+        }
         async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
             self.0.tagged(label).await
         }
@@ -7882,6 +7888,9 @@ mod tests {
         }
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.inner.release_node_row(name, holder).await
+        }
+        async fn exited_row(&self, mesh: &str, node_id: &NodeId) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
+            self.inner.exited_row(mesh, node_id).await
         }
         async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
             self.inner.tagged(label).await
@@ -9843,6 +9852,9 @@ mod tests {
         }
         async fn release_node_row(&self, name: &PathName, holder: &NodeId) -> Result<bool, crate::record_store::StorageError> {
             self.inner.release_node_row(name, holder).await
+        }
+        async fn exited_row(&self, mesh: &str, node_id: &NodeId) -> Result<Option<crate::storage::NodeRow>, crate::record_store::StorageError> {
+            self.inner.exited_row(mesh, node_id).await
         }
         async fn tagged(&self, label: &str) -> Result<std::collections::BTreeSet<NodeId>, crate::record_store::StorageError> {
             self.inner.tagged(label).await
