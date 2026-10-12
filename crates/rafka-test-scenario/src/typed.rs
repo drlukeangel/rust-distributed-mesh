@@ -134,10 +134,9 @@ impl Estate {
     }
 
     /// `Fabric.build_id` as the admin the estate asks holds it: the id of the Build whose topology the
-    /// fabric accepted. `fabric.get` (op `0x1B`) carries no `build_id` today, so this one read is the
-    /// control API's `GET /api/fabric` field (finding: the typed `FabricView` has no accepted-Build id).
+    /// fabric accepted, as `fabric.get` (op `0x1B`) answers it; empty while it names none.
     pub async fn accepted_build_id(&self) -> String {
-        self.get("/api/fabric").await.1["build_id"].as_str().unwrap_or_default().to_string()
+        self.fabric_view().await.build_id.unwrap_or_default()
     }
 
     /// `fabric.get` at the admin the estate asks, or how the call ended.

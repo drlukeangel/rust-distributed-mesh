@@ -296,8 +296,9 @@ pub fn connections_answer(held: &HeldConnections) -> StatusReply {
     reply
 }
 
-/// `mesh.get` or `fabric.get` answered by the node-admin `me` from its `view`; `None` for any other
-/// request (`node.get` reads the nodes store too: [`nodes_answer`]). Each read's span names what was
+/// `mesh.get` answered by the node-admin `me` from its `view`; `None` for any other request
+/// (`node.get` reads the nodes store too: [`nodes_answer`]; `fabric.get` its fabric record too:
+/// [`fabric_answer`]). Each read's span names what was
 /// asked and how much was answered; a mesh the view does not hold is `UnknownMesh`, named.
 pub fn view_answer(me: &PathName, view: &Topology, req: &StatusRequest) -> Option<StatusReply> {
     let reply = match req {
@@ -323,19 +324,22 @@ pub fn view_answer(me: &PathName, view: &Topology, req: &StatusRequest) -> Optio
                 }
             }
         }
-        StatusRequest::GetFabric => {
-            let fabric = fabric(view, None);
-            let count = fabric.meshes.len();
-            let reply = StatusReply::within_reply_bound(StatusReply::Fabric { fabric }, "fabric.get");
-            match &reply {
-                StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.fabric.reject.via-over-bound", node = %me, read = "fabric.get", meshes = count, bytes, max, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the fabric encodes past the Status reply bound; nothing of it is sent")),
-                _ => tracing::info_span!("rdm.node_admin.fabric.serve.via-get", node = %me, meshes = count, "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("the fabric the view holds answered")),
-            }
-            reply
-        }
         _ => return None,
     };
     Some(reply)
+}
+
+/// `fabric.get` answered by the node-admin `me`: the fabric its `view` holds, with `build_id`, its
+/// fabric record's `Fabric.build_id`. The span names the meshes and the Build answered.
+pub fn fabric_answer(me: &PathName, view: &Topology, build_id: Option<String>) -> StatusReply {
+    let fabric = fabric(view, build_id);
+    let (count, build) = (fabric.meshes.len(), fabric.build_id.clone().unwrap_or_default());
+    let reply = StatusReply::within_reply_bound(StatusReply::Fabric { fabric }, "fabric.get");
+    match &reply {
+        StatusReply::ReadOverBound { bytes, max, .. } => tracing::info_span!("rdm.node_admin.fabric.reject.via-over-bound", node = %me, read = "fabric.get", meshes = count, bytes, max, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the fabric encodes past the Status reply bound; nothing of it is sent")),
+        _ => tracing::info_span!("rdm.node_admin.fabric.serve.via-get", node = %me, meshes = count, build_id = %build, "otel.kind" = "internal")
+            .in_scope(|| tracing::info!("the fabric the view holds answered")),
+    }
+    reply
 }

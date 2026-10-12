@@ -573,6 +573,14 @@ impl StatusAuthority {
                 if self.loads.is_none() {
                     return StatusReply::NotReady { reason: format!("{me} reads no digest book; {} is refused", req.op()) };
                 }
+                if matches!(req, StatusRequest::GetFabric) {
+                    // `Fabric.build_id` is the fabric's own field (node-identity-and-state.md §2.8): read from
+                    // this admin's fabric record, a read that fails named rather than answered as no Build.
+                    return match self.accepted.record().await {
+                        Ok(record) => crate::views::fabric_answer(&me, &view, record.and_then(|r| r.build_id).map(|b| b.0)),
+                        Err(e) => StatusReply::source_failed("fabric.storage", "fabric.get", &format!("{me} could not read its fabric record: {e}")),
+                    };
+                }
                 return crate::views::view_answer(&me, &view, req).unwrap_or_else(|| StatusReply::NotReady { reason: format!("{me} answers no {} from its view", req.op()) });
             }
             StatusRequest::GetConnections { node_id, incarnation } => return self.read_connections(&view, node_id, incarnation).await,

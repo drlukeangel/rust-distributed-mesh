@@ -20,10 +20,6 @@ fn owner(test: &str) -> Owner {
     }
 }
 
-fn s(v: &Value) -> String {
-    v.as_str().unwrap_or_default().to_string()
-}
-
 /// The boot file of a joining admin: it arms `spec` before the admin's first line runs.
 fn arm_at_birth(estate: &Estate, admin: &str, id: &str, spec: Value) {
     let dir = estate.root.join("faults");

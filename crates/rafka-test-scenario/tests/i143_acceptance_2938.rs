@@ -17,7 +17,6 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
 
-const SETTLE: Duration = Duration::from_secs(120);
 const SOURCE: &str = "mesh1.rpc.1";
 const CARRIER: &str = "mesh1.rpc.2";
 const DEST: &str = "mesh1.rpc.3";
