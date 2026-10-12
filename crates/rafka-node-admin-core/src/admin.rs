@@ -8315,6 +8315,41 @@ mod tests {
         assert_eq!(watched, vec!["mesh1.rpc.1".to_string()], "only its own mesh's silent member is watched");
     }
 
+    /// CONTRACT (node-recovery.md, Detection: "The mesh-primary's tick (every gossip interval) reads
+    /// the members its view marks `PendingReconnect` (unheard past the staleness floor)"; "Detection
+    /// and proof" step 1: "Every node-admin keeps the silence bookkeeping (`first_seen`), so a
+    /// node-admin that takes the seat mid-window continues the window already running"): an admin of
+    /// mesh2 whose book holds mesh2.rpc.1 only from its mesh-primary's projection (the member's own
+    /// digest never reached it) lists the birth in its view, never routable: with the projected
+    /// status within one staleness floor of first holding it, and `PendingReconnect` past it. Its
+    /// tick watches the birth, and the silence mark is the instant it first held it plus the floor,
+    /// so the window it keeps began before any seat change. Must NOT happen: the view holding no birth
+    /// of the member, so an heir's tick watches nothing and the member is never recovered.
+    #[test]
+    fn an_admin_lists_and_watches_an_own_mesh_birth_held_only_from_its_primarys_projection() {
+        use MemberStatus::*;
+        let book = DigestBook::default();
+        let me = with_id(digest("mesh2.admin.2", ReadyForTraffic), "200000000000");
+        assert!(book.record(me.clone()));
+        let member = with_id(digest("mesh2.rpc.1", ReadyForTraffic), "300000000000");
+        let t0 = std::time::Instant::now();
+        book.hold_projected_at(&member, t0);
+        let floor = book.staleness_floor();
+        let records = Records::default();
+        let path: PathName = "mesh2.rpc.1".parse().unwrap();
+        let early = project_at("fabric1", &fabric1(), ProviderKind::Process, &book, &records, t0 + floor / 2);
+        let n = early.node(&path).unwrap_or_else(|| panic!("the view holds the birth its primary's projection lists: {:?}", early.nodes));
+        assert_eq!((n.node_id.clone(), n.status, n.routable), (member.node.node_id.clone(), NodeStatus::ReadyForTraffic, false), "within the floor: the projected status, never routable (no liveness heard)");
+        let late_at = t0 + floor + Duration::from_millis(500);
+        let late = project_at("fabric1", &fabric1(), ProviderKind::Process, &book, &records, late_at);
+        assert_eq!(late.node(&path).map(|n| n.status), Some(NodeStatus::PendingReconnect), "unheard past the floor since it was first held");
+        let watched = watched_births(&late, &me.node.node_id, "mesh2", &[]);
+        assert_eq!(watched.keys().cloned().collect::<Vec<_>>(), vec![member.node.node_id.to_string()], "the tick watches it");
+        let now_ms = 1_000_000u64;
+        let silent = crate::offline::silent_set(watched.values(), &book, late_at, now_ms, floor);
+        assert_eq!(silent.iter().map(|s| s.marked_at_ms).collect::<Vec<_>>(), vec![Some(now_ms - 500)], "the mark: first held plus the floor");
+    }
+
     /// CONTRACT (R-EL1, "a seat moves only by explicit yield": the election ignores a holder's
     /// status; seat_watch, R-A2: only a runtime found exited is a verified loss; fabric-node-lifecycle.md
     /// §7.3: every admin keeps the silence window, only the seat holder tickles): a mesh primary that

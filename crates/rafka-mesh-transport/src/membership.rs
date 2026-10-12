@@ -5262,6 +5262,26 @@ impl DigestBook {
         self.stopped_marks.lock().unwrap().values().filter_map(|m| m.held.clone()).collect()
     }
 
+    /// Hold the own-mesh birth `d` its mesh-primary's projection lists, received at `now`, when this
+    /// book holds no digest of it.
+    pub fn hold_projected_at(&self, d: &MeshDigest, now: Instant) {
+        let _ = (d, now);
+    }
+
+    /// The own-mesh birth of `node_id` this book holds only from its mesh-primary's projection, and
+    /// how long it has gone unheard at `now`.
+    pub fn projected_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
+        let _ = (node_id, now);
+        None
+    }
+
+    /// Every own-mesh birth this book holds only from its mesh-primary's projection, each with how
+    /// long it has gone unheard at `now`.
+    pub fn projected_unheard_at(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
+        let _ = now;
+        Vec::new()
+    }
+
     /// The open stop overlays of stopped births this book never held a digest of (an admin that
     /// joined after the stop and read the overlay from the mesh topology): the only facts it has of
     /// them are the overlay's own, the node's path, id and incarnation.
@@ -6340,6 +6360,66 @@ mod tests {
         assert!(view.book.record(itself(MemberStatus::ReadyForTraffic, 2)));
         view.take_snapshot(&members(2, itself(MemberStatus::Leaving, 1)), &fabric, Side::MeshChannel);
         assert_eq!(view.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::ReadyForTraffic), "after it, by its NodeId: its own status stands");
+    }
+
+    /// CONTRACT (gossip.md §3: "the aggregate/current birth projection preserves the current
+    /// RuntimeFact and required current runtime metadata needed by an authority-bearing admin to
+    /// manage that birth"; §3.1 `Members`: "what every node-admin holds of every Mesh", where "for an
+    /// own-mesh birth, liveness, endpoints with freshness and the runtime fact come from its Digest and
+    /// status from the projection"; node-recovery.md "Detection and proof" step 1: "Every node-admin
+    /// keeps the silence bookkeeping (`first_seen`), so a node-admin that takes the seat mid-window
+    /// continues the window already running"): a node-admin of mesh1 that is not its primary, whose
+    /// primary's projection lists mesh1.rpc.1 though the member's own Digest never reached it, holds
+    /// the birth from that projection, unheard since it first held it. A later version listing it
+    /// again does not refresh its silence, and the primary dropping the silent member from its
+    /// projection (no departure) does not forget it. The member's own digest, once heard, is the
+    /// birth's word; a departure removes a projected birth. Must NOT happen: the book holding nothing
+    /// of a member its primary's projection listed, so an heir that never heard the member keeps no
+    /// window for it; or a projection refreshing a silence.
+    #[test]
+    fn an_admin_holds_an_own_mesh_birth_its_primarys_projection_lists_unheard_since_it_first_held_it() {
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = View::new("mesh1", "mesh1.admin.2");
+        let publisher = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let members = |version: u64, digests: Vec<MeshDigest>, departed: Vec<LifecycleOp>| Frame::Members {
+            mesh: "mesh1".into(),
+            publisher: publisher.clone(),
+            forwarded_by: Some("mesh1.admin.1".into()),
+            topology_version: version,
+            published_at_rafka_ms: version,
+            snapshot_id: version,
+            chunk_index: 0,
+            chunk_count: 1,
+            digests,
+            in_flight: vec![],
+            departed,
+        };
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        let (gone, gone_inc) = (NodeId::mint(), IncarnationId::mint());
+        let member = digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 4);
+        let mut other = digest(&gone, &gone_inc, None, MemberStatus::ReadyForTraffic, 4);
+        other.node.name = "mesh1.rpc.2".parse().unwrap();
+        view.take_snapshot(&members(1, vec![member.clone(), other.clone()], vec![]), &fabric, Side::MeshChannel);
+        let first_held_by = Instant::now();
+        assert!(view.book.get(id.as_str()).is_none(), "a projection is no liveness: no digest of the member is held");
+        let held = |now: Instant| view.book.projected_at(id.as_str(), now).map(|(d, unheard)| (d.node.incarnation.clone(), now.checked_sub(unheard)));
+        let (incarnation, since) = held(Instant::now()).expect("the birth its primary's projection lists is held from that projection");
+        assert_eq!(incarnation, inc);
+        assert!(since.is_some_and(|s| s <= first_held_by), "unheard since it was first held");
+        std::thread::sleep(Duration::from_millis(20));
+        view.take_snapshot(&members(2, vec![member.clone(), other.clone()], vec![]), &fabric, Side::MeshChannel);
+        assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "a later version listing it again does not refresh its silence");
+        view.take_snapshot(&members(3, vec![other.clone()], vec![]), &fabric, Side::MeshChannel);
+        assert!(held(Instant::now()).is_some_and(|(_, s)| s.is_some_and(|s| s <= first_held_by)), "the primary dropping the silent member from its projection is no departure: the birth stays held");
+        let listed: Vec<String> = view.book.projected_unheard_at(Instant::now()).into_iter().map(|(d, _)| d.node.name.to_string()).collect();
+        assert_eq!(listed.len(), 2, "both projected births are held: {listed:?}");
+        assert!(view.book.record(digest(&id, &inc, None, MemberStatus::ReadyForTraffic, 5)), "the member's own digest is taken");
+        assert!(view.book.projected_at(id.as_str(), Instant::now()).is_none(), "its own digest is the birth's word: it is held from the projection no more");
+        let mut departure = op(&gone, &gone_inc, "retire-node:mesh1.rpc.2");
+        departure.name = "mesh1.rpc.2".parse().unwrap();
+        view.take_snapshot(&members(4, vec![], vec![departure]), &fabric, Side::MeshChannel);
+        assert!(view.book.projected_at(gone.as_str(), Instant::now()).is_none(), "a departure removes the projected birth");
+        assert!(view.book.projected_unheard_at(Instant::now()).is_empty(), "nothing is held from the projection any more");
     }
 
     /// CONTRACT (gossip.md §3.1 `Members`; node-status-heartbeat-connections.md §A.3: "a delayed
