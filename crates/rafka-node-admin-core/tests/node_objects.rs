@@ -939,6 +939,11 @@ fn every_pipeline_step_is_named_by_the_client() {
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
     let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(name.clone()), &view("stop-node:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
+    // A standalone drain ends on the birth's `node-drained`: the process is not stopped and nothing is deleted.
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Drain(name.clone()), &view("drain-node:mesh1.rpc.3", vec!["DrainNode", "AwaitNodeDrained", "Complete"]), 1).unwrap();
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Complete]);
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Drain(admin.clone()), &view("drain-node:mesh1.admin.2", vec!["SeatTransfer", "DrainNode", "AwaitNodeDrained", "Complete"]), 1).unwrap();
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Complete]);
     // A node-admin whose transfer has not run yet: the fold stops at it, and a resume starts there.
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!((f.frames.len(), f.next.as_ref().map(|(_, s)| s.as_str())), (0, Some("SeatTransfer")));

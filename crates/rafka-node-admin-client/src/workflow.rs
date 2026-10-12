@@ -84,6 +84,8 @@ pub enum WorkflowKind {
     Restart(PathName),
     /// `node.delete` of this node: `retire-node:<path.name>`.
     Delete(PathName),
+    /// `node.drain` of this node: `drain-node:<path.name>`. The process keeps running.
+    Drain(PathName),
 }
 
 /// One row of the mapping from a Build receipt to the canonical names.
@@ -166,6 +168,7 @@ impl WorkflowKind {
             Self::Start(_) => NodeOp::Start,
             Self::Restart(_) => NodeOp::Restart,
             Self::Delete(_) => NodeOp::Delete,
+            Self::Drain(_) => NodeOp::Drain,
         }
     }
 
@@ -193,6 +196,17 @@ impl WorkflowKind {
                 rows.extend(start_rows!("restart-node", &[NodeEvent::Restarted], NodeStep::Restart));
                 rows
             }
+            // A standalone drain: the drain command to the exact birth, the wait for its `node-drained`, and its
+            // `Complete`. Nothing stops the process and nothing is deleted.
+            Self::Drain(n) => {
+                let mut rows: Vec<Row> = seat_transfer_row("drain-node", NodeStep::Drain, n).into_iter().collect();
+                rows.extend([
+                    row("drain-node", "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
+                    row("drain-node", "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
+                    row("drain-node", "Complete", NodeStep::Drain, &[], true),
+                ]);
+                rows
+            }
             Self::Delete(n) => {
                 let mut rows = vec![row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false)];
                 rows.extend(shutdown_rows("retire-node", n));
@@ -211,7 +225,7 @@ impl WorkflowKind {
     fn operation_matches(&self, prefix: &str, key: &str) -> bool {
         match self {
             Self::Create => prefix == "create-node" && key.starts_with("create-node:"),
-            Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) => key == format!("{prefix}:{n}"),
+            Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) | Self::Drain(n) => key == format!("{prefix}:{n}"),
         }
     }
 }
@@ -449,6 +463,7 @@ impl WorkflowStream {
                             WorkflowKind::Start(_) => NodeStep::Start,
                             WorkflowKind::Restart(_) => NodeStep::Restart,
                             WorkflowKind::Delete(_) => NodeStep::Delete,
+                            WorkflowKind::Drain(_) => NodeStep::Drain,
                         });
                     self.span.record("outcome", "failed");
                     self.span.record("failed_step", node_step.name());

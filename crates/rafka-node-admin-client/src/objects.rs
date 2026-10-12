@@ -477,6 +477,12 @@ impl Nodes {
         self.workflow(WorkflowKind::Restart(node.clone()), BuildChange::Restart { node: node.clone() }).await
     }
 
+    /// `node.drain` of `node`: refuse new work and finish in-flight work. The stream is `Started`, then
+    /// `node.draining` and `node.drained`, ending `Complete`; the process keeps running.
+    pub async fn drain(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
+        self.workflow(WorkflowKind::Drain(node.clone()), BuildChange::Drain { node: node.clone() }).await
+    }
+
     /// `node.delete` of `node`.
     pub async fn delete(&self, node: &PathName) -> Result<WorkflowStream, CallEnd> {
         self.workflow(WorkflowKind::Delete(node.clone()), BuildChange::RemoveNode { node: node.clone() }).await
