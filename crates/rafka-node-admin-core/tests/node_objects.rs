@@ -966,6 +966,37 @@ fn every_pipeline_step_is_named_by_the_client() {
     );
 }
 
+/// CONTRACT (node-delete.md: a stopped birth's node.delete runs no stop half, its stop steps are
+/// already done; lifecycles/node-replace.md 3): `node.delete` of a `<path>.old` path acts only on
+/// the stopped predecessor a rename left there, or one whose exit is proven (the fabric-primary
+/// admits nothing else at a `.old` path), so its workflow is NodeDeleting, TerminateRuntime,
+/// NodeDeleted, Complete. A caller that lost the stream after `NodeDeleting` resumes at
+/// TerminateRuntime, never at a drain that delete never runs; a stop-half receipt under it is
+/// refused by name. A bare path's delete keeps its stop half (a live birth's runs it).
+#[test]
+fn a_dot_old_delete_resumes_after_node_deleting_at_terminate_runtime() {
+    let view = |op: &str, steps: Vec<&str>| -> rafka_node_admin_client::BuildView {
+        serde_json::from_value(json!({
+            "build_id": "bld-1", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
+            "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": op, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
+            "last_failure": null, "reason": "delete"
+        }))
+        .unwrap()
+    };
+    let old: rafka_mesh_entity::PathName = "mesh1.rpc.3.old".parse().unwrap();
+    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(old.clone()), &view("retire-node:mesh1.rpc.3.old", vec!["NodeDeleting"]), 1).unwrap();
+    assert_eq!(r.from, Some(("retire-node".to_string(), "TerminateRuntime".to_string())), "the stopped predecessor's delete stands at TerminateRuntime");
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("retire-node:mesh1.rpc.3.old", vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]), 1).unwrap();
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::Deleted), Frame::Complete]);
+    assert_eq!(
+        rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("retire-node:mesh1.rpc.3.old", vec!["NodeDeleting", "DrainNode"]), 1).unwrap_err(),
+        CallEnd::UnrecognisedReceipt { operation: "retire-node:mesh1.rpc.3.old".into(), step: "DrainNode".into() }
+    );
+    let bare: rafka_mesh_entity::PathName = "mesh1.rpc.3".parse().unwrap();
+    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(bare), &view("retire-node:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
+    assert_eq!(r.from, Some(("retire-node".to_string(), "DrainNode".to_string())), "a bare path's delete keeps its stop half");
+}
+
 /// One attempt's run as an executor streams it to the fabric-primary: its frames, then its end.
 struct Script(std::collections::VecDeque<InnerItem>);
 
