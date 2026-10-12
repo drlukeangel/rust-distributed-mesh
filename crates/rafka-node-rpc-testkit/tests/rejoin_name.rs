@@ -16,6 +16,7 @@ use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_admin_core::model::NodeStatus;
+use rafka_node_admin_core::node_commands::CommandKey;
 use rafka_node_admin_core::storage::NodeRow;
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
@@ -150,8 +151,18 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let drain = StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_held".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1.new".into() };
+        // The workflow's order (node-connections-delete.md; apply_node_name.rs): `connections.delete` is called only
+        // once the drain's completion has been answered at the admin, so nothing of the drain is still
+        // calling the admin when the connections are cut and none dials it afterwards.
+        let operation = "drain-node:mesh1.rpc.1.new".to_string();
+        let mut drained = admin.observer.commands.open(CommandKey { build_id: "bld_held".into(), attempt: 1, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone() });
+        let drain = StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_held".into(), attempt: 1, operation };
         assert_eq!(call(&admin, &target, &drain).await, StatusReply::Applied);
+        tokio::time::timeout(Duration::from_secs(20), drained.wait_for(|done| *done)).await.expect("the drained birth called node-drained at its commander").expect("the command book is held by the admin side");
+        let completed = |f: &std::collections::BTreeMap<String, String>| f.get("completion").map(String::as_str) == Some("node-drained") && f.get("answer").map(String::as_str) == Some("applied");
+        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_admin.status.update.via-completion-call", completed)).await.expect("the drained birth had its commander's answer to node-drained");
+        let declared = |f: &std::collections::BTreeMap<String, String>| f.get("state").map(String::as_str) == Some("Draining") && f.get("definitive").map(String::as_str) == Some("true");
+        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_rpc.status.update.via-declare-own", declared)).await.expect("the drained birth's Draining declaration was answered by name");
         let delete = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
         assert!(matches!(call(&admin, &target, &delete).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "every connection is deleted");
         let apply = StatusRequest::ApplyNodeName { node_id: node_id.clone(), incarnation: incarnation.clone(), name: taken.to_string() };
