@@ -2,17 +2,19 @@
 //! mid-leave (R11; mesh-leave.md, "Resume after the primary's loss").
 //!
 //! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 owns `shutdown-mesh:<mesh2 id>`.
-//! mesh2's primary is held by its fault door in tier 1 (rpc.2's DrainNode receipt) and SIGKILLed
-//! there by exact pid; the door dies with it. The owner's attempt ends at its hand-off wait, the
-//! drift plans the shutdown again, and the resume proves and records the lost primary's exact
-//! Exited, amends the roster with the new final primary, and finishes: completion covers the
-//! accepted roster plus the amendment, both primary births included.
+//! mesh2's primary is held by its fault door in tier 1 (rpc.2's node.delete DrainNode receipt) and
+//! SIGKILLed there by exact pid; the door dies with it. The owner's attempt ends at its hand-off
+//! wait, the drift plans the mesh.delete again, and the resume proves and records the lost primary's
+//! exact Exited, amends the roster with the new final primary, and finishes at mesh.deleted: its
+//! completion covers the accepted roster plus the amendment but the new final primary, which stays
+//! alive. Its end is its own node.delete (mesh-delete.md step 7), after which MeshLeft covers every
+//! birth, both primary births included.
 //!
 //! This stem is form (a): a surviving admin of mesh2 the election seats. Form (b), no admin of mesh2
 //! survives and the fabric-primary creates the one node-admin the leaving mesh may gain, is
 //! `mesh_lifecycle__mesh_leave_no_survivor`, over the shared run and assertions here.
 
-use rafka_test_scenario::estate::{named, Estate, Owner};
+use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -48,6 +50,8 @@ pub(crate) struct Run {
     pub(crate) mesh2_id: String,
     pub(crate) lost: (String, String),
     pub(crate) b: String,
+    /// mesh2's final primary after the amendment, alive after mesh.deleted until its node.delete.
+    pub(crate) last: String,
 }
 
 /// Build {mesh1, mesh2 with `mesh2_admins` admins}, arm mesh2's primary's door at rpc.2's DrainNode
@@ -66,6 +70,14 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1_s
     let mut want: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh2.rpc.1", "mesh2.rpc.2"].iter().map(|n| n.to_string()).collect();
     want.extend((1..=mesh2_admins).map(|i| format!("mesh2.admin.{i}")));
     let before = estate.settled(&want, Duration::from_secs(60)).await;
+    // The rows mesh2's primary commits (its mesh row Leaving at leave-mesh) are durable only once the
+    // fabric's state-commit published them (states.md, Rounds: "Before state-commit, RDM holds its
+    // rows in the scratchpad"; R14 item 9): the fabric is ready-for-traffic before mesh2 goes, so the
+    // admin seated after the primary's loss reads mesh2 deleting from its mesh's own rows.
+    wait_for("the fabric is ready-for-traffic: its state-commit published every node's rows", Duration::from_secs(90), || async {
+        (estate.get("/api/fabric").await.1["status"] == "ready-for-traffic").then_some(())
+    })
+    .await;
     let (_, m2) = estate.get("/api/meshes/mesh2").await;
     let mesh2_id = s(&m2["id"]);
     let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
@@ -74,14 +86,14 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1_s
 
     // Held in tier 1: rpc.2 drained and running, the other admin (form a) still ready for traffic.
     let cut = "leave:rpc2-DrainNode";
-    // A member's workflow runs under `<outer>/<path>` (`mesh_leave::member_operation`): the operation prefix names rpc.2's.
-    door.arm(cut, json!({"kind": "receipt", "step": "DrainNode", "operation": format!("shutdown-mesh:{mesh2_id}/mesh2.rpc.2")})).await;
+    // A member's end is its node.delete, under node.delete's own operation (mesh-delete.md step 3).
+    door.arm(cut, json!({"kind": "receipt", "step": "DrainNode", "operation": "retire-node:mesh2.rpc.2"})).await;
     // rpc.1's stop completed (its stop-node answered stopped: drained, its mesh connections cut,
     // its process alive) and its workflow held at that receipt: its NodeStopped, published at the
     // next step, is never published, and it has no Exited receipt. Nothing any admin holds names it.
     let stopped = "leave:rpc1-StopNode";
     if rpc1_stopped {
-        door.arm(stopped, json!({"kind": "receipt", "step": "StopNode", "operation": format!("shutdown-mesh:{mesh2_id}/mesh2.rpc.1")})).await;
+        door.arm(stopped, json!({"kind": "receipt", "step": "StopNode", "operation": "retire-node:mesh2.rpc.1"})).await;
     }
     let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh1]})).await;
     assert_eq!(status, 202, "{b}");
@@ -109,10 +121,45 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1_s
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    // The view converges on mesh1 alone within gossip delay of the MeshLeft receipt.
+    // mesh.delete ends at mesh.deleted: the view settles on mesh1 and mesh2's new final primary,
+    // alive; its end is its own node.delete (mesh-delete.md step 7), then the view converges on
+    // mesh1 alone within gossip delay of mesh-left.
     let mut view: Vec<String> = Vec::new();
     let mut mesh2_status = 0;
+    let mut last: Option<String> = None;
+    let mut deleted = Value::Null;
     if build["state"] == "complete" {
+        let settle = std::time::Instant::now() + Duration::from_secs(60);
+        while std::time::Instant::now() < settle && last.is_none() {
+            // The lost primary's exit is recorded, not published deleted: it may still be held
+            // unheard until mesh-left. The final primary is the one mesh2 birth that is alive.
+            let nodes = estate.nodes().await;
+            let mesh2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
+            let deleting: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node").collect();
+            if mesh2.len() == 1 && deleting.is_empty() {
+                last = mesh2.into_iter().next();
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+    if let Some(last) = &last {
+        let (_, fabric) = estate.get("/api/fabric").await;
+        estate.admin = s(&fabric["admin_api_base"]);
+        let (status, c) = estate.delete(&format!("/api/nodes/{last}")).await;
+        if status == 202 {
+            let c = s(&c["build_id"]);
+            let until = std::time::Instant::now() + Duration::from_secs(120);
+            while std::time::Instant::now() < until {
+                let (_, v) = estate.get(&format!("/api/builds?id={c}")).await;
+                deleted = v;
+                if deleted["state"] == "complete" || deleted["state"] == "failed" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        } else {
+            deleted = json!({"refused": status, "body": c});
+        }
         let settle = std::time::Instant::now() + Duration::from_secs(60);
         while std::time::Instant::now() < settle {
             view = estate.nodes().await.iter().map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
@@ -123,18 +170,23 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1_s
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
+    let build = if build["state"] == "complete" { estate.get(&format!("/api/builds?id={b}")).await.1 } else { build };
     estate.stop().await;
     let spans = estate.spans();
     assert!(build["state"] == "complete" && build["attempt"].as_u64().unwrap_or(0) >= 2, "build {b} completes on an attempt after the first within 420 s: {build}");
-    assert!(view.iter().all(|n| n.starts_with("mesh1.")), "the view holds no mesh2 birth after MeshLeft: {view:?}");
+    let last = last.unwrap_or_else(|| panic!("mesh.deleted leaves mesh2's final primary alive, the one mesh2 node the view holds after build {b}"));
+    assert_eq!(deleted["state"], "complete", "the node.delete of mesh2's final primary {last} completes: {deleted}");
+    assert!(view.iter().all(|n| n.starts_with("mesh1.")), "the view holds no mesh2 birth after mesh-left: {view:?}");
     assert_eq!(mesh2_status, 404, "mesh2 is no longer a mesh of the fabric");
-    Run { build, spans, mesh2_id, lost, b }
+    Run { build, spans, mesh2_id, lost, b, last }
 }
 
 /// The receipts and spans both forms share: the lost primary's exit recorded before the
-/// amendment, one amendment admitting `next`, and a MeshLeft covering the accepted roster plus it.
+/// amendment, one amendment admitting `next`, mesh.deleted's completion over every birth but `next`,
+/// and, after `next`'s own node.delete, a MeshLeft covering the accepted roster plus it.
 pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
-    let Run { build, spans, mesh2_id, lost, b } = run;
+    let Run { build, spans, mesh2_id, lost, b, last } = run;
+    assert_eq!(last, next, "mesh2's final primary alive after mesh.deleted is the amended one");
     let outer = format!("shutdown-mesh:{mesh2_id}");
     let steps: Vec<Value> = build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["operation"] == outer.as_str()).collect();
     let step = |name: &str| -> Vec<&Value> { steps.iter().filter(|r| r["step"] == name).collect() };
@@ -143,8 +195,14 @@ pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
     assert_eq!(s(&amended[0]["output"]["predecessor"]["node"]), lost.0, "the amendment names the lost primary: {}", amended[0]);
     assert_eq!(s(&amended[0]["output"]["predecessor"]["incarnation_id"]), lost.1, "the amendment names the lost primary's exact birth: {}", amended[0]);
     assert_eq!(s(&amended[0]["output"]["final_primary"]["node"]), next, "the amendment admits {next}: {}", amended[0]);
+    let completion = step("MeshDeleted");
+    assert_eq!(completion.len(), 1, "one MeshDeleted completion under {outer}: {build}");
+    assert_eq!(s(&completion[0]["output"]["final_primary"]["node"]), next, "mesh.deleted names the amended final primary: {}", completion[0]);
+    let completed: BTreeSet<String> = completion[0]["output"]["receipts"].as_array().cloned().unwrap_or_default().iter().map(|r| s(&r["node"])).collect();
+    assert!(completed.contains(&lost.0) && !completed.contains(next), "mesh.deleted covers the lost primary and every other birth but the alive final primary {next}: {completed:?}");
+    assert_eq!(completion[0]["output"]["receipts"].as_array().map(Vec::len), Some(roster - 1), "{}", completion[0]);
     let left = step("MeshLeft");
-    assert_eq!(left.len(), 1, "one MeshLeft receipt under {outer}: {build}");
+    assert_eq!(left.len(), 1, "one MeshLeft receipt under {outer}, after {next}'s own node.delete: {build}");
     assert_eq!(left[0]["outcome"], json!("complete"), "{}", left[0]);
     let births: BTreeSet<String> = left[0]["output"]["receipts"].as_array().cloned().unwrap_or_default().iter().map(|r| s(&r["node"])).collect();
     assert!(births.contains(&lost.0) && births.contains(next), "MeshLeft covers both primary births ({} and {next}): {births:?}", lost.0);
@@ -164,6 +222,10 @@ pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
     assert!(attr_u(applied[0], "attempt") >= 2, "the amendment belongs to a resumed attempt: {}", applied[0]);
     let mesh_left = one("rdm.node_admin.mesh.update.via-mesh-left-receipt");
     assert_eq!((attr_u(&mesh_left, "receipts"), attr_u(&mesh_left, "roster")), (roster as u64, roster as u64), "{mesh_left}");
+    // An exit inside the mesh.delete belongs to it (node-recovery.md "Failure and receipts"): the
+    // deleted mesh's final primary submits no recovery of a mesh2 birth, the lost primary included.
+    let recoveries: Vec<String> = named(spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| s(&sp["attributes"]["submitter"]).starts_with("mesh2.")).map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();
+    assert!(recoveries.is_empty(), "no recovery of a mesh2 birth is submitted by mesh2's primary: {} submissions, first {:?}", recoveries.len(), recoveries.first());
     // A desired change, not a recovery: no drift attempt replaces or restarts a mesh2 birth.
     let drift: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains("mesh2.") && sp["attributes"]["action"] != "none").collect();
     assert!(drift.is_empty(), "no drift attempt acts on a mesh2 birth while the leave resumes: {drift:?}");

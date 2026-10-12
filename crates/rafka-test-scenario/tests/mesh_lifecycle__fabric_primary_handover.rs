@@ -1,26 +1,29 @@
-//! i143.e4.s8 process E2E: deleting the fabric-primary's own mesh hands the fabric-primary seat to a
-//! surviving mesh first, then deletes the mesh. The fabric does not move; its primary does.
+//! i143.e4.s8, i143.e12.s49 process E2E: deleting the fabric-primary's own mesh hands the
+//! fabric-primary seat to a surviving mesh first, then deletes the mesh. The fabric does not move;
+//! its primary does. mesh.delete ends at mesh.deleted with the mesh-primary alive; its end is a
+//! separate node.delete, with the fabric-primary as executor.
 //!
-//! fabric-primary-handover.md: "R-ST2 transfers fabric leadership before the incumbent mesh leaves.
-//! It completes before any mesh teardown. The new fabric-primary then runs the existing mesh-leave
-//! workflow, including the final departing primary's stop."
-//!
-//! mesh-leave.md: the owner outside the mesh runs `shutdown-mesh:<mesh_id>`; the mesh's primary
-//! drains and stops every other member; the owner drains and stops the mesh's final primary and
-//! records `MeshLeft`.
+//! mesh-delete.md, steps 5-7: "`mesh.deleted`: when every member has its exact exit proof, the
+//! mesh-primary, still alive, writes the mesh row deleted and reports mesh.deleted to the
+//! fabric-primary ... After mesh.deleted the mesh-primary keeps publishing its aggregate, itself the
+//! only member and the mesh deleted ... A separate node.delete deletes the mesh-primary. The
+//! fabric-primary is its executor, proves its exit and, as acting primary of a mesh that has no
+//! primary, writes its row deleted; from that admin's stop on it publishes the deleted mesh's
+//! aggregate." R-MD1 items 2-3: mesh-left requires complete exact-birth terminal coverage, and
+//! "Peers retain the Dead mesh and its final birth while that birth lives": the fabric-primary
+//! publishes MeshLeft only once the final birth's node.delete has its exact exit proof.
 //!
 //! desired {mesh1, mesh2, mesh3} -> {mesh2, mesh3} through one Build, mesh1 holding the fabric seat.
 //! A desired change, never a recovery: no proven-drift Build names mesh1 and nothing recreates a
-//! mesh1 node (subfeature `fabric-primary-handover`).
+//! mesh1 node (subfeature `fabric-primary-handover`). Then `DELETE /api/nodes/<mesh1's last admin>`.
 //!
-//! R-NS1 (gossip.md, mesh-leave section): after mesh.deleted the last admin, still its mesh's
-//! primary, keeps publishing its aggregate; from its stop on the fabric-primary is that mesh's
-//! publisher of record and publishes the mesh's own Members aggregate on the backbone, publisher
-//! itself, `digests` empty, the stopped admin in `in_flight` as NodeStopped. A node of the surviving
-//! mesh that does not hold the fabric seat holds the deleted mesh with its last admin, then holds it
-//! stopped, then gone after MeshLeft. The seat lands on the lowest NodeId among mesh2's and mesh3's
-//! primaries (the election's, never chosen here). Every receiver read is made at BOTH surviving
-//! meshes, the fabric-primary's own and the other, so every run covers both placements.
+//! R-NS1 (gossip.md, "Mesh delete"): after mesh.deleted the last admin, still its mesh's primary,
+//! keeps publishing its aggregate with itself the only member and MeshStatus Dead, and every peer
+//! holds the deleted mesh with that one member while it lives; from its stop on the fabric-primary
+//! publishes the mesh's own Members aggregate, and its delete moves the birth to `departed`. The
+//! seat lands on the lowest NodeId among mesh2's and mesh3's primaries (the election's, never
+//! chosen here). Every receiver read is made at BOTH surviving meshes, the fabric-primary's own and
+//! the other, so every run covers both placements.
 
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
@@ -69,6 +72,15 @@ fn alive(pid: u64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
 }
 
+/// CONTRACT: deleting the mesh that holds the fabric seat hands the seat to a surviving mesh's
+/// primary first, then deletes the mesh. The mesh.delete ends at mesh.deleted: the fabric-primary
+/// validates the handoff and records its completion receipt, and stops nothing of mesh1's final
+/// primary, which stays alive, publishing mesh1's aggregate with itself the only member and
+/// MeshStatus Dead, while every peer holds mesh1 with that one member. Its end is a separate
+/// node.delete the fabric-primary executes: node.stop, exact exit proof, its row Deleted,
+/// NodeDeleted in `departed`, then the fabric-primary's own aggregate for mesh1; only then, with
+/// every birth proven exited, mesh-left. No MeshLeft is published between the handoff and the final
+/// birth's exit proof.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_deletes_it() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
@@ -106,6 +118,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // The Node rows mesh1's admin holds, read from its data dir while it runs.
     let mesh1_ids: Vec<(String, String)> = before.iter().filter(|n| n["mesh"] == "mesh1").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     let mesh1_dir = estate.data_dir_of("mesh1.admin.1").await;
+    let mesh1_bare: String = mesh1_id.split_once('_').map(|(_, r)| r).unwrap_or(&mesh1_id).replace('-', "").to_lowercase();
 
     // Control moves to mesh2 before mesh1 goes: its admins advertise it in the topology.
     let mesh2_admin = before
@@ -115,11 +128,89 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         .expect("a ready mesh2 admin");
     estate.admin = mesh2_admin.clone();
 
-    // {mesh1, mesh2, mesh3} -> {mesh2, mesh3}: one Build.
+    // {mesh1, mesh2, mesh3} -> {mesh2, mesh3}: one Build. It completes at mesh.deleted.
     let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh2"), mesh("mesh3")]})).await;
     assert_eq!(status, 202, "{b}");
     let b = s(&b["build_id"]);
     estate.await_build(&b, Duration::from_secs(240)).await;
+    let survivors_named = names(&["mesh2", "mesh3"]);
+    // Every member of mesh1 but its final primary is deleted by mesh1's primary (mesh-delete.md step
+    // 3, the whole node.delete: NodeDeleted from its exact exit proof), so the view settles on mesh2,
+    // mesh3 and at most mesh1's final primary.
+    let settle_by = std::time::Instant::now() + Duration::from_secs(60);
+    let after_b = loop {
+        let nodes = estate.nodes().await;
+        let ours: BTreeSet<String> = nodes.iter().filter(|n| n["mesh"] != "mesh1").filter_map(|n| n["name"].as_str().map(str::to_string)).collect();
+        let ready = nodes.iter().filter(|n| n["mesh"] != "mesh1").all(|n| n["status"] == "ready-for-traffic");
+        if ours == survivors_named && ready && nodes.iter().filter(|n| n["mesh"] == "mesh1").count() <= 1 {
+            break nodes;
+        }
+        if std::time::Instant::now() >= settle_by {
+            let held: Vec<String> = nodes.iter().map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
+            estate.stop().await;
+            let spans = estate.spans();
+            let deleted: Vec<String> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["build_id"] == b.as_str()).map(|sp| s(&sp["attributes"]["node"])).collect();
+            let recoveries: Vec<String> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().map(|sp| format!("{} by {}: {}", s(&sp["attributes"]["node"]), s(&sp["attributes"]["submitter"]), s(&sp["attributes"]["outcome"]))).collect();
+            panic!("the view never settled on mesh2, mesh3 and at most mesh1's final primary within 60 s after build {b}: {held:?}; NodeDeleted published under {b}: {deleted:?}; recovery submissions ({}): {:?}", recoveries.len(), recoveries.iter().take(3).collect::<Vec<_>>());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    // mesh.deleted leaves mesh1's final primary alive: the one mesh1 node the view still holds.
+    let Some(last) = after_b.iter().find(|n| n["mesh"] == "mesh1").cloned() else {
+        estate.stop().await;
+        let spans = estate.spans();
+        let stopped: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
+            .into_iter()
+            .filter(|sp| sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.admin.") && sp["attributes"]["step"] == "TerminateRuntime")
+            .map(|sp| format!("{} TerminateRuntime trace {}", s(&sp["attributes"]["node"]), s(&sp["trace_id"])))
+            .collect();
+        let inside: Vec<String> = named(&spans, "rdm.node_admin.node.update.via-shutdown-member").into_iter().filter(|sp| sp["attributes"]["build_id"] == b.as_str()).map(|sp| s(&sp["attributes"]["node"])).collect();
+        panic!("mesh.delete ends at mesh.deleted with the mesh-primary alive, but no mesh1 node is left after build {b}: the fabric-primary stopped the final primary inside the mesh.delete ({stopped:?}; shutdown-member workflows under {b}: {inside:?})");
+    };
+    let final_name = s(&last["name"]);
+    assert!(final_name.starts_with("mesh1.admin."), "the mesh1 node left alive is a node-admin, the final primary: {last}");
+    let final_pid = mesh1_pids.iter().find(|(n, _)| *n == final_name).map(|(_, p)| *p).unwrap();
+    assert!(alive(final_pid), "mesh1's final primary {final_name} still runs after mesh.deleted");
+    let (_, fabric_now) = estate.get("/api/fabric").await;
+    let fabric_primary = s(&fabric_now["fabric_primary"]);
+    estate.admin = s(&fabric_now["admin_api_base"]);
+
+    // Peers hold the deleted mesh with its last admin while it lives (R-NS1 item 1, R-MD1 item 3):
+    // an admin of each surviving mesh, read on its own control API, holds mesh1 deleted with that one
+    // node. The admin lives on here until its node.delete, so this interval is held, not raced.
+    let survivors = ["mesh2", "mesh3"];
+    for m in survivors {
+        for admin in after_b.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin") {
+            let base = s(&admin["admin_api_base"]);
+            let who = s(&admin["name"]);
+            wait_for(&format!("{who} holds mesh1 dead with {final_name} its only node"), Duration::from_secs(30), || async {
+                let (status, v) = estate.http_get(&base, "/api/meshes/mesh1").await;
+                (status == 200 && v["status"] == "dead" && v["nodes"] == json!([final_name.clone()])).then_some(())
+            })
+            .await;
+        }
+    }
+    assert!(alive(final_pid), "mesh1's final primary {final_name} still runs while every peer holds it");
+
+    // The completion receipt of mesh.deleted, read from the live Build projection: every birth of mesh1
+    // but its final primary, which is not deleted inside its own mesh.delete; no MeshLeft yet.
+    let steps_of = |build: &Value, step: &str| -> Vec<Value> { build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == step).collect() };
+    let (_, build_b) = estate.get(&format!("/api/builds?id={b}")).await;
+    let deleted_receipts = steps_of(&build_b, "MeshDeleted");
+    assert_eq!(deleted_receipts.len(), 1, "one MeshDeleted completion receipt under {b}: {build_b}");
+    assert_eq!(deleted_receipts[0]["operation"], format!("shutdown-mesh:{mesh1_bare}"), "keyed by the mesh's minted id: {}", deleted_receipts[0]);
+    assert_eq!(deleted_receipts[0]["output"]["receipts"].as_array().map(Vec::len), Some(3), "a terminal receipt for every birth of mesh1 but its final primary: {}", deleted_receipts[0]);
+    assert_eq!(s(&deleted_receipts[0]["output"]["final_primary"]["node"]), final_name, "{}", deleted_receipts[0]);
+    assert!(steps_of(&build_b, "MeshLeft").is_empty(), "no MeshLeft while the final primary lives: {build_b}");
+
+    // The final primary's end: an ordinary node.delete, a separate call, the fabric-primary its
+    // executor. The topology names no mesh1, so the call opens its own fenced attempt of the accepted
+    // Build (as a delete of a parked `.old` does), with its own trace.
+    let (status, c) = estate.delete(&format!("/api/nodes/{final_name}")).await;
+    assert_eq!(status, 202, "{c}");
+    let c_attempt = Estate::attempt_of(&c);
+    let c = s(&c["build_id"]);
+    estate.await_attempt(&c, c_attempt, Duration::from_secs(120)).await;
     let after = estate.settled(&names(&["mesh2", "mesh3"]), Duration::from_secs(60)).await;
 
     // Identities: the Fabric, mesh2 and mesh3 keep theirs; mesh1 is gone.
@@ -129,16 +220,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!(s(&m2_after["id"]), mesh2_id, "an untouched mesh keeps its id");
     let (_, m3_after) = estate.get("/api/meshes/mesh3").await;
     assert_eq!(s(&m3_after["id"]), mesh3_id, "an untouched mesh keeps its id");
-    let (status, gone) = estate.get("/api/meshes/mesh1").await;
-    assert_eq!(status, 404, "mesh1 is no longer a mesh of the fabric: {gone}");
+    wait_for("mesh1 is no longer a mesh of the fabric", Duration::from_secs(30), || async { (estate.get("/api/meshes/mesh1").await.0 == 404).then_some(()) }).await;
     assert!(!after.iter().any(|n| n["mesh"] == "mesh1"), "no mesh1 node remains: {after:#?}");
     for (name, pid) in &mesh1_pids {
         wait_for(&format!("{name}'s runtime is gone"), Duration::from_secs(30), || async { (!alive(*pid)).then_some(()) }).await;
     }
 
-    // Dead is final and its members resolve Gone: an ordinary node of each surviving mesh (the
-    // fabric-primary's and the other) answers `gone` from its own live resolver for every departed
-    // mesh1 birth, never `unknown`, and nothing dials it.
+    // Deleted is final and its members resolve Gone: an ordinary node of each surviving mesh answers
+    // `gone` from its own live resolver for every departed mesh1 birth, never `unknown`.
     for rx in ["mesh2.rpc.1", "mesh3.rpc.1"] {
         for (name, id) in mesh1_ids.iter() {
             let query = format!("exact:{id}");
@@ -150,57 +239,189 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
             .await;
         }
     }
-    // R-MN1 (mesh-delete.md "Rows", steps 3 and 7): the removal deletes every roster birth and removes
-    // no row. Each mesh1 birth's Node row stays on the fabric's store root at its path.name
+    // R-MN1 (mesh-delete.md "Rows", steps 3 and 7): every birth of mesh1 is deleted and no row is
+    // removed. Each mesh1 birth's Node row stays on the fabric's store root at its path.name
     // (`nodes/mesh1/rows/<path.name>`, R14), written Deleted under its node id: the members' by
-    // mesh1's primary, the final primary's by the fabric-primary at mesh-left. mesh1's admin still
-    // holds its own row in its data dir. A contact is a hint for a birth that may still answer
-    // (node-admin-lifecycle.md rule 5: the stored map locates live nodes); a departed birth never
-    // answers, so mesh-left drops the contact of every birth its proof set names
-    // (`via-mesh-left-contact`, read below).
+    // mesh1's primary, the final primary's by the fabric-primary in its node.delete. A departed birth
+    // never answers, so mesh-left drops the contact of every birth its proof set names.
     assert!(std::path::Path::new(&format!("{mesh1_dir}/nodes/self.json")).exists(), "mesh1.admin.1's own Node row remains in {mesh1_dir}");
     let shared = estate.fabric_store_root().join("nodes").join("mesh1");
     for (name, id) in mesh1_ids.iter() {
         let at = shared.join("rows").join(format!("{name}.json"));
         let row: Value = std::fs::read(&at).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("the Node row of {name} ({id}) remains at {}", at.display()));
-        assert_eq!((s(&row["record"]["node_id"]), s(&row["record"]["status"])), (id.clone(), "deleted".to_string()), "{name}'s Node row is written Deleted by mesh1's removal: {row}");
+        assert_eq!((s(&row["record"]["node_id"]), s(&row["record"]["status"])), (id.clone(), "deleted".to_string()), "{name}'s Node row is written Deleted: {row}");
         let contact = shared.join("contacts").join(format!("{id}.json"));
         assert!(!contact.exists(), "mesh-left dropped the contact of departed {name} ({id}): {} remains", contact.display());
     }
-    // states.md: the mesh's `leaving` is entered by the leave-mesh down op, and "one commit stores
-    // the row, applies it, gossips it and answers the op"; fabric-node-lifecycle.md (2.7): the mesh's
-    // primary "keeps that mesh's row ... and writes every status". mesh1's primary stored its own
-    // mesh row Leaving when it admitted leave-mesh: the keyed row is in mesh1's status store on the
-    // fabric's store root (R14: `status/<mesh>/`).
-    let mesh1_bare: String = mesh1_id.split_once('_').map(|(_, r)| r).unwrap_or(&mesh1_id).replace('-', "").to_lowercase();
+    // states.md: the mesh's `deleting` is entered by the leave-mesh down op, and "one commit stores
+    // the row, applies it, gossips it and answers the op": mesh1's primary stored its own mesh row
+    // Leaving when it admitted leave-mesh, in mesh1's status store on the fabric's store root (R14).
     let mesh1_statuses = estate.fabric_store_root().join("status").join("mesh1").join("meshes");
     let leaving_row = mesh1_statuses.join(format!("{mesh1_bare}-Leaving.json"));
     let row: Value = std::fs::read(&leaving_row).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("mesh1's primary stored no Leaving row for its mesh at {}: {:?}", leaving_row.display(), std::fs::read_dir(&mesh1_statuses).map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())));
     assert_eq!((s(&row["record"]["mesh_id"]), s(&row["record"]["state"])), (mesh1_bare.clone(), "Leaving".to_string()), "{row}");
-    let (_, fabric_now) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric_now["admin_api_base"]);
-    // The MeshLeft receipt, read from the live Build projection (the admin API): one Complete
-    // receipt under the outer operation, covering every birth of the mesh.
-    let (_, build_now) = estate.get(&format!("/api/builds?id={b}")).await;
-    let left_receipts: Vec<Value> = build_now["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == "MeshLeft").collect();
-    let other_receipts: Vec<Value> = build_now["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == "OtherMembersExited").collect();
+    // mesh-left, once the final birth's exit was proven: one Complete MeshLeft receipt under the
+    // mesh.delete's operation, covering every birth of the mesh, the final primary included.
+    let (_, build_b) = estate.get(&format!("/api/builds?id={b}")).await;
+    let left_receipts = steps_of(&build_b, "MeshLeft");
+    let other_receipts = steps_of(&build_b, "OtherMembersExited");
     estate.stop().await;
     let spans = estate.spans();
-    // The executor's reconcile span ends after the run returned its terminal, which can be after the
-    // Build was read Complete: it is read from the evidence every process flushed on exit.
-    let owner_name = {
-        let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile");
-        let r = reconciles.iter().find(|sp| sp["attributes"]["build_id"] == b.as_str() && sp["attributes"]["outcome"] == "converged" && sp["attributes"]["operations"].as_str().is_some_and(|o| o.contains("shutdown-mesh:"))).cloned().expect("a reconcile converged the shutdown-mesh operation");
+    assert_eq!(other_receipts.len(), 1, "one OtherMembersExited receipt, recorded by mesh1's primary: {build_b}");
+    assert_eq!(other_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(3), "a terminal receipt for every birth of mesh1 but its final primary");
+    assert_eq!(left_receipts.len(), 1, "one MeshLeft receipt under {b}: {build_b}");
+    assert_eq!(left_receipts[0]["outcome"], json!("complete"), "{}", left_receipts[0]);
+    assert_eq!(left_receipts[0]["operation"], format!("shutdown-mesh:{mesh1_bare}"), "keyed by the mesh's minted id");
+    assert_eq!(left_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(4), "a terminal receipt for every birth of mesh1, the final primary included: {}", left_receipts[0]);
+
+    // The mesh.delete Build's executor is the fabric-primary; so is the node.delete's.
+    let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile");
+    let converged = |build: &str, op: &str| -> String {
+        let r = reconciles.iter().find(|sp| sp["attributes"]["build_id"] == build && sp["attributes"]["outcome"] == "converged" && sp["attributes"]["operations"].as_str().is_some_and(|o| o.contains(op))).cloned().unwrap_or_else(|| panic!("a reconcile converged {op} under {build}"));
         s(&r["attributes"]["executor"])
     };
-    assert_eq!(other_receipts.len(), 1, "one OtherMembersExited receipt, recorded by mesh1's primary: {build_now}");
-    assert_eq!(other_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(3), "a terminal receipt for every birth of mesh1 but its final primary");
-    assert_eq!(left_receipts.len(), 1, "one MeshLeft receipt under {b} (owner {owner_name})");
-    assert_eq!(left_receipts[0]["outcome"], json!("complete"), "{}", left_receipts[0]);
-    assert_eq!(left_receipts[0]["operation"], format!("shutdown-mesh:{mesh1_id}"), "keyed by the mesh's minted id");
-    assert_eq!(left_receipts[0]["output"]["receipts"].as_array().map(|r| r.len()), Some(4), "a terminal receipt for every birth of mesh1, the final primary included: {}", left_receipts[0]);
-    // mesh-left drops the contacts of the births its proof set names, the final primary included,
-    // written by the fabric-primary that records MeshLeft (mesh_leave.rs drop_departed_contacts).
+    let owner_name = converged(&b, "shutdown-mesh:");
+    let delete_executor = converged(&c, &format!("retire-node:{final_name}"));
+    assert_eq!(delete_executor, fabric_primary, "the fabric-primary executes the final primary's node.delete (mesh1 has no other admin)");
+
+    // mesh1's members left through the member workflows under B: every member drained, stopped and
+    // proven exited in the documented order, and none of the node-removal steps ran.
+    let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
+    // The node.delete's run: Build `c` from attempt `c_attempt`; the mesh.delete's: every other
+    // attempt of Build `b`.
+    let node_delete_run = |sp: &Value| sp["attributes"]["build_id"] == c.as_str() && attr_u(sp, "attempt") >= c_attempt;
+    let in_run = |sp: &Value, node_delete: bool| if node_delete { node_delete_run(sp) } else { sp["attributes"]["build_id"] == b.as_str() && !node_delete_run(sp) };
+    let order_in = |name: &str, node_delete: bool| -> Vec<(String, u64, u64)> {
+        let mut v: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == name && in_run(sp, node_delete)).collect();
+        v.sort_by_key(|sp| sp["start_unix_nano"].as_u64());
+        v.iter().map(|sp| (s(&sp["attributes"]["step"]), sp["start_unix_nano"].as_u64().unwrap_or(0), sp["end_unix_nano"].as_u64().unwrap_or(0))).collect()
+    };
+    let members: Vec<String> = mesh1_pids.iter().map(|(n, _)| n.clone()).filter(|n| *n != final_name).collect();
+    // mesh-delete.md step 3: each member's end is the whole node.delete, its node-admin's with the
+    // SeatTransfer step a node-admin target takes (it holds no seat: NotAHolder).
+    for name in &members {
+        let order = order_in(name, false);
+        let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
+        let want: &[&str] = if name.contains(".admin.") {
+            &["NodeDeleting", "SeatTransfer", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
+        } else {
+            &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
+        };
+        assert_eq!(got, want, "{name}: the ordinary node.delete under {b}, node.stop first, then the exit proof and NodeDeleted");
+    }
+    // Each member's NodeDeleted is mesh1's primary's, before mesh.deleted; the deleted mesh's last
+    // admin then holds no exited member to recover (node-recovery.md: recovery is for a member that
+    // exits outside any workflow).
+    let deleted_member: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["build_id"] == b.as_str()).collect();
+    for name in &members {
+        assert!(deleted_member.iter().any(|sp| sp["attributes"]["node"] == name.as_str() && s(&sp["attributes"]["operation"]) == format!("retire-node:{name}")), "mesh1's primary published NodeDeleted for {name} under {b}: {deleted_member:?}");
+    }
+    let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-node-recovery").into_iter().filter(|sp| s(&sp["attributes"]["submitter"]) == final_name).collect();
+    assert!(recoveries.is_empty(), "the deleted mesh's last admin {final_name} submits no recovery of its deleted members: {} submissions, first {:?}", recoveries.len(), recoveries.first());
+    // 1. mesh.deleted ends the mesh.delete: nothing of the final primary is stopped under B.
+    assert!(order_in(&final_name, false).is_empty(), "the mesh.delete runs no step on its final primary {final_name} (its node.delete is attempt {c_attempt}): {:?}", order_in(&final_name, false));
+    let inside: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-shutdown-member").into_iter().filter(|sp| sp["attributes"]["node"] == final_name.as_str()).collect();
+    assert!(inside.is_empty(), "no shutdown-member workflow of the final primary {final_name}: {inside:?}");
+    // Tiers: the ordinary nodes' workflows overlap in time; the other node-admin starts only after the
+    // last ordinary node's exit is proven.
+    let member = |name: &str| -> (u64, u64) {
+        let sp = named(&spans, "rdm.node_admin.node.update.via-shutdown-member").into_iter().find(|sp| sp["attributes"]["node"] == name && sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("shutdown-mesh:"))).cloned().unwrap_or_else(|| panic!("no shutdown-member span for {name}"));
+        (start_ns(&sp), end_ns(&sp))
+    };
+    let terminal_end = |name: &str, node_delete: bool| order_in(name, node_delete).iter().find(|(n, _, _)| n == "TerminateRuntime").map(|(_, _, e)| *e).unwrap_or_else(|| panic!("{name} has a TerminateRuntime step in the {} run", if node_delete { "node.delete" } else { "mesh.delete" }));
+    let drain_start = |name: &str, node_delete: bool| order_in(name, node_delete).iter().find(|(n, _, _)| n == "DrainNode").map(|(_, st, _)| *st).unwrap_or_else(|| panic!("{name} has a DrainNode step in the {} run", if node_delete { "node.delete" } else { "mesh.delete" }));
+    let (r1, r2) = (member("mesh1.rpc.1"), member("mesh1.rpc.2"));
+    assert!(r1.0 < r2.1 && r2.0 < r1.1, "the ordinary nodes' workflows overlap in time: {r1:?} {r2:?}");
+    let tier1_last = terminal_end("mesh1.rpc.1", false).max(terminal_end("mesh1.rpc.2", false));
+    let tier2: Vec<&String> = members.iter().filter(|n| n.contains(".admin.")).collect();
+    assert_eq!(tier2.len(), 1, "one other node-admin of mesh1: {members:?}");
+    for n in &tier2 {
+        assert!(drain_start(n, false) > tier1_last, "{n} (a node-admin) drained only after every ordinary node's exit was proven");
+    }
+    let handoff = named(&spans, "rdm.node_admin.mesh.update.via-handoff-validated").into_iter().find(|sp| sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("shutdown-mesh:"))).cloned().expect("the handoff was validated");
+    assert_eq!(handoff["attributes"]["outcome"], "applied", "the owner validated the mesh-leave handoff: {handoff}");
+    // The completion follows the validated handoff, at the fabric-primary that owns the mesh.delete.
+    let completion = named(&spans, "rdm.node_admin.mesh.update.via-mesh-deleted-receipt").into_iter().find(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).cloned().unwrap_or_else(|| panic!("the fabric-primary recorded mesh.deleted's completion receipt for mesh1"));
+    assert!(start_ns(&completion) >= end_ns(&handoff), "the completion receipt follows the validated handoff: {completion}");
+    assert_eq!((attr_u(&completion, "receipts"), attr_u(&completion, "roster"), s(&completion["attributes"]["final_primary"])), (3, 4, final_name.clone()), "{completion}");
+    assert_eq!(s(&completion["attributes"]["node"]), owner_name, "the mesh.delete's owner records its completion: {completion}");
+    eprintln!("bullet 1: mesh.deleted completion trace {} by {owner_name}, handoff trace {}", s(&completion["trace_id"]), s(&handoff["trace_id"]));
+
+    // The gossip hooks: mesh-leaving by the owner, mesh-leave (mesh.deleted) by the still-running primary.
+    for hook in ["via-mesh-leaving", "via-mesh-leave", "via-mesh-left"] {
+        assert!(!named(&spans, &format!("rdm.node_admin.mesh.update.{hook}")).is_empty(), "the {hook} hook ran");
+    }
+    let recorded = named(&spans, "rdm.node_admin.mesh.update.via-exit-manifest-recorded");
+    assert!(recorded.iter().any(|sp| attr_u(sp, "receipts") == 3 && attr_u(sp, "roster") == 4), "the mesh primary recorded the exit manifest of its three other members: {recorded:?}");
+    let heard = |m: &str, name: &str| -> Vec<&Value> { named(&spans, &format!("rdm.mesh.membership.update.{name}")).into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}."))).collect() };
+    for m in survivors {
+        let leaving = heard(m, "via-mesh-leaving");
+        assert!(!leaving.is_empty(), "a {m} node heard mesh-leaving: {spans_len} spans", spans_len = spans.len());
+        // R4: no mesh-level hold at a peer. A node learns mesh1's members are leaving from each
+        // member's own Draining and Leaving in what it installs, and routes none of them meanwhile.
+        let states: Vec<&Value> = heard(m, "via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]).starts_with("mesh1.")).collect();
+        let leaving_states: Vec<&Value> = states.iter().copied().filter(|sp| matches!(s(&sp["attributes"]["status"]).as_str(), "Draining" | "Leaving")).collect();
+        assert!(!leaving_states.is_empty(), "a {m} node held a mesh1 member's own Draining or Leaving: {states:?}");
+        assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying Draining or Leaving is not routable at {m}: {leaving_states:?}");
+        assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.rpc.")) && sp["attributes"]["channel"] == "mesh-channel"), "a {m} ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
+    }
+    let routable = |sp: &Value| s(&sp["attributes"]["routable"]) == "true" || sp["attributes"]["routable"] == json!(true);
+    let fp_mesh = fabric_primary.split('.').next().unwrap_or_default().to_string();
+    let other_mesh = if fp_mesh == "mesh2" { "mesh3" } else { "mesh2" };
+    let at_mesh = |sp: &Value, m: &str, kind: &str| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.{kind}."));
+    let installed = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed");
+
+    // 1. While it lives: after mesh.deleted (its mesh-leave hook) the last admin keeps publishing
+    // mesh1's aggregate with itself the only member and MeshStatus Dead, and an admin of each surviving
+    // mesh installs mesh1 from that aggregate with that one member.
+    let deleted_at = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["publisher"]) == final_name).map(|sp| start_ns(sp)).min().expect("the last admin reported mesh.deleted (its mesh-leave hook)");
+    let final_exit = terminal_end(&final_name, true);
+    let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1 && start_ns(sp) > deleted_at).collect();
+    assert!(!lone.is_empty(), "after mesh.deleted the last admin {final_name} kept publishing mesh1's aggregate with itself the only member");
+    for m in survivors {
+        let held: Vec<&Value> = installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "backbone" && at_mesh(sp, m, "admin") && s(&sp["attributes"]["publisher"]).starts_with(&format!("{final_name}@")) && attr_u(sp, "members") == 1 && start_ns(sp) > deleted_at && start_ns(sp) < final_exit).collect();
+        assert!(!held.is_empty(), "an admin of {m} held mesh1 from its last admin {final_name}'s own aggregate, itself the only member, while it lived (fabric-primary's mesh {fp_mesh})");
+        eprintln!("bullet 1: {m} held mesh1 with {final_name} alone: trace {} at {}", s(&held[0]["trace_id"]), s(&held[0]["attributes"]["node"]));
+    }
+    let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-dead-row").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
+    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= deleted_at), "the last admin {final_name} committed mesh1's row Dead at mesh.deleted, before its mesh-leave hook: {dead_row:?}");
+    let dead_sent: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && sp["attributes"]["scope"] == "mesh:mesh1" && sp["attributes"]["status"] == "dead").collect();
+    assert!(dead_sent.iter().any(|sp| start_ns(sp) < final_exit), "the last admin {final_name} sent MeshStatus Dead for mesh1 while it lived: {dead_sent:?}");
+    eprintln!("bullet 1: {final_name} lone aggregate trace {}, MeshStatus Dead trace {}", s(&lone[0]["trace_id"]), dead_sent.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());
+    // No MeshLeft between the handoff and the final birth's exit proof (R-MD1 item 2), at the
+    // fabric-primary or at any receiver.
+    let early_left: Vec<String> = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left")
+        .into_iter()
+        .chain(named(&spans, "rdm.mesh.membership.update.via-mesh-left"))
+        .filter(|sp| start_ns(sp) < final_exit)
+        .map(|sp| format!("{} at {} ({})", s(&sp["name"]), s(&sp["attributes"]["node"]) + &s(&sp["attributes"]["publisher"]), start_ns(sp)))
+        .collect();
+    assert!(early_left.is_empty(), "no MeshLeft before the final birth's exit proof at {final_exit}: {early_left:?}");
+
+    // 2. The final primary's node.delete under C, executed by the fabric-primary: its whole node.stop
+    // (the seats it holds stay with it, no admin of its mesh is left to take them), the provider's
+    // exact exit proof, its row Deleted, NodeDeleted, its removal.
+    let order = order_in(&final_name, true);
+    let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(got, ["NodeDeleting", "SeatTransfer", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name}: the ordinary node.delete, node.stop first, then the exit proof");
+    let c_steps: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == final_name.as_str() && node_delete_run(sp)).collect();
+    assert!(c_steps.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{final_name}: every step of its node.delete completed: {c_steps:?}");
+    let row_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| s(&sp["attributes"]["subject"]) == final_name && s(&sp["attributes"]["node"]) == fabric_primary).collect();
+    assert!(row_deleted.iter().any(|sp| sp["attributes"]["outcome"] == "row-deleted" && start_ns(sp) >= final_exit), "the fabric-primary {fabric_primary} wrote {final_name}'s row Deleted after its exit proof: {row_deleted:?}");
+    let node_deleted = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["build_id"]) == c).cloned().unwrap_or_else(|| panic!("NodeDeleted was published for {final_name} under {c}"));
+    assert!(start_ns(&node_deleted) >= final_exit, "NodeDeleted follows the exit proof: {node_deleted}");
+    // Then the fabric-primary's own aggregate for mesh1: publisher itself, the birth in `departed`.
+    let acting: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-acting-primary").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == fabric_primary && attr_u(sp, "departed") >= 1 && start_ns(sp) >= start_ns(&node_deleted)).collect();
+    assert!(!acting.is_empty(), "after NodeDeleted the fabric-primary {fabric_primary} published mesh1's own aggregate with the deleted birth in departed");
+    eprintln!("bullet 2: node.delete of {final_name} by {fabric_primary} (build {c} attempt {c_attempt}): TerminateRuntime then NodeDeleted trace {}, acting aggregate trace {} (departed {})", s(&node_deleted["trace_id"]), s(&acting[0]["trace_id"]), attr_u(acting[0], "departed"));
+    // mesh-left once every birth is proven exited: the receipt over all four births, then the hook,
+    // at the fabric-primary, after the final birth's exit proof.
+    let left_recorded: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt").into_iter().filter(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4).collect();
+    assert!(left_recorded.iter().any(|sp| start_ns(sp) >= final_exit), "the fabric-primary recorded MeshLeft over all four births after the final birth's exit proof: {left_recorded:?}");
+    let left_hook = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left").into_iter().find(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).cloned().expect("mesh-left was published for mesh1");
+    assert_eq!(s(&left_hook["attributes"]["publisher"]), fabric_primary, "{left_hook}");
+    eprintln!("bullet 2: mesh-left trace {} at {}", s(&left_hook["trace_id"]), start_ns(&left_hook));
+    // mesh-left drops the contacts of the births its proof set names, the final primary included.
     let dropped = named(&spans, "rdm.node_admin.node.remove.via-mesh-left-contact")
         .into_iter()
         .find(|sp| sp["attributes"]["operation"] == format!("shutdown-mesh:{mesh1_bare}").as_str() && sp["attributes"]["error"].is_null())
@@ -209,146 +430,33 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     for (name, id) in mesh1_ids.iter() {
         assert!(s(&dropped["attributes"]["dropped"]).split(", ").any(|d| d == format!("{name} {id}")), "mesh-left dropped the contact of {name} ({id}): {dropped}");
     }
-    eprintln!("mesh-left contacts dropped: trace {} by {} ({})", s(&dropped["trace_id"]), s(&dropped["attributes"]["node"]), s(&dropped["attributes"]["dropped"]));
-
-    // mesh1 left through the mesh-leave workflow under B: every member drained, stopped and proven
-    // exited in the documented order, and none of the node-removal steps ran (the Node rows stay).
-    let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
-    let order_of = |name: &str| -> Vec<(String, u64, u64)> {
-        let mut v: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == name && sp["attributes"]["build_id"] == b.as_str()).collect();
-        v.sort_by_key(|sp| sp["start_unix_nano"].as_u64());
-        v.iter().map(|sp| (s(&sp["attributes"]["step"]), sp["start_unix_nano"].as_u64().unwrap_or(0), sp["end_unix_nano"].as_u64().unwrap_or(0))).collect()
-    };
-    for (name, _) in &mesh1_pids {
-        let order = order_of(name);
-        let names: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
-        assert_eq!(names, ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime"], "{name}: drain-node, node-drained, stop-node, node-left, then the provider's exit proof; no node-removal step");
-        let mine: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == name.as_str() && sp["attributes"]["build_id"] == b.as_str()).collect();
-        assert!(mine.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{name}: every step completed");
-    }
-    // Tiers: the ordinary nodes' workflows overlap in time; the other node-admin starts only after
-    // the last ordinary node's exit is proven; the final primary's drain starts after the other
-    // admin's exit is proven and the handoff was validated.
-    let member = |name: &str| -> (u64, u64) {
-        let sp = named(&spans, "rdm.node_admin.node.update.via-shutdown-member").into_iter().find(|sp| sp["attributes"]["node"] == name && sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("shutdown-mesh:"))).cloned().unwrap_or_else(|| panic!("no shutdown-member span for {name}"));
-        (start_ns(&sp), end_ns(&sp))
-    };
-    let terminal_end = |name: &str| order_of(name).iter().find(|(n, _, _)| n == "TerminateRuntime").map(|(_, _, e)| *e).unwrap();
-    let drain_start = |name: &str| order_of(name).iter().find(|(n, _, _)| n == "DrainNode").map(|(_, st, _)| *st).unwrap();
-    let (r1, r2) = (member("mesh1.rpc.1"), member("mesh1.rpc.2"));
-    assert!(r1.0 < r2.1 && r2.0 < r1.1, "the ordinary nodes' workflows overlap in time: {r1:?} {r2:?}");
-    let tier1_last = terminal_end("mesh1.rpc.1").max(terminal_end("mesh1.rpc.2"));
-    let others: Vec<String> = mesh1_pids.iter().map(|(n, _)| n.clone()).filter(|n| n.contains(".admin.")).collect();
-    // The final primary is the one whose workflow the owner ran: its shutdown-member span is not in the mesh-primary's tier.
-    let handoff = named(&spans, "rdm.node_admin.mesh.update.via-handoff-validated").into_iter().find(|sp| sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("shutdown-mesh:"))).cloned().expect("the handoff was validated");
-    assert_eq!(handoff["attributes"]["outcome"], "applied", "the owner validated the mesh-leave handoff: {handoff}");
-    let final_name = others.iter().max_by_key(|n| drain_start(n)).unwrap().clone();
-    let tier2: Vec<&String> = others.iter().filter(|n| **n != final_name).collect();
-    for n in &tier2 {
-        assert!(drain_start(n) > tier1_last, "{n} (a node-admin) drained only after every ordinary node's exit was proven: {} <= {tier1_last}", drain_start(n));
-    }
-    let tier2_last = tier2.iter().map(|n| terminal_end(n)).max().unwrap_or(tier1_last);
-    assert!(drain_start(&final_name) > tier2_last && drain_start(&final_name) > end_ns(&handoff), "the final primary {final_name} drained after every other exit and after the validated handoff");
-    // The gossip hooks: mesh-leaving by the owner, mesh-leave by the still-running primary, mesh-left
-    // by the owner after the final exit; each heard by another mesh's nodes.
-    for hook in ["via-mesh-leaving", "via-mesh-leave", "via-mesh-left"] {
-        let published = named(&spans, &format!("rdm.node_admin.mesh.{}.{hook}", "update"));
-        assert!(!published.is_empty(), "the {hook} hook ran");
-    }
-    let recorded = named(&spans, "rdm.node_admin.mesh.update.via-exit-manifest-recorded");
-    assert!(recorded.iter().any(|sp| attr_u(sp, "receipts") == 3 && attr_u(sp, "roster") == 4), "the mesh primary recorded the exit manifest of its three other members: {recorded:?}");
-    let left_recorded = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt");
-    assert!(left_recorded.iter().any(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4), "the owner recorded MeshLeft over all four births: {left_recorded:?}");
-    // Every receiver read below is made at both surviving meshes: whichever the election seated, one
-    // is the fabric-primary's mesh and the other is not, so each run covers both placements.
-    let survivors = ["mesh2", "mesh3"];
-    let heard = |m: &str, name: &str| -> Vec<&Value> { named(&spans, &format!("rdm.mesh.membership.update.{name}")).into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}."))).collect() };
-    for m in survivors {
-        let leaving = heard(m, "via-mesh-leaving");
-        assert!(!leaving.is_empty(), "a {m} node heard mesh-leaving: {spans_len} spans", spans_len = spans.len());
-        // R4: no mesh-level hold at a peer. A node learns mesh1's members are leaving from each member's
-        // own Draining and Leaving in what it installs, and routes none of them while they say so.
-        let states: Vec<&Value> = heard(m, "via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]).starts_with("mesh1.")).collect();
-        let leaving_states: Vec<&Value> = states.iter().copied().filter(|sp| matches!(s(&sp["attributes"]["status"]).as_str(), "Draining" | "Leaving")).collect();
-        assert!(!leaving_states.is_empty(), "a {m} node held a mesh1 member's own Draining or Leaving: {states:?}");
-        assert!(leaving_states.iter().all(|sp| s(&sp["attributes"]["routable"]) == "false" || sp["attributes"]["routable"] == json!(false)), "a mesh1 member saying Draining or Leaving is not routable at {m}: {leaving_states:?}");
-        // The forwarder leg: the mesh's ordinary nodes, which hear no backbone, hold it from what their
-        // mesh primary forwards onto the mesh channel.
-        assert!(leaving_states.iter().any(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.rpc.")) && sp["attributes"]["channel"] == "mesh-channel"), "a {m} ordinary node held a mesh1 member's own state from the mesh channel: {leaving_states:?}");
-    }
-    let routable = |sp: &Value| s(&sp["attributes"]["routable"]) == "true" || sp["attributes"]["routable"] == json!(true);
-    // R-NS1 acceptance, stated on receipt: a peer that receives a valid NodeStopped excludes that exact
-    // birth from routing; on MeshLeft it resolves the birth Gone whether or not it saw Stopped (the
-    // resolver reads above); a late NodeStopped restores nothing (read below). This teardown is
-    // immediate, so Running -> Gone is valid at a peer: the stopped phase is observed only in the cell
-    // that holds it (`a_stopped_final_primary_is_held_stopped_by_the_other_mesh`). Read here: no node
-    // holds the final primary routable once its stop was answered.
-    let fabric_primary = s(&fabric_now["fabric_primary"]).to_string();
-    let fp_mesh = fabric_primary.split('.').next().unwrap_or_default().to_string();
-    let final_stopped_at = order_of(&final_name).iter().find(|(n, _, _)| n == "StopNode").map(|(_, _, e)| *e).expect("the final primary's stop was answered");
-    let final_after_stop: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && start_ns(sp) > final_stopped_at).collect();
-    assert!(final_after_stop.iter().all(|sp| !routable(sp)), "no node holds the final primary {final_name} routable after its stop: {final_after_stop:?}");
-    // R-NS1 (gossip.md, mesh-leave section): "After mesh.deleted the mesh's last node-admin, still its
-    // primary, keeps publishing its aggregate on the backbone with itself as the only member ... From the
-    // stop on the fabric-primary is that mesh's publisher of record ...: it publishes the dead mesh's own
-    // Members aggregate on the backbone, publisher itself, `digests` empty, the stopped admin in
-    // `in_flight` as NodeStopped ... Receivers handle it as that mesh's aggregate". Read at both surviving
-    // meshes: the fabric-primary's own, and the other, which hears the fabric-primary's mesh channel never.
-    let other_mesh = if fp_mesh == "mesh2" { "mesh3" } else { "mesh2" };
-    let at_mesh = |sp: &Value, m: &str, kind: &str| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.{kind}."));
-    let installed = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed");
-    let mesh1_installed = |m: &str, publisher: &str, members: u64| -> Vec<&Value> {
-        installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "backbone" && at_mesh(sp, m, "admin") && s(&sp["attributes"]["publisher"]).starts_with(&format!("{publisher}@")) && attr_u(sp, "members") == members).collect()
-    };
-    // 1. While it lives: the last admin keeps publishing mesh1's aggregate, itself the only member once
-    // every other member stopped, and the other mesh holds mesh1 from that admin's own aggregate. Which
-    // of its last versions a peer hears before the stop's cut is gossip delivery inside a window of tens
-    // of milliseconds at this cadence, so the hold is read from any version it published.
-    // mesh.deleted is its mesh-leave hook; the fabric-primary's drain that follows moves its own status,
-    // a material change its round publishes at once.
-    let deleted_at = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["publisher"]) == final_name).map(|sp| start_ns(sp)).min().expect("the last admin reported mesh.deleted (its mesh-leave hook)");
-    let lone_published = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1 && start_ns(sp) > deleted_at);
-    assert!(lone_published, "after mesh.deleted the last admin {final_name} kept publishing mesh1's aggregate with itself the only member");
-    for m in survivors {
-        assert!((1..=4).any(|n| !mesh1_installed(m, &final_name, n).is_empty()), "an admin of {m} held mesh1 from its last admin {final_name}'s own aggregate (fabric-primary's mesh {fp_mesh})");
-    }
-    // R-NS1 item 1: "After mesh.deleted the mesh row is Dead and its last node-admin, still its primary,
-    // keeps publishing ... MeshStatus Dead"; ops-naming mesh.delete: mesh.deleted is "reported by the
-    // mesh-primary, still alive, from its members' exit proofs; mesh is dead". The last admin commits
-    // its mesh row Dead before its mesh-leave hook, publishes MeshStatus Dead (the same status frame and
-    // reinforcement every status change uses) while it lives (before its exit is proven).
-    let final_exit = terminal_end(&final_name);
-    let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-dead-row").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
-    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= deleted_at), "the last admin {final_name} committed mesh1's row Dead at mesh.deleted, before its mesh-leave hook: {dead_row:?}");
-    let dead_sent: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && sp["attributes"]["scope"] == "mesh:mesh1" && sp["attributes"]["status"] == "dead").collect();
-    assert!(dead_sent.iter().any(|sp| start_ns(sp) < final_exit), "the last admin {final_name} sent MeshStatus Dead for mesh1 while it lived: {dead_sent:?}");
-    // A peer's hold of mesh1 Dead is not read here: in this immediate teardown the last admin is cut
-    // tens of milliseconds after it sends, and no gossip delivery bound exists for that window (R-NS1
-    // acceptance, R-NS1b Q1 = A). It is read in the held-stop cell, where the last admin lives on.
-    // R-NS1 item 2 (gossip.md mesh-leave section): "Its last aggregate before a stop carries itself
-    // Leaving." Its drain is answered, then before the stop's cut (node-stop.md step 3) the last admin
-    // publishes mesh1's aggregate once more, itself the only member and Leaving; after the cut it
-    // publishes nothing (step 4, R-ON1).
+    // R-NS1 item 2: "Its last aggregate before a stop carries itself Leaving": after its drain and
+    // before its stop's cut, the last admin publishes mesh1's aggregate once more, itself the only
+    // member and Leaving; after the cut it publishes nothing (node-stop.md step 4, R-ON1).
     let final_cut = named(&spans, "rdm.node_admin.node.connections.delete.via-stop-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's connections were cut by its stop");
-    let final_drain = drain_start(&final_name);
+    let final_drain = drain_start(&final_name, true);
     let leaving_aggregate: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-leaving-aggregate").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).collect();
     assert!(
         leaving_aggregate.iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "Leaving" && attr_u(sp, "members") == 1 && (sp["attributes"]["published"] == json!(true) || sp["attributes"]["published"] == "true") && start_ns(sp) > final_drain && end_ns(sp) <= final_cut),
         "the last admin {final_name} published mesh1's aggregate carrying itself Leaving after its drain and before its stop's cut: {leaving_aggregate:?}"
     );
-    // 2. Stopped: from the stop on the fabric-primary is mesh1's publisher of record, on the ordinary
-    // anti-entropy cadence (R-NS1 item 2). Here MeshLeft follows the stop within tens of milliseconds, so
-    // neither its acting aggregate nor a peer's stopped hold is owed before MeshLeft (R-NS1 acceptance:
-    // Running -> Gone is valid for an immediate teardown); both are read in the cell that holds the
-    // stopped phase.
-    // 3. Gone after delete, and 4. nothing resurrects it: once a node of a surviving mesh applied
-    // mesh-left, no mesh1 birth is held by it again (a late frame is refused by the departed fence, by name).
-    let mesh_left_at: Vec<(String, u64)> = named(&spans, "rdm.mesh.membership.update.via-mesh-left").into_iter().filter(|sp| survivors.iter().any(|m| s(&sp["attributes"]["node"]).starts_with(&format!("{m}."))) && attr_u(sp, "births_departed") > 0).map(|sp| (s(&sp["attributes"]["node"]), start_ns(sp))).collect();
+    let after_cut: Vec<String> = named(&spans, "rdm.mesh.node.update.via-leave-announcement").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && start_ns(sp) > final_cut).map(|sp| format!("{}:{}", s(&sp["attributes"]["channel"]), s(&sp["attributes"]["outcome"]))).collect();
+    assert!(after_cut.is_empty(), "the stopped final primary {final_name} announced nothing after its stop's cut: {after_cut:?}");
+    let final_stopped_at = order.iter().find(|(n, _, _)| n == "StopNode").map(|(_, _, e)| *e).expect("the final primary's stop was answered");
+    let final_after_stop: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == final_name && start_ns(sp) > final_stopped_at).collect();
+    assert!(final_after_stop.iter().all(|sp| !routable(sp)), "no node holds the final primary {final_name} routable after its stop: {final_after_stop:?}");
+
+    // 3. Gone after mesh-left, and nothing resurrects it: once a node of a surviving mesh applied
+    // mesh-left, no mesh1 birth is held by it again.
+    // Every birth of mesh1 is already departed by its NodeDeleted when mesh-left arrives (the members'
+    // from mesh1's primary, the final primary's from the fabric-primary), so a receiver's mesh-left
+    // departs nothing new; it is the terminal topology removal: the mesh's projections and held status
+    // dropped.
+    let receivers_left: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-mesh-left").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare && survivors.iter().any(|m| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.")))).collect();
+    let mesh_left_at: Vec<(String, u64)> = receivers_left.iter().map(|sp| (s(&sp["attributes"]["node"]), start_ns(sp))).collect();
     for m in survivors {
-        assert!(mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{m}.admin."))) && mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{m}.rpc."))), "an admin and an ordinary node of {m} departed mesh1's births on mesh-left: {mesh_left_at:?}");
-        // MeshLeft keeps nothing of mesh1 (gossip.md: the mesh left), its held MeshStatus included (Dead,
-        // when it arrived): it is dropped there and replayed to no joiner after.
-        let dropped: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-mesh-left").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.admin.")) && attr_u(sp, "births_departed") > 0).collect();
+        assert!(mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{m}.admin."))) && mesh_left_at.iter().any(|(n, _)| n.starts_with(&format!("{m}.rpc."))), "an admin and an ordinary node of {m} applied mesh-left for mesh1: {mesh_left_at:?}");
+        let dropped: Vec<&&Value> = receivers_left.iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.admin."))).collect();
         assert!(dropped.iter().any(|sp| !s(&sp["attributes"]["status_dropped"]).is_empty()), "an admin of {m} dropped mesh1's held status on mesh-left: {dropped:?}");
     }
     let resurrected: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]).starts_with("mesh1.") && mesh_left_at.iter().any(|(n, at)| s(&sp["attributes"]["node"]) == *n && start_ns(sp) > *at)).collect();
@@ -356,26 +464,30 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let after_left = |sp: &Value| mesh_left_at.iter().any(|(n, at)| (s(&sp["attributes"]["node"]) == *n || s(&sp["attributes"]["holder"]) == *n) && start_ns(sp) > *at);
     let reinstalled: Vec<&Value> = installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && after_left(sp)).collect();
     assert!(reinstalled.is_empty(), "a node of a surviving mesh installed a mesh1 aggregate after mesh-left: {reinstalled:?}");
-    let late_refused: Vec<String> = ["rdm.mesh.membership.reject.via-departed-birth", "rdm.mesh.membership.reject.via-mesh-not-in-build"]
+    // R-MD1 item 3 with R-NS1 item 3: the fabric-primary keeps publishing the deleted mesh's own
+    // aggregate until departed retention, and every node that applied mesh-left refuses each republish
+    // of that MeshId by name, whether or not it holds the accepted Build: the removal is terminal.
+    let fenced: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-mesh-left").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare && after_left(sp)).collect();
+    for m in survivors {
+        let at_m: Vec<&&Value> = fenced.iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.")) && s(&sp["attributes"]["node"]) != fabric_primary).collect();
+        assert!(at_m.len() >= 2, "a node of {m} refused the fabric-primary's republishes of mesh1 by name after mesh-left, more than once: {at_m:?}");
+        assert!(at_m.iter().all(|sp| s(&sp["attributes"]["left_operation"]) == format!("shutdown-mesh:{mesh1_bare}")), "each refusal names the mesh-left it applied: {at_m:?}");
+    }
+    eprintln!("mesh-left fence: {} republishes of mesh1 refused after mesh-left, first trace {}", fenced.len(), fenced.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());
+    let late_refused: Vec<String> = ["rdm.mesh.membership.reject.via-departed-birth", "rdm.mesh.membership.reject.via-mesh-not-in-build", "rdm.mesh.membership.reject.via-mesh-left"]
         .into_iter()
         .flat_map(|n| named(&spans, n))
         .filter(|sp| after_left(sp) && (sp["attributes"]["mesh"] == "mesh1" || s(&sp["attributes"]["node"]).starts_with("mesh1.")))
         .map(|sp| format!("{}:{}", s(&sp["name"]), s(&sp["attributes"]["holder"]) + &s(&sp["attributes"]["node"])))
         .collect();
     eprintln!("late mesh1 frames refused by name at the surviving meshes after their mesh-left (fabric-primary's mesh {fp_mesh}, other {other_mesh}): {late_refused:?}");
-    // A stopped birth gossips nothing (node-stop.md step 4): once its connections are cut, the parked
-    // final primary announces no Leaving on any channel when its process is ended.
-    let cut_at = named(&spans, "rdm.node_admin.node.connections.delete.via-stop-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's connections were cut by its stop");
-    let after_cut: Vec<String> = named(&spans, "rdm.mesh.node.update.via-leave-announcement").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && start_ns(sp) > cut_at).map(|sp| format!("{}:{}", s(&sp["attributes"]["channel"]), s(&sp["attributes"]["outcome"]))).collect();
-    assert!(after_cut.is_empty(), "the parked final primary {final_name} announced nothing after its stop's cut: {after_cut:?}");
-    // gossip.md, node-stopped lifecycle overlay: mesh1's primary publishes NodeStopped from each member's
-    // matching stopped reply, for every member it stops. The overlay is a material change (gossip.md
-    // "an in_flight overlay added or cleared" bumps topology_version), and the Members row publishes
-    // "at once on a material change": the primary's round is woken by its own projection's move
-    // (via-material-change, proven per event in rafka-mesh-transport round_wake; another wake of the same
-    // round may win the race) and publishes a new mesh1 version carrying the overlay for EVERY member it
-    // stops, the other node-admin included.
-    let stopped_members: Vec<String> = ["mesh1.rpc.1".to_string(), "mesh1.rpc.2".to_string()].into_iter().chain(tier2.iter().map(|n| n.to_string())).collect();
+    for m in survivors {
+        let left = heard(m, "via-mesh-left");
+        assert!(left.iter().all(|sp| start_ns(sp) >= final_exit.saturating_sub(1)), "mesh-left was heard at {m} only after the last exact exit was proven");
+    }
+
+    // gossip.md, node-stopped lifecycle overlay: mesh1's primary publishes NodeStopped from each
+    // member's matching stopped reply, for every member it stops, and a new mesh1 version carries it.
     let published_stopped = named(&spans, "rdm.node_admin.node.update.via-node-stopped");
     let stopped_at = |m: &str| -> u64 {
         published_stopped.iter().find(|sp| s(&sp["attributes"]["node"]) == m && s(&sp["attributes"]["operation"]) == format!("stop-node:{m}")).map(|sp| start_ns(sp)).unwrap_or_else(|| panic!("mesh1's primary published NodeStopped for {m}: {published_stopped:?}"))
@@ -383,30 +495,20 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let mesh1_publications: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
     let mesh1_wakes: Vec<u64> = named(&spans, "rdm.mesh.backbone.update.via-material-change").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1").map(|sp| start_ns(sp)).collect();
     assert!(!mesh1_wakes.is_empty(), "mesh1's primary's round was woken by its own projection's move");
-    for m in &stopped_members {
+    for m in &members {
         let at = stopped_at(m);
         assert!(mesh1_publications.iter().any(|p| *p >= at), "mesh1's primary published a new version after {m}'s NodeStopped at {at}: publications {mesh1_publications:?}");
-        // On receipt: once its NodeStopped was published no node holds it routable; whether a peer saw
-        // the stopped phase before MeshLeft is not ordered (R-NS1 acceptance), so it is not read here.
         let after: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == *m && start_ns(sp) > at).collect();
         assert!(after.iter().all(|sp| !routable(sp)), "no node holds {m} routable after its NodeStopped: {after:?}");
     }
-    let last_exit = tier2_last.max(terminal_end(&final_name));
-    for m in survivors {
-        let left = heard(m, "via-mesh-left");
-        assert!(left.iter().any(|sp| attr_u(sp, "births_departed") > 0), "a {m} node held mesh1's births departed on mesh-left: {left:?}");
-        assert!(left.iter().all(|sp| start_ns(sp) >= last_exit.saturating_sub(1)), "mesh-left was heard at {m} only after the last exact exit was proven");
-    }
-    // The Leaving row is the leave-mesh admission's commit: put and applied before the admission is
-    // answered, so before the first member drains.
+    // The Leaving row is the leave-mesh admission's commit, before the first member drains; the
+    // order the spec fixes is mesh-leaving's publication before the first drain.
     let leaving_commit: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-leaving-row").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
     assert!(leaving_commit.iter().any(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["outcome"]) == "applied"), "mesh1's primary {final_name} applied its mesh row Leaving at leave-mesh: {leaving_commit:?}");
-    let first_member_drain = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| drain_start(n)).min().unwrap();
+    let first_member_drain = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| drain_start(n, false)).min().unwrap();
     assert!(leaving_commit.iter().all(|sp| end_ns(sp) < first_member_drain), "the Leaving row was committed before any member drained: {leaving_commit:?}");
-    // Gossip delivers asynchronously: the order the spec fixes is publication before the first drain.
     let published_leaving = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leaving").into_iter().map(|sp| start_ns(sp)).min().expect("mesh-leaving was published");
-    let first_drain = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| drain_start(n)).min().unwrap();
-    assert!(published_leaving < first_drain, "mesh-leaving was published ({published_leaving}) before any member drained ({first_drain})");
+    assert!(published_leaving < first_member_drain, "mesh-leaving was published ({published_leaving}) before any member drained ({first_member_drain})");
 
     // R-ST2: mesh1 held the fabric seat, so it was handed to an outside mesh-primary first. In
     // order: the command, the successor's commit at the next epoch, new-fabric-primary, the
@@ -426,26 +528,20 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert!(first_call < start_ns(&committed) && start_ns(&committed) < start_ns(&announced[0]) && start_ns(&announced[0]) < start_ns(&confirmed), "command, commit, new-fabric-primary, confirmation in order");
     let taken_calls = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21 && start_ns(sp) > start_ns(&announced[0]) && start_ns(sp) <= start_ns(&confirmed)).count();
     assert!(taken_calls >= 1, "FabricPrimaryTaken was called after new-fabric-primary and before the confirmation");
-    let first_leaving = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leaving").into_iter().map(|sp| start_ns(sp)).min().expect("mesh-leaving was published");
-    assert!(start_ns(&confirmed) < first_leaving, "the confirmation precedes mesh-leaving, LeaveMesh and every drain");
-    assert!(first_leaving < drain_start("mesh1.rpc.1").min(drain_start("mesh1.rpc.2")));
+    assert!(start_ns(&confirmed) < published_leaving, "the confirmation precedes mesh-leaving, LeaveMesh and every drain");
     assert!(named(&spans, "rdm.node_admin.fabric.reject.via-handover").is_empty(), "no handover call was refused");
     assert!(named(&spans, "rdm.node_admin.mesh.update.via-seat-inside-leaving-mesh").is_empty());
-    assert_eq!(s(&committed["attributes"]["successor"]).split(':').next(), Some(s(&fabric_now["fabric_primary"]).split('.').next().unwrap()), "the committed successor's mesh holds the seat afterwards");
+    assert_eq!(s(&committed["attributes"]["successor"]).split(':').next(), Some(fabric_primary.split('.').next().unwrap()), "the committed successor's mesh holds the seat afterwards");
 
     // A desired change, not a recovery.
-    assert!(
-        !named(&spans, "rdm.node_admin.build.create.via-proven-drift").iter().any(|sp| s(&sp["attributes"]["scope"]).contains("mesh1")),
-        "no recovery Build names mesh1"
-    );
+    assert!(!named(&spans, "rdm.node_admin.build.create.via-proven-drift").iter().any(|sp| s(&sp["attributes"]["scope"]).contains("mesh1")), "no recovery Build names mesh1");
     let created = named(&spans, "rdm.node_admin.node.create.via-build");
-    assert!(!created.iter().any(|sp| sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.")), "B recreates nothing in mesh1");
+    assert!(!created.iter().any(|sp| (sp["attributes"]["build_id"] == b.as_str() || sp["attributes"]["build_id"] == c.as_str()) && s(&sp["attributes"]["node"]).starts_with("mesh1.")), "nothing recreates a mesh1 node");
 
     // rafka-time: the fabric seat moved from the retired mesh1 to the lowest NodeId among the
-    // remaining mesh primaries (R-A2), mesh2's or mesh3's whichever drew it. The other remaining
-    // mesh primary, which does not hold the seat, pulled once from the new fabric-primary and
-    // adopted its time under the mesh-primary rule.
-    let holder = s(&fabric_now["fabric_primary"]);
+    // remaining mesh primaries (R-A2). The other remaining mesh primary, which does not hold the seat,
+    // pulled once from the new fabric-primary and adopted its time under the mesh-primary rule.
+    let holder = fabric_primary.clone();
     let holder_id = after.iter().find(|n| s(&n["name"]) == holder).map(|n| s(&n["node_id"])).unwrap_or_else(|| panic!("the fabric primary {holder} is in the settled view"));
     assert!(["mesh2.admin.1", "mesh3.admin.1"].contains(&holder.as_str()), "the seat left the retired mesh1 for a remaining mesh primary: {holder}");
     let other = if holder == "mesh2.admin.1" { "mesh3.admin.1" } else { "mesh2.admin.1" };
@@ -462,8 +558,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
 
     // gossip.md "New-fabric-primary and contact addresses": every surviving mesh hears
     // new-fabric-primary naming the exact committed holder birth at the committed epoch, with that
-    // birth's own endpoint key, QUIC address and application contact; the holder those contacts
-    // name is the one the other surviving mesh primary reached and adopted from above.
+    // birth's own endpoint key, QUIC address and application contact.
     let h = after.iter().find(|n| s(&n["name"]) == holder).unwrap();
     let (succ_mesh, succ_rest) = s(&committed["attributes"]["successor"]).split_once(':').map(|(m, r)| (m.to_string(), r.to_string())).unwrap();
     let (succ_id, succ_inc) = succ_rest.split_once(':').map(|(i, c)| (i.to_string(), c.to_string())).unwrap();
@@ -485,5 +580,4 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
             }
         }
     }
-
 }

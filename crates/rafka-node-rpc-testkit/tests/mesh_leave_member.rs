@@ -1,8 +1,9 @@
-//! i143.e12.s40 functional: one member's shutdown inside a mesh leave composes node.drain and the
-//! whole node.stop (mesh-leave.md, "Operations and lifecycle events"), so the leaving mesh's primary
-//! publishes `NodeStopped` from the member's matching `stopped` reply (node-stop.md step 5,
-//! gossip.md "Node-stopped lifecycle overlay"). That overlay is what its aggregate carries in
-//! backbone `Members.in_flight` to every peer mesh.
+//! i143.e12.s40, s49 functional: one member's end inside a mesh delete is the whole node.delete
+//! (mesh-delete.md step 3), which composes node.drain and the whole node.stop, so the deleting mesh's
+//! primary publishes `NodeStopped` from the member's matching `stopped` reply (node-stop.md step 5,
+//! gossip.md "Node-stopped lifecycle overlay") and then `NodeDeleted` from the provider's exact exit
+//! proof (gossip.md §6.1). Those are what its aggregate carries in backbone `Members.in_flight` and
+//! `Members.departed` to every peer mesh.
 
 use crate::common;
 
@@ -10,7 +11,7 @@ use common::{add_node, admin_side, publish_build, template, Published};
 use rafka_mesh_entity::{FabricId, LifecycleOp};
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, LifecycleEvents, Timeouts};
+use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, LifecycleEvents, RetireRequest, Timeouts};
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus};
 use std::net::IpAddr;
@@ -45,8 +46,8 @@ impl LifecycleEvents for Recorder {
     async fn leaving(&self, op: &LifecycleOp) {
         self.1.lock().unwrap().push(format!("NodeLeaving:{}", op.operation));
     }
-    // A member's shutdown publishes no mesh-level event: those are the owner's and the leaving
-    // primary's (mesh-leave.md), recorded here so a stray one shows in the order.
+    // A member's node.delete publishes no mesh-level event: those are the owner's and the deleting
+    // primary's (mesh-delete.md), recorded here so a stray one shows in the order.
     async fn mesh_leaving(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
         self.1.lock().unwrap().push(format!("MeshLeaving:{}", event.operation));
     }
@@ -61,13 +62,16 @@ impl LifecycleEvents for Recorder {
     }
 }
 
-/// CONTRACT: a member's shutdown in a mesh leave publishes `NodeStopped` once, from its matching
-/// `stopped` reply: after its `node-leaving` hook, naming the member's exact birth under its own
-/// `stop-node:<path>` operation of the leave's Build and attempt. Without it no peer mesh hears the
-/// member parked: the leaving primary's aggregate carries no overlay of it.
+/// CONTRACT: a member's node.delete in a mesh delete publishes `NodeDeleting` first, then
+/// `NodeStopped` once, from its matching `stopped` reply after its `node-leaving` hook, naming the
+/// member's exact birth under its own `stop-node:<path>` operation of the mesh delete's Build and
+/// attempt, and `NodeDeleted` last, from the provider's exact exit proof, under node.delete's own
+/// `retire-node:<path>`. Without NodeStopped no peer mesh hears the member parked; without
+/// NodeDeleted no peer holds it departed, and its own mesh-primary takes its exit for a member to
+/// recover.
 #[test]
-fn a_mesh_leave_member_shutdown_publishes_node_stopped_from_its_stopped_reply() {
-    let cap = crate::common::capture("a_mesh_leave_member_shutdown_publishes_node_stopped_from_its_stopped_reply");
+fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
+    let cap = crate::common::capture("a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted");
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side(IpAddr::from([127, 0, 0, 1]), &fabric).await;
@@ -92,12 +96,25 @@ fn a_mesh_leave_member_shutdown_publishes_node_stopped_from_its_stopped_reply() 
             .unwrap_or_else(|e| panic!("create: {e}"));
 
         let leave_build = publish_build(&builds, add_node()).await;
-        let mut node = first.node.clone();
-        pipeline.shutdown_member(&leave_build, 1, "shutdown-mesh:mesh1", &mut node, &first.handle).await.unwrap_or_else(|e| panic!("shutdown member: {e}"));
+        let terminal = pipeline
+            .retire(&RetireRequest { build_id: leave_build.clone(), attempt: 1, node: first.node.clone(), handle: first.handle.clone(), exit: None })
+            .await
+            .unwrap_or_else(|e| panic!("the member's node.delete: {e}"));
         assert!(matches!(provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the member's runtime is proven exited");
+        assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (first.node.node_id.as_str(), first.node.incarnation_id.as_ref().map(|i| i.0.as_str())), "the terminal receipt names the member's exact birth");
 
         let events = recorder.1.lock().unwrap().clone();
-        assert_eq!(events, vec!["NodeDraining:drain-node:mesh1.rpc.1".to_string(), "NodeLeaving:stop-node:mesh1.rpc.1".into(), "NodeStopped:stop-node:mesh1.rpc.1".into()], "the member's lifecycle events, in order");
+        assert_eq!(
+            events,
+            vec![
+                "NodeDeleting:retire-node:mesh1.rpc.1".to_string(),
+                "NodeDraining:drain-node:mesh1.rpc.1".into(),
+                "NodeLeaving:stop-node:mesh1.rpc.1".into(),
+                "NodeStopped:stop-node:mesh1.rpc.1".into(),
+                "NodeDeleted:retire-node:mesh1.rpc.1".into()
+            ],
+            "the member's lifecycle events, in order"
+        );
         let stopped = recorder.0.lock().unwrap().clone();
         assert_eq!(stopped.len(), 1, "NodeStopped once: {stopped:?}");
         let op = &stopped[0];

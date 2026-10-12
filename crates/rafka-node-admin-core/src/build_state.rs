@@ -681,6 +681,12 @@ pub trait BuildStateAdapter: Send + Sync {
     /// every adapter answers it from its index (or delegates to the adapter it decorates), never by
     /// reading the fact log.
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
+    /// The Build, attempt and operation of the mesh.delete whose completion receipt
+    /// (`mesh_leave::STEP_MESH_DELETED`) names the exact birth `(node_id, incarnation)` its final
+    /// primary: the mesh.delete that ended with that birth alive, whose mesh-left follows that birth's
+    /// exit proof. The first such attempt. A point read by the birth: every adapter answers it from
+    /// its index (or delegates to the adapter it decorates), never by reading the fact log.
+    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
     /// The exited births of `mesh` whose node workflow in `build_id` stopped at a Failed attempt and
     /// is not done (node-recovery.md "Failure and receipts": the mesh-primary submits each again):
     /// for each birth an attempt of `build_id` was opened for with `AttemptAction::Recover`, the run
@@ -741,6 +747,18 @@ fn recovery_completed(s: &BuildStepReceipt) -> bool {
     s.step == "Complete" && s.outcome == StepOutcome::Complete && (deleting_workflow_path(&s.operation).is_some() || s.operation.starts_with(RECOVERY_LAST))
 }
 
+/// The final primary a mesh.delete's completion receipt (`MeshDeleted`) names: its manifest's
+/// `final_primary`, `(node_id, incarnation)`.
+fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, crate::model::IncarnationId)> {
+    if s.step != crate::mesh_leave::STEP_MESH_DELETED || s.outcome != StepOutcome::Complete {
+        return None;
+    }
+    let last = s.output.as_ref()?.get("final_primary")?;
+    let node_id = crate::model::NodeId::parse(last.get("node_id")?.as_str()?).ok()?;
+    let incarnation = crate::model::IncarnationId(last.get("incarnation_id")?.as_str()?.to_string());
+    Some((node_id, incarnation))
+}
+
 /// What an opened attempt carries, for a refusal: its reason, its action and who opened it.
 fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
@@ -782,6 +800,9 @@ struct FactLog {
     /// enters the log (own appends, absorbed facts and a journal's replay alike); forgetting a Build
     /// leaves all three, as it leaves the receipts.
     recoveries_opened: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(BuildId, u32)>>,
+    /// The mesh.delete completion index: every `MeshDeleted` receipt by the final primary its
+    /// manifest names, to its Build, attempt and operation ([`BuildStateAdapter::mesh_deleted_of`]).
+    mesh_deleted: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(BuildId, u32, String)>>,
     /// The index of [`BuildStateAdapter::exits_owed`], per Build, filled by [`FactLog::push`] in
     /// whatever order the facts arrive: the exited birth each attempt opened with
     /// `AttemptAction::Recover` names, by attempt (the first open of an attempt)...
@@ -804,6 +825,7 @@ impl Default for FactLog {
             exit_opens: Default::default(),
             opens: Default::default(),
             verdicts: Default::default(),
+            mesh_deleted: Default::default(),
         }
     }
 }
@@ -831,6 +853,11 @@ impl FactLog {
                 }
             } else if recovery_completed(s) {
                 self.recovery_completes.entry((s.build_id.clone(), s.operation.clone())).or_default().insert(s.attempt);
+            } else if let Some(birth) = mesh_deleted_final(s) {
+                let held = self.mesh_deleted.entry(birth).or_default();
+                if !held.iter().any(|(b, a, o)| *b == s.build_id && *a == s.attempt && *o == s.operation) {
+                    held.push((s.build_id.clone(), s.attempt, s.operation.clone()));
+                }
             }
         }
         if let BuildFact::Opened(AttemptOpened { build_id, attempt, action: Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }), .. }) = &fact {
@@ -887,6 +914,11 @@ impl FactLog {
                 Some((build.clone(), *completed, operation.clone()))
             })
             .min_by_key(|(_, a, _)| *a)
+    }
+
+    /// The point read of [`BuildStateAdapter::mesh_deleted_of`]: the first attempt's.
+    fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, u32, String)> {
+        self.mesh_deleted.get(&(node_id.clone(), incarnation.clone()))?.iter().min_by_key(|(_, a, _)| *a).cloned()
     }
 
     /// The point read of [`BuildStateAdapter::exits_owed`]: per exited birth of `mesh`, the run its
@@ -1128,6 +1160,10 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
     }
 
+    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+        Ok(self.log.lock().unwrap().mesh_deleted_of(node_id, incarnation))
+    }
+
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
         Ok(self.log.lock().unwrap().exits_owed(build_id, mesh))
     }
@@ -1276,6 +1312,10 @@ impl BuildStateAdapter for FileJournal {
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
         Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
+    }
+
+    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+        Ok(self.log.lock().unwrap().mesh_deleted_of(node_id, incarnation))
     }
 
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {

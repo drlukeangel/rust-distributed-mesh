@@ -314,6 +314,11 @@ pub struct Records {
     /// mesh id's, never a name's (states.md: an id is never reissued; a name is, R-MN1). After
     /// mesh.deleted the last admin, still its primary, publishes MeshStatus Dead (R-NS1 item 1).
     heard_dead: Mutex<BTreeMap<(String, String, u64), Option<MeshId>>>,
+    /// The meshes this admin, as fabric-primary, accepted mesh.deleted for: a validated `MeshLeave`,
+    /// which the mesh-primary calls only after it committed the mesh row Dead (node-rpc-envelope.md,
+    /// mesh delete command pair). Dead in this admin's projection from that acceptance on, without
+    /// waiting for the MeshStatus Dead gossip; dropped with the mesh's id at mesh-left.
+    deleted_meshes: Mutex<std::collections::HashSet<MeshId>>,
     /// This admin's own logical node, set once at start: the projection knows the mesh it authors
     /// the status of (a mesh primary restates no heard status as its own, gossip.md MeshStatus).
     me: std::sync::OnceLock<NodeId>,
@@ -409,6 +414,21 @@ impl Records {
                 *bound = id_of(&f.0, &f.1);
             }
         }
+    }
+
+    /// Hold that this fabric-primary accepted mesh.deleted for the mesh `id` (a validated `MeshLeave`).
+    pub fn hold_mesh_deleted(&self, id: &MeshId) {
+        self.deleted_meshes.lock().unwrap().insert(id.clone());
+    }
+
+    /// Drop the mesh `id` from the meshes this fabric-primary accepted mesh.deleted for (its mesh-left).
+    pub fn deleted_meshes_forget(&self, id: &MeshId) {
+        self.deleted_meshes.lock().unwrap().remove(id);
+    }
+
+    /// Whether this fabric-primary accepted mesh.deleted for the mesh `id`.
+    pub fn mesh_deleted(&self, id: &MeshId) -> bool {
+        self.deleted_meshes.lock().unwrap().contains(id)
     }
 
     /// Whether a MeshStatus Dead bound to the mesh `id` is held, unless this admin authors that mesh's
@@ -1244,6 +1264,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         let authored_here = records.me.get().is_some_and(|me| topology.cohort_primary(&m, NodeKind::NodeAdmin).is_some_and(|p| &p.node_id == me));
         let status = match row {
             Some(rafka_node_rpc_contract::status::MeshState::Dead) => ScopeStatus::Dead,
+            _ if id.as_ref().is_some_and(|id| records.mesh_deleted(id)) => ScopeStatus::Dead,
             _ if records.heard_dead(id.as_ref(), authored_here) => ScopeStatus::Dead,
             Some(rafka_node_rpc_contract::status::MeshState::Leaving) => ScopeStatus::Leaving,
             _ if ready => ScopeStatus::ReadyForTraffic,
@@ -1573,6 +1594,16 @@ pub async fn exit_proof_of(
     }
 }
 
+/// The workflow an exited member's removal was announced by ([`RecoverySubmitter::removal_announced`]):
+/// which announcement, and the operation, Build and attempt it names (a mesh.delete announced by its
+/// mesh's status names its operation and no Build).
+struct Announced {
+    announced: &'static str,
+    operation: String,
+    build_id: String,
+    attempt: u32,
+}
+
 /// What the mesh primary's recovery of one TRUE OFFLINE member reads and calls
 /// (node-recovery.md "Detection and proof" step 3, sequence step 1).
 #[derive(Clone)]
@@ -1649,7 +1680,7 @@ impl RecoverySubmitter {
             }
         }
         if let Inspected::Exited(code, source) = &outcome {
-            if let Some((announced, op)) = self.removal_announced(n) {
+            if let Some(Announced { announced, operation, build_id, attempt }) = self.removal_announced(n).await {
                 // The provider's exact Exited is recorded durably whatever follows: the birth's
                 // exit-proof row is the proven loss every projection reads (`Records::read_exits`).
                 let exit_proof_row = match crate::offline::put_exit_proof(&*self.status_storage, n, *code, source, local_now_ms()).await {
@@ -1664,9 +1695,9 @@ impl RecoverySubmitter {
                     incarnation_id = %incarnation,
                     submitter = %self.me,
                     announced,
-                    operation = %op.operation,
-                    build_id = %op.build_id,
-                    attempt = op.attempt,
+                    operation = %operation,
+                    build_id = %build_id,
+                    attempt,
                     exit_code = code.map(|c| c.to_string()).unwrap_or_default(),
                     exit_proof = *source,
                     exit_proof_row = %exit_proof_row,
@@ -1683,21 +1714,30 @@ impl RecoverySubmitter {
     /// now (node-recovery.md: recovery is drift reconciliation for a member that exits outside any
     /// workflow; "Failure and receipts": an exit during a workflow belongs to that workflow): its
     /// node's departure (`node-deleted`), else an open `NodeDeleting` overlay naming the exact birth
-    /// (`node-deleting`). A recovery's own node.delete of the exited birth (`retire-node:<path>`) is
-    /// such a workflow too: its overlay closes when its attempt's verdict is terminal
-    /// (`DigestBook::deletions_from_facts`), and a recovery whose Build ended Failed is submitted
-    /// again by the next tick: from the view while it holds the birth, else from the Failed attempt
-    /// the accepted Build holds once its delete departed the birth ([`Self::owed_submits`]).
-    fn removal_announced(&self, n: &Node) -> Option<(&'static str, rafka_mesh_entity::LifecycleOp)> {
+    /// (`node-deleting`), else the mesh.delete of its mesh (mesh-delete.md: from mesh.deleting, the
+    /// mesh's status deleting, to mesh.deleted, every member's removal is the mesh.delete's;
+    /// `mesh-deleting`, `mesh-deleted`), the status the book holds for the mesh. A recovery's own
+    /// node.delete of the exited birth (`retire-node:<path>`) is such a workflow too: its overlay
+    /// closes when its attempt's verdict is terminal (`DigestBook::deletions_from_facts`), and a
+    /// recovery whose Build ended Failed is submitted again by the next tick: from the view while it
+    /// holds the birth, else from the Failed attempt the accepted Build holds once its delete departed
+    /// the birth ([`Self::owed_submits`]).
+    async fn removal_announced(&self, n: &Node) -> Option<Announced> {
         let incarnation = n.incarnation_id.as_ref()?;
+        let of = |announced: &'static str, op: rafka_mesh_entity::LifecycleOp| Announced { announced, operation: op.operation, build_id: op.build_id, attempt: op.attempt };
         if let Some(op) = self.book.departed().into_iter().find(|op| op.node_id == n.node_id) {
-            return Some(("node-deleted", op));
+            return Some(of("node-deleted", op));
         }
-        self.book
-            .in_flight()
-            .into_iter()
-            .find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_restart() && !op.is_stop())
-            .map(|op| ("node-deleting", op))
+        if let Some(op) = self.book.in_flight().into_iter().find(|op| op.node_id == n.node_id && &op.incarnation == incarnation && !op.is_restart() && !op.is_stop()) {
+            return Some(of("node-deleting", op));
+        }
+        let announced = match self.book.statuses.mesh(&n.mesh)?.status.as_str() {
+            "leaving" => "mesh-deleting",
+            "dead" => "mesh-deleted",
+            _ => return None,
+        };
+        let operation = self.topology.read().await.meshes.iter().find(|m| m.name == n.mesh).and_then(|m| m.id.clone()).map(|id| crate::mesh_leave::operation(&id)).unwrap_or_else(|| format!("mesh.delete of {}", n.mesh));
+        Some(Announced { announced, operation, build_id: String::new(), attempt: 0 })
     }
 
     /// The inspection's span, named when its verdict for the birth changes (a hung member is
@@ -2333,13 +2373,14 @@ pub async fn reconcile_drift(
         })
         .map(|n| n.name.to_string())
         .collect();
-    // A removed Mesh whose shutdown is incomplete (mesh-leave.md, "Failure/certainty behavior"):
-    // no MeshLeft receipt, and either the view still holds a birth of it live (an incomplete leave
-    // leaves at least its final primary running) or the final primary's exact exit is recorded
-    // (the attempt failed after the owner's stop, before MeshLeft). Its attempt carries no action;
-    // the planner plans the mesh's shutdown again, which resumes from the receipts. The ladder's
-    // unheard hold does not fence it: a leaving mesh whose every node-admin was lost is unheard by
-    // construction, and its resume carries its own proof (mesh-leave.md, "Resume after the
+    // A removed Mesh whose mesh.delete is incomplete (mesh-delete.md, "Failure and receipts"): no
+    // completion receipt (`MeshDeleted`, or `MeshLeft`), and either the view still holds a birth of a
+    // mesh that is not deleted live (a mesh.delete that never reached admission) or the mesh.delete
+    // was admitted. Its attempt carries no action; the planner plans the mesh's delete again, which
+    // resumes from the receipts. A deleted mesh (its row Dead at mesh.deleted) whose last admin lives
+    // on is no incomplete mesh.delete: that admin's end is its own node.delete. The ladder's unheard
+    // hold does not fence it: a deleting mesh whose every node-admin was lost is unheard by
+    // construction, and its resume carries its own proof (mesh-delete.md, "Resume after the
     // primary's loss", step 1: the lost final primary's exact Exited is recorded before anything is
     // created for the mesh, and an unproven one refuses the resume by name).
     surplus.extend(
@@ -2347,14 +2388,13 @@ pub async fn reconcile_drift(
             .iter()
             .filter(|m| !current.topology.meshes.contains_key(&m.name))
             .filter_map(|m| m.id.as_ref().map(|id| (m, crate::mesh_leave::operation(id))))
-            .filter(|(_, op)| !current.steps.iter().any(|st| &st.operation == op && st.step == crate::mesh_leave::STEP_MESH_LEFT && st.outcome == crate::build_state::StepOutcome::Complete))
+            .filter(|(_, op)| matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::Lead) | Err(_)))
             .filter(|(m, op)| {
-                t.members().any(|n| n.mesh == m.name && n.status.is_live())
-                    || matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::FinalExited(_)))
-                    // An admitted leave is resumed until its MeshLeft, whatever this view hears of the
-                    // mesh: with every admin lost its births are silent here, and the resume proves the
-                    // lost final primary's exit before it creates the mesh's one admin (R11). An
-                    // unreadable roster receipt is planned too: the resume refuses it by name.
+                (m.status != ScopeStatus::Dead && t.members().any(|n| n.mesh == m.name && n.status.is_live()))
+                    // An admitted mesh.delete is resumed until its completion, whatever this view hears
+                    // of the mesh: with every admin lost its births are silent here, and the resume
+                    // proves the lost final primary's exit before it creates the mesh's one admin
+                    // (R11). An unreadable roster receipt is planned too: the resume refuses it by name.
                     || crate::mesh_leave::admitted_of(&current.steps, op).is_some()
             })
             .map(|(_, op)| op),
@@ -3217,6 +3257,9 @@ pub struct GossipLifecycle {
     pub backbone: Backbone,
     /// This admin's own path: the publisher of the mesh frames it authors.
     pub me: PathName,
+    /// This admin's mesh.delete door, once its runner exists: every birth this executor publishes
+    /// deleted is handed to it (mesh-left follows the final primary's exit proof, R-MD1 item 2).
+    pub leaver: crate::mesh_leave::LeaverSlot,
 }
 
 #[async_trait::async_trait]
@@ -3356,7 +3399,12 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             tracing::info!("the exact birth is proven terminal: it has left");
         }
         .instrument(span)
-        .await
+        .await;
+        // The mesh.delete door observes the deleted birth: the final primary of a deleted mesh is
+        // its mesh-left (R-MD1 item 2); any other birth is nothing to it.
+        if let Some(leaver) = self.leaver.get().cloned() {
+            leaver.birth_deleted(op).await;
+        }
     }
 }
 
@@ -4048,12 +4096,22 @@ impl AdminRunner {
             Some(n) => Node { parked: n.parked, ..record },
             None => record,
         };
-        let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, exit: None };
-        self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
-        self.after_exit(&record);
-        self.handles.lock().unwrap().remove(node);
+        self.delete_birth(build_id, attempt, record.clone(), handle).await?;
         Ok(Some(record))
+    }
+
+    /// node.delete of the live or stopped exact birth `record` (node-delete.md): the ordinary
+    /// workflow (`DeploymentPipeline::retire`: node.stop for a live process, the provider's exact
+    /// exit proof, its row Deleted, NodeDeleted) over its exact runtime `handle`; then its paths are
+    /// retired and this admin's handle of it dropped. The one composition a removal, a mesh
+    /// delete's member and a deleted mesh's last admin all call. Answers the terminal receipt.
+    pub(crate) async fn delete_birth(&self, build_id: &crate::build::BuildId, attempt: u32, record: Node, handle: DeploymentHandle) -> Result<crate::deployment::pipeline::TerminalReceipt, String> {
+        let template = self.template_for(record.kind, &record.mesh).await?;
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, exit: None };
+        let terminal = self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
+        self.after_exit(&record);
+        self.handles.lock().unwrap().remove(&record.name);
+        Ok(terminal)
     }
 
     /// Fabric shutdown: stop every runtime this admin started, all at once;
@@ -5407,7 +5465,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 node_id: node_id.clone(),
                                 endpoint: Some(endpoint.clone()),
                                 node_rpc: node_rpc.clone(),
-                                lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone() })),
+                                lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone(), leaver: leaver.clone() })),
                                 leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
                                 leave_runs: crate::mesh_leave::LeaveRuns::default(),
                                 handover: handover.clone(),
@@ -6375,7 +6433,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 backbone.set_fabric_primary(fabric_primary);
                                                 // The meshes this view names a primary for: a mesh with none is one the fabric
                                                 // primary publishes as acting primary (R-NS1).
-                                                *primaries.lock().unwrap() = t.meshes.iter().filter_map(|m| t.cohort_primary(&m.name, NodeKind::NodeAdmin).map(|p| (m.name.clone(), p.name.to_string()))).collect();
+                                                // A stopped seat holder is no primary (R-NS1 item 2: from its stop on the
+                                                // fabric-primary is the mesh's publisher of record).
+                                                *primaries.lock().unwrap() = t.meshes.iter().filter_map(|m| t.cohort_primary(&m.name, NodeKind::NodeAdmin).filter(|p| !p.parked).map(|p| (m.name.clone(), p.name.to_string()))).collect();
                                                 // Taking the fabric-primary role while the fabric is degraded adopts degraded: the
                                                 // new holder authors no ready on a topology reading.
                                                 if fabric_primary && !was_fabric_primary {
@@ -7619,6 +7679,50 @@ mod tests {
         }
     }
 
+    /// CONTRACT (node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that
+    /// workflow"; mesh-delete.md: from mesh.deleting, the mesh's status deleting, to mesh.deleted, every
+    /// member's removal is the mesh.delete's): an exited member of a mesh whose status the mesh primary
+    /// holds deleting or deleted is not a member to recover, a primary lost mid-delete included: its
+    /// exit is recorded as its exit-proof row, no recovery is submitted, and one
+    /// `rdm.node_admin.build.reject.via-exit-inside-workflow` span names the mesh.delete. Must NOT
+    /// happen: mesh_lifecycle__mesh_leave_resume on f8001275, where mesh2's surviving admin, seated
+    /// after its primary was killed mid-delete, submitted the recovery of that primary 220 times
+    /// (trace 8b3d152a6a51c90fc06a4031cd055d37, refused while the Build reconciled).
+    // @feature: mesh-lifecycle
+    #[tokio::test]
+    async fn a_proven_exit_of_a_member_of_a_deleting_or_deleted_mesh_submits_no_recovery() {
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process("dep-mesh-deleting").unwrap();
+        for (status, announced) in [("leaving", "mesh-deleting"), ("dead", "mesh-deleted")] {
+            let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+            member.node.runtime = Some(fact.clone());
+            let book = DigestBook::default();
+            for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+                book.record(d);
+            }
+            book.statuses.take(&rafka_mesh_transport::membership::Frame::MeshStatus { mesh: "mesh2".into(), status: status.into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 10 }, &fabric1());
+            let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+            let nodes = Arc::new(crate::storage::MemoryNodesStorage::default());
+            crate::storage::NodesStorage::put_runtime(&*nodes, &crate::storage::RuntimeRow { node_id: member.node.node_id.clone(), name: member.node.name.clone(), incarnation_id: member.node.incarnation.clone(), runtime: fact.clone(), data_dir: None }).await.unwrap();
+            let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
+            let (recovery, status_rows, node) = recovery_of(&view, book, provider, nodes, Arc::new(crate::status_storage::MemoryStatusStorage::default()));
+            let capture = crate::span_capture::Capture::new(&format!("i143-3078-mesh-{status}"));
+            let outcome = {
+                let _g = tracing::dispatcher::set_default(&capture.dispatch);
+                recovery.recover_if_proven(&node, &Mutex::new(HashMap::new())).await
+            };
+            assert_eq!(outcome, Inspected::Exited(Some(137), "provider"), "{status}: the provider proved the exact runtime exited");
+            let proof = status_rows.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap();
+            let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+            let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
+            assert_eq!((submits.len(), proof.is_some()), (0, true), "{status}: no recovery of a member of a mesh being deleted, its exit recorded: {submits:?}");
+            assert_eq!(rejects.len(), 1, "{status}: the refusal is spanned once: {rejects:?}");
+            let a = &rejects[0].attributes;
+            assert_eq!(a.get("announced").map(String::as_str), Some(announced), "{status}: {a:?}");
+            assert!(a.get("operation").is_some_and(|o| o.contains("mesh2") || o.starts_with("shutdown-mesh:")), "{status}: the mesh.delete is named: {a:?}");
+            eprintln!("span rdm.node_admin.build.reject.via-exit-inside-workflow trace_id={} {a:?}", rejects[0].trace_id);
+        }
+    }
+
     /// CONTRACT (gossip.md `NodeDeleting`: keyed `(kind, build_id, attempt, operation)`, "the fact
     /// rides `Members.in_flight` until the operation completes", and `Members.in_flight` is "while
     /// the operation is claimed and has no completed receipt (derived from Build facts each round)";
@@ -8111,16 +8215,16 @@ mod tests {
         crate::deployment::pipeline::TerminalReceipt { node: d.node.name.to_string(), node_id: d.node.node_id.to_string(), incarnation_id: d.node.incarnation.0.clone(), runtime: None, exit_code: Some(0) }
     }
 
-    /// CONTRACT (mesh-leave.md step 7: "At mesh-left the fabric-primary writes the final primary's
-    /// row Deleted, as acting primary of a mesh that has none left"; R-EL1: a seat moves only by
-    /// explicit yield or proven loss): the final primary's exact Exited in the MeshLeft proof set is
-    /// that proven loss. Recorded as its exit-proof row when the fabric-primary's stop proved it, and
-    /// read by the install `record_mesh_left` runs before it projects the view the rows are written
-    /// from, the exited holder is no longer seated, mesh2 has no primary in the fabric-primary's view,
-    /// and the fabric-primary writes the final primary's row Deleted and the mesh row Dead. Must NOT happen:
-    /// the refusal of mesh_identity::canonical_ids on 8803f84e ("mesh1.admin.1 (40ynvqbyvdhh) is not
-    /// the writer of mesh2's node rows ...: mesh2's primary node-admin mesh2.admin.1 (kz0m1x9y3wcn)
-    /// writes them"): the exit proven, never read as a loss, so the election kept the exited holder.
+    /// CONTRACT (mesh-delete.md step 7: the final primary's own node.delete, the fabric-primary its
+    /// executor, "as acting primary of a mesh that has no primary, writes its row deleted"; R-EL1: a
+    /// seat moves only by explicit yield or proven loss): the final primary's exact Exited is that
+    /// proven loss. Recorded as its exit-proof row and read by the install before the view the row is
+    /// written from is projected, the exited holder is no longer seated, mesh2 has no primary in the
+    /// fabric-primary's view, and the fabric-primary writes the final primary's row Deleted (the write
+    /// node.delete's NodeDeleted step makes). Must NOT happen: the refusal of
+    /// mesh_identity::canonical_ids on 8803f84e ("mesh1.admin.1 (40ynvqbyvdhh) is not the writer of
+    /// mesh2's node rows ...: mesh2's primary node-admin mesh2.admin.1 (kz0m1x9y3wcn) writes them"):
+    /// the exit proven, never read as a loss, so the election kept the exited holder.
     // @feature: mesh-lifecycle
     #[tokio::test]
     async fn the_final_primarys_exit_held_as_a_proven_loss_leaves_the_fabric_primary_writing_its_row_deleted() {
@@ -8128,14 +8232,12 @@ mod tests {
         let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
         let (_fp, book, records, view, _rows) = fabric_primary_over(std::slice::from_ref(&last), storage.clone()).await;
         crate::storage::NodesStorage::put_node_row(&*storage, &crate::storage::NodeRow { name: last.node.name.clone(), node_id: last.node.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: BTreeMap::new() }).await.unwrap().unwrap();
-        let status = crate::status_storage::MemoryStatusStorage::default();
-        let key = crate::mesh_leave::LeaveKey { mesh_id: mesh_id("mesh2"), build_id: "bld-leave".into(), attempt: 1, operation: format!("shutdown-mesh:{}", mesh_id("mesh2")) };
         let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-final-exit-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
         let write = || async {
             let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
-            crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &crate::storage::MemoryMeshStorage::default(), &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary, &[exited_receipt(&last)]).await
+            crate::mesh_leave::birth_row_deleted(records.node_rows().as_deref(), "mesh1.admin.1", "retire-node:mesh2.admin.1", &nodes, &final_primary).await
         };
         // The exit proven and not held: the election keeps the exited holder seated (R-EL1).
         let refused = write().await;
@@ -8193,66 +8295,6 @@ mod tests {
         assert!(crate::node_rows::writes_for(&installed, &fp.node.node_id, "mesh2"), "the fabric-primary writes mesh2's rows as acting primary");
     }
 
-    /// CONTRACT (mesh-delete.md step 5: the fabric-primary validates the manifest of the members'
-    /// exact exit proofs; step 7: "The fabric-primary is its executor, proves its exit and, as acting
-    /// primary of a mesh that has no primary, writes its row deleted"; R-MN1 item 2; R-EL1: a seat
-    /// moves by explicit yield or proven loss): the MeshLeft proof set is every roster birth's exact
-    /// Exited, so at mesh-left no birth of the mesh lives. The fabric-primary's view may still hold a
-    /// member Ready whose stop it never heard (R-NS1, R-MD1: no gossip ordering guarantee), and
-    /// before the fabric's first state-commit that member's exit-proof row lies in its mesh-primary's
-    /// scratchpad, which this admin cannot read. The proof set is the proof: once the final
-    /// primary's exit is held, mesh-left reads the member exited, the election seats no birth of the
-    /// mesh, and the fabric-primary writes the final primary's row Deleted. Must NOT happen: the
-    /// build_op planned-handover red (1de2d1c8, node-logs/mesh2.admin.1, 05:21:04.034): "mesh2.admin.1
-    /// (2jdrt3m5rb85) is not the writer of mesh1's node rows ...: mesh1's primary node-admin
-    /// mesh1.admin.2 (djbthqd5szf7) writes them", the election seating a member whose exact exit the
-    /// fabric-primary had validated.
-    // @feature: mesh-lifecycle
-    #[tokio::test]
-    async fn a_member_the_proof_set_holds_exited_and_the_view_holds_ready_is_never_seated_at_mesh_left() {
-        let storage = Arc::new(crate::storage::MemoryNodesStorage::default());
-        let last = with_id(digest("mesh2.admin.1", MemberStatus::Leaving), "200000000000");
-        let other = with_id(digest("mesh2.admin.2", MemberStatus::ReadyForTraffic), "300000000000");
-        let (fp, book, records, view, _rows) = fabric_primary_over(&[last.clone(), other.clone()], storage.clone()).await;
-        records.set_status(Arc::new(crate::status_storage::MemoryStatusStorage::default()), "mesh1".into(), fp.node.name.clone(), fp.node.node_id.clone());
-        // The final primary's exit, proven by the fabric-primary's own stop of it and recorded then.
-        records.put_exit_of_receipt(&exited_receipt(&last)).await.unwrap();
-        let birth = |d: &MeshDigest| crate::mesh_leave::RosterBirth { node: d.node.name.to_string(), node_id: d.node.node_id.to_string(), incarnation_id: d.node.incarnation.0.clone() };
-        let key = crate::mesh_leave::LeaveKey { mesh_id: mesh_id("mesh2"), build_id: "bld-leave".into(), attempt: 1, operation: format!("shutdown-mesh:{}", mesh_id("mesh2")) };
-        let all = crate::mesh_leave::ExitManifest { mesh_id: mesh_id("mesh2").to_string(), roster: vec![birth(&other), birth(&last)], final_primary: birth(&last), final_runtime: None, receipts: vec![exited_receipt(&other), exited_receipt(&last)] };
-        let status = crate::status_storage::MemoryStatusStorage::default();
-        let capture = crate::span_capture::Capture::new("i143-3069-mesh-left-proof-set-exits");
-        let (written, installed) = {
-            use tracing::Instrument;
-            let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            let root = tracing::info_span!("cell.mesh-left-proof-set-exits", operation = %key.operation);
-            async {
-                let refresh = || async {
-                    records.install_read(&fp.node.name, &view, &book, &fabric1(), |reads| project_with("fabric1", &fabric1(), ProviderKind::Process, &book, &records, reads)).await;
-                };
-                let written = crate::mesh_leave::mesh_left(&records, refresh, &view, &status, &crate::storage::MemoryMeshStorage::default(), &fp.node.name.to_string(), &key, "mesh2", &all).await;
-                (written, view.read().await.clone())
-            }
-            .instrument(root)
-            .await
-        };
-        written.unwrap_or_else(|e| panic!("mesh-left writes the final primary's row Deleted as acting primary of a mesh none of whose births lives: {e}"));
-        assert_eq!(installed.node(&other.node.name).map(|n| (n.status, n.is_primary)), Some((NodeStatus::Dead, false)), "the member the proof set holds exited is Dead and holds no seat");
-        assert_eq!(installed.cohort_primary("mesh2", NodeKind::NodeAdmin).map(|n| n.name.to_string()), None, "mesh2 has no primary");
-        let row = crate::storage::NodesStorage::node_row_at(&*storage, &last.node.name).await.unwrap().expect("the final primary's row stays at its path.name");
-        assert_eq!((row.status, &row.node_id), (NodeStatus::Deleted, &last.node.node_id), "{row:?}");
-        let exits = capture.named("rdm.node_admin.node.resolve.via-exit-proof-row");
-        let read_other = exits.iter().find(|s| s.attributes.get("node").map(String::as_str) == Some("mesh2.admin.2")).unwrap_or_else(|| panic!("the fabric-primary reads the member's exit-proof row: {exits:?}"));
-        let deleted = capture.named("rdm.node_admin.node.delete.via-node-row");
-        assert_eq!(deleted.iter().map(|s| s.attributes.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), ["row-deleted"], "{deleted:?}");
-        let proof_set = capture.named("rdm.node_admin.node.update.via-proof-set-exits");
-        let attr = |k: &str| proof_set.first().and_then(|s| s.attributes.get(k).cloned()).unwrap_or_default();
-        assert_eq!((attr("recorded"), attr("held")), (format!("mesh2.admin.2 {}", other.node.incarnation.0), format!("mesh2.admin.1 {}", last.node.incarnation.0)), "the member's exit is recorded from the proof set; the final primary's was held: {proof_set:?}");
-        eprintln!("span rdm.node_admin.node.update.via-proof-set-exits trace_id={} {:?}", proof_set[0].trace_id, proof_set[0].attributes);
-        eprintln!("span rdm.node_admin.node.resolve.via-exit-proof-row trace_id={} {:?}", read_other.trace_id, read_other.attributes);
-        eprintln!("span rdm.node_admin.node.delete.via-node-row trace_id={} {:?}", deleted[0].trace_id, deleted[0].attributes);
-    }
-
     /// CONTRACT (R-MD1 = A, i143-rulings-2026-10-11-dev.md: "The mesh-primary commits the mesh row
     /// Dead at mesh.deleted ... At mesh-left the fabric-primary writes the final primary's row
     /// Deleted, unchanged. Its ensure-Dead operation returns AlreadyApplied if the mesh-primary wrote
@@ -8289,13 +8331,11 @@ mod tests {
                 // ... and its Mesh row Dead on mesh.storage with it (admin/leave.rs, mesh.deleted).
                 crate::storage::MeshStorage::claim_mesh(&meshes, &crate::storage::MeshRecord { mesh_id: mesh_id("mesh2"), name: "mesh2".into(), dead: true }).await.unwrap().unwrap();
             }
-            let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
-            let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
             let capture = crate::span_capture::Capture::new(&format!("i143-3068-r-md1-{case}"));
             {
                 let _g = tracing::dispatcher::set_default(&capture.dispatch);
                 for _replay in 0..2 {
-                    crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &meshes, &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary, &[exited_receipt(&last)]).await.unwrap_or_else(|e| panic!("{case}: mesh-left's rows: {e}"));
+                    crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &meshes, &records.declared, "mesh1.admin.1", &key, "mesh2", &[exited_receipt(&last)]).await.unwrap_or_else(|e| panic!("{case}: mesh-left's rows: {e}"));
                 }
             }
             assert!(status.mesh_status_held_of("mesh2", &dead("mesh2")).await.unwrap(), "{case}: mesh2's row Dead stands among mesh2's status rows");
@@ -8339,13 +8379,11 @@ mod tests {
         prove_exit(&book, &records, &last).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         let key = crate::mesh_leave::LeaveKey { mesh_id: mesh_id("mesh2"), build_id: "bld-leave".into(), attempt: 1, operation: format!("shutdown-mesh:{}", mesh_id("mesh2")) };
-        let final_primary = crate::mesh_leave::RosterBirth { node: last.node.name.to_string(), node_id: last.node.node_id.to_string(), incarnation_id: last.node.incarnation.0.clone() };
-        let nodes: Vec<Node> = view.read().await.nodes.iter().filter(|n| n.mesh == "mesh2").cloned().collect();
         let status = crate::status_storage::MemoryStatusStorage::default();
         let capture = crate::span_capture::Capture::new("i143-3068-mesh-left-contacts");
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
-            crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &crate::storage::MemoryMeshStorage::default(), &records.declared, "mesh1.admin.1", &key, "mesh2", &nodes, &final_primary, &[exited_receipt(&last), exited_receipt(&member)]).await.unwrap_or_else(|e| panic!("mesh-left's rows: {e}"));
+            crate::mesh_leave::mesh_left_rows(records.node_rows().as_deref(), &status, &crate::storage::MemoryMeshStorage::default(), &records.declared, "mesh1.admin.1", &key, "mesh2", &[exited_receipt(&last), exited_receipt(&member)]).await.unwrap_or_else(|e| panic!("mesh-left's rows: {e}"));
         }
         let held: Vec<String> = storage.contacts().await.unwrap().into_iter().map(|c| c.name.to_string()).collect();
         assert_eq!(held, vec!["mesh1.admin.1".to_string()], "no contact of the removed mesh's births stands; another mesh's is untouched");

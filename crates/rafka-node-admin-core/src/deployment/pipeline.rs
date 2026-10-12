@@ -1849,14 +1849,15 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// Retire `req.node` through every step.
-    pub async fn retire(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    /// Retire `req.node` through every step (node.delete): the provider's exact terminal receipt of
+    /// the birth's runtime, the proof its NodeDeleted was published from.
+    pub async fn retire(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("retire", &req.build_id, &req.node.name, req.attempt);
         self.retire_steps(req).instrument(span).await
     }
 
-    async fn retire_steps(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    async fn retire_steps(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         let name = &req.node.name;
         let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await;
         let mut node = req.node.clone();
@@ -1893,7 +1894,7 @@ impl DeploymentPipeline<'_> {
         // moment it is announced, so a successor derives it from the same facts.
         let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
         self.lifecycle.deleting(&op).await;
-        let _terminal = if node.parked || req.exit.is_some() {
+        let terminal = if node.parked || req.exit.is_some() {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exit proof
@@ -1947,8 +1948,7 @@ impl DeploymentPipeline<'_> {
         })
         .await?;
         self.step(&mut run, RetireStep::Complete.name(), async { Ok(()) }).await?;
-        Ok(())
-
+        Ok(terminal)
     }
 
     /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
@@ -1993,27 +1993,9 @@ impl DeploymentPipeline<'_> {
         }
     }
 
-    /// One member's shutdown inside a mesh leave: its drain half and its stop half under its own
-    /// run, whose operation is the outer `shutdown-mesh:<mesh_id>` correlated with the member's path.
-    /// The children keep their `drain-node:<path>` and `stop-node:<path>` identities. The result is
-    /// the provider's terminal receipt of the exact runtime.
-    pub async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        use tracing::Instrument;
-        let path = node.name.clone();
-        let span = self.pipeline_span("shutdown-member", build_id, &path, attempt);
-        async {
-            let mut run = self.begin(build_id, attempt, &path, crate::mesh_leave::member_operation(outer_operation, &path.to_string())).await;
-            self.drain_steps(&mut run, node, handle).await?;
-            self.stop_steps(&mut run, node, handle).await
-        }
-        .instrument(span)
-        .await
-    }
-
     /// SeatTransfer (node-drain.md step 0, node-stop.md "Seat holder"): before a node-admin target
     /// drains, the seats it holds move to this executor by TakeSeats, once per run and under the
-    /// run's own operation, so an identical retry of the run sends the identical call. Not run for a
-    /// mesh leave member (`shutdown_member`): the leaving mesh's final primary keeps its seat.
+    /// run's own operation, so an identical retry of the run sends the identical call.
     /// A refusal fails the step by name and nothing is drained, a fabric seat included: it is never
     /// taken by an executor of another mesh (`HandoverDoor::take_seats` refuses it). `OtherMesh` is a
     /// holder of its own mesh's seat alone with no other admin in that mesh: the seat stays with it
@@ -2075,14 +2057,9 @@ impl DeploymentPipeline<'_> {
 
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
     /// drain), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
-    /// `NodeStopped` from that matching reply, then the provider's stop and inspection of the exact
-    /// runtime: only its `Exited` is terminal proof.
-    pub(crate) async fn stop_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        let terminal = self.stop_steps_with(run, node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?;
-        Ok(terminal.expect("a stop that terminates yields the provider's receipt"))
-    }
-
-    /// [`Self::stop_steps`]; `proof` says what the wait step must have seen to complete (a standalone
+    /// `NodeStopped` from that matching reply, then, by `end`, the parked process or the provider's
+    /// stop and inspection of the exact runtime, whose `Exited` alone is terminal proof. `proof` says
+    /// what the wait step must have seen to complete (a standalone
     /// stop and a replace's predecessor stop fail it by name unless stop-node was admitted and the
     /// birth's `stopped` reply received).
     /// `end` says what follows: the process parks, or the provider ends it.
