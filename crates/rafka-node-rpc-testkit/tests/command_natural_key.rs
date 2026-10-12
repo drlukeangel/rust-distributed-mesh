@@ -558,6 +558,19 @@ fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_c
         let (d, _) = birth.admin.observer.membership.book.get(birth.launch.node_id.as_str()).unwrap();
         admin2.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let _carried = birth.admin.carry_in_projection(&admin2);
+        // The new primary has been a member all along: the birth hears its digest (its resolver dials it).
+        let book = &birth.running.membership.book;
+        let (mut heard, mut digests) = (book.heard_changes(), book.digest_changes());
+        tokio::time::timeout(Duration::from_secs(20), async {
+            while book.get(admin2.launcher.node_id.as_str()).is_none() {
+                tokio::select! {
+                    r = heard.changed() => r.unwrap(),
+                    r = digests.changed() => r.unwrap(),
+                }
+            }
+        })
+        .await
+        .expect("the birth hears admin2's digest");
         let admin2_endpoint = admin2.own_digest().node.endpoint_id.0.clone();
         tokio::time::timeout(Duration::from_secs(20), async {
             while birth.running.membership.projected_member_at(&admin2_endpoint).is_none() {
@@ -573,8 +586,16 @@ fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_c
         checked_in(&admin2, "state-committed", 1).await;
         let at_admin1 = birth.admin.observer.check_ins.borrow().iter().filter(|r| r.op() == "state-committed").count();
         assert_eq!(at_admin1, 0, "the check-in went to the commander, never to the holder the birth's seat book names");
-        let calls = spans_named(&spans, "rdm.node_admin.status.update.via-completion-call");
-        assert!(calls.iter().any(|c| c.get("commander") == Some(&admin2.launcher.node_id.to_string()) && c.get("answer").map(String::as_str) == Some("applied")), "the completion call names admin2 as its commander and was applied: {calls:?}");
+        // The completion call's span closes once its reply is back at the birth, after admin2 took it.
+        let admin2_id = admin2.launcher.node_id.to_string();
+        let named_admin2 = || spans_named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().any(|c| c.get("commander") == Some(&admin2_id) && c.get("answer").map(String::as_str) == Some("applied"));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !named_admin2() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("the completion call names admin2 as its commander and was applied: {:?}", spans_named(&spans, "rdm.node_admin.status.update.via-completion-call")));
         assert_eq!(actions.runs(), 1, "the action ran once");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })

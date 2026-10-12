@@ -844,12 +844,15 @@ impl FabricRounds {
                 StatusReply::AlreadyApplied
             }
         } else {
-            // A member: it checks in with its mesh's primary, as this admin's view names it.
-            let primary = view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).filter(|p| p.node_id != me.node_id).map(|p| p.node_id.clone());
-            match (own, primary) {
-                (Some(own), Some(primary)) => own.serve(Some(&primary), None, req).await.expect("a round op"),
+            // A member: it checks in with the primary that commanded it (fabric-state-commit.md, round
+            // sequence: "M->>N: commit-state", "N->>M: state-committed"): the caller, which a new
+            // primary is before this admin's view names it. Only a caller the view does not hold is
+            // checked in at the mesh's primary as the view names it.
+            let commander = sender.filter(|s| s.node_id != me.node_id).map(|s| s.node_id.clone()).or_else(|| view.cohort_primary(&me.mesh, NodeKind::NodeAdmin).filter(|p| p.node_id != me.node_id).map(|p| p.node_id.clone()));
+            match (own, commander) {
+                (Some(own), Some(commander)) => own.serve(Some(&commander), None, req).await.expect("a round op"),
                 (None, _) => StatusReply::NotReady { reason: format!("{} has not yet joined its mesh; {} is refused", self.env.me, req.op()) },
-                (Some(_), None) => StatusReply::NotReady { reason: format!("{}: its view names no primary of {} to check {} in to", self.env.me, me.mesh, req.op()) },
+                (Some(_), None) => StatusReply::NotReady { reason: format!("{}: its view holds no caller and names no primary of {} to check {} in to", self.env.me, me.mesh, req.op()) },
             }
         }
     }
