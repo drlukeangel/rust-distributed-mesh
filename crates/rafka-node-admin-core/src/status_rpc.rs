@@ -544,7 +544,7 @@ impl StatusAuthority {
             }
             StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
                 return match self.rounds.get() {
-                    Some(rounds) => rounds.serve(&view, sender.as_ref(), req, self.own.get()).await,
+                    Some(rounds) => rounds.serve(&view, sender.as_ref(), peer, req, self.own.get()).await,
                     None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
                 };
             }
@@ -589,7 +589,7 @@ impl StatusAuthority {
         // A downward exact-node operation naming this admin itself (a probe, an apply) is
         // answered by the subject, through the same door.
         if let Some(me) = view.own(&self.node_id) {
-            if let Some(reply) = self_subject(me, sender.as_ref(), req, &self.republish, &self.configure, &self.rename, &self.hydration, &self.wake).await {
+            if let Some(reply) = self_subject(me, sender.as_ref(), peer, req, &self.republish, &self.configure, &self.rename, &self.hydration, &self.wake).await {
                 return reply;
             }
         }
@@ -943,7 +943,8 @@ pub fn node_state_of(s: crate::model::NodeStatus) -> NodeState {
 /// re-publishes its presence and answers its current state; no transition. While its
 /// `hydrate_before_ready` hook is Blocked it answers `Blocked` with the hook's blocker and
 /// re-publishes nothing. `ApplyNodeState` is not served: a drain is `drain-node` and a stop is `stop-node`.
-async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, hydration: &Hydrating, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
+#[allow(clippy::too_many_arguments)]
+async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, republish: &Republish, configure: &Configure, rename: &Rename, hydration: &Hydrating, wake: &crate::status_declare::DeclareWake) -> Option<StatusReply> {
     let incarnation = match req {
         StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } => incarnation,
         _ => return None,
@@ -962,11 +963,10 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             // The hook's blocker as it stood when the probe arrived, before the probe addresses
             // this admin (a hook blocked on its authority's word runs again on it).
             let blocker = hydration.lock().unwrap().as_ref().and_then(|h| h.state().probe_blocker());
-            // The authority addressed this admin (R-S3's down op): every declaration owed to it is
-            // sent again, whatever its last outcome.
-            if let Some(from) = sender {
-                wake.addressed_by(&from.node_id);
-            }
+            // The authority addressed this admin (R-S3's down op): its endpoint is counted for a hook
+            // blocked on its word, whether or not a record names it, and every declaration owed to it
+            // is sent again, whatever its last outcome.
+            wake.addressed_by(sender.map(|n| &n.node_id), peer);
             // A parked admin presents nothing: it says it is parked.
             if crate::node_self::parking().is_parked() {
                 tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.name, sender = %sender_name, state = "parked", "otel.kind" = "internal")
@@ -1291,11 +1291,11 @@ mod tests {
         let republish = Republish::default();
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
         for sender in [Some(&carrier), Some(&admin), None] {
-            let answered = self_subject(&admin, sender, &probe, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
+            let answered = self_subject(&admin, sender, None, &probe, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
             assert!(matches!(answered, Some(R::Current { .. })), "from {:?}: {answered:?}", sender.map(|n| n.name.to_string()));
         }
         let apply = StatusRequest::ApplyNodeState { node_id, incarnation, state: NodeState::Draining };
-        let answered = self_subject(&admin, Some(&carrier), &apply, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
+        let answered = self_subject(&admin, Some(&carrier), None, &apply, &republish, &Configure::default(), &Rename::default(), &Hydrating::default(), &crate::status_declare::DeclareWake::default()).await;
         assert!(matches!(answered, Some(R::RejectedInvalidNodeTransition { .. })), "the subject answers the apply by its own rule: {answered:?}");
     }
 

@@ -60,11 +60,17 @@ impl DeclareWake {
         self.notify.notify_one();
     }
 
-    /// The authority `from` sent this admin its down op: every declaration owed to it is sent
-    /// again, whatever its last outcome.
-    pub(crate) fn addressed_by(&self, from: &NodeId) {
-        self.hydration.note(from);
-        self.addressed.lock().unwrap().insert(from.clone());
+    /// A down op reached this admin on a call from the endpoint `peer` (as the transport proved
+    /// it), from the authority `from` where a record names it: a hook blocked on its authority's
+    /// word counts the endpoint, and every declaration owed to `from` is sent again, whatever its
+    /// last outcome.
+    pub(crate) fn addressed_by(&self, from: Option<&NodeId>, peer: Option<iroh::PublicKey>) {
+        if let Some(peer) = peer {
+            self.hydration.note(&peer);
+        }
+        if let Some(from) = from {
+            self.addressed.lock().unwrap().insert(from.clone());
+        }
         self.poke();
     }
 
@@ -969,12 +975,12 @@ mod tests {
     fn the_down_ops_taken_by_a_round_are_not_taken_twice() {
         let w = DeclareWake::new();
         let a = NodeId::mint();
-        w.addressed_by(&a);
-        w.addressed_by(&a);
+        w.addressed_by(Some(&a), None);
+        w.addressed_by(Some(&a), None);
         assert_eq!(w.take_addressed(), [a.clone()].into());
         assert!(w.take_addressed().is_empty());
         let b = NodeId::mint();
-        w.addressed_by(&b);
+        w.addressed_by(Some(&b), None);
         assert_eq!(w.take_addressed(), [b].into());
     }
 }

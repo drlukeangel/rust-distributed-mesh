@@ -25,7 +25,6 @@ use rafka_mesh_entity::{MemberStatus, MeshDigest};
 use std::time::Duration;
 use rafka_mesh_transport::membership::{DigestBook, Membership};
 use rafka_node_rpc::{CancelToken, HydrationGate, NodeRpcClient};
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::Instrument;
@@ -225,11 +224,13 @@ impl Hydration {
     }
 }
 
-/// Which authorities addressed this node, counted: a count survives an event that happened before
-/// anything waited on it.
+/// Which endpoints addressed this node with a down op, counted: a count survives an event that
+/// happened before anything waited on it. Keyed by the endpoint the transport proved for the call,
+/// so an authority no record names (a commander born after this node's stop, node-start.md step 2)
+/// is counted too.
 #[derive(Debug, Default)]
 pub struct Addressed {
-    counts: Mutex<BTreeMap<NodeId, u64>>,
+    counts: Mutex<std::collections::HashMap<iroh::PublicKey, u64>>,
     tick: tokio::sync::watch::Sender<u64>,
 }
 
@@ -239,13 +240,13 @@ impl Addressed {
         Arc::default()
     }
 
-    /// `from` sent this node a down op.
-    pub fn note(&self, from: &NodeId) {
-        *self.counts.lock().unwrap().entry(from.clone()).or_default() += 1;
+    /// The endpoint `from` sent this node a down op.
+    pub fn note(&self, from: &iroh::PublicKey) {
+        *self.counts.lock().unwrap().entry(*from).or_default() += 1;
         self.tick.send_modify(|v| *v += 1);
     }
 
-    fn count(&self, from: &NodeId) -> u64 {
+    fn count(&self, from: &iroh::PublicKey) -> u64 {
         self.counts.lock().unwrap().get(from).copied().unwrap_or(0)
     }
 }
@@ -283,8 +284,8 @@ impl Events {
     /// The counts now, for `authority`.
     pub fn mark(&self, authority: &Authority) -> Mark {
         let heard = *self.book.heard_changes().borrow();
-        match authority.accepted().and_then(|a| self.birth_of(a)) {
-            Some((d, _)) => Mark { heard, addressed: self.addressed.count(&d.node.node_id), authority_incarnation: Some(d.node.incarnation) },
+        match authority.accepted() {
+            Some(a) => Mark { heard, addressed: self.addressed.count(&a.endpoint), authority_incarnation: self.birth_of(a).map(|(d, _)| d.node.incarnation) },
             None => Mark { heard, addressed: 0, authority_incarnation: None },
         }
     }
@@ -313,7 +314,7 @@ impl Events {
             },
             RetryOn::AuthorityReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),
             RetryOn::TargetReachable { .. } => unreachable!("answered above"),
-            RetryOn::AuthorityAddressed => birth.is_some_and(|(d, _)| self.addressed.count(&d.node.node_id) > mark.addressed),
+            RetryOn::AuthorityAddressed => self.addressed.count(&authority.endpoint) > mark.addressed,
         }
     }
 

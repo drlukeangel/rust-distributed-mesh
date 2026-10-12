@@ -1040,9 +1040,9 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             let sender = me.membership.projected_member_at(&peer.endpoint_id.to_string());
             // A sender no projection this node holds names is named by the one fact it holds of it: its endpoint.
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
-            if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
-                me.addressed.note(&from.node.node_id);
-            }
+            // Every call addressed this birth from its endpoint: a hook blocked on its authority's word
+            // counts it, whether or not a record names the caller.
+            me.addressed.note(&peer.endpoint_id);
             if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::DeleteConnections { .. }) {
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone());
                 let reply = me.own.serve(commander.as_ref(), Some(peer.endpoint_id), &req).await.expect("a command");
