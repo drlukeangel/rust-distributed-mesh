@@ -239,11 +239,14 @@ impl Pool {
                     // connection's driver task with the span current at that moment, and that task lives as
                     // long as the pooled connection, so a current dial span would stay open (and keep the
                     // call span above it open) until the connection closes. Its events name it as parent.
-                    // The task runs on the dispatcher of the call that started it: its events reach that
-                    // subscriber, and the dial span ends there. A span's end releases its parent's reference
+                    // The task runs on the dispatcher of the dial span: its events reach that span's
+                    // subscriber, and the span ends there. A span's end releases its parent's reference
                     // through the dispatcher of the thread it ends on, so a dial span ending on a worker that
                     // holds another dispatcher would leave the call span (and every span above it) open
-                    // for good.
+                    // for good. A dial span no subscriber took has no parent to release and no subscriber
+                    // for its events: its task carries no dispatcher, so it never pins "none" over one
+                    // installed while it runs (a callsite first reached under a pinned "none" is cached as
+                    // never enabled, process-wide).
                     let span = tracing::info_span!(
                         "rdm.node_rpc.connection.create.via-dial",
                         peer = %key.peer.fmt_short(),
@@ -253,7 +256,8 @@ impl Pool {
                         outcome = tracing::field::Empty,
                         elapsed_ms = tracing::field::Empty,
                     );
-                    tokio::spawn(async move {
+                    let dispatch = tracing::Span::with_subscriber(&span, |(_, d): (&tracing::Id, &tracing::Dispatch)| d.clone());
+                    let dial = async move {
                         let started = Instant::now();
                         let out = pool.run_dial(&key, spec, cancelled, &span).await;
                         span.record("outcome", match &out { Ok(_) => "connected".to_string(), Err(e) => format!("{e:?}") }.as_str());
@@ -262,8 +266,11 @@ impl Pool {
                         drop(span);
                         pool.inner.dials.lock().unwrap().remove(&key);
                         let _ = tx.send(Some(out));
+                    };
+                    match dispatch {
+                        Some(d) => drop(tokio::spawn(dial.with_subscriber(d))),
+                        None => drop(tokio::spawn(dial)),
                     }
-                    .with_current_subscriber());
                     rx
                 }
             }
