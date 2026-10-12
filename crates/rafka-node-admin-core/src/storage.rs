@@ -678,7 +678,7 @@ mod tests {
         let writes = async |n: &FileNodesStorage, m: &FileMeshStorage, mesh: &str| {
             m.put_mesh(&MeshRecord { mesh_id: MeshId::mint(), name: mesh.into() }).await.unwrap();
             for name in [format!("{mesh}.admin.1"), format!("{mesh}.rpc.1"), format!("{mesh}.rpc.2")] {
-                n.put_node_row(&row(&name)).await.unwrap();
+                n.put_node_row(&row(&name)).await.unwrap().expect("each row is at a name no node holds");
                 n.put_contact(&node(&name)).await.unwrap();
             }
         };
