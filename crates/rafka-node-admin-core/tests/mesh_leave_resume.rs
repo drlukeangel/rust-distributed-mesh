@@ -1143,6 +1143,7 @@ fn the_fabric_primary_proves_a_lost_primarys_exit_from_its_durable_runtime_row_a
     std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
     println!("trace_id={trace_id} spans={}", dir.join("spans.json").display());
     let refusal = without_row.expect_err("no runtime row of the lost birth: the resume is refused");
+    let rafka_node_admin_core::executor::RunEnd::Incomplete(refusal) = refusal else { panic!("an unproven lost primary leaves the leave incomplete, not failed: {refusal:?}") };
     assert!(refusal.contains("not proven exited") && refusal.contains(FINAL) && refusal.contains("no durable runtime row"), "the refusal names the lost birth and the missing row: {refusal}");
     assert_eq!(before.final_primary, lost, "nothing is amended while the lost primary is unproven");
     assert_eq!(with_row, Ok(Amended::Applied), "with the durable runtime row the exit is proven and the amendment recorded");

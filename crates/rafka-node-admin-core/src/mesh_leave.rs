@@ -546,21 +546,22 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
 /// then `RosterAmended` admits `held`. A lost primary not proven exited refuses the resume by name
 /// and nothing is amended (R-D1).
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, records: &crate::admin::Records, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, String> {
+pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, records: &crate::admin::Records, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, crate::executor::RunEnd> {
     let operation = key.operation.as_str();
     let lost = &admitted.final_primary;
     let steps = builds.read_build(&BuildId(key.build_id.clone())).await.map_err(|e| format!("{executor}: the Build {} could not be read for the receipts of {operation}: {e}", key.build_id))?.steps;
     if !exit_receipts(&steps, operation, std::slice::from_ref(lost)).contains_key(&(lost.node_id.clone(), lost.incarnation_id.clone())) {
+        // A lost primary not proven exited refuses the resume by name; the leave is incomplete, not failed.
         let terminal = prove_predecessor_exit(provider, row, lost, &admitted.final_runtime).await.map_err(|reason| {
             span_unproven(key, lost, &reason);
-            format!("{operation} is refused: the final primary {} {} is silent but not proven exited, so {} {} is not admitted in its place: {reason}", lost.node, lost.incarnation_id, held.node, held.incarnation_id)
+            crate::executor::RunEnd::Incomplete(format!("{operation} is refused: the final primary {} {} is silent but not proven exited, so {} {} is not admitted in its place: {reason}", lost.node, lost.incarnation_id, held.node, held.incarnation_id))
         })?;
         // Recorded durably before its receipt: the exit-proof row is the proven loss every
         // projection reads.
         records.put_exit_of_receipt(&terminal).await.map_err(|e| format!("{operation} is refused: the lost final primary's proven exit is not recorded: {e}"))?;
         record_predecessor_exit(builds, key, executor, &terminal).await?;
     }
-    amend_roster(builds, key, executor, &RosterAmended { predecessor: lost.clone(), final_primary: held.clone(), final_runtime: held_runtime.clone() }).await
+    Ok(amend_roster(builds, key, executor, &RosterAmended { predecessor: lost.clone(), final_primary: held.clone(), final_runtime: held_runtime.clone() }).await?)
 }
 
 /// The roster a leaving primary runs `LeaveMesh` over, and the owner's step receipts it read for it

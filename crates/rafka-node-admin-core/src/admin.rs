@@ -2384,31 +2384,16 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
 
 /// What a drift opening decides on, as one comparable string: for a repair, the exited birth and
 /// the completed receipts under its `replace-node:<path>`; for surplus, each live birth by
-/// incarnation and, per removed mesh's `shutdown-mesh:<mesh id>`, the mesh's seated node-admin, its
-/// live node-admins by birth and status, and the completed receipts under the workflow and its
-/// member operations (an exit, an amendment, a roster recorded since moves it).
+/// incarnation.
 fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], repair: Option<(&PathName, &IncarnationId)>, surplus: &[String]) -> String {
-    let complete = |op: &str| {
-        let member = format!("{op}/");
-        steps.iter().filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && (s.operation == op || s.operation.starts_with(&member))).count()
-    };
     let birth = |n: &Node| format!("{}:{}", n.name, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("-"));
     if let Some((path, incarnation)) = repair {
-        return format!("repair {path}:{} receipts={}", incarnation.0, complete(&format!("replace-node:{path}")));
+        let op = format!("replace-node:{path}");
+        let member = format!("{op}/");
+        let complete = steps.iter().filter(|s| s.outcome == crate::build_state::StepOutcome::Complete && (s.operation == op || s.operation.starts_with(&member))).count();
+        return format!("repair {path}:{} receipts={complete}", incarnation.0);
     }
-    surplus
-        .iter()
-        .map(|item| match t.meshes.iter().find(|m| m.id.as_ref().is_some_and(|id| crate::mesh_leave::operation(id) == *item)) {
-            Some(m) => {
-                let primary = t.cohort_primary(&m.name, NodeKind::NodeAdmin).map(birth).unwrap_or_else(|| "none".into());
-                let mut admins: Vec<String> = t.cohort(&m.name, NodeKind::NodeAdmin).filter(|n| n.status.is_live()).map(|n| format!("{}:{:?}", birth(n), n.status)).collect();
-                admins.sort();
-                format!("{item} primary={primary} admins=[{}] receipts={}", admins.join(","), complete(item))
-            }
-            None => t.members().find(|n| n.name.to_string() == *item).map(birth).unwrap_or_else(|| item.clone()),
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
+    surplus.iter().map(|item| t.members().find(|n| n.name.to_string() == *item).map(birth).unwrap_or_else(|| item.clone())).collect::<Vec<_>>().join("; ")
 }
 
 /// The fabric authority's drift check (`crate::drift`): when this admin is the fabric primary,
@@ -2598,32 +2583,6 @@ pub async fn reconcile_drift(
         })
         .map(|n| n.name.to_string())
         .collect();
-    // A removed Mesh whose mesh.delete is incomplete (mesh-delete.md, "Failure and receipts"): no
-    // completion receipt (`MeshDeleted`, or `MeshLeft`), and either the view still holds a birth of a
-    // mesh that is not deleted live (a mesh.delete that never reached admission) or the mesh.delete
-    // was admitted. Its attempt carries no action; the planner plans the mesh's delete again, which
-    // resumes from the receipts. A deleted mesh (its row Dead at mesh.deleted) whose last admin lives
-    // on is no incomplete mesh.delete: that admin's end is its own node.delete. The ladder's unheard
-    // hold does not fence it: a deleting mesh whose every node-admin was lost is unheard by
-    // construction, and its resume carries its own proof (mesh-delete.md, "Resume after the
-    // primary's loss", step 1: the lost final primary's exact Exited is recorded before anything is
-    // created for the mesh, and an unproven one refuses the resume by name).
-    surplus.extend(
-        t.meshes
-            .iter()
-            .filter(|m| !current.topology.meshes.contains_key(&m.name))
-            .filter_map(|m| m.id.as_ref().map(|id| (m, crate::mesh_leave::operation(id))))
-            .filter(|(_, op)| matches!(crate::mesh_leave::owner_resume(&current.steps, op), Ok(crate::mesh_leave::OwnerResume::Lead) | Err(_)))
-            .filter(|(m, op)| {
-                (m.status != ScopeStatus::Dead && t.members().any(|n| n.mesh == m.name && n.status.is_live()))
-                    // An admitted mesh.delete is resumed until its completion, whatever this view hears
-                    // of the mesh: with every admin lost its births are silent here, and the resume
-                    // proves the lost final primary's exit before it creates the mesh's one admin
-                    // (R11). An unreadable roster receipt is planned too: the resume refuses it by name.
-                    || crate::mesh_leave::admitted_of(&current.steps, op).is_some()
-            })
-            .map(|(_, op)| op),
-    );
     surplus.sort();
     if first_exited.is_none() && surplus.is_empty() {
         return None;

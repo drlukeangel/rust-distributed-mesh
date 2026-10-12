@@ -973,13 +973,25 @@ struct LostLeaver {
     topology: Arc<RwLock<Topology>>,
     /// What the shutdown ends with while the primary is lost.
     ends: Mutex<Option<rafka_node_admin_core::executor::RunEnd>>,
+    /// The incomplete shutdown first records a receipt of the leave (an exit, an amendment): the
+    /// attempt moved something before it ended.
+    progress: std::sync::atomic::AtomicBool,
+    /// The shutdown ends incomplete on its first run only.
+    once: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait::async_trait]
 impl OperationRunner for LostLeaver {
     async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
-        if let (BuildOperation::ShutdownMesh { mesh, .. }, Some(end)) = (op, self.ends.lock().unwrap().clone()) {
-            let _ = mesh;
+        let ends = self.ends.lock().unwrap().clone();
+        if let (BuildOperation::ShutdownMesh { .. }, Some(end)) = (op, ends) {
+            if self.progress.load(Ordering::SeqCst) {
+                let receipt = BuildStepReceipt { build_id: build.clone(), attempt, operation: op.key(), step: "RosterAmended".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+                self.ran.get().expect("the rig set the recorder").1.append_step_receipt(&receipt).await.map_err(|e| e.to_string())?;
+            }
+            if self.once.load(Ordering::SeqCst) {
+                *self.ends.lock().unwrap() = None;
+            }
             return Err(end);
         }
         self.ran.get().expect("the rig set the recorder").run(build, attempt, op).await?;
@@ -1000,7 +1012,7 @@ async fn removing_mesh2(ends: Option<rafka_node_admin_core::executor::RunEnd>) -
     let held: Arc<Mutex<Option<Arc<LostLeaver>>>> = Arc::default();
     let slot = held.clone();
     let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh2".into() }, move |ran, topology| {
-        let leaver = Arc::new(LostLeaver { ran: std::sync::OnceLock::new(), topology, ends: Mutex::new(ends) });
+        let leaver = Arc::new(LostLeaver { ran: std::sync::OnceLock::new(), topology, ends: Mutex::new(ends), progress: AtomicBool::new(false), once: AtomicBool::new(false) });
         let _ = leaver.ran.set(ran);
         *slot.lock().unwrap() = Some(leaver.clone());
         leaver
@@ -1112,4 +1124,134 @@ fn a_leave_that_ends_with_a_named_failure_fails_the_build_and_the_read_skips_it(
     assert_eq!(p.state, BuildState::Failed);
     assert_eq!(current, seeded, "the failed Build is skipped: the Build before it is current again");
     assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1)], "no further attempt is claimed");
+}
+
+/// Moves what the resume of a leave decides on: `mesh2.admin.1`'s status in the view.
+async fn mesh2_primary_becomes(r: &Rig, status: NodeStatus) {
+    for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
+        n.status = status;
+        n.is_primary = status.is_live();
+    }
+}
+
+/// CONTRACT (R-D1; mesh-delete.md, "Resume after the primary's loss": "A silent but unproven primary
+/// refuses the resume by name; silence is not death"): the peer-mesh investigation holds `mesh2`
+/// unheard, every birth of it silent, and the leave of it ends incomplete because its primary is
+/// unproven. The hold fences restart, replace and delete of the mesh's births, never the shutdown's
+/// resume: the shutdown is dispatched on attempt 1, the Build stays in progress and nothing is claimed
+/// again while the primary stays unproven, and once its exit is proven attempt 2 runs the shutdown
+/// and completes the Build.
+/// Must NOT happen: the drive stopping at the unheard-mesh fence before the shutdown, the Build
+/// failed, or the Build left in progress with no attempt claimed after the proof.
+#[test]
+fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unproven_and_resumes_when_it_is_proven() {
+    use rafka_node_admin_core::build_state::{BuildState, CurrentBuild};
+    let cap = crate::mesh_leave_resume::capture();
+    let (first, second, third, current, dispatched, ran) = cap.run(async {
+        let root = tracing::info_span!("cell.leave-unheard-unproven-primary");
+        let _in_root = root.enter();
+        let (r, leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: the final primary mesh2.admin.1 is silent but not proven exited, so no admin is created for it".into()))).await;
+        mesh2_primary_becomes(&r, NodeStatus::PendingReconnect).await;
+        for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2") {
+            n.status = NodeStatus::PendingReconnect;
+        }
+        r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(120_000), rebirth_decided: false });
+        let drive = Drive::detached(r.build.clone());
+        let first = r.env.run(&drive).await;
+        let dispatches = r.dispatch.dispatched.lock().unwrap().len();
+        let first = (first, r.builds.read_build(&r.build).await.unwrap().state, r.builds.current_build().await.unwrap(), dispatches);
+        let second = r.env.run(&drive).await;
+        let dispatches = r.dispatch.dispatched.lock().unwrap().len();
+        let second = (second, r.builds.read_build(&r.build).await.unwrap().attempt, dispatches);
+        // The provider proves the primary's exit: it is gone from the view, and the shutdown can run.
+        *leaver.ends.lock().unwrap() = None;
+        mesh2_primary_becomes(&r, NodeStatus::Dead).await;
+        let third = r.env.run(&drive).await;
+        let current = r.builds.current_build().await.unwrap();
+        let (dispatched, ran) = (r.dispatch.dispatched.lock().unwrap().clone(), r.ran.0.lock().unwrap().clone());
+        (first, second, (third, r.builds.read_build(&r.build).await.unwrap().state), current, dispatched, (ran, r.build.clone()))
+    });
+    let spans = cap.spans();
+    let (end, state, current_then, dispatches) = first;
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("ended incomplete and was handed back")), "the drive names the incomplete attempt: {end:?}");
+    assert_eq!((state, dispatches), (BuildState::Pending, 1), "the shutdown was dispatched on attempt 1 although mesh2 is held unheard, and the Build waits for its next claim");
+    assert!(matches!(current_then, CurrentBuild::InProgress(_)), "the Build is in progress, not failed: {current_then:?}");
+    let (end, attempt, dispatches) = second;
+    assert!(matches!(end, DriveEnd::Stalled(_)) && (attempt, dispatches) == (1, 1), "the unproven primary refuses the resume by name and no attempt is claimed: {end:?} attempt {attempt}, {dispatches} dispatches");
+    let (end, state) = third;
+    assert_eq!((end, state), (DriveEnd::Terminal, BuildState::Complete), "the proven exit moved an input: attempt 2 runs the shutdown and completes the Build");
+    let (ran, build) = ran;
+    assert_eq!(current, CurrentBuild::Completed(build));
+    assert_eq!(ran.iter().filter(|k| k.starts_with("shutdown-mesh:")).count(), 1, "{ran:?}");
+    assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2)]);
+    assert!(!spans.iter().any(|s| s["name"] == "rdm.node_admin.build.reject.via-unheard-mesh-drive"), "the unheard hold did not fence the shutdown's resume");
+    assert!(spans.iter().any(|s| s["name"] == "rdm.node_admin.build.update.via-stalled"), "the refusal is spanned by name");
+}
+
+/// CONTRACT (R-S2: event-driven, never once per pass; mesh-delete.md, "Failure and receipts"): an
+/// attempt of a leave that ends incomplete with nothing changed since it was claimed gets no next
+/// attempt from the drive, however many times the drive passes; one input moving (the seat of a
+/// member of the leaving mesh) gets exactly one. Attempt 1 ends incomplete, two passes claim nothing,
+/// the move opens attempt 2, which ends incomplete the same way and again claims nothing, and the
+/// next move opens attempt 3, which completes.
+/// Must NOT happen: an attempt claimed per pass of a leave whose primary stays lost.
+#[test]
+fn a_leave_that_ends_incomplete_with_nothing_changed_claims_one_attempt_per_change_never_one_per_pass() {
+    use rafka_node_admin_core::build_state::BuildState;
+    let cap = crate::mesh_leave_resume::capture();
+    let (passes, state, dispatched) = cap.run(async {
+        let root = tracing::info_span!("cell.leave-one-attempt-per-change");
+        let _in_root = root.enter();
+        let (r, leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: mesh2 holds no node-admin primary to hand the workflow to".into()))).await;
+        let drive = Drive::detached(r.build.clone());
+        let mut passes = Vec::new();
+        for pass in 0..6 {
+            match pass {
+                2 => mesh2_primary_becomes(&r, NodeStatus::PendingReconnect).await,
+                4 => {
+                    *leaver.ends.lock().unwrap() = None;
+                    mesh2_primary_becomes(&r, NodeStatus::Dead).await;
+                }
+                _ => {}
+            }
+            let end = r.env.run(&drive).await;
+            passes.push((matches!(end, DriveEnd::Stalled(_)), r.builds.read_build(&r.build).await.unwrap().attempt));
+        }
+        let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+        (passes, r.builds.read_build(&r.build).await.unwrap().state, dispatched)
+    });
+    // Passes 0-1: attempt 1, then nothing. Pass 2 moves an input: attempt 2, which ends incomplete the same way.
+    // Pass 3: nothing. Pass 4 moves the next input: attempt 3 completes. Pass 5: the Build is complete.
+    assert_eq!(passes[..5], [(true, 1), (true, 1), (true, 2), (true, 2), (false, 3)], "one attempt for the failure, none while nothing changed, one for each change: {passes:?}");
+    assert_eq!(state, BuildState::Complete);
+    assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2), ("mesh1.admin.1".to_string(), 3)], "three attempts for three states of the world, not one per pass");
+}
+
+/// CONTRACT (mesh-delete.md, "Resume after the primary's loss": the lost primary's Exited is recorded,
+/// the amendment admits the new primary, "the new mesh-primary gets a fresh claim and runs only the
+/// tiers without a terminal receipt"): a leave whose primary was lost records the exit and the
+/// amendment as receipts of its Build and ends incomplete because the new primary is not seated yet.
+/// The receipts are what moved: the Build stays in progress and the drive claims the next attempt at
+/// once, with no wait for any other change, and that attempt completes the leave.
+/// Must NOT happen: the drive idling after an attempt that recorded receipts, or the Build failed.
+#[test]
+fn a_leave_that_recorded_the_exit_and_the_amendment_before_it_ended_incomplete_is_resumed_by_the_next_attempt_at_once() {
+    use rafka_node_admin_core::build_state::{BuildFact, BuildState};
+    let cap = crate::mesh_leave_resume::capture();
+    let (end, state, attempt, dispatched, steps) = cap.run(async {
+        let root = tracing::info_span!("cell.leave-recorded-then-incomplete");
+        let _in_root = root.enter();
+        let (r, leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: mesh2.admin.3 was created for mesh2 and holds no mesh-primary seat yet; the next attempt amends the roster for it".into()))).await;
+        leaver.progress.store(true, Ordering::SeqCst);
+        leaver.once.store(true, Ordering::SeqCst);
+        let end = r.env.run(&Drive::detached(r.build.clone())).await;
+        let p = r.builds.read_build(&r.build).await.unwrap();
+        let steps: Vec<_> = r.builds.facts().await.unwrap().into_iter().filter_map(|f| if let BuildFact::Step(s) = f { Some((s.attempt, s.step)) } else { None }).collect();
+        let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
+        (end, p.state, p.attempt, dispatched, steps)
+    });
+    assert_eq!(end, DriveEnd::Terminal, "attempt 1 moved the leave on, so the drive went straight on to attempt 2");
+    assert_eq!((state, attempt), (BuildState::Complete, 2));
+    assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2)]);
+    assert!(steps.contains(&(1, "RosterAmended".to_string())), "attempt 1's receipt stands for the resumed attempt: {steps:?}");
 }
