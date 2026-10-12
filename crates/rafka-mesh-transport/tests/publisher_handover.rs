@@ -112,9 +112,10 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 /// mesh is a complete projection under its own epoch (a full, `full-due`), before any delta of its
 /// own; the member installs it, then its delta. mesh1.admin.1, its publication delayed (it still
 /// publishes as a primary would: a full, then a delta), is refused by name at the member, naming the
-/// seat holder; the member never holds mesh1.admin.1's epoch again and no source is desynchronized.
-/// Must NOT happen: the member switched back to the predecessor's epoch, a delta of the successor
-/// before its full, or a predecessor's delta read as a version gap.
+/// seat holder, and marks the source for GetTopology repair (an unknown source epoch, gossip.md
+/// §3.1); the member never holds mesh1.admin.1's epoch again. Must NOT happen: the member switched
+/// back to the predecessor's epoch, a delta of the successor before its full, or a predecessor's delta
+/// read as a version gap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_successor_publishes_a_full_first_and_a_delayed_predecessor_publication_is_refused_by_name() {
     let cell = "the_successor_publishes_a_full_first_and_a_delayed_predecessor_publication_is_refused_by_name";
@@ -177,7 +178,11 @@ async fn the_successor_publishes_a_full_first_and_a_delayed_predecessor_publicat
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(held_at_member(), Some((pub2.clone(), v2)), "round {round}: the member keeps the successor's epoch");
     }
-    assert!(m.desynced_sources().is_empty(), "a predecessor's delta is refused, not a version gap: {:?}", m.desynced_sources());
+    assert_eq!(
+        m.desynced_sources().iter().map(|(mesh, g)| (mesh.clone(), g.to_string())).collect::<Vec<_>>(),
+        vec![("mesh1".to_string(), "unknown-epoch".to_string())],
+        "a predecessor's publication is refused, not read as a version gap: its unknown epoch marks the source for GetTopology repair"
+    );
 
     drop((bb1, bb2));
     for n in [&n1, &n2, &nm] {
@@ -201,7 +206,7 @@ async fn the_successor_publishes_a_full_first_and_a_delayed_predecessor_publicat
     let kinds: std::collections::BTreeSet<String> = refused.iter().map(|s| attr(s, "frame")).collect();
     assert_eq!(kinds, ["members".to_string(), "members-delta".to_string()].into_iter().collect(), "the predecessor's full and delta are each refused: {refused:#?}");
     assert!(
-        refused.iter().all(|s| attr(s, "publisher") == pub1.to_string() && attr(s, "held_publisher") == pub2.to_string() && attr(s, "reason") == "not-seated" && attr(s, "seat_holder") == seat_of(&p2_d, 2).to_string() && attr(s, "channel") == "mesh-channel"),
+        refused.iter().all(|s| attr(s, "publisher") == pub1.to_string() && attr(s, "held_publisher") == pub2.to_string() && attr(s, "reason") == "not-seated" && attr(s, "seat_holder") == seat_of(&p2_d, 2).to_string() && attr(s, "channel") == "mesh-channel" && attr(s, "repair") == "get-topology"),
         "{refused:#?}"
     );
     let mut lines = String::new();

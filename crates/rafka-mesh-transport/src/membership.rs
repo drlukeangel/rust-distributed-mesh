@@ -2120,7 +2120,9 @@ impl View {
     /// - on the backbone or the mesh channel, a frame of another epoch than the one held, from a
     ///   publisher the held seat record of `mesh` does not name and that is not the held
     ///   fabric-primary (the acting primary of a mesh with no primary, R-NS1): `not-seated`, naming
-    ///   the seat holder. A receiver that holds no seat record of `mesh` has no evidence against it.
+    ///   the seat holder. On the mesh channel that is an unknown source epoch, which marks the source
+    ///   for GetTopology repair ([`View::refuse_predecessor`]). A receiver that holds no seat record of
+    ///   `mesh` has no evidence against it.
     ///   A topology read is this node's own top-up from the primary it chose by that record, so a
     ///   read is refused only for a publisher that left.
     fn predecessor(&self, mesh: &str, publisher: &PublisherId, held: Option<&PublisherId>, side: Side) -> Option<(&'static str, Option<SeatHolder>)> {
@@ -2139,6 +2141,17 @@ impl View {
     /// holds of the source, and why the publisher is not the epoch this node takes.
     #[allow(clippy::too_many_arguments)]
     fn refuse_predecessor(&self, side: Side, frame: &'static str, mesh: &str, publisher: &PublisherId, topology_version: u64, held: Option<&(PublisherId, u64)>, reason: &'static str, seat: Option<&SeatHolder>) {
+        // On the mesh channel, a publisher without seat evidence is an unknown source epoch: the
+        // node cannot tell a delayed predecessor from a successor whose seat no frame of its channel
+        // carried (a peer mesh's `Seated` never reaches it), so its own primary's topology repairs
+        // the source (gossip.md §3.1: "an unknown source epoch trigger[s] GetTopology repair").
+        let repair = if side == Side::MeshChannel && reason == "not-seated" {
+            self.mesh_rx.lock().unwrap().unknown_epoch(mesh, publisher);
+            self.desync.notify_one();
+            "get-topology"
+        } else {
+            "none"
+        };
         tracing::info_span!(
             "rdm.mesh.membership.reject.via-predecessor-publisher",
             node = %self.node,
@@ -2151,8 +2164,9 @@ impl View {
             held_version = held.map(|(_, v)| *v as i64).unwrap_or(-1),
             reason,
             seat_holder = %seat.map(ToString::to_string).unwrap_or_default(),
+            repair,
         )
-        .in_scope(|| tracing::info!("a publication of an epoch before the one this node takes: refused, the held projection stands"));
+        .in_scope(|| tracing::info!("a publication of an epoch this node does not take: refused, the held projection stands"));
     }
 
     /// A `Members` chunk or a `MembersDelta`, arrived on `side`. A snapshot is applied to the book
@@ -6516,7 +6530,11 @@ mod tests {
         let late_delta = Frame::MembersDelta { mesh: "mesh1".into(), source_publisher: publisher_of(&p1), base_version: 5, topology_version: 6, published_at_rafka_ms: 6, changed: vec![], removed: vec![p2.node.node_id.to_string()], in_flight: vec![], departed: vec![] };
         member.take_snapshot(&late_delta, &fabric, Side::MeshChannel);
         assert_eq!(held(&member, Side::MeshChannel, "mesh1"), Some((publisher_of(&p2), 1)));
-        assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "a predecessor's delta is refused, not a version gap: nothing is desynchronized");
+        assert_eq!(
+            member.mesh_rx.lock().unwrap().desynced().iter().map(|(m, g)| (m.clone(), g.to_string())).collect::<Vec<_>>(),
+            vec![("mesh1".to_string(), "unknown-epoch".to_string())],
+            "a predecessor's publication is refused, not read as a version gap: its unknown epoch marks the source for GetTopology repair from the member's own primary"
+        );
 
         let refused = spans.named("rdm.mesh.membership.reject.via-predecessor-publisher");
         let said: Vec<(String, String, String, String)> = refused.iter().map(|f| (f["node"].clone(), f["mesh"].clone(), f["frame"].clone(), f["reason"].clone())).collect();
