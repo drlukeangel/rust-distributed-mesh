@@ -9,7 +9,8 @@
 //! every heartbeat it hears, each stamped with Rafka-time from the clock the binary composed (the
 //! OS clock for an RDM executable), and a `Members` publication is stamped the same way. Then the
 //! observer broadcasts a heartbeat of that very birth that is OLDER by sequence but stamped a year
-//! ahead and saying `Leaving`: the node-admin that hears it holds the member as it was, because
+//! ahead and saying `Joining` (a heartbeat carries liveness, never a status, gossip.md §3.1): the
+//! node-admin that hears it holds the member as it was, because
 //! time never ranks a heartbeat, and the live heartbeats that follow (the healthy control) keep
 //! the member heard well past the silence window, so a stamp that runs ahead of the clock never
 //! makes a live member look silent or `Dead`. Silence is the receiver's own monotonic age.
@@ -18,7 +19,7 @@ use bytes::Bytes;
 use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
-use rafka_mesh_entity::{FabricId, MemberStatus, MeshDigest, MeshId};
+use rafka_mesh_entity::{FabricId, MeshDigest, MeshId, NodeState};
 use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
 use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{named, Estate, Owner};
@@ -141,7 +142,7 @@ fn seeds_of(nodes: &[NodeView]) -> Vec<EndpointAddr> {
 }
 
 fn row(h: &(Seen, MeshDigest)) -> Value {
-    json!({ "heard_at_ms": h.0.heard_at_ms, "digest_seq": h.1.digest_seq, "emitted_at_rafka_ms": h.1.emitted_at_rafka_ms, "status": format!("{:?}", h.1.status), "incarnation": h.1.node.incarnation.0 })
+    json!({ "heard_at_ms": h.0.heard_at_ms, "digest_seq": h.1.digest_seq, "emitted_at_rafka_ms": h.1.emitted_at_rafka_ms, "node_state": format!("{:?}", h.1.node_state), "incarnation": h.1.node.incarnation.0 })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -190,7 +191,9 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     assert_eq!(held_before.status, NodeStatus::ReadyForTraffic);
     let last = before.last().unwrap().1.clone();
     let mut forged = last.clone();
-    forged.status = MemberStatus::Leaving;
+    // A heartbeat carries liveness and no status (gossip.md §3.1 Digest row): the forged one says the
+    // birth is not self-ready.
+    forged.node_state = NodeState::Joining;
     forged.digest_seq = seqs[0];
     forged.emitted_at_rafka_ms = os_now_ms() + 365 * 24 * 3600 * 1000;
     assert!(forged.digest_seq < last.digest_seq && forged.emitted_at_rafka_ms > last.emitted_at_rafka_ms);
@@ -201,7 +204,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
     let held_after = estate.node_view(NODE).await;
     assert_eq!(held_after.status, NodeStatus::ReadyForTraffic, "the older heartbeat stamped ahead did not move the member, and its live heartbeats kept it heard past the silence window: {held_after:?}");
     assert_eq!(held_after.incarnation_id, held_before.incarnation_id, "the same birth");
-    let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(NODE).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.status == MemberStatus::ReadyForTraffic).collect();
+    let live_after: Vec<(Seen, MeshDigest)> = observer.heartbeats_of(NODE).into_iter().filter(|h| h.0.heard_at_ms > forged_at_ms && h.1.node_state == NodeState::Alive).collect();
     assert!(live_after.len() >= 8, "the node kept publishing live heartbeats for the whole window ({} heard)", live_after.len());
     assert!(live_after.iter().all(|h| h.1.digest_seq > last.digest_seq), "every live heartbeat after the forged one carries a higher sequence than the last one before it");
     let silent_ms = live_after.windows(2).map(|w| w[1].0.heard_at_ms - w[0].0.heard_at_ms).max().unwrap_or(0);
@@ -216,7 +219,7 @@ async fn mesh_composition_uses_supplied_clock_keeps_silence_monotonic() {
         "observer_heartbeats_before_forgery": before.iter().map(row).collect::<Vec<_>>(),
         "digest_seq_rises": seqs,
         "members_publication_skews_ms": members_published,
-        "forged": { "digest_seq": forged.digest_seq, "emitted_at_rafka_ms": forged.emitted_at_rafka_ms, "status": "Leaving", "last_real_digest_seq": last.digest_seq, "last_real_emitted_at_rafka_ms": last.emitted_at_rafka_ms },
+        "forged": { "digest_seq": forged.digest_seq, "emitted_at_rafka_ms": forged.emitted_at_rafka_ms, "node_state": "Joining", "last_real_digest_seq": last.digest_seq, "last_real_emitted_at_rafka_ms": last.emitted_at_rafka_ms },
         "member_before": { "status": held_before.status, "incarnation_id": held_before.incarnation_id },
         "member_after_9s": { "status": held_after.status, "incarnation_id": held_after.incarnation_id },
         "live_heartbeats_after_forgery": live_after.len(),

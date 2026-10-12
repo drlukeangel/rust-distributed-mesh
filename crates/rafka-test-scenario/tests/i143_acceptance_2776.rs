@@ -458,7 +458,7 @@ fn scenario_manifest_round_trips_owner_seed_and_fault_schedule() {
 /// written replay manifest alone, on a fresh estate - repeats the same ordered actions, the same
 /// typed semantic outcomes and the same final proof state, with the exact seed and fault schedule
 /// retained. The seeded fault is a restart through the node-admin Build rectifier: the restarted
-/// node keeps its NodeId under a new incarnation in both runs. Each run leaves its complete
+/// node keeps its NodeId and its incarnation in both runs (node-restart.md "Kept"). Each run leaves its complete
 /// manifest, its per-host spans and its RPC ledger under its own estate directory.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
@@ -491,7 +491,7 @@ async fn scenario_runner_replays_manifest_preserves_semantic_outcomes() {
     assert_eq!(a.final_state, b.final_state, "the same final proof state");
     let restarts: Vec<&StepOutcome> = a.outcomes.iter().filter(|o| o.action == "restart_node").collect();
     assert_eq!(restarts.len(), 1, "the seeded fault ran: {:?}", a.outcomes);
-    assert_eq!(restarts[0].result, json!({"same_node_id": true, "new_incarnation": true}), "a restart keeps the NodeId under a new incarnation");
+    assert_eq!(restarts[0].result, json!({"same_node_id": true, "same_incarnation": true}), "a restart keeps the NodeId and the incarnation (node-restart.md \"Kept\")");
     assert_eq!(a.final_state["mesh1.rpc.1/10"]["value"], "a2");
     assert_eq!(a.final_state["mesh1.rpc.2/11"]["found"], false);
 
@@ -653,7 +653,10 @@ fn acceptance_runner_rejects_invalid_job_execution_receipts() {
     let want = sha256_file(&stage.join("rshape-x")).unwrap();
     let manifest = |hash: &str| {
         let p = stage.join("build-manifest.json");
-        std::fs::write(&p, json!({ "candidate_sha": "c", "binaries": { "rshape-x": hash } }).to_string()).unwrap();
+        // The candidate is this tree's commit: the runner refuses a manifest naming a commit the repository
+        // does not hold, or whose source differs from the run's, before any hash is compared
+        // (scripts/i143-acceptance-gate.sh consumer_candidate_reason).
+        std::fs::write(&p, json!({ "candidate_sha": candidate_sha(), "binaries": { "rshape-x": hash } }).to_string()).unwrap();
         p
     };
     let consumer_cmd = |bin: &Path, estate_mode: &str| {

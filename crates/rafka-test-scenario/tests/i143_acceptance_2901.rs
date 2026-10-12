@@ -5,8 +5,9 @@
 //!
 //! CONTRACT: on a real fabric, an observer that joined the backbone and a mesh channel before a
 //! status change decodes the frames the fabric puts there. A quiet fabric carries heartbeats and
-//! aggregates and no status frame at all. A new mesh's primary sends its mesh's status five times,
-//! one per second, as the SAME message (one `changed_at_rafka_ms`), and then nothing: the five
+//! aggregates and no status frame at all. A new mesh's primary sends each status of its mesh
+//! (pending, then ready-for-traffic: two status facts) five times, one per second, each as the SAME
+//! message (one `changed_at_rafka_ms`), and then nothing: the five
 //! sends are proven at the SENDER by its `via-status-send` span for each send, never by counting
 //! frames at an observer, which already holds the first copy and drops the identical rest. A member
 //! that joins while the sends are running holds the status once, with the original publisher and
@@ -180,14 +181,28 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     let joiner_heard_at = joiner.statuses().iter().filter(|x| matches!(&x.frame, Frame::MeshStatus { mesh, .. } if mesh == "mesh2")).map(|x| x.at).min().unwrap();
     // Let the five sends finish, then keep watching: nothing more is sent.
     tokio::time::sleep(Duration::from_secs(8)).await;
-    let early_copies = authored(&early);
+    // A new mesh is pending, then ready-for-traffic (states.md, Mesh line): two status facts, each one
+    // message whose copies all carry its one `changed_at_rafka_ms` (gossip.md §3.2: "reinforcement of
+    // one status fact, not five status transitions").
+    let all_copies = authored(&early);
+    let mut facts: Vec<(String, u64)> = Vec::new();
+    for x in &all_copies {
+        let p = parts(&x.frame);
+        if !facts.contains(&(p.2.clone(), p.5)) {
+            facts.push((p.2, p.5));
+        }
+    }
+    let early_rows = || all_copies.iter().map(|x| row(&early, x)).collect::<Vec<_>>();
+    assert_eq!(facts.iter().map(|(st, _)| st.as_str()).collect::<Vec<_>>(), vec!["pending", "ready-for-traffic"], "mesh2's primary said each status of the new mesh once, in order: {:#?}", early_rows());
+    let all_encoded: std::collections::BTreeSet<Vec<u8>> = all_copies.iter().map(|x| x.frame.encode()).collect();
+    assert_eq!(all_encoded.len(), facts.len(), "every copy of one status fact is the one identical message: {:#?}", early_rows());
+    let ready = |copies: Vec<Seen>| -> Vec<Seen> { copies.into_iter().filter(|x| parts(&x.frame).2 == "ready-for-traffic").collect() };
+    let early_copies = ready(all_copies.clone());
     let early_encoded: std::collections::BTreeSet<Vec<u8>> = early_copies.iter().map(|x| x.frame.encode()).collect();
-    assert_eq!(early_encoded.len(), 1, "every copy the early observer holds is the one identical message: {:#?}", early_copies.iter().map(|x| row(&early, x)).collect::<Vec<_>>());
     let instants: Vec<u64> = early_copies.iter().map(|x| parts(&x.frame).5).collect();
-    assert_eq!(parts(&early_copies[0].frame).2, "ready-for-traffic", "the status mesh2's primary sent");
-    let joiner_copies = authored(&joiner);
+    let joiner_copies = ready(authored(&joiner));
     let joiner_encoded: std::collections::BTreeSet<Vec<u8>> = joiner_copies.iter().map(|x| x.frame.encode()).collect();
-    assert_eq!(joiner_encoded, early_encoded, "the member that joined mid-window holds the very message the early observer holds");
+    assert_eq!(joiner_encoded, early_encoded, "the member that joined mid-window holds the very ready-for-traffic message the early observer holds");
 
     // The quiet window: nothing changes, the fabric primary stays the same, and no status frame
     // crosses either channel while the heartbeat and the aggregate keep going.
@@ -248,13 +263,18 @@ async fn late_member_receives_held_status_on_join_without_status_heartbeat() {
     // The five sends, proven at the SENDER: one `via-status-send` span per send on mesh2's primary,
     // the first at once and the rest one second apart, all carrying the one changed_at_rafka_ms,
     // and no sixth however long the estate ran afterwards.
-    let mut sender_sends: Vec<(u64, u64)> = named(&spans, "rdm.mesh.fabric.update.via-status-send")
+    let mut every_send: Vec<(u64, u64)> = named(&spans, "rdm.mesh.fabric.update.via-status-send")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == "mesh2.admin.1" && sp["attributes"]["scope"] == "mesh:mesh2")
         .map(|sp| (sp["start_unix_nano"].as_u64().unwrap(), s(&sp["attributes"]["changed_at_rafka_ms"]).parse::<u64>().unwrap()))
         .collect();
-    sender_sends.sort();
-    assert_eq!(sender_sends.len(), 5, "mesh2's primary sent its status exactly five times: {sender_sends:?}");
+    every_send.sort();
+    for (status, at) in &facts {
+        let sends = every_send.iter().filter(|(_, a)| a == at).count();
+        assert_eq!(sends, 5, "mesh2's primary sent its {status} fact exactly five times: {every_send:?}");
+    }
+    assert_eq!(every_send.len(), 5 * facts.len(), "no send of mesh2's status but its two facts' five each: {every_send:?}");
+    let sender_sends: Vec<(u64, u64)> = every_send.into_iter().filter(|(_, at)| *at == instants[0]).collect();
     assert!(sender_sends.iter().all(|(_, at)| *at == instants[0]), "all five sends are the one message, changed_at_rafka_ms {}: {sender_sends:?}", instants[0]);
     let send_offsets_ms: Vec<u64> = sender_sends.iter().map(|(t, _)| (t - sender_sends[0].0) / 1_000_000).collect();
     for (k, o) in send_offsets_ms.iter().enumerate() {

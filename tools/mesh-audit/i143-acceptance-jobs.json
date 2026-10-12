@@ -320,10 +320,10 @@
           "dir": "target/i143-acceptance/2775/process/proof_holder_restarts_preserves_same_node_store"
         },
         {
-          "name": "proof_replacement_starts_fresh_exact_old_never_follows_path",
+          "name": "proof_replacement_inherits_the_data_dir_exact_old_never_follows_path",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2775.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_replacement_starts_fresh_exact_old_never_follows_path/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2775::proof_replacement_starts_fresh_exact_old_never_follows_path -- --exact",
-          "dir": "target/i143-acceptance/2775/process/proof_replacement_starts_fresh_exact_old_never_follows_path"
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2775/process/proof_replacement_inherits_the_data_dir_exact_old_never_follows_path/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2775::proof_replacement_inherits_the_data_dir_exact_old_never_follows_path -- --exact",
+          "dir": "target/i143-acceptance/2775/process/proof_replacement_inherits_the_data_dir_exact_old_never_follows_path"
         }
       ]
     },

@@ -75,7 +75,8 @@ fn kinds(frames: &[Value]) -> Vec<String> {
 
 /// CONTRACT: an ordinary member (an rpc node, neither a primary nor a maker) answers
 /// `GetTopology` with the fabric topology it holds: its own mesh and the other mesh, each at its
-/// publisher and `topology_version`, as `Started`, one snapshot per mesh, `End`. A read naming the
+/// publisher and `topology_version`, as `Started`, one snapshot per mesh, the seat records and
+/// rafka-time it holds (`Seats`, `RafkaTime`), `End`. A read naming the
 /// version it holds is `Unchanged` and sends no snapshot; a caller one version behind is sent the
 /// snapshot; a mesh it does not hold is refused as `UnknownMesh` and nothing else is sent. The read
 /// changes nothing at the member: the member's version of each mesh after the reads is the one
@@ -95,7 +96,9 @@ async fn ordinary_member_answers_get_topology_with_the_fabric_topology_it_holds(
     let k = kinds(&frames);
     assert_eq!(k.first().map(String::as_str), Some("started"), "{k:?}");
     assert_eq!(frames.last().unwrap(), &json!({"frame": "end", "meshes": 2}), "{frames:?}");
-    assert!(k[1..k.len() - 1].iter().all(|f| f == "snapshot"), "{k:?}");
+    // Between Started and End: the snapshots, then the seat records and the rafka-time the member holds
+    // (node-rpc-envelope.md, Topology op 0x1E: `TopologyReply` carries `Seats` and `RafkaTime` frames).
+    assert!(k[1..k.len() - 1].iter().all(|f| f == "snapshot" || f == "seats" || f == "rafka-time"), "{k:?}");
     let (mesh1, mesh1_pub, mesh1_v, _) = snapshot_of(&frames, "mesh1");
     let (mesh2, mesh2_pub, mesh2_v, _) = snapshot_of(&frames, "mesh2");
     assert_eq!(mesh1, vec!["mesh1.admin.1", "mesh1.rpc.1"], "its own mesh: the members its book holds, itself among them");

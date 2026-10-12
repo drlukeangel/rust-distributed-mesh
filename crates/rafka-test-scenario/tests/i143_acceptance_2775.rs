@@ -142,16 +142,18 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// CONTRACT (#2775): a permanent replacement of the logical node (the rectifier's replace attempt
-/// after the runtime's death) is a new NodeId at the same path.name with a fresh, empty store:
-/// `path:` reaches the new holder and finds nothing; the old exact NodeId never follows the path:
+/// CONTRACT (#2775; node-recovery.md: "node.delete of the exited instance, node.create at the same
+/// path.name over the inherited data dir, then node[2].update"): the runtime's death is answered by
+/// node recovery under the accepted Build, a new NodeId at the same path.name over the old birth's
+/// data dir: `path:` reaches the new holder, which serves what the old birth stored there; the old
+/// exact NodeId never follows the path:
 /// the probe's current-only resolver answers Unknown (NotSent), a node's own retained departure
 /// resolver answers Gone for it, Found (the replacement) for the path, Unknown for an id never
-/// seen. What must NOT happen: the replacement serving the old value, `exact:<old>` reaching the
-/// replacement, or any handler success at the old birth after its replacement.
+/// seen. What must NOT happen: the replacement starting over another data dir, `exact:<old>`
+/// reaching the replacement, or any handler success at the old birth after its replacement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn proof_replacement_starts_fresh_exact_old_never_follows_path() {
-    let cell = "proof_replacement_starts_fresh_exact_old_never_follows_path";
+async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() {
+    let cell = "proof_replacement_inherits_the_data_dir_exact_old_never_follows_path";
     let dir = acceptance_dir(cell);
     let (mut estate, build) = estate(cell).await;
     let path = format!("path:{NODE}");
@@ -163,7 +165,7 @@ async fn proof_replacement_starts_fresh_exact_old_never_follows_path() {
     let build_id = build.0.clone();
     let attempt_before = u64::from(estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build").attempt);
 
-    // The runtime dies (a fault); the rectifier answers it with a replace attempt.
+    // The runtime dies (a fault); its mesh-primary answers it with node recovery.
     estate.kill_node(NODE).await;
     let replacement = estate
         .until_node(NODE, "a new logical node holds the path", Duration::from_secs(120), |n| {
@@ -174,7 +176,8 @@ async fn proof_replacement_starts_fresh_exact_old_never_follows_path() {
     let replacement_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
-    assert_eq!(fresh["reply"]["result"], json!({"found": false}), "a replacement starts with an empty store: {fresh}");
+    assert_eq!(replacement_dir, first_dir, "node recovery creates the new node over the old birth's data dir");
+    assert_eq!(fresh["reply"]["result"], json!({"found": true, "value": "old-birth"}), "the new node serves what the old birth stored in the inherited data dir: {fresh}");
     let old = estate.probe(&["get", "--target", &exact_old, "--key", "41"]);
     // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
@@ -192,19 +195,23 @@ async fn proof_replacement_starts_fresh_exact_old_never_follows_path() {
     estate.stop().await;
 
     let spans = estate.spans();
-    // The rectifier's recovery: the next attempt of the accepted Build, opened on the proven
-    // death (reason proven-drift), re-creating this path.
+    // Node recovery: the next attempt of the accepted Build (reason recovery), deleting the exited
+    // birth and creating this path again, then updating it (node-recovery.md steps).
     let attempt_of = |r: &Value| r["attributes"]["attempt"].as_u64().or_else(|| r["attributes"]["attempt"].as_str().and_then(|a| a.parse().ok())).unwrap_or(0);
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == build_id.as_str() && attempt_of(r) > attempt_before).collect();
     let replace = reconciles
         .iter()
-        .find(|r| r["attributes"]["reason"] == "proven-drift" && s(&r["attributes"]["operations"]).contains(&format!("create-node:{NODE}")))
+        .find(|r| r["attributes"]["reason"] == "recovery" && [format!("retire-node:{NODE}"), format!("create-node:{NODE}"), format!("update-node:{NODE}")].iter().all(|op| s(&r["attributes"]["operations"]).contains(op.as_str())))
         .cloned()
-        .unwrap_or_else(|| panic!("a proven-drift attempt re-creating {NODE}: {reconciles:?}"));
-    let drift = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().find(|d| d["attributes"]["build_id"] == build_id.as_str() && attempt_of(d) == attempt_of(replace)).cloned().unwrap_or(Value::Null);
+        .unwrap_or_else(|| panic!("a recovery attempt deleting, creating and updating {NODE}: {reconciles:?}"));
+    let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
+        .into_iter()
+        .find(|d| d["attributes"]["node"] == NODE && d["attributes"]["build_id"] == build_id.as_str() && s(&d["attributes"]["outcome"]).starts_with("complete"))
+        .cloned()
+        .unwrap_or_else(|| panic!("node recovery of {NODE} completed under the accepted Build"));
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
     let stored = served.iter().find(|s| s["attributes"]["incarnation_id"] == first["incarnation_id"] && s["attributes"]["op"] == "put" && s["attributes"]["outcome"] == "stored").cloned().expect("the old birth stored the put");
-    let absent = served.iter().find(|s| s["attributes"]["node_id"] == replacement["node_id"] && s["attributes"]["op"] == "get" && s["attributes"]["outcome"] == "absent").cloned().expect("the replacement served an empty store");
+    let inherited = served.iter().find(|s| s["attributes"]["node_id"] == replacement["node_id"] && s["attributes"]["op"] == "get" && s["attributes"]["outcome"] == "value").cloned().expect("the new node served the value the old birth stored");
     let replace_start = replace["start_unix_nano"].as_u64().unwrap_or(0);
     let old_after: Vec<&&Value> = served.iter().filter(|s| s["attributes"]["node_id"] == first["node_id"] && s["start_unix_nano"].as_u64().unwrap_or(0) > replace_start).collect();
     assert!(old_after.is_empty(), "no handler ran at the old birth after its replacement: {old_after:?}");
@@ -218,10 +225,10 @@ async fn proof_replacement_starts_fresh_exact_old_never_follows_path() {
         "fresh": fresh["reply"],
         "exact_old_probe": old,
         "resolver": {"old": gone["reply"], "path": holder["reply"], "never_seen": never["reply"]},
-        "replace_attempt": {"build_id": build_id, "attempt": replace["attributes"]["attempt"], "reason": replace["attributes"]["reason"], "action": replace["attributes"]["action"], "operations": replace["attributes"]["operations"], "trace_id": replace["trace_id"], "span_id": replace["span_id"], "proven_drift": {"span_id": drift["span_id"], "scope": drift["attributes"]["scope"]}},
+        "replace_attempt": {"build_id": build_id, "attempt": replace["attributes"]["attempt"], "reason": replace["attributes"]["reason"], "action": replace["attributes"]["action"], "operations": replace["attributes"]["operations"], "trace_id": replace["trace_id"], "span_id": replace["span_id"], "node_recovery": {"span_id": recovery["span_id"], "outcome": recovery["attributes"]["outcome"]}},
         "spans": {
             "stored": {"trace_id": stored["trace_id"], "span_id": stored["span_id"], "parent_span_id": stored["parent_span_id"]},
-            "absent": {"trace_id": absent["trace_id"], "span_id": absent["span_id"], "parent_span_id": absent["parent_span_id"]},
+            "inherited": {"trace_id": inherited["trace_id"], "span_id": inherited["span_id"], "parent_span_id": inherited["parent_span_id"]},
         },
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
