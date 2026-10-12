@@ -1069,6 +1069,31 @@ impl LeaveRuns {
     }
 }
 
+/// What a `leave-mesh` did at the leaving mesh-primary ([`admit_leave_mesh`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaveMeshAdmission {
+    /// The commit of the mesh row `Leaving` this round made, as the commit answered, or `None` when
+    /// it made none.
+    pub leaving_row: Option<StatusReply>,
+    /// What the round does for the leave: `Refused` with the commit's refusal when the row's commit
+    /// was refused, so nothing is admitted.
+    pub admission: LeaveAdmission,
+}
+
+/// `leave-mesh` for `key` from `sender` at the leaving mesh-primary (states.md: the mesh's
+/// `leaving` is entered by this down op, and "one commit stores the row, applies it, gossips it and
+/// answers the op"; fabric-node-lifecycle.md 2.7: the mesh's primary writes every status of its own
+/// mesh row). The row is put and applied before the round is admitted: a refused put admits nothing
+/// and is the reply, so the owner's repeated `leave-mesh` is decided afresh.
+pub async fn admit_leave_mesh(runs: &LeaveRuns, storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<crate::status_rpc::Declared>, key: &LeaveKey, sender: &NodeId) -> LeaveMeshAdmission {
+    let committed = crate::status_rpc::commit_mesh_state(storage, declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Leaving).await;
+    let admission = match &committed {
+        StatusReply::Applied | StatusReply::AlreadyApplied => runs.admit(key, sender),
+        refused => LeaveAdmission::Refused(refused.clone()),
+    };
+    LeaveMeshAdmission { leaving_row: Some(committed), admission }
+}
+
 /// The one run of the member workflows of the leave `mesh_id` admitted ([`LeaveAdmission::Start`]):
 /// `run(key, owner)` runs them under the `leave-mesh` admitted last and records its manifest under
 /// that key. A `leave-mesh` of a later attempt admitted while they run joins this run

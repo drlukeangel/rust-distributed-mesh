@@ -11,8 +11,10 @@
 use crate::mesh_leave_resume::{capture, trace_id};
 use rafka_mesh_entity::{MeshId, NodeId};
 use rafka_node_admin_core::deployment::pipeline::RuntimeProof;
-use rafka_node_admin_core::mesh_leave::{operation, run_admitted, Admitted, ExitManifest, LeaveAdmission, LeaveBook, LeaveKey, LeaveRunEnd, LeaveRuns, RosterBirth};
-use rafka_node_rpc_contract::status::{MeshDeleteRound, StatusReply};
+use rafka_node_admin_core::mesh_leave::{admit_leave_mesh, operation, run_admitted, Admitted, ExitManifest, LeaveAdmission, LeaveBook, LeaveKey, LeaveMeshAdmission, LeaveRunEnd, LeaveRuns, RosterBirth};
+use rafka_node_admin_core::status_rpc::Declared;
+use rafka_node_admin_core::status_storage::{MemoryStatusStorage, MeshStatusRow, StatusStorage};
+use rafka_node_rpc_contract::status::{MeshDeleteRound, MeshState, StatusReply};
 use serde_json::Value;
 
 const STALE: &str = "rdm.node_admin.mesh.reject.via-stale-round";
@@ -172,4 +174,69 @@ fn a_mesh_leave_naming_a_round_the_fabric_primary_does_not_hold_is_refused_by_na
     };
     assert_eq!(refusals(&spans, &trace_id, STALE).iter().map(named_rounds).collect::<Vec<_>>(), vec![expect(&stale)]);
     assert_eq!(refusals(&spans, &trace_id, CONFLICTING).iter().map(named_rounds).collect::<Vec<_>>(), vec![expect(&unopened), expect(&other)]);
+}
+
+/// CONTRACT (states.md: the mesh's `leaving` is entered by the `leave-mesh` down op, "one commit
+/// stores the row, applies it, gossips it and answers the op"; mesh-delete.md step 5: at mesh.deleted
+/// the mesh-primary writes the mesh row deleted; node-rpc-envelope.md, "Mesh delete command pair":
+/// `LeaveMesh` answers Applied or AlreadyApplied on admission, and a stale round is refused by name):
+/// the first `leave-mesh` of the mesh commits its row Leaving and is admitted. Once the members exited
+/// and the row is Dead (mesh.deleted, the handoff's own write), a `leave-mesh` of the round held
+/// resends its handoff, an earlier attempt is `RejectedStaleRound`, and the Build's next attempt
+/// starts again from the receipts; none of them commits the row again, which stays Dead. What must
+/// NOT happen: a round after mesh.deleted answered `RejectedInvalidMeshTransition { current: Dead }`
+/// (a lost handoff could then never be sent again, and the leave never ends), or a second Leaving
+/// commit.
+#[test]
+fn a_leave_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leaving_row_once() {
+    let cap = capture();
+    let mesh_id = MeshId::mint();
+    let (held, stale, next) = (key(&mesh_id, "bld_a", 2), key(&mesh_id, "bld_a", 1), key(&mesh_id, "bld_a", 3));
+    let (owner, late) = (NodeId::mint(), NodeId::mint());
+    let last = final_primary();
+    let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };
+    let (runs, storage, declared) = (LeaveRuns::default(), MemoryStatusStorage::default(), std::sync::Mutex::new(Declared::default()));
+    let ((first, end, after, row), trace_id) = cap.run(async {
+        let root = tracing::info_span!("rdm.test.mesh.update.via-leave-mesh-after-deleted");
+        let trace_id = trace_id(&root);
+        let out = tracing::Instrument::instrument(
+            async {
+                let first = admit_leave_mesh(&runs, &storage, &declared, &held, &owner).await;
+                let m = manifest.clone();
+                let end = run_admitted(&runs, &mesh_id, move |_, _| {
+                    let m = m.clone();
+                    async move { Ok::<ExitManifest, String>(m) }
+                })
+                .await;
+                // mesh.deleted: the mesh-primary's handoff commits its mesh row Dead before it calls
+                // mesh-leave; the call is lost, so the owner sends leave-mesh again.
+                storage.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
+                declared.lock().unwrap().meshes.insert(mesh_id.clone(), MeshState::Dead);
+                let mut after = Vec::new();
+                for (k, sender) in [(&held, &owner), (&stale, &late), (&next, &owner)] {
+                    after.push(admit_leave_mesh(&runs, &storage, &declared, k, sender).await);
+                }
+                let row = storage.mesh_statuses().await.unwrap().get(&mesh_id).copied();
+                (first, end, after, row)
+            },
+            root,
+        )
+        .await;
+        (out, trace_id)
+    });
+    let spans = cap.spans();
+    keep("leave_mesh_after_deleted", &trace_id, &spans);
+    assert_eq!(first, LeaveMeshAdmission { leaving_row: Some(StatusReply::Applied), admission: LeaveAdmission::Start }, "the first leave-mesh commits the row Leaving and starts the leave");
+    assert_eq!(end, LeaveRunEnd::Exited { key: held.clone(), owner: owner.clone(), manifest: manifest.clone() });
+    assert_eq!(
+        after,
+        vec![
+            LeaveMeshAdmission { leaving_row: None, admission: LeaveAdmission::Resend(manifest) },
+            LeaveMeshAdmission { leaving_row: None, admission: LeaveAdmission::Refused(StatusReply::RejectedStaleRound { held: round(&held), offered: round(&stale) }) },
+            LeaveMeshAdmission { leaving_row: None, admission: LeaveAdmission::Start },
+        ],
+        "after mesh.deleted each leave-mesh is decided on its round, and none commits the row again"
+    );
+    assert_eq!(row, Some(MeshState::Dead), "the mesh row stays Dead");
+    assert_eq!(refusals(&spans, &trace_id, STALE).len(), 1, "the stale round is refused by its own span");
 }

@@ -333,26 +333,25 @@ impl AdminRunner {
         let Some(owner) = sender.map(|n| n.node_id.clone()).or_else(|| view.fabric_primary().map(|n| n.node_id.clone())) else {
             return StatusReply::NotReady { reason: format!("{}: leave-mesh for {mesh_id} came from an endpoint this admin holds no birth for, and its view names no fabric-primary to hand the leave back to", self.me) };
         };
-        // states.md: the mesh's `leaving` is entered by this down op, and "one commit stores the row,
-        // applies it, gossips it and answers the op" (the command hook's mesh-leaving is the owner's);
-        // fabric-node-lifecycle.md 2.7: the mesh's primary writes every status of its own mesh row.
-        // The row is put and applied before the leave is admitted: a refused put admits nothing and
-        // answers NotReady naming the store, so the owner's repeated leave-mesh is decided afresh.
-        let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, mesh_id, rafka_node_rpc_contract::status::MeshState::Leaving).await;
-        tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = committed.name())
-            .in_scope(|| tracing::info!("leave-mesh admitted at the mesh's primary: its own mesh row Leaving is stored and applied before the answer"));
-        match committed {
-            // The committed Leaving is owed upward now: the declarer reports it to the
-            // fabric-primary (DeclareMeshState, "report committed state upward"), whose map holds
-            // the state it hands an admin it creates for this mesh.
-            StatusReply::Applied | StatusReply::AlreadyApplied => self.records.wake.poke(),
-            refused => return refused,
-        }
-        // The same commit applies the row to the view: the mesh is projected leaving now, and the
-        // view change wakes the hierarchy loop, which announces it on the mesh's MeshStatus send.
-        self.refresh_view().await;
+        // The mesh row Leaving and the round's admission (the command hook's mesh-leaving is the
+        // owner's): [`crate::mesh_leave::admit_leave_mesh`].
         let key = LeaveKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt: *attempt, operation: operation.clone() };
-        let resend = match self.leave_runs.admit(&key, &owner) {
+        let crate::mesh_leave::LeaveMeshAdmission { leaving_row, admission } = crate::mesh_leave::admit_leave_mesh(&self.leave_runs, &*self.status_storage, &self.records.declared, &key, &owner).await;
+        if let Some(committed) = &leaving_row {
+            tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = committed.name())
+                .in_scope(|| tracing::info!("leave-mesh at the mesh's primary: its own mesh row Leaving is stored and applied before the answer"));
+            if matches!(committed, StatusReply::Applied | StatusReply::AlreadyApplied) {
+                // The committed Leaving is owed upward now: the declarer reports it to the
+                // fabric-primary (DeclareMeshState, "report committed state upward"), whose map
+                // holds the state it hands an admin it creates for this mesh.
+                self.records.wake.poke();
+                // The same commit applies the row to the view: the mesh is projected leaving now,
+                // and the view change wakes the hierarchy loop, which announces it on the mesh's
+                // MeshStatus send.
+                self.refresh_view().await;
+            }
+        }
+        let resend = match admission {
             crate::mesh_leave::LeaveAdmission::Running => return StatusReply::AlreadyApplied,
             crate::mesh_leave::LeaveAdmission::Resend(manifest) => Some(manifest),
             crate::mesh_leave::LeaveAdmission::Start => None,
