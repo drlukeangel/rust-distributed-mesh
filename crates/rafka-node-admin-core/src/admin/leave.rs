@@ -443,13 +443,14 @@ impl AdminRunner {
         let committed = crate::status_rpc::commit_mesh_state(&*self.status_storage, &self.records.declared, mesh_id, rafka_node_rpc_contract::status::MeshState::Leaving).await;
         tracing::info_span!("rdm.node_admin.mesh.update.via-leaving-row", node = %self.me, mesh = %me.mesh, mesh_id = %mesh_id, build_id = %build_id, attempt = *attempt, operation = %operation, owner = %sender.map(|n| n.name.to_string()).unwrap_or_default(), outcome = committed.name())
             .in_scope(|| tracing::info!("leave-mesh admitted at the mesh's primary: its own mesh row Leaving is stored and applied before the answer"));
-        match committed {
-            // The committed Leaving is owed upward now: the declarer reports it to the
-            // fabric-primary (DeclareMeshState, "report committed state upward"), whose map holds
-            // the state it hands an admin it creates for this mesh.
-            StatusReply::Applied | StatusReply::AlreadyApplied => self.records.wake.poke(),
-            refused => return refused,
+        // The committed Leaving is owed upward now: the declarer reports it to the fabric-primary
+        // (DeclareMeshState, "report committed state upward"), whose map holds the state it hands an
+        // admin it creates for this mesh. A row already Dead (mesh.deleted committed, its handoff
+        // lost) admits the repeat, whose handoff is what repeats.
+        if let Err(refused) = crate::mesh_leave::leaving_commit_admits(committed) {
+            return refused;
         }
+        self.records.wake.poke();
         // The same commit applies the row to the view: the mesh is projected leaving now, and the
         // view change wakes the hierarchy loop, which announces it on the mesh's MeshStatus send.
         self.refresh_view().await;
@@ -543,16 +544,19 @@ impl AdminRunner {
         members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, records, &known, |n| async move { self.shutdown_one(key, &n).await }, |b| async move { crate::mesh_leave::birth_row_deleted(self.records.node_rows().as_deref(), &self.me.to_string(), &key.operation, records, &b).await }).await
     }
 
-    /// One member's drain and stop and the provider's terminal receipt of its exact runtime.
+    /// One member's end (mesh-delete.md step 3: "The mesh-primary runs the whole node.delete for
+    /// every ordinary node"): the ordinary node.delete workflow ([`AdminRunner::delete_birth`]) of the
+    /// exact birth, under the mesh.delete's Build and attempt, and its exact Exited recorded as the
+    /// birth's exit-proof row. The provider's terminal receipt is the member's roster receipt.
     async fn shutdown_one(&self, key: &LeaveKey, n: &Node) -> Result<TerminalReceipt, String> {
         let span = tracing::info_span!("rdm.node_admin.node.update.via-shutdown-member", node = %n.name, node_id = %n.node_id, operation = %key.operation, build_id = %key.build_id, attempt = key.attempt, outcome = tracing::field::Empty);
         let result = async {
-            let (mut record, handle) = self.handle_for(n).await?;
-            let template = self.template_for(n.kind, &n.mesh).await?;
-            let terminal = self.pipeline(&template).shutdown_member(&crate::build::BuildId(key.build_id.clone()), key.attempt, &key.operation, &mut record, &handle).await.map_err(|e| e.to_string())?;
+            let (record, handle) = self.handle_for(n).await?;
+            // Whether the birth is stopped is the record's the leave works from (a stopped member's
+            // delete goes straight to its exit proof), as `retire` takes it from the view.
+            let record = Node { parked: n.parked, ..record };
+            let terminal = self.delete_birth(&crate::build::BuildId(key.build_id.clone()), key.attempt, record, handle).await.map_err(|e| format!("{}'s node.delete: {e}", n.name))?;
             self.records.put_exit_of_receipt(&terminal).await.map_err(|e| format!("{}'s exit is not recorded: {e}", n.name))?;
-            self.after_mesh_exit(&record, "mesh-leave");
-            self.handles.lock().unwrap().remove(&n.name);
             Ok(terminal)
         }
         .instrument(span.clone())
@@ -687,20 +691,6 @@ impl AdminRunner {
             StatusReply::Applied
         } else {
             StatusReply::AlreadyApplied
-        }
-    }
-
-    /// The exact birth's exit is proven: the resolver names no current birth for it and its direct
-    /// paths are retired, so nothing aims at its old socket.
-    pub(super) fn after_mesh_exit(&self, record: &Node, kind: &'static str) {
-        if let (Some(rpc), Some(incarnation)) = (&self.node_rpc, record.incarnation_id.as_ref()) {
-            rpc.resolver.retire_birth(&record.node_id, incarnation);
-        }
-        if let (Some(ep), Some(key)) = (&self.endpoint, record.endpoint_id.as_ref().and_then(|k| k.0.parse::<iroh::PublicKey>().ok())) {
-            let ep = ep.clone();
-            tokio::spawn(async move { ep.replace_direct_addrs(key, []).await });
-            tracing::info_span!("rdm.node_admin.node.update.via-exit-paths-retired", node = %record.name, node_id = %record.node_id, endpoint = %key.fmt_short(), kind, reason = "proven-exit")
-                .in_scope(|| tracing::info!("the exited birth's direct paths are retired: nothing aims at its old socket"));
         }
     }
 }

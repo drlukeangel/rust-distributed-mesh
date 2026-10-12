@@ -1,6 +1,7 @@
-//! The mesh-leave resumption (i143.e12.s39; mesh-leave.md steps 1, 3 and "Completion proof"): the
-//! leaving mesh-primary's member workflows are the product's (`mesh_leave::members_exited` over
-//! `DeploymentPipeline::shutdown_member`); the provider, the Build state and the view are fixtures.
+//! The mesh-delete resumption (i143.e12.s39, s49; mesh-delete.md steps 1, 3 and "Resume after the
+//! primary's loss"): the deleting mesh-primary's member workflows are the product's
+//! (`mesh_leave::members_exited` over each member's node.delete, `DeploymentPipeline::retire`); the
+//! provider, the Build state and the view are fixtures.
 //!
 //! mesh2 leaves: two ordinary nodes, one other node-admin and the final primary `mesh2.admin.1`.
 //! In attempt 1 one ordinary node exits and the provider cannot inspect the other after its stop
@@ -336,11 +337,11 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let shutdown = |attempt: u32| {
-            let (pipeline, handles, calls, build_id, outer) = (&pipeline, &handles, &calls, &build_id, &outer);
-            move |mut n: Node| async move {
+            let (pipeline, handles, calls, build_id) = (&pipeline, &handles, &calls, &build_id);
+            move |n: Node| async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((attempt, name.clone()));
-                pipeline.shutdown_member(build_id, attempt, outer, &mut n, &handles[&name]).await.map_err(|e| e.to_string())
+                pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-leave-resume", build_id = %build_id, operation = %outer);
@@ -491,11 +492,11 @@ fn an_incomplete_tier_is_refused_not_ready_naming_the_births_without_an_exited_r
         let _in_root = root.enter();
         let roster = accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
         let mp = accepted_roster(&builds, &key, STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();
-        let tier = members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, &[], |mut n: Node| {
-            let (pipeline, handles, build_id, outer) = (&pipeline, &handles, &build_id, &outer);
+        let tier = members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, &[], |n: Node| {
+            let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let name = n.name.to_string();
-                pipeline.shutdown_member(build_id, 1, outer, &mut n, &handles[&name]).await.map_err(|e| e.to_string())
+                pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
             }
         }, no_rows)
         .await;
@@ -578,11 +579,11 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
         accepted_roster(&builds, &key, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me, &final_runtime, || live_roster(&records)).await.unwrap();
         let admitted = admitted_of(&builds.read_build(&build_id).await.unwrap().steps, &outer).unwrap().unwrap();
         let mp = accepted_roster(&builds, &key, STEP_LEAVING_ROSTER, FINAL, &me, &final_runtime, || live_roster(&records)).await.unwrap();
-        members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, &[], |mut n: Node| {
-            let (pipeline, handles, build_id, outer) = (&pipeline, &handles, &build_id, &outer);
+        members_exited(&builds, &key, FINAL, &mp, &me, final_runtime.clone(), &records, &[], |n: Node| {
+            let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
             async move {
                 let name = n.name.to_string();
-                pipeline.shutdown_member(build_id, 1, outer, &mut n, &handles[&name]).await.map_err(|e| e.to_string())
+                pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
             }
         }, no_rows)
         .await
@@ -795,11 +796,11 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let shutdown = |attempt: u32| {
-            let (pipeline, handles, calls, build_id, outer) = (&pipeline, &handles, &calls, &build_id, &outer);
-            move |mut n: Node| async move {
+            let (pipeline, handles, calls, build_id) = (&pipeline, &handles, &calls, &build_id);
+            move |n: Node| async move {
                 let name = n.name.to_string();
                 calls.lock().unwrap().push((attempt, name.clone()));
-                pipeline.shutdown_member(build_id, attempt, outer, &mut n, &handles[&name]).await.map_err(|e| e.to_string())
+                pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
             }
         };
         let root = tracing::info_span!("cell.mesh-leave-amended", build_id = %build_id, operation = %outer);

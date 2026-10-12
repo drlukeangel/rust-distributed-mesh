@@ -2,8 +2,8 @@
 //! command pair").
 //!
 //! The fabric-primary owns the outer workflow `shutdown-mesh:<mesh_id>`. The deleting mesh's primary
-//! drains and stops every other member (ordinary nodes first, the other node-admins after, each
-//! tier a set of parallel member workflows), records one exit manifest, hands it to the
+//! deletes every other member with the whole node.delete (ordinary nodes first, the other
+//! node-admins after, each tier a set of parallel member workflows), records one exit manifest, hands it to the
 //! fabric-primary (`MeshLeave`, mesh.deleted) and keeps running. The fabric-primary validates the
 //! manifest against the roster it captured at admission and records mesh.deleted's completion
 //! (`MeshDeleted`): the mesh.delete ends there, its primary alive. The primary's end is a separate
@@ -190,17 +190,19 @@ pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, ste
     Ok(roster)
 }
 
-/// The exact Exited receipts the Build already holds for births of `roster`: each member workflow's
-/// `TerminateRuntime` step receipt under `<operation>/<path>`, from any attempt, whose terminal
-/// receipt names that exact birth.
+/// The exact Exited receipts the Build already holds for births of `roster`: each member's
+/// node.delete `TerminateRuntime` step receipt under node.delete's own operation (`retire-node:<path>`,
+/// mesh-delete.md step 3), or a lost final primary's exact Exited recorded under `<operation>/<path>`
+/// ([`record_predecessor_exit`]), from any attempt, whose terminal receipt names that exact birth.
 pub fn exit_receipts(steps: &[BuildStepReceipt], operation: &str, roster: &[RosterBirth]) -> BTreeMap<(String, String), TerminalReceipt> {
     let terminate = crate::deployment::pipeline::RetireStep::TerminateRuntime.name();
     let mut held = BTreeMap::new();
     for b in roster {
         let member = member_operation(operation, &b.node);
+        let deleted = b.node.parse::<crate::model::PathName>().ok().map(|node| crate::build::BuildOperation::RetireNode { node, exited: None }.key());
         let receipt = steps
             .iter()
-            .filter(|r| r.operation == member && r.step == terminate && r.outcome == StepOutcome::Complete)
+            .filter(|r| (r.operation == member || Some(&r.operation) == deleted.as_ref()) && r.step == terminate && r.outcome == StepOutcome::Complete)
             .filter_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<TerminalReceipt>(v).ok()))
             .find(|t| t.node_id == b.node_id && t.incarnation_id == b.incarnation_id);
         if let Some(t) = receipt {
@@ -708,8 +710,9 @@ pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executo
 /// roster birth they hold no record of runs from the roster birth itself ([`RosterBirth::record`]):
 /// the accepted roster decides what runs (mesh-delete.md, "Resume after the primary's loss" step 3);
 /// `known` are step receipts read from the owner's Build facts at admission
-/// ([`admission_roster`]), folded with this Build's own; `shutdown` is one member's drain/stop
-/// workflow and the provider's terminal receipt of its exact runtime; `delete_row` is the
+/// ([`admission_roster`]), folded with this Build's own; `shutdown` is one member's node.delete
+/// (mesh-delete.md step 3), answering the provider's terminal receipt of its exact runtime;
+/// `delete_row` is the
 /// mesh-primary's write of a member's row `Deleted` on that member's exact Exited receipt (step 3:
 /// "On that receipt the mesh-primary, the writer of its mesh's rows, writes the member's row
 /// Deleted"), a keyed write that is repeated for a retained receipt, never inferred done from it.
@@ -1012,6 +1015,19 @@ pub fn replayed_handoff(steps: &[BuildStepReceipt], key: &LeaveKey, final_node_i
     tracing::info_span!("rdm.node_admin.mesh.resolve.via-handoff-replayed", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, final_primary = %format!("{} {}", last.node, last.incarnation_id), outcome = reply.name())
         .in_scope(|| tracing::info!("a handoff after mesh.deleted's completion receipt: answered from the receipt, nothing is recorded again"));
     Some(reply)
+}
+
+/// What a `leave-mesh` admission does with its commit of the mesh row `Leaving` (`committed`, the
+/// reply `status_rpc::commit_mesh_state` gave): `Applied` or `AlreadyApplied` admits it; a row
+/// already `Dead` (mesh.deleted was committed, states only move forward) admits it too, as the
+/// repeat of a mesh.delete past its member workflows, whose handoff is what repeats (a resume after
+/// a lost handoff). Any other answer refuses the admission with that reply.
+pub fn leaving_commit_admits(committed: StatusReply) -> Result<(), StatusReply> {
+    match committed {
+        StatusReply::Applied | StatusReply::AlreadyApplied => Ok(()),
+        StatusReply::RejectedInvalidMeshTransition { current: rafka_node_rpc_contract::status::MeshState::Dead } => Ok(()),
+        refused => Err(refused),
+    }
 }
 
 /// The key of one open mesh leave at the fabric-primary.
@@ -1396,6 +1412,22 @@ mod tests {
         let attrs: std::collections::BTreeMap<String, String> = joined[0].attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect();
         assert_eq!((attrs.get("attempt").map(String::as_str), attrs.get("ran_attempt").map(String::as_str)), (Some("2"), Some("1")), "{attrs:?}");
         eprintln!("span rdm.node_admin.mesh.resolve.via-later-leave-mesh trace_id={} {attrs:?}", joined[0].span_context.trace_id());
+    }
+
+    /// CONTRACT: a `leave-mesh` over a mesh row already `Dead` is admitted: mesh.deleted was committed
+    /// and the handoff to the owner was lost, so the resumed mesh.delete's handoff repeats (states only
+    /// move forward; a `Leaving` over `Dead` is no new state). `Leaving` applied or already applied
+    /// admits; a backward move from any other state, and a store refusal, refuse by that reply.
+    #[test]
+    fn a_leave_mesh_over_a_mesh_already_dead_is_admitted_and_its_handoff_repeats() {
+        use rafka_node_rpc_contract::status::MeshState;
+        assert_eq!(leaving_commit_admits(StatusReply::Applied), Ok(()));
+        assert_eq!(leaving_commit_admits(StatusReply::AlreadyApplied), Ok(()));
+        assert_eq!(leaving_commit_admits(StatusReply::RejectedInvalidMeshTransition { current: MeshState::Dead }), Ok(()), "the mesh is past Leaving: mesh.deleted was committed");
+        let pending = StatusReply::RejectedInvalidMeshTransition { current: MeshState::Pending };
+        assert_eq!(leaving_commit_admits(pending.clone()), Err(pending));
+        let store = StatusReply::NotReady { reason: "status.storage refused the Mesh status row".into() };
+        assert_eq!(leaving_commit_admits(store.clone()), Err(store));
     }
 
     /// CONTRACT: an open leave the leaving primary reports incomplete ends at once with the named

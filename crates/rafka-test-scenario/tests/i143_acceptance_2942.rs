@@ -4,10 +4,11 @@
 //! estate's manifest and every process's spans land under it, feature `i143-2942`, test the
 //! cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
-//! The estate is the mesh leave of `mesh_lifecycle__fabric_primary_handover`: {mesh1, mesh2} -> {mesh2}, owned by the
-//! fabric-primary (a mesh2 admin). The last admin of mesh1 is the final mesh-primary the
-//! fabric-primary drains and stops itself, whose exit its `TerminateRuntime` step proves; its own
-//! leave is read from its leg spans.
+//! The estate is the mesh delete of `mesh_lifecycle__fabric_primary_handover`: {mesh1, mesh2} -> {mesh2}, owned by the
+//! fabric-primary (a mesh2 admin). The mesh.delete ends at mesh.deleted with mesh1's last admin, its
+//! final primary, alive; its end is its own node.delete, which the fabric-primary executes and whose
+//! `TerminateRuntime` step proves its exit (mesh-delete.md step 7); its own leave is read from its
+//! leg spans.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
@@ -67,10 +68,11 @@ fn alive(pid: u64) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| !st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
 }
 
-/// A mesh1 shutdown through the mesh leave, run to its end and read back: every span.
-async fn retire_mesh1(test: &str) -> (String, Vec<Value>) {
-    let (b, spans, _) = retire_mesh1_with(test, &[]).await;
-    (b, spans)
+/// A mesh1 delete run to its end and read back: the mesh.delete's Build and its last admin's
+/// node.delete's, and every span.
+async fn retire_mesh1(test: &str) -> (Vec<String>, Vec<Value>) {
+    let (builds, spans, _) = retire_mesh1_with(test, &[]).await;
+    (builds, spans)
 }
 
 /// What a faulted retirement armed on one admin.
@@ -90,7 +92,7 @@ struct Fired {
 /// A mesh1 retirement under `cut`, when there is one. With a cut, every admin of the estate is the
 /// testkit's faulted node-admin; the cut is armed on its admin's door before the retire Build is
 /// posted, and its door state is read after the retired runtime is gone.
-async fn retire_mesh1_with(test: &str, cuts: &[Cut]) -> (String, Vec<Value>, Vec<Fired>) {
+async fn retire_mesh1_with(test: &str, cuts: &[Cut]) -> (Vec<String>, Vec<Value>, Vec<Fired>) {
     let mut estate = if cuts.is_empty() {
         Estate::bootstrap(owner(test), "fabric1", "mesh1").await
     } else {
@@ -143,12 +145,24 @@ async fn retire_mesh1_with(test: &str, cuts: &[Cut]) -> (String, Vec<Value>, Vec
     assert_eq!(status, 202, "{b}");
     let b = s(&b["build_id"]);
     estate.await_build(&b, Duration::from_secs(240)).await;
+    // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
+    let last = wait_for("mesh1's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), || async {
+        let nodes = estate.nodes().await;
+        let mesh1: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh1").map(|n| s(&n["name"])).collect();
+        let alive = nodes.iter().any(|n| n["mesh"] == "mesh1" && n["status"] == "ready-for-traffic");
+        (mesh1.len() == 1 && alive).then(|| mesh1[0].clone())
+    })
+    .await;
+    let (_, fabric_now) = estate.get("/api/fabric").await;
+    estate.admin = s(&fabric_now["admin_api_base"]);
+    let (status, c) = estate.delete(&format!("/api/nodes/{last}")).await;
+    assert_eq!(status, 202, "the node.delete of mesh1's last admin {last}: {c}");
+    let c = s(&c["build_id"]);
+    estate.await_build(&c, Duration::from_secs(120)).await;
     estate.settled(&names(&["mesh2"]), Duration::from_secs(60)).await;
     for (name, pid) in &pids {
         wait_for(&format!("{name}'s runtime is gone"), Duration::from_secs(30), || async { (!alive(*pid)).then_some(()) }).await;
     }
-    let (_, fabric_now) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric_now["admin_api_base"]);
     let fired: Vec<Fired> = armed
         .into_iter()
         .map(|(c, arm_ack, last, poller)| {
@@ -158,7 +172,7 @@ async fn retire_mesh1_with(test: &str, cuts: &[Cut]) -> (String, Vec<Value>, Vec
         })
         .collect();
     estate.stop().await;
-    (b, estate.spans(), fired)
+    (vec![b, c], estate.spans(), fired)
 }
 
 /// The last admin of mesh1 completes five `Leaving` announcements on the mesh channel and five on
@@ -174,10 +188,11 @@ async fn retiring_admin_completes_five_leaving_announcements_within_linger() {
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let (b, spans) = retire_mesh1(cell).await;
+    let of_b = |sp: &Value| b.iter().any(|x| sp["attributes"]["build_id"] == x.as_str());
 
-    // The last admin: the mesh1 admin whose exit the fabric-primary proved last under B.
-    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.admin.")).collect();
-    assert!(!observe.is_empty(), "the mesh leave proved a mesh1 admin's exit under {b}");
+    // The last admin: the mesh1 admin whose exit was proved last, by its own node.delete.
+    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && of_b(sp) && s(&sp["attributes"]["node"]).starts_with("mesh1.admin.")).collect();
+    assert!(!observe.is_empty(), "the mesh delete proved a mesh1 admin's exit under {b:?}");
     let obs = *observe.iter().max_by_key(|sp| start(sp)).unwrap();
     let last = s(&obs["attributes"]["node"]);
     assert!(last.starts_with("mesh1.admin."), "the exit proved last is an admin's: {last}");
@@ -192,7 +207,7 @@ async fn retiring_admin_completes_five_leaving_announcements_within_linger() {
         .find(|sp| sp["span_id"] == obs["parent_span_id"] && sp["trace_id"] == obs["trace_id"])
         .unwrap_or_else(|| panic!("TerminateRuntime's parent is a pipeline span of its trace: {obs}"));
     assert_eq!(pipeline["attributes"]["node"], last.as_str());
-    assert_eq!(pipeline["attributes"]["build_id"], b.as_str());
+    assert_eq!(pipeline["attributes"]["build_id"], obs["attributes"]["build_id"]);
 
     // The retiring admin's own leave: the signal span and every leg beneath it.
     let mine = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node"] == last.as_str()).collect() };
@@ -275,8 +290,8 @@ async fn retire_with_lost_announcements(cell: &'static str, announcements: &[u32
         assert_eq!(f.arm_ack["armed"], "lose-leaving", "the door of {} acknowledged the arm: {}", f.admin, f.arm_ack);
     }
 
-    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["build_id"] == b.as_str() && s(&sp["attributes"]["node"]).starts_with("mesh1.admin.")).collect();
-    let obs = *observe.iter().max_by_key(|sp| start(sp)).expect("the mesh leave proved a mesh1 admin's exit");
+    let observe: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && b.iter().any(|x| sp["attributes"]["build_id"] == x.as_str()) && s(&sp["attributes"]["node"]).starts_with("mesh1.admin.")).collect();
+    let obs = *observe.iter().max_by_key(|sp| start(sp)).expect("the mesh delete proved a mesh1 admin's exit");
     let last = s(&obs["attributes"]["node"]);
     assert!(last.starts_with("mesh1.admin."), "the exit proved last is an admin's: {last}");
     let obs_elapsed = attr_u64(obs, "elapsed_ms");

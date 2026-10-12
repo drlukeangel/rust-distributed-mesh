@@ -1992,27 +1992,9 @@ impl DeploymentPipeline<'_> {
         }
     }
 
-    /// One member's shutdown inside a mesh leave: its drain half and its stop half under its own
-    /// run, whose operation is the outer `shutdown-mesh:<mesh_id>` correlated with the member's path.
-    /// The children keep their `drain-node:<path>` and `stop-node:<path>` identities. The result is
-    /// the provider's terminal receipt of the exact runtime.
-    pub async fn shutdown_member(&self, build_id: &BuildId, attempt: u32, outer_operation: &str, node: &mut Node, handle: &DeploymentHandle) -> Result<TerminalReceipt, PipelineError> {
-        use tracing::Instrument;
-        let path = node.name.clone();
-        let span = self.pipeline_span("shutdown-member", build_id, &path, attempt);
-        async {
-            let mut run = self.begin(build_id, attempt, &path, crate::mesh_leave::member_operation(outer_operation, &path.to_string())).await;
-            self.drain_steps(&mut run, node, handle).await?;
-            self.stop_steps(&mut run, node, handle).await
-        }
-        .instrument(span)
-        .await
-    }
-
     /// SeatTransfer (node-drain.md step 0, node-stop.md "Seat holder"): before a node-admin target
     /// drains, the seats it holds move to this executor by TakeSeats, once per run and under the
-    /// run's own operation, so an identical retry of the run sends the identical call. Not run for a
-    /// mesh leave member (`shutdown_member`): the leaving mesh's final primary keeps its seat.
+    /// run's own operation, so an identical retry of the run sends the identical call.
     /// A refusal fails the step by name and nothing is drained, a fabric seat included: it is never
     /// taken by an executor of another mesh (`HandoverDoor::take_seats` refuses it). `OtherMesh` is a
     /// holder of its own mesh's seat alone with no other admin in that mesh: the seat stays with it

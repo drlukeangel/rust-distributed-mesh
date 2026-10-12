@@ -3518,12 +3518,22 @@ impl AdminRunner {
             Some(n) => Node { parked: n.parked, ..record },
             None => record,
         };
-        let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, exit: None };
-        self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
-        self.after_exit(&record);
-        self.handles.lock().unwrap().remove(node);
+        self.delete_birth(build_id, attempt, record.clone(), handle).await?;
         Ok(Some(record))
+    }
+
+    /// node.delete of the live or stopped exact birth `record` (node-delete.md): the ordinary
+    /// workflow (`DeploymentPipeline::retire`: node.stop for a live process, the provider's exact
+    /// exit proof, its row Deleted, NodeDeleted) over its exact runtime `handle`; then its paths are
+    /// retired and this admin's handle of it dropped. The one composition a removal, a mesh
+    /// delete's member and a deleted mesh's last admin all call. Answers the terminal receipt.
+    pub(crate) async fn delete_birth(&self, build_id: &crate::build::BuildId, attempt: u32, record: Node, handle: DeploymentHandle) -> Result<crate::deployment::pipeline::TerminalReceipt, String> {
+        let template = self.template_for(record.kind, &record.mesh).await?;
+        let req = RetireRequest { build_id: build_id.clone(), attempt, node: record.clone(), handle, exit: None };
+        let terminal = self.pipeline(&template).retire(&req).await.map_err(|e| e.to_string())?;
+        self.after_exit(&record);
+        self.handles.lock().unwrap().remove(&record.name);
+        Ok(terminal)
     }
 
     /// Fabric shutdown: stop every runtime this admin started, all at once;
