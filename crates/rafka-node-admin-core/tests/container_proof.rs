@@ -117,6 +117,27 @@ async fn find_tells_a_running_container_launch_a_terminated_one_and_one_never_la
     assert_eq!(fresh.find(&never).await.unwrap(), Found::NeverLaunched);
 }
 
+/// CONTRACT (lifecycles/node-create.md step 1: "Record the exact deployment ... and launch its
+/// executable"; a record with no live runtime reads as exited): the launch's record is durable before
+/// the container is created, as the process provider's is before its executable runs. A launch whose
+/// `docker run` fails (its address is not on the fabric network) leaves no container, and its record
+/// says the launch was made: `find` answers `Exited` to this provider and to a fresh one. Must NOT
+/// happen: `NeverLaunched` for a launch whose record was written before the container was asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launch_whose_container_is_never_created_leaves_a_record_that_reads_exited() {
+    let fabric = fabric_name("record-first");
+    let Some(p) = provider(&fabric).await else { return };
+    let _cleanup = Fabric(fabric.clone());
+    let spec = ResolvedNodeLaunch { transport: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 20000), ..launch(&p, &fabric, 0) };
+    let refused = p.spawn(&spec).await.expect_err("docker cannot place an address outside the fabric network");
+    let listed = std::process::Command::new("docker").args(["ps", "-aq", "--filter", &format!("label=rafka.fabric={fabric}")]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&listed.stdout).trim(), "", "no container of the fabric exists after {refused}");
+    assert_eq!(p.find(&spec).await.unwrap(), Found::Exited, "the launch's record names it and no container is left");
+    let fresh = ContainerDeploymentProvider::prepare(&fabric).await.unwrap();
+    assert_eq!(fresh.find(&spec).await.unwrap(), Found::Exited, "a provider of the same domain that never saw the launch reads the same record");
+    assert_eq!(fresh.find(&launch(&p, &fabric, 1)).await.unwrap(), Found::NeverLaunched, "another launch has no record");
+}
+
 /// CONTRACT: a container runtime is named by its provider control domain (the Docker daemon) and
 /// its immutable container id. The deterministic container name is reused by the next birth at the
 /// same path, and it never stands for the old runtime: the old id inspects as not running and
