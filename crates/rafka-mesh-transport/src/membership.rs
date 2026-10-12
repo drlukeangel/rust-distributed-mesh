@@ -2171,7 +2171,7 @@ impl View {
                         )
                         .in_scope(|| tracing::info!("a delta applied at exactly its base version"));
                         let full = Full::new(delta.changed.clone(), delta.in_flight.clone(), delta.departed.clone());
-                        let carried = self.apply_full(mesh, &full, fabric, side);
+                        let carried = self.apply_full(mesh, &full, fabric, side, source_publisher.node.split('.').next() == Some(mesh.as_str()));
                         drop(rx);
                         SnapshotTaken { carried, ..SnapshotTaken::default() }
                     }
@@ -2257,12 +2257,15 @@ impl View {
             refreshed = i.refreshed,
         )
         .in_scope(|| tracing::debug!("a complete snapshot installed"));
-        let carried = self.apply_full(&i.mesh, &i.full, fabric, side);
+        // The publisher is a node of the mesh it publishes (its primary), or of another mesh: the
+        // fabric primary as the acting primary of a mesh with no primary. Only the first hears the
+        // members it publishes.
+        let publishers_own = i.publisher.node.split('.').next() == Some(i.mesh.as_str());
+        let carried = self.apply_full(&i.mesh, &i.full, fabric, side, publishers_own);
         let source = (side == Side::Backbone && i.mesh != self.mesh).then(|| (i.mesh.clone(), i.publisher.clone(), i.topology_version, i.full.clone()));
         // The fabric primary's clock is sampled from its own mesh's aggregate, never from one it
         // publishes as the acting primary of a mesh with no primary: that publisher is a node of
         // another mesh.
-        let publishers_own = i.publisher.node.split('.').next() == Some(i.mesh.as_str());
         let publication = (side == Side::Backbone && publishers_own).then(|| Publication {
             publisher: i.publisher.clone(),
             published_at_rafka_ms,
@@ -2272,8 +2275,9 @@ impl View {
     }
 
     /// Apply the members, overlays and departures of a snapshot or a delta to the book. Departures
-    /// first: a digest of a departed birth in the same snapshot is refused.
-    fn apply_full(&self, _mesh: &str, full: &Full, fabric: &FabricId, side: Side) -> Vec<MeshDigest> {
+    /// first: a digest of a departed birth in the same snapshot is refused. `publishers_own`: the
+    /// publisher is a node of the mesh it publishes, its primary, which carries only members it hears.
+    fn apply_full(&self, _mesh: &str, full: &Full, fabric: &FabricId, side: Side, publishers_own: bool) -> Vec<MeshDigest> {
         for op in full.departed() {
             self.book.depart(op);
         }
@@ -2302,8 +2306,12 @@ impl View {
             let own = d.node.name.mesh == self.mesh;
             let prior = self.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status);
             let taken = match (side, own) {
-                (Side::Backbone, true) => self.book.record(d.clone()),
-                (Side::Backbone, false) => self.book.record_forwarded(d.clone()),
+                (Side::Backbone, true) if publishers_own => self.book.record(d.clone()),
+                (Side::Backbone, false) if publishers_own => self.book.record_forwarded(d.clone()),
+                // The acting primary of a mesh with no primary (the fabric primary, a node of another
+                // mesh) hears none of that mesh's members: what it carries of them is topology, and
+                // their liveness comes from their own word or their own primary's aggregate alone.
+                (Side::Backbone, _) => self.book.record_topology(d.clone()),
                 (Side::MeshChannel, true) => false,
                 (Side::MeshChannel, false) => self.book.record_topology(d.clone()),
                 // A read installs what an entry answer installed, by the rule `learn` applies
