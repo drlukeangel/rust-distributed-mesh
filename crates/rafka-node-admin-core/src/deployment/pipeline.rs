@@ -2492,17 +2492,21 @@ impl DeploymentPipeline<'_> {
 
     async fn update_steps(&self, req: &UpdateRequest) -> Result<(), PipelineError> {
         let name = &req.node.name;
-        let mut run = self.begin(&req.build_id, req.attempt, name, format!("update-node:{name}")).await?;
+        let operation = format!("update-node:{name}");
+        let mut run = self.begin(&req.build_id, req.attempt, name, operation.clone()).await?;
         let (onto, from) = (&req.node, &req.from);
         self.step(&mut run, UpdateStep::UpdateNode.name(), async {
             if onto.node_id == from.node_id || onto.incarnation_id.is_none() {
                 return Err(format!("{name}: node.update copies the exited birth {}'s caller-owned meta onto the node its create made there, and the node held at the path is {} at {}", from.node_id, onto.node_id, onto.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")));
             }
-            // The caller-owned group as this admin's records hold it of the exited birth: the node
-            // record carries no caller-owned field, so the group is its default and nothing is written.
-            let copied = crate::node_update::meta_of(onto).with_caller_owned_of(&crate::node_update::meta_of(from));
-            tracing::info!(node = %name, from = %from.node_id, onto = %onto.node_id, otel_debug = copied.otel_debug, written = false, "node.update onto the new node: the caller-owned group of the exited birth as held, no row written");
-            Ok(())
+            // The caller-owned group of the exited birth's Deleted row, put on the new node's row
+            // through the writer of the mesh's rows (node-recovery.md step 6). A sink with no row
+            // writer keeps no nodes store: there is no row to put.
+            let Some(rows) = self.sink.node_rows() else {
+                tracing::info!(node = %name, from = %from.node_id, onto = %onto.node_id, "node.update onto the new node: this sink keeps no node rows, so there is no row to put");
+                return Ok(());
+            };
+            rows.copy_caller_owned(onto, from, &operation).await.map(|_| ()).map_err(|e| format!("{name}: node.update copying the caller-owned meta of the exited birth {} onto {}: {e}", from.node_id, onto.node_id))
         })
         .await?;
         self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await

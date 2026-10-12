@@ -23,6 +23,9 @@
 //!   of `<path>` ([`NodeRows::moved_to_old`]).
 //! - `NodeDeleted`: the row with status `Deleted`, the record and its config kept
 //!   ([`NodeRows::deleted`]).
+//! - A recovery's `node.update` (node-recovery.md step 6): the new node's row, put blind with the
+//!   caller-owned meta of the exited birth's `Deleted` row ([`NodeRows::copy_caller_owned`]); the
+//!   one write of a row that keeps its name is [`put_meta`], which `node.update`'s door makes too.
 //! - A mesh delete (R-MN1, mesh-delete.md steps 3 and 7): each member's row `Deleted` on its exact
 //!   Exited receipt, by the deleting mesh's primary, and the final primary's in its own node.delete,
 //!   by the fabric-primary as acting primary of a mesh with no primary; a birth the view no longer
@@ -40,6 +43,7 @@
 use crate::model::{IncarnationId, Node, NodeId, NodeKind, NodeStatus, PathName};
 use crate::storage::{Allocation, NameHeld, NodeRow, NodesStorage};
 use crate::topology::Topology;
+use rafka_node_admin_client::NodeMeta;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
@@ -404,6 +408,80 @@ impl NodeRows {
         self.deleted_row(&record.name, &record.node_id, Ok(Some((config, tags, config_from))), operation).await
     }
 
+    /// A recovery's `node.update` (node-recovery.md step 6: "node[2].update copies the exited node's
+    /// caller-owned meta (such as `otel_debug`) as a blind put; config was seeded by the create"):
+    /// the caller-owned group of the exited birth `from`, as its `Deleted` row holds it, copied onto
+    /// the new node `onto` the create made at its path.name, through [`NodeMeta::with_caller_owned_of`]
+    /// (the declared copy: nothing RDM owns moves, the name least of all), and put as a blind write
+    /// of the new node's row ([`put_meta`]), one change to a node record at a time with the config
+    /// door. The row carries the tag labels; `otel_debug` has no row field, so nothing of it is put
+    /// ([`rafka_node_admin_client::CallEnd::NotBackedToday`] says so to a caller that puts it).
+    ///
+    /// The `Deleted` row is the writer's record of it: the create's claim replaced that row in the
+    /// store, so a writer that did not write it (the recovery ran on another executor after the
+    /// delete) holds none and refuses by name, writing nothing. One `via-caller-owned-copy` span
+    /// names the exited birth and the labels copied.
+    pub async fn copy_caller_owned(&self, onto: &Node, from: &Node, operation: &str) -> Result<NodeRow, RowRefused> {
+        let span = tracing::info_span!(
+            "rdm.node_admin.node.update.via-caller-owned-copy",
+            node = %self.me,
+            subject = %onto.name,
+            node_id = %onto.node_id,
+            from_node_id = %from.node_id,
+            operation,
+            tags = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+            "otel.kind" = "internal",
+        );
+        let r = tracing::Instrument::instrument(self.copy_caller_owned_row(onto, from), span.clone()).await;
+        match &r {
+            Ok(row) => {
+                span.record("tags", labels(&row.tags).as_str()).record("outcome", "meta-copied");
+            }
+            Err(e) => {
+                span.record("outcome", e.outcome()).record("detail", e.to_string().as_str());
+            }
+        }
+        span.in_scope(|| tracing::info!("node.update: the caller-owned meta of the exited birth is put on the new node's row"));
+        r
+    }
+
+    async fn copy_caller_owned_row(&self, onto: &Node, from: &Node) -> Result<NodeRow, RowRefused> {
+        let me = &self.me;
+        self.writer_check(&onto.name.mesh, &onto.name).await?;
+        let deleted = match self.written.known_row(&*self.storage, &from.mesh, &from.node_id).await {
+            Ok(Some(row)) if row.status == NodeStatus::Deleted => row,
+            Ok(held) => {
+                return Err(RowRefused::Unwritten(format!(
+                    "{me} holds no Deleted row of the exited birth {} at {}{}: the new node's claim replaced it in the store, so its caller-owned meta is not copied and nothing is written",
+                    from.node_id,
+                    from.name,
+                    held.map(|r| format!(" (it holds a {:?} row)", r.status)).unwrap_or_default()
+                )))
+            }
+            Err(why) => return Err(RowRefused::Unwritten(format!("{me}: {why}: the caller-owned meta of the exited birth {} is not copied and nothing is written", from.node_id))),
+        };
+        let exited = NodeMeta { tags: deleted.tags.clone(), ..crate::node_update::meta_of(from) };
+        let copied = crate::node_update::meta_of(onto).with_caller_owned_of(&exited);
+        // One change to a node record at a time (node-update.md "Config update"), with the door's puts.
+        let door = self.configs.as_ref().and_then(|slot| slot.get().cloned());
+        let _one = match &door {
+            Some(door) => Some(door.one_at_a_time().await),
+            None => None,
+        };
+        let new = match self.written.known_row(&*self.storage, &onto.mesh, &onto.node_id).await {
+            Ok(Some(row)) => row,
+            Ok(None) => return Err(RowRefused::Unwritten(format!("{me} holds no row of the new node {} at {}: its claim is the row the exited birth's caller-owned meta is put on, and nothing is written", onto.node_id, onto.name))),
+            Err(why) => return Err(RowRefused::Unwritten(format!("{me}: {why}: the new node's row is not put and nothing is written"))),
+        };
+        match put_meta(&*self.storage, &self.written, &new.name, &onto.node_id, new.status, new.config, copied.tags).await {
+            Ok(Ok(row)) => Ok(row),
+            Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
+            Err(e) => Err(RowRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} ({}): {e}", onto.name, onto.node_id))),
+        }
+    }
+
     /// The tags of the row `record`'s node is written with: the ones this writer holds for it, else
     /// those of the row the node holds now (a point read through the id index); none when it holds
     /// no row. A node's tags are never in the executor's record: they are meta only its rows carry.
@@ -655,6 +733,30 @@ pub enum RenameRefused {
     NameHeld(crate::storage::NameHeld),
     /// The move could not be written: why, whole.
     Unwritten(String),
+}
+
+/// `node.update`'s write of a row that keeps its name (node-update.md step 4): a blind put of the
+/// whole row at `name`, carrying `config` and `tags`, which the writer then holds as its record of
+/// `node_id`. The store adapter refuses it `NameHeld` when another node's live row holds `name`.
+/// The one write of a row's meta: the door's `node.update` and a recovery's copy of the caller-owned
+/// meta ([`NodeRows::copy_caller_owned`]) both put here.
+pub(crate) async fn put_meta(
+    storage: &dyn NodesStorage,
+    written: &WrittenRows,
+    name: &PathName,
+    node_id: &NodeId,
+    status: NodeStatus,
+    config: BTreeMap<String, String>,
+    tags: std::collections::BTreeSet<String>,
+) -> Result<Result<NodeRow, NameHeld>, crate::record_store::StorageError> {
+    let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: None };
+    Ok(match storage.put_node_row(&row).await? {
+        Ok(()) => {
+            written.hold(&row);
+            Ok(row)
+        }
+        Err(held) => Err(held),
+    })
 }
 
 /// The node's row moves from `from` to `to` in `storage`: written at `to` from its held `record`

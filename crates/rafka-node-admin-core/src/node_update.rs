@@ -19,7 +19,7 @@
 
 use crate::model::{Node, NodeStatus, PathName};
 use crate::node_rows::RenameRefused;
-use crate::storage::{NodeRow, NodesStorage};
+use crate::storage::NodesStorage;
 use crate::topology::Topology;
 use rafka_node_admin_client::{ExactBirth, MetaField, NodeMeta, NodeRpc, Traffic};
 use rafka_node_rpc::{CallOptions, NodeTarget, RouteChoice};
@@ -151,9 +151,8 @@ async fn put(
     span.record("tags_arrived", crate::node_rows::labels(&tags.difference(&was).cloned().collect()).as_str());
     span.record("tags_left", crate::node_rows::labels(&was.difference(tags).cloned().collect()).as_str());
     if to == held.name {
-        let row = NodeRow { name: held.name.clone(), node_id: node_id.clone(), status: held.status, config, tags: tags.clone(), allocated: None };
-        match storage.put_node_row(&row).await {
-            Ok(Ok(())) => door.written().hold(&row),
+        match crate::node_rows::put_meta(storage, door.written(), &held.name, node_id, held.status, config, tags.clone()).await {
+            Ok(Ok(_)) => {}
             Ok(Err(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
             Err(e) => return StatusReply::node_row_refused(&held.name.to_string(), &format!("{me}: nodes.storage refused the row of {} ({node_id}): {e}", held.name)),
         }
