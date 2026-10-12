@@ -474,12 +474,21 @@ impl Caller {
         self.bases.lock().unwrap().get(at).cloned().unwrap_or_else(|| panic!("the control API of {at} is not known"))
     }
 
+    /// The first node-admin that survives `dead`.
+    fn survivor_of(&self, dead: &str) -> String {
+        self.admins_except(dead).into_iter().next().unwrap_or_else(|| panic!("no node-admin survives {dead}"))
+    }
+
+    /// The control API client of node-admin `at`: it answers from `at`'s own view.
+    fn control_at(&self, at: &str) -> NodeAdminClient {
+        NodeAdminClient::new(self.base_of(at))
+    }
+
     /// The node-admin that holds the fabric-primary seat once `dead` has died: the first surviving
     /// admin's own view of the fabric is awaited until it names a fabric-primary other than `dead`.
     async fn successor_of(&self, dead: &str) -> String {
-        let survivors = self.admins_except(dead);
-        let asked = survivors.first().unwrap_or_else(|| panic!("no node-admin survives {dead}"));
-        let view = Fabrics::new(self.carrier_at(asked))
+        let asked = self.survivor_of(dead);
+        let view = Fabrics::new(self.carrier_at(&asked))
             .fact(&format!("a fabric-primary other than {dead}"), Duration::from_secs(60), |f| f.fabric_primary.as_ref().is_some_and(|p| p.to_string() != dead))
             .await
             .unwrap_or_else(|end| panic!("{end}"));
@@ -588,7 +597,13 @@ struct Lost {
 /// fabric-primary's own Door parks it there), after its claim of mesh2's name landed: mesh2's row is on
 /// the store root. A seat moves to a surviving admin, and the caller re-submits the Build there by its id
 /// and follows it to `Complete`. mesh2 is then the mesh the lost fabric-primary's claim wrote.
-async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Caller, carrier: &BuildCarrier, cut: Value) -> Lost {
+///
+/// `survivor_holds` is a precondition of the cut: the operation whose `Complete` receipt, at the lost
+/// attempt, the surviving mesh1 admin's own view must hold before the fabric-primary is lost. The
+/// receipt reaches that admin by the Build topic's push; the loss comes within milliseconds of the
+/// receipt, so a cell that reads the receipt at its successor awaits the push first. A cell that
+/// cuts before the receipt exists passes `None`.
+async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Caller, carrier: &BuildCarrier, cut: Value, survivor_holds: Option<&str>) -> Lost {
     let fp = carrier.fabric_primary().to_string();
     let root = estate.fabric_store_root();
     Fabrics::new(carrier.clone())
@@ -610,6 +625,19 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     let row: Value = serde_json::from_slice(&std::fs::read(root.join("meshes/mesh2.json")).expect("the fabric-primary's claim of mesh2 wrote its row to the store root")).unwrap();
     let claimed = s(&row["record"]["mesh_id"]);
     assert!(!claimed.is_empty() && row["record"]["name"] == "mesh2", "{row}");
+    // The receipt reached the surviving admin before the fabric-primary is lost: its own view of the Build
+    // holds the operation's `Complete` receipt of the lost attempt. The Build family is the
+    // fabric-primary's alone, so the survivor is asked through its control API's build view.
+    if let Some(operation) = survivor_holds {
+        let survivor = caller.survivor_of(&fp);
+        caller
+            .control_at(&survivor)
+            .build_fact(&build_id, &format!("{operation} Complete at attempt {attempt}"), Duration::from_secs(60), |b| {
+                b.steps.iter().any(|r| r.operation == operation && r.step == "Complete" && r.attempt == attempt && r.outcome == json!("complete"))
+            })
+            .await
+            .unwrap_or_else(|end| panic!("{end}"));
+    }
     // The fabric-primary dies at that cut.
     estate.kill_bootstrap();
     let end = loop {
@@ -662,7 +690,9 @@ fn create_mesh_flame(spans: &[Value], lost: &Lost) -> Option<String> {
 /// fabric is past its first state-commit, so a claim is written to its store root. The fabric-primary
 /// accepts mesh2, minting mesh2's id at that acceptance, runs `create-mesh:mesh2` (the claim of mesh2's
 /// name writes its row, and the step is receipted `Complete`) and is lost before the next step's receipt is
-/// durable: the first admin's `AllocateIdentity`. The successor fabric-primary resumes the same Build: it
+/// durable: the first admin's `AllocateIdentity`. The loss waits for the receipt to reach the surviving
+/// mesh1 admin: its own view of the Build holds `create-mesh:mesh2` `Complete` at the lost attempt. The
+/// successor fabric-primary resumes the same Build: it
 /// reads the `create-mesh:mesh2` receipt and does not run the step again, and streams the Build to
 /// `Complete`. mesh2 is the mesh the lost fabric-primary's claim wrote. The Build holds exactly one
 /// `Complete` receipt of `create-mesh:mesh2`, written by the run that executed it. Must NOT happen: the
@@ -677,7 +707,7 @@ async fn a_successor_fabric_primary_reads_the_create_mesh_receipt_and_does_not_c
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: mesh2's first admin has its identity allocated and that receipt is not durable; the
     // fabric-primary ran `create-mesh:mesh2` before it.
-    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "create-node", "node": "mesh2.admin.1"})).await;
+    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "create-node", "node": "mesh2.admin.1"}), Some("create-mesh:mesh2")).await;
     let receipts = create_mesh_receipts(&lost).await;
 
     estate.stop().await;
@@ -707,7 +737,7 @@ async fn a_successor_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its
     let caller = Caller::of(&estate.admin).await;
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: the claim of mesh2's name landed and `create-mesh:mesh2`'s own receipt is not durable.
-    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "Complete", "operation": "create-mesh", "node": "mesh2"})).await;
+    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "Complete", "operation": "create-mesh", "node": "mesh2"}), None).await;
     let receipts = create_mesh_receipts(&lost).await;
 
     estate.stop().await;
