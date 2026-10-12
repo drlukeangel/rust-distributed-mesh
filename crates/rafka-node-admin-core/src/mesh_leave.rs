@@ -1340,19 +1340,30 @@ where
     RFut: std::future::Future<Output = Result<(), crate::executor::RunEnd>>,
 {
     let outer = key.operation.as_str();
-    let _ = &mut reissue;
+    let mut reissued = false;
     view.borrow_and_update();
     loop {
         let held = handoff.borrow_and_update().clone();
         if let Some(outcome) = held {
             return outcome.map_err(|reason| crate::executor::RunEnd::Incomplete(format!("{outer}: the handoff of {primary} ended the leave incomplete: {reason}")));
         }
-        if let FinalPrimary::Exited(proof) = probe().await {
-            tracing::info_span!("rdm.node_admin.mesh.update.via-final-primary-exited", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, final_primary = %primary, proof = %proof)
-                .in_scope(|| tracing::info!("the final primary is proven exited before it sent mesh-leave: this attempt ends and the next resumes the leave from its receipts"));
-            return Err(crate::executor::RunEnd::Incomplete(format!(
-                "{outer}: the final primary {primary} is proven exited ({proof}) and sent no mesh-leave; the workflow is incomplete, its receipts stand, and the next attempt resumes it from that exit"
-            )));
+        match probe().await {
+            FinalPrimary::Exited(proof) => {
+                tracing::info_span!("rdm.node_admin.mesh.update.via-final-primary-exited", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, final_primary = %primary, proof = %proof)
+                    .in_scope(|| tracing::info!("the final primary is proven exited before it sent mesh-leave: this attempt ends and the next resumes the leave from its receipts"));
+                return Err(crate::executor::RunEnd::Incomplete(format!(
+                    "{outer}: the final primary {primary} is proven exited ({proof}) and sent no mesh-leave; the workflow is incomplete, its receipts stand, and the next attempt resumes it from that exit"
+                )));
+            }
+            FinalPrimary::MeshDeleted if !reissued => {
+                reissued = true;
+                let span = tracing::info_span!("rdm.node_admin.mesh.update.via-leave-mesh-reissued", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, final_primary = %primary);
+                span.in_scope(|| tracing::info!("the view holds the mesh deleted and no handoff is held: leave-mesh is reissued, and the mesh-primary answers its held manifest with AlreadyApplied and calls mesh-leave again"));
+                tracing::Instrument::instrument(reissue(), span).await?;
+                // The handoff may already be held: it is read first.
+                continue;
+            }
+            FinalPrimary::MeshDeleted | FinalPrimary::Live => {}
         }
         tokio::select! {
             changed = handoff.changed() => {
