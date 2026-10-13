@@ -553,6 +553,42 @@ fn a_config_update_naming_a_node_at_its_old_row_name_is_decided_for_that_exact_b
     eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config subject=mesh1.rpc.1.old outcome=config-updated");
 }
 
+/// CONTRACT (node-rpc-envelope.md "Node properties": config "is a field of the node record ... a
+/// rejoining node gets it back in its join answer"; node-config-update.md: row first, node second, as
+/// node.name.update completes a stopped node on the row, proposal node-properties-own-commands.md §2.3):
+/// `node.config.update` of `mesh1.rpc.2`, listed stopped in the mesh-primary's view (its row at its
+/// name) ends `node.config.updated` on the row: the row at `mesh1.rpc.2` holds the whole config, keeping
+/// the tags it carried, and the birth is told nothing (it serves Status here, and hears no call). The
+/// via-config span says `config-updated` with `apply=stopped` and no answer. What must NOT happen: an
+/// ApplyNodeConfig sent to the stopped node, or `ConfigNotApplied` for it.
+#[test]
+fn a_stopped_nodes_config_update_completes_on_its_row_and_tells_the_node_nothing() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let stopped = &b["rpc2"];
+        let node = serve_node(stopped).await;
+        configs_door(&rig, &node).await;
+        stopped_with_row(&rig, stopped, &["edge"]).await;
+        let config: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
+        let client = client_of(&rig, &b["admin2"]).await;
+        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        assert_eq!(reply, StatusReply::ConfigUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() }, "a stopped node's config update completes on its row");
+        let row = rig.nodes.node_row_at(&stopped.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
+        assert_eq!((row.node_id.clone(), row.config.clone(), row.tags.clone()), (stopped.node.node_id.clone(), config, labels(&["edge"])), "the row holds the whole config and keeps its tags");
+        assert!(node.seen.lock().unwrap().is_empty(), "the stopped node is told nothing: {:?}", node.seen.lock().unwrap());
+    });
+    let spans = cap.spans("rdm.node_admin.node.update.via-config");
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    let (trace_id, attrs) = &spans[0];
+    assert_eq!(
+        (attrs.get("outcome").map(String::as_str), attrs.get("apply").map(String::as_str), attrs.get("subject").map(String::as_str), attrs.get("answered")),
+        (Some("config-updated"), Some("stopped"), Some("mesh1.rpc.2"), None),
+        "{attrs:?}"
+    );
+    eprintln!("trace {trace_id}: rdm.node_admin.node.update.via-config subject=mesh1.rpc.2 apply=stopped outcome=config-updated (nothing sent)");
+}
+
 /// CONTRACT (ops-naming "Node data": config is capped in key count and bytes, refused by name past
 /// the cap): a config of more keys than the cap is refused `RejectedConfig` naming the keys, the bytes
 /// and both bounds; nothing is told to the node.

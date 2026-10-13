@@ -222,6 +222,67 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
     estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (node-rpc-envelope.md "Node properties": config "is a field of the node record ... a
+/// rejoining node gets it back in its join answer"; node-config-update.md: row first, node second; the
+/// stopped arm node.name.update already completes on, proposal node-properties-own-commands.md §2.3):
+/// `node.config.update` of the stopped `mesh1.rpc.1` at its mesh-primary ends `node.config.updated`
+/// on the row: the row at `mesh1.rpc.1` holds the whole config, and the stopped node is sent nothing
+/// (the via-config span says `apply=stopped`, no `answered`; no ApplyNodeConfig reaches it). Then
+/// `node.start` makes the same process rejoin: its join is handed the row's config
+/// (`via-join` `config_keys=1`), and `node.get` lists the same birth `ready-for-traffic` carrying it.
+/// What must NOT happen: `ConfigNotApplied` (`not-sent`) for a stopped node, or a call to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carries_it() {
+    let test = "a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carries_it";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.settled_views(&[("mesh1", 1, 2)]).await;
+    // The initial fabric refuses a node stop until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let nodes = estate.nodes_obj().await;
+    let path: PathName = NODE.parse().unwrap();
+    let mesh = nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get");
+    let before = mesh.iter().find(|n| n.name == path).cloned().expect("node.get lists the node");
+    let primary = mesh.iter().find(|n| n.is_primary).cloned().expect("node.get names mesh1's primary");
+    let pid = estate.pid_of(NODE).await;
+
+    let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
+    assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
+    let held = view_of(&nodes, &path).await;
+    assert!(held.parked && held.status == NodeStatus::Leaving, "{held:?}");
+
+    // The update: one call to the node's mesh-primary, the row written, the stopped node told nothing.
+    let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
+    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().expect("the stopped node's birth") };
+    let carrier = estate.carrier().await;
+    let reply = rafka_node_admin_client::NodeRpc::new(carrier.client())
+        .config_update(&primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
+        .await
+        .expect("node.config.update answered");
+    assert_eq!(reply, StatusReply::ConfigUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() }, "a stopped node's config update completes on its row");
+
+    let started = frames(nodes.start(&path).await.expect("the start was accepted")).await;
+    assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
+    assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
+    let after = view_of(&nodes, &path).await;
+    assert!(!after.parked && after.status == NodeStatus::ReadyForTraffic, "node.get lists {path} ready: {after:?}");
+    assert_eq!((&after.node_id, &after.incarnation_id), (&before.node_id, &before.incarnation_id), "the same birth");
+    assert_eq!(after.config, told, "the started node carries the config its join handed it");
+    assert_eq!(estate.pid_of(NODE).await, pid, "the same process");
+
+    estate.stop().await;
+    let spans = estate.spans();
+    let update = named(&spans, "rdm.node_admin.node.update.via-config").into_iter().find(|sp| s(&sp["attributes"]["node_id"]) == before.node_id.to_string()).expect("the mesh-primary served the node.config.update");
+    let a = &update["attributes"];
+    assert_eq!((s(&a["outcome"]), s(&a["apply"]), s(&a["subject"]), s(&a["answered"])), ("config-updated".into(), "stopped".into(), path.to_string(), String::new()), "the stopped node is sent nothing: {update:#?}");
+    assert!(named(&spans, "rdm.node_admin.node.update.via-apply-node-config").is_empty(), "no ApplyNodeConfig reached the stopped node");
+    let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["command"] == "start-node" && sp["attributes"]["node"] == path.to_string()).expect("the start command was sent");
+    let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the start's rejoin was installed");
+    assert_eq!((s(&join["attributes"]["admitted_as"]), s(&join["attributes"]["config_keys"])), (path.to_string(), "1".to_string()), "the join answer hands the row's config: {join:#?}");
+    eprintln!("trace {}: via-config outcome=config-updated apply=stopped; trace {}: via-join admitted_as={path} config_keys=1", s(&update["trace_id"]), s(&join["trace_id"]));
+    estate.record_trace_url(update["trace_id"].as_str().unwrap_or(""));
+}
+
 /// CONTRACT (R-JN1; node-start.md step 2, node-create.md step 4; R12/R13; CLAUDE.md read rule): in a
 /// mesh of three node-admins, the non-primary `mesh1.admin.3` is stopped and its mesh-primary renames
 /// its row to `mesh1.admin.3.old` (`node.name.update` of the name `3.old`, the stopped node told nothing). Every admin lists
