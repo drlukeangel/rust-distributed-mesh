@@ -160,6 +160,12 @@ struct Estate {
 
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 3), ("mesh2", 2, 3)];
 
+/// An rpc node of `mesh` that holds no seat in the view (the lowest name among them).
+async fn seatless_rpc(e: &Estate, mesh: &str) -> String {
+    let t = e.view.read().await;
+    t.nodes.iter().filter(|n| n.mesh == mesh && n.name.to_string().contains(".rpc.") && !n.is_primary).map(|n| n.name.to_string()).min().expect("an rpc node holding no seat")
+}
+
 /// Every path of the accepted shape born, live, held in the view and membership; seats elected.
 async fn estate() -> Estate {
     let world = Arc::new(World::default());
@@ -1345,8 +1351,11 @@ mod one_attempt_number {
         let hold = |m: &str| decided(m).and_then(|p| p.unheard_ms);
         let defers = |_: &str| false;
         let rebirth = |m: &str| decided(m).is_some_and(|p| p.rebirth_decided);
+        // The restarted node holds no seat: a seat holder's restart runs node.primary.update first, and the
+        // writer's view takes the moved seat from its view loop, which this harness does not run.
+        let target = seatless_rpc(&e, &own).await;
         let restart = tokio::spawn({
-            let (cp, path): (_, PathName) = (cp.clone(), format!("{own}.rpc.1").parse().unwrap());
+            let (cp, path): (_, PathName) = (cp.clone(), target.parse().unwrap());
             async move { cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, path, rafka_node_admin_core::control_plane::ActionKind::Restart, None).await }
         });
         g.arrived.notified().await;
