@@ -647,6 +647,18 @@ impl Estate {
         }
     }
 
+    /// A workflow call the fabric-primary accepted, awaited to its `Complete`: a refusal is a defect of the
+    /// cell and `what` names the call.
+    pub async fn workflow(what: &str, call: Result<WorkflowStream, CallEnd>) -> Accepted {
+        let mut stream = call.unwrap_or_else(|end| panic!("the fabric-primary refused {what}: {end}"));
+        Self::complete(&mut stream).await
+    }
+
+    /// `name` as a path.name; a name that is not one is a defect of the cell.
+    pub fn path(name: &str) -> PathName {
+        name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"))
+    }
+
     /// Re-learn every node the admin lists, so the typed objects reach births the last Build made.
     async fn refresh(&self) {
         let _ = self.node_views().await;
