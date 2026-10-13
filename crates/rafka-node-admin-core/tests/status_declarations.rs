@@ -1476,6 +1476,53 @@ fn a_rename_whose_release_fails_ends_incomplete_with_both_keys_held_and_its_retr
     eprintln!("trace {}: {NAME_SPAN} to=mesh1.rpc.2.old outcome=name-not-applied answered=release-pending; trace {}: rdm.node_admin.node.name.update.via-pending-release from=mesh1.rpc.2 outcome=released", spans[0].0, releases[0].0);
 }
 
+/// CONTRACT (proposal §2.1 "Claim and move": "a row whose `renamed_from` key still holds the same node
+/// id has a pending release, and the writer releases it ... It runs wherever a writer meets the row";
+/// §2.4: "the release is finished by whichever writer next meets the row"): the stopped `mesh1.rpc.2`
+/// renamed to `2.old` while the nodes store refuses the release ends `release-pending`, both keys
+/// held; the next `node.config.update` of the node releases `mesh1.rpc.2` before its put. Renamed back
+/// to `2` under a second refused release, `mesh1.rpc.2.old` is held twice over the same way, and the
+/// next `node.tags.create` releases it before its put. One
+/// `rdm.node_admin.node.name.update.via-pending-release` span names each release, `moment=config-put`
+/// and `moment=tags-put`. What must NOT happen: a config or tags put leaving the old key held until the
+/// next rename or a successor's rebuild.
+#[test]
+fn a_config_or_tags_put_that_meets_a_pending_release_finishes_it() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        quiet_door(&rig).await;
+        let stopped = &b["rpc2"];
+        stopped_with_row(&rig, stopped, &[]).await;
+        let (base, old): (PathName, PathName) = (stopped.node.name.clone(), "mesh1.rpc.2.old".parse().unwrap());
+        let holds = |name: PathName| {
+            let nodes = rig.nodes.clone();
+            async move { nodes.node_row_at(&name).await.unwrap().map(|r| r.node_id) }
+        };
+        rig.refuse_release.store(true, Ordering::SeqCst);
+        let pending = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2.old")).await);
+        assert!(matches!(&pending, StatusReply::NameNotApplied { answered, .. } if answered == "release-pending"), "{pending:?}");
+        assert_eq!(holds(base.clone()).await, Some(stopped.node.node_id.clone()), "the release of {base} is pending");
+        let config = StatusRequest::UpdateNodeConfig { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "a".to_string())].into() };
+        let configured = reply(&call(&rig, &b["admin2"], &config).await);
+        assert_eq!(holds(base.clone()).await, None, "the config put released {base}: {configured:?}");
+        assert_eq!(rig.nodes.node_row_at(&old).await.unwrap().map(|r| r.config), Some([("zone".to_string(), "a".to_string())].into()), "the config put wrote the row at {old}");
+
+        rig.refuse_release.store(true, Ordering::SeqCst);
+        let back = reply(&call(&rig, &b["admin2"], &update_name(stopped, "2")).await);
+        assert!(matches!(&back, StatusReply::NameNotApplied { answered, .. } if answered == "release-pending"), "{back:?}");
+        assert_eq!(holds(old.clone()).await, Some(stopped.node.node_id.clone()), "the release of {old} is pending");
+        let tagged = reply(&call(&rig, &b["admin2"], &create_tags(stopped, &["red"])).await);
+        assert_eq!(tagged, StatusReply::TagsCreated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap(), already_carried: Default::default() });
+        assert_eq!(holds(old.clone()).await, None, "the tags put released {old}");
+        assert_eq!(rig.nodes.node_row_at(&base).await.unwrap().map(|r| r.tags), Some(labels(&["red"])), "the tags put wrote the row at {base}");
+    });
+    let releases = cap.spans("rdm.node_admin.node.name.update.via-pending-release");
+    let seen: Vec<(String, String, String)> = releases.iter().map(|(_, a)| (a.get("moment").cloned().unwrap_or_default(), a.get("from").cloned().unwrap_or_default(), a.get("outcome").cloned().unwrap_or_default())).collect();
+    assert_eq!(seen, vec![("config-put".to_string(), "mesh1.rpc.2".to_string(), "released".to_string()), ("tags-put".to_string(), "mesh1.rpc.2.old".to_string(), "released".to_string())], "{releases:?}");
+    eprintln!("trace {}: rdm.node_admin.node.name.update.via-pending-release moment=config-put from=mesh1.rpc.2 outcome=released; trace {}: moment=tags-put from=mesh1.rpc.2.old outcome=released", releases[0].0, releases[1].0);
+}
+
 /// CONTRACT (proposal §2.1 Idempotency: "A repeat naming the name the row already holds ... for a
 /// live node, resends `ApplyNodeName` and completes on `Applied` or `AlreadyApplied`"; §2.3 "Row
 /// written, apply unresolved ... the resubmit resends `ApplyNodeName`, and completes on `Applied` or
