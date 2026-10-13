@@ -165,8 +165,8 @@ pub const OWN_CLOCK_FABRIC_SEAT: &str = "fabric-seat-held-without-rafka-time";
 pub const OWN_CLOCK_NOTHING_ALIVE: &str = "nothing-alive";
 
 /// The fabric's root adopts its own OS clock as rafka-time, once: the Day-0 root at boot, an admin
-/// that holds the fabric seat and no rafka-time, and an admin whose store names no other node. There
-/// is no authority above any of them.
+/// that holds the fabric seat and no rafka-time, and an admin whose store names no other node. No
+/// node serves rafka-time to any of them.
 pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str, reason: &'static str) -> Adopted {
     let now = rafka_mesh_transport::clock::Clock::now_rafka_ms(&rafka_mesh_transport::clock::OsClock);
     let adopted = time.adopt(now);
