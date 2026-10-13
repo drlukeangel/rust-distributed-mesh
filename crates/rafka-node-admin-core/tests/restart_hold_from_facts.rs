@@ -34,7 +34,11 @@ fn evidence_dir(cell: &str) -> PathBuf {
 /// delegated, once the child passed; `false` in the child, which runs the cell.
 fn delegated(cell: &str) -> bool {
     let (stretched, evidence) = (std::ffi::OsStr::new(STRETCHED_MS), evidence_dir(cell));
-    crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_GOSSIP_INTERVAL_MS", Some(stretched)), ("RDM_BACKBONE_INTERVAL_MS", Some(stretched)), ("RDM_EVIDENCE_DIR", Some(evidence.as_os_str()))])
+    let parent = crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_GOSSIP_INTERVAL_MS", Some(stretched)), ("RDM_BACKBONE_INTERVAL_MS", Some(stretched)), ("RDM_EVIDENCE_DIR", Some(evidence.as_os_str()))]);
+    if !parent {
+        assert_eq!(rafka_mesh_entity::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the rounds it was started with");
+    }
+    parent
 }
 
 fn day0_config(dir: &std::path::Path) -> AdminConfig {

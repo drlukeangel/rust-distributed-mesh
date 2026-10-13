@@ -45,6 +45,7 @@ fn a_parked_admin_whose_loops_were_woken_on_a_taken_view_lock_still_gives_the_lo
     if crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_GOSSIP_INTERVAL_MS", stretched), ("RDM_BACKBONE_INTERVAL_MS", stretched)]) {
         return;
     }
+    assert_eq!(rafka_mesh_entity::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the rounds it was started with");
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("park-gate-view-lock-{}", NodeId::mint()));
