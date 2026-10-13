@@ -1103,13 +1103,17 @@ impl DriveEnv {
             _ => self.me.clone(),
         };
         let terminal = BuildReply::HandedOff { build_id: id.to_string(), attempt, to: to.to_string() };
+        // The verdict's writer releases the mesh's in-flight row the claim took (R-BI7 caveat 3), at
+        // the verdict and before a reader of the held run learns the attempt ended: a successor that
+        // reads the verdict claims its next attempt on the same mesh rows.
         match held {
-            Some(held) => held.finish(terminal).await,
-            None => {
-                if let Err(e) = self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.to_string() }, mesh: None }).await {
+            Some(held) => held.finish(terminal, self.release_mesh(id, attempt, &self.me)).await,
+            None => match self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.to_string() }, mesh: None }).await {
+                Ok(()) => self.release_mesh(id, attempt, &self.me).await,
+                Err(e) => {
                     dspan.record("reason", format!("the verdict of attempt {attempt} could not be recorded: {e}").as_str());
                 }
-            }
+            },
         }
         dspan.record("outcome", "handed-off");
         match (moved, still) {

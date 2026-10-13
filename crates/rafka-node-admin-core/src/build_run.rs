@@ -411,10 +411,12 @@ pub struct HeldRun {
 impl HeldRun {
     /// The attempt ended with `terminal`: its verdict receipt first, on this admin's own Build state as
     /// an executor's run writes it, so a call that reads the attempt after the run ends finds the
-    /// verdict; then the terminal frame to every reader; then the run is no longer held. A verdict
-    /// that cannot be recorded ends the attempt `Failed` naming why, with no verdict, as an executor's
-    /// run does.
-    pub async fn finish(mut self, terminal: BuildReply) {
+    /// verdict; then `at_verdict`, what the verdict's writer does at the verdict (the release of the
+    /// mesh's in-flight row the attempt's claim took, R-BI7 caveat 3), before any reader learns the
+    /// attempt ended; then the terminal frame to every reader; then the run is no longer held. A
+    /// verdict that cannot be recorded ends the attempt `Failed` naming why, with no verdict and no
+    /// `at_verdict` (the mesh stays held by the attempt), as an executor's run does.
+    pub async fn finish(mut self, terminal: BuildReply, at_verdict: impl std::future::Future<Output = ()>) {
         let outcome = match &terminal {
             BuildReply::HandedOff { to, .. } => Some(AttemptOutcome::HandedOff { to: to.clone() }),
             BuildReply::Complete { .. } => Some(AttemptOutcome::Converged),
@@ -423,7 +425,10 @@ impl HeldRun {
         };
         let terminal = match outcome {
             Some(outcome) => match self.builds.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: self.build_id.clone(), attempt: self.attempt, outcome, mesh: None }).await {
-                Ok(()) => terminal,
+                Ok(()) => {
+                    at_verdict.await;
+                    terminal
+                }
                 Err(e) => BuildReply::Failed { build_id: self.build_id.to_string(), attempt: self.attempt, operation: String::new(), step: "attempt".into(), reason: bounded_reason(format!("recording attempt {}: {e}", self.attempt)) },
             },
             None => terminal,
