@@ -143,105 +143,93 @@ async fn paths(ep: &iroh::Endpoint, key: iroh::PublicKey) -> BTreeSet<SocketAddr
         .collect()
 }
 
-fn spans_of(dir: &std::path::Path) -> Vec<Value> {
-    let mine = format!(".{}-", std::process::id());
-    let mut spans = Vec::new();
-    for e in std::fs::read_dir(dir).unwrap().flatten() {
-        let n = e.file_name().to_string_lossy().to_string();
-        if n.ends_with(".spans.jsonl") && n.contains(&mine) {
-            spans.extend(std::fs::read_to_string(e.path()).unwrap().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
-        }
-    }
-    spans
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_never_dials_the_old() {
+#[test]
+fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_never_dials_the_old() {
     if crate::own_process::delegated_with_env(module_path!(), "an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_never_dials_the_old", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("60000")))]) {
         return;
     }
     let dir = crate::evidence_dir();
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-peer-location-book");
+    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-mesh-transport-peer-location-book").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
+        let clock = rafka_mesh_transport::clock::os_clock;
+        let (held_tx, mut held_at_admin) = tokio::sync::mpsc::unbounded_channel();
+        let admin = node_with(iroh::SecretKey::generate(), Some(HandOver(held_tx))).await;
+        let member = node_with(iroh::SecretKey::generate(), None).await;
+        let m_admin = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
+        let backbone = Backbone::join(&admin.gossip, &admin.ep, &m_admin, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
+        let m_member = Membership::join(&member.gossip, &member.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![]).await.unwrap();
 
-    let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
-    let clock = rafka_mesh_transport::clock::os_clock;
-    let (held_tx, mut held_at_admin) = tokio::sync::mpsc::unbounded_channel();
-    let admin = node_with(iroh::SecretKey::generate(), Some(HandOver(held_tx))).await;
-    let member = node_with(iroh::SecretKey::generate(), None).await;
-    let m_admin = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh_id, "mesh1.admin.1", clock(), vec![]).await.unwrap();
-    let backbone = Backbone::join(&admin.gossip, &admin.ep, &m_admin, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
-    let m_member = Membership::join(&member.gossip, &member.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", clock(), vec![]).await.unwrap();
+        // The peer admin's first birth at X: known to the admin's mesh channel and its backbone, known
+        // to the member, and connected to the admin.
+        let key = iroh::SecretKey::generate();
+        let peer = key.public();
+        let (dialed_tx, mut dialed_at_old) = tokio::sync::mpsc::unbounded_channel();
+        let old = first_birth_at(key.clone(), HandOver(dialed_tx)).await;
+        let x = socket_of(&old.0);
+        let node_id = NodeId::mint();
+        let first_birth = IncarnationId::mint();
+        let first = birth(&node_id, peer, x, &first_birth, None);
+        m_admin.learn(first.clone(), "join");
+        m_member.learn(first, "join");
+        backbone.join_admins(vec![iroh::EndpointAddr::new(peer).with_ip_addr(x)]).await;
+        // The admin's gossip dial to X is registered at the admin and in use: gossip writes on a
+        // connection only once its connect returned, and a connect returns only once the endpoint
+        // registered the connection.
+        let dialed = dialed_at_old.recv().await.unwrap();
+        let first_frames = dialed.accept_uni().await.unwrap();
+        // The old birth's own connection to the admin, registered at the admin: its connect returning
+        // says only that the old side completed the handshake.
+        let held = old.0.connect(iroh::EndpointAddr::new(admin.ep.id()).with_ip_addr(socket_of(&admin.ep)), HELD).await.unwrap();
+        let held_by_admin = held_at_admin.recv().await.unwrap();
+        assert_eq!(held_by_admin.remote_id(), peer);
+        assert!(paths(&admin.ep, peer).await.contains(&x), "the old birth is connected to the admin at {x}");
 
-    // The peer admin's first birth at X: known to the admin's mesh channel and its backbone, known
-    // to the member, and connected to the admin.
-    let key = iroh::SecretKey::generate();
-    let peer = key.public();
-    let (dialed_tx, mut dialed_at_old) = tokio::sync::mpsc::unbounded_channel();
-    let old = first_birth_at(key.clone(), HandOver(dialed_tx)).await;
-    let x = socket_of(&old.0);
-    let node_id = NodeId::mint();
-    let first_birth = IncarnationId::mint();
-    let first = birth(&node_id, peer, x, &first_birth, None);
-    m_admin.learn(first.clone(), "join");
-    m_member.learn(first, "join");
-    backbone.join_admins(vec![iroh::EndpointAddr::new(peer).with_ip_addr(x)]).await;
-    // The admin's gossip dial to X is registered at the admin and in use: gossip writes on a
-    // connection only once its connect returned, and a connect returns only once the endpoint
-    // registered the connection.
-    let dialed = dialed_at_old.recv().await.unwrap();
-    let first_frames = dialed.accept_uni().await.unwrap();
-    // The old birth's own connection to the admin, registered at the admin: its connect returning
-    // says only that the old side completed the handshake.
-    let held = old.0.connect(iroh::EndpointAddr::new(admin.ep.id()).with_ip_addr(socket_of(&admin.ep)), HELD).await.unwrap();
-    let held_by_admin = held_at_admin.recv().await.unwrap();
-    assert_eq!(held_by_admin.remote_id(), peer);
-    assert!(paths(&admin.ep, peer).await.contains(&x), "the old birth is connected to the admin at {x}");
+        // The key re-binds: the old process dies without a word (no close reaches the admin, which keeps
+        // its connections to X open and in use), and its successor binds a new socket Y.
+        drop(old);
+        let open = active_paths(&admin.ep, peer).await;
+        assert!(open.contains(&x), "the admin still holds the dead birth's path to {x} open: {open:?}");
+        let new = node_with(key, None).await;
+        let y = socket_of(&new.ep);
+        assert_ne!(x, y);
+        let second = birth(&node_id, peer, y, &IncarnationId::mint(), Some(first_birth));
+        m_admin.learn(second.clone(), "join");
+        m_member.learn(second, "join");
 
-    // The key re-binds: the old process dies without a word (no close reaches the admin, which keeps
-    // its connections to X open and in use), and its successor binds a new socket Y.
-    drop(old);
-    let open = active_paths(&admin.ep, peer).await;
-    assert!(open.contains(&x), "the admin still holds the dead birth's path to {x} open: {open:?}");
-    let new = node_with(key, None).await;
-    let y = socket_of(&new.ep);
-    assert_ne!(x, y);
-    let second = birth(&node_id, peer, y, &IncarnationId::mint(), Some(first_birth));
-    m_admin.learn(second.clone(), "join");
-    m_member.learn(second, "join");
-
-    let (at_admin, at_member) = (looked_up(&admin.ep, peer).await, looked_up(&member.ep, peer).await);
-    assert!(
-        at_admin == BTreeSet::from([y]) && at_member == BTreeSet::from([y]),
-        "after the newer birth is accepted every address book names the key at {y} alone (old {x}): admin {at_admin:?}, member {at_member:?}"
-    );
-
-    // The admin retires its path to X, and a dial of the key by its id puts none back.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while paths(&admin.ep, peer).await.contains(&x) {
-        assert!(Instant::now() < deadline, "the admin still holds a path to the old socket {x}: {:?}", paths(&admin.ep, peer).await);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(
-        held_by_admin.close_reason(),
-        Some(iroh::endpoint::ConnectionError::LocallyClosed),
-        "the retire closed the admin's open connection from the old birth, whose last path X was"
-    );
-    let _dialed = admin.ep.connect(iroh::EndpointAddr::new(peer), iroh_gossip::ALPN).await.unwrap();
-    let after = paths(&admin.ep, peer).await;
-    assert!(!after.contains(&x), "a dial of the key by its id reached for the old socket {x} again: {after:?}");
-    assert!(after.contains(&y), "the dial went to {y}: {after:?}");
-    drop((held, held_by_admin, dialed, first_frames));
-
-    drop(telemetry);
-    let spans = spans_of(&dir);
-    let refreshed: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.connection.update.via-peer-location-refreshed").collect();
-    for observer in ["mesh1.admin.1", "mesh1.rpc.1"] {
+        let (at_admin, at_member) = (looked_up(&admin.ep, peer).await, looked_up(&member.ep, peer).await);
         assert!(
-            refreshed.iter().any(|s| s["attributes"]["observer"] == observer
-                && s["attributes"]["old_socket"] == x.to_string()
-                && s["attributes"]["new_socket"] == y.to_string()
-                && s["attributes"]["retired"] == "true"),
-            "{observer} names the move from {x} to {y} and the retirement of the old paths: {refreshed:#?}"
+            at_admin == BTreeSet::from([y]) && at_member == BTreeSet::from([y]),
+            "after the newer birth is accepted every address book names the key at {y} alone (old {x}): admin {at_admin:?}, member {at_member:?}"
         );
-    }
+
+        // The admin retires its path to X, and a dial of the key by its id puts none back.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while paths(&admin.ep, peer).await.contains(&x) {
+            assert!(Instant::now() < deadline, "the admin still holds a path to the old socket {x}: {:?}", paths(&admin.ep, peer).await);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            held_by_admin.close_reason(),
+            Some(iroh::endpoint::ConnectionError::LocallyClosed),
+            "the retire closed the admin's open connection from the old birth, whose last path X was"
+        );
+        let _dialed = admin.ep.connect(iroh::EndpointAddr::new(peer), iroh_gossip::ALPN).await.unwrap();
+        let after = paths(&admin.ep, peer).await;
+        assert!(!after.contains(&x), "a dial of the key by its id reached for the old socket {x} again: {after:?}");
+        assert!(after.contains(&y), "the dial went to {y}: {after:?}");
+        drop((held, held_by_admin, dialed, first_frames));
+
+        let spans = capture.spans().expect("the cell's spans reached its evidence file");
+        let refreshed: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.connection.update.via-peer-location-refreshed").collect();
+        for observer in ["mesh1.admin.1", "mesh1.rpc.1"] {
+            assert!(
+                refreshed.iter().any(|s| s["attributes"]["observer"] == observer
+                    && s["attributes"]["old_socket"] == x.to_string()
+                    && s["attributes"]["new_socket"] == y.to_string()
+                    && s["attributes"]["retired"] == "true"),
+                "{observer} names the move from {x} to {y} and the retirement of the old paths: {refreshed:#?}"
+            );
+        }
+    });
 }
