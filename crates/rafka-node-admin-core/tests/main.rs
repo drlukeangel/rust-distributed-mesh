@@ -41,6 +41,7 @@ mod loopback;
 mod mesh_leave_resume;
 mod mesh_delete_round;
 mod mesh_delete_source;
+mod mesh_delete_view;
 mod build_catch_up;
 mod build_admission;
 mod build_claim;
