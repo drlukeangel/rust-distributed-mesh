@@ -1167,6 +1167,8 @@ mod tests {
             opened: 0,
             completed_at: None,
             reported: Default::default(),
+            claimant: None,
+            lanes: Default::default(),
         };
         let gone = mn();
         assert_eq!(plan_for_build(&build(vec![]), &gone).operations, op, "the view never names the parked birth (a fabric-primary that did not run its replace) and nothing began: owed");
@@ -1214,6 +1216,8 @@ mod tests {
             opened: 0,
             completed_at: None,
             reported: Default::default(),
+            claimant: None,
+            lanes: Default::default(),
         };
         let mut gone = mn();
         gone.nodes.retain(|x| x.name != path);
@@ -1263,6 +1267,8 @@ mod tests {
             opened: 0,
             completed_at: None,
             reported: Default::default(),
+            claimant: None,
+            lanes: Default::default(),
         };
         let replace = vec![BuildOperation::ReplaceNode { node: path.clone(), from_incarnation: from.clone() }];
         // The view holds the successor (another birth) at the path.
@@ -1345,6 +1351,8 @@ mod tests {
             opened: 0,
             completed_at: None,
             reported: Default::default(),
+            claimant: None,
+            lanes: Default::default(),
         };
         let keys = |steps: Vec<BuildStepReceipt>, o: &Topology| plan_for_build(&build(&path, &node_id, steps), o).operations.iter().map(|op| op.key()).collect::<Vec<_>>();
         let all = vec![format!("retire-node:{path}"), format!("create-node:{path}"), format!("update-node:{path}")];
