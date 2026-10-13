@@ -83,8 +83,8 @@ async fn settle(cp: &ControlPlane, id: &rafka_node_admin_client::BuildId) {
     use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt};
     let id = id.clone();
     let attempt = cp.builds.read_build(&id).await.unwrap().attempt + 1;
-    cp.builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
-    cp.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+    cp.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    cp.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
 }
 
 #[tokio::test]

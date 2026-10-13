@@ -92,13 +92,13 @@ async fn settled(builds: &MemoryBuildStateAdapter, id: &BuildId, holder: &str, s
         if attempt > 1 {
             open(builds, id, attempt).await;
         }
-        builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: holder.into() }).await.unwrap();
-        builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: holder.into() }).await.unwrap();
+        builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     }
 }
 
 async fn open(builds: &MemoryBuildStateAdapter, id: &BuildId, attempt: u32) {
-    builds.open_attempt(&AttemptOpened { build_id: id.clone(), attempt, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 }).await.unwrap();
+    builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 }).await.unwrap();
 }
 
 /// A fabric-primary P whose log holds the Build at `settled` converged attempts, listing the
@@ -153,7 +153,7 @@ async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
     open(&p_builds, &id, 4).await;
     assert_eq!(p_seat.door.claim("mesh1.admin.2", &id, 4).await, BuildClaimReply::Won { context: rest.clone() });
     // The next attempt (a hand-off) has no record of its own.
-    p_builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt: 4, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }).await.unwrap();
+    p_builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 4, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }).await.unwrap();
     assert_eq!(contexts.get(&id, 5).await.unwrap(), None);
     assert_eq!(p_seat.door.claim("mesh2.admin.1", &id, 5).await, BuildClaimReply::Won { context: rest.clone() }, "the hand-off continues the trace");
     assert_eq!(contexts.get(&id, 5).await.unwrap(), Some(rest), "and keeps it under its own attempt");

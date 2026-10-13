@@ -780,8 +780,8 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let settle = |attempt: u32| {
             let (builds, b0) = (rig.builds.clone(), b0.clone());
             async move {
-                builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
-                builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+                builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+                builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
             }
         };
         settle(1).await;
@@ -794,7 +794,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let deleted = rafka_mesh_entity::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("retire-node:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
         for (operation, step, output) in [("retire-node", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("retire-node", "Complete", None), ("create-node", "Complete", None), ("update-node", "Complete", None)] {
             rig.builds
-                .append_step_receipt(&BuildStepReceipt { build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
+                .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
                 .await
                 .unwrap();
         }

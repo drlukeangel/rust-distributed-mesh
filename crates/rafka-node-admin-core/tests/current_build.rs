@@ -54,8 +54,8 @@ async fn fabric_primary() -> (Arc<ControlPlane>, Arc<MemoryBuildStateAdapter>, B
 
 async fn fail(builds: &MemoryBuildStateAdapter, id: &BuildId) {
     let attempt = builds.read_build(id).await.unwrap().attempt + 1;
-    builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
-    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the cell fails it".into() } }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the cell fails it".into() } }).await.unwrap();
 }
 
 /// CONTRACT (R-BI3: "failed Builds are skipped. A failed Build is never current"; "completed: it is

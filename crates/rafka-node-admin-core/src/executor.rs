@@ -368,7 +368,7 @@ impl BuildExecutor {
 
     async fn run_claimed(&self, build_id: &BuildId, attempt: u32, plan: &RunPlan, span: &tracing::Span) -> Reconciled {
         // The fabric-primary decided the claim; this admin's own log takes the fact with it.
-        let claim = BuildAttemptClaim { build_id: build_id.clone(), attempt, executor: self.executor.clone() };
+        let claim = BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: self.executor.clone() };
         if let Err(e) = self.builds.adopt_claim(&claim).await {
             return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording the claim of attempt {attempt}: {e}") };
         }
@@ -415,7 +415,7 @@ impl BuildExecutor {
     }
 
     async fn hand_off(&self, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {
-        let receipt = BuildAttemptReceipt { build_id: build.build_id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } };
+        let receipt = BuildAttemptReceipt { mesh: None, build_id: build.build_id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } };
         if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
             return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") };
         }
@@ -428,7 +428,7 @@ impl BuildExecutor {
             Ok(_) => AttemptOutcome::Converged,
             Err((op, reason)) => AttemptOutcome::Failed { reason: format!("{op}: {reason}") },
         };
-        let receipt = BuildAttemptReceipt { build_id: build.build_id.clone(), attempt, outcome };
+        let receipt = BuildAttemptReceipt { mesh: None, build_id: build.build_id.clone(), attempt, outcome };
         if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
             return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") };
         }
@@ -753,8 +753,8 @@ mod tests {
                 submitted_change: None,
                 submitted_at_ms: 0,
             }),
-            BuildFact::Claim(BuildAttemptClaim { build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }),
-            BuildFact::Attempt(BuildAttemptReceipt { build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }),
+            BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }),
+            BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }),
         ];
         let p = fold(&facts).remove(&id).unwrap();
         assert_eq!((p.state, p.attempt, p.last_failure), (BuildState::Pending, 1, None));

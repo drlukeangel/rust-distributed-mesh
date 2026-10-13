@@ -161,7 +161,7 @@ impl ClaimDoor {
         if let Some(refusal) = self.not_fabric_primary().await {
             return refusal;
         }
-        let claim = BuildAttemptClaim { build_id: build_id.clone(), attempt, executor: executor.to_string() };
+        let claim = BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: executor.to_string() };
         match self.builds.claim_attempt(&claim).await {
             Ok(ClaimOutcome::Won) => match self.contexts.for_claim(build_id, attempt).await {
                 Ok(context) => BuildClaimReply::Won { context },

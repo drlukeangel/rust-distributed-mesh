@@ -49,13 +49,13 @@ async fn an_admin_joining_after_a_build_was_accepted_holds_it_and_only_active_bu
     // the active one is the current Build (R-BI3), the finished one history.
     let finished = BuildId::mint();
     a.publish_accepted(&BuildAccepted { submitted_at_ms: 1, ..intent(&finished) }).await.unwrap();
-    a.claim_attempt(&BuildAttemptClaim { build_id: finished.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    a.append_attempt_receipt(&BuildAttemptReceipt { build_id: finished.clone(), attempt: 1, outcome: AttemptOutcome::Converged })
+    a.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: finished.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    a.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: finished.clone(), attempt: 1, outcome: AttemptOutcome::Converged })
         .await
         .unwrap();
     let active = BuildId::mint();
     a.publish_accepted(&BuildAccepted { submitted_at_ms: 2, ..intent(&active) }).await.unwrap();
-    a.claim_attempt(&BuildAttemptClaim { build_id: active.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    a.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: active.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
 
     // C joins later.
     let (_c_ep, c_router, c) = admin(vec![addr(&a_ep)]).await;
@@ -73,7 +73,7 @@ async fn an_admin_joining_after_a_build_was_accepted_holds_it_and_only_active_bu
     assert!(c.read_build(&finished).await.is_err(), "finished Builds are history, not catch-up");
 
     // From here on C hears A's new facts directly.
-    a.append_attempt_receipt(&BuildAttemptReceipt { build_id: active.clone(), attempt: 1, outcome: AttemptOutcome::Converged })
+    a.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: active.clone(), attempt: 1, outcome: AttemptOutcome::Converged })
         .await
         .unwrap();
     let mut complete = false;
@@ -95,10 +95,11 @@ async fn a_large_catch_up_arrives_in_messages_that_fit_and_keeps_the_connection(
     let (a_ep, a_router, a) = admin(vec![]).await;
     let id = BuildId::mint();
     a.publish_accepted(&intent(&id)).await.unwrap();
-    a.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    a.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     // Far more than one gossip message's worth of receipts, each with output.
     for i in 0..120 {
         a.append_step_receipt(&BuildStepReceipt {
+            mesh: None,
             build_id: id.clone(),
             attempt: 1,
             operation: format!("create-node:mesh1.rpc.{i}"),
@@ -127,7 +128,7 @@ async fn a_large_catch_up_arrives_in_messages_that_fit_and_keeps_the_connection(
     }
     assert!(all, "C did not receive the whole catch-up: {:?}", c.read_build(&id).await.map(|v| v.steps.len()));
     // The connection survived: a fact appended afterwards still arrives.
-    a.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+    a.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
     let mut complete = false;
     for _ in 0..200 {
         if c.read_build(&id).await.is_ok_and(|v| v.state == BuildState::Complete) {
@@ -179,7 +180,7 @@ async fn a_catch_up_at_the_wire_limit_arrives_and_keeps_the_connection() {
     assert!(both, "C never received the two Builds: the catch-up message exceeded the gossip wire limit");
 
     // The connection survived: C hears a fact appended afterwards.
-    a.claim_attempt(&BuildAttemptClaim { build_id: one.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    a.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: one.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     let mut heard = false;
     for _ in 0..200 {
         if c.read_build(&one).await.is_ok_and(|v| v.attempt == 1) {

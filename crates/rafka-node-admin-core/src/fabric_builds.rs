@@ -667,6 +667,7 @@ mod tests {
             event_at_rafka_ms: 4_242,
         };
         let receipt = |operation: &str| BuildStepReceipt {
+            mesh: None,
             build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt: 2,
             operation: operation.into(),
@@ -691,6 +692,8 @@ mod tests {
             let facts: Vec<BuildFact> = (0..60u32)
                 .map(|i| {
                     BuildFact::Claim(BuildAttemptClaim {
+                        claimant: None,
+                        mesh: None,
                         build_id: BuildId::mint(),
                         attempt: i,
                         executor: format!("mesh{}.admin.{}", round, "x".repeat(((i * 37 + round) % 90) as usize)),
@@ -722,6 +725,7 @@ mod tests {
             event_at_rafka_ms: 7,
         };
         let receipt = BuildStepReceipt {
+            mesh: None,
             build_id: BuildId::parse("3qcfk1kq47m9").unwrap(),
             attempt: 2,
             operation: op.operation.clone(),

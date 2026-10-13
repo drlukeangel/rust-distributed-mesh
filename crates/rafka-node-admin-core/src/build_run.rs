@@ -659,7 +659,7 @@ mod tests {
         let deleted = rafka_mesh_entity::LifecycleOp { build_id: id().to_string(), attempt: 2, operation: format!("retire-node:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 };
         for (operation, step, output) in [("retire-node", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("retire-node", "Complete", None)] {
             memory
-                .append_step_receipt(&BuildStepReceipt { build_id: id(), attempt: 2, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
+                .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: id(), attempt: 2, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
                 .await
                 .unwrap();
         }
@@ -669,7 +669,7 @@ mod tests {
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: id(), attempt, operation: "create-node:mesh1.rpc.2".into(), step: step.into(), outcome, output: None, executor: Some("mesh1.admin.1".into()) }
+        BuildStepReceipt { mesh: None, build_id: id(), attempt, operation: "create-node:mesh1.rpc.2".into(), step: step.into(), outcome, output: None, executor: Some("mesh1.admin.1".into()) }
     }
 
     /// CONTRACT: a step frame is made only after the step's `Complete` receipt has been appended on
@@ -743,8 +743,8 @@ mod tests {
             Attached::Refused(BuildReply::NotExecutor { named, recipient }) if named == "mesh2.admin.1" && recipient == "mesh1.admin.1"
         ));
         // Attempt 1 is claimed and converged; attempt 4 is ahead of the Build, attempt 0 behind it.
-        memory.claim_attempt(&BuildAttemptClaim { build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-        memory.append_attempt_receipt(&BuildAttemptReceipt { build_id: id(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+        memory.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        memory.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
         for carried in [4u32, 0] {
             assert_eq!(
                 match door.attempt_run(&id(), carried, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await {
@@ -767,7 +767,7 @@ mod tests {
         accepted(&memory).await;
         let ctx = CallContext::default();
         // The fabric-primary won attempt 1 for this admin and died before calling it.
-        memory.claim_attempt(&BuildAttemptClaim { build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        memory.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
         let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await else { panic!("the claimed attempt is started") };
         assert_eq!(disposition, Disposition::Started);
         let mut last = None;

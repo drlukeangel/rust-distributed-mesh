@@ -389,6 +389,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         let unborn = "mesh1.rpc.4".parse::<PathName>().unwrap();
         let build_unborn = accepted_build(&builds).await;
         let decided = rafka_node_admin_core::build_state::BuildStepReceipt {
+            mesh: None,
             build_id: build_unborn.clone(),
             attempt: 1,
             operation: format!("create-node:{unborn}"),

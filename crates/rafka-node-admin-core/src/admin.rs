@@ -1740,7 +1740,7 @@ pub(crate) async fn create_mesh_step(records: &Records, meshes: &dyn crate::stor
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let receipt = |step: CreateMeshStep, outcome: StepOutcome| BuildStepReceipt { build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.name().into(), outcome, output: None, executor: Some(executor.to_string()) };
+    let receipt = |step: CreateMeshStep, outcome: StepOutcome| BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt, operation: operation.clone(), step: step.name().into(), outcome, output: None, executor: Some(executor.to_string()) };
     let run = async {
         let held = builds.read_build(build_id).await.map_err(|e| ("build-unreadable", format!("{me}: {operation}: the Build {build_id} could not be read for its receipts: {e}")))?;
         if held.steps.iter().any(|r| r.operation == operation && r.step == CreateMeshStep::Complete.name() && r.outcome == StepOutcome::Complete && r.attempt >= held.opened && r.attempt <= attempt) {
@@ -2739,6 +2739,7 @@ pub async fn reconcile_drift(
         exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
     );
     let opened = crate::build_state::AttemptOpened {
+        mesh: None,
         build_id: current.build_id.clone(),
         attempt,
         reason: crate::build_state::AttemptReason::ProvenDrift,
@@ -7631,12 +7632,12 @@ mod tests {
         let (build_id, op) = build_creating_mesh2(&builds).await;
         let capture = crate::span_capture::Capture::new("i143-3089-create-mesh-reopened");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let claim = |attempt: u32, executor: &str| crate::build_state::BuildAttemptClaim { build_id: build_id.clone(), attempt, executor: executor.into() };
+        let claim = |attempt: u32, executor: &str| crate::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: executor.into() };
         assert_eq!(builds.claim_attempt(&claim(1, "key1@127.0.0.1:1")).await.unwrap(), crate::build_state::ClaimOutcome::Won);
         create_mesh_step(&Records::default(), &meshes, &builds, "key1@127.0.0.1:1", "mesh1.admin.1", &build_id, 1, &op).await.expect("the first run");
-        builds.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged }).await.unwrap();
+        builds.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: 1, outcome: crate::build_state::AttemptOutcome::Converged }).await.unwrap();
         builds
-            .open_attempt(&crate::build_state::AttemptOpened { build_id: build_id.clone(), attempt: 2, reason: crate::build_state::AttemptReason::ProvenDrift, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1 })
+            .open_attempt(&crate::build_state::AttemptOpened { mesh: None, build_id: build_id.clone(), attempt: 2, reason: crate::build_state::AttemptReason::ProvenDrift, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 1 })
             .await
             .expect("the Build is reopened");
         assert_eq!(builds.read_build(&build_id).await.unwrap().opened, 2, "attempt 2 begins the Build's current run");
@@ -8264,6 +8265,7 @@ mod tests {
         let b1 = crate::build::BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
         let builds = Arc::new(crate::build_state::MemoryBuildStateAdapter::new());
         let deleted = |step: &str| crate::build_state::BuildStepReceipt {
+            mesh: None,
             build_id: b1.clone(),
             attempt: 2,
             operation: format!("retire-node:{path}"),
@@ -8277,6 +8279,7 @@ mod tests {
         builds.absorb(&[
             crate::build_state::BuildFact::Accepted(crate::build_state::BuildAccepted { build_id: b1.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
             crate::build_state::BuildFact::Opened(crate::build_state::AttemptOpened {
+                mesh: None,
                 build_id: b1.clone(),
                 attempt: 2,
                 reason: crate::build_state::AttemptReason::Recovery,
@@ -8284,10 +8287,10 @@ mod tests {
                 opened_by: "mesh1.admin.1".into(),
                 opened_at_ms: 1,
             }),
-            crate::build_state::BuildFact::Claim(crate::build_state::BuildAttemptClaim { build_id: b1.clone(), attempt: 2, executor: "mesh2.admin.2".into() }),
+            crate::build_state::BuildFact::Claim(crate::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: b1.clone(), attempt: 2, executor: "mesh2.admin.2".into() }),
             crate::build_state::BuildFact::Step(deleted("NodeDeleted")),
             crate::build_state::BuildFact::Step(deleted("Complete")),
-            crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }),
+            crate::build_state::BuildFact::Attempt(crate::build_state::BuildAttemptReceipt { mesh: None, build_id: b1.clone(), attempt: 2, outcome: crate::build_state::AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }),
         ]).await;
         let fabric = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         crate::fabric_storage::FabricStorage::claim_identity(&*fabric, &crate::fabric_storage::FabricIdentity { fabric_id: fabric1(), name: "fabric1".into() }).await.unwrap().expect("the fabric's name is claimed");
@@ -8485,7 +8488,7 @@ mod tests {
         let build = crate::build::BuildId::parse(&op.build_id).unwrap();
         let mut facts = vec![
             BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
-            BuildFact::Step(BuildStepReceipt { build_id: build.clone(), attempt: 2, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(&op).unwrap()), executor: None }),
+            BuildFact::Step(BuildStepReceipt { mesh: None, build_id: build.clone(), attempt: 2, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(&op).unwrap()), executor: None }),
         ];
         let capture = crate::span_capture::Capture::new("i143-3068-failed-removal-recovered");
         let mut named = NamedSteps::new();
@@ -8495,7 +8498,7 @@ mod tests {
         }
         assert_eq!(book.in_flight(), vec![op.clone()], "the removal's NodeDeleting receipt opens its overlay");
         // The attempt's verdict: the workflow failed (the member's runtime exited under it).
-        facts.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: build.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "TerminateRuntime: the member exited under the replace".into() } }));
+        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 2, outcome: AttemptOutcome::Failed { reason: "TerminateRuntime: the member exited under the replace".into() } }));
         {
             let _g = tracing::dispatcher::set_default(&capture.dispatch);
             overlays_from_facts(&facts, &book, &mut named);
@@ -9511,9 +9514,9 @@ mod tests {
         assert!(blocked.contains(&format!("holds attempt 0 of Build {id}")) && blocked.contains("held attempt 2"), "{blocked}");
         for attempt in 1..=2 {
             if attempt > 1 {
-                builds.open_attempt(&AttemptOpened { build_id: id.clone(), attempt, reason: AttemptReason::Restart, action: None, opened_by: "x".into(), opened_at_ms: 0 }).await.unwrap();
+                builds.open_attempt(&AttemptOpened { mesh: None, build_id: id.clone(), attempt, reason: AttemptReason::Restart, action: None, opened_by: "x".into(), opened_at_ms: 0 }).await.unwrap();
             }
-            builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+            builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
         }
         assert_eq!(hydration_blocker(&me, &builds, Some((id.clone(), 2))).await, None, "its attempt facts reached the entry's");
         let other = crate::build::BuildId::parse("qsmy968wj1zt").unwrap();

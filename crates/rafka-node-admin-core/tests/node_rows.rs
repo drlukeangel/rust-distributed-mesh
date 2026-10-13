@@ -764,7 +764,7 @@ fn a_fabric_primary_whose_view_never_names_the_old_path_admits_the_stopped_prede
         let held = r.env.rows.parked_at(&old);
         // The replace's attempt converged, as its executor's attempt receipt says.
         let attempt = r.env.builds.read_build(&r.build).await.unwrap().attempt;
-        let converged = rafka_node_admin_core::build_state::BuildAttemptReceipt { build_id: r.build.clone(), attempt, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged };
+        let converged = rafka_node_admin_core::build_state::BuildAttemptReceipt { mesh: None, build_id: r.build.clone(), attempt, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged };
         r.env.builds.append_attempt_receipt(&converged).await.unwrap();
         // The door: the next attempt of the accepted Build, fenced to the held record's exact birth.
         let mut cp = ControlPlane::new(r.env.builds.clone(), r.accepted.clone(), "mesh1.admin.1".parse().unwrap(), r.env.topology.read().await.clone(), crate::adopted_time());
@@ -1126,7 +1126,7 @@ mod writer {
             let identity = serde_json::json!({ "node_id": x, "incarnation": IncarnationId::mint(), "supersedes": null, "deployment_id": rafka_node_admin_core::model::DeploymentId::mint() });
             rafka_node_admin_core::build_state::BuildStateAdapter::append_step_receipt(
                 &builds,
-                &rafka_node_admin_core::build_state::BuildStepReceipt { build_id: other.clone(), attempt: 1, operation: "create-node:mesh1.rpc.6".into(), step: "AllocateIdentity".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: Some(identity), executor: None },
+                &rafka_node_admin_core::build_state::BuildStepReceipt { mesh: None, build_id: other.clone(), attempt: 1, operation: "create-node:mesh1.rpc.6".into(), step: "AllocateIdentity".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: Some(identity), executor: None },
             )
             .await
             .unwrap();

@@ -1006,7 +1006,7 @@ fn a_repeated_loss_records_one_amendment_per_predecessor_and_a_hand_off_omitting
         // A hand-off manifest over the accepted roster alone: it omits the amendment.
         let receipts = vec![exited(&by(FAILING), &runtime(FAILING, 46_003)), exited(&by(EXITING), &runtime(EXITING, 46_004)), exited(&first, &runtime(FINAL, 46_000)), exited(&second, &runtime(OTHER_ADMIN, 46_001))];
         let omitting = ExitManifest { mesh_id: mesh_id.to_string(), roster: leaving.clone(), final_primary: third.clone(), final_runtime: Some(a2.final_runtime.clone()), receipts };
-        let facts = vec![BuildFact::Step(BuildStepReceipt { build_id: build_id.clone(), attempt: 3, operation: outer.clone(), step: STEP_OTHER_MEMBERS_EXITED.into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: serde_json::to_value(&omitting).ok(), executor: Some(NEW_ADMIN.into()) })];
+        let facts = vec![BuildFact::Step(BuildStepReceipt { mesh: None, build_id: build_id.clone(), attempt: 3, operation: outer.clone(), step: STEP_OTHER_MEMBERS_EXITED.into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: serde_json::to_value(&omitting).ok(), executor: Some(NEW_ADMIN.into()) })];
         let omitted = handoff_verdict(&facts, &key(3), &admitted, &manifest_reference(&build_id.as_str(), 3, &outer, false));
         let _ = step_facts(&facts);
         (r1, r2, admitted, mp, omitted, trace_id)
@@ -1196,6 +1196,7 @@ fn a_created_admin_of_a_leaving_mesh_runs_the_owners_admitted_roster_and_capture
         // mesh2.rpc.2's exact exit, recorded by the lost primary and gossiped to the owner.
         owner
             .append_step_receipt(&BuildStepReceipt {
+                mesh: None,
                 build_id: build_id.clone(),
                 attempt: 1,
                 operation: rafka_node_admin_core::mesh_leave::member_operation(&outer, EXITING),

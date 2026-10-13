@@ -207,9 +207,9 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
         .publish_accepted(&rafka_node_admin_core::build_state::BuildAccepted { build_id: seed.clone(), topology: FabricTopology::of_observed(&observed()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
-    a.builds.claim_attempt(&rafka_node_admin_core::build_state::BuildAttemptClaim { build_id: seed.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    a.builds.claim_attempt(&rafka_node_admin_core::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: seed.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     a.builds
-        .append_attempt_receipt(&rafka_node_admin_core::build_state::BuildAttemptReceipt { build_id: seed.clone(), attempt: 1, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged })
+        .append_attempt_receipt(&rafka_node_admin_core::build_state::BuildAttemptReceipt { mesh: None, build_id: seed.clone(), attempt: 1, outcome: rafka_node_admin_core::build_state::AttemptOutcome::Converged })
         .await
         .unwrap();
     let mut cp = ControlPlane::new(a.builds.clone(), a.accepted.clone(), "mesh1.admin.1".parse().unwrap(), observed(), crate::adopted_time());

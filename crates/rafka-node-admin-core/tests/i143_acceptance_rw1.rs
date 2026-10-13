@@ -191,7 +191,7 @@ fn changes() -> Vec<Option<TopologyChange>> {
 }
 
 fn step(step: &str, output: Option<Value>) -> BuildFact {
-    BuildFact::Step(BuildStepReceipt { build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: "create-node:mesh2.rpc.1".into(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("key@127.0.0.1:1".into()) })
+    BuildFact::Step(BuildStepReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: "create-node:mesh2.rpc.1".into(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("key@127.0.0.1:1".into()) })
 }
 
 fn to_json<T: serde::Serialize>(v: &T) -> Value {
@@ -204,12 +204,13 @@ fn facts() -> Vec<BuildFact> {
     for change in changes() {
         out.push(BuildFact::Accepted(BuildAccepted { build_id: bid("3qcfk1kq47m9"), topology: topology(), submitted_change: change, submitted_at_ms: 55 }));
     }
-    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Restart, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
+    let action = |a: Option<AttemptAction>| BuildFact::Opened(AttemptOpened { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, reason: AttemptReason::Restart, action: a, opened_by: "mesh1.admin.1".into(), opened_at_ms: 56 });
     out.push(action(None));
     out.push(action(Some(AttemptAction::Restart { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
     out.push(action(Some(AttemptAction::Replace { path: "mesh2.rpc.1".parse().unwrap(), from_incarnation: IncarnationId::mint() })));
     // A member's recovery (node-recovery.md): the attempt the mesh-primary's submit opens.
     out.push(BuildFact::Opened(AttemptOpened {
+        mesh: None,
         build_id: bid("3qcfk1kq47m9"),
         attempt: 2,
         reason: AttemptReason::Recovery,
@@ -218,9 +219,10 @@ fn facts() -> Vec<BuildFact> {
         opened_at_ms: 56,
     }));
 
-    out.push(BuildFact::Claim(BuildAttemptClaim { build_id: bid("3qcfk1kq47m9"), attempt: 2, executor: "mesh1.admin.1".into() }));
+    out.push(BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, executor: "mesh1.admin.1".into() }));
     out.push(step("PrepareNetwork", None));
     out.push(BuildFact::Step(BuildStepReceipt {
+        mesh: None,
         build_id: bid("3qcfk1kq47m9"),
         attempt: 2,
         operation: "create-node:mesh2.rpc.1".into(),
@@ -275,9 +277,9 @@ fn facts() -> Vec<BuildFact> {
         // A receipt an earlier build wrote: no step of this build runs it, and it still decodes.
         out.push(step(rafka_node_admin_core::wire::RELEASE_STORAGE_STEP, Some(to_json(&s))));
     }
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Converged }));
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Failed { reason: "step failed".into() } }));
-    out.push(BuildFact::Attempt(BuildAttemptReceipt { build_id: bid("3qcfk1kq47m9"), attempt: 3, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }));
+    out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Converged }));
+    out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, outcome: AttemptOutcome::Failed { reason: "step failed".into() } }));
+    out.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 3, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }));
     out.push(BuildFact::Forget { build_id: bid("3qcfk1kq47m9") });
     out
 }

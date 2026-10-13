@@ -104,6 +104,12 @@ pub struct AttemptOpened {
     pub opened_by: String,
     /// When the attempt was opened, in milliseconds since the Unix epoch.
     pub opened_at_ms: u64,
+    /// The lane the attempt is numbered in (R-BI7, proposal Part C caveat 2): `None` the fabric lane
+    /// (a topology Build's attempts and the fabric-primary's workflow attempts, numbered across the
+    /// Build); `Some(mesh)` that mesh's drift lane (its mesh-primary's attempts, numbered per Build
+    /// and mesh from 1). A line written before lanes existed carries none: the fabric lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
 }
 
 /// A claim of one attempt by an executor.
@@ -115,6 +121,18 @@ pub struct BuildAttemptClaim {
     pub attempt: u32,
     /// The claiming executor (a node-admin's path.name).
     pub executor: String,
+    /// The admin that decided the claim (a node-admin's path.name): the fabric-primary for a fabric-lane
+    /// attempt, the mesh's own mesh-primary for a drift attempt. What a refusal names as the holder of
+    /// the attempt's mesh, as the claim recorded it (never re-read from a later seat view). A line
+    /// written before claimants were recorded carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimant: Option<String>,
+    /// The lane the attempt is numbered in (R-BI7, proposal Part C caveat 2): `None` the fabric lane
+    /// (a topology Build's attempts and the fabric-primary's workflow attempts, numbered across the
+    /// Build); `Some(mesh)` that mesh's drift lane (its mesh-primary's attempts, numbered per Build
+    /// and mesh from 1). A line written before lanes existed carries none: the fabric lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
 }
 
 /// The receipt of one step of an attempt.
@@ -139,6 +157,10 @@ pub struct BuildStepReceipt {
     /// lost admin. Absent on lines written by an executor that did not record it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executor: Option<String>,
+    /// The lane of the attempt the step belongs to (`None` the fabric lane, `Some(mesh)` that mesh's
+    /// drift lane; see [`AttemptOpened::mesh`]). A line written before lanes existed carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
 }
 
 /// How a step ended.
@@ -163,6 +185,10 @@ pub struct BuildAttemptReceipt {
     pub attempt: u32,
     /// How the attempt ended.
     pub outcome: AttemptOutcome,
+    /// The lane of the attempt (`None` the fabric lane, `Some(mesh)` that mesh's drift lane; see
+    /// [`AttemptOpened::mesh`]). A line written before lanes existed carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
 }
 
 /// How an attempt ended.
@@ -1562,19 +1588,19 @@ mod tests {
     }
 
     fn opened(id: &str, attempt: u32, reason: AttemptReason) -> AttemptOpened {
-        AttemptOpened { build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, reason, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }
+        AttemptOpened { mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, reason, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }
     }
 
     fn claim(id: &str, attempt: u32, who: &str) -> BuildAttemptClaim {
-        BuildAttemptClaim { build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, executor: who.into() }
+        BuildAttemptClaim { claimant: None, mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, executor: who.into() }
     }
 
     fn step(id: &str, attempt: u32, op: &str) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete, output: None, executor: None }
+        BuildStepReceipt { mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete, output: None, executor: None }
     }
 
     fn attempt(id: &str, attempt: u32, outcome: AttemptOutcome) -> BuildAttemptReceipt {
-        BuildAttemptReceipt { build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, outcome }
+        BuildAttemptReceipt { mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, outcome }
     }
 
     fn log() -> Vec<BuildFact> {
@@ -1630,6 +1656,7 @@ mod tests {
         let (a, b) = (op("mesh1.rpc.1"), op("mesh1.rpc.2"));
         let with = |operation: &str, step: &str, output: &rafka_mesh_entity::LifecycleOp| {
             BuildFact::Step(BuildStepReceipt {
+                mesh: None,
                 build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
                 attempt: 1,
                 operation: operation.into(),
@@ -1690,6 +1717,7 @@ mod tests {
         };
         let pre_event = |op: &rafka_mesh_entity::LifecycleOp| {
             BuildFact::Step(BuildStepReceipt {
+                mesh: None,
                 build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
                 attempt: op.attempt,
                 operation: op.operation.clone(),
@@ -1717,6 +1745,7 @@ mod tests {
     fn a_pre_event_step_this_build_cannot_read_is_refused_by_name() {
         let step = |output: Option<serde_json::Value>| {
             BuildFact::Step(BuildStepReceipt {
+                mesh: None,
                 build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
                 attempt: 2,
                 operation: "retire-node:mesh1.rpc.1".into(),
@@ -2035,6 +2064,7 @@ mod tests {
         // A recovery's receipts as its three operations write them: the delete's NodeDeleted names
         // the exited birth (its lifecycle operation), and each operation's Complete commits no output.
         let receipt = |build: &str, attempt: u32, operation: &str, step: &str| BuildStepReceipt {
+            mesh: None,
             build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(build)).unwrap(),
             attempt,
             operation: format!("{operation}:{path}"),
@@ -2046,6 +2076,7 @@ mod tests {
             executor: Some("mesh1.admin.1".into()),
         };
         let opened = |build: &str, attempt: u32| AttemptOpened {
+            mesh: None,
             build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(build)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
@@ -2097,6 +2128,7 @@ mod tests {
         let birth = |path: &str| (path.parse::<crate::model::PathName>().unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
         let (r, q) = (birth("mesh2.rpc.1"), birth("mesh1.rpc.1"));
         let receipt = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32, operation: &str, step: &str| BuildStepReceipt {
+            mesh: None,
             build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("{operation}:{}", b.0),
@@ -2108,6 +2140,7 @@ mod tests {
             executor: Some("mesh2.admin.1".into()),
         };
         let open = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32| AttemptOpened {
+            mesh: None,
             build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
@@ -2194,6 +2227,7 @@ mod tests {
     async fn a_birth_a_replace_or_a_retire_deleted_is_answered_by_that_workflow() {
         let path: crate::model::PathName = "mesh2.rpc.2".parse().unwrap();
         let receipt = |kind: &str, attempt: u32, step: &str, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId| BuildStepReceipt {
+            mesh: None,
             build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("{kind}:{path}"),

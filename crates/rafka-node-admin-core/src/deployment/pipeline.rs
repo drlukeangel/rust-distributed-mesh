@@ -1246,6 +1246,7 @@ impl DeploymentPipeline<'_> {
         let appended = self
             .builds
             .append_step_receipt(&BuildStepReceipt {
+                mesh: None,
                 build_id: run.build_id.clone(),
                 attempt: run.attempt,
                 operation: run.operation.clone(),
@@ -2679,7 +2680,7 @@ mod tests {
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
+        BuildStepReceipt { mesh: None, build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
     }
 
     #[test]

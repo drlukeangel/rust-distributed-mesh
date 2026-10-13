@@ -55,8 +55,8 @@ impl Capture {
 /// The Build `id`'s first attempt claimed and converged: it is settled.
 async fn settle_other(builds: &MemoryBuildStateAdapter, id: &rafka_node_admin_core::build::BuildId) {
     let attempt = builds.read_build(id).await.unwrap().attempt;
-    builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
-    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
 }
 
 fn opened(facts: &[BuildFact]) -> usize {
@@ -94,8 +94,8 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     let settle = |attempt: u32| {
         let (builds, b0) = (builds.clone(), b0.clone());
         async move {
-            builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
-            builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+            builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+            builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
         }
     };
     settle(1).await;
@@ -116,11 +116,11 @@ async fn a_duplicate_recovery_submit_for_the_same_exited_birth_opens_one_recover
     assert!(matches!(&repeat, Err(Refusal::BuildInProgress(id)) if *id == b0), "{repeat:?}");
 
     // The executor completes the recovery of the exited birth: its delete, create and update.
-    builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 2, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt: 2, executor: "mesh1.admin.1".into() }).await.unwrap();
     for r in recovery_receipts(&b0, 2, &path, &node_id, &birth, "mesh1.admin.1") {
         builds.append_step_receipt(&r).await.unwrap();
     }
-    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Converged }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Converged }).await.unwrap();
 
     // A repeat once the birth was recovered.
     let again = cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await;
@@ -185,17 +185,17 @@ async fn a_recovery_submit_for_a_birth_a_replace_deleted_is_answered_already_app
     let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
     // `mesh1.rpc.2` is replaced: attempt 2 terminates the birth, creates its successor at the
     // path.name and deletes the birth.
     let replace = cp.open_attempt("build.create", AttemptReason::Replace, path.clone(), ActionKind::Replace, Some(birth.clone())).await.expect("the replace is admitted");
     assert_eq!((replace.build_id.clone(), replace.attempt), (b0.clone(), 2));
-    builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 2, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt: 2, executor: "mesh1.admin.1".into() }).await.unwrap();
     for r in deletion_receipts("replace-node", &b0, 2, &path, &node_id, &birth, "mesh1.admin.1") {
         builds.append_step_receipt(&r).await.unwrap();
     }
-    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Converged }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 2, outcome: AttemptOutcome::Converged }).await.unwrap();
     // The mesh-primary's tick read the birth silent before the replace removed it: its tickle ends
     // TRUE OFFLINE and the provider proves the exit (the replace terminated it).
     cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
@@ -271,7 +271,7 @@ async fn until(what: &str, builds: &dyn BuildStateAdapter, id: &rafka_node_admin
 fn recovery_receipts(build: &rafka_node_admin_core::build::BuildId, attempt: u32, path: &PathName, node_id: &NodeId, birth: &IncarnationId, executor: &str) -> Vec<BuildStepReceipt> {
     let mut receipts = deletion_receipts("retire-node", build, attempt, path, node_id, birth, executor);
     for kind in ["create-node", "update-node"] {
-        receipts.push(BuildStepReceipt { build_id: build.clone(), attempt, operation: format!("{kind}:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: Some(executor.into()) });
+        receipts.push(BuildStepReceipt { mesh: None, build_id: build.clone(), attempt, operation: format!("{kind}:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: Some(executor.into()) });
     }
     receipts
 }
@@ -283,7 +283,7 @@ fn recovery_receipts(build: &rafka_node_admin_core::build::BuildId, attempt: u32
 fn deletion_receipts(kind: &str, build: &rafka_node_admin_core::build::BuildId, attempt: u32, path: &PathName, node_id: &NodeId, birth: &IncarnationId, executor: &str) -> Vec<BuildStepReceipt> {
     let operation = format!("{kind}:{path}");
     let op = rafka_mesh_entity::LifecycleOp { build_id: build.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
-    let receipt = |step: &str, output: Option<serde_json::Value>| BuildStepReceipt { build_id: build.clone(), attempt, operation: operation.clone(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor.into()) };
+    let receipt = |step: &str, output: Option<serde_json::Value>| BuildStepReceipt { mesh: None, build_id: build.clone(), attempt, operation: operation.clone(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some(executor.into()) };
     vec![
         receipt("NodeDeleting", Some(serde_json::to_value(&op).unwrap())),
         receipt("NodeDeleted", Some(serde_json::to_value(&op).unwrap())),
@@ -316,8 +316,8 @@ async fn a_recovery_run_by_a_mesh_primary_that_is_not_the_fabric_primary_is_answ
     let accepted = AcceptedStore::seeded(&*fp, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
     let cp = Arc::new(ControlPlane::new(fp.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()));
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
-    fp.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    fp.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+    fp.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    fp.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
     cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
 
     // The mesh-primary's submit: admitted as the accepted Build's next attempt, claimed by the
@@ -326,7 +326,7 @@ async fn a_recovery_run_by_a_mesh_primary_that_is_not_the_fabric_primary_is_answ
         Ok(Recovery::Opened(o)) => o,
         other => panic!("the first recovery is admitted: {other:?}"),
     };
-    assert_eq!(fp.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt: first.attempt, executor: "mesh2.admin.1".into() }).await.unwrap(), rafka_node_admin_core::build_state::ClaimOutcome::Won);
+    assert_eq!(fp.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt: first.attempt, executor: "mesh2.admin.1".into() }).await.unwrap(), rafka_node_admin_core::build_state::ClaimOutcome::Won);
     until("the mesh-primary hears its claim of the recovery attempt", &*mp, &b0, |p| p.attempt == first.attempt && p.executor.as_deref() == Some("mesh2.admin.1")).await;
 
     // The mesh-primary runs the recovery: every receipt is appended to its own log and broadcast.
@@ -334,7 +334,7 @@ async fn a_recovery_run_by_a_mesh_primary_that_is_not_the_fabric_primary_is_answ
         let step = r.step.clone();
         mp.append_step_receipt(&r).await.unwrap_or_else(|e| panic!("the recovery's {step} receipt is not broadcast to the fabric-primary: {e}"));
     }
-    mp.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0.clone(), attempt: first.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+    mp.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt: first.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     until("the fabric-primary hears the recovery attempt converge", &*fp, &b0, |p| p.state == rafka_node_admin_core::build_state::BuildState::Complete && p.attempt == first.attempt).await;
     assert_eq!(fp.recovery_of(&path, &node_id, &birth).await.unwrap(), Some((b0.clone(), first.attempt, format!("retire-node:{path}"))), "the fabric-primary's recovery index holds the exited birth from the heard receipts");
 
@@ -415,7 +415,7 @@ async fn a_recovery_in_mesh2_is_opened_by_its_mesh_primary_while_a_node_create_r
 
     // node.create in mesh1: a topology Build, its first attempt claimed for mesh1's admin.
     let create = fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("the node.create is accepted");
-    builds.claim_attempt(&BuildAttemptClaim { build_id: create.build_id.clone(), attempt: create.attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: create.build_id.clone(), attempt: create.attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
 
     // mesh2's mesh-primary opens its member's recovery at its own door.
     let recovery = mp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
@@ -458,7 +458,7 @@ async fn a_topology_operation_and_a_drift_attempt_on_one_mesh_never_both_open() 
 
     // The fabric-primary's topology operation holds mesh2.
     let create = fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await.expect("the node.create is accepted");
-    builds.claim_attempt(&BuildAttemptClaim { build_id: create.build_id.clone(), attempt: create.attempt, executor: "mesh2.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: create.build_id.clone(), attempt: create.attempt, executor: "mesh2.admin.1".into() }).await.unwrap();
     let refused = match mp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await {
         Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
         other => panic!("the recovery is refused build-in-progress while the node.create holds mesh2: {other:?}"),
@@ -466,7 +466,7 @@ async fn a_topology_operation_and_a_drift_attempt_on_one_mesh_never_both_open() 
     assert_eq!((refused["current_build_id"].as_str(), refused["mesh"].as_str(), refused["held_by"].as_str()), (Some(create.build_id.as_str()), Some("mesh2"), Some("mesh1.admin.1")), "the refusal names the Build, the mesh and its holder: {refused}");
 
     // The node.create converges; the mesh-primary's recovery opens and holds mesh2.
-    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: create.build_id.clone(), attempt: create.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: create.build_id.clone(), attempt: create.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     let recovery = match mp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await {
         Ok(Recovery::Opened(o)) => o,
         other => panic!("the recovery opens once mesh2 is free: {other:?}"),

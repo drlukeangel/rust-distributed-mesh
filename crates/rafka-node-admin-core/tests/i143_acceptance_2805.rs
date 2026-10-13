@@ -479,7 +479,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         })
         .await
         .unwrap();
-    builds.claim_attempt(&rafka_node_admin_core::build_state::BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&rafka_node_admin_core::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     let node = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false).node;
     let template = LaunchTemplate {
         fabric: "fabric1".into(),

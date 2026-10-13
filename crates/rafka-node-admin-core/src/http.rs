@@ -317,6 +317,7 @@ impl ControlPlane {
     #[allow(clippy::too_many_arguments)]
     async fn open_with(&self, current: &crate::build_state::BuildProjection, reason: AttemptReason, action: AttemptAction, route: &'static str, outer: &tracing::Span, node_name: &str, span: tracing::Span) -> Result<Opened, Refusal> {
         let opened = AttemptOpened {
+            mesh: None,
             build_id: current.build_id.clone(),
             attempt: current.attempt + 1,
             reason,

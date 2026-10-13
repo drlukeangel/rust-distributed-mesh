@@ -117,8 +117,8 @@ impl Harness {
     async fn settle(&self, id: &str) {
         let bid = BuildId::parse(id).unwrap();
         let attempt = self.builds.read_build(&bid).await.unwrap().attempt + 1;
-        self.builds.claim_attempt(&BuildAttemptClaim { build_id: bid.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
-        self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: bid, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+        self.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: bid.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+        self.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: bid, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     }
     fn span_with_build(&self, name: &str, id: &str) -> bool {
         self.spans.0.lock().unwrap().iter().any(|(n, b)| n == name && b.as_deref() == Some(id))

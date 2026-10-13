@@ -91,6 +91,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
             event_at_rafka_ms: 1,
         };
         let receipt = |operation: String, step: &str| BuildStepReceipt {
+            mesh: None,
             build_id: build_id.clone(),
             attempt: 2,
             operation,
@@ -169,6 +170,7 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
         let restart = op_at("mesh1.rpc.1", "restart-node");
         let retire = op_at("mesh1.rpc.2", "retire-node");
         let receipt = |operation: String, step: &str, output: Option<&LifecycleOp>| BuildStepReceipt {
+            mesh: None,
             build_id: build_id.clone(),
             attempt: 2,
             operation,
@@ -265,6 +267,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
         let restart = op_at("mesh1.rpc.1", ATTEMPT);
         let other = op_at("mesh1.rpc.2", ATTEMPT + 1);
         let pre_event = |op: &LifecycleOp| BuildStepReceipt {
+            mesh: None,
             build_id: build_id.clone(),
             attempt: op.attempt,
             operation: op.operation.clone(),
@@ -289,7 +292,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
 
         // The attempt's Converged enters the log (the fabric-primary's own verdict from the stream's
         // terminal), no restart-node Complete with it: the hold is over when the append returns.
-        builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: build_id.clone(), attempt: ATTEMPT, outcome: AttemptOutcome::Converged }).await.unwrap();
+        builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: ATTEMPT, outcome: AttemptOutcome::Converged }).await.unwrap();
         assert_eq!(
             book.restart_of(restart.node_id.as_str(), &restart.incarnation),
             None,

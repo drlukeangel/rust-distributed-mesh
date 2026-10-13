@@ -472,6 +472,7 @@ impl AdminRunner {
         crate::mesh_leave::mesh_left_rows(self.records.node_rows().as_deref(), &*self.status_storage, &*self.mesh_storage, &self.records.declared, &self.me.to_string(), key, mesh, &all.receipts).await?;
         self.builds
             .append_step_receipt(&BuildStepReceipt {
+                mesh: None,
                 build_id: build_id.clone(),
                 attempt,
                 operation: outer.to_string(),

@@ -181,6 +181,7 @@ pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, ste
             let row = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.clone(), final_primary: final_primary.clone(), final_runtime: Some(final_runtime.clone()), receipts: Vec::new() };
             builds
                 .append_step_receipt(&BuildStepReceipt {
+                    mesh: None,
                     build_id: build_id.clone(),
                     attempt: key.attempt,
                     operation: key.operation.clone(),
@@ -294,6 +295,7 @@ pub fn completion_of(steps: &[BuildStepReceipt], operation: &str) -> Option<Resu
 pub async fn record_completion(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, manifest: &ExitManifest) -> Result<(), String> {
     builds
         .append_step_receipt(&BuildStepReceipt {
+            mesh: None,
             build_id: key.build_id.clone(),
             attempt: key.attempt,
             operation: key.operation.clone(),
@@ -445,6 +447,7 @@ pub async fn record_predecessor_exit(builds: &dyn BuildStateAdapter, key: &Leave
     }
     builds
         .append_step_receipt(&BuildStepReceipt {
+            mesh: None,
             build_id,
             attempt: key.attempt,
             operation: member_operation(operation, &lost.node),
@@ -501,6 +504,7 @@ pub async fn amend_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, execut
     }
     builds
         .append_step_receipt(&BuildStepReceipt {
+            mesh: None,
             build_id,
             attempt: key.attempt,
             operation: operation.to_string(),
@@ -851,6 +855,7 @@ where
     let manifest = ExitManifest { mesh_id: key.mesh_id.to_string(), roster: roster.to_vec(), final_primary: me.clone(), final_runtime: Some(final_runtime), receipts };
     builds
         .append_step_receipt(&BuildStepReceipt {
+            mesh: None,
             build_id: key.build_id.clone(),
             attempt: key.attempt,
             operation: key.operation.clone(),

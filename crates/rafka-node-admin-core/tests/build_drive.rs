@@ -90,7 +90,7 @@ struct Creates(Mutex<Vec<String>>, Arc<MemoryBuildStateAdapter>);
 impl OperationRunner for Creates {
     async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.0.lock().unwrap().push(op.key());
-        let receipt = BuildStepReceipt { build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+        let receipt = BuildStepReceipt { mesh: None, build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
         self.1.append_step_receipt(&receipt).await.map_err(|e| e.to_string().into())
     }
 }
@@ -747,7 +747,7 @@ async fn a_lost_executors_unreported_receipt_does_not_make_its_operation_done() 
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) };
     let r = rig_for(view(), change, |ran, _| ran).await;
     assert!(matches!(r.env.door.claim("mesh1.admin.2", &r.build, 1).await, rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. }));
-    let receipt = BuildStepReceipt { build_id: r.build.clone(), attempt: 1, operation: "create-node:mesh1.rpc.2".into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+    let receipt = BuildStepReceipt { mesh: None, build_id: r.build.clone(), attempt: 1, operation: "create-node:mesh1.rpc.2".into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
     r.builds.append_step_receipt(&receipt).await.unwrap();
     r.dispatch.lose("mesh1.admin.2");
     r.proofs.exited.lock().unwrap().insert("mesh1.admin.2".into());
@@ -987,11 +987,11 @@ async fn a_completed_drive_is_kept_for_its_own_attempt_and_replaced_once_the_bui
     let drives = Arc::new(Drives::default());
     let first = drives.ensure(&r.env, &r.build, 1);
     let BuildReply::Complete { attempt: done, .. } = terminal_of(&first).await else { panic!("the first run completes the Build") };
-    r.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: r.build.clone(), attempt: done, outcome: AttemptOutcome::Converged }).await.unwrap();
+    r.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: r.build.clone(), attempt: done, outcome: AttemptOutcome::Converged }).await.unwrap();
     let stale = drives.ensure(&r.env, &r.build, done);
     assert!(Arc::ptr_eq(&stale, &first), "a read that showed attempt {done} running is handed the drive that completed it");
     r.builds
-        .open_attempt(&AttemptOpened { build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 })
+        .open_attempt(&AttemptOpened { mesh: None, build_id: r.build.clone(), attempt: done + 1, reason: AttemptReason::Restart, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 0 })
         .await
         .unwrap();
     let reopened = drives.ensure(&r.env, &r.build, done + 1);
@@ -1022,7 +1022,7 @@ impl OperationRunner for LostLeaver {
         let ends = self.ends.lock().unwrap().clone();
         if let (BuildOperation::ShutdownMesh { .. }, Some(end)) = (op, ends) {
             if self.progress.load(Ordering::SeqCst) {
-                let receipt = BuildStepReceipt { build_id: build.clone(), attempt, operation: op.key(), step: "RosterAmended".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+                let receipt = BuildStepReceipt { mesh: None, build_id: build.clone(), attempt, operation: op.key(), step: "RosterAmended".into(), outcome: StepOutcome::Complete, output: None, executor: None };
                 self.ran.get().expect("the rig set the recorder").1.append_step_receipt(&receipt).await.map_err(|e| e.to_string())?;
             }
             if self.once.load(Ordering::SeqCst) {

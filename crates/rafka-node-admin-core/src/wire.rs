@@ -49,9 +49,9 @@ impl std::fmt::Display for WireRefusal {
 pub(crate) enum WireFact {
     Accepted(WireAccepted),
     Opened(WireOpened),
-    Claim(BuildAttemptClaim),
+    Claim(WireClaim),
     Step(WireStep),
-    Attempt(BuildAttemptReceipt),
+    Attempt(WireAttempt),
     Forget { build_id: BuildId },
 }
 
@@ -71,6 +71,24 @@ pub(crate) struct WireOpened {
     action: Option<WireAction>,
     opened_by: String,
     opened_at_ms: u64,
+    mesh: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WireClaim {
+    build_id: BuildId,
+    attempt: u32,
+    executor: String,
+    claimant: Option<String>,
+    mesh: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WireAttempt {
+    build_id: BuildId,
+    attempt: u32,
+    outcome: crate::build_state::AttemptOutcome,
+    mesh: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -82,6 +100,7 @@ pub(crate) struct WireStep {
     outcome: StepOutcome,
     output: Option<WireOutput>,
     executor: Option<String>,
+    mesh: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -590,8 +609,9 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
             action: o.action.as_ref().map(Into::into),
             opened_by: o.opened_by.clone(),
             opened_at_ms: o.opened_at_ms,
+            mesh: o.mesh.clone(),
         }),
-        BuildFact::Claim(c) => WireFact::Claim(c.clone()),
+        BuildFact::Claim(c) => WireFact::Claim(WireClaim { build_id: c.build_id.clone(), attempt: c.attempt, executor: c.executor.clone(), claimant: c.claimant.clone(), mesh: c.mesh.clone() }),
         BuildFact::Step(s) => {
             let refuse = |reason: String| WireRefusal { build_id: s.build_id.clone(), attempt: s.attempt, step: s.step.clone(), reason };
             let output = match &s.output {
@@ -606,9 +626,10 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
                 outcome: s.outcome.clone(),
                 output,
                 executor: s.executor.clone(),
+                mesh: s.mesh.clone(),
             })
         }
-        BuildFact::Attempt(a) => WireFact::Attempt(a.clone()),
+        BuildFact::Attempt(a) => WireFact::Attempt(WireAttempt { build_id: a.build_id.clone(), attempt: a.attempt, outcome: a.outcome.clone(), mesh: a.mesh.clone() }),
         BuildFact::Forget { build_id } => WireFact::Forget { build_id: build_id.clone() },
     })
 }
@@ -629,17 +650,18 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
             action: o.action.map(Into::into),
             opened_by: o.opened_by,
             opened_at_ms: o.opened_at_ms,
+            mesh: o.mesh,
         }),
-        WireFact::Claim(c) => BuildFact::Claim(c),
+        WireFact::Claim(c) => BuildFact::Claim(BuildAttemptClaim { build_id: c.build_id, attempt: c.attempt, executor: c.executor, claimant: c.claimant, mesh: c.mesh }),
         WireFact::Step(s) => {
             let (build_id, attempt, step) = (s.build_id.clone(), s.attempt, s.step.clone());
             let output = match s.output {
                 None => None,
                 Some(o) => Some(output_to_json(o).map_err(|reason| WireRefusal { build_id: build_id.clone(), attempt, step: step.clone(), reason })?),
             };
-            BuildFact::Step(BuildStepReceipt { build_id: s.build_id, attempt: s.attempt, operation: s.operation, step: s.step, outcome: s.outcome, output, executor: s.executor })
+            BuildFact::Step(BuildStepReceipt { build_id: s.build_id, attempt: s.attempt, operation: s.operation, step: s.step, outcome: s.outcome, output, executor: s.executor, mesh: s.mesh })
         }
-        WireFact::Attempt(a) => BuildFact::Attempt(a),
+        WireFact::Attempt(a) => BuildFact::Attempt(BuildAttemptReceipt { build_id: a.build_id, attempt: a.attempt, outcome: a.outcome, mesh: a.mesh }),
         WireFact::Forget { build_id } => BuildFact::Forget { build_id },
     })
 }

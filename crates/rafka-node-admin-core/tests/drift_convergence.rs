@@ -243,6 +243,7 @@ impl OperationRunner for Runner {
         // create's Complete, the update's Complete. The fabric-primary's planning and recovery dedup
         // read them.
         let receipt = |operation: String, step: &str, output: Option<serde_json::Value>| rafka_node_admin_core::build_state::BuildStepReceipt {
+            mesh: None,
             build_id: build_id.clone(),
             attempt,
             operation,
@@ -1467,12 +1468,12 @@ mod unheard_mesh_hold {
         use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter as _, BuildStepReceipt, ClaimOutcome, StepOutcome};
         let restore = before.attempt + 1;
         let fp = e.fabric_primary().await;
-        assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { build_id: before.build_id.clone(), attempt: restore, executor: fp }).await.unwrap(), ClaimOutcome::Won);
+        assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: before.build_id.clone(), attempt: restore, executor: fp }).await.unwrap(), ClaimOutcome::Won);
         e.builds
-            .append_step_receipt(&BuildStepReceipt { build_id: before.build_id.clone(), attempt: restore, operation: format!("replace-node:{}", admins[0]), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None })
+            .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: before.build_id.clone(), attempt: restore, operation: format!("replace-node:{}", admins[0]), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None })
             .await
             .unwrap();
-        e.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: before.build_id.clone(), attempt: restore, outcome: AttemptOutcome::Converged }).await.unwrap();
+        e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: restore, outcome: AttemptOutcome::Converged }).await.unwrap();
         {
             let fabric_id = e.view.read().await.fabric.id.clone();
             let reborn = birth(&e.world, &e.book, &fabric_id, &admins[0], None);
@@ -1513,7 +1514,7 @@ async fn a_birth_whose_retirement_the_build_receipted_is_not_surplus() {
                 event_at_rafka_ms: 0,
             };
             e.builds
-                .append_step_receipt(&BuildStepReceipt { build_id: current.build_id.clone(), attempt: current.attempt, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
+                .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: current.build_id.clone(), attempt: current.attempt, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: serde_json::to_value(&op).ok(), executor: None })
                 .await
                 .unwrap();
             assert_eq!(e.drift().await, None, "a receipted retirement is not surplus");

@@ -860,7 +860,7 @@ impl DriveEnv {
             match inner {
                 Inner::Terminal(t @ BuildReply::Complete { .. }) => {
                     dspan.record("outcome", "complete");
-                    self.verdicts.record(BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await;
+                    self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await;
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }
@@ -868,7 +868,7 @@ impl DriveEnv {
                     dspan.record("outcome", "failed");
                     if let BuildReply::Failed { operation, reason, .. } = &t {
                         if !operation.is_empty() && !reason.contains("(reason cut:") {
-                            self.verdicts.record(BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone() } }).await;
+                            self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone() } }).await;
                         }
                     }
                     drive.finish(t);
@@ -876,7 +876,7 @@ impl DriveEnv {
                 }
                 Inner::Terminal(BuildReply::HandedOff { to, .. }) => {
                     dspan.record("outcome", "handed-off");
-                    self.verdicts.record(BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } }).await;
+                    self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } }).await;
                     let Some(next) = parse_path(&to) else {
                         return self.stalled(drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
                     };

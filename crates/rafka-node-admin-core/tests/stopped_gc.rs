@@ -96,8 +96,8 @@ fn desired(t: &Topology) -> FabricTopology {
 async fn settle(builds: &MemoryBuildStateAdapter, id: &BuildId) {
     let p = builds.read_build(id).await.unwrap();
     let attempt = p.attempt_to_drive();
-    builds.claim_attempt(&BuildAttemptClaim { build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
-    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
 }
 
 fn birth(t: &Topology, p: &str) -> (PathName, NodeId, IncarnationId) {
@@ -118,10 +118,10 @@ async fn period(cp: &ControlPlane, builds: &MemoryBuildStateAdapter, (path, node
     };
     let op = LifecycleOp { build_id: b0.to_string(), attempt, operation: operation.clone(), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: at_ms };
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: at_ms }),
-        BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
-        BuildFact::Step(BuildStepReceipt { build_id: b0.clone(), attempt, operation, step: "Complete".into(), outcome: StepOutcome::Complete, output: stop.then(|| serde_json::to_value(&op).unwrap()), executor: Some("mesh1.admin.1".into()) }),
-        BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Converged }),
+        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason, action: Some(action), opened_by: "mesh1.admin.1".into(), opened_at_ms: at_ms }),
+        BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
+        BuildFact::Step(BuildStepReceipt { mesh: None, build_id: b0.clone(), attempt, operation, step: "Complete".into(), outcome: StepOutcome::Complete, output: stop.then(|| serde_json::to_value(&op).unwrap()), executor: Some("mesh1.admin.1".into()) }),
+        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Converged }),
     ]).await;
 }
 
@@ -218,9 +218,9 @@ async fn a_node_started_after_the_scan_is_refused_at_the_delete_admission() {
     // fails mid-transfer: the Build is open, not in flight, and keeps the birth as its rollback point.
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Replace, action: Some(AttemptAction::Replace { path: other.0.clone(), from_incarnation: other.2.clone() }), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
-        BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
-        BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
+        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Replace, action: Some(AttemptAction::Replace { path: other.0.clone(), from_incarnation: other.2.clone() }), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
+        BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
+        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
     ]).await;
     let referenced = cp.collect_stopped(&candidates[1], TTL).await;
     assert!(matches!(&referenced, Err(Refusal::Reject(r)) if r.reason() == "referenced-by-open-build"), "{referenced:?}");
@@ -250,9 +250,9 @@ async fn a_stopped_birth_an_open_replace_references_is_skipped() {
     period(&cp, &builds, &young, true, now(&cp)).await;
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Replace, action: Some(AttemptAction::Replace { path: old.0.clone(), from_incarnation: old.2.clone() }), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
-        BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
-        BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
+        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Replace, action: Some(AttemptAction::Replace { path: old.0.clone(), from_incarnation: old.2.clone() }), opened_by: "mesh1.admin.1".into(), opened_at_ms: now(&cp) }),
+        BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
+        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Failed { reason: "the successor did not report ready".into() } }),
     ]).await;
 
     let verdicts = cp.scan_stopped(TTL, now(&cp)).await;
@@ -394,10 +394,10 @@ async fn a_stopped_node_whose_stop_receipt_cannot_be_read_is_skipped_by_its_own_
     let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
     let attempt = builds.read_build(&b0).await.unwrap().attempt + 1;
     builds.absorb(&[
-        BuildFact::Opened(AttemptOpened { build_id: b0.clone(), attempt, reason: AttemptReason::Stop, action: Some(AttemptAction::Stop { path: path.clone(), from_incarnation: incarnation }), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1 }),
-        BuildFact::Claim(BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
-        BuildFact::Step(BuildStepReceipt { build_id: b0.clone(), attempt, operation: format!("stop-node:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: Some(serde_json::json!("not a lifecycle op")), executor: Some("mesh1.admin.1".into()) }),
-        BuildFact::Attempt(BuildAttemptReceipt { build_id: b0.clone(), attempt, outcome: AttemptOutcome::Converged }),
+        BuildFact::Opened(AttemptOpened { mesh: None, build_id: b0.clone(), attempt, reason: AttemptReason::Stop, action: Some(AttemptAction::Stop { path: path.clone(), from_incarnation: incarnation }), opened_by: "mesh1.admin.1".into(), opened_at_ms: 1 }),
+        BuildFact::Claim(BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }),
+        BuildFact::Step(BuildStepReceipt { mesh: None, build_id: b0.clone(), attempt, operation: format!("stop-node:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: Some(serde_json::json!("not a lifecycle op")), executor: Some("mesh1.admin.1".into()) }),
+        BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: b0.clone(), attempt, outcome: AttemptOutcome::Converged }),
     ]).await;
 
     assert_eq!(cp.sweep_stopped(Some(TTL)).await, Swept::Nothing);

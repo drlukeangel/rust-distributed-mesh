@@ -548,7 +548,7 @@ fn the_new_seat_resumes_a_resubmitted_build_it_has_not_heard_from_its_incumbents
         let b = rafka_node_admin_core::build::BuildId::mint();
         let (p_log, n_log) = (Arc::new(MemoryBuildStateAdapter::new()), Arc::new(MemoryBuildStateAdapter::new()));
         p_log.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 1 }).await.unwrap();
-        p_log.claim_attempt(&BuildAttemptClaim { build_id: b.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        p_log.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
         let _ = f.incumbent.facts_slot.set(Arc::new(BuildFactsDoor { me: f.incumbent.resolved.name.clone(), builds: p_log.clone(), floor: Arc::default() }));
         let n_door = build_door(&f.successor, n_log.clone(), Arc::new(AcceptedStore::new(storage.clone(), "mesh2.admin.1"))).await;
         let _ = f.successor.build_slot.set(n_door);
