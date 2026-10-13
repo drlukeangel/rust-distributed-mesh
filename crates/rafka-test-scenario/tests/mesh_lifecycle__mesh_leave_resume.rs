@@ -18,6 +18,8 @@
 //! rpc.1 at its NodeDeleted receipt, so the Build holds rpc.1's exact Exited (TerminateRuntime) and
 //! no NodeDeleted.
 
+use crate::build_log;
+use rafka_node_admin_client::{BuildSpec, CallEnd, FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, MeshSelector, PathName};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
@@ -63,6 +65,16 @@ pub(crate) enum Rpc1 {
     ExitProven,
 }
 
+/// Build `id` as the node-admin the estate asks holds it now (its own Build log over `FetchBuildFacts`), as
+/// the JSON its view serializes to; a read that ends, or a log that holds no acceptance of it, is recorded
+/// as such: nothing here panics before the estate is stopped.
+async fn build_now(estate: &Estate, id: &str) -> Value {
+    match build_log::log_read(&estate.carrier().await, id).await {
+        Ok(facts) => build_log::projection(&facts, id).map(|p| serde_json::to_value(p).expect("a Build view serializes")).unwrap_or_else(|| json!({"unaccepted": facts.len()})),
+        Err(end) => json!({"read_ended": end.to_string()}),
+    }
+}
+
 /// What one form's run leaves to assert on.
 pub(crate) struct Run {
     pub(crate) build: Value,
@@ -83,24 +95,21 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let root = estate.root.clone();
-    let mesh1 = json!({"name": "mesh1", "node_admin": 2, "rpc_node": 0});
-    let mesh2 = json!({"name": "mesh2", "node_admin": mesh2_admins, "rpc_node": 2});
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh1.clone(), mesh2]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
+    let mesh1 = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2)]);
+    let mesh2 = MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, mesh2_admins), (NodeKind::RpcNode, 2)]);
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1.clone(), mesh2] }).await;
     let mut want: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh2.rpc.1", "mesh2.rpc.2"].iter().map(|n| n.to_string()).collect();
     want.extend((1..=mesh2_admins).map(|i| format!("mesh2.admin.{i}")));
-    let before = estate.settled(&want, Duration::from_secs(60)).await;
+    let before = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
     // The rows mesh2's primary commits (its mesh row Leaving at leave-mesh) are durable only once the
     // fabric's state-commit published them (states.md, Rounds: "Before state-commit, RDM holds its
     // rows in the scratchpad"; R14 item 9): the fabric is ready-for-traffic before mesh2 goes, so the
     // admin seated after the primary's loss reads mesh2 deleting from its mesh's own rows.
     estate.until_fabric_ready(Duration::from_secs(90)).await;
-    let (_, m2) = estate.get("/api/meshes/mesh2").await;
-    let mesh2_id = s(&m2["id"]);
+    let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).unwrap_or_else(|| panic!("mesh2 has a minted id"));
     let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
     let lost = (s(&primary["name"]), s(&primary["incarnation_id"]));
-    let door = Door::open(&root, &lost.0, &s(&primary["admin_api_base"])).await;
+    let door = Door::open(&root, &lost.0, "").await;
 
     // Held in tier 1: rpc.2's stop answered `stopped` (its node.connections.delete { All } and its
     // transport cut done, its process alive) and its StopNode receipt is not yet durable, so a resumed
@@ -123,9 +132,10 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     if rpc1 == Rpc1::ExitProven {
         door.arm(exit_proven, json!({"kind": "receipt", "step": "NodeDeleted", "operation": "retire-node:mesh2.rpc.1"})).await;
     }
-    let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh1]})).await;
-    assert_eq!(status, 202, "{b}");
-    let b = s(&b["build_id"]);
+    // The leave's stream is held to the end of the run: the Build is read as the admin the estate asks
+    // holds it, and the stream's attempt ends when the primary is lost.
+    let leave = estate.submit(&BuildSpec::Fabric(FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1] })).await;
+    let b = leave.build_id().to_string();
     let held = door.wait_held(cut).await;
     assert_eq!(held["hit"]["build_id"], b.as_str(), "the held receipt is the leave's: {held}");
     if rpc1 == Rpc1::Stopped {
@@ -147,8 +157,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let deadline = std::time::Instant::now() + Duration::from_secs(90);
     let mut build = Value::Null;
     while std::time::Instant::now() < deadline {
-        let (_, v) = estate.get(&format!("/api/builds?id={b}")).await;
-        build = v;
+        build = build_now(&estate, &b).await;
         if build["state"] == "complete" && build["attempt"].as_u64().unwrap_or(0) >= 2 {
             break;
         }
@@ -158,7 +167,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     // alive; its end is its own node.delete (mesh-delete.md step 7), then the view converges on
     // mesh1 alone within gossip delay of mesh-left.
     let mut view: Vec<String> = Vec::new();
-    let mut mesh2_status = 0;
+    let mut mesh2_gone = false;
     let mut last: Option<String> = None;
     let mut deleted = Value::Null;
     if build["state"] == "complete" {
@@ -166,7 +175,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
         while std::time::Instant::now() < settle && last.is_none() {
             // The lost primary's exit is recorded, not published deleted: it may still be held
             // unheard until mesh-left. The final primary is the one mesh2 birth that is alive.
-            let nodes = estate.nodes().await;
+            let nodes = estate.try_node_views().await.map(|v| Estate::values(&v)).unwrap_or_default();
             let mesh2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
             let deleting: Vec<&Value> = nodes.iter().filter(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node").collect();
             if mesh2.len() == 1 && deleting.is_empty() {
@@ -176,41 +185,51 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
         }
     }
     if let Some(last) = &last {
-        let (_, fabric) = estate.get("/api/fabric").await;
-        estate.admin = s(&fabric["admin_api_base"]);
-        let (status, c) = estate.delete(&format!("/api/nodes/{last}")).await;
-        if status == 202 {
-            let c = s(&c["build_id"]);
-            let until = std::time::Instant::now() + Duration::from_secs(120);
-            while std::time::Instant::now() < until {
-                let (_, v) = estate.get(&format!("/api/builds?id={c}")).await;
-                deleted = v;
-                if deleted["state"] == "complete" || deleted["state"] == "failed" {
-                    break;
+        let path: PathName = last.parse().unwrap_or_else(|e| panic!("{last} is not a path.name: {e:?}"));
+        deleted = match estate.nodes_obj().await.delete(&path).await {
+            Ok(mut stream) => {
+                let accepted = stream.accepted().clone();
+                let (mut frames, mut end) = (Vec::new(), None);
+                while let Some(f) = stream.next().await {
+                    match f {
+                        Ok(f) => frames.push(f),
+                        Err(e) => {
+                            end = Some(e.to_string());
+                            break;
+                        }
+                    }
                 }
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                let state = match frames.last() {
+                    Some(Frame::Complete) => "complete",
+                    Some(Frame::Failed { .. }) => "failed",
+                    _ => "ended",
+                };
+                json!({"build_id": accepted.build_id.to_string(), "attempt": accepted.attempt, "state": state, "frames": format!("{frames:?}"), "end": end})
             }
-        } else {
-            deleted = json!({"refused": status, "body": c});
-        }
+            Err(e) => json!({"refused": e.to_string()}),
+        };
         let settle = std::time::Instant::now() + Duration::from_secs(60);
         while std::time::Instant::now() < settle {
-            view = estate.nodes().await.iter().map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
-            mesh2_status = estate.get("/api/meshes/mesh2").await.0;
-            if mesh2_status == 404 && view.iter().all(|n| n.starts_with("mesh1.")) {
+            view = match estate.try_node_views().await {
+                Ok(views) => views.iter().map(|n| format!("{}={:?}", n.name, n.status)).collect(),
+                Err(e) => vec![format!("the read ended: {e}")],
+            };
+            mesh2_gone = matches!(estate.meshes_obj().await.get(&MeshSelector::Mesh("mesh2".into())).await, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-mesh");
+            if mesh2_gone && view.iter().all(|n| n.starts_with("mesh1.")) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
-    let build = if build["state"] == "complete" { estate.get(&format!("/api/builds?id={b}")).await.1 } else { build };
+    let build = if build["state"] == "complete" { build_now(&estate, &b).await } else { build };
+    drop(leave);
     estate.stop().await;
     let spans = estate.spans();
     assert!(build["state"] == "complete" && build["attempt"].as_u64().unwrap_or(0) >= 2, "build {b} completes on an attempt after the first within 90 s: {build}");
     let last = last.unwrap_or_else(|| panic!("mesh.deleted leaves mesh2's final primary alive, the one mesh2 node the view holds after build {b}"));
     assert_eq!(deleted["state"], "complete", "the node.delete of mesh2's final primary {last} completes: {deleted}");
     assert!(view.iter().all(|n| n.starts_with("mesh1.")), "the view holds no mesh2 birth after mesh-left: {view:?}");
-    assert_eq!(mesh2_status, 404, "mesh2 is no longer a mesh of the fabric");
+    assert!(mesh2_gone, "mesh2 is no longer a mesh of the fabric: mesh.get answers unknown-mesh");
     Run { build, spans, mesh2_id, lost, b, last }
 }
 
