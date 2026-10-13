@@ -63,23 +63,6 @@ impl Role {
         Self { kind: launch.name.kind }
     }
 
-    /// The broker role: kind `Broker`.
-    pub fn broker() -> Self {
-        Self { kind: NodeKind::Broker }
-    }
-    /// The gateway role: kind `Gateway`.
-    pub fn gateway() -> Self {
-        Self { kind: NodeKind::Gateway }
-    }
-    /// The compute role: kind `Compute`.
-    pub fn compute() -> Self {
-        Self { kind: NodeKind::Compute }
-    }
-    /// A registry is a plain product node on the base: it serves core protocols only.
-    pub fn registry() -> Self {
-        Self { kind: NodeKind::RpcNode }
-    }
-
     /// The role's name, the kind's name.
     pub fn name(self) -> &'static str {
         self.kind.name()
