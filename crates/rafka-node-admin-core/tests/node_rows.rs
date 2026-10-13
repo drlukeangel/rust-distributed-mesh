@@ -590,7 +590,7 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
         mp.rows.claim(&pred.name, &succ, op, None).await.expect("the freed name is claimed");
         (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
     });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None }), "the predecessor's row moved to .old, parked, and stays its row, its config kept");
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: Some("mesh1.rpc.1".parse().unwrap()) }), "the predecessor's row moved to .old naming the key it came from, parked, and stays its row, its config kept");
     assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: succ.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None }), "the successor holds the path.name with the .old row's config");
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     assert_eq!(renames.len(), 1, "{renames:#?}");
@@ -653,7 +653,7 @@ fn a_successor_heard_before_the_predecessor_lets_go_is_refused_name_held_and_the
         mp.rows.moved_to_old(&Node { status: NodeStatus::Leaving, parked: true, ..pred.clone() }, "replace-node:mesh1.rpc.1").await.expect("the predecessor's row moves");
         (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
     });
-    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None }), "the predecessor's row moved to .old, parked, its config kept");
+    assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: Some("mesh1.rpc.1".parse().unwrap()) }), "the predecessor's row moved to .old naming the key it came from, parked, its config kept");
     assert_eq!(row, None, "the successor was refused while the predecessor held the name, and the rename let it go");
     let renames = cap.spans_named("rdm.node_admin.node.update.via-rename");
     assert_eq!(renames.len(), 1, "{renames:#?}");
