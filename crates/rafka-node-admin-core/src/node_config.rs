@@ -5,7 +5,9 @@
 //! hold that mesh's primary seat. It checks the cap, writes the node's whole row from what it holds (a
 //! blind put of the `path.name` key; it never reads the store on the write path), tells the exact
 //! birth directly, within its mesh, with `ApplyNodeConfig`, which the node holds and carries in its
-//! next digest, and answers `node.config.updated` only after that apply answered. A caller that cannot
+//! next digest, and answers `node.config.updated` only after that apply answered. A stopped node is
+//! told nothing and the command completes on the row: the node gets its config back in its join
+//! answer at its next start (node-rpc-envelope.md "Node properties"). A caller that cannot
 //! reach the mesh-primary directly reaches it through a carrier (Forward `0x1A`). A single call, never
 //! a Build, and never refused because a Build runs: updates go through this one door one at a time.
 
@@ -152,6 +154,13 @@ impl NodeConfigs {
         if let Some(detail) = refused {
             span.record("detail", detail.as_str());
             return StatusReply::config_row_refused(&subject.name.to_string(), &detail);
+        }
+        // A stopped node is told nothing: its config is a field of its row, and it gets it back in its
+        // join answer at its next start (node-rpc-envelope.md "Node properties"), as node.name.update
+        // completes a stopped node on the row.
+        if subject.parked {
+            span.record("apply", "stopped");
+            return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
         }
         // The node applies it. This admin as the subject applies it in-process, through what holds
         // its config (the same hand-off its `ApplyNodeConfig` door uses); any other member of its
