@@ -16,7 +16,7 @@
 //!
 //! desired {mesh1, mesh2, mesh3} -> {mesh2, mesh3} through one Build, mesh1 holding the fabric seat.
 //! A desired change, never a recovery: no proven-drift Build names mesh1 and nothing recreates a
-//! mesh1 node (subfeature `fabric-primary-handover`). Then `DELETE /api/nodes/<mesh1's last admin>`.
+//! mesh1 node (subfeature `fabric-primary-handover`). Then `node.delete` of mesh1's last admin.
 //!
 //! R-NS1 (gossip.md, "Mesh delete"): after mesh.deleted the last admin, still its mesh's primary,
 //! keeps publishing its aggregate with itself the only member and MeshStatus Dead, and every peer
@@ -28,6 +28,8 @@
 //! chosen here). Every receiver read is made at BOTH surviving meshes, the fabric-primary's own and
 //! the other, so every run covers both placements.
 
+use crate::build_log;
+use rafka_node_admin_client::{Fabrics, ScopeStatus};
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -46,10 +48,6 @@ fn owner() -> Owner {
 
 fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
-}
-
-fn mesh(name: &str) -> Value {
-    json!({"name": name, "node_admin": 2, "rpc_node": 2})
 }
 
 fn names(meshes: &[&str]) -> BTreeSet<String> {
@@ -87,25 +85,15 @@ fn alive(pid: u64) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_deletes_it() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2"), mesh("mesh3")]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
-    let before = estate.settled(&names(&["mesh1", "mesh2", "mesh3"]), Duration::from_secs(30)).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)]).await;
+    let before = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2", "mesh3"]), Duration::from_secs(30)).await);
     // The initial fabric refuses a mesh delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
-    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // The rows mesh1's primary writes are durable only once the fabric's first state-commit
     // published them (states.md, Rounds: "Before state-commit, RDM holds its rows in the
     // scratchpad"; R14 item 9): the fabric is ready-for-traffic under this Build before mesh1 goes.
-    wait_for("the fabric is ready-for-traffic: its state-commit published every node's rows", Duration::from_secs(90), || async {
-        (estate.get("/api/fabric").await.1["status"] == "ready-for-traffic").then_some(())
-    })
-    .await;
-    let (_, fabric) = estate.get("/api/fabric").await;
-    let fabric_id = s(&fabric["id"]);
-    let (_, m1) = estate.get("/api/meshes/mesh1").await;
-    let (_, m2) = estate.get("/api/meshes/mesh2").await;
-    let (_, m3) = estate.get("/api/meshes/mesh3").await;
-    let (mesh1_id, mesh2_id, mesh3_id) = (s(&m1["id"]), s(&m2["id"]), s(&m3["id"]));
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let fabric_id = estate.fabric_view().await.id.to_string();
+    let (mesh1_id, mesh2_id, mesh3_id) = (estate.mesh_view("mesh1").await.id.expect("mesh1 carries its id").to_string(), estate.mesh_view("mesh2").await.id.expect("mesh2 carries its id").to_string(), estate.mesh_view("mesh3").await.id.expect("mesh3 carries its id").to_string());
     let mesh1_pids: Vec<(String, u64)> = {
         let mut v = Vec::new();
         for n in before.iter().filter(|n| n["mesh"] == "mesh1") {
@@ -122,36 +110,37 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
 
     // The Node rows mesh1's admin holds, read from its data dir while it runs.
     let mesh1_ids: Vec<(String, String)> = before.iter().filter(|n| n["mesh"] == "mesh1").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
-    let mesh1_dir = estate.data_dir_of("mesh1.admin.1").await;
+    let mesh1_dir = estate.data_dir("mesh1.admin.1").await;
     let mesh1_bare: String = mesh1_id.split_once('_').map(|(_, r)| r).unwrap_or(&mesh1_id).replace('-', "").to_lowercase();
 
     // Control moves to mesh2 before mesh1 goes: its admins advertise it in the topology.
     let mesh2_admin = before
         .iter()
         .find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["status"] == "ready-for-traffic")
-        .map(|n| s(&n["admin_api_base"]))
+        .map(|n| Estate::path(&s(&n["name"])))
         .expect("a ready mesh2 admin");
-    estate.admin = mesh2_admin.clone();
+    estate.enter(&mesh2_admin).await;
 
     // {mesh1, mesh2, mesh3} -> {mesh2, mesh3}: one Build. It completes at mesh.deleted.
-    let (status, b) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh2"), mesh("mesh3")]})).await;
-    assert_eq!(status, 202, "{b}");
-    let b = s(&b["build_id"]);
-    estate.await_build(&b, Duration::from_secs(240)).await;
+    let b = estate.reconcile_shape("fabric1", &[("mesh2", 2, 2), ("mesh3", 2, 2)]).await.build_id.to_string();
     let survivors_named = names(&["mesh2", "mesh3"]);
     // Every member of mesh1 but its final primary is deleted by mesh1's primary (mesh-delete.md step
     // 3, the whole node.delete: NodeDeleted from its exact exit proof), so the view settles on mesh2,
     // mesh3 and at most mesh1's final primary.
     let settle_by = std::time::Instant::now() + Duration::from_secs(60);
     let after_b = loop {
-        let nodes = estate.nodes().await;
+        let read = estate.try_node_views().await;
+        let nodes = read.as_ref().map(|views| Estate::values(views)).unwrap_or_default();
         let ours: BTreeSet<String> = nodes.iter().filter(|n| n["mesh"] != "mesh1").filter_map(|n| n["name"].as_str().map(str::to_string)).collect();
         let ready = nodes.iter().filter(|n| n["mesh"] != "mesh1").all(|n| n["status"] == "ready-for-traffic");
-        if ours == survivors_named && ready && nodes.iter().filter(|n| n["mesh"] == "mesh1").count() <= 1 {
+        if read.is_ok() && ours == survivors_named && ready && nodes.iter().filter(|n| n["mesh"] == "mesh1").count() <= 1 {
             break nodes;
         }
         if std::time::Instant::now() >= settle_by {
-            let held: Vec<String> = nodes.iter().map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect();
+            let held: Vec<String> = match &read {
+                Ok(_) => nodes.iter().map(|n| format!("{}={}", s(&n["name"]), s(&n["status"]))).collect(),
+                Err(e) => vec![format!("the read ended: {e}")],
+            };
             estate.stop().await;
             let spans = estate.spans();
             let deleted: Vec<String> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["build_id"] == b.as_str()).map(|sp| s(&sp["attributes"]["node"])).collect();
@@ -176,23 +165,21 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert!(final_name.starts_with("mesh1.admin."), "the mesh1 node left alive is a node-admin, the final primary: {last}");
     let final_pid = mesh1_pids.iter().find(|(n, _)| *n == final_name).map(|(_, p)| *p).unwrap();
     assert!(alive(final_pid), "mesh1's final primary {final_name} still runs after mesh.deleted");
-    let (_, fabric_now) = estate.get("/api/fabric").await;
-    let fabric_primary = s(&fabric_now["fabric_primary"]);
-    estate.admin = s(&fabric_now["admin_api_base"]);
+    let fabric_primary_path = estate.fabric_view().await.fabric_primary.expect("the fabric names its primary");
+    let fabric_primary = fabric_primary_path.to_string();
+    estate.enter(&fabric_primary_path).await;
 
     // Peers hold the deleted mesh with its last admin while it lives (R-NS1 item 1, R-MD1 item 3):
-    // an admin of each surviving mesh, read on its own control API, holds mesh1 deleted with that one
+    // an admin of each surviving mesh, read on its own fabric view, holds mesh1 deleted with that one
     // node. The admin lives on here until its node.delete, so this interval is held, not raced.
     let survivors = ["mesh2", "mesh3"];
     for m in survivors {
         for admin in after_b.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin") {
-            let base = s(&admin["admin_api_base"]);
             let who = s(&admin["name"]);
-            wait_for(&format!("{who} holds mesh1 dead with {final_name} its only node"), Duration::from_secs(30), || async {
-                let (status, v) = estate.http_get(&base, "/api/meshes/mesh1").await;
-                (status == 200 && v["status"] == "dead" && v["nodes"] == json!([final_name.clone()])).then_some(())
-            })
-            .await;
+            Fabrics::new(estate.carrier_at(&Estate::path(&who)).await)
+                .fact(&format!("{who} holds mesh1 dead with {final_name} its only node"), Duration::from_secs(30), |f| f.meshes.iter().any(|m| m.name == "mesh1" && m.status == ScopeStatus::Dead && m.nodes.iter().map(|n| n.to_string()).collect::<Vec<_>>() == [final_name.clone()]))
+                .await
+                .unwrap_or_else(|end| panic!("{end}"));
         }
     }
     assert!(alive(final_pid), "mesh1's final primary {final_name} still runs while every peer holds it");
@@ -200,7 +187,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // The completion receipt of mesh.deleted, read from the live Build projection: every birth of mesh1
     // but its final primary, which is not deleted inside its own mesh.delete; no MeshLeft yet.
     let steps_of = |build: &Value, step: &str| -> Vec<Value> { build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["step"] == step).collect() };
-    let (_, build_b) = estate.get(&format!("/api/builds?id={b}")).await;
+    let build_b = build_log::build_value(&estate.carrier().await, &b).await;
     let deleted_receipts = steps_of(&build_b, "MeshDeleted");
     assert_eq!(deleted_receipts.len(), 1, "one MeshDeleted completion receipt under {b}: {build_b}");
     assert_eq!(deleted_receipts[0]["operation"], format!("shutdown-mesh:{mesh1_bare}"), "keyed by the mesh's minted id: {}", deleted_receipts[0]);
@@ -211,21 +198,16 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // The final primary's end: an ordinary node.delete, a separate call, the fabric-primary its
     // executor. The topology names no mesh1, so the call opens its own fenced attempt of the accepted
     // Build (as a delete of a parked `.old` does), with its own trace.
-    let (status, c) = estate.delete(&format!("/api/nodes/{final_name}")).await;
-    assert_eq!(status, 202, "{c}");
-    let c_attempt = Estate::attempt_of(&c);
-    let c = s(&c["build_id"]);
-    estate.await_attempt(&c, c_attempt, Duration::from_secs(120)).await;
-    let after = estate.settled(&names(&["mesh2", "mesh3"]), Duration::from_secs(60)).await;
+    let mut removal = estate.nodes_obj().await.delete(&Estate::path(&final_name)).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {final_name}: {e}"));
+    let accepted = Estate::complete(&mut removal).await;
+    let (c, c_attempt) = (accepted.build_id.to_string(), u64::from(accepted.attempt));
+    let after = Estate::values(&estate.settles_to_named(&names(&["mesh2", "mesh3"]), Duration::from_secs(60)).await);
 
     // Identities: the Fabric, mesh2 and mesh3 keep theirs; mesh1 is gone.
-    let (_, fabric_after) = estate.get("/api/fabric").await;
-    assert_eq!(s(&fabric_after["id"]), fabric_id, "the Fabric keeps its id");
-    let (_, m2_after) = estate.get("/api/meshes/mesh2").await;
-    assert_eq!(s(&m2_after["id"]), mesh2_id, "an untouched mesh keeps its id");
-    let (_, m3_after) = estate.get("/api/meshes/mesh3").await;
-    assert_eq!(s(&m3_after["id"]), mesh3_id, "an untouched mesh keeps its id");
-    wait_for("mesh1 is no longer a mesh of the fabric", Duration::from_secs(30), || async { (estate.get("/api/meshes/mesh1").await.0 == 404).then_some(()) }).await;
+    assert_eq!(estate.fabric_view().await.id.to_string(), fabric_id, "the Fabric keeps its id");
+    assert_eq!(estate.mesh_view("mesh2").await.id.expect("mesh2 carries its id").to_string(), mesh2_id, "an untouched mesh keeps its id");
+    assert_eq!(estate.mesh_view("mesh3").await.id.expect("mesh3 carries its id").to_string(), mesh3_id, "an untouched mesh keeps its id");
+    estate.fabrics_obj().await.fact("mesh1 is no longer a mesh of the fabric", Duration::from_secs(30), |f| !f.meshes.iter().any(|m| m.name == "mesh1")).await.unwrap_or_else(|end| panic!("{end}"));
     assert!(!after.iter().any(|n| n["mesh"] == "mesh1"), "no mesh1 node remains: {after:#?}");
     for (name, pid) in &mesh1_pids {
         wait_for(&format!("{name}'s runtime is gone"), Duration::from_secs(30), || async { (!alive(*pid)).then_some(()) }).await;
@@ -267,7 +249,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!((s(&row["record"]["mesh_id"]), s(&row["record"]["state"])), (mesh1_bare.clone(), "Leaving".to_string()), "{row}");
     // mesh-left, once the final birth's exit was proven: one Complete MeshLeft receipt under the
     // mesh.delete's operation, covering every birth of the mesh, the final primary included.
-    let (_, build_b) = estate.get(&format!("/api/builds?id={b}")).await;
+    let build_b = build_log::build_value(&estate.carrier().await, &b).await;
     let left_receipts = steps_of(&build_b, "MeshLeft");
     let other_receipts = steps_of(&build_b, "OtherMembersExited");
     estate.stop().await;
