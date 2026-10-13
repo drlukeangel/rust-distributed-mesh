@@ -1624,3 +1624,110 @@ fn exit_records() -> rafka_node_admin_core::admin::Records {
     r.set_status(std::sync::Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default()), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rafka_mesh_entity::NodeId::mint());
     r
 }
+
+/// A status store counting the exit-proof rows it is offered; every row is the memory store's.
+#[derive(Default)]
+struct CountsExitPuts {
+    inner: rafka_node_admin_core::status_storage::MemoryStatusStorage,
+    exit_puts: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::status_storage::StatusStorage for CountsExitPuts {
+    async fn put_mesh_status(&self, row: &rafka_node_admin_core::status_storage::MeshStatusRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.inner.put_mesh_status(row).await
+    }
+    async fn mesh_statuses(&self) -> Result<std::collections::HashMap<MeshId, rafka_node_rpc_contract::status::MeshState>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.mesh_statuses().await
+    }
+    async fn put_fabric_event(&self, row: &rafka_node_admin_core::status_storage::FabricEventRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.inner.put_fabric_event(row).await
+    }
+    async fn fabric_events(&self) -> Result<Vec<rafka_node_admin_core::status_storage::FabricEventRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.fabric_events().await
+    }
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<rafka_node_admin_core::status_storage::FabricEventRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.fabric_events_of(mesh).await
+    }
+    async fn put_node_declared(&self, row: &rafka_node_admin_core::status_storage::NodeDeclaredRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.inner.put_node_declared(row).await
+    }
+    async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.inner.remove_node_declared(node_id, incarnation_id).await
+    }
+    async fn node_declared(&self) -> Result<Vec<rafka_node_admin_core::status_storage::NodeDeclaredRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_declared().await
+    }
+    async fn put_node_silence(&self, row: &rafka_node_admin_core::status_storage::NodeSilenceRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.inner.put_node_silence(row).await
+    }
+    async fn node_silences(&self) -> Result<Vec<rafka_node_admin_core::status_storage::NodeSilenceRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_silences().await
+    }
+    async fn put_node_exit(&self, row: &rafka_node_admin_core::status_storage::NodeExitRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.exit_puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.put_node_exit(row).await
+    }
+    async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<rafka_node_admin_core::status_storage::NodeExitRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_exit(node_id, incarnation_id).await
+    }
+    async fn mesh_status_held_of(&self, mesh: &str, row: &rafka_node_admin_core::status_storage::MeshStatusRow) -> Result<bool, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.mesh_status_held_of(mesh, row).await
+    }
+    async fn put_mesh_status_of(&self, mesh: &str, row: &rafka_node_admin_core::status_storage::MeshStatusRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.inner.put_mesh_status_of(mesh, row).await
+    }
+    async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<rafka_node_admin_core::status_storage::NodeExitRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.node_exit_of(mesh, node_id, incarnation_id).await
+    }
+    async fn put_node_exit_of(&self, mesh: &str, row: &rafka_node_admin_core::status_storage::NodeExitRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
+        self.exit_puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.put_node_exit_of(mesh, row).await
+    }
+}
+
+/// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
+/// durably"; the exit-proof row is a blind put of the birth's own key, `Records::put_exit`): the
+/// fabric primary's drift pass proves both exited node-admins of a peer mesh whose rebirth the
+/// ladder decided and opens the attempt that replaces the first of them; that attempt ends Failed.
+/// Two later passes find the same exited births with the Build settled and nothing moved: each
+/// returns without an attempt (`via-drift-unchanged`), and neither puts an exit-proof row again. Each
+/// birth's row is put once, by the pass that proved its exit. Must NOT happen: the row put again on
+/// every pass for an exit already recorded (admin.rs `reconcile_drift`, part 8's finding: the put
+/// runs on every pass until its inputs move).
+#[tokio::test]
+async fn a_drift_pass_records_a_proven_exit_once_over_every_pass_that_finds_it() {
+    use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, ClaimOutcome};
+    let e = estate().await;
+    let before = e.builds.current().await.unwrap().unwrap();
+    let me: PathName = e.fabric_primary().await.parse().unwrap();
+    let lost = if me.mesh == "mesh1" { "mesh2" } else { "mesh1" };
+    for i in 1..=2 {
+        let id = e.node_id(&format!("{lost}.admin.{i}")).await;
+        e.world.kill(&id);
+    }
+    let t = e.view.read().await.clone();
+    let store = Arc::new(CountsExitPuts::default());
+    let exits = rafka_node_admin_core::admin::Records::default();
+    exits.set_status(store.clone(), "mesh1".into(), "mesh1.admin.1".parse().unwrap(), rafka_mesh_entity::NodeId::mint());
+    let mut started = HashSet::new();
+    let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
+    async fn pass(e: &Estate, t: &Topology, me: &PathName, lost: &str, contexts: &rafka_node_admin_core::build_claim::AttemptContexts, exits: &rafka_node_admin_core::admin::Records, started: &mut HashSet<(BuildId, u32, Vec<String>)>) -> Option<(BuildId, u32)> {
+        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), me, &own_id(t, me), t, &e.book, &e.provider, &*e.builds, contexts, &tokio::sync::Mutex::new(()), &[], started, &mut Default::default(), &|_| None, &|_| false, &|m| m == lost, exits).await
+    }
+    let opened = pass(&e, &t, &me, lost, &contexts, &exits, &mut started).await;
+    assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decided mesh's exited admins open the next attempt");
+    assert_eq!(store.exit_puts.load(std::sync::atomic::Ordering::SeqCst), 2, "the pass that proved them puts each exited admin's row once");
+    let failed = before.attempt + 1;
+    let fp = e.fabric_primary().await;
+    assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: before.build_id.clone(), attempt: failed, executor: fp }).await.unwrap(), ClaimOutcome::Won);
+    e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: failed, outcome: AttemptOutcome::Failed { reason: format!("replace-node:{lost}.admin.1 step PrepareStorage") } }).await.unwrap();
+    for later in 1..=2 {
+        assert_eq!(pass(&e, &t, &me, lost, &contexts, &exits, &mut started).await, None, "pass {later} after the Failed attempt: nothing moved, no next attempt");
+    }
+    assert_eq!(store.exit_puts.load(std::sync::atomic::Ordering::SeqCst), 2, "two passes that find the same exits put no row again");
+    for i in 1..=2 {
+        let n = t.node(&format!("{lost}.admin.{i}").parse().unwrap()).unwrap();
+        assert!(rafka_node_admin_core::status_storage::StatusStorage::node_exit_of(&*store, lost, &n.node_id, n.incarnation_id.as_ref().unwrap()).await.unwrap().is_some(), "{lost}.admin.{i}'s exit-proof row stands");
+    }
+}
