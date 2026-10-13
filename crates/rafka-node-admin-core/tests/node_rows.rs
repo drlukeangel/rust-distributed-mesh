@@ -862,17 +862,26 @@ mod writer {
         eprintln!("trace {}: rdm.node_admin.node.create.via-node-row node=mesh1.admin.2 subject=mesh1.rpc.2 outcome=row-written; the fabric-primary mesh1.admin.1 wrote none", ours[0]["trace_id"].as_str().unwrap_or(""));
     }
 
-    /// CONTRACT: no node writes its own row (R12): an admin that takes its mesh's seat (and the
-    /// fabric seat) rebuilds the rows of its mesh's members from its view, every member but itself.
+    /// CONTRACT (R-OW1, ruling text item 1: "The mesh-primary writes every row in its mesh, including its
+    /// own"; item 5: "A seat transfer moves write authority to the successor for every row of the mesh,
+    /// the predecessor's included, and rewrites nothing"): an admin that takes its mesh's seat (and the
+    /// fabric seat) rebuilds the rows of its mesh's members from its view, its own birth included: its
+    /// own row, absent, is written (`subject = mesh1.admin.1`, `node = mesh1.admin.1`, `row-written`)
+    /// under its own node.id. A row a member already holds is left as it is. What must NOT happen: a
+    /// mesh-primary that writes every member's row but its own, so its mesh's primary holds no row.
     #[test]
-    fn an_admin_that_takes_its_meshs_seat_writes_every_members_row_but_its_own() {
+    fn an_admin_that_takes_its_meshs_seat_writes_every_members_row_its_own_included() {
         let cap = capture();
-        let (own, others) = cap.run(async {
+        let (own, me_id, others, held_before, held_after) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let mut before = view();
             for n in before.nodes.iter_mut() {
                 n.is_fabric_primary = n.name.to_string() == "mesh1.admin.2";
             }
+            let rpc = before.node(&"mesh1.rpc.1".parse().unwrap()).unwrap().clone();
+            let held = NodeRow { config: tier("silver"), ..row_of(&rpc) };
+            storage.put_node_row(&held).await.unwrap().unwrap();
+            let me_id = before.node(&"mesh1.admin.1".parse().unwrap()).unwrap().node_id.clone();
             let (records, topology) = writer_of("mesh1.admin.1", &before, &storage);
             install(&records, &topology, |v| {
                 for n in v.nodes.iter_mut() {
@@ -883,13 +892,22 @@ mod writer {
             })
             .await;
             let own = storage.node_row_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
-            let others = [storage.node_row_at(&"mesh1.admin.2".parse().unwrap()).await.unwrap(), storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap()];
-            (own, others)
+            let others = storage.node_row_at(&"mesh1.admin.2".parse().unwrap()).await.unwrap();
+            let after = storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap();
+            (own, me_id, others, held, after)
         });
-        assert_eq!(own, None, "the admin writes no row of its own");
-        assert!(others.iter().all(Option::is_some), "every other member's row is written: {others:?}");
+        assert_eq!(own.map(|r| r.node_id), Some(me_id.clone()), "the mesh-primary writes its own row");
+        assert!(others.is_some(), "every other member's row is written");
+        assert_eq!(held_after, Some(held_before), "a row its node holds is never rewritten");
         let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
-        assert!(spans.iter().all(|s| s["attributes"]["subject"] != "mesh1.admin.1"), "{spans:#?}");
+        let ours: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["subject"] == "mesh1.admin.1").collect();
+        assert_eq!(ours.len(), 1, "{spans:#?}");
+        assert_eq!(
+            (ours[0]["attributes"]["node"].as_str(), ours[0]["attributes"]["node_id"].as_str(), ours[0]["attributes"]["moment"].as_str(), ours[0]["attributes"]["outcome"].as_str()),
+            (Some("mesh1.admin.1"), Some(me_id.as_str()), Some("arrival"), Some("row-written")),
+            "{ours:#?}"
+        );
+        eprintln!("trace {}: rdm.node_admin.node.create.via-node-row node=mesh1.admin.1 subject=mesh1.admin.1 moment=arrival outcome=row-written", ours[0]["trace_id"].as_str().unwrap_or(""));
     }
 
     /// Launches nothing: each spawn is counted and refused, so a create that reaches

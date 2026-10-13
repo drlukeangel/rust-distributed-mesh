@@ -205,6 +205,64 @@ fn the_fabric_primary_puts_the_ready_for_traffic_row_on_its_own_mesh() {
     println!("trace_id={}", put["trace_id"].as_str().unwrap_or(""));
 }
 
+/// The durable writes of a Day-0 birth, by the span that names each: the Fabric row, mesh1's row, the
+/// accepted root Build, and a node row put at an arrival.
+const DAY0_WRITES: [&str; 3] = ["rdm.node_admin.fabric.create.via-fabric-row", "rdm.node_admin.mesh.create.via-mesh-row", "rdm.node_admin.build.create.via-accepted"];
+
+/// CONTRACT (R-OW1, ruling text item 2: "Day 0: the bootstrap admin, as mesh1's primary, claims
+/// (mesh1.admin, 1) by insert-and-fail and writes its own row through the same validation and storage
+/// path as any create, the first write of its birth, before Ready. No bypass; a conflicting holder is
+/// NameHeld, never overwritten"; item 1: "The mesh-primary writes every row in its mesh, including its
+/// own"): the Day-0 admin's first durable write is the claim of its own path.name, one
+/// `rdm.node_admin.node.create.via-node-row` span with `subject = mesh1.admin.1`, its own node.id,
+/// `moment = claim`, `outcome = row-written`, a step of its boot's own trace, started before the Fabric
+/// row, mesh1's row, the accepted root Build and Ready. Its own birth's arrival in its first view finds the
+/// row its node holds and writes nothing (`row-held-by-node`): one writer, one write. The row stands on the
+/// store root at mesh1.admin.1 under the boot's node.id. What must NOT happen: a Day-0 fabric whose
+/// primary holds no row of its own, so that `mesh1.admin.1` has no claimed name.
+#[test]
+fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_before_ready() {
+    let day0 = Day0::at("the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth");
+    let running = day0.day0_until_ready(true);
+    let spans = day0.stop(running);
+    let attr = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or_default().to_string();
+    let start = |s: &serde_json::Value| s["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
+    let boot = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-boot").unwrap_or_else(|| panic!("no boot span: {spans:?}"));
+    let node_id = attr(boot, "node_id");
+    assert_eq!(attr(boot, "node"), "mesh1.admin.1", "{boot}");
+    let rows: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject") == "mesh1.admin.1").collect();
+    let claims: Vec<&serde_json::Value> = rows.iter().copied().filter(|s| attr(s, "moment") == "claim").collect();
+    assert_eq!(claims.len(), 1, "the Day-0 admin claims its own path.name once: every node row span of mesh1.admin.1 {rows:?}");
+    let claim = claims[0];
+    assert_eq!(
+        (attr(claim, "node"), attr(claim, "node_id"), attr(claim, "outcome")),
+        ("mesh1.admin.1".to_string(), node_id.clone(), "row-written".to_string()),
+        "the claim of its own name under its own node.id, written: {claim}"
+    );
+    assert_eq!(claim["trace_id"], boot["trace_id"], "the claim is a step of the boot's own story: {claim}");
+    for name in DAY0_WRITES.iter().chain(["rdm.mesh.node.update.via-ready"].iter()) {
+        let later = spans.iter().find(|s| s["name"] == *name).unwrap_or_else(|| panic!("Day 0 left no {name}: {:?}", spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()));
+        assert!(start(claim) < start(later), "the claim of mesh1.admin.1 starts before {name}: claim {claim} then {later}");
+    }
+    for arrival in rows.iter().filter(|s| attr(s, "moment") == "arrival") {
+        assert!(start(claim) < start(arrival), "the claim precedes its birth's arrival: {arrival}");
+        assert_eq!(attr(arrival, "outcome"), "row-held-by-node", "its own birth's arrival finds the claimed row and writes nothing: {arrival}");
+    }
+    let fabric_id = rafka_node_admin_core::model::FabricId::parse(&fabric_dirs(&day0.store).remove(0)).unwrap();
+    let row = {
+        use rafka_node_admin_core::storage::NodesStorage as _;
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let root = rafka_node_admin_core::store_root::StoreRoot::open(&day0.store, &fabric_id).unwrap();
+            let reader = rafka_node_admin_core::model::IncarnationId::mint();
+            let nodes = rafka_node_admin_core::storage::FileNodesStorage::open(&day0.data_dir, &root, "mesh1", &reader).await.unwrap();
+            nodes.node_row_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap()
+        })
+    };
+    let row = row.expect("the store root holds the row at mesh1.admin.1");
+    assert_eq!(row.node_id.to_string(), node_id, "mesh1.admin.1 is held by the Day-0 admin's node.id: {row:?}");
+    println!("trace_id={}", boot["trace_id"].as_str().unwrap_or(""));
+}
+
 /// The config and tags of the inherited birth's row at mesh1.admin.1.
 const INHERITED_CONFIG: [(&str, &str); 1] = [("zone", "a")];
 const INHERITED_TAGS: [&str; 1] = ["edge"];
