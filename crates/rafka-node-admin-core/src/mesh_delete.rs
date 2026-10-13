@@ -1064,7 +1064,14 @@ impl HandoffVerdict {
 /// sender's Build facts, read now); `receipt_manifest` is the reference the call carried.
 pub fn handoff_verdict(facts: &[BuildFact], key: &MeshDeleteKey, admitted: &Admitted, receipt_manifest: &str) -> HandoffVerdict {
     let unmatched = |field: &str, expected: String, reported: String| HandoffVerdict::Unmatched { field: field.into(), expected, reported };
-    let (operation, attempt) = (key.operation.as_str(), key.attempt);
+    let operation = key.operation.as_str();
+    // The reference names where the manifest is recorded (node-rpc-envelope.md "Mesh delete command
+    // pair": scoped to the Build, attempt and operation): this round's attempt, or an earlier attempt of
+    // it when the report is a replay of what that attempt recorded.
+    let attempt = match recorded_attempt(receipt_manifest, key) {
+        Some(a) => a,
+        None => return unmatched("receipt_manifest", format!("{} at attempt {} or earlier", manifest_reference(key.build_id.as_str(), key.attempt, operation, false), key.attempt), receipt_manifest.to_string()),
+    };
     let receipt = facts.iter().find_map(|f| match f {
         BuildFact::Step(r) if r.operation == operation && r.attempt == attempt && r.step == STEP_OTHER_MEMBERS_EXITED && r.outcome == StepOutcome::Complete => Some(r.clone()),
         _ => None,
@@ -1100,6 +1107,15 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &MeshDeleteKey, admitted: &Admi
         return unmatched("final_runtime", format!("{:?}", admitted.final_runtime), format!("{:?}", manifest.final_runtime));
     }
     HandoffVerdict::Accept(manifest)
+}
+
+/// The attempt `receipt_manifest` names (`<build_id>/<attempt>/<operation>/other-members-exited`,
+/// [`manifest_reference`]) when it names `key`'s Build and operation at `key`'s attempt or an earlier one.
+fn recorded_attempt(receipt_manifest: &str, key: &MeshDeleteKey) -> Option<u32> {
+    let (head, scope) = receipt_manifest.rsplit_once('/')?;
+    let (head, operation) = head.split_once('/').and_then(|(build, rest)| rest.split_once('/').map(|(attempt, op)| ((build, attempt), op)))?;
+    let attempt: u32 = head.1.parse().ok()?;
+    (head.0 == key.build_id.as_str() && operation == key.operation && scope == "other-members-exited" && attempt <= key.attempt).then_some(attempt)
 }
 
 /// The verdict on the handoff of the leave `key` from the final primary's Build facts as `reader`
@@ -1414,21 +1430,21 @@ enum MeshDeleteRun {
     /// The member workflows are running; `key` is the `delete-mesh` admitted last and `owner` its
     /// sender, whom the handoff goes to.
     Running { key: MeshDeleteKey, owner: MeshDeleteOwner },
-    /// Every other member exited and the manifest is recorded under `key`: the handoff to `owner`
-    /// is what is left.
-    Exited { key: MeshDeleteKey, owner: MeshDeleteOwner, manifest: ExitManifest },
+    /// Every other member exited and the manifest is recorded under attempt `recorded` of the round:
+    /// the report to `owner`, under `key` (the `delete-mesh` admitted last), is what is left.
+    Exited { key: MeshDeleteKey, owner: MeshDeleteOwner, manifest: ExitManifest, recorded: u32 },
 }
 
 /// What a `delete-mesh` admission does for the leave of its mesh.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MeshDeleteAdmission {
-    /// No run is held, or the one held exited under an earlier attempt of the same round: the
-    /// member workflows run for this sender under its key (a run under a later attempt resumes from
-    /// the receipts).
+    /// No run is held: the member workflows run for this sender under its key.
     Start,
     /// The member workflows are running: their handoff goes to this sender, under its key.
     Running,
-    /// The manifest is recorded under this key: the handoff is what repeats, to this sender.
+    /// The manifest is recorded under this round, at this attempt or an earlier one: the recorded
+    /// MeshDeleted report is what repeats, to this sender under its key, and no member workflow runs
+    /// again (mesh-delete.md "Failure and receipts": the next attempt resumes from the receipts).
     Resend {
         /// The manifest recorded.
         manifest: ExitManifest,
@@ -1504,9 +1520,11 @@ impl MeshDeleteRuns {
                 runs.insert(key.mesh_id.clone(), MeshDeleteRun::Running { key: key.clone(), owner: sender.clone() });
                 MeshDeleteAdmission::Running
             }
-            Some(MeshDeleteRun::Exited { key: held, manifest, .. }) if &held == key => {
-                runs.insert(key.mesh_id.clone(), MeshDeleteRun::Exited { key: held.clone(), owner: sender.clone(), manifest: manifest.clone() });
-                MeshDeleteAdmission::Resend { recorded: held.attempt, manifest }
+            // Exited under this round or an earlier attempt of it (an earlier or another round was
+            // refused above): the recorded report is replayed to this sender under its key.
+            Some(MeshDeleteRun::Exited { manifest, recorded, .. }) => {
+                runs.insert(key.mesh_id.clone(), MeshDeleteRun::Exited { key: key.clone(), owner: sender.clone(), manifest: manifest.clone(), recorded });
+                MeshDeleteAdmission::Resend { manifest, recorded }
             }
             _ => {
                 runs.insert(key.mesh_id.clone(), MeshDeleteRun::Running { key: key.clone(), owner: sender.clone() });
@@ -1534,7 +1552,8 @@ impl MeshDeleteRuns {
         let mut runs = self.0.lock().unwrap();
         match runs.get(&ran.mesh_id).cloned() {
             Some(MeshDeleteRun::Running { key, owner }) if &key == ran => {
-                runs.insert(key.mesh_id.clone(), MeshDeleteRun::Exited { key, owner: owner.clone(), manifest: manifest.clone() });
+                let recorded = key.attempt;
+                runs.insert(key.mesh_id.clone(), MeshDeleteRun::Exited { key, owner: owner.clone(), manifest: manifest.clone(), recorded });
                 RunExit::Exited(owner)
             }
             Some(MeshDeleteRun::Running { .. }) => RunExit::Moved,
