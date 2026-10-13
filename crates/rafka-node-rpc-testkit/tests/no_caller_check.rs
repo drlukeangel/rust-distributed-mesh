@@ -85,10 +85,10 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
 
         // The admin the node knows stops it: the node parks, and hears no digest from now on.
-        let parked = call(&admin.observer.client, &target, &stop(1, &incarnation)).await;
-        assert!(matches!(parked, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{parked:?}");
+        let stopped = call(&admin.observer.client, &target, &stop(1, &incarnation)).await;
+        assert!(matches!(stopped, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{stopped:?}");
 
-        // An admin the parked node never heard of: a fresh endpoint key, in no digest the node holds.
+        // An admin the stopped node never heard of: a fresh endpoint key, in no digest the node holds.
         let stranger_key = iroh::SecretKey::generate();
         let stranger_endpoint = stranger_key.public().to_string();
         assert!(book.all().iter().all(|d| d.node.endpoint_id.0 != stranger_key.public().to_string()), "the stranger is in no digest");
@@ -97,7 +97,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let stranger = NodeRpcClient::new(rafka_node_rpc::endpoint::bind(stranger_key, "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
 
         // Its stop naming the exact birth is answered as the known admin's was: stopping a stopped birth is done.
-        assert_eq!(call(&stranger, &target, &stop(2, &incarnation)).await, parked, "a stopped endpoint answers anyone who reaches it");
+        assert_eq!(call(&stranger, &target, &stop(2, &incarnation)).await, stopped, "a stopped endpoint answers anyone who reaches it");
         // Its probe is answered for the subject: parked.
         assert!(matches!(call(&stranger, &target, &probe).await, StatusReply::CurrentParked { .. }), "the probe is decided for the subject, not the caller");
 
@@ -107,7 +107,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         // The node id the request names is never a reason to refuse: the birth the call reached answers it.
         let another = StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: incarnation.clone(), build_id: "bld_stranger".into(), attempt: 4, operation: "stop-node:mesh1.rpc.9".into() };
         let reply = call(&stranger, &NodeTarget::ExactNode(node_id.clone()), &another).await;
-        assert_eq!(reply, parked, "a stop naming another node id is answered by the birth it reached, as the stop of a stopped birth: {reply:?}");
+        assert_eq!(reply, stopped, "a stop naming another node id is answered by the birth it reached, as the stop of a stopped birth: {reply:?}");
 
         // The node's own decision span names the stop it answered the stranger, and names the
         // stranger by the one fact the node holds of it: its endpoint.

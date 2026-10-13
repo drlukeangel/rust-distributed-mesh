@@ -28,7 +28,7 @@ fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &str, ste
 }
 
 /// CONTRACT: `node.connections.delete { All }` opens the next attempt of the accepted Build (reason
-/// delete-connections, action delete_connections fenced to the live birth, no Build minted). The
+/// delete-connections, action delete_connections targeting the live birth, no Build minted). The
 /// operation is exactly `node.connections.delete:<path>`: the one call through the birth's
 /// mesh-primary, then Complete. The Build completes on node.connections.deleted; the node is
 /// connections-deleting (held `Draining` until the status names land) under the SAME NodeId and

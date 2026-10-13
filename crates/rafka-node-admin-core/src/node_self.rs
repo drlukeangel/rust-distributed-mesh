@@ -188,11 +188,11 @@ enum Cycle {
     Live,
     /// A stop is under way; later stops of the birth wait for the same receipt.
     Stopping(tokio::sync::watch::Receiver<Option<ConnectionsReceipt>>),
-    /// Stopped and parked, with the receipt its drain established.
-    Parked(ConnectionsReceipt),
-    /// Parked and a start is under way (the natural key `(node_id, incarnation, Pending)`): later
+    /// Stopped, its process alive, with the receipt its node.connections.delete { All } established.
+    Stopped(ConnectionsReceipt),
+    /// Stopped and a start is under way (the natural key `(node_id, incarnation, Pending)`): later
     /// starts of the birth answer the same outcome, and a stop is refused naming the start. A failed
-    /// start parks the birth again with the receipt it was parked with.
+    /// start leaves the birth stopped again with the receipt it was stopped with.
     Starting {
         /// The outcome of the start under way, once it ends.
         outcome: tokio::sync::watch::Receiver<Option<StatusReply>>,
@@ -470,7 +470,7 @@ impl NodeSelf {
     /// Whether this birth is parked: stopped, its process alive, waiting for a start or a delete.
     /// A birth whose start is under way is parked until the start ends.
     pub fn is_parked(&self) -> bool {
-        matches!(*self.cycle.lock().unwrap(), Cycle::Parked(_) | Cycle::Starting { .. })
+        matches!(*self.cycle.lock().unwrap(), Cycle::Stopped(_) | Cycle::Starting { .. })
     }
 
     /// This surface, completing `actions` before it checks in to a round.
@@ -669,7 +669,7 @@ impl NodeSelf {
         let next = {
             let mut cycle = self.cycle.lock().unwrap();
             match &*cycle {
-                Cycle::Parked(r) => Next::Done(r.clone()),
+                Cycle::Stopped(r) => Next::Done(r.clone()),
                 // The start ends the stopped cycle: the receipt that parked the birth does not
                 // answer for a birth on its way out of Leaving, as a start does not run beside a stop.
                 Cycle::Starting { .. } => return StatusReply::NotReady { reason: format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name()) },
@@ -696,7 +696,7 @@ impl NodeSelf {
                 );
                 let receipt = self.stop_steps(commander.as_ref(), spare, &op).instrument(span.clone()).await;
                 span.record("receipt", receipt.name());
-                *self.cycle.lock().unwrap() = Cycle::Parked(receipt.clone());
+                *self.cycle.lock().unwrap() = Cycle::Stopped(receipt.clone());
                 let _ = tx.send(Some(receipt.clone()));
                 receipt
             }
@@ -794,7 +794,7 @@ impl NodeSelf {
             let next = {
                 let mut cycle = self.cycle.lock().unwrap();
                 match &mut *cycle {
-                    Cycle::Parked(r) => {
+                    Cycle::Stopped(r) => {
                         let receipt = r.clone();
                         let Some(session) = self.session.lock().unwrap().clone() else {
                             return StatusReply::NotReady { reason: format!("{}: this process holds no session to rejoin its mesh with", self.held_name()) };
@@ -875,7 +875,7 @@ impl NodeSelf {
                         _ => spare.into_iter().collect(),
                     };
                     let _ = session.cut(&calls).await;
-                    *self.cycle.lock().unwrap() = Cycle::Parked(receipt);
+                    *self.cycle.lock().unwrap() = Cycle::Stopped(receipt);
                     tracing::Span::current().record("failed_step", failed.step);
                     StatusReply::StartFailed { step: failed.step.to_string(), reason: failed.reason }
                 }

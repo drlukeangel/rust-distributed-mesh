@@ -4026,16 +4026,17 @@ impl AdminRunner {
         }
     }
 
-    /// `drain-node:<path>` / `stop-node:<path>` (node-drain.md, node-stop.md): the exact birth `from` at
-    /// `node`, fenced by incarnation. A drain leaves the process running; a stop parks it, its
-    /// process alive (node-stop.md: no runtime Exited receipt), and publishes no departure.
+    /// `node.connections.delete:<path>` / `stop-node:<path>` (node-connections-delete.md, node-stop.md):
+    /// the exact birth `from` at `node`, targeted by incarnation. A node.connections.delete leaves the
+    /// process running; a stop leaves it stopped, its process alive (node-stop.md: no runtime Exited
+    /// receipt), and publishes no departure.
     async fn standalone(&self, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &IncarnationId, stop: bool) -> Result<(), String> {
-        let op = if stop { "stop-node" } else { "drain-node" };
+        let op = if stop { "stop-node" } else { "node.connections.delete" };
         let seen = self.topology.read().await.node(node).cloned();
         let (record, handle) = match seen {
             Some(n) => {
                 if n.incarnation_id.as_ref() != Some(from) {
-                    return Err(format!("{op}:{node} is fenced to birth {}, the view holds {} at that path", from.0, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("none")));
+                    return Err(format!("{op}:{node} targets birth {}, the view holds {} at that path", from.0, n.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("none")));
                 }
                 self.handle_for(&n).await?
             }
@@ -4811,14 +4812,12 @@ fn provider_image(p: ProviderKind) -> rafka_mesh_entity::binding::ProviderImage<
 /// The Node RPC server a node-admin serves, before it seals: core (Ping, Forward), then the families the
 /// admin owns as an authority (status, build claim, join).
 pub fn rpc_server(
-    resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
     connections: Arc<crate::connections_writer::ConnectionsWriter>,
     client: Arc<rafka_node_rpc::NodeRpcClient>,
     authority: crate::status_rpc::AuthoritySlot,
     claim: crate::build_claim::ClaimSlot,
     join: crate::join::JoinSlot,
 ) -> rafka_node_rpc::ServerBuilder {
-    let _ = resolver;
     let core = rafka_node_rpc::ServerBuilder::new().serve_core(client, Some(connections));
     // Status is forwardable: a peer may carry an authority's status call through this admin.
     crate::join::serve(crate::build_claim::serve(crate::status_rpc::serve(core, authority), claim), join).carry::<rafka_node_rpc_contract::status::Status>()
@@ -5108,7 +5107,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // Closed until the Status authority is filled and its view holds this admin (it decides from
     // that view): the router refuses every op, ping included, with a typed NotReady before then.
     let rpc_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(node_rpc_resolver.clone(), connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone()), handover_slot.clone()), build_slot.clone());
+    let rpc_builder = crate::build_op::serve(crate::fabric_handover::serve(crate::build_facts_read::serve(crate::topology_read::serve(rpc_server(connections.clone(), node_rpc.client.clone(), authority.clone(), claim_slot.clone(), join_slot.clone()), topology_slot.clone()), build_facts_slot.clone()), handover_slot.clone()), build_slot.clone());
     // The app's own ops (each behind the gate of its hook), before the catalog seals.
     let rpc_builder = match wiring.serve_app.take() {
         Some(serve_app) => serve_app(rpc_builder),

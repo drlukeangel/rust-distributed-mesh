@@ -104,7 +104,7 @@ fn connections_delete_with(transfer: Result<SeatTransferOutcome, String>) -> (Re
     run_with(transfer, NodeCommand::DeleteConnections)
 }
 
-/// [`connections_delete_with`] for the standalone workflow `workflow` (a drain or a stop).
+/// [`connections_delete_with`] for the standalone workflow `workflow` (a node.connections.delete or a stop).
 fn run_with(transfer: Result<SeatTransferOutcome, String>, workflow: NodeCommand) -> (Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String) {
     let (r, sent, steps, trace_id, _) = run_workflow(transfer, Some(workflow));
     (r, sent, steps, trace_id)
