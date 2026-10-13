@@ -321,6 +321,15 @@ impl BuildPreset {
     }
 }
 
+/// A tags call's labels refused before anything is sent: its span says so, and the reply is the
+/// `RejectedTags` the mesh-primary would answer.
+fn refused_before_sending(op: NodeOp, reason: &str) -> StatusReply {
+    let span = op.span();
+    span.record("outcome", "rejected-tags");
+    span.in_scope(|| tracing::info!(op = op.name(), reason = %reason, "the labels are not a node's tags; nothing is sent"));
+    StatusReply::rejected_tags(reason)
+}
+
 /// The `node` objects: workflows through the fabric-primary's Build family, reads as Status calls.
 #[derive(Debug, Clone)]
 pub struct Nodes {
@@ -414,6 +423,27 @@ impl Nodes {
         let incarnation = held.incarnation.clone().ok_or_else(|| CallEnd::Indeterminate { reason: format!("{} ({}) has no known birth; node.update names an exact birth", held.name, held.node_id) })?;
         let birth = crate::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation };
         crate::NodeRpc::new(self.carrier.client()).node_update(mesh_primary, route, &birth, &body.name, &body.tags, &rafka_node_rpc::CallOptions::default()).await
+    }
+
+    /// `node.tags.create`: add `labels` to the tags of the exact birth `birth`, a single call to the
+    /// node's mesh-primary `mesh_primary` over `route` ([`crate::NodeRpc::tags_create`]). Labels
+    /// outside the label grammar, an empty list or more than a node carries are refused here,
+    /// `RejectedTags`, and nothing is sent.
+    pub async fn tags_create(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, labels: &std::collections::BTreeSet<String>) -> Result<StatusReply, CallEnd> {
+        if let Some(reason) = rafka_node_rpc_contract::status::create_tags_refusal(labels) {
+            return Ok(refused_before_sending(NodeOp::TagsCreate, &reason));
+        }
+        crate::NodeRpc::new(self.carrier.client()).tags_create(mesh_primary, route, birth, labels, &rafka_node_rpc::CallOptions::default()).await
+    }
+
+    /// `node.tags.delete`: remove every label (`All`) or the named ones from the exact birth `birth`,
+    /// as [`Self::tags_create`]; a `Labels` scope naming nothing or a non-label is refused here,
+    /// `RejectedTags`, and nothing is sent.
+    pub async fn tags_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rafka_node_rpc_contract::status::TagScope) -> Result<StatusReply, CallEnd> {
+        if let Some(reason) = scope.refusal() {
+            return Ok(refused_before_sending(NodeOp::TagsDelete, &reason));
+        }
+        crate::NodeRpc::new(self.carrier.client()).tags_delete(mesh_primary, route, birth, scope, &rafka_node_rpc::CallOptions::default()).await
     }
 
     /// `node.connections.get`: the connections the exact birth `birth` holds, under the name it
@@ -710,7 +740,7 @@ mod tests {
     fn one_name_per_op_renders_the_same_in_the_name_and_the_span() {
         use crate::names::NodeEvent;
         let (_g, spans) = capture_spans();
-        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
             drop(op.span());
         }
         for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
@@ -722,7 +752,7 @@ mod tests {
         drop(MeshOp::Get.span());
         drop(FabricOp::Get.span());
         let names = spans.lock().unwrap().clone();
-        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
             let via = if op.is_workflow() { "via-workflow" } else { "via-call" };
             let want = format!("rdm.node_admin.{}.{via}", op.name());
             assert!(names.contains(&want), "{want} missing from {names:?}");

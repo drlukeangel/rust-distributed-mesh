@@ -21,6 +21,10 @@ pub enum NodeOp {
     ConfigGet,
     /// `node.config.update`.
     ConfigUpdate,
+    /// `node.tags.create`: labels added, each its own key of the tags index.
+    TagsCreate,
+    /// `node.tags.delete`: every label or the named ones removed.
+    TagsDelete,
     /// `node.create(spec)`.
     Create,
     /// `node.stop`.
@@ -44,6 +48,8 @@ impl NodeOp {
             Self::ConnectionsDelete => "node.connections.delete",
             Self::ConfigGet => "node.config.get",
             Self::ConfigUpdate => "node.config.update",
+            Self::TagsCreate => "node.tags.create",
+            Self::TagsDelete => "node.tags.delete",
             Self::Create => "node.create",
             Self::Stop => "node.stop",
             Self::Start => "node.start",
@@ -68,6 +74,8 @@ impl NodeOp {
             Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.node.connections.delete.via-call", op = "node.connections.delete", outcome = tracing::field::Empty),
             Self::ConfigGet => tracing::info_span!("rdm.node_admin.node.config.get.via-call", op = "node.config.get", outcome = tracing::field::Empty),
             Self::ConfigUpdate => tracing::info_span!("rdm.node_admin.node.config.update.via-call", op = "node.config.update", outcome = tracing::field::Empty),
+            Self::TagsCreate => tracing::info_span!("rdm.node_admin.node.tags.create.via-call", op = "node.tags.create", outcome = tracing::field::Empty),
+            Self::TagsDelete => tracing::info_span!("rdm.node_admin.node.tags.delete.via-call", op = "node.tags.delete", outcome = tracing::field::Empty),
             Self::Create => tracing::info_span!("rdm.node_admin.node.create.via-workflow", op = "node.create", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Stop => tracing::info_span!("rdm.node_admin.node.stop.via-workflow", op = "node.stop", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),
             Self::Start => tracing::info_span!("rdm.node_admin.node.start.via-workflow", op = "node.start", outcome = tracing::field::Empty, failed_step = tracing::field::Empty, build_id = tracing::field::Empty, attempt = tracing::field::Empty),

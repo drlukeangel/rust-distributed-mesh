@@ -8,7 +8,7 @@
 //! wrote.
 
 use crate::build_log;
-use rafka_node_admin_client::{CallEnd, Change, FabricDesired, Fabrics, FabricView, LaunchKind as NodeKind, MeshDesired, NodeMeta, NodeView, PathName, ScopeStatus};
+use rafka_node_admin_client::{CallEnd, Change, ExactBirth, FabricDesired, Fabrics, FabricView, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, binding_set_with_roles, candidate_sha, Door};
@@ -578,13 +578,13 @@ fn refused<T>(what: &str, call: Result<T, CallEnd>) -> CallEnd {
 /// `build.create` of every Build that would move a seat (a restart, stop or drain of the
 /// fabric-primary, a replace of mesh2's primary) and of every caller workflow that writes a row (a node
 /// stop, a node delete, mesh.delete) answers `Rejected { reason: "fabric-not-ready", detail }`, the detail
-/// naming the workflow and `state-sync`; and `node.update` at mesh2's primary answers
+/// naming the workflow and `state-sync`; and `node.tags.create` at mesh2's primary answers
 /// `RejectedFabricNotReady` naming the workflow and `state-sync`. The Build log of the initial Build,
 /// read from the admin's own journal over `FetchBuildFacts`, holds the attempt it held before: none is
 /// claimed. Once the application answers and the fabric is ready-for-traffic the same kind of workflow is
 /// accepted, and its one attempt is the only one the Build gains. One
 /// `rdm.node_admin.build.reject.via-fabric-not-ready` span per refused Build and one
-/// `rdm.node_admin.node.reject.via-fabric-not-ready` for the refused node.update say the same, and no
+/// `rdm.node_admin.node.reject.via-fabric-not-ready` for the refused node.tags.create say the same, and no
 /// node.primary.update span is ever written (the approved proposal
 /// node-primary-update-fabric-mesh-and-node-type.md, Part C1: "Before the initial fabric first reaches
 /// ready-for-traffic, every call is refused `fabric-not-ready` (R-PB1)"; "Refused before the row ...
@@ -605,7 +605,7 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     let held_in_state_sync = |f: &FabricView| f.status == ScopeStatus::StateSync && f.build_id.as_deref() == Some(first.as_str()) && f.meshes.len() == 2 && f.meshes.iter().all(|m| m.status == ScopeStatus::ReadyForTraffic);
     estate.fabrics_obj().await.fact("state-sync under the initial Build, both meshes ready", Duration::from_secs(60), held_in_state_sync).await.unwrap_or_else(|end| panic!("{end}"));
     door.wait_held("state-sync").await;
-    // mesh2's primary holds the fabric's state too: the node.update below is decided from its own view.
+    // mesh2's primary holds the fabric's state too: the node.tags.create below is decided from its own view.
     let mesh2_primary = path("mesh2.admin.1");
     Fabrics::new(estate.carrier_at(&mesh2_primary).await).fact("mesh2's primary holds the fabric in state-sync", Duration::from_secs(30), |f| f.status == ScopeStatus::StateSync).await.unwrap_or_else(|end| panic!("{end}"));
 
@@ -635,27 +635,13 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
         }
     }
 
-    // node.update at mesh2's primary: the Status op's own refusal, nothing written.
+    // node.tags.create at mesh2's primary: the Status op's own refusal, nothing written.
     let rpc2 = estate.node_view("mesh2.rpc.1").await;
-    let held = NodeMeta {
-        node_id: rpc2.node_id.clone(),
-        incarnation: rpc2.incarnation_id.clone(),
-        endpoint: rpc2.endpoint_id.clone(),
-        transport_addr: rpc2.transport_addr,
-        exe: None,
-        runtime: rpc2.deployment_id.clone(),
-        status: rpc2.status,
-        name: rpc2.name.clone(),
-        mesh: rpc2.mesh.clone(),
-        kind: rpc2.kind,
-        otel_debug: false,
-        tags: rpc2.tags.clone(),
-    };
     let primary2 = estate.node_view("mesh2.admin.1").await;
-    let body = NodeMeta { tags: ["rabbit".to_string()].into(), ..held.clone() };
-    let updated = nodes.update(&held, &body, &primary2.node_id, &rafka_node_rpc::RouteChoice::Direct).await.unwrap_or_else(|end| panic!("node.update at {mesh2_primary}: {end}"));
-    assert_eq!(updated, StatusReply::RejectedFabricNotReady { workflow: "node.update mesh2.rpc.1".into(), status: "state-sync".into() });
-    assert!(estate.node_view("mesh2.rpc.1").await.tags.is_empty(), "a refused node.update writes no tags");
+    let birth2 = ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(rpc2.node_id.clone()), node_id: rpc2.node_id.clone(), incarnation: rpc2.incarnation_id.clone().expect("mesh2.rpc.1 has a known birth") };
+    let created = nodes.tags_create(&birth2, &primary2.node_id, &rafka_node_rpc::RouteChoice::Direct, &["rabbit".to_string()].into()).await.unwrap_or_else(|end| panic!("node.tags.create at {mesh2_primary}: {end}"));
+    assert_eq!(created, StatusReply::RejectedFabricNotReady { workflow: "node.tags.create mesh2.rpc.1".into(), status: "state-sync".into() });
+    assert!(estate.node_view("mesh2.rpc.1").await.tags.is_empty(), "a refused node.tags.create writes no tags");
 
     // Nothing moved: no attempt was claimed, the fabric is still held, every seat is where it was.
     let log_after = build_log::build_value(&carrier, &first).await;
@@ -684,8 +670,8 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
         assert_eq!((s(&r["attributes"]["workflow"]).as_str(), s(&r["attributes"]["status"]).as_str()), (*workflow, "state-sync"), "{:?}", r["attributes"]);
     }
     let node_rejects = named(&spans, "rdm.node_admin.node.reject.via-fabric-not-ready");
-    assert_eq!(node_rejects.len(), 1, "one refusal span for the refused node.update: {node_rejects:?}");
-    assert_eq!((s(&node_rejects[0]["attributes"]["workflow"]).as_str(), s(&node_rejects[0]["attributes"]["status"]).as_str()), ("node.update mesh2.rpc.1", "state-sync"));
+    assert_eq!(node_rejects.len(), 1, "one refusal span for the refused node.tags.create: {node_rejects:?}");
+    assert_eq!((s(&node_rejects[0]["attributes"]["workflow"]).as_str(), s(&node_rejects[0]["attributes"]["status"]).as_str()), ("node.tags.create mesh2.rpc.1", "state-sync"));
     for seat_span in [
         "rdm.node_admin.seat.update.via-primary-update",
         "rdm.node_admin.seat.update.via-primary-updating",
@@ -700,5 +686,5 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     for r in &rejects {
         eprintln!("trace {}: rdm.node_admin.build.reject.via-fabric-not-ready workflow={} status=state-sync", s(&r["trace_id"]), s(&r["attributes"]["workflow"]));
     }
-    eprintln!("trace {}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.update mesh2.rpc.1 status=state-sync", s(&node_rejects[0]["trace_id"]));
+    eprintln!("trace {}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.tags.create mesh2.rpc.1 status=state-sync", s(&node_rejects[0]["trace_id"]));
 }
