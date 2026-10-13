@@ -1502,7 +1502,7 @@ struct Channel {
 /// is handed to its handler. A frame received after a newer one of its source, by the node's one held
 /// version per source, is ignored with one `rdm.mesh.membership.reject.via-earlier-version` span naming
 /// the source, the key held and the key offered.
-fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &str, channel: &str, sender: &str) -> bool {
+fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &str, channel: &str, sender: &dyn std::fmt::Display) -> bool {
     match order.admit(f) {
         Ok(()) => true,
         Err(e) => {
@@ -1578,7 +1578,7 @@ impl Channel {
                                     // its source is ignored, by name, before any handler reads it. The
                                     // check and what the handler installs are one hold of it.
                                     let mut held = order.lock().unwrap();
-                                    if admitted(&mut held, &f, &node, &channel, &m.delivered_from.fmt_short().to_string()) {
+                                    if admitted(&mut held, &f, &node, &channel, &m.delivered_from.fmt_short()) {
                                         on_frame(f, &mut held);
                                     }
                                 }
@@ -7828,7 +7828,7 @@ mod tests {
     /// `f` heard on `side` of `view` as a channel's receive path hands it on: the one ordering check
     /// of that channel first (`order`, R-RX3), then the view. `false` when the check ignored it.
     fn hear(order: &mut crate::receive_order::ReceiveOrder, view: &View, f: &Frame, fabric: &FabricId, side: Side) -> bool {
-        if !admitted(order, f, &view.node, side.name(), "cell") {
+        if !admitted(order, f, &view.node, side.name(), &"cell") {
             return false;
         }
         match f {
