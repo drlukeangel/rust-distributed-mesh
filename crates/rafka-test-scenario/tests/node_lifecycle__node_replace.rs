@@ -740,17 +740,17 @@ async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_par
 /// Complete names the birth. Storage is not released ("It releases node.id and name, not storage").
 const DELETE_PARKED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"];
 
-/// CONTRACT: the recipe's `node[1].delete` of the parked predecessor a replace left at `<path>.old`
+/// CONTRACT: the recipe's `node[1].delete` of the stopped predecessor a replace left at `<path>.old`
 /// (node-replace.md; node-decommission.md 2-4): `DELETE /api/nodes/<path>.old` is the next attempt of
 /// the accepted Build (reason delete, action delete fenced to the exact old birth, no Build minted).
-/// One operation `delete-node:<path>.old` asks the provider to end the parked runtime and inspects
+/// One operation `delete-node:<path>.old` asks the provider to end the stopped runtime and inspects
 /// it; only the provider's Exited is the proof, after which the executor publishes NodeDeleted for
 /// the exact old birth and the mesh's primary, which executes it, writes the Deleted row at
 /// `<path>.old`, its record kept (R13). The predecessor's process is gone; its data dir stays; the successor at the path is
 /// untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn deleting_the_parked_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row() {
-    let (estate, birth_build) = estate("deleting_the_parked_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row").await;
+async fn deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row() {
+    let (estate, birth_build) = estate("deleting_the_stopped_predecessor_proves_its_exit_publishes_node_deleted_and_writes_its_deleted_row").await;
     let parked = replace_and_park(&estate, &birth_build, "mesh1.rpc.1").await;
     delete_parked_and_assert(&estate, &birth_build, &parked).await;
     estate.shutdown().await;

@@ -668,15 +668,17 @@ fn a_rename_handled_again_after_the_successor_took_the_name_leaves_its_row() {
     assert_eq!(outcomes, vec!["already-moved"], "{renames:#?}");
 }
 
-/// CONTRACT: the fabric-primary holds the record of the parked predecessor a replace left at
+/// CONTRACT: the fabric-primary holds the record of the stopped predecessor a replace left at
 /// `<path>.old` although its view never names that path (a fabric-primary in another mesh than the
-/// replace's executor: its view drops the parked predecessor under the successor at `<path>`), fed
-/// from the replace's frames its drive reads. From that held record it admits
+/// replace's executor: its view drops the stopped predecessor under the successor at `<path>`), fed
+/// from the replace's frames its drive reads. The replace's first step is its stop, whose `StopNode`
+/// frame follows the stop's Leaving publish: the record it announces is stopped (Leaving, parked)
+/// at the rename, whatever status the view held at the frame. From that held record it admits
 /// `DELETE /api/nodes/<path>.old` as the next attempt fenced to the exact old birth; at the delete's
 /// `NodeDeleted` it holds the record no more. It writes no row of `mesh1`, which has a primary: the
 /// mesh primary that executes the delete writes the Deleted row (node-decommission.md 3; R13).
 #[test]
-fn a_fabric_primary_whose_view_never_names_the_old_path_admits_the_parked_predecessors_delete_and_writes_no_row() {
+fn a_fabric_primary_whose_view_never_names_the_old_path_admits_the_stopped_predecessors_delete_and_writes_no_row() {
     let cap = capture();
     let (pred, held, opened, row, held_after) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
@@ -688,9 +690,15 @@ fn a_fabric_primary_whose_view_never_names_the_old_path_admits_the_parked_predec
             v.nodes.retain(|n| n.name.to_string() != "mesh1.rpc.1");
             v.nodes.push(successor);
         }));
+        // The stop marks the predecessor Leaving as it sends stop-node, before its `StopNode` frame
+        // (node-stop.md; the pipeline's stop publishes the Leaving record inside that step).
+        let stopping = Act::View(Box::new(|v: &mut Topology| {
+            let n = v.nodes.iter_mut().find(|n| n.name.to_string() == "mesh1.rpc.1").expect("the predecessor is in the view");
+            n.status = NodeStatus::Leaving;
+            n.parked = false;
+        }));
         let acts = vec![
-            Act::Frame(op, "DrainNode"),
-            Act::Frame(op, "AwaitNodeDrained"),
+            stopping,
             Act::Frame(op, "StopNode"),
             Act::Frame(op, "AwaitNodeLeft"),
             Act::Frame(op, "RenamePredecessor"),
