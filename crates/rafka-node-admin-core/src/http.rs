@@ -619,7 +619,9 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
         (true, false) => crate::election::Moving::MeshSeat,
         _ => return None,
     };
-    if action == "retire" && t.members().filter(|n| n.mesh == node.mesh).all(|n| n.node_id == target.node_id) {
+    // The delete of a mesh's only node, by a desired-state retire or by the node.delete route (the
+    // final primary a mesh.delete left alive, mesh-delete.md step 7), skips the update.
+    if matches!(action, "retire" | "delete") && t.members().filter(|n| n.mesh == node.mesh).all(|n| n.node_id == target.node_id) {
         return None;
     }
     let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
