@@ -104,3 +104,11 @@ pub async fn serve(nodes: Vec<NodeView>) -> AdminView {
     let birth = MeshNode { node_id, name: ADMIN.parse().unwrap(), endpoint_id: EndpointId(key.public().to_string()), transport_addr: addr, incarnation, supersedes: None, runtime: None };
     AdminView { birth, seen, router }
 }
+
+/// [`serve`] for a cell with no runtime of its own: the runtime serving the stub is returned with it,
+/// and the cell holds it for as long as the probe runs.
+pub fn serve_on_own_runtime(nodes: Vec<NodeView>) -> (tokio::runtime::Runtime, AdminView) {
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    let admin = rt.block_on(serve(nodes));
+    (rt, admin)
+}

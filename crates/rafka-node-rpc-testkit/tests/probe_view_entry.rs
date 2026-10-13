@@ -1,46 +1,45 @@
-//! Functional: the probe refuses a node-view entry it cannot read, by name.
+//! Functional: the probe refuses a node of the admin's view it cannot read, by name.
 //!
-//! The probe dials from the admin's node view (`GET /api/nodes`). A reader that does not recognise a
-//! value refuses with a named reason and never falls through (rafka-v2 CLAUDE.md, "DURABLE", second-order
-//! rule): an entry whose `incarnation_id` is not a Crockford id used to vanish from the resolver, so the
-//! call aimed at it came back as a resolve failure that named nothing, and a fixture with a bad birth
-//! became a stem that waited forever for a dial.
+//! The probe dials from the entry admin's view, read over Node RPC (`fabric.get`, `node.get`). A reader
+//! that does not recognise a value refuses with a named reason and never falls through (rafka-v2
+//! CLAUDE.md, "DURABLE", second-order rule): a node whose endpoint is no Iroh key would otherwise
+//! vanish from the resolver, so the call aimed at it would come back as a resolve failure that named
+//! nothing, and a fixture with a bad birth would become a stem that waited forever for a dial. The view's
+//! ids and incarnations are typed on the wire, so the endpoint, carried as text, is the field a view
+//! node can hold unreadable.
 
-use crate::probe_endpoint_close::serve_view;
+use crate::common::admin_view::{node, serve_on_own_runtime};
 use rafka_mesh_entity::{IncarnationId, NodeId};
 
-/// CONTRACT: a probe whose admin view holds an entry with an `incarnation_id` that is not a Crockford id
-/// refuses the whole call: exit status 2, one `Refused` line whose reason names that entry's node id, the
-/// field `incarnation_id`, the value it held and the parse error the id type gives, and the probe's
-/// `via-probe` span carries the same refusal. What must NOT happen: a `NotSent`/`Resolve` outcome, exit
-/// status 0, or a refusal that makes the reader open the view to learn which entry failed.
+/// CONTRACT: a probe whose admin view holds a node with an `endpoint_id` that is not an Iroh key
+/// refuses the whole call: exit status 2, one `Refused` line whose reason names that node's id, the
+/// field `endpoint_id`, the value it held and the parse error the key type gives, and the probe's
+/// `via-probe` span carries the same refusal. The probe closes its endpoint before it refuses (it was
+/// bound to read the view). What must NOT happen: a `NotSent`/`Resolve` outcome, exit status 0, a
+/// refusal that makes the reader open the view to learn which node failed, or the ungraceful-abort line.
 #[test]
-fn probe_with_unreadable_incarnation_refuses_naming_the_entry() {
-    let bad_node = NodeId::mint().to_string();
-    let bad_birth = "deadbeef01234567";
-    let parse_error = IncarnationId::parse(bad_birth).unwrap_err().to_string();
-    let key = iroh::SecretKey::generate().public().to_string();
-    let view = serde_json::json!({"nodes": [{
-        "node_id": bad_node, "name": "mesh1.rpc.1", "endpoint_id": key, "transport_addr": "127.0.0.1:9", "incarnation_id": bad_birth,
-    }]})
-    .to_string();
-    let admin = serve_view(view);
+fn probe_with_unreadable_endpoint_refuses_naming_the_node() {
+    let bad_node = NodeId::mint();
+    let bad_endpoint = "not-an-iroh-key";
+    let parse_error = bad_endpoint.parse::<iroh::PublicKey>().unwrap_err().to_string();
+    let (rt, admin) = serve_on_own_runtime(vec![node("mesh1.rpc.1", &bad_node, Some(bad_endpoint.into()), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
     let evidence = std::env::temp_dir().join(format!("rdm-probe-view-entry-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
-        .args(["--admin", &admin, "get", "--target", &format!("exact:{bad_node}"), "--key", "k"])
+        .args(["--admin-birth", &admin.birth_arg(), "get", "--target", &format!("exact:{bad_node}"), "--key", "k"])
         .env("RDM_EVIDENCE_DIR", &evidence)
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("the probe printed no JSON ({e}): {stdout} / {stderr}"));
-    assert_eq!(v["outcome"].as_str(), Some("Refused"), "an unreadable view entry refuses the call: {v}");
+    assert_eq!(v["outcome"].as_str(), Some("Refused"), "an unreadable view node refuses the call: {v}");
     assert_eq!(out.status.code(), Some(2), "a refused call exits non-zero: {v}");
     let reason = v["reason"].as_str().unwrap_or_default();
-    for part in [bad_node.as_str(), "incarnation_id", bad_birth, parse_error.as_str()] {
+    for part in [bad_node.to_string().as_str(), "endpoint_id", bad_endpoint, parse_error.as_str()] {
         assert!(reason.contains(part), "the refusal names {part:?}: {reason:?}");
     }
+    assert!(!stderr.contains("dropped without calling"), "the probe's endpoint was dropped open: {stderr}");
     let spans: Vec<serde_json::Value> = std::fs::read_dir(&evidence)
         .unwrap()
         .flatten()
@@ -54,5 +53,6 @@ fn probe_with_unreadable_incarnation_refuses_naming_the_entry() {
     let refused = probe["events"].as_array().into_iter().flatten().find(|e| e["name"] == "the probe refused the call");
     assert_eq!(refused.map(|e| e["attributes"]["refusal"].as_str()), Some(Some(reason)), "the via-probe span carries the refusal the probe printed: {probe}");
     eprintln!("probe_view_entry trace_id={} span={} refusal={reason}", probe["trace_id"].as_str().unwrap_or_default(), probe["name"].as_str().unwrap_or_default());
+    rt.block_on(admin.shutdown());
     let _ = std::fs::remove_dir_all(&evidence);
 }

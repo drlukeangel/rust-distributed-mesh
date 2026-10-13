@@ -28,7 +28,8 @@ use std::sync::Arc;
 fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_node_rpc() {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let data = std::env::temp_dir().join(format!("rdm-probe-entry-data-{}", std::process::id()));
-    let evidence = std::env::temp_dir().join(format!("rdm-probe-entry-{}", std::process::id()));
+    // The probe's span files stay after the cell, in the cell's own directory: its trace is the proof.
+    let evidence = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_node_rpc");
     let _ = std::fs::remove_dir_all(&data);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&data).unwrap();
@@ -89,11 +90,10 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
         let s = spans.iter().find(|s| s["name"] == read).unwrap_or_else(|| panic!("the probe left no {read} span: {spans:?}"));
         assert_eq!((s["trace_id"].as_str(), s["attributes"]["outcome"].as_str()), (Some(trace), Some("read")), "{read} is a read of the probe's own trace: {s}");
     }
-    eprintln!("probe_entry_admin trace_id={trace} reads=fabric.get,node.get(mesh1) outcome={} executing_node={target}", v["outcome"]);
+    std::fs::write(evidence.join("trace.txt"), format!("probe_entry_admin trace_id={trace} reads=fabric.get,node.get(mesh1) outcome={} executing_node={target}\n", v["outcome"])).unwrap();
     rt.block_on(async {
         admin.shutdown().await;
         let _ = router.shutdown().await;
     });
-    let _ = std::fs::remove_dir_all(&evidence);
     let _ = std::fs::remove_dir_all(&data);
 }

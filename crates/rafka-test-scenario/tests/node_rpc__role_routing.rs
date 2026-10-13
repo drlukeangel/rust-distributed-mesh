@@ -83,7 +83,12 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     assert_eq!(none_t.len(), 1, "{none_t:?}");
     assert_eq!(none_t[0]["attributes"]["outcome"], "NotSent");
     let none_trace = &none_t[0]["trace_id"];
-    assert!(!spans.iter().any(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")), "no route: no connection was opened");
+    // The probe reads its entry admin's view over Node RPC (fabric.get, node.get) before it chooses a
+    // route: that read's dial, to the entry admin's birth, is the one connection of the trace, and the
+    // NoActiveRoute choice opens none.
+    let entry = estate.entry_birth();
+    let opened: Vec<&Value> = spans.iter().filter(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")).collect();
+    assert!(opened.iter().all(|s| s["attributes"]["incarnation_id"] == entry.incarnation.as_str()), "no route: no connection was opened but the entry admin {}'s view read: {opened:?}", entry.name);
     assert!(served_in(&none_t).is_empty(), "no route: nothing served");
     let b2_served: Vec<_> = served.iter().filter(|s| s["attributes"]["incarnation_id"] == b2["incarnation_id"]).collect();
     assert_eq!(b2_served.len(), 1, "broker.2 served exactly the one call selected for it: {b2_served:?}");

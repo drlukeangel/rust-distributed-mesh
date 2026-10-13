@@ -43,7 +43,7 @@ use crate::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault};
 use crate::scenario::Operation as ProofOp;
 use crate::sim::Scheduler;
 use crate::wedge::{judge, Control, Evidence, Family, FaultAck, Primitive, Progress as WedgeProgress, Reconciliation, Recovery, Release, Routing};
-use rafka_node_admin_client::{Accepted, CallEnd, FabricDesired, FabricView, Frame, LaunchKind, MeshDesired, NodeSpec, PathName, ScopeStatus, WorkflowStream};
+use rafka_node_admin_client::{birth_of_view, Accepted, CallEnd, FabricDesired, FabricView, Frame, LaunchKind, MeshDesired, MeshNode, NodeSpec, NodeView, PathName, ScopeStatus, WorkflowStream};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -326,8 +326,8 @@ struct OpBook {
 
 #[derive(Default, Clone)]
 struct View {
-    /// The fabric-primary's control API: the traffic's probes read the view through it.
-    admin: Option<String>,
+    /// The fabric-primary's birth: the traffic's probes enter at it and read its view.
+    admin: Option<MeshNode>,
     rpcs: Vec<(String, String)>,
     /// The gateways that carry a quarter of the traffic to its exact target (`--via`).
     gateways: Vec<String>,
@@ -353,7 +353,7 @@ struct Call {
 
 /// Issue `call` once: recorded in the ledger before it is sent, classified from the printed typed
 /// outcome after. No retry: an outcome is recorded, never repeated.
-async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &str, call: Call) {
+async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &MeshNode, call: Call) {
     let id: OperationId = {
         let mut b = shared.book.lock().unwrap();
         let mutation = match (call.kind, &call.value) {
@@ -383,7 +383,7 @@ async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &str, call: Call) {
     if let Some(gw) = &call.via {
         args.extend(["--via".into(), format!("path:{gw}")]);
     }
-    let (p, a) = (probe.clone(), admin.to_string());
+    let (p, a) = (probe.clone(), admin.clone());
     let printed = tokio::task::spawn_blocking(move || {
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         p.run(&a, &refs)
@@ -806,7 +806,13 @@ impl Driver {
     }
 
     fn publish_view(&self, nodes: &[Value]) {
-        let admin = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic").or_else(|| nodes.iter().find(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic")).and_then(|n| n["admin_api_base"].as_str().map(String::from));
+        let admin = nodes
+            .iter()
+            .find(|n| n["kind"] == "node_admin" && n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic")
+            .or_else(|| nodes.iter().find(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic"))
+            .and_then(|n| serde_json::from_value::<NodeView>(n.clone()).ok())
+            .as_ref()
+            .and_then(birth_of_view);
         let rpcs = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
         let gateways = nodes.iter().filter(|n| n["kind"] == "gateway" && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
         *self.shared.view.lock().unwrap() = View { admin, rpcs, gateways };
@@ -1089,7 +1095,7 @@ impl Driver {
                 };
                 let n = node_json(target).filter(|n| n["status"] == "ready-for-traffic").ok_or_else(|| broken("model-matches-view", format!("{target} is not ready in the view")))?;
                 let probe = self.estate.probe_handle();
-                let admin = self.shared.view.lock().unwrap().admin.clone().unwrap_or_else(|| self.estate.admin.clone());
+                let admin = self.shared.view.lock().unwrap().admin.clone().unwrap_or_else(|| self.estate.entry_birth());
                 let call = match op {
                     ProofOp::Put { value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "put", key, value: Some(value.clone()), expected: None, via: None },
                     ProofOp::Cas { expected, value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "cas", key, value: Some(value.clone()), expected: Some(expected.clone()), via: None },
@@ -1266,7 +1272,7 @@ impl Driver {
         let floor = self.cfg.floor;
         let key = (9000 + round).to_string();
         let probe = self.estate.probe_handle();
-        let admin = self.estate.admin.clone();
+        let admin = self.estate.entry_birth();
         let run = |args: Vec<String>| {
             let (p, a) = (probe.clone(), admin.clone());
             async move { tokio::task::spawn_blocking(move || p.run(&a, &args.iter().map(String::as_str).collect::<Vec<_>>())).await.ok().and_then(|r| r.ok()).unwrap_or(Value::Null) }
@@ -1552,7 +1558,7 @@ impl Driver {
         // The state algebra, store by store.
         let ids: BTreeSet<String> = meta.iter().map(|m| m.target_id.clone()).collect();
         let probe = self.estate.probe_handle();
-        let admin = self.estate.admin.clone();
+        let admin = self.estate.entry_birth();
         for id in ids {
             let Some(path) = alive.get(&id) else {
                 report.ops_on_retired_births += meta.iter().filter(|m| m.target_id == id).count();

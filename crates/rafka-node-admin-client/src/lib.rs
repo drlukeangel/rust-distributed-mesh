@@ -23,7 +23,7 @@ pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
     await_fact, BuildPreset, BuildSpec, Builds, Fabrics, MeshSelector, Meshes, NameHeld, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
 };
-pub use peers::{birth_of_line, Peers, BIRTH_LINE};
+pub use peers::{birth_of_line, birth_of_view, Peers, BIRTH_LINE};
 /// A node's birth, as a node-admin prints it at start ([`BIRTH_LINE`]).
 pub use rafka_mesh_entity::MeshNode;
 pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};

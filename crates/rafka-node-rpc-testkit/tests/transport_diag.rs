@@ -15,11 +15,10 @@
 //! own process, started with the environment its subject reads, as the estate starts a node: the cell
 //! never sets a variable.
 
+use crate::common::admin_view::{self, node};
 use iroh::protocol::ProtocolHandler;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{ServedBirth, ServerBuilder};
-use std::io::{Read, Write};
-use std::net::TcpListener;
 
 /// The diagnostic file each process writes in its node log directory.
 const DIAG: &str = "transport-diag.log";
@@ -27,21 +26,6 @@ const DIAG: &str = "transport-diag.log";
 /// The directory a cell owns: both of its processes compute the same one.
 fn cell_dir(cell: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell)
-}
-
-/// A one-route admin: every request is answered with the same node view.
-fn serve_view(view: String) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut stream = stream;
-            let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf);
-            let _ = write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{view}", view.len());
-        }
-    });
-    base
 }
 
 fn line_with<'a>(file: &'a str, parts: &[&str]) -> Option<&'a str> {
@@ -86,16 +70,15 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
         let server = ServerBuilder::new().seal(ServedBirth { node_id: NodeId::mint().to_string(), incarnation: IncarnationId::mint().to_string() }).unwrap();
         let ep = rafka_node_rpc::endpoint::bind(maker_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let maker_addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let target = NodeId::mint().to_string();
-        let view = serde_json::json!({"nodes": [{
-            "node_id": target, "name": "mesh1.admin.1", "endpoint_id": expected.to_string(), "transport_addr": maker_addr.to_string(), "incarnation_id": IncarnationId::mint().to_string(),
-        }]})
-        .to_string();
-        let admin = serve_view(view);
+        let target = NodeId::mint();
+        // The entry admin the probe reads its view from: a third endpoint of this process, whose view
+        // names the target at the maker's address under another endpoint's key.
+        let served = admin_view::serve(vec![node("mesh1.admin.1", &target, Some(expected.to_string()), Some(maker_addr), Some(IncarnationId::mint()))]).await;
+        let admin = served.birth_arg();
         let (run, dialler_dir) = (run.clone(), dialler_dir.clone());
         let mut dialler = tokio::task::spawn_blocking(move || {
             std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
-                .args(["--admin", &admin, "get", "--target", &format!("exact:{target}"), "--key", "k"])
+                .args(["--admin-birth", &admin, "get", "--target", &format!("exact:{target}"), "--key", "k"])
                 .env("RDM_EVIDENCE_DIR", &run)
                 .env("RDM_DATA_DIR", &dialler_dir)
                 .env("RDM_NODE_NAME", "mesh1.rpc.9")
@@ -116,6 +99,7 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
             Err(e) => Err(format!("alpn: {e:#}")),
         };
         let out = dialler.await.unwrap();
+        served.shutdown().await;
         ep.close().await;
         (maker_addr, accepted, out)
     });

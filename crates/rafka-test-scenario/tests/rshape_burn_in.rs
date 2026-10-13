@@ -6567,7 +6567,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let carrier_inc0 = s(&cn["incarnation_id"]);
     let rows_c0 = proxy_retirements(&durable_history(&f, &src).await).len();
     let handle = f.estate.probe_handle();
-    let admin = f.estate.admin.clone();
+    let admin = f.estate.entry_birth();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stream = {
         let (stop, args) = (stop.clone(), ["originate", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--key", "x"].map(String::from));
