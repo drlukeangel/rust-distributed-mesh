@@ -1035,88 +1035,59 @@ impl Estate {
         std::fs::write(self.artifacts.join("trace-url.txt"), format!("{base}/trace/{trace_id}\n")).unwrap();
     }
 
-    /// Stop the whole estate through the runtime-administration route of the admin that holds the
-    /// fabric now (drift recovery can move the fabric back to a recovered mesh) and wait until every
-    /// runtime of the estate has exited. Every process flushes its evidence on exit, so read `spans()`
-    /// after this.
-    ///
-    /// Who holds the fabric is read over Node RPC: `fabric.get` at the admin the estate asks, then at
-    /// every node-admin its view lists, names the fabric-primary, and that admin's own `fabric.get`
-    /// (reached by its exact birth, so a control port another estate reused is never taken for it)
-    /// gives the control base it advertises. The fabric shutdown itself is that base's route: no op on
-    /// the wire begins one.
+    /// Stop the whole estate through its own provider and wait until every runtime of it has exited:
+    /// the test's teardown, not a fabric operation (no op on the wire begins it). Every admin the estate
+    /// started, every runtime an admin launched (the pid its `deployment.json` names) and every
+    /// container of its Fabric is sent SIGTERM at once, and each leaves as a local stop does
+    /// (`rdm.mesh.node.delete.via-signal`), its evidence flushed as it exits, so read `spans()` after
+    /// this. A runtime an admin launched while the others were leaving is told the same. One still
+    /// running when the bound passes (a node's leave: its Leaving linger and its transport close, plus
+    /// the grace of one stop) is named and killed, so a stop never hangs on it.
     pub async fn stop(&mut self) {
-        let peers = self.peers().await;
-        let entry = self.entry().await;
-        // Only the fabric-primary accepts the shutdown, and the seat can still be moving when the
-        // test asks: follow the seat until one accepts, and name the last refusal rather than
-        // waiting on a shutdown nobody began.
+        let mut told = self.terminate(&[]);
         let until = Instant::now() + Duration::from_secs(30);
-        let mut last: (u16, Value);
-        let holder = loop {
-            let mut asked = vec![entry.clone()];
-            if let Ok(views) = self.try_node_views().await {
-                asked.extend(views.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, rafka_node_admin_client::NodeStatus::Dead | rafka_node_admin_client::NodeStatus::PendingReconnect) && n.name != entry).map(|n| n.name));
+        loop {
+            for c in self.restarted.iter_mut().chain(self.bootstrap.as_mut()) {
+                let _ = c.try_wait();
             }
-            let mut seat = None;
-            for admin in &asked {
-                let Some(fp) = crate::typed::fabric_view_of(&peers, admin, &self.fabric_id).await.and_then(|f| f.fabric_primary) else { continue };
-                // The holder's own view names it the fabric-primary and gives its own control base.
-                if let Some(own) = crate::typed::fabric_view_of(&peers, &fp, &self.fabric_id).await.filter(|f| f.fabric_primary.as_ref() == Some(&fp)) {
-                    if let Some(base) = own.admin_api_base.filter(|b| !b.is_empty()) {
-                        seat = Some((fp, base));
-                        break;
-                    }
+            told.extend(self.terminate(&told));
+            let running: Vec<u32> = told.iter().copied().filter(|p| runs(*p)).collect();
+            let containers = self.live_containers();
+            if running.is_empty() && containers.is_empty() {
+                break;
+            }
+            if Instant::now() >= until {
+                eprintln!("estate stop: still running when the stop bound passed, killed: pids {running:?}, containers {containers:?}");
+                for p in &running {
+                    let _ = Command::new("kill").args(["-9", &p.to_string()]).status();
                 }
+                for (_, id) in &containers {
+                    let _ = docker(&["kill", id]);
+                }
+                break;
             }
-            last = match &seat {
-                Some((fp, base)) => match self.http.post(format!("{base}/api/shutdown")).json(&json!({})).send().await {
-                    Ok(r) if r.status().as_u16() == 202 => break seat.clone().expect("the seat was read"),
-                    Ok(r) => (r.status().as_u16(), json!({"fabric_primary": fp.to_string(), "base": base, "answer": r.json::<Value>().await.unwrap_or(Value::Null)})),
-                    Err(e) => (0, json!({"fabric_primary": fp.to_string(), "base": base, "error": e.to_string()})),
-                },
-                None => (0, json!({"asked": asked.iter().map(|a| a.to_string()).collect::<Vec<_>>(), "error": format!("no admin of Fabric {} names a fabric-primary whose own view holds the seat", self.fabric_id)})),
-            };
-            assert!(Instant::now() < until, "no fabric-primary accepted the fabric shutdown within 30s; last: {} {}", last.0, last.1);
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        };
-        self.admin = holder.1.clone();
-        // The bootstrap admin is stopped by the shutdown like any other admin; one still running
-        // when the bound passes is named and killed, so a stop never hangs on it. The bound covers
-        // the drain bound a stopper waits on (`shutdown::drain_bound`) plus the grace of one stop.
-        let until = Instant::now() + Duration::from_secs(30);
-        let mut bootstrap = self.bootstrap.take();
-        if let Some(c) = bootstrap.as_mut() {
-            while Instant::now() < until && c.try_wait().ok().flatten().is_none() {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            if c.try_wait().ok().flatten().is_none() {
-                // The holder may already have closed its endpoint (it leaves before the Leaving linger
-                // ends): its view is evidence when it answers, never a condition of the stop.
-                let fabric = match crate::typed::fabric_view_of(&peers, &holder.0, &self.fabric_id).await {
-                    Some(f) => serde_json::to_value(f).unwrap_or(Value::Null),
-                    None => Value::String(format!("{} does not answer fabric.get for {}", holder.0, self.fabric_id)),
-                };
-                eprintln!("estate stop: bootstrap admin pid {} still ran when the shutdown bound passed; killed. Its fabric view: {fabric}", c.id());
-                let _ = c.kill();
-                let _ = c.wait();
-            }
-        }
-        // A restarted admin is stopped by the shutdown like any other; one still running when the
-        // bound passes is named and killed, so a stop never hangs on it.
-        for mut c in std::mem::take(&mut self.restarted) {
-            while Instant::now() < until && c.try_wait().ok().flatten().is_none() {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            if c.try_wait().ok().flatten().is_none() {
-                eprintln!("estate stop: restarted admin pid {} still ran when the shutdown bound passed; killed", c.id());
-                let _ = c.kill();
-                let _ = c.wait();
-            }
-        }
-        while Instant::now() < until && (!self.live_runtimes().is_empty() || !self.live_containers().is_empty()) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        for mut c in std::mem::take(&mut self.restarted).into_iter().chain(self.bootstrap.take()) {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// Send SIGTERM to every process of this estate not in `told` (the admins it started and every
+    /// runtime an admin launched) and to every container of its Fabric: each leaves as a local stop
+    /// does. The pids it signalled.
+    fn terminate(&self, told: &[u32]) -> Vec<u32> {
+        let pids: Vec<u32> = self.restarted.iter().map(Child::id).chain(self.bootstrap.as_ref().map(Child::id)).chain(self.live_runtimes().into_iter().map(|(_, p)| p)).filter(|p| !told.contains(p) && runs(*p)).collect();
+        for p in &pids {
+            let _ = Command::new("kill").args(["-TERM", &p.to_string()]).status();
+        }
+        if told.is_empty() {
+            for (_, id) in self.live_containers() {
+                let _ = docker(&["kill", "--signal", "TERM", &id]);
+            }
+        }
+        pids
     }
 
     /// The bootstrap admin's process id while the estate still holds it. The bootstrap runtime is
@@ -1165,27 +1136,6 @@ impl Estate {
         self.restarted.push(child);
         self.printed.lock().unwrap().push((base.clone(), birth));
         base
-    }
-
-    /// Stop every runtime of this estate with a local signal (SIGTERM), as an operator does when
-    /// no admin can stop the fabric, and wait for them.
-    pub async fn stop_locally(&mut self) {
-        let mut pids: Vec<u32> = self.restarted.iter().map(|c| c.id()).chain(self.bootstrap.as_ref().map(|c| c.id())).collect();
-        pids.extend(self.live_runtimes().into_iter().map(|(_, p)| p));
-        for p in &pids {
-            let _ = std::process::Command::new("kill").args(["-TERM", &p.to_string()]).status();
-        }
-        let until = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < until && pids.iter().any(|p| Path::new(&format!("/proc/{p}")).exists() && !std::fs::read_to_string(format!("/proc/{p}/stat")).unwrap_or_default().contains(") Z ")) {
-            for c in self.restarted.iter_mut().chain(self.bootstrap.as_mut()) {
-                let _ = c.try_wait();
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        for mut c in std::mem::take(&mut self.restarted).into_iter().chain(self.bootstrap.take()) {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
     }
 
     /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone.
@@ -1268,7 +1218,7 @@ impl Estate {
         for e in std::fs::read_dir(&self.root).into_iter().flatten().flatten() {
             let Ok(raw) = std::fs::read_to_string(e.path().join("deployment.json")) else { continue };
             let Some(pid) = serde_json::from_str::<Value>(&raw).ok().and_then(|v| v["pid"].as_u64()) else { continue };
-            if Path::new(&format!("/proc/{pid}")).exists() && !std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z ") {
+            if runs(pid as u32) {
                 out.push((e.path(), pid as u32));
             }
         }
@@ -1303,29 +1253,21 @@ impl Drop for Estate {
                 eprintln!("estate drop: {} runtime(s) still alive under {} after 10 sweeps: {left:?}", left.len(), e.root.display());
             }
         };
-        if self.bootstrap.is_none() {
-            sweep(self);
+        // A failed run: every process of the estate is told to stop (SIGTERM, so its evidence flushes)
+        // and given the time to leave before it is forced.
+        let told = self.terminate(&[]);
+        let until = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < until && told.iter().any(|p| runs(*p)) {
+            for c in self.restarted.iter_mut().chain(self.bootstrap.as_mut()) {
+                let _ = c.try_wait();
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         if let Some(mut c) = self.bootstrap.take() {
-            // Best-effort fabric shutdown on a failed run, then the bootstrap process.
-            if let Some(hostport) = self.admin.strip_prefix("http://") {
-                if let Ok(mut s) = std::net::TcpStream::connect(hostport.trim_end_matches('/')) {
-                    let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
-                    let _ = write!(
-                        s,
-                        "POST /api/shutdown HTTP/1.1\r\nHost: {hostport}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
-                    );
-                }
-            }
-            // Give it the time to stop what it started before forcing it.
-            let until = Instant::now() + Duration::from_secs(20);
-            while Instant::now() < until && matches!(c.try_wait(), Ok(None)) {
-                std::thread::sleep(Duration::from_millis(100));
-            }
             let _ = c.kill();
             let _ = c.wait();
-            sweep(self);
         }
+        sweep(self);
         // Admins this estate restarted on their own data dirs are its children too, and run under
         // no deployment of any admin: a failed run leaves them unless they are killed here, and
         // whatever they launched with them.
@@ -1338,6 +1280,11 @@ impl Drop for Estate {
         self.remove_containers();
         keep_node_logs(&self.root, &self.artifacts);
     }
+}
+
+/// Whether process `pid` runs: it exists and is no zombie.
+fn runs(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists() && !std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z ")
 }
 
 /// Does this process environment (`/proc/<pid>/environ`, NUL-separated) name `root` as its estate:
