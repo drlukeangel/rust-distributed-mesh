@@ -786,48 +786,80 @@ async fn an_executor_whose_view_lags_runs_the_first_operation_it_was_claimed_for
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 1);
 }
 
-/// Moves the fabric seat to `mesh2.admin.1` when the operation is prepared, as the mesh-retire
-/// handover does for the mesh that holds the seat.
-struct SeatMover {
-    ran: Arc<Creates>,
+/// The gate of a fabric-primary whose node.fabric-primary.update moves its seat to `mesh2.admin.1`:
+/// `move_seats` answers once the successor's installation is acknowledged, after which the committed
+/// record names `mesh2.admin.1` and the view shows it holding the seat. Every other gate is `inner`'s.
+struct SeatMoves {
+    inner: Arc<Switch>,
     topology: Arc<RwLock<Topology>>,
+    /// Every move asked: `(holder, mesh seat, fabric seat, operation)`.
+    moved: Mutex<Vec<(String, bool, bool, String)>>,
 }
 
 #[async_trait::async_trait]
-impl OperationRunner for SeatMover {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
-        self.ran.run(build, attempt, op).await
+impl Gate for SeatMoves {
+    fn authorizes(&self) -> bool {
+        self.inner.authorizes()
     }
-    async fn prepare(&self, _: &BuildId, _: u32, op: &BuildOperation) -> Result<(), String> {
-        if matches!(op, BuildOperation::ShutdownMesh { .. }) {
-            for n in self.topology.write().await.nodes.iter_mut() {
-                n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
-            }
+    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+        self.inner.fence().await
+    }
+    async fn fence_set(&self) {
+        self.inner.fence_set().await
+    }
+    async fn move_seats(&self, m: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, _: u32, operation: &str) -> Result<(), String> {
+        self.moved.lock().unwrap().push((m.holder.name.to_string(), m.mesh_seat, m.fabric_seat, operation.to_string()));
+        for n in self.topology.write().await.nodes.iter_mut() {
+            n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
         }
+        self.inner.fence_to(Some("mesh2.admin.1"));
         Ok(())
     }
 }
 
-/// CONTRACT: a mesh retire whose fabric-primary sits inside the leaving mesh is run by the admin
-/// the handover made the fabric-primary. The claimed executor hands the seat over when the
-/// operation is prepared, the executor of the operation is then another admin, and the attempt is
-/// passed to it before the operation runs: the leaving mesh's admin never runs its own retire, and
-/// its drive, now showing another seat holder, ends by naming it.
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The last
+/// node-admin of a mesh": "If the mesh holds the fabric seat, that seat moves first by
+/// `node.fabric-primary.update` with the departing mesh excluded (mesh-delete.md step 1)"; C1 step 8:
+/// "Only then does the commanding Build continue, and only once the successor's installation is
+/// acknowledged"): a mesh retire whose fabric-primary sits inside the leaving mesh moves the fabric
+/// seat alone (the mesh seat stays, mesh.delete never updates it) from the drive, before any attempt
+/// is claimed, and the drive ends `SeatLost` naming the new holder only once that move answered.
+/// Must NOT happen: an attempt claimed or dispatched at the leaving mesh's admin, the retire run there,
+/// or the seat moved inside a dispatched run, where the row ends the drive before the successor installed.
 #[tokio::test]
-async fn a_mesh_retire_whose_seat_moved_at_prepare_is_passed_to_the_new_fabric_primary_unrun() {
+async fn a_mesh_retire_whose_fabric_primary_sits_inside_moves_the_fabric_seat_alone_before_any_claim() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     t.nodes.push(node("mesh2.admin.1", true, false));
-    let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh1".into() }, |ran, topology| Arc::new(SeatMover { ran, topology })).await;
+    let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh1".into() }, |ran, _| ran).await;
+    let gate = Arc::new(SeatMoves { inner: r.switch.clone(), topology: r.env.topology.clone(), moved: Mutex::new(Vec::new()) });
+    let env = Arc::new(DriveEnv {
+        me: r.env.me.clone(),
+        topology: r.env.topology.clone(),
+        builds: r.env.builds.clone(),
+        door: r.env.door.clone(),
+        dispatcher: r.env.dispatcher.clone(),
+        gate: gate.clone(),
+        departure: r.env.departure.clone(),
+        verdicts: r.env.verdicts.clone(),
+        rows: r.env.rows.clone(),
+    });
     let drive = Drive::detached(r.build.clone());
-    match r.env.run(&drive).await {
+    let mut reader = drive.reader(1);
+    match env.run(&drive).await {
         DriveEnd::SeatLost(why) => assert!(why.contains("mesh2.admin.1"), "the drive names the seat's new holder: {why}"),
-        other => panic!("the old seat holder's drive ends SeatLost: {other:?}"),
+        other => panic!("the old seat holder's drive ends SeatLost once the seat moved: {other:?}"),
     }
-    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1)]);
-    assert!(!r.ran.0.lock().unwrap().iter().any(|k| k.starts_with("shutdown-mesh")), "the retire did not run at the leaving mesh's admin: {:?}", r.ran.0.lock().unwrap());
+    let moved = gate.moved.lock().unwrap().clone();
+    assert_eq!(moved.len(), 1, "one node.fabric-primary.update: {moved:?}");
+    let (holder, mesh_seat, fabric_seat, operation) = &moved[0];
+    assert_eq!((holder.as_str(), *mesh_seat, *fabric_seat), ("mesh1.admin.1", false, true), "the fabric seat alone moves from the fabric-primary: {moved:?}");
+    assert!(operation.starts_with("shutdown-mesh:"), "the update names the mesh retire it precedes: {operation}");
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no attempt was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran at the leaving mesh's admin: {:?}", r.ran.0.lock().unwrap());
     let p = r.builds.read_build(&r.build).await.unwrap();
-    assert_eq!(p.state, rafka_node_admin_core::build_state::BuildState::Pending, "the handed-off attempt leaves the Build waiting for the new seat's claim");
+    assert_eq!((p.state, p.attempt), (rafka_node_admin_core::build_state::BuildState::Pending, 0), "no attempt was claimed: the Build waits for the new seat's claim");
+    assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")), "the callers' streams end naming the new seat");
 }
 
 /// CONTRACT (R-ON8: the fabric-primary plans and dispatches): an executor runs exactly the

@@ -424,12 +424,18 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     estate.record_trace_url(run["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (acceptance 5): a planned seat move mid-Build ends the caller's outer stream with the
-/// typed new-seat frame, never `Indeterminate`. `mesh1` holds the fabric-primary seat, and the Build
-/// retires `mesh1`: the fabric-primary hands the seat to `mesh2`'s primary (op `0x21`) as the retire
-/// is prepared, and the Build goes on at the new seat. The old fabric-primary's dispatch after the
-/// handover is refused with `Fenced` in its span; the caller re-submits by the Build id at the seat the
-/// frame names and streams it to `Complete`.
+/// CONTRACT (acceptance 5; the approved proposal node-primary-update-fabric-mesh-and-node-type.md,
+/// Part C1 step 8: "Only then does the commanding Build continue, and only once the successor's
+/// installation is acknowledged"): a planned seat move mid-Build ends the caller's outer stream with
+/// the typed new-seat frame, never `Indeterminate`. `mesh1` holds the fabric-primary seat, and the
+/// Build retires `mesh1`: before the retire is claimed, the fabric-primary moves the fabric seat alone
+/// to `mesh2`'s primary by node.fabric-primary.update (op `0x21`, mesh-delete.md step 1), and the Build
+/// goes on at the new seat. The successor installs the committed row (`seat.update.via-primary-updated`
+/// at the new seat, not a replay) before the old fabric-primary's drive refuses with `Fenced` in its
+/// span and names the new seat, so the caller's re-submit by the Build id at the seat the frame names
+/// is accepted and streams to `Complete`.
+/// Must NOT happen: the new seat named to the caller before it installed (its re-submit refused
+/// `not-fabric-primary`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_seat_and_the_old_seat_dispatches_nothing() {
     let test = "a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_seat_and_the_old_seat_dispatches_nothing";
@@ -472,6 +478,11 @@ async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_se
     let fenced: Vec<_> = spans_named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build).collect();
     assert!(!fenced.is_empty(), "the old fabric-primary's dispatch after the fence was refused, Fenced in its span");
     assert!(fenced.iter().all(|sp| s(&sp["attributes"]["node"]) == old_seat), "{fenced:?}");
+    let installed: Vec<_> = spans_named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["node"]) == new_seat && s(&sp["attributes"]["replay"]) == "false").collect();
+    assert_eq!(installed.len(), 1, "the new seat installed the committed row once, not a replay: {installed:?}");
+    let installed_at = installed[0]["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
+    let early: Vec<_> = fenced.iter().filter(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0) <= installed_at).collect();
+    assert!(early.is_empty(), "C1 step 8: the old seat's drive names the new seat only once the successor installed ({installed_at}): {early:?}");
     estate.record_trace_url(fenced[0]["trace_id"].as_str().unwrap_or(""));
 }
 
