@@ -41,12 +41,18 @@ fn probe_with_unreadable_incarnation_refuses_naming_the_entry() {
     for part in [bad_node.as_str(), "incarnation_id", bad_birth, parse_error.as_str()] {
         assert!(reason.contains(part), "the refusal names {part:?}: {reason:?}");
     }
-    let spans: String = std::fs::read_dir(&evidence)
+    let spans: Vec<serde_json::Value> = std::fs::read_dir(&evidence)
         .unwrap()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe."))
-        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("rafka-rpc-probe.") && e.file_name().to_string_lossy().ends_with(".spans.jsonl"))
+        .flat_map(|e| std::fs::read_to_string(e.path()).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect::<Vec<serde_json::Value>>())
         .collect();
-    assert!(spans.contains("rdm.node_rpc.proof_store.resolve.via-probe") && spans.contains(bad_node.as_str()) && spans.contains("incarnation_id"), "the via-probe span carries the refusal; evidence dir holds: {spans:?}");
+    let probe = spans
+        .iter()
+        .find(|s| s["name"] == "rdm.node_rpc.proof_store.resolve.via-probe")
+        .unwrap_or_else(|| panic!("the probe left no via-probe span; evidence dir holds: {spans:?}"));
+    let refused = probe["events"].as_array().into_iter().flatten().find(|e| e["name"] == "the probe refused the call");
+    assert_eq!(refused.map(|e| e["attributes"]["refusal"].as_str()), Some(Some(reason)), "the via-probe span carries the refusal the probe printed: {probe}");
+    eprintln!("probe_view_entry trace_id={} span={} refusal={reason}", probe["trace_id"].as_str().unwrap_or_default(), probe["name"].as_str().unwrap_or_default());
     let _ = std::fs::remove_dir_all(&evidence);
 }
