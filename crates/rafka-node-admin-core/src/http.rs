@@ -1015,4 +1015,46 @@ mod tests {
         assert_eq!(refusal("mesh1.admin.1", "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
         assert_eq!(refusal("mesh2.admin.1", "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }
+
+    /// CONTRACT (mesh-delete.md "Resume after the primary's loss", step 1: "The lost primary's exact
+    /// provider Exited is recorded as its roster receipt", step 4: "The new mesh-primary is then deleted
+    /// by the separate node.delete of step 7"; the approved proposal
+    /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The no-successor cases": "The one
+    /// exception is R-MT1's: the delete of a mesh's only node skips the update"; elections §4.1: only
+    /// the provider's exit proof vacates a seat): mesh2's lost primary `mesh2.admin.1` is proven exited
+    /// (its exit-proof row read: `exit_proven`, `Dead`), and `mesh2.admin.2`, the final primary the
+    /// roster amendment admitted, is the only node of mesh2. Its node.delete (`delete`) skips the
+    /// update at the Build door (`last_admin`) and at the drive (`executor::seat_move`), and the fabric
+    /// primary executes it. A member `Dead` by the true-offline mark alone (no exit proof) is still a
+    /// node of the mesh: the same delete moves the seat first, and with no Ready secondary it is refused
+    /// with Q7's text.
+    /// Must NOT happen: a birth proven exited counted as the mesh's other node (step 7's delete refused
+    /// `last-admin`), or a birth only marked offline discounted.
+    #[test]
+    fn a_birth_proven_exited_is_not_the_other_node_of_its_mesh_when_its_final_primary_is_deleted() {
+        let mut lost = node("mesh2.admin.1", false, false);
+        lost.status = NodeStatus::Dead;
+        lost.exit_proven = true;
+        let mut t = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            ],
+            nodes: vec![node("mesh1.admin.1", true, true), lost, node("mesh2.admin.2", true, false)],
+        };
+        let last: PathName = "mesh2.admin.2".parse().unwrap();
+        let delete = crate::build::BuildOperation::RetireNode { node: last.clone(), exited: None };
+        assert!(last_admin(&last, "delete", &t).is_none(), "the delete of mesh2's only node skips the update: {:?}", last_admin(&last, "delete", &t));
+        assert_eq!(crate::executor::seat_move(&delete, &t), None, "no seat moves before it");
+        assert_eq!(crate::executor::executor_for(&delete, &t).map(|p| p.to_string()), Some("mesh1.admin.1".to_string()), "the fabric primary executes it");
+        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
+            n.exit_proven = false;
+        }
+        match last_admin(&last, "delete", &t) {
+            Some(BuildReject::LastAdmin { refusal, .. }) => assert_eq!(refusal, "cannot transfer: no secondary of type node-admin in mesh mesh2"),
+            other => panic!("a birth marked offline is still mesh2's other node: the delete is refused last-admin: {other:?}"),
+        }
+        assert!(crate::executor::seat_move(&delete, &t).is_some_and(|m| m.mesh_seat), "a birth marked offline is still mesh2's other node: the seat moves first");
+    }
 }
