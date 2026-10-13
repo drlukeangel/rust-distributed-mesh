@@ -213,8 +213,7 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     if !mesh_seat && !fabric_seat {
         return None;
     }
-    let only_node = t.members().filter(|n| n.mesh == node.mesh).all(|n| n.node_id == holder.node_id);
-    if delete && only_node {
+    if delete && t.only_node(&node.mesh, &holder.node_id) {
         return None;
     }
     Some(SeatMove { holder, mesh_seat, fabric_seat })

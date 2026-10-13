@@ -621,7 +621,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     };
     // The delete of a mesh's only node, by a desired-state retire or by the node.delete route (the
     // final primary a mesh.delete left alive, mesh-delete.md step 7), skips the update.
-    if matches!(action, "retire" | "delete") && t.members().filter(|n| n.mesh == node.mesh).all(|n| n.node_id == target.node_id) {
+    if matches!(action, "retire" | "delete") && t.only_node(&node.mesh, &target.node_id) {
         return None;
     }
     let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
