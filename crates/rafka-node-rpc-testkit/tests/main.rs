@@ -29,6 +29,7 @@ mod member_cert;
 mod member_cert_admin;
 mod pipeline_rerun;
 mod probe_endpoint_close;
+mod probe_entry_admin;
 mod probe_view_entry;
 mod probe_root_span;
 mod process_pipeline;

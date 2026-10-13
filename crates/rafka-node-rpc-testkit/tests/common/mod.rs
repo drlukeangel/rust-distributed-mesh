@@ -13,6 +13,8 @@
 
 #![allow(dead_code)]
 
+pub mod admin_view;
+
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::accepted::{FabricTopology, MeshTopology};
 use rafka_node_admin_core::build::BuildId;
