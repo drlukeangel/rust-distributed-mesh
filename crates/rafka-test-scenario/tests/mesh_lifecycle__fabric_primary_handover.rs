@@ -456,16 +456,16 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // executor's own mesh channel and, on the backbone, the aggregate's in_flight (gossip.md §3.1).
     // Each stage is the fabric-primary's own publication as the author (R-NS2); the stop stage is
     // superseded within milliseconds by the delete's, and gossip delivers the latest, so an admin of
-    // the other mesh holds the final primary parked from the stop stage or its final state, deleted,
+    // the other mesh holds the final primary stopped from the stop stage or its final state, deleted,
     // from the later aggregate.
     let parked_at_other: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state")
         .into_iter()
         .filter(|sp| s(&sp["attributes"]["member"]) == final_name && s(&sp["attributes"]["node"]).starts_with(&format!("{other_mesh}.")) && (sp["attributes"]["parked"] == json!(true) || sp["attributes"]["parked"] == "true") && start_ns(sp) >= stop_answered)
         .collect();
-    let parked_admin: Vec<&Value> = parked_at_other.iter().copied().filter(|sp| at_mesh(sp, other_mesh, "admin") && sp["attributes"]["channel"] == "backbone").collect();
+    let stopped_admin: Vec<&Value> = parked_at_other.iter().copied().filter(|sp| at_mesh(sp, other_mesh, "admin") && sp["attributes"]["channel"] == "backbone").collect();
     let deleted_admin: Vec<&Value> = installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && at_mesh(sp, other_mesh, "admin") && sp["attributes"]["channel"] == "backbone" && by_fabric_primary(sp) && attr_u(sp, "members") == 0 && attr_u(sp, "in_flight") == 0 && attr_u(sp, "departed") == members_deleted + 1 && start_ns(sp) >= stop_answered).collect();
-    assert!(!parked_admin.is_empty() || !deleted_admin.is_empty(), "an admin of {other_mesh} held {final_name} parked from the fabric-primary's aggregate on the backbone, or deleted from its later aggregate: parked {parked_at_other:?}, installed {installed:?}");
-    let other_admin_trace = parked_admin.first().or(deleted_admin.first()).map(|sp| s(&sp["trace_id"])).unwrap_or_default();
+    assert!(!stopped_admin.is_empty() || !deleted_admin.is_empty(), "an admin of {other_mesh} held {final_name} stopped from the fabric-primary's aggregate on the backbone, or deleted from its later aggregate: parked {parked_at_other:?}, installed {installed:?}");
+    let other_admin_trace = stopped_admin.first().or(deleted_admin.first()).map(|sp| s(&sp["trace_id"])).unwrap_or_default();
     // gossip.md "External topology when a mesh is deleted": "its mesh-primary forwards it on its own
     // mesh channel; ordinary nodes install that projection", and a frame received after a newer one of
     // its source is ignored (R-RX3). An ordinary node of the other mesh installs the fabric-primary's
@@ -487,7 +487,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         })
         .collect();
     assert!(rpc_held_stopped || !superseded.is_empty(), "an ordinary node of {other_mesh} held {final_name} parked from its primary's forward, or installed the fabric-primary's later aggregate from its primary: parked {parked_at_other:?}");
-    eprintln!("bullet 2: node.delete of {final_name} by {fabric_primary} (build {c} attempt {c_attempt}): TerminateRuntime then NodeDeleted trace {}; deleted mesh's aggregate NodeStopped trace {}, NodeDeleted trace {}; {other_mesh} admin trace {other_admin_trace} (parked {}); {other_mesh} ordinary nodes parked: {rpc_held_stopped}, superseded: {superseded:?}", s(&node_deleted["trace_id"]), s(&stopped_aggregate["trace_id"]), s(&deleted_aggregate["trace_id"]), !parked_admin.is_empty());
+    eprintln!("bullet 2: node.delete of {final_name} by {fabric_primary} (build {c} attempt {c_attempt}): TerminateRuntime then NodeDeleted trace {}; deleted mesh's aggregate NodeStopped trace {}, NodeDeleted trace {}; {other_mesh} admin trace {other_admin_trace} (stopped stage held {}); {other_mesh} ordinary nodes parked: {rpc_held_stopped}, superseded: {superseded:?}", s(&node_deleted["trace_id"]), s(&stopped_aggregate["trace_id"]), s(&deleted_aggregate["trace_id"]), !stopped_admin.is_empty());
     // mesh-left once every birth is proven exited: the receipt over all four births, then the hook,
     // at the fabric-primary, after the final birth's exit proof.
     let left_recorded: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt").into_iter().filter(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4).collect();
