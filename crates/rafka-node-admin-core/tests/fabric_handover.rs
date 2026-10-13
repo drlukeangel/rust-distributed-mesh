@@ -1298,64 +1298,82 @@ fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attemp
 
 /// CONTRACT (proposal Part C1 failure contract: "After the row, the successor is the committed holder
 /// whatever the call returns ... A call that reached a process other than the named birth, a refusal
-/// or no answer is never an exit proof ... The holder's call fails by name ... No row is rewritten";
-/// step 8: the commanding Build continues only on the successor's `node.primary.updated`; R14 item 4:
-/// no write of a seat lands after the row that ends its writer's authority; node-rpc.md §34: a reply
-/// that is nested work, as the Build carrier's, is bounded by the transport's idle timeout and
-/// keepalive): the fabric-primary X commands P; P writes the row, takes the row's seat and calls N; N
-/// installs and never answers, which is what a process that died there leaves its caller: no reply and
-/// no close within P's call bound (a dead peer is heard only at the idle timeout, after it). P's call
-/// runs to its own bound and ends Indeterminate: P's update ends `Incomplete` naming N, P is no longer
-/// primary (its book and its cut-off say the row moved the seat: `Committed`, never `Lift`), and X's
-/// command is answered by P (its call to P ends `Reply`) with that incomplete update, installing
-/// nothing. N's process is then gone, its endpoint closed. X's next attempt sends the identical
-/// command: P replays from its row, calls N again, and that call ends by name too, answered to X; no
-/// second row is written and no seat moves back to P. What must NOT happen: X's own deadline ending
-/// its command before P answers (an uncertainty about P, which is alive, in place of P's answer naming
-/// N), an update that never ends, a cut-off lifted after the row, a second row, or P primary again.
+/// or no answer is never an exit proof (elections §4.1: only the provider's exit proof vacates a seat;
+/// R-SW1: a failed probe never proves death). The holder's call fails by name, the workflow runs
+/// node-recovery's tickle ladder on the successor's exact birth and retries the call against the
+/// resolved birth; the seat vacates only on the provider's exit proof, and then the ordinary rule fills
+/// it (lowest ReadyForTraffic NodeId of the cohort). No row is rewritten"; "Indeterminate after the
+/// row: the row resolves it. An identical retry of the call replays the committed result"; R14 item 4:
+/// no write of a seat lands after the row that ends its writer's authority): the fabric-primary X
+/// commands P; P writes the row, takes the row's seat and calls N; N installs from the row and its
+/// process is gone before it answers. P's call ends by name with no answer, which proves nothing: P
+/// runs the tickle ladder on N's exact birth, and its direct ping and its kick through M both find no
+/// answer, so P asks the provider, which proves N's runtime exited. P puts N's exit-proof row (proof
+/// `provider`) and retries nothing: N's seat vacates and P's view seats the ordinary rule's choice,
+/// the lowest ReadyForTraffic NodeId of mesh1's node-admins not proven gone (P itself, in this
+/// fabric). P's update ends `Incomplete` naming the proof and X's command is answered by P with it,
+/// X installing nothing. X's next attempt sends the identical command: P reads its row, finds N's
+/// exit proven and calls N no more: no second update under the operation. What must NOT happen: a
+/// retry or a second look at a birth proven exited, X's own deadline ending its command before P
+/// answers, a cut-off lifted after the row, a second row, or a seat record moved off the row's.
 #[test]
-fn a_successor_lost_mid_call_leaves_the_update_incomplete_and_the_seat_the_successors_from_the_row() {
+fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rule_and_is_called_no_more() {
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
-    cap.run(async {
+    let (trace_id, ()) = cap.story("successor_proven_exited", async {
         let f = commanded_fabric().await;
         let p_node = f.x.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
         let op = "node.primary.update:b1:stop-node:mesh1.admin.1";
-        // N installs from the row and never answers: P hears no reply and no close within its call's bound.
+        // N's runtime, as recorded at its launch in P's nodes.storage: the exact runtime P's provider
+        // inspects.
+        let deployment = rafka_node_admin_core::model::DeploymentId::mint().to_string();
+        let runtime = rafka_mesh_entity::RuntimeFact { deployment_id: deployment.clone(), provider: rafka_mesh_entity::RuntimeProvider::Process, control_domain: "fabric-handover".into(), locator: rafka_mesh_entity::RuntimeLocator::Process { pid: 4242, start: 1 } };
+        let row = rafka_node_admin_core::storage::RuntimeRow { node_id: f.n.resolved.node_id.clone(), name: f.n.resolved.name.clone(), incarnation_id: f.n.resolved.incarnation.clone(), runtime, data_dir: None };
+        rafka_node_admin_core::storage::NodesStorage::put_runtime(&*f.p.nodes, &row).await.unwrap();
+        // N installs from the row and never answers: its process dies there.
         f.n.view_open.send_replace(false);
         let first = tokio::spawn({
             let (door, p_node) = (f.x.door.clone(), p_node.clone());
-            async move { door.command_update_primary(&p_node, "b1", 1, op).await }
+            tracing::Instrument::instrument(async move { door.command_update_primary(&p_node, "b1", 1, op).await }, tracing::Span::current())
         });
         until("N installed mesh1's seat from P's row", || f.n.door.membership.seats().mesh("mesh1") == Some(holder_of(&f.n, 4))).await;
         let Seats { p, n, m, x } = f;
         let (n_id, p_id) = (n.resolved.node_id.to_string(), p.resolved.node_id.to_string());
-        // The 0x21 calls the update made, from their own spans: each call's outcome, by the node it targets.
+        // N's process is gone: its endpoint closed, its runtime exited.
+        p.provider.exited.lock().unwrap().insert(deployment.clone());
+        let _ = n._router.shutdown().await;
         let calls = |to: &str| -> Vec<String> { spans.named(CALL).into_iter().filter(|f| f.get("op").map(String::as_str) == Some("33") && f.get("target").is_some_and(|t| t.contains(to))).map(|f| f.get("outcome").cloned().unwrap_or_else(|| "open".into())).collect() };
         let call_lines = || spans.lines().into_iter().filter(|l| l.contains(CALL)).collect::<Vec<_>>().join("\n");
         let out = tokio::time::timeout(std::time::Duration::from_secs(20), first).await.expect("an update whose successor was lost mid-call ends: it is never sent again on its own").unwrap();
-        let e = out.expect_err("an uncertain update is no answer");
-        assert!(e.contains("Indeterminate") && e.contains(&n_id) && e.contains(op), "the end is P's answer naming the outcome, the successor and the operation: {e}\nthe 0x21 calls:\n{}", call_lines());
-        assert_eq!((calls(&p_id), calls(&n_id)), (vec!["Reply".to_string()], vec!["Indeterminate".to_string()]), "X's command is answered by P once P's call to N ended by its own bound:\n{}", call_lines());
-        assert!(matches!(p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }]), "the row ended P's authority over the cut-off writes: {:?}", p.cut_offs.lock().unwrap());
-        assert_eq!(p.door.membership.seats().mesh("mesh1"), Some(holder_of(&n, 4)), "after the row the seat is N's at P, whatever the call returned");
-        assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "X installs nothing on an incomplete update");
-        let incomplete: Vec<_> = refusals(&spans).into_iter().filter(|(side, reason, _)| side == "holder" && reason == "indeterminate").collect();
-        assert_eq!(incomplete.len(), 1, "P's call after the row ends by name: {:?}", refusals(&spans));
-        // N's process is gone: its endpoint closed.
-        let _ = n._router.shutdown().await;
-        // X's next attempt: P replays from its row and calls N again, which is still gone.
-        let out = tokio::time::timeout(std::time::Duration::from_secs(20), x.door.command_update_primary(&p_node, "b1", 2, op)).await.expect("the next attempt ends");
-        let e = out.expect_err("N is still gone: no node.primary.updated");
-        assert!(e.contains(op) && e.contains(&n_id), "{e}\nthe 0x21 calls:\n{}", call_lines());
+        let e = out.expect_err("a successor proven exited answered nothing");
+        assert!(e.contains("incomplete") && e.contains("exited") && e.contains(&n_id) && e.contains(op), "the end is P's answer naming the proof, the successor and the operation: {e}\nthe 0x21 calls:\n{}", call_lines());
         let (to_p, to_n) = (calls(&p_id), calls(&n_id));
-        assert!(to_p == ["Reply", "Reply"] && to_n.len() == 2 && to_n.iter().all(|o| o != "Reply" && o != "open"), "both commands answered by P, each of P's calls to N ended by name:\n{}", call_lines());
+        assert!(to_p == ["Reply"] && to_n.len() == 1 && to_n[0] != "Reply" && to_n[0] != "open", "X's command answered by P; P's one call to N ended by name and was retried no more:\n{}", call_lines());
+        let looks = spans.named(LADDER);
+        assert_eq!(looks.len(), 1, "one look at N's birth: {looks:?}");
+        let field = |k: &str| looks[0].get(k).cloned().unwrap_or_default();
+        assert_eq!((field("node"), field("side"), field("finding"), field("retry"), field("exit_proof_row")), ("mesh1.admin.1".to_string(), "holder".to_string(), "exit-proven".to_string(), "none".to_string(), "put".to_string()), "{:?}", looks[0]);
+        assert_ne!(field("call"), "", "the look names how P's call ended: {:?}", looks[0]);
+        let exit = p.door.records.exit_row_of_birth("mesh1", &n.resolved.node_id, &n.resolved.incarnation, "N").await.unwrap().expect("P put N's exit-proof row among mesh1's status rows");
+        assert_eq!(exit.proof, "provider");
+        assert!(matches!(p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }]), "the row ended P's authority over the cut-off writes: {:?}", p.cut_offs.lock().unwrap());
+        assert_eq!(p.door.membership.seats().mesh("mesh1"), Some(holder_of(&n, 4)), "the seat record stays the row's: no row is rewritten");
+        assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "X installs nothing on an incomplete update");
+        let primary = p.door.topology.read().await.cohort_primary("mesh1", rafka_node_admin_core::model::NodeKind::NodeAdmin).map(|n| n.name.to_string());
+        assert_eq!(primary.as_deref(), Some("mesh1.admin.1"), "N's seat vacated on the proof and P's view seats the ordinary rule's choice, the lowest ReadyForTraffic NodeId of mesh1's node-admins not proven gone");
+        // X's next attempt: P replays from its row, N's exit is proven, and N is called no more.
+        let out = tokio::time::timeout(std::time::Duration::from_secs(20), x.door.command_update_primary(&p_node, "b1", 2, op)).await.expect("the next attempt ends");
+        let e = out.expect_err("no second update under the operation");
+        assert!(e.contains(op) && e.contains(&n_id) && e.contains("exit is proven"), "{e}");
+        assert_eq!((calls(&p_id).len(), calls(&n_id).len()), (2, 1), "the next command answered by P, which called N no more:\n{}", call_lines());
+        assert_eq!(spans.named(LADDER).len(), 1, "no second look at a birth proven exited");
+        assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "holder" && reason == "exit-proven"), "{:?}", refusals(&spans));
         assert_eq!(p.storage.seat_transfers().await.unwrap().len(), 1, "no row is rewritten");
-        assert_eq!(p.door.membership.seats().mesh("mesh1"), Some(holder_of(&n, 4)), "no seat moves back to P");
         assert_eq!(spans.named(ROW_WRITTEN).len(), 1, "one row written");
         let _ = m;
     });
+    println!("cell=successor_proven_exited trace_id={trace_id}");
 }
 
 /// CONTRACT (proposal Part C1 failure contract: "After the row, the successor is the committed holder
