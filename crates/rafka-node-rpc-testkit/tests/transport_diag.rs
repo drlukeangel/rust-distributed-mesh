@@ -7,8 +7,13 @@
 //! another endpoint's key. The maker answers the Initial, the probe verifies the maker's key, finds
 //! it is not the one it dialled and closes: a failed handshake with work on both ends.
 //!
-//! Each cell is its own process (the telemetry init is process-wide) started with the environment its
-//! subject reads, as the estate starts a node: the cell never sets a variable.
+//! The subject of both cells is the process-wide telemetry init itself, `init_evidence_telemetry`: the
+//! diagnostic layer it installs from the process environment (`RDM_EVIDENCE_DIR`, `RDM_DATA_DIR`,
+//! `RDM_NODE_NAME`, `RDM_MESH`), the callsites that layer enables or leaves off, and the file it opens.
+//! A thread-scoped `EvidenceCapture` installs no diagnostic layer and reads none of that environment,
+//! so a cell on one would pass without exercising what these cells prove. Each cell is therefore its
+//! own process, started with the environment its subject reads, as the estate starts a node: the cell
+//! never sets a variable.
 
 use iroh::protocol::ProtocolHandler;
 use rafka_mesh_entity::{IncarnationId, NodeId};
