@@ -119,6 +119,9 @@ const ANNOUNCE_UPDATING: &str = "rdm.mesh.seat.update.via-announce-primary-updat
 /// "primary updated", said by the holder once the successor answered node.primary.updated (C1 step 7;
 /// R-MT1: "NA2 updates itself and answers node.primary.updated; NA1 gossips that the primary updated to NA2").
 const ANNOUNCE_UPDATED: &str = "rdm.mesh.seat.update.via-announce-primary-updated";
+/// The resuming executor acknowledged a committed row before an operation on its holder (C1 failure
+/// contract: "node.primary.updated answered to the resuming executor's call, never a read alone").
+const ROW_ACKNOWLEDGED: &str = "rdm.node_admin.seat.update.via-row-acknowledged";
 /// One Node RPC call at its caller: its target, op, outcome, reason and elapsed time.
 const CALL: &str = "rdm.node_rpc.request.update.via-call";
 /// The retired successor-side row writer: no span of it may appear.
@@ -760,6 +763,47 @@ fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
         assert!(spans.named(SEATS_COMMITTED).is_empty(), "the successor never writes a seat row");
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         let _ = &f.x;
+    });
+}
+
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 7: "The
+/// writer publishes 'primary updated' with the same identifiers"; failure contract: "The holder lost
+/// after the row, before 'updated': the successor and every reader take the seat from the row; the next
+/// writer to read the row publishes 'updated'"; "The workflow continues only after the result is
+/// installed and acknowledged: node.primary.updated answered to the resuming executor's call"): P moves
+/// both seats to N; N installs from the row on P's call and P says "primary updated". N, now the
+/// fabric-primary, acknowledges the row before it dispatches an operation on P: its answer to P's call
+/// is its node.primary.updated, so it installs nothing a second time, and while P is alive N says
+/// nothing (P said it, step 7). Once P's exit is proven by its exit-proof row, N, the next writer to
+/// read the row, says "primary updated" once, however often it acknowledges the row after that.
+/// Must NOT happen: the successor saying "primary updated" for a holder that is alive, a second install
+/// from the row, or "primary updated" said twice by the successor.
+#[test]
+fn a_successor_that_answered_the_holders_call_says_primary_updated_only_once_the_holder_is_proven_exited() {
+    let cap = trace_capture("fabric-handover");
+    let spans = cap.spans.clone();
+    cap.run(async {
+        let f = seats_fabric().await;
+        let p_node = f.p.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
+        let op = update_operation(Seat::MeshPrimary, "b1", "stop-node:mesh1.admin.1");
+        let moved = f.p.door.update_primary(Moving::BothSeats, None, "b1", 1, &op).await.expect("both seats move");
+        assert_eq!(moved, committed_both(&f.n, 4, 8));
+        let said = || spans.named(ANNOUNCE_UPDATED).iter().map(|f| f["node"].clone()).collect::<Vec<String>>();
+        assert_eq!(said(), vec!["mesh1.admin.1".to_string()], "P said the primary updated on N's answer");
+        let acks = || spans.named(ROW_ACKNOWLEDGED).iter().map(|f| (f.get("by").cloned().unwrap_or_default(), f.get("announced").cloned().unwrap_or_default())).collect::<Vec<_>>();
+        assert_eq!(f.n.door.row_acknowledged("mesh1", &op, Some(&p_node.name), "b1", 2).await, Ok(true), "N acknowledges the row");
+        assert_eq!(said(), vec!["mesh1.admin.1".to_string()], "while P is alive N says nothing: {:?}", acks());
+        assert_eq!(acks(), vec![("answered".to_string(), "false".to_string())], "N's answer to P's call is its acknowledgement: no second install");
+        assert_eq!(spans.named(UPDATED).len(), 1, "N installed from the row once, on P's call");
+        // P's birth is proven gone: its exit-proof row among mesh1's status rows.
+        f.n.door.records.put_exit(&p_node, None, "provider").await.expect("P's exit-proof row is recorded");
+        for _ in 0..2 {
+            assert_eq!(f.n.door.row_acknowledged("mesh1", &op, Some(&p_node.name), "b1", 2).await, Ok(true), "N acknowledges the row");
+        }
+        assert_eq!(said(), vec!["mesh1.admin.1".to_string(), "mesh1.admin.2".to_string()], "N, the next writer to read the row, says it once P's exit is proven, once: {:?}", acks());
+        assert_eq!(spans.named(UPDATED).len(), 1, "still one install");
+        assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
+        let _ = (&f.m, &f.x);
     });
 }
 
