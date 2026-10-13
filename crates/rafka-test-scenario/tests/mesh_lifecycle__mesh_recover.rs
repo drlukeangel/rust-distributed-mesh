@@ -16,7 +16,10 @@
 //! recovery verdict (`via-rebirth`), and only then creates mesh1's first node-admin; a reconcile of B by a
 //! mesh2 admin names mesh1's admin primary as the previous executor.
 
-use rafka_test_scenario::estate::{claim_decider, descends_from, named, own_fabric_at, wait_for, Estate, Owner};
+use crate::build_log;
+use rafka_node_admin_client::{BuildSpec, FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes};
+use rafka_node_admin_core::build_state::BuildState;
+use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
@@ -37,12 +40,6 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-async fn get(base: &str, path: &str) -> Option<Value> {
-    let r = reqwest::Client::new().get(format!("{base}{path}")).timeout(Duration::from_secs(2)).send().await.ok()?;
-    r.status().is_success().then_some(())?;
-    r.json().await.ok()
-}
-
 fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for (m, a, r) in meshes {
@@ -53,8 +50,13 @@ fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<String> {
 }
 
 /// name -> incarnation
-fn births(nodes: &[Value]) -> BTreeMap<String, String> {
-    nodes.iter().map(|n| (s(&n["name"]), s(&n["incarnation_id"]))).collect()
+fn births(nodes: &[rafka_node_admin_client::NodeView]) -> BTreeMap<String, String> {
+    nodes.iter().map(|n| (n.name.to_string(), n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default())).collect()
+}
+
+/// The Build that reconciles the fabric to `mesh1` with `r1` rpc nodes beside `mesh2`.
+fn shape(r1: u32) -> FabricDesired {
+    FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, r1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)])] }
 }
 
 /// CONTRACT (mesh-investigation.md step 5: "Recovery ONLY if the latest probe answers
@@ -71,35 +73,24 @@ fn births(nodes: &[Value]) -> BTreeMap<String, String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let shape = |r1: u32| json!({"fabric": "fabric1", "meshes": [
-        {"name": "mesh1", "node_admin": 2, "rpc_node": r1},
-        {"name": "mesh2", "node_admin": 2, "rpc_node": 3},
-    ]});
-    let (_, a) = estate.post("/api/build", &shape(3)).await;
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let before = estate.settled(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(15)).await;
-    let (_, mesh1) = estate.get("/api/meshes/mesh1").await;
-    let mesh1_id = s(&mesh1["id"]);
+    estate.reconcile(&shape(3)).await;
+    let before = estate.settles_to_named(&names(&[("mesh1", 2, 3), ("mesh2", 2, 3)]), Duration::from_secs(15)).await;
+    let mesh1_id = estate.mesh_view("mesh1").await.id.expect("mesh1 carries its id").to_string();
     // mesh1's members are grown by mesh1's admin primary (the lowest NodeId of its admins).
-    let mesh1_primary = before.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).unwrap();
-    let (_, fabric) = estate.get("/api/fabric").await;
-    let advertised: Vec<String> = fabric["meshes"].as_array().unwrap().iter().map(|m| s(&m["admin_api_base"])).collect();
+    let mesh1_primary = before.iter().find(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin && n.is_primary).map(|n| n.name.to_string()).unwrap();
+    let mesh2_primary = estate.mesh_view("mesh2").await.primary_admin.expect("mesh2 seats a primary admin");
 
     // B: grow mesh1. Once its first attempt is claimed, lose mesh1 entirely. Its births run one
     // after another (~55 ms each on the process provider), so six of them keep the first attempt
     // running across several polls; two finished inside one 100 ms poll.
-    let (status, a) = estate.post("/api/build", &shape(9)).await;
-    assert_eq!(status, 202, "{a}");
-    let b = s(&a["build_id"]);
+    let stream = estate.submit(&BuildSpec::Fabric(shape(9))).await;
+    let b = stream.build_id().to_string();
     // Active fabric-wide: the surviving mesh's admin already sees mesh1's
     // admin holding B's first attempt (a claim that never left the lost mesh
     // would leave the successor nothing to take over: it would claim afresh).
-    let mesh2_base = advertised.iter().find(|b| **b != estate.admin).cloned().unwrap();
-    wait_for("mesh2's admin sees B's first attempt held by mesh1's admin", Duration::from_secs(30), || async {
-        let v = get(&mesh2_base, &format!("/api/builds?id={b}")).await?;
-        (v["attempt"].as_u64() == Some(1) && v["state"] == "running" && v["executor"] == mesh1_primary.as_str()).then_some(())
-    })
-    .await;
+    build_log::build_fact(&estate.carrier_at(&mesh2_primary).await, &b, "mesh2's admin sees B's first attempt held by mesh1's admin", Duration::from_secs(30), |p| p.attempt == 1 && p.state == BuildState::Running && p.executor.as_deref() == Some(mesh1_primary.as_str()))
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
     // mesh1's node-admins and every birth B's first attempt launched; the members born before B
     // (rpc.1..3) stay alive, so a member of mesh1 can say it cannot reach its own node-admin.
     let kept: BTreeSet<String> = (1..=3).map(|i| format!("mesh1.rpc.{i}")).collect();
@@ -111,34 +102,23 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
         }
     }
     estate.kill_bootstrap();
+    drop(stream);
     let killed_ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
 
-    // Control, through the advertised endpoints only.
-    let base = wait_for("a surviving admin answers", Duration::from_secs(30), || {
-        let advertised = advertised.clone();
-        let fabric_id = estate.fabric_id.clone();
-        async move {
-            for base in &advertised {
-                if own_fabric_at(base, &fabric_id).await.is_some() {
-                    return Some(base.clone());
-                }
-            }
-            None
-        }
-    })
-    .await;
-    estate.admin = base;
+    // Control, through the surviving mesh's admin.
+    estate.until_view_at(&mesh2_primary, "a surviving admin answers", Duration::from_secs(30), |_| Some(())).await;
+    estate.enter(&mesh2_primary).await;
 
     // B completes under its own id, and mesh1 is back as itself.
-    let done = estate.await_build(&b, Duration::from_secs(180)).await;
-    assert!(done["attempt"].as_u64().unwrap() > 1, "a successor continued B: {done:#}");
-    let after = estate.settled(&names(&[("mesh1", 2, 9), ("mesh2", 2, 3)]), Duration::from_secs(60)).await;
-    let (_, mesh1) = estate.get("/api/meshes/mesh1").await;
-    assert_eq!(s(&mesh1["id"]), mesh1_id, "mesh1 recovered as itself: {mesh1:#}");
+    let done = build_log::attempt_complete(&estate.carrier().await, &b, 2, Duration::from_secs(180)).await;
+    assert!(done.attempt > 1, "a successor continued B: {done:#?}");
+    let after = estate.settles_to_named(&names(&[("mesh1", 2, 9), ("mesh2", 2, 3)]), Duration::from_secs(60)).await;
+    let mesh1 = estate.mesh_view("mesh1").await;
+    assert_eq!(mesh1.id.as_ref().map(|i| i.to_string()), Some(mesh1_id.clone()), "mesh1 recovered as itself: {mesh1:#?}");
     // ...in the recovered mesh's own admins too: they carry its identity.
-    for admin in after.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin") {
-        let own = get(&s(&admin["admin_api_base"]), "/api/meshes/mesh1").await.unwrap();
-        assert_eq!(s(&own["id"]), mesh1_id, "{} serves mesh1 under its own identity: {own:#}", admin["name"]);
+    for admin in after.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::NodeAdmin) {
+        let own = Meshes::new(estate.carrier_at(&admin.name).await).get(&MeshSelector::Mesh("mesh1".into())).await.unwrap_or_else(|e| panic!("mesh.get mesh1 at {}: {e}", admin.name));
+        assert_eq!(own.first().and_then(|m| m.id.as_ref()).map(|i| i.to_string()), Some(mesh1_id.clone()), "{} serves mesh1 under its own identity: {own:#?}", admin.name);
     }
     let (old, new) = (births(&before), births(&after));
     for (name, incarnation) in &old {
@@ -151,10 +131,9 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
             assert_eq!(now_inc, incarnation, "{name} was never touched");
         }
     }
+    let (before, after) = (Estate::values(&before), Estate::values(&after));
 
-    // Stop through whoever holds the fabric now.
-    let (_, fabric) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric["admin_api_base"]);
+    // The estate stops through whoever holds the fabric now.
     estate.artifact("nodes.json", &json!(after));
     estate.stop().await;
     let spans = estate.spans();
