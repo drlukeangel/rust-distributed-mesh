@@ -475,7 +475,8 @@ pub fn estate_store_dir(root: &Path) -> PathBuf {
     root.join("store")
 }
 
-fn estate_root(test: &str) -> PathBuf {
+/// A fresh root for one run of `test`: an estate, or a cell that starts a node-admin of its own.
+pub fn estate_root(test: &str) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!("i143-{test}-{}-{n}", std::process::id()))
@@ -519,7 +520,8 @@ rm -rf "$root"
 "#;
 
 impl EstateScope {
-    fn begin(root: &Path) -> Self {
+    /// The scope of `root`: its reaper starts now, and dropping the scope removes the root.
+    pub fn begin(root: &Path) -> Self {
         use std::os::unix::process::CommandExt;
         let mut cmd = Command::new("sh");
         cmd.args(["-c", REAPER, "estate-reaper", &std::process::id().to_string(), &root.display().to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());

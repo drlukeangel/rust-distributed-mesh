@@ -35,6 +35,7 @@ pub fn node_recovery_due() -> std::time::Duration {
 mod own_process;
 mod build_log;
 mod chaos_kit__restored_faults;
+mod estate_handover;
 mod estate_teardown;
 mod fabric_build__accepted_topology;
 mod fabric_build__await_attempt;
