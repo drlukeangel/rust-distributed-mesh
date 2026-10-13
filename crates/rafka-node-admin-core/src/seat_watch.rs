@@ -208,7 +208,8 @@ impl Finding {
         }
     }
 
-    fn detail(&self) -> String {
+    /// What the finding names beyond its name: the carrier, the exit code or what was missing.
+    pub fn detail(&self) -> String {
         match self {
             Self::AnsweredViaPeer { carrier } => carrier.clone(),
             Self::Exited { code } => code.map(|c| c.to_string()).unwrap_or_else(|| "no code provable".into()),
