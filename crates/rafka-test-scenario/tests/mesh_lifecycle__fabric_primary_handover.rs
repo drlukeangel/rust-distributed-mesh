@@ -356,8 +356,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!(s(&completion["attributes"]["node"]), owner_name, "the mesh.delete's owner records its completion: {completion}");
     eprintln!("bullet 1: mesh.deleted completion trace {} by {owner_name}, handoff trace {}", s(&completion["trace_id"]), s(&handoff["trace_id"]));
 
-    // The gossip hooks: mesh-leaving by the owner, mesh-deleted (mesh.deleted) by the still-running primary.
-    for hook in ["via-mesh-leaving", "via-mesh-deleted", "via-mesh-left"] {
+    // The gossip hooks: mesh-leaving by the owner, mesh-leave (mesh.deleted) by the still-running primary.
+    for hook in ["via-mesh-leaving", "via-mesh-leave", "via-mesh-left"] {
         assert!(!named(&spans, &format!("rdm.node_admin.mesh.update.{hook}")).is_empty(), "the {hook} hook ran");
     }
     let recorded = named(&spans, "rdm.node_admin.mesh.update.via-exit-manifest-recorded");
@@ -380,19 +380,19 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let at_mesh = |sp: &Value, m: &str, kind: &str| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.{kind}."));
     let installed = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed");
 
-    // 1. While it lives: after mesh.deleted (its mesh-deleted hook) the last admin keeps publishing
+    // 1. While it lives: after mesh.deleted (its mesh-leave hook) the last admin keeps publishing
     // mesh1's aggregate with itself the only member and MeshStatus Dead. Every peer held mesh1 dead
     // with that one member while it lived (read above, on each surviving admin's own view); which
     // frame brought it there is best-effort dissemination (R-NS2), so no particular one is expected.
-    let deleted_at = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["publisher"]) == final_name).map(|sp| start_ns(sp)).min().expect("the last admin reported mesh.deleted (its mesh-deleted hook)");
+    let deleted_at = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["publisher"]) == final_name).map(|sp| start_ns(sp)).min().expect("the last admin reported mesh.deleted (its mesh-leave hook)");
     let final_exit = terminal_end(&final_name, true);
     // The version its aggregate took with itself the only member: the bump is at the last member's
-    // departure, before or after the mesh-deleted hook as rounds fall, and every round from then on
+    // departure, before or after the mesh-leave hook as rounds fall, and every round from then on
     // republishes it (passive anti-entropy carries no span of its own).
     let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1 && start_ns(sp) < final_exit).collect();
-    assert!(!lone.is_empty(), "the last admin {final_name} published mesh1's aggregate with itself the only member while it lived (mesh-deleted hook at {deleted_at})");
+    assert!(!lone.is_empty(), "the last admin {final_name} published mesh1's aggregate with itself the only member while it lived (mesh-leave hook at {deleted_at})");
     let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-dead-row").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
-    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= deleted_at), "the last admin {final_name} committed mesh1's row Dead at mesh.deleted, before its mesh-deleted hook: {dead_row:?}");
+    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= deleted_at), "the last admin {final_name} committed mesh1's row Dead at mesh.deleted, before its mesh-leave hook: {dead_row:?}");
     let dead_sent: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && sp["attributes"]["scope"] == "mesh:mesh1" && sp["attributes"]["status"] == "dead").collect();
     assert!(dead_sent.iter().any(|sp| start_ns(sp) < final_exit), "the last admin {final_name} sent MeshStatus Dead for mesh1 while it lived: {dead_sent:?}");
     eprintln!("bullet 1: {final_name} lone aggregate trace {}, MeshStatus Dead trace {}", s(&lone[0]["trace_id"]), dead_sent.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());

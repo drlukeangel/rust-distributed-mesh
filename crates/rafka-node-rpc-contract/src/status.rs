@@ -196,9 +196,9 @@ pub enum StatusRequest {
         /// The operation: `stop-node:<path>`.
         operation: String,
     },
-    /// Downward: the fabric-primary tells the leaving mesh's primary to run the mesh-deleted
-    /// workflow (`delete-mesh`; mesh-delete.md). `Applied` / `AlreadyApplied` admit the command; the
-    /// departure is complete only when the fabric-primary records `MeshLeft`.
+    /// Downward: the fabric-primary tells the deleting mesh's primary to run its mesh.delete
+    /// (`delete-mesh`; mesh-delete.md). `Applied` / `AlreadyApplied` admit the command; mesh.deleted is
+    /// reported only by the `MeshDeleted` call that follows.
     DeleteMesh {
         /// The mesh that leaves.
         mesh_id: MeshId,
