@@ -916,3 +916,130 @@ async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_clai
     // The refusal before the claim named the opener the row names: an open attempt's holder.
     assert_eq!(other_before["held_by"].as_str(), Some("mesh2.admin.1"), "{other_before}");
 }
+
+/// CONTRACT (node-recovery.md "Failure and receipts": "the mesh-primary is the submitter that
+/// resubmits by `build_id` ... the mesh-primary's next tick finds the member still proven exited and
+/// submits the recovery"; build.md :365 as the approved proposal A4 words it: "Claims are
+/// insert-and-fail on `(build_id, attempt)`", so an open attempt's first claim takes it, whoever opened
+/// it): mesh2's primary `mesh2.admin.1` runs the recovery of its exited member `mesh2.rpc.1` as attempt
+/// 1 of mesh2's lane; its node.delete departs the birth (no view holds it after) and its create fails,
+/// so attempt 1 ends Failed. The primary resubmits: it takes mesh2's in-flight row for attempt 2 and
+/// opens it with the same recovery, and is lost before it claims it. `mesh2.admin.2` takes mesh2's
+/// seat over the same Build log and rows and records the lost primary's exit. The member is owed a
+/// submit from attempt 1's Failed verdict: an open no one claimed ran nothing and ends no run. Its
+/// owed submit claims the open attempt 2 as it stands (the in-flight row names that very attempt),
+/// and once claimed nothing is owed. Until then the lost primary's own recovery is refused
+/// build-in-progress naming mesh2 and the opener the row names. Must NOT happen: the member's exit
+/// owed nothing while no attempt runs it (mesh2 held for good by the open attempt; seen at
+/// node_replace's a_failed_build_ cell, s23 part 16: mesh2.admin.2's recovery of mesh2.admin.1
+/// refused build-in-progress 209 times, held_by mesh2.admin.1), a verdict written for an attempt
+/// no one ran, or a second open of attempt 2.
+#[tokio::test]
+async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_owed_from_its_failed_attempt() {
+    use rafka_node_admin_core::accepted::AttemptAction;
+    use rafka_node_admin_core::build_state::{AttemptOpened, BuildState};
+    use rafka_node_admin_core::mesh_claims::InFlight;
+    use rafka_node_admin_core::status_storage::{MemoryStatusStorage, NodeExitRow, StatusStorage};
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-unclaimed-resubmit", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let claims = Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory());
+    let rows: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
+    let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
+    let member: PathName = "mesh2.rpc.1".parse().unwrap();
+    let exited = before.node(&member).unwrap().clone();
+    let birth = exited.incarnation_id.clone().unwrap();
+    let mut accepted_view = before.clone();
+    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::ReadyForTraffic);
+    let accepted = AcceptedStore::seeded(&*builds, before.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
+    let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0).await;
+
+    // Attempt 1: opened and claimed by mesh2's primary; its node.delete departs the birth and its
+    // create fails; the run releases mesh2's in-flight row at its verdict.
+    let lost = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), "mesh2.admin.1".parse().unwrap(), before.clone(), crate::adopted_time()).with_claims(claims.clone()));
+    let Ok(Recovery::Opened(first)) = lost.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), birth.clone()).await else { panic!("mesh2's primary opens its member's recovery") };
+    assert_eq!((first.mesh.as_deref(), first.attempt), (Some("mesh2"), 1), "attempt 1 of mesh2's lane");
+    for r in deletion_receipts(Some("mesh2"), "retire-node", &b0, 1, &member, &exited.node_id, &birth, "mesh2.admin.1") {
+        builds.append_step_receipt(&r).await.unwrap();
+    }
+    let failed = "create-node:mesh2.rpc.1 step PrepareStorage: node-key is missing in the inherited data dir";
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: failed.into() } }).await.unwrap();
+    claims.release("mesh2", &InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into() }).await.unwrap();
+    assert_eq!(builds.exits_owed(&b0, "mesh2").await.unwrap().iter().map(|o| (o.path.clone(), o.attempt)).collect::<Vec<_>>(), vec![(member.clone(), 1)], "after attempt 1's Failed verdict the member is owed a submit");
+
+    // The resubmit: mesh2's in-flight row for attempt 2, then attempt 2's open carrying the same
+    // recovery. Its claim was never written: the primary was lost between the two.
+    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: birth.clone() };
+    let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 2, claimant: "mesh2.admin.1".into() };
+    assert_eq!(claims.take("mesh2", &row).await.unwrap(), rafka_node_admin_core::mesh_claims::Taken::Won);
+    builds
+        .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 2, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 2, mesh: Some("mesh2".into()) })
+        .await
+        .unwrap();
+    let lane = builds.read_build(&b0).await.unwrap().lanes.get("mesh2").cloned().expect("mesh2's lane");
+    assert_eq!((lane.state, lane.attempt, lane.opened, lane.claimant.as_deref()), (BuildState::Pending, 1, 2, None), "attempt 2 is open and unclaimed: {lane:?}");
+
+    // mesh2.admin.2 holds the seat; the member departed its view; the lost primary is Dead in it.
+    let departed: PathName = "mesh2.admin.1".parse().unwrap();
+    let departed_birth = before.node(&departed).unwrap().clone();
+    let departed_incarnation = departed_birth.incarnation_id.clone().unwrap();
+    let mut after = two_meshes_two_mesh2_admins("mesh2.admin.2");
+    after.nodes.retain(|n| n.name != member);
+    after.nodes.iter_mut().filter(|n| n.name == departed).for_each(|n| {
+        n.node_id = departed_birth.node_id.clone();
+        n.incarnation_id = departed_birth.incarnation_id.clone();
+        n.status = NodeStatus::Dead;
+    });
+    let heir = Arc::new(
+        ControlPlane::new(builds.clone(), accepted, "mesh2.admin.2".parse().unwrap(), after, crate::adopted_time())
+            .with_claims(claims.clone())
+            .with_first_ready(rafka_node_admin_core::fabric_state::FirstReady::new(), rows.clone()),
+    );
+    rows.put_node_exit(&NodeExitRow { node_id: departed_birth.node_id.clone(), name: departed.clone(), incarnation_id: departed_incarnation.clone(), exit_code: None, proof: "provider".into(), observed_at_ms: 3 }).await.unwrap();
+
+    // The lost primary's own recovery waits for the open attempt: one attempt in flight per mesh.
+    let refused = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), departed_incarnation.clone()).await {
+        Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
+        other => panic!("while attempt 2 is open for the member, mesh2 refuses another birth's recovery: {other:?}"),
+    };
+    assert_eq!((refused["mesh"].as_str(), refused["held_by"].as_str()), (Some("mesh2"), Some("mesh2.admin.1")), "named by the mesh and the opener the row names: {refused}");
+
+    // The member stays owed from attempt 1's Failed verdict: the open no one claimed ran nothing.
+    let owed = builds.exits_owed(&b0, "mesh2").await.unwrap();
+    assert_eq!(
+        owed.iter().map(|o| (o.path.clone(), o.node_id.clone(), o.incarnation.clone(), o.attempt, o.reason.clone())).collect::<Vec<_>>(),
+        vec![(member.clone(), exited.node_id.clone(), birth.clone(), 1, failed.to_string())],
+        "the member's exit is owed a submit from attempt 1's verdict while attempt 2 stands opened and unclaimed: {owed:?}"
+    );
+
+    // Its owed submit claims the open attempt 2 as it stands.
+    let taken = match heir.open_recovery("node-recovery", owed[0].path.clone(), owed[0].node_id.clone(), owed[0].incarnation.clone()).await {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("the owed submit claims the attempt its lost opener left unclaimed: {other:?}"),
+    };
+    assert_eq!((taken.build_id.clone(), taken.mesh.as_deref(), taken.attempt), (b0.clone(), Some("mesh2"), 2), "attempt 2 of mesh2's lane, the one open");
+    let lane = builds.read_build(&b0).await.unwrap().lanes.get("mesh2").cloned().expect("mesh2's lane");
+    assert_eq!((lane.state, lane.attempt, lane.claimant.as_deref()), (BuildState::Running, 2, Some("mesh2.admin.2")), "the new primary claimed attempt 2: {lane:?}");
+    assert_eq!(lane.attempt_actions.get(&2), Some(&action), "attempt 2 runs the action its opener opened");
+    let facts = builds.facts().await.unwrap();
+    let opens: Vec<u32> = facts.iter().filter_map(|f| match f {
+        BuildFact::Opened(o) if o.mesh.as_deref() == Some("mesh2") => Some(o.attempt),
+        _ => None,
+    }).collect();
+    assert_eq!(opens, vec![1, 2], "attempt 2 is claimed, never opened again");
+    assert!(!facts.iter().any(|f| matches!(f, BuildFact::Attempt(a) if a.mesh.as_deref() == Some("mesh2") && a.attempt == 2)), "no verdict for an attempt no one ran");
+    assert!(builds.exits_owed(&b0, "mesh2").await.unwrap().is_empty(), "nothing is owed once the member's recovery is the running attempt");
+
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-departed-claimant", "rdm.node_admin.build.update.via-claim-decision"] {
+        for (trace_id, attrs) in capture.spans(name) {
+            eprintln!("span {name} trace_id={trace_id} {attrs:?}");
+        }
+    }
+    let recovery = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().find(|(_, a)| a["node"] == member.to_string() && a["attempt"] == "2").expect("the owed submit's recovery span");
+    assert_eq!((recovery.1["outcome"].as_str(), recovery.1["open_attempt"].as_str()), ("admitted", "held-open"), "{recovery:?}");
+    assert!(capture.spans("rdm.node_admin.build.update.via-departed-claimant").is_empty(), "nothing is ended or released: the row names the attempt claimed");
+}
