@@ -3354,6 +3354,15 @@ pub struct Announced {
     pub fabric_awaiting_round: bool,
 }
 
+/// A deleted mesh's aggregate as stamped under the hold of its versions: what its send carries.
+#[derive(Clone, Copy)]
+struct DeletedMeshStamp {
+    version: u64,
+    snapshot_id: u64,
+    /// No send of this version went out before: its send is spanned.
+    first: bool,
+}
+
 /// A node-admin's place on the backbone. What it hears there it holds; while
 /// it is its mesh's primary it publishes its mesh's members and forwards the
 /// other meshes' onto its mesh channel; while it is the fabric primary it
@@ -3736,38 +3745,49 @@ impl Backbone {
         *self.deleted_seen.lock().unwrap() = listed.clone();
         let mut published = Vec::new();
         for (mesh, (in_flight, departed)) in listed {
-            let sent = membership.clock.now_rafka_ms();
             let full = Full::new(Vec::new(), in_flight, departed);
-            let (version, snapshot_id, first) = {
-                let mut versions = self.deleted_versions.lock().unwrap();
-                let (v, published) = versions.entry(mesh.clone()).or_default();
-                let version = v.observe(&full);
-                let first = std::mem::replace(published, version) != version;
-                (version, v.next_snapshot_id(), first)
-            };
-            if first {
-                tracing::info_span!("rdm.mesh.backbone.update.via-deleted-mesh", node = %self.node, mesh = %mesh, publisher = %self.publisher, topology_version = version, digests = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
-                    .in_scope(|| tracing::info!("a deleted mesh whose last admin this fabric-primary stopped or deleted: it publishes the mesh's own aggregate, no digests, the stop in in_flight, the delete in deleted"));
-            }
-            for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
-                mesh: mesh.clone(),
-                publisher: self.publisher.clone(),
-                forwarded_by: None,
-                topology_version: version,
-                published_at_rafka_ms: sent,
-                snapshot_id,
-                chunk_index,
-                chunk_count,
-                digests,
-                in_flight,
-                departed,
-            }) {
-                let _ = self.channel.broadcast(&frame).await;
-            }
-            membership.forward_path.source(&self.node, &mesh, &self.publisher, version, &full, sent);
+            let stamp = Self::stamp_deleted_mesh(&mut self.deleted_versions.lock().unwrap(), &mesh, &full);
+            self.send_deleted_mesh(membership, &mesh, &full, stamp).await;
             published.push(mesh);
         }
         published
+    }
+
+    /// Stamps `full`, the aggregate of the deleted mesh `mesh`, under the hold of its versions:
+    /// returns its version, the next snapshot id, and whether this version is published for the first
+    /// time (from now on it is the version published).
+    fn stamp_deleted_mesh(versions: &mut BTreeMap<String, (SourceVersion, u64)>, mesh: &str, full: &Full) -> DeletedMeshStamp {
+        let (v, published) = versions.entry(mesh.to_string()).or_default();
+        let version = v.observe(full);
+        let first = std::mem::replace(published, version) != version;
+        DeletedMeshStamp { version, snapshot_id: v.next_snapshot_id(), first }
+    }
+
+    /// Sends the deleted mesh's aggregate `full`, stamped: on the backbone, publisher itself, and the
+    /// same source into its own mesh. The first send of a version is spanned.
+    async fn send_deleted_mesh(&self, membership: &Membership, mesh: &str, full: &Full, stamp: DeletedMeshStamp) {
+        let DeletedMeshStamp { version, snapshot_id, first } = stamp;
+        let sent = membership.clock.now_rafka_ms();
+        if first {
+            tracing::info_span!("rdm.mesh.backbone.update.via-deleted-mesh", node = %self.node, mesh = %mesh, publisher = %self.publisher, topology_version = version, digests = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
+                .in_scope(|| tracing::info!("a deleted mesh whose last admin this fabric-primary stopped or deleted: it publishes the mesh's own aggregate, no digests, the stop in in_flight, the delete in deleted"));
+        }
+        for frame in crate::snapshot::chunks_of(full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
+            mesh: mesh.to_string(),
+            publisher: self.publisher.clone(),
+            forwarded_by: None,
+            topology_version: version,
+            published_at_rafka_ms: sent,
+            snapshot_id,
+            chunk_index,
+            chunk_count,
+            digests,
+            in_flight,
+            departed,
+        }) {
+            let _ = self.channel.broadcast(&frame).await;
+        }
+        membership.forward_path.source(&self.node, mesh, &self.publisher, version, full, sent);
     }
 
     /// Resolves when the next publication round is due: at `deadline`, the anti-entropy timer, or
@@ -3843,7 +3863,11 @@ impl Backbone {
     ///   version, carrying the event;
     /// - the fabric-primary stopping a deleted mesh's birth ([`Backbone::publishes_deleted_mesh_of`]):
     ///   from the stop on it is that mesh's publisher of record (gossip.md "Mesh delete"), so the
-    ///   version is the deleted mesh's aggregate's with the stop listed;
+    ///   version is the deleted mesh's aggregate's with the stop listed, and that aggregate leaves on
+    ///   the backbone at once, from this event (mesh-delete.md "Command, completion and gossip
+    ///   messages": "F->>M: node.stop", then "F->>B: deleted mesh's aggregate: NodeStopped in
+    ///   in_flight"), never waiting for the round, which a delete applied right behind it would
+    ///   find already departed;
     /// - otherwise (the executor of a peer mesh's node, the fabric-primary among them; nobody
     ///   publishes a live mesh on its behalf, R-RX4): this admin's own publisher at the version it
     ///   holds, and the span names the role.
@@ -3851,20 +3875,24 @@ impl Backbone {
     /// Returns the publisher and version stamped.
     pub async fn publish_status_event(&self, kind: StatusEvent, op: &LifecycleOp) -> (PublisherId, u64) {
         let membership = &self.membership;
-        let (role, version) = if op.name.mesh == self.mesh && self.publishing.load(Ordering::Relaxed) {
+        let (role, version, deleted_mesh) = if op.name.mesh == self.mesh && self.publishing.load(Ordering::Relaxed) {
             let mut v = self.version.lock().unwrap();
             membership.view.apply_status_event(kind, op, None, "executed");
             let full = self.own_full(membership, self.own_members(membership));
-            ("mesh-primary", v.observe(&full))
+            ("mesh-primary", v.observe(&full), None)
         } else if kind == StatusEvent::Stopped && self.publishes_deleted_mesh_of(op) {
             let mut versions = self.deleted_versions.lock().unwrap();
             membership.view.apply_status_event(kind, op, None, "executed");
             self.hold_deleted_mesh_birth(op, true);
             let (in_flight, departed) = membership.book.deleted_mesh_listing(&mut self.deleted_births.lock().unwrap(), &self.mesh).remove(&op.name.mesh).unwrap_or_default();
-            ("deleted-mesh-publisher", versions.entry(op.name.mesh.clone()).or_default().0.observe(&Full::new(Vec::new(), in_flight, departed)))
+            // What this event sends is what the round has seen published for the mesh.
+            self.deleted_seen.lock().unwrap().insert(op.name.mesh.clone(), (in_flight.clone(), departed.clone()));
+            let full = Full::new(Vec::new(), in_flight, departed);
+            let stamp = Self::stamp_deleted_mesh(&mut versions, &op.name.mesh, &full);
+            ("deleted-mesh-publisher", stamp.version, Some((full, stamp)))
         } else {
             membership.view.apply_status_event(kind, op, None, "executed");
-            ("executor", self.version.lock().unwrap().version())
+            ("executor", self.version.lock().unwrap().version(), None)
         };
         tracing::info_span!(
             "rdm.mesh.membership.update.via-status-event",
@@ -3883,6 +3911,9 @@ impl Backbone {
         .in_scope(|| tracing::info!("a status event this admin executed: applied to its own book, stamped with the version at which its subject changed, broadcast on its mesh channel"));
         if let Err(e) = membership.mesh.broadcast(&kind.frame(op.clone(), self.publisher.clone(), version)).await {
             tracing::info!(error = %e, frame = kind.name(), "the status event was not sent on the mesh channel");
+        }
+        if let Some((full, stamp)) = deleted_mesh {
+            self.send_deleted_mesh(membership, &op.name.mesh, &full, stamp).await;
         }
         (self.publisher.clone(), version)
     }
