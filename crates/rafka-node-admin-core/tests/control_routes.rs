@@ -621,7 +621,7 @@ async fn last_admin_plane(second: Option<NodeStatus>) -> (Arc<ControlPlane>, Arc
 
 /// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary; R-EL1a point 7):
 /// TakeSeats moves seats inside the holder's mesh only, so a Build that would restart, replace,
-/// drain, stop or retire the fabric-primary while no other live node-admin of its mesh can take its
+/// delete the connections of, stop or retire the fabric-primary while no other live node-admin of its mesh can take its
 /// seats is refused by name, 422 `last-admin` with `rdm.node_admin.build.reject.via-last-admin`,
 /// before any attempt opens or any executor is picked: nothing is published. The fabric seat leaves
 /// such a mesh only through TakeFabricPrimary inside mesh-leave. A retire of a mesh's only admin
@@ -644,7 +644,7 @@ async fn a_build_that_would_end_the_fabric_primarys_last_admin_is_refused_by_nam
     // mesh1's only admin is the fabric-primary.
     let (_, builds, app) = last_admin_plane(None).await;
     let seed = builds.facts().await.unwrap().len();
-    for action in ["restart", "replace", "drain", "stop"] {
+    for action in ["restart", "replace", "connections/delete", "stop"] {
         let (s, v) = call(&app, "POST", &format!("/api/nodes/mesh1.admin.1/{action}"), None).await;
         last_admin(action, s, &v);
     }

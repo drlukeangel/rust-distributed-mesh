@@ -112,22 +112,23 @@ async fn a_caller_node_workflow_before_the_fabric_first_reaches_ready_for_traffi
     eprintln!("trace {}: rdm.node_admin.build.reject.via-fabric-not-ready x{} (stop, start, restart, replace, delete) status=state-sync", spans[0].0, spans.len());
 }
 
-/// CONTRACT (R-PB1): a drain moves a seat when its node holds the fabric-primary or its mesh's primary
-/// seat. Until the initial fabric has first reached ready-for-traffic that drain is refused
-/// `fabric-not-ready`, naming the node; a drain of a node that holds no seat is admitted (it moves none).
+/// CONTRACT (R-PB1): a node.connections.delete moves a seat when its node holds the fabric-primary or
+/// its mesh's primary seat. Until the initial fabric has first reached ready-for-traffic that
+/// node.connections.delete is refused `fabric-not-ready`, naming the node; one of a node that holds no
+/// seat is admitted (it moves none).
 /// What must NOT happen: `TakeSeats` sent for a seat whose rows only its holder's scratchpad holds.
 #[tokio::test]
-async fn a_drain_of_a_seat_holder_before_the_fabric_first_reaches_ready_for_traffic_is_refused_and_a_drain_of_another_node_is_admitted() {
+async fn a_connections_delete_of_a_seat_holder_before_the_fabric_first_reaches_ready_for_traffic_is_refused_and_one_of_another_node_is_admitted() {
     let r = rig(ScopeStatus::StateSync).await;
     let before = r.facts().await;
     for holder in ["mesh1.admin.1", "mesh2.admin.1"] {
         let (workflow, status) = refused(r.attempt(AttemptReason::DeleteConnections, holder, ActionKind::DeleteConnections).await);
-        assert_eq!((workflow.as_str(), status.as_str()), (format!("node.drain {holder} (a seat holder)").as_str(), "state-sync"));
+        assert_eq!((workflow.as_str(), status.as_str()), (format!("node.connections.delete {holder} (a seat holder)").as_str(), "state-sync"));
     }
-    assert_eq!(r.facts().await, before, "a refused drain opens no attempt");
+    assert_eq!(r.facts().await, before, "a refused node.connections.delete opens no attempt");
     let opened = r.attempt(AttemptReason::DeleteConnections, "mesh1.admin.2", ActionKind::DeleteConnections).await.expect("a node that holds no seat has its connections deleted");
     assert_eq!(opened.attempt, 2);
-    assert_eq!(r.facts().await, before + 1, "the admitted drain opened its one attempt");
+    assert_eq!(r.facts().await, before + 1, "the admitted node.connections.delete opened its one attempt");
 }
 
 /// CONTRACT (R-PC1, R-PB1): until the initial fabric has first reached ready-for-traffic, mesh.delete and

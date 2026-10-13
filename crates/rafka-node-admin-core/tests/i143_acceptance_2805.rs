@@ -344,7 +344,9 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let subject = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
     let (node_id, incarnation) = (subject.node.node_id.clone(), subject.node.incarnation_id.clone().unwrap());
     let rig = rig(subject, &[&executor], BTreeMap::new()).await;
-    let command = |inc: IncarnationId| StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: inc, build_id: "bld_2805".into(), attempt: 1, operation: "drain-node:mesh1.admin.2".into() };
+    // The node command: node.connections.delete { All } to the exact birth (DrainNode is a reserved
+    // position, refused by name before any birth is checked).
+    let command = |inc: IncarnationId| StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: inc, scope: rafka_node_rpc_contract::status::ConnectionScope::All };
 
     // Healthy control before draining: a ping is served.
     let c = client_of(&rig, &executor).await;
@@ -381,7 +383,7 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let (lost, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
     let indeterminate = command_admission(&lost);
     assert!(matches!(indeterminate, CommandAdmission::Indeterminate { .. }), "{indeterminate:?}");
-    // Deadline: the retire pipeline's AwaitNodeDrained over an admitted command that never completes.
+    // Deadline: the retire pipeline's AwaitNodeLeft over an admitted command that never completes.
     let deadline = deadline_arm().await;
     assert_eq!(deadline, Completion::Deadline);
 
@@ -407,7 +409,7 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// The retire pipeline run to its AwaitNodeDrained over a birth that admits the drain and never
+/// The retire pipeline run to its AwaitNodeLeft over a birth that admits the stop and never
 /// completes it: the step's receipt is the arm.
 async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completion {
     use rafka_node_admin_core::build::BuildId;
@@ -511,7 +513,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     };
     let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
     let _ = pipeline.retire(&req).await;
-    // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the drain
+    // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the stop
     // command (StopNode), its completion wait (AwaitNodeLeft: the deadline arm); and never
     // NodeDeleted, because the provider never proves the runtime dead.
     let view = builds.read_build(&build_id).await.unwrap();
