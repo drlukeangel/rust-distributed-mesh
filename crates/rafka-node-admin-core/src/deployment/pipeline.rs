@@ -733,7 +733,7 @@ pub struct CommandContext {
     pub operation: String,
 }
 
-/// The identity a mesh-deleted gossip hook carries: the mesh, the Build, the attempt and the outer
+/// The identity a mesh-leave gossip hook carries: the mesh, the Build, the attempt and the outer
 /// operation `shutdown-mesh:<mesh_id>`, with the receipt manifest reference and the final primary
 /// where the event has them.
 #[derive(Debug, Clone, PartialEq, Eq)]

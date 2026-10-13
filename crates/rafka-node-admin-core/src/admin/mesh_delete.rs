@@ -667,7 +667,7 @@ impl AdminRunner {
         result
     }
 
-    /// The `MeshDeleted` handoff: the mesh-deleted gossip hook, then the call up to the owner.
+    /// The `MeshDeleted` handoff: the mesh-leave gossip hook, then the call up to the owner.
     async fn hand_off(&self, key: &MeshDeleteKey, owner: &crate::mesh_delete::MeshDeleteOwner, manifest: &ExitManifest, recorded: u32) {
         let reference = manifest_reference(key.build_id.as_str(), recorded, &key.operation, false);
         let view = self.topology.read().await.clone();
