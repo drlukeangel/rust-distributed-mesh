@@ -296,31 +296,36 @@ impl FileRecords {
                 .filter(|p| p.extension().is_some_and(|x| x == "json"))
                 .collect();
             paths.sort();
-            let mut records: std::collections::BTreeMap<String, T> = std::collections::BTreeMap::new();
-            // A file listed and then removed before it is read is a record that is gone: the list
-            // answers the records that remain.
-            for p in paths {
-                let key = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                if held.contains_key(&key) {
-                    continue;
-                }
-                match std::fs::read(&p) {
-                    Ok(b) => {
-                        records.insert(key, Self::decode(&p, &b, &format)?);
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(StorageError::Io { file: p.display().to_string(), reason: e.to_string() }),
-                }
-            }
-            for (key, row) in held {
-                if let Some(b) = row.bytes() {
-                    let p = dir.join(format!("{key}.json"));
-                    records.insert(key, Self::decode(&p, b, &format)?);
-                }
-            }
-            Ok(records.into_values().collect())
+            Self::read_listed(&dir, paths, held, &format)
         })
         .await
+    }
+
+    /// The records of the files a directory read `paths` named, under the rows the store holds. A file
+    /// listed and then removed before it is read is a record that is gone: the list answers the
+    /// records that remain.
+    fn read_listed<T: DeserializeOwned>(dir: &Path, paths: Vec<PathBuf>, held: std::collections::BTreeMap<String, HeldRow>, format: &str) -> Result<Vec<T>, StorageError> {
+        let mut records: std::collections::BTreeMap<String, T> = std::collections::BTreeMap::new();
+        for p in paths {
+            let key = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            if held.contains_key(&key) {
+                continue;
+            }
+            match std::fs::read(&p) {
+                Ok(b) => {
+                    records.insert(key, Self::decode(&p, &b, format)?);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(StorageError::Io { file: p.display().to_string(), reason: e.to_string() }),
+            }
+        }
+        for (key, row) in held {
+            if let Some(b) = row.bytes() {
+                let p = dir.join(format!("{key}.json"));
+                records.insert(key, Self::decode(&p, b, format)?);
+            }
+        }
+        Ok(records.into_values().collect())
     }
 
     /// Store `record` under `key`, replacing what was there: held in the scratchpad while the store
@@ -1205,29 +1210,19 @@ mod tests {
     }
 
     /// CONTRACT: a record removed while another caller lists the store is a record that is gone;
-    /// the list answers the records that remain and never fails on the one that vanished.
+    /// the list answers the records that remain and never fails on the one that vanished. The race is
+    /// made exact: the directory read named a file that is gone by the time its record is read.
     #[tokio::test]
     async fn a_list_racing_a_removal_answers_the_records_that_remain() {
         let d = tempdir("records-race");
-        let r = std::sync::Arc::new(FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.unwrap());
-        for round in 0..20 {
-            for k in 0..200 {
-                r.write(&format!("k{k:03}"), "thing/1", &k).await.unwrap();
-            }
-            let remover = {
-                let r = r.clone();
-                tokio::spawn(async move {
-                    for k in 0..200 {
-                        r.remove(&format!("k{k:03}")).await.unwrap();
-                    }
-                })
-            };
-            while !remover.is_finished() {
-                let listed = r.list::<u32>("thing/1").await;
-                assert!(listed.is_ok(), "round {round}: a list racing a removal failed: {:?}", listed.err());
-            }
-            remover.await.unwrap();
-        }
+        let r = FileRecords::open(&d, "things", &crate::model::IncarnationId("test".into())).await.unwrap();
+        r.write("k001", "thing/1", &1u32).await.unwrap();
+        r.write("k003", "thing/1", &3u32).await.unwrap();
+        let dir = d.join("things");
+        let listed = vec![dir.join("k001.json"), dir.join("k002.json"), dir.join("k003.json")];
+        assert!(!listed[1].exists(), "k002 was listed and is gone before its record is read");
+        let records = FileRecords::read_listed::<u32>(&dir, listed, std::collections::BTreeMap::new(), "thing/1");
+        assert_eq!(records.unwrap(), [1, 3], "the list answers the records that remain");
     }
 
     /// CONTRACT: opening a store (its directory made on the disk) never waits on the disk on a
