@@ -1652,8 +1652,12 @@ impl Write {
 
 /// What `Authority::finish` waits for, observed from the view and the Build, never from elapsed time.
 enum Until {
-    /// The node is ready under an incarnation other than `old_incarnation`.
-    Reborn { node: String, old_incarnation: String },
+    /// The node is ready again as the same birth: its node id and incarnation unchanged (node-restart.md: a
+    /// restart keeps the node.id, the incarnation and the process).
+    Restarted { node: String, node_id: String, incarnation: String },
+    /// The node is ready under an incarnation other than `old_incarnation`: the new birth a node recovery
+    /// put at the path after its runtime died.
+    Recovered { node: String, old_incarnation: String },
     /// The node is no longer in the view.
     Gone { node: String },
     /// `mesh` holds a ready node-admin that was not in `before`.
@@ -1902,7 +1906,8 @@ impl Authority {
                 seen_failed += 1;
             }
             let held = nodes.as_ref().is_some_and(|nodes| match &until {
-                Until::Reborn { node, old_incarnation } => nodes.iter().any(|n| n["name"] == node.as_str() && n["status"] == "ready-for-traffic" && n["incarnation_id"] != old_incarnation.as_str()),
+                Until::Restarted { node, node_id, incarnation } => nodes.iter().any(|n| n["name"] == node.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] == node_id.as_str() && n["incarnation_id"] == incarnation.as_str()),
+                Until::Recovered { node, old_incarnation } => nodes.iter().any(|n| n["name"] == node.as_str() && n["status"] == "ready-for-traffic" && n["incarnation_id"] != old_incarnation.as_str()),
                 Until::Gone { node } => nodes.iter().all(|n| n["name"] != node.as_str()),
                 Until::Grew { mesh, before } => nodes.iter().any(|n| n["kind"] == "node_admin" && n["mesh"] == mesh.as_str() && n["status"] == "ready-for-traffic" && !before.contains(&s(&n["node_id"]))),
                 Until::Joined { node, not_node_id } => nodes.iter().any(|n| n["name"] == node.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] != not_node_id.as_str()),
@@ -1911,7 +1916,8 @@ impl Authority {
                 return json!({"build": b, "wall_ms": started.elapsed().as_millis() as u64, "seen_failed_observations": seen_failed});
             }
             assert!(started.elapsed() < Duration::from_secs(120), "Build {build_id} did not complete with its effect visible within 120 s: build {b:#}; wanted {}", match &until {
-                Until::Reborn { node, .. } => format!("{node} reborn"),
+                Until::Restarted { node, incarnation, .. } => format!("{node} ready again as incarnation {incarnation}"),
+                Until::Recovered { node, old_incarnation } => format!("{node} ready under an incarnation other than {old_incarnation}"),
                 Until::Gone { node } => format!("{node} gone"),
                 Until::Grew { mesh, .. } => format!("{mesh} grown by one node-admin"),
                 Until::Joined { node, not_node_id } => format!("{node} ready under a NodeId other than {not_node_id}"),
@@ -2006,8 +2012,9 @@ async fn prove_path(f: &mut Formed, a: &mut Authority, want: &BTreeMap<String, u
 }
 
 /// Restart `node` (never the fabric-primary) through the Build rectifier and keep the traffic going
-/// until the Build is complete and the node is ready under a new incarnation. The request opens the
-/// next attempt of the accepted Build: the Build id is the fabric's own, the node keeps its NodeId.
+/// until the Build is complete and the node is ready again as the same birth (node-restart.md: a restart
+/// keeps the node.id and the incarnation). The call opens the next attempt of the accepted Build: the
+/// Build id is the fabric's own.
 async fn restart_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, scenario: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a retiring Build");
     let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
@@ -2017,12 +2024,12 @@ async fn restart_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node:
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), Write::Restart(node.to_string())).await;
     assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
-    let fin = a.finish(f, &build_id, Until::Reborn { node: node.into(), old_incarnation: s(&n["incarnation_id"]) }, "during-restart").await;
+    let fin = a.finish(f, &build_id, Until::Restarted { node: node.into(), node_id: s(&n["node_id"]), incarnation: s(&n["incarnation_id"]) }, "during-restart").await;
     let now = f.estate.node_value(node).await;
     assert_eq!(now["node_id"], n["node_id"], "{node}: a restart keeps the logical node");
-    assert_ne!(now["incarnation_id"], n["incarnation_id"], "{node}: a restart is a new exact birth");
+    assert_eq!(now["incarnation_id"], n["incarnation_id"], "{node}: a restart keeps the incarnation (node-restart.md)");
     let ev = json!({
-        "event": "admin.restart", "scenario": scenario, "node": node, "node_id": n["node_id"], "was_primary": n["is_primary"], "old_incarnation_id": n["incarnation_id"], "new_incarnation_id": now["incarnation_id"],
+        "event": "admin.restart", "scenario": scenario, "node": node, "node_id": n["node_id"], "was_primary": n["is_primary"], "incarnation_id": n["incarnation_id"],
         "build_id": build_id, "fabric_build_id_before": fabric_build, "attempt_before": attempt_before, "attempt_after": fin["build"]["attempt"], "executor_after": fin["build"]["executor"], "request_ns": t0, "wall_ms": fin["wall_ms"], "build_failed_observations": fin["seen_failed_observations"],
     });
     a.events.push(ev.clone());
@@ -2362,15 +2369,15 @@ fn check_election_history(a: &Authority, spans: &[Value], inv: &mut Invariants) 
         retired.push(json!({"node": d["attributes"]["node"], "node_id": id, "incarnation_id": d["attributes"]["incarnation_id"], "departed_ns": start_ns(d)}));
     }
     inv.holds("no retired NodeId is Ready again after its departure; a replacement is a new NodeId", true, json!({"retired": retired}));
-    // Restarts keep the NodeId across births.
+    // A restart keeps the birth: every Ready of a restarted admin's NodeId carries its one incarnation.
     let mut restarts = Vec::new();
     for ev in a.events.iter().filter(|e| e["event"] == "admin.restart") {
         let id = s(&ev["node_id"]);
         let incs: BTreeSet<String> = ready.iter().filter(|r| r["attributes"]["node_id"] == id.as_str()).map(|r| s(&r["attributes"]["incarnation_id"])).collect();
-        assert!(incs.contains(&s(&ev["old_incarnation_id"])) && incs.contains(&s(&ev["new_incarnation_id"])), "{}: the NodeId {id} was Ready under both the old and the new birth: {incs:?}", ev["node"]);
+        assert_eq!(incs, BTreeSet::from([s(&ev["incarnation_id"])]), "{}: every Ready of the NodeId {id} carries the one incarnation it kept across the restart", ev["node"]);
         restarts.push(json!({"node": ev["node"], "node_id": id, "births_seen_ready": incs}));
     }
-    inv.holds("each restarted admin: one logical NodeId, ready under its old and its new exact birth", true, json!({"restarts": restarts}));
+    inv.holds("each restarted admin: one logical NodeId, ready under the one exact birth it kept across the restart", true, json!({"restarts": restarts}));
     json!({"hand_offs": out, "kills": kills, "retakes": retakes, "retired": retired, "restarts": restarts})
 }
 
@@ -2457,17 +2464,18 @@ async fn authority_run(cell: &str, shape: Shape) {
         fp_trail.push(json!({"after": format!("C4 {mesh} second"), "fabric_primary": st.fp_name(), "node_id": st.fp["node_id"]}));
     }
 
-    // C19: a primary that restarts loses its seat to its mesh and keeps its NodeId; as a later birth it
-    // holds no seat while the admin that filled it lives (R-A2: a lower NodeId never displaces a living
-    // holder); the fabric-primary hands off once more; no retired identity returns.
+    // C19: a primary that restarts loses its seat to its mesh (its stop moves its seats) and keeps its NodeId
+    // and incarnation; back as the same birth it holds no seat while the admin that filled it lives (R-A2: a
+    // lower NodeId never displaces a living holder); the fabric-primary hands off once more; no retired
+    // identity returns.
     let quiet = MESHES.iter().find(|m| **m != st.mesh_of_fp()).unwrap().to_string();
     let incumbent = st.primary_of(&quiet);
     restart_via_build(&mut f, &mut a, &st, &s(&incumbent["name"]), &format!("C19 {quiet}: the primary restarts and holds no seat")).await;
     st = a.stable(&mut f, &format!("C19 {quiet}: the restarted primary is Ready"), &both(2), &mut inv).await;
-    assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the restarted primary is a later birth: the admin that filled its seat keeps it while it lives, whatever NodeId the restarted one holds");
+    assert_ne!(st.primary_of(&quiet)["node_id"], incumbent["node_id"], "C19: the admin that filled the restarted primary's seat keeps it while it lives, whatever NodeId the restarted one holds");
     let back = st.admins.iter().find(|n| n["name"] == incumbent["name"]).unwrap_or_else(|| panic!("C19: the restarted admin {} is in the view", incumbent["name"]));
     assert_eq!(back["node_id"], incumbent["node_id"], "C19: the restart keeps the NodeId");
-    assert_ne!(back["incarnation_id"], incumbent["incarnation_id"], "C19: the restart is a later birth");
+    assert_eq!(back["incarnation_id"], incumbent["incarnation_id"], "C19: the restart keeps the incarnation (node-restart.md)");
     assert_eq!(back["is_primary"], false, "C19: the restarted admin holds no seat while the admin that filled it lives");
     proofs.push(prove_path(&mut f, &mut a, &both(2), "C19 restarted primary", &mut inv).await);
     let (after, ev) = hand_off(&mut f, &mut a, &st, "C19: a repeated fabric-primary hand-off", &mut inv).await;
@@ -2665,10 +2673,11 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let kill = kill_admin(&mut f, &mut a, &st, &executor_name).await;
     let killed_instant = Instant::now();
     progress(&format!("R3: {executor_name} killed with attempt {killed_at_attempt} of {bid} in flight: {held}"));
-    let fin = a.finish(&mut f, &bid, Until::Reborn { node: broker.clone(), old_incarnation: s(&broker_before["incarnation_id"]) }, "during-successor").await;
+    let fin = a.finish(&mut f, &bid, Until::Restarted { node: broker.clone(), node_id: s(&broker_before["node_id"]), incarnation: s(&broker_before["incarnation_id"]) }, "during-successor").await;
     a.traffic.aim = None;
     let broker_after = f.estate.node_value(&broker).await;
-    assert_ne!(broker_after["incarnation_id"], broker_before["incarnation_id"], "R3: the broker stands under a new exact birth");
+    // The successor's attempt starts the stopped broker again: the same birth is back (node-restart.md).
+    assert_eq!((&broker_after["node_id"], &broker_after["incarnation_id"]), (&broker_before["node_id"], &broker_before["incarnation_id"]), "R3: the restart the successor completed keeps the broker's node id and incarnation");
     let broker_kept = broker_after["node_id"] == broker_before["node_id"];
     // The dead executor is re-born only once its death is established: a floor to mark it silent, half a
     // floor to its tickle and a floor to the second no-path, then the create itself (a further floor of margin).
@@ -2906,6 +2915,17 @@ fn live_and_distinct(node: &str, old: &Rt, new: &Rt) -> Value {
     json!({"old": old.record(), "new": new.record()})
 }
 
+/// The restarted birth runs in the runtime it ran in before the restart, alive (node-restart.md: the live
+/// process stops and rejoins; no relaunch).
+fn live_and_same(node: &str, before: &Rt, after: &Rt) -> Value {
+    assert!(before.is(after), "{node}: a restart keeps the runtime, and the node now runs in another: before {:?}, after {:?}", before.record(), after.record());
+    match after {
+        Rt::Process(r) => assert!(r.check().is_ok(), "{node}: the restarted birth's exact runtime {r:?} is not alive: {:?}", r.check()),
+        Rt::Container(c) => assert!(container_faults::inspect(&c.id).is_ok_and(|i| i.running), "{node}: the restarted birth's container {} is not running", c.id),
+    }
+    json!({"before": before.record(), "after": after.record()})
+}
+
 /// One synthetic put aimed at an arbitrary node (a canary: the node holds the value in its own
 /// data dir, so a same-node restart keeps it and a replacement does not). It joins the cell's
 /// ledger like every other operation. Returns the operation's index in the ledger.
@@ -3011,7 +3031,8 @@ fn originate_op(f: &Formed, a: &mut Authority, holder: &str, dest: &Value, windo
 }
 
 /// Restart `node` (never the fabric-primary) through the Build rectifier, keeping the seeded traffic
-/// going until the Build is complete and the node is ready under a new incarnation. Any role.
+/// going until the Build is complete and the node is ready again as the same birth (node-restart.md).
+/// Any role.
 async fn restart_node(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, scenario: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a retiring Build");
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
@@ -3023,10 +3044,10 @@ async fn restart_node(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), Write::Restart(node.to_string())).await;
     assert_eq!(build_id, fabric_build, "{node}: a restart opens the next attempt of the accepted Build (the current build_id stays)");
-    let fin = a.finish(f, &build_id, Until::Reborn { node: node.into(), old_incarnation: s(&n["incarnation_id"]) }, "during-restart").await;
+    let fin = a.finish(f, &build_id, Until::Restarted { node: node.into(), node_id: s(&n["node_id"]), incarnation: s(&n["incarnation_id"]) }, "during-restart").await;
     let ev = json!({
         "event": "node.restart", "scenario": scenario, "node": node, "kind": n["kind"], "node_id": n["node_id"], "endpoint_id": n["endpoint_id"], "was_primary": n["is_primary"],
-        "old_incarnation_id": n["incarnation_id"], "build_id": build_id, "fabric_build_id_before": fabric_build, "attempt_before": attempt_before,
+        "incarnation_id": n["incarnation_id"], "build_id": build_id, "fabric_build_id_before": fabric_build, "attempt_before": attempt_before,
         "attempt_after": fin["build"]["attempt"], "executor_after": fin["build"]["executor"], "request_ns": t0, "wall_ms": fin["wall_ms"], "build_failed_observations": fin["seen_failed_observations"],
     });
     a.events.push(ev.clone());
@@ -3056,13 +3077,14 @@ fn representatives(f: &Formed, st: &Stable) -> Vec<String> {
     vec![broker, gateway, compute, admin]
 }
 
-/// Restart one representative and prove what a restart is: the same logical node (NodeId, EndpointId,
-/// path.name, data dir) in a new exact birth in a new runtime, the old birth's runtime terminal as the
-/// provider reports it, and routing recovered onto the new birth (the connections that named the old
-/// birth gone, a call over a held connection answered by the new birth).
+/// Restart one representative and prove what a restart is (node-restart.md, "Kept: same node.id,
+/// incarnation, immutable path, name, endpoint key, bound port, bin and data dir"; "Runtime: live process
+/// stops and rejoins; no relaunch"): the same logical node in the same exact birth, its runtime the same
+/// live process as the provider reports it, and routing back on that birth (a call over a held connection
+/// answered by it once its connections were deleted by the stop and dialed again).
 async fn restart_representative(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, label: &str, inv: &mut Invariants) -> (Value, Stable) {
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
-    let (kind, mesh, node_id, old_inc, endpoint) = (s(&n["kind"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["endpoint_id"]));
+    let (kind, mesh, node_id, inc, endpoint) = (s(&n["kind"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["endpoint_id"]));
     let rt_before = exact_runtime(f, node).await;
     let gw = format!("{mesh}.gateway.1");
     // The canary: a value only this node's data dir holds. A node-admin serves no proof store (op 0x70
@@ -3080,9 +3102,9 @@ async fn restart_representative(f: &mut Formed, a: &mut Authority, st: &Stable, 
     let gx = format!("{}.gateway.1", MESHES.iter().find(|m| **m != mesh).unwrap());
     if kind == "broker" {
         carried_get(&f.estate, &n, &gw, &ckey);
-        await_edge(&f.estate, &gw, &node_id, &old_inc, None).await;
+        await_edge(&f.estate, &gw, &node_id, &inc, None).await;
         carried_get(&f.estate, &n, &gx, &ckey);
-        await_edge(&f.estate, &gx, &node_id, &old_inc, None).await;
+        await_edge(&f.estate, &gx, &node_id, &inc, None).await;
     }
     a.traffic.aim = matches!(kind.as_str(), "broker" | "gateway").then(|| node.to_string());
     let ev = restart_node(f, a, st, node, label).await;
@@ -3091,55 +3113,51 @@ async fn restart_representative(f: &mut Formed, a: &mut Authority, st: &Stable, 
     let n2 = st2.nodes.iter().find(|x| x["name"] == node).unwrap_or_else(|| panic!("{node} is not in the view after its restart")).clone();
     assert_eq!(n2["node_id"], n["node_id"], "{node}: a restart keeps the logical node");
     assert_eq!(n2["endpoint_id"], n["endpoint_id"], "{node}: a restart keeps the node's EndpointId (the key in its data dir)");
-    assert_ne!(n2["incarnation_id"], n["incarnation_id"], "{node}: a restart is a new exact birth");
+    assert_eq!(n2["incarnation_id"], n["incarnation_id"], "{node}: a restart keeps the incarnation (node-restart.md)");
     assert_eq!((n2["status"].as_str(), n2["kind"].as_str(), n2["mesh"].as_str()), (Some("ready-for-traffic"), n["kind"].as_str(), n["mesh"].as_str()), "{node}");
-    let new_inc = s(&n2["incarnation_id"]);
     if kind == "node_admin" {
         let mut e = ev.clone();
         e["event"] = json!("admin.restart");
-        e["new_incarnation_id"] = n2["incarnation_id"].clone();
         a.events.push(e);
     }
-    // The provider: a different runtime now, the old one terminal, the new one the bound executable.
+    // The provider: the same live runtime, the bound executable it was launched on.
     let rt_after = exact_runtime(f, node).await;
-    let runtimes = live_and_distinct(node, &rt_before, &rt_after);
-    let terminal = terminal_proof(node, &rt_before);
+    let runtimes = live_and_same(node, &rt_before, &rt_after);
     let launch = observe_launch(&f.estate, node).await;
     let b = f.set.bindings.iter().find(|b| b.launch_id == launch_id(node)).unwrap();
-    assert_eq!(launched_path(&launch), b.executable, "{node}: the new birth runs the bound executable: {launch}");
-    assert_eq!(launch["observed_sha256"], b.sha256.as_str(), "{node}: the new birth runs the bound bytes: {launch}");
+    assert_eq!(launched_path(&launch), b.executable, "{node}: the restarted birth runs the bound executable: {launch}");
+    assert_eq!(launch["observed_sha256"], b.sha256.as_str(), "{node}: the restarted birth runs the bound bytes: {launch}");
     if serves_proof_store {
         // The same data dir: the canary survived the restart.
         let c = probe_call(&f.estate, &["get", "--target", &format!("exact:{node_id}"), "--key", &ckey]);
-        assert_eq!(c.out["reply"]["result"], json!({"found": true, "value": cval}), "{node}: the value stored before the restart is held by the new birth (same data dir): {}", c.out);
-        assert_eq!(c.out["reply"]["incarnation_id"], n2["incarnation_id"], "{node}: the read was served by the new birth: {}", c.out);
+        assert_eq!(c.out["reply"]["result"], json!({"found": true, "value": cval}), "{node}: the value stored before the restart is held after it (same data dir): {}", c.out);
+        assert_eq!(c.out["reply"]["incarnation_id"], n2["incarnation_id"], "{node}: the read was served by the birth the restart kept: {}", c.out);
         f.actions.push(action_row(&c));
-        // Routing: an exact write reaches the new birth, never the old.
+        // Routing: an exact write reaches the birth the restart kept.
         let wi = op_to(f, a, &n2, None, "after", "after-restart");
         let w = &a.traffic.ops[wi].1.out;
         assert_eq!((w["outcome"].as_str(), w["reply"]["result"].clone()), (Some("Reply"), json!({"stored": true})), "{node}: an exact write after the restart: {w}");
-        assert_eq!(w["reply"]["incarnation_id"], n2["incarnation_id"], "{node}: the write was served by the new birth: {w}");
+        assert_eq!(w["reply"]["incarnation_id"], n2["incarnation_id"], "{node}: the write was served by the birth the restart kept: {w}");
     }
     let routing = match kind.as_str() {
         "broker" => {
             let carried = carried_get(&f.estate, &n2, &gw, &ckey);
             assert_eq!(carried.out["reply"]["result"], json!({"found": true, "value": cval}), "{}", carried.out);
-            let edge = await_edge(&f.estate, &gw, &node_id, &new_inc, Some(&old_inc)).await;
+            let edge = await_edge(&f.estate, &gw, &node_id, &inc, None).await;
             let oi = originate_op(f, a, &gw, &n2, "after-restart");
             let orig_trace = a.traffic.ops[oi].1.trace_id.clone();
             let orig_route = a.traffic.ops[oi].1.out["route"].clone();
             f.actions.push(action_row(&carried));
-            // The other mesh's gateway: its edge facts are observed, and its call over the projection must
-            // still reach the new birth whatever the facts say.
-            let cross_edge = observe_edge(&f.estate, &gx, &node_id, &new_inc, &old_inc, Duration::from_secs(30)).await;
+            // The other mesh's gateway: its call over the projection reaches the birth the restart kept, and it
+            // holds an edge to that birth again.
             let cross_carried = carried_get(&f.estate, &n2, &gx, &ckey);
-            let cross_edge_after = await_edge(&f.estate, &gx, &node_id, &new_inc, None).await;
+            let cross_edge_after = await_edge(&f.estate, &gx, &node_id, &inc, None).await;
             let xi = originate_op(f, a, &gx, &n2, "after-restart");
             let cross_orig_trace = a.traffic.ops[xi].1.trace_id.clone();
             f.actions.push(action_row(&cross_carried));
             json!({
                 "gateway": gw, "edge": edge, "carried_trace": carried.trace_id, "originated_trace": orig_trace, "originated_route": orig_route,
-                "cross_mesh_gateway": gx, "cross_mesh_edge_facts": cross_edge, "cross_mesh_edge_after_a_carried_call": cross_edge_after, "cross_mesh_carried_trace": cross_carried.trace_id, "cross_mesh_originated_trace": cross_orig_trace,
+                "cross_mesh_gateway": gx, "cross_mesh_edge_after_a_carried_call": cross_edge_after, "cross_mesh_carried_trace": cross_carried.trace_id, "cross_mesh_originated_trace": cross_orig_trace,
             })
         }
         "gateway" => {
@@ -3159,24 +3177,24 @@ async fn restart_representative(f: &mut Formed, a: &mut Authority, st: &Stable, 
     // above), never required away here: the required edges are the current primary node-admin's.
     let connections = converge_connections_after_restart(f, inv, &node_id).await;
     let rec = json!({
-        "label": label, "node": node, "kind": kind, "node_id": node_id, "endpoint_id": endpoint, "old_incarnation_id": old_inc, "new_incarnation_id": new_inc,
-        "runtimes": runtimes, "old_birth_terminal": terminal, "new_birth_launch": launch, "canary_key": ckey, "serves_proof_store": serves_proof_store, "restart": ev, "routing": routing, "connections": connections,
+        "label": label, "node": node, "kind": kind, "node_id": node_id, "endpoint_id": endpoint, "incarnation_id": inc,
+        "runtimes": runtimes, "launch": launch, "canary_key": ckey, "serves_proof_store": serves_proof_store, "restart": ev, "routing": routing, "connections": connections,
     });
     inv.holds(
-        &format!("{label}: {node} ({kind}) restarted as the same logical node in a new exact birth in a new runtime; the old birth's runtime is terminal; the canary in its data dir survived; calls and connections converged on the new birth"),
+        &format!("{label}: {node} ({kind}) restarted as the same logical node in the same exact birth on the same live runtime; the canary in its data dir survived; calls and connections converged back on that birth"),
         true,
-        json!({"node_id": node_id, "old_incarnation_id": old_inc, "new_incarnation_id": new_inc, "runtimes": rec["runtimes"], "terminal": rec["old_birth_terminal"]}),
+        json!({"node_id": node_id, "incarnation_id": inc, "runtimes": rec["runtimes"]}),
     );
     (rec, st2)
 }
 
 /// The spans of one restart: build.update.via-node-rpc -> reconcile (operation `restart-node:<node>`) -> node.update.via-build
-/// -> pipeline (restart) -> steps, the NodeRestarting event naming the old birth, the new birth's own
-/// ready span, and no NodeDeleted for the node at any time.
+/// -> pipeline (restart) -> steps, the NodeRestarting event naming the birth, that same birth's own ready
+/// span after it, and no NodeDeleted for the node at any time.
 fn check_restart_chain(spans: &[Value], rec: &Value) -> Value {
     let node = s(&rec["node"]);
     let ev = &rec["restart"];
-    let (bid, id, old, new) = (s(&ev["build_id"]), s(&rec["node_id"]), s(&rec["old_incarnation_id"]), s(&rec["new_incarnation_id"]));
+    let (bid, id, inc) = (s(&ev["build_id"]), s(&rec["node_id"]), s(&rec["incarnation_id"]));
     let accepted = named(spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == bid.as_str() && sp["attributes"]["node"] == node.as_str()).cloned().unwrap_or_else(|| panic!("{node}: no build.update.via-node-rpc for the restart"));
     let op = format!("restart-node:{node}");
     let reconcile = named(spans, "rdm.node_admin.build.update.via-reconcile")
@@ -3197,9 +3215,8 @@ fn check_restart_chain(spans: &[Value], rec: &Value) -> Value {
     assert!(!names.iter().any(|n| n == "DeployRuntime" || n == "TerminateRuntime"), "{node}: a restart deploys nothing and terminates nothing: {names:?}");
     let restarting = named(spans, "rdm.node_admin.node.update.via-node-restarting").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str() && sp["attributes"]["build_id"] == bid.as_str()).collect::<Vec<_>>();
     assert!(!restarting.is_empty(), "{node}: the executor published no NodeRestarting for {id}");
-    assert!(restarting.iter().all(|sp| sp["attributes"]["incarnation_id"] == old.as_str()), "{node}: NodeRestarting names the old birth {old}: {restarting:?}");
-    let ready = named(spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == id.as_str() && sp["attributes"]["incarnation_id"] == new.as_str()).cloned().unwrap_or_else(|| panic!("{node}: the new birth {new} left no ready span"));
-    assert!(start_ns(&ready) > start_ns(restarting[0]), "{node}: the new birth became ready after the restart was announced");
+    assert!(restarting.iter().all(|sp| sp["attributes"]["incarnation_id"] == inc.as_str()), "{node}: NodeRestarting names the birth {inc}: {restarting:?}");
+    let ready = named(spans, "rdm.mesh.node.update.via-ready").into_iter().find(|sp| sp["attributes"]["node_id"] == id.as_str() && sp["attributes"]["incarnation_id"] == inc.as_str() && start_ns(sp) > start_ns(restarting[0])).cloned().unwrap_or_else(|| panic!("{node}: the birth {inc} left no ready span after the restart was announced"));
     let deleted: Vec<&Value> = named(spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).collect();
     assert!(deleted.is_empty(), "{node}: a successful restart emits no NodeDeleted for the same logical node: {deleted:?}");
     let received = named(spans, "rdm.mesh.membership.update.via-node-restarting").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str()).count();
@@ -3283,7 +3300,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     let services = check_services(&spans, &mut inv);
     let formation = check_formation_chain(&f, &spans, &mut inv);
     let mut runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
-    runtime.extend(records.iter().map(|r| json!({"phase": "restart", "node": r["node"], "node_id": r["node_id"], "endpoint_id": r["endpoint_id"], "old_incarnation_id": r["old_incarnation_id"], "new_incarnation_id": r["new_incarnation_id"], "runtimes": r["runtimes"], "old_birth_terminal": r["old_birth_terminal"]})));
+    runtime.extend(records.iter().map(|r| json!({"phase": "restart", "node": r["node"], "node_id": r["node_id"], "endpoint_id": r["endpoint_id"], "incarnation_id": r["incarnation_id"], "runtimes": r["runtimes"]})));
     let index = copy_spans(&f.estate, &f.dir);
     let mut actions = std::mem::take(&mut f.actions);
     actions.extend(a.actions.iter().cloned());
@@ -3321,18 +3338,18 @@ async fn restart_run(cell: &str, shape: Shape) {
 /// rectifier under seeded traffic: a broker, a gateway, a compute and a node-admin that is neither
 /// the fabric-primary nor the Day-0 admin (`node.restart`, an attempt of the
 /// accepted Build). Each restarted node is the same logical node (same NodeId, same EndpointId, same
-/// path.name, the value stored in its data dir before the restart still there) in a new exact birth
-/// (new IncarnationId) in a new runtime: the provider (the process table's start token, or the
-/// container daemon) shows the old runtime terminal and the new one running the bound bytes. Routing
-/// recovers onto the new birth: an exact write is served by it, the gateway that held a pooled edge
-/// to the old broker birth holds one to the new birth and none to the old, and a call over that held
-/// connection is answered by the new birth. At every checkpoint exactly one admin accepts a topology
-/// write. Every operation is classified once, none applied twice, none replayed. What must NOT
-/// happen: a new NodeId or EndpointId, a NodeDeleted for a restarted node, a Connected edge to a
-/// superseded birth, a second Build for an unchanged topology, a signal to the fabric-primary.
+/// path.name, the value stored in its data dir before the restart still there) in the same exact birth
+/// (the same IncarnationId) on the same runtime (node-restart.md: the live process stops and rejoins, no
+/// relaunch): the provider (the process table's start token, or the container daemon) shows the runtime it
+/// ran in before still running the bound bytes. Routing comes back on that birth: an exact write is served
+/// by it, the gateways that held a pooled edge to the broker hold one to it again after its stop deleted
+/// their connections, and a call over that held connection is answered by it. At every checkpoint exactly
+/// one admin accepts a topology write. Every operation is classified once, none applied twice, none
+/// replayed. What must NOT happen: a new NodeId, EndpointId or IncarnationId, a new runtime, a NodeDeleted
+/// for a restarted node, a second Build for an unchanged topology, a signal to the fabric-primary.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mock_role_restarts_preserve_identity_and_replace_birth() {
-    restart_run("mock_role_restarts_preserve_identity_and_replace_birth", any_tier()).await;
+async fn mock_role_restarts_preserve_identity_and_birth() {
+    restart_run("mock_role_restarts_preserve_identity_and_birth", any_tier()).await;
 }
 
 // ---- retirement, replacement and the exact-runtime kill ------------------------------------------
@@ -3879,7 +3896,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let kill_ns = now_ns();
     progress(&format!("{victim2} exact runtime killed: {kill}"));
     a.attempts.insert(drift_build.clone(), attempt_before + 1);
-    let drift_fin = a.finish(&mut f, &drift_build, Until::Reborn { node: victim2.clone(), old_incarnation: inc2.clone() }, "during-drift").await;
+    let drift_fin = a.finish(&mut f, &drift_build, Until::Recovered { node: victim2.clone(), old_incarnation: inc2.clone() }, "during-drift").await;
     let st_drift = a.stable(&mut f, "C8 drift: the dead gateway is re-born", &both(2), &mut inv).await;
     let n3 = at(&st_drift, &victim2).clone();
     let rt3 = exact_runtime(&f, &victim2).await;
@@ -4022,9 +4039,10 @@ fn exact_rt_from_record(r: &Value, retired: &Value) -> Rt {
 /// provider) the fabric-primary is asked to restart it. The Build's attempt cannot stop a runtime that
 /// does not answer; what it does is observed from the Build's own projection and the node's view, every
 /// 500 ms, for as long as the hold lasts (10 s plus two staleness windows). Silence is never death: the node
-/// stays listed under its NodeId and no replacement is started. The hold is then released
-/// (acknowledged) and the Build must complete with the node ready under a new incarnation, within the
-/// 60 s a restart is given, as the same logical node.
+/// stays listed under its NodeId and no replacement is started. A restart terminates nothing
+/// (node-restart.md: the live process stops and rejoins, no relaunch), so the held runtime is alive at the
+/// end of the observation. The hold is then released (acknowledged) and the Build must complete with the
+/// node ready again as the same birth on the same runtime, within the 120 s `finish` gives it.
 async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
     let n = at(st, node).clone();
     let (node_id, inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
@@ -4051,7 +4069,7 @@ async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
             assert!(v["lists_path"] == true && v["node_id"] == json!(node_id), "{node}: an admin stopped listing the node under its NodeId while its restart waited on a held runtime: {v}");
         }
         seen.push(json!({"t_ns": now_ns(), "build_state": b["state"], "attempt": b["attempt"], "executor": b["executor"], "reason": b["reason"], "last_failure": b["last_failure"], "node_statuses": views.iter().map(|v| v["status"].clone()).collect::<Vec<_>>()}));
-        if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= a.attempts[&build_id] && views.iter().all(|v| v["node_id"] == json!(node_id)) && a.nodes_now(f).await.iter().any(|x| x["name"] == node && x["incarnation_id"] != inc.as_str() && x["status"] == "ready-for-traffic") {
+        if b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= a.attempts[&build_id] && views.iter().all(|v| v["node_id"] == json!(node_id)) && a.nodes_now(f).await.iter().any(|x| x["name"] == node && x["incarnation_id"] == inc.as_str() && x["status"] == "ready-for-traffic") {
             completed_while_held = true;
             break;
         }
@@ -4063,23 +4081,22 @@ async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
         Rt::Process(r) => json!({"check": format!("{:?}", r.check()), "state": proc_state_of(r.pid)}),
         Rt::Container(c) => json!(container_faults::inspect(&c.id).map(|i| json!({"status": i.status, "running": i.running})).unwrap_or_else(|e| json!({"gone": e}))),
     };
-    let alive_at_end = rt_alive(&rt);
-    let release_ack = if alive_at_end { held.release() } else { held.released = true; json!({"not_needed": "the held runtime was terminated by the provider during the restart", "runtime": runtime_at_end}) };
+    assert!(rt_alive(&rt), "{node}: a restart terminates nothing, and the held runtime is gone at the end of the observation: {runtime_at_end}");
+    let release_ack = held.release();
     let release_ns = now_ns();
-    let fin = a.finish(f, &build_id, Until::Reborn { node: node.into(), old_incarnation: inc.clone() }, "after-hold-release").await;
+    let fin = a.finish(f, &build_id, Until::Restarted { node: node.into(), node_id: node_id.clone(), incarnation: inc.clone() }, "after-hold-release").await;
     let after = f.estate.node_value(node).await;
     assert_eq!(after["node_id"], n["node_id"], "{node}: the restart of a held runtime keeps the logical node");
-    assert_ne!(after["incarnation_id"], n["incarnation_id"], "{node}: the restart ends in a new exact birth");
-    let rt_new = exact_runtime(f, node).await;
-    let runtimes = live_and_distinct(node, &rt, &rt_new);
-    let terminal = terminal_proof(node, &rt);
+    assert_eq!(after["incarnation_id"], n["incarnation_id"], "{node}: the restart of a held runtime keeps the incarnation (node-restart.md)");
+    let rt_after = exact_runtime(f, node).await;
+    let runtimes = live_and_same(node, &rt, &rt_after);
     let rec = json!({
-        "node": node, "node_id": node_id, "old_incarnation_id": inc, "new_incarnation_id": after["incarnation_id"], "build_id": build_id, "attempt_before": attempt_before, "attempt_after": fin["build"]["attempt"],
-        "hold_ack": hold_ack, "hold_ns": hold_ns, "observation_window_ms": window, "observed_until_ns": observed_ns, "observations": seen, "restart_completed_while_held": completed_while_held, "held_runtime_terminated_by_the_provider_during_the_hold": !alive_at_end,
-        "runtime_at_end_of_observation": runtime_at_end, "release_ack": release_ack, "release_ns": release_ns, "wall_after_release_ms": fin["wall_ms"], "runtimes": runtimes, "old_birth_terminal": terminal,
+        "node": node, "node_id": node_id, "incarnation_id": inc, "build_id": build_id, "attempt_before": attempt_before, "attempt_after": fin["build"]["attempt"],
+        "hold_ack": hold_ack, "hold_ns": hold_ns, "observation_window_ms": window, "observed_until_ns": observed_ns, "observations": seen, "restart_completed_while_held": completed_while_held,
+        "runtime_at_end_of_observation": runtime_at_end, "release_ack": release_ack, "release_ns": release_ns, "wall_after_release_ms": fin["wall_ms"], "runtimes": runtimes,
     });
     inv.holds(
-        &format!("{node}: a restart requested while its exact runtime was held (acknowledged) kept the logical node listed under its NodeId in every admin's view; it completed {} and ended in a new exact birth of the same NodeId in a new runtime, the held one terminal", if completed_while_held { "while the hold was in force (the provider terminated the held runtime)" } else { "after the release" }),
+        &format!("{node}: a restart requested while its exact runtime was held (acknowledged) kept the logical node listed under its NodeId in every admin's view; it terminated nothing, completed {} and ended in the same exact birth of the same NodeId on the same runtime", if completed_while_held { "while the hold was in force" } else { "after the release" }),
         true,
         json!({"node_id": node_id, "restart_completed_while_held": completed_while_held, "wall_after_release_ms": fin["wall_ms"]}),
     );
