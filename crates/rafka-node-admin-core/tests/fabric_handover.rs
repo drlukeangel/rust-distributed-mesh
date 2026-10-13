@@ -1648,7 +1648,7 @@ fn a_committed_fabric_seat_transfer_drops_the_rows_its_holder_held_as_acting_pri
             fabric: std::sync::Arc::new(FileFabricStorage::open(&root, &inc).await.unwrap()),
             status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
         };
-        let row = NodeRow { name: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None };
+        let row = NodeRow { name: "mesh2.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         let dead = MeshStatusRow { mesh_id: MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::Dead };
         stores.nodes.put_node_row(&row).await.unwrap().expect("mesh2.rpc.1 is a free key");
         stores.status.put_mesh_status_of("mesh2", &dead).await.unwrap();

@@ -117,17 +117,21 @@ impl NodeConfigs {
             Some(_) => {}
         }
         let _one = self.one_at_a_time.lock().await;
-        // The row carries the node's tags as this writer knows them, and the key a rename moved it from
-        // while it stands at the same key (its pending release stays the row's): a config put changes
-        // the config.
-        let (tags, renamed_from) = match self.written.known_row(storage, &subject.mesh, node_id).await {
+        // The row carries the node's tags as this writer knows them, and, while it stands at the same
+        // key, the key a rename moved it from (its pending release stays the row's) and the successor
+        // that inherited it (its labels stay out of the tags index): a config put changes the config.
+        let (tags, renamed_from, inherited_by) = match self.written.known_row(storage, &subject.mesh, node_id).await {
             Ok(row) => {
                 // A writer that meets the row finishes the release a rename left pending (proposal
                 // node-properties-own-commands.md §2.1); one that fails again stays pending, named on its span.
                 if let Some(r) = &row {
                     let _ = crate::node_rows::finish_release(storage, me, r, "config-put").await;
                 }
-                row.map(|r| (r.tags, r.renamed_from.filter(|_| r.name == subject.name))).unwrap_or_default()
+                row.map(|r| {
+                    let here = r.name == subject.name;
+                    (r.tags, r.renamed_from.filter(|_| here), r.inherited_by.filter(|_| here))
+                })
+                .unwrap_or_default()
             }
             Err(why) => {
                 let detail = format!("{me}: {why}: the row of {} is not written without the tags it carries", subject.name);
@@ -136,7 +140,7 @@ impl NodeConfigs {
             }
         };
         span.record("tags", crate::node_rows::labels(&tags).as_str());
-        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None, renamed_from };
+        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None, renamed_from, inherited_by };
         let refused = match storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);

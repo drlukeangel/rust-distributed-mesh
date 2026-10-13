@@ -83,7 +83,7 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
         // While it is stopped the mesh-primary renames its row: the node is sent nothing. Its
         // authority holds the birth under the row's name, with the name it last accepted.
         let config: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
-        admin.put_row(NodeRow { name: old.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, config: config.clone(), tags: Default::default(), allocated: None, renamed_from: None });
+        admin.put_row(NodeRow { name: old.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, config: config.clone(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None });
         admin.deployed_as(&launch, &key, old.clone(), Some(born.clone()));
 
         let started = call(&admin, &target, &start).await;
@@ -162,7 +162,7 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
         let seq_at_stop = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;
 
         // The authority holds the birth under its row's name, and its held stopped digest names it too.
-        admin.put_row(NodeRow { name: taken.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None });
+        admin.put_row(NodeRow { name: taken.clone(), node_id: node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None });
         admin.deployed_as(&launch, &key, taken.clone(), Some(taken.clone()));
 
         assert_eq!(call(&admin, &target, &start).await, StatusReply::Started, "the start presents the name the node holds");

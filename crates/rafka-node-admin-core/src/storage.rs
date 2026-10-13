@@ -298,6 +298,16 @@ pub struct NodeRow {
     /// so it is never cleared. A row no rename wrote carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub renamed_from: Option<PathName>,
+    /// The successor that took this row's config and tags at a replace's cutover (node-replace.md
+    /// step 4; proposal node-properties-own-commands.md §8, replace: the successor "inherits config
+    /// and tags from the retained predecessor row at the cutover rename ... and the predecessor's index
+    /// entries gone"), written on the retained predecessor's row once the successor's row stands at the
+    /// name. The row keeps its tags, as a `Deleted` row does, and the tags index holds none of them:
+    /// every label leaves with that write and none arrives with a later write at the same key. A
+    /// rename of the row writes none: the node takes a name again (node-replace.md "Rollback" step 2).
+    /// A row no cutover marked carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_by: Option<NodeId>,
 }
 
 /// The identity a create's `AllocateIdentity` decided for the birth its claim names (beside the
@@ -319,15 +329,16 @@ pub struct Allocation {
 impl NodeRow {
     /// The labels the tags index holds for this row's node once the row is written over `previous`,
     /// the row it replaces at its key, split into (leaving, arriving): a label the node's previous
-    /// row carried and this one does not, or every label of a `Deleted` row, leaves; every label of
-    /// a live row arrives. A previous row of another node (a `Deleted` row a new node takes over)
-    /// changes nothing: its labels left when it turned `Deleted`.
+    /// row carried and this one does not, or every label of a `Deleted` row or of a row a successor
+    /// inherited ([`Self::inherited_by`]), leaves; every label of any other live row arrives. A
+    /// previous row of another node (a `Deleted` row a new node takes over) changes nothing: its labels
+    /// left when it turned `Deleted`.
     fn tag_moves(&self, previous: Option<&NodeRow>) -> (BTreeSet<String>, BTreeSet<String>) {
         let held: BTreeSet<String> = previous.filter(|p| p.node_id == self.node_id).map(|p| p.tags.clone()).unwrap_or_default();
-        match self.status {
-            crate::model::NodeStatus::Deleted => (held.union(&self.tags).cloned().collect(), BTreeSet::new()),
-            _ => (held.difference(&self.tags).cloned().collect(), self.tags.clone()),
+        if self.status == crate::model::NodeStatus::Deleted || self.inherited_by.is_some() {
+            return (held.union(&self.tags).cloned().collect(), BTreeSet::new());
         }
+        (held.difference(&self.tags).cloned().collect(), self.tags.clone())
     }
 }
 
@@ -1184,7 +1195,7 @@ mod tests {
     }
 
     fn row(name: &str) -> NodeRow {
-        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None }
+        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }
     }
 
     /// CONTRACT (CLAUDE.md read rule: a lookup by id that cannot read the store's own key reads the
@@ -1377,6 +1388,34 @@ mod tests {
         assert!(files("mesh1", "green").is_empty(), "nothing of the cut-off label is written");
     }
 
+    /// CONTRACT (proposal node-properties-own-commands.md §8, replace: the successor inherits the
+    /// retained predecessor row's tags at the cutover, "and the predecessor's index entries gone"):
+    /// between the cutover's put of the successor at the name and its mark, both nodes carry the label;
+    /// the retained row put again with `inherited_by` keeps its tags and the tags index names none of
+    /// them for it; a later put at the same key carrying the field (a tags or config write) indexes
+    /// none again, an added label included, while the successor stays named.
+    #[tokio::test]
+    async fn a_row_a_successor_inherited_keeps_its_tags_and_holds_none_in_the_tags_index() {
+        let d = crate::record_store::tempdir("tags-inherited");
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
+        let n1 = FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
+        root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
+        let tags = |l: &[&str]| l.iter().map(|t| t.to_string()).collect::<BTreeSet<String>>();
+        let (pred, succ) = (NodeId::mint(), NodeId::mint());
+        let old = NodeRow { node_id: pred.clone(), tags: tags(&["rabbit"]), ..row("mesh1.rpc.1.old") };
+        n1.put_node_row(&old).await.unwrap().unwrap();
+        n1.put_node_row(&NodeRow { node_id: succ.clone(), tags: tags(&["rabbit"]), ..row("mesh1.rpc.1") }).await.unwrap().unwrap();
+        assert_eq!(n1.tagged("rabbit").await.unwrap(), [pred.clone(), succ.clone()].into(), "between the cutover's put and its mark both carry the label");
+        let marked = NodeRow { inherited_by: Some(succ.clone()), ..old.clone() };
+        n1.put_node_row(&marked).await.unwrap().unwrap();
+        assert_eq!(n1.tagged("rabbit").await.unwrap(), [succ.clone()].into(), "the retained row's label left the index");
+        assert_eq!(n1.node_row_at(&old.name).await.unwrap(), Some(marked.clone()), "the retained row keeps its tags and names who inherited it");
+        n1.put_node_row(&NodeRow { tags: tags(&["rabbit", "red"]), ..marked.clone() }).await.unwrap().unwrap();
+        assert_eq!((n1.tagged("rabbit").await.unwrap(), n1.tagged("red").await.unwrap()), ([succ.clone()].into(), BTreeSet::new()), "a later write of the inherited row indexes none of its labels");
+    }
+
     /// CONTRACT (R14 items 1 and 9; acceptance "an ordinary node's connections rows land under
     /// `connections/<node>/` in the shared root and the successor mesh-primary reads them there";
     /// states.md, Rounds): before the fabric's first state-commit a node holds its connections rows
@@ -1482,7 +1521,7 @@ mod tests {
     /// thread keeps running meanwhile, and the read answers the row.
     #[test]
     fn a_node_row_read_waits_on_the_disk_off_the_runtime_thread() {
-        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None };
+        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         let name = row.name.clone();
         let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
         assert!(ran, "the runtime thread ran while the row read waited on the disk");
@@ -1530,7 +1569,7 @@ mod tests {
     async fn a_second_nodes_row_at_a_held_name_is_refused_by_the_adapter_and_nothing_is_written() {
         let d = crate::record_store::tempdir("storage-claim");
         let name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None, renamed_from: None };
+        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         let check = async |n: &dyn NodesStorage, store: &str| {
             let (first, second) = (NodeId::mint(), NodeId::mint());
             let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");

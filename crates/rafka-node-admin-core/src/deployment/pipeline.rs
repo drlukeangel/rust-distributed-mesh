@@ -244,16 +244,27 @@ impl RetireStep {
     }
 }
 
-/// The steps a replacement adds to the create and retire steps it composes
+/// The steps a replacement adds to the create, stop and start steps it composes
 /// ([`DeploymentPipeline::replace`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplaceStep {
-    /// The predecessor gives up its `path.name` (`<path>.old`) before the successor is created, so
-    /// two nodes never hold one `path.name`.
+    /// The stopped predecessor gives up its `path.name` (`<path>.old`, node-replace.md step 3), so
+    /// two nodes never hold one `path.name`; an exited one, on its exit proof.
     RenamePredecessor,
     /// A replace of an exited predecessor: its storage goes into the successor's empty directory,
     /// before the successor's process exists.
     HandoffStorage,
+    /// node[2].stop (node-replace.md step 4): `stop-node` to the successor born at `<path>.new`.
+    StopSuccessor,
+    /// The successor's stop reply, its left reply.
+    AwaitSuccessorLeft,
+    /// node[2].update(name=`<path>`), the cutover: the stopped successor takes the path.name with
+    /// the config and tags of the predecessor's retained row.
+    RenameSuccessor,
+    /// node[2].start under `<path>`: `start-node` to the stopped successor.
+    StartSuccessor,
+    /// The successor reports Ready under `<path>`.
+    WaitForSuccessorReady,
 }
 
 impl ReplaceStep {
@@ -262,6 +273,11 @@ impl ReplaceStep {
         match self {
             Self::RenamePredecessor => "RenamePredecessor",
             Self::HandoffStorage => "HandoffStorage",
+            Self::StopSuccessor => "StopSuccessor",
+            Self::AwaitSuccessorLeft => "AwaitSuccessorLeft",
+            Self::RenameSuccessor => "RenameSuccessor",
+            Self::StartSuccessor => "StartSuccessor",
+            Self::WaitForSuccessorReady => "WaitForSuccessorReady",
         }
     }
 }
@@ -479,7 +495,9 @@ pub trait NodeObserver: Send + Sync {
     /// a step"): decided in-process by the validator a caller's `UpdateName` meets (exact birth,
     /// writer, the node admits no connection, the name), then the claim and the row's move. Answers
     /// the command's reply.
-    async fn update_name(&self, node: &Node, to: &PathName) -> rafka_node_rpc_contract::status::StatusReply {
+    /// `cutover`: a replace's cutover names the predecessor's retained row the successor inherits from
+    /// (node-replace.md step 4).
+    async fn update_name(&self, node: &Node, to: &PathName, _cutover: Option<&crate::node_name_update::Cutover>) -> rafka_node_rpc_contract::status::StatusReply {
         rafka_node_rpc_contract::status::StatusReply::NotReady { reason: format!("this observer holds no name door: {} is not renamed {to}", node.name) }
     }
 }
@@ -1855,6 +1873,12 @@ impl DeploymentPipeline<'_> {
     /// verified against it), `start-node` goes to the parked birth and its reply is `Started`, then
     /// the wait for the birth to report ready.
     async fn start_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, deployed: &Deployed) -> Result<(), PipelineError> {
+        self.start_steps_as(run, node, handle, deployed, [StartStep::StartNode.name(), CreateStep::WaitForNodeReady.name()]).await
+    }
+
+    /// [`Self::start_steps`] whose two steps are receipted as `steps` (the send, the readiness): a
+    /// replace's successor starts in the operation that created it, and its start's receipts are its own.
+    async fn start_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, deployed: &Deployed, steps: [&'static str; 2]) -> Result<(), PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Start, node);
         // Held while this start runs, however it ends; a deployment that never heard its birth is remembered abandoned.
@@ -1880,7 +1904,7 @@ impl DeploymentPipeline<'_> {
             event_at_rafka_ms: 0,
         });
         let admission: CommandAdmission = self
-            .step(run, StartStep::StartNode.name(), async {
+            .step(run, steps[0], async {
                 node.status = NodeStatus::Pending;
                 self.sink.publish(node.clone());
                 // node.joined is taken when the birth's join is admitted, before the birth can report
@@ -1929,7 +1953,7 @@ impl DeploymentPipeline<'_> {
         let _ = admission;
         let until = Instant::now() + self.timeouts.ready;
         let _: () = self
-            .step(run, CreateStep::WaitForNodeReady.name(), async {
+            .step(run, steps[1], async {
                 loop {
                     match self.observer.ready(node).await {
                         Ok(()) => return Ok(()),
@@ -2141,6 +2165,12 @@ impl DeploymentPipeline<'_> {
     /// birth's `stopped` reply received).
     /// `end` says what follows: the process parks, or the provider ends it.
     async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
+        self.stop_steps_as(run, node, handle, proof, end, [RetireStep::StopNode.name(), RetireStep::AwaitNodeLeft.name()]).await
+    }
+
+    /// [`Self::stop_steps_with`] whose two steps are receipted as `steps` (the send, the left reply):
+    /// a replace stops two nodes in one operation, and each stop's receipts are its own.
+    async fn stop_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd, steps: [&'static str; 2]) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         node.status = NodeStatus::Leaving;
@@ -2148,7 +2178,7 @@ impl DeploymentPipeline<'_> {
         // `stop-node` is held until the birth is parked, and its reply is `stopped`: the birth drained,
         // cut its mesh connections and entered Leaving. The command is `Stopped` or it is not complete.
         let admission: CommandAdmission = self
-            .step(run, RetireStep::StopNode.name(), async {
+            .step(run, steps[0], async {
                 self.sink.publish(node.clone());
                 let op = self.command_op(&ctx, node)?;
                 self.lifecycle.leaving(&op).await;
@@ -2156,7 +2186,7 @@ impl DeploymentPipeline<'_> {
             })
             .await?;
         let _: Completion = self
-            .step(run, RetireStep::AwaitNodeLeft.name(), async {
+            .step(run, steps[1], async {
                 if !admission.admitted() {
                     // A command the birth never held has no left reply to follow (node-stop.md): a
                     // standalone stop and a replace's predecessor stop are not complete.
@@ -2277,33 +2307,37 @@ impl DeploymentPipeline<'_> {
 
     /// Replace `req.predecessor` with a new node at its path, as ONE operation `replace-node:<path>`.
     ///
-    /// A live predecessor follows Rafka's replace recipe (node-replace.md 1-3):
+    /// A live predecessor follows Rafka's replace recipe (node-replace.md 1-4):
     ///
     /// ```text
-    /// DrainNode -> AwaitNodeDrained -> StopNode -> AwaitNodeLeft (NodeStopped)   (node[1].stop: parked)
-    ///   -> RenamePredecessor                                                    (node[1].update: <path>.old)
-    ///   -> AllocateIdentity -> PrepareStorage -> PrepareNetwork -> DeployRuntime -> ...
-    ///   -> WaitForBind -> ... -> WaitForMeshJoin -> WaitForNodeReady -> Complete (node.create)
+    /// AllocateIdentity -> ... -> WaitForMeshJoin -> WaitForNodeReady    (node.create(<path>.new): Ready, no traffic)
+    ///   -> StopNode -> AwaitNodeLeft (NodeStopped)                       (node[1].stop)
+    ///   -> RenamePredecessor                                             (node[1] node.name.update: <path>.old)
+    ///   -> StopSuccessor -> AwaitSuccessorLeft (NodeStopped)             (node[2].stop)
+    ///   -> RenameSuccessor                                               (node[2] node.name.update: <path>, the cutover)
+    ///   -> StartSuccessor -> WaitForSuccessorReady -> Complete           (node[2].start under <path>)
     /// ```
     ///
-    /// The predecessor stays parked at `<path>.old`, its process, incarnation and data kept: the data
-    /// transfer is Rafka's own step after the create ("Rafka transfers its data as its own recipe
-    /// step. RDM interprets no application data."), and the predecessor's delete, or its rollback
-    /// (rename back, start), is a later step of the recipe. A replace publishes no NodeDeleting or
-    /// NodeDeleted ("delete retains the existing NodeDeleting/NodeDeleted gossip names. There is no new
-    /// replace gossip frame.").
+    /// Both renames are node.name.update at this admin, the writer of the mesh's rows, through the
+    /// validator a caller's `UpdateName` meets; the cutover's row inherits the config and tags of the
+    /// predecessor's retained row, whose labels then leave the tags index (proposal
+    /// node-properties-own-commands.md §8, replace). The predecessor stays stopped at `<path>.old`,
+    /// its process, incarnation and data kept: the data transfer is Rafka's own step ("Rafka transfers
+    /// its data as its own recipe step. RDM interprets no application data."), and the predecessor's
+    /// delete, or the rollback, is a later step of the recipe. A replace publishes no NodeDeleting or
+    /// NodeDeleted.
     ///
     /// A predecessor the provider already proves terminal is sent nothing (node-recovery.md: no RPC
     /// can be required from the proven-terminal old birth), and the replace deletes the exited
     /// instance before it creates: NodeDeleting -> TerminateRuntime -> RenamePredecessor -> NodeDeleted (its
     /// Deleted row at `<path>.old`) -> AllocateIdentity -> PrepareStorage -> PrepareNetwork ->
     /// HandoffStorage -> DeployRuntime -> ... -> WaitForNodeReady -> Complete. It was never stopped, so
-    /// it is renamed only on the provider's exact terminal proof (node-update.md, "Rename
-    /// precondition"), and the old identity's delete releases no storage (node-delete.md "Storage"):
-    /// its directory keeps what HandoffStorage did not move, its identity files and endpoint key.
+    /// it is renamed on the provider's exact terminal proof, and the old identity's delete releases no
+    /// storage (node-delete.md "Storage"): its directory keeps what HandoffStorage did not move, its
+    /// identity files and endpoint key.
     ///
-    /// `before_ready` is the successor's `ApplyMeshPending` work (a mesh's first admin); `after_ready`
-    /// commits the successor's lifecycle transition once it is ready.
+    /// `before_ready` is the exited predecessor's successor's `ApplyMeshPending` work (a mesh's first
+    /// admin); `after_ready` commits the successor's lifecycle transition once it is ready under the path.
     pub async fn replace<F, Fut>(&self, req: &ReplaceRequest, before_ready: Option<BeforeReady>, after_ready: F) -> Result<Created, PipelineError>
     where
         F: FnOnce(Node) -> Fut,
@@ -2339,78 +2373,142 @@ impl DeploymentPipeline<'_> {
         // delete (its NodeDeleting receipt) continues as the replace of an exited predecessor.
         let exited = run.done.contains_key(RetireStep::NodeDeleting.name()) || matches!(self.provider.inspect(&req.handle).await, DeploymentStatus::Exited { .. });
         if exited {
-            // The receipt first, then the publish: the Build facts carry the overlay from the moment
-            // it is announced, so a successor executor derives it from the same facts.
-            let op = self.step(&mut run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
-            self.lifecycle.deleting(&op).await;
-            // The provider's exact terminal proof, before the predecessor gives up its name: it was
-            // never stopped, so it is renamed only on that proof (node-update.md, "Rename precondition").
-            self.terminate_step(&mut run, &old, &req.handle).await?;
-        } else {
-            // The recipe's first step (node-replace.md 1): the complete stop leaves the predecessor
-            // parked, and the stop's departure (`NodeStopped`) drops it from every book, before it
-            // gives up its name and before anything of the successor exists.
-            // The complete stop (node-stop.md): stop-node admitted and `stopped` received, or the
-            // step fails by name; a predecessor that is not stopped keeps its path.name, and a birth
-            // that does not answer goes to node recovery (node-recovery.md).
-            self.stop_steps_with(&mut run, &mut old, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
+            return self.replace_exited(&mut run, req, &old, &birth, op, before_ready, after_ready).await;
         }
-        // node-replace.md 3: the predecessor gives up its name, renamed `<path>.old`: a stopped one as
-        // node.name.update (node-name-update.md), decided by this admin's own validator, the writer of
-        // the mesh's rows; an exited one, never stopped, on the provider's exact terminal proof above.
-        // The receipt names the exact old birth.
-        let proof = if exited { "exited" } else { "stopped" };
+        // node-replace.md 1: node.create of the successor at `<name>.new`, a new node.id, incarnation,
+        // runtime and directory, through its full FirstStart to Ready. Nothing routes to `<name>.new`
+        // and it is not brought into traffic: it carries none.
+        let new = name.successor();
+        let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: new.clone(), spec: req.spec, data_dir: None, held_runtimes: req.held_runtimes.clone() };
+        let Created { node: mut succ, handle } = self.create_to_ready(&mut run, &creq, None, None, None).await?;
+        // node-replace.md 2: the complete stop leaves the predecessor stopped with its incarnation and
+        // data (node-stop.md: stop-node admitted and `stopped` received, or the step fails by name), and
+        // the stop's departure (`NodeStopped`) drops it from every book. A birth that does not answer
+        // goes to node recovery (node-recovery.md).
+        self.stop_steps_with(&mut run, &mut old, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
+        // node-replace.md 3: node[1].update(name=`<name>.old`), node.name.update of the stopped
+        // predecessor at this admin, the writer of its mesh's rows: completes on the row, the node
+        // sent nothing. The receipt names the exact old birth.
         let to = name.renamed();
         self.step(&mut run, ReplaceStep::RenamePredecessor.name(), async {
-            tracing::info_span!(
-                "rdm.node_admin.node.update.via-replace-rename",
-                build_id = %req.build_id,
-                attempt = req.attempt,
-                node = %name,
-                node_id = %old.node_id,
-                incarnation_id = %birth.as_str(),
-                from = %name,
-                to = %to,
-                proof,
-            )
-            .in_scope(|| tracing::info!("the predecessor gives up its path.name: the successor is created at it"));
-            if exited {
-                // The exited predecessor's row, moved by the writer of the mesh's rows on its exit proof.
-                if let Some(rows) = self.sink.node_rows() {
-                    rows.moved_to_old(&old, &op.operation).await.map_err(|e| format!("{name}: the predecessor {} keeps its path.name: {e}", old.node_id))?;
-                }
-            } else {
-                // node[1].update(name=`<name>.old`): completes on the row, the stopped node sent nothing.
-                match self.observer.update_name(&old, &to).await {
-                    rafka_node_rpc_contract::status::StatusReply::NameUpdated { .. } => {}
-                    refused => return Err(format!("{name}: node.name.update of the stopped predecessor {} to {to} answered {refused:?}; it keeps its path.name", old.node_id)),
-                }
-            }
+            self.rename_span(req, &old, &birth, name, &to, "stopped");
+            self.renamed(&old, &to, None).await?;
             self.sink.rename_predecessor(name, &old.node_id, &birth);
             Ok(op.clone())
         })
         .await?;
-        if exited {
-            // The exited predecessor's delete, then the create: after
-            // the provider's exact terminal proof and the rename, the old identity's departure and its
-            // Deleted row at `<path>.old`, before anything of the successor exists. The row is written
-            // while this executor is the writer of the mesh's rows: a mesh's only admin, replaced by
-            // the fabric-primary as the acting primary of a mesh with no primary, hands the mesh's
-            // seat to its successor at the successor's readiness, and from then on that successor
-            // writes the mesh's rows (R13). The delete keeps the predecessor's storage (node-delete.md
-            // "Storage"); the successor's create takes over only what HandoffStorage moves.
-            let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
-            let parked = Node { name: name.renamed(), ..old.clone() };
-            let op = self.step(&mut run, RetireStep::NodeDeleted.name(), self.deleted_row(&parked, op)).await?;
-            self.lifecycle.deleted(&op).await;
+        // node-replace.md 4: node[2].stop, the complete stop of the successor, which carries no
+        // traffic; then node[2].update(name=`<name>`), the cutover: its row is put at `<name>` with the
+        // config and tags of the predecessor's retained `<name>.old` row, `<name>.new` released, and the
+        // retained row's labels taken out of the tags index; then node[2].start under `<name>`, its
+        // join answer handing it the row's name (R-JN1) and config.
+        let succ_birth = succ.incarnation_id.clone().ok_or_else(|| PipelineError { step: ReplaceStep::StopSuccessor.name(), reason: format!("{new} has no known birth") })?;
+        self.stop_steps_as(&mut run, &mut succ, &handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }, [ReplaceStep::StopSuccessor.name(), ReplaceStep::AwaitSuccessorLeft.name()]).await?;
+        let cutover = crate::node_name_update::Cutover { retained: to.clone(), retained_id: old.node_id.clone() };
+        let succ_op = LifecycleOp { node_id: succ.node_id.clone(), incarnation: succ_birth.clone(), name: new.clone(), event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
+        self.step(&mut run, ReplaceStep::RenameSuccessor.name(), async {
+            self.renamed(&succ, name, Some(&cutover)).await?;
+            self.sink.rename_predecessor(&new, &succ.node_id, &succ_birth);
+            Ok(succ_op.clone())
+        })
+        .await?;
+        succ.name = name.clone();
+        let deployed = Deployed {
+            name: name.clone(),
+            node_id: succ.node_id.clone(),
+            incarnation: succ_birth.clone(),
+            supersedes: None,
+            endpoint_id: succ.endpoint_id.clone().ok_or_else(|| PipelineError { step: ReplaceStep::StartSuccessor.name(), reason: format!("{new}: the successor has no known endpoint id") })?,
+            runtime: handle.fact().ok_or_else(|| PipelineError { step: ReplaceStep::StartSuccessor.name(), reason: format!("{new}: the handle names no exact runtime to verify its rejoin against") })?,
+            data_dir: succ.data_dir.clone().ok_or_else(|| PipelineError { step: ReplaceStep::StartSuccessor.name(), reason: format!("{new}: the successor has no known data dir") })?,
+            // The name it was stopped under: its join presents it, and is reconciled to the row's (R-JN1).
+            last_accepted_name: Some(new.clone()),
+            held: true,
+        };
+        self.start_steps_as(&mut run, &mut succ, &handle, &deployed, [ReplaceStep::StartSuccessor.name(), ReplaceStep::WaitForSuccessorReady.name()]).await?;
+        // The cutover is its ready-for-traffic: `<name>` resolves to the successor.
+        after_ready(succ.clone()).await.map_err(|reason| PipelineError { step: ReplaceStep::WaitForSuccessorReady.name(), reason })?;
+        self.step(&mut run, CreateStep::Complete.name(), async {
+            self.sink.publish(succ.clone());
+            Ok(())
+        })
+        .await?;
+        Ok(Created { node: succ, handle })
+    }
+
+    /// The rename step's span: the node gives up `from` for `to`, on its stop or its exit proof.
+    fn rename_span(&self, req: &ReplaceRequest, node: &Node, birth: &IncarnationId, from: &PathName, to: &PathName, proof: &'static str) {
+        tracing::info_span!(
+            "rdm.node_admin.node.update.via-replace-rename",
+            build_id = %req.build_id,
+            attempt = req.attempt,
+            node = %from,
+            node_id = %node.node_id,
+            incarnation_id = %birth.as_str(),
+            from = %from,
+            to = %to,
+            proof,
+        )
+        .in_scope(|| tracing::info!("the node gives up its path.name in the replace recipe"));
+    }
+
+    /// node.name.update of the stopped `node` to `to` at this admin (node-name-update.md), the
+    /// cutover's retained row named for the successor's: complete on its `NameUpdated`, which a stopped
+    /// node's rename answers once its row has moved, or the step fails naming the reply.
+    async fn renamed(&self, node: &Node, to: &PathName, cutover: Option<&crate::node_name_update::Cutover>) -> Result<(), String> {
+        match self.observer.update_name(node, to, cutover).await {
+            rafka_node_rpc_contract::status::StatusReply::NameUpdated { .. } => Ok(()),
+            refused => Err(format!("{}: node.name.update of the stopped {} to {to} answered {refused:?}; it keeps its path.name", node.name, node.node_id)),
         }
-        // node-replace.md 3: node.create at the freed name, a new node.id, incarnation and directory.
+    }
+
+    /// The replace of an exited predecessor (node-recovery.md: no RPC can be required from the
+    /// proven-terminal old birth): NodeDeleting -> TerminateRuntime -> RenamePredecessor (its row moved
+    /// to `<path>.old` on the exit proof) -> NodeDeleted -> the successor's create at the path, its
+    /// HandoffStorage before its runtime -> Complete.
+    #[allow(clippy::too_many_arguments)]
+    async fn replace_exited<F, Fut>(&self, run: &mut Run<'_>, req: &ReplaceRequest, old: &Node, birth: &IncarnationId, op: LifecycleOp, before_ready: Option<BeforeReady>, after_ready: F) -> Result<Created, PipelineError>
+    where
+        F: FnOnce(Node) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        let name = &req.predecessor.name;
+        // The receipt first, then the publish: the Build facts carry the overlay from the moment
+        // it is announced, so a successor executor derives it from the same facts.
+        let op = self.step(run, RetireStep::NodeDeleting.name(), async { Ok(op.clone()) }).await?;
+        self.lifecycle.deleting(&op).await;
+        // The provider's exact terminal proof, before the predecessor gives up its name: it was
+        // never stopped, so it is renamed only on that proof.
+        self.terminate_step(run, old, &req.handle).await?;
+        let to = name.renamed();
+        self.step(run, ReplaceStep::RenamePredecessor.name(), async {
+            self.rename_span(req, old, birth, name, &to, "exited");
+            // The exited predecessor's row, moved by the writer of the mesh's rows on its exit proof.
+            if let Some(rows) = self.sink.node_rows() {
+                rows.moved_to_old(old, &op.operation).await.map_err(|e| format!("{name}: the predecessor {} keeps its path.name: {e}", old.node_id))?;
+            }
+            self.sink.rename_predecessor(name, &old.node_id, birth);
+            Ok(op.clone())
+        })
+        .await?;
+        // The exited predecessor's delete, then the create: after the provider's exact terminal proof
+        // and the rename, the old identity's departure and its Deleted row at `<path>.old`, before
+        // anything of the successor exists. The row is written while this executor is the writer of
+        // the mesh's rows: a mesh's only admin, replaced by the fabric-primary as the acting primary of
+        // a mesh with no primary, hands the mesh's seat to its successor at the successor's readiness,
+        // and from then on that successor writes the mesh's rows (R13). The delete keeps the
+        // predecessor's storage (node-delete.md "Storage"); the successor's create takes over only
+        // what HandoffStorage moves.
+        let op = LifecycleOp { event_at_rafka_ms: self.lifecycle.now_rafka_ms(), ..op.clone() };
+        let at_old = Node { name: name.renamed(), ..old.clone() };
+        let op = self.step(run, RetireStep::NodeDeleted.name(), self.deleted_row(&at_old, op)).await?;
+        self.lifecycle.deleted(&op).await;
         let creq = CreateRequest { build_id: req.build_id.clone(), attempt: req.attempt, node: name.clone(), spec: req.spec, data_dir: None, held_runtimes: req.held_runtimes.clone() };
-        let exited_predecessor = ExitedPredecessor { build_id: &req.build_id, predecessor: &old };
-        let mut created = self.create_to_ready(&mut run, &creq, before_ready, exited.then_some(&exited_predecessor), None).await?;
+        let exited_predecessor = ExitedPredecessor { build_id: &req.build_id, predecessor: old };
+        let mut created = self.create_to_ready(run, &creq, before_ready, Some(&exited_predecessor), None).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         after_ready(created.node.clone()).await.map_err(|reason| PipelineError { step: CreateStep::WaitForNodeReady.name(), reason })?;
-        self.step(&mut run, CreateStep::Complete.name(), async {
+        self.step(run, CreateStep::Complete.name(), async {
             self.sink.publish(created.node.clone());
             Ok(())
         })
