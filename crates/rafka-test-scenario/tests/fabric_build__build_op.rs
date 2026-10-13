@@ -321,13 +321,10 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
 
     let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
-    let mut frames = Vec::new();
-    // The executor, mesh2's primary, is lost once the restart is under way: its first step frame.
-    while !frames.contains(&Frame::Event(NodeEvent::Restarting)) {
-        frames.push(stream.next().await.expect("the stream goes on").expect("the stream does not break"));
-    }
+    // RED: the restart is allowed to complete before the kill lands, as in the gate's run (s82-D): no
+    // executor is lost, so no departure is proven.
+    let frames = frames_of(&mut stream).await;
     estate.kill_node("mesh2.admin.1").await;
-    frames.extend(frames_of(&mut stream).await);
     assert_eq!(frames.last(), Some(&Frame::Complete), "the caller's stream carries the successor's frames to the end: {frames:?}");
     let seen = events(&frames);
     let mut once = seen.clone();
