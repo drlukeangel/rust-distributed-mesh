@@ -1477,3 +1477,128 @@ async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dis
         other => panic!("the caller reads the blocker naming the update, got {other:?}"),
     }
 }
+
+/// The view before the holder's row: the fabric-primary `mesh1.admin.1` holds both seats, and
+/// `mesh1.admin.2` is the ready admin of its mesh that the update names its successor.
+fn view_holder_of_both() -> Topology {
+    let mut t = view();
+    t.nodes = vec![node("mesh1.admin.1", true, true), node("mesh1.admin.2", false, false), node("mesh1.rpc.1", false, false)];
+    t
+}
+
+/// The holder's own node.primary.update, run from its drive (`SeatGate::move_seats` for its own
+/// seats): at the row the shared view names the successor the holder of both seats and the holder's
+/// Build log decides nothing more, naming it (`row` resolves: the successor installs and its drive may begin);
+/// then the update waits at steps 6-7 until the cell lets it go, and says "primary updated" (step 7).
+struct HolderUpdate {
+    inner: Arc<Switch>,
+    topology: Arc<RwLock<Topology>>,
+    row: Arc<tokio::sync::Notify>,
+    let_go: Arc<tokio::sync::Semaphore>,
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl Gate for HolderUpdate {
+    fn authorizes(&self) -> bool {
+        self.inner.authorizes()
+    }
+    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+        self.inner.fence().await
+    }
+    async fn fence_set(&self) {
+        self.inner.fence_set().await
+    }
+    async fn move_seats(&self, _: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, attempt: u32, _: &str) -> Result<(), String> {
+        for n in self.topology.write().await.nodes.iter_mut() {
+            let successor = n.name.to_string() == "mesh1.admin.2";
+            (n.is_primary, n.is_fabric_primary) = (successor, successor);
+        }
+        self.inner.fence_to(Some("mesh1.admin.2"));
+        self.events.lock().unwrap().push(format!("row attempt {attempt}"));
+        self.row.notify_one();
+        let _ = self.let_go.acquire().await.expect("the cell keeps the semaphore open");
+        self.events.lock().unwrap().push("primary updated".into());
+        Ok(())
+    }
+}
+
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 7:
+/// "The writer publishes 'primary updated' with the same identifiers"; step 8: "Only then does the
+/// commanding Build continue"; build proposal Part A, build.md:365: "The next attempt is claimed after
+/// the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is
+/// lost with the attempt unfinished, after exact departure proof. A live run is reattached, never
+/// re-claimed"): the fabric-primary `mesh1.admin.1` holds both seats and its Build retires it, so its
+/// drive moves both seats itself first. At its row the successor `mesh1.admin.2` holds the seats and
+/// its own drive of the same Build begins, while the holder is still at steps 6-7. The update is a
+/// step of the holder's attempt: the successor's drive reattaches to that attempt, claims nothing and
+/// dispatches nothing until it ends, and only after the holder said "primary updated" does the attempt
+/// end `HandedOff` to the successor, which then claims the next attempt and runs the retire.
+/// Must NOT happen: the successor claiming an attempt, dispatching, or the retire running while the
+/// holder (alive) has not reached step 7.
+#[tokio::test(start_paused = true)]
+async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_not_said_primary_updated() {
+    let r = rig_for(view_holder_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+    let (row, let_go, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Semaphore::new(0)), Arc::new(Mutex::new(Vec::new())));
+    let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row: row.clone(), let_go: let_go.clone(), events: events.clone() });
+    let e = &r.env;
+    let holder = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: holder_gate,
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        rows: e.rows.clone(),
+        turns: e.turns.clone(),
+    });
+    // The successor: its own door, gate and park gate over the fixture's one Build log and view.
+    let n_name: PathName = "mesh1.admin.2".parse().unwrap();
+    let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
+    let n_switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let successor = Arc::new(DriveEnv {
+        me: n_name.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        dispatcher: e.dispatcher.clone(),
+        gate: n_switch,
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(n_name.clone(), n_id, e.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+    });
+    let (p_drive, n_drive) = (Drive::detached(r.build.clone()), Drive::detached(r.build.clone()));
+    let p_driving = tokio::spawn({
+        let (env, d) = (holder.clone(), p_drive.clone());
+        async move { env.run(&d).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), row.notified()).await.expect("the holder's update never wrote its row");
+    let mut n_driving = tokio::spawn({
+        let (env, d) = (successor.clone(), n_drive.clone());
+        async move { env.run(&d).await }
+    });
+    // Paused time moves on only once every task is idle: the successor's drive has gone as far as it
+    // can while the holder is at steps 6-7.
+    let early = tokio::time::timeout(Duration::from_secs(60), &mut n_driving).await;
+    let to_successor: Vec<(String, u32)> = r.dispatch.dispatched.lock().unwrap().iter().filter(|(to, _)| *to == n_name.to_string()).cloned().collect();
+    assert!(r.ran.0.lock().unwrap().is_empty() && to_successor.is_empty() && early.is_err(), "while the holder had not said primary updated, the successor's drive dispatched {to_successor:?}, ran {:?}, and ended {early:?}; events {:?}", r.ran.0.lock().unwrap(), events.lock().unwrap());
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.1")), "the update runs in the holder's own attempt, and no other is claimed");
+    let_go.add_permits(1);
+    assert_eq!(tokio::time::timeout(Duration::from_secs(60), n_driving).await.expect("the successor's drive went on once the holder's attempt ended").unwrap(), DriveEnd::Terminal);
+    assert!(matches!(tokio::time::timeout(Duration::from_secs(60), p_driving).await.expect("the holder's drive ended").unwrap(), DriveEnd::SeatLost(_)), "the holder's drive ends at its row");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!(p.attempt_executors.get(&1).map(String::as_str), Some("mesh1.admin.1"), "attempt 1 is the holder's: {:?}", p.attempt_executors);
+    assert_eq!(p.attempt_executors.get(&2).map(String::as_str), Some("mesh1.admin.2"), "the successor claimed the next attempt after the holder's ended: {:?}", p.attempt_executors);
+    let handed: Vec<_> = r.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
+        rafka_node_admin_core::build_state::BuildFact::Attempt(a) if a.attempt == 1 => Some(a.outcome),
+        _ => None,
+    }).collect();
+    assert_eq!(handed, vec![rafka_node_admin_core::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }], "the holder's attempt ended handed off to the successor");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["retire-node:mesh1.admin.1".to_string()], "the retire ran once, at the successor");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.2".to_string(), 2)], "the successor reattached to the holder's attempt, then dispatched the next to itself");
+    assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
+}
