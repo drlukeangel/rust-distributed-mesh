@@ -11,7 +11,7 @@
 use crate::estate::Estate;
 use rafka_node_admin_client::{LaunchKind as NodeKind, PathName};
 use rafka_node_admin_client::{
-    Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
+    Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
 use std::sync::Arc;
 
@@ -545,6 +545,26 @@ impl Estate {
                 builds.create(spec).await
             }
             other => other,
+        }
+    }
+
+    /// `build.create` of `change` (a change of the accepted Build the carrier carries without a
+    /// [`BuildSpec`]: a replace, a mesh removal), accepted: the stream of the Build that runs it. A Build
+    /// still reconciling is awaited on its own stream first, and `change` is submitted after it, for up to
+    /// two minutes.
+    pub async fn submit_change(&self, change: Change) -> BuildStream {
+        let carrier = self.carrier().await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            match carrier.create(change.clone()).await {
+                Ok(stream) => return stream,
+                Err(CallEnd::BuildInProgress { current }) => {
+                    assert!(tokio::time::Instant::now() < deadline, "{change:?}: Build {current} was still reconciling after 120 s");
+                    let mut running = carrier.resubmit(&current, 1).await.unwrap_or_else(|e| panic!("the fabric-primary does not stream the Build {current} it is reconciling: {e}"));
+                    Self::until_complete(&mut running).await;
+                }
+                Err(e) => panic!("the fabric-primary refused {change:?}: {e}"),
+            }
         }
     }
 
