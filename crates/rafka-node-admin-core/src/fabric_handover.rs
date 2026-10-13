@@ -1188,6 +1188,38 @@ impl HandoverDoor {
     }
 }
 
+impl HandoverDoor {
+    /// node.primary.update of a cohort that is not node-admin, at its mesh-primary, commander and row
+    /// writer (proposal Part C1, non-admin order). Not built yet.
+    pub async fn update_cohort_primary(&self, holder: &crate::model::Node, _expected: Option<u64>, _build_id: &str, _attempt: u32, _operation: &str) -> Result<Vec<CommittedSeat>, Reply> {
+        Err(Reply::not_authority(&format!("{}: node.primary.update of the {} cohort is not built", self.me, holder.kind.name())))
+    }
+}
+
+/// The 0x21 door of a node that is not a node-admin. Not built yet.
+pub struct MemberDoor {
+    membership: Membership,
+}
+
+impl MemberDoor {
+    /// The door of the birth `node_id`/`incarnation` at `me`.
+    pub fn new(_me: PathName, _node_id: NodeId, _incarnation: IncarnationId, membership: Membership, _client: Arc<NodeRpcClient>) -> Self {
+        Self { membership }
+    }
+    /// This node's mesh channel.
+    pub fn membership(&self) -> &Membership {
+        &self.membership
+    }
+}
+
+/// Where a member's door is set once its process holds its mesh channel.
+pub type MemberSlot = Arc<std::sync::OnceLock<Arc<MemberDoor>>>;
+
+/// Serve node.primary.update on a node that is not a node-admin. Not built yet.
+pub fn serve_member(b: ServerBuilder, _slot: MemberSlot) -> ServerBuilder {
+    b.serve::<NodePrimaryUpdate, _, _>(OpOwner::Product("rdm".into()), move |_peer: PeerContext, _req: Request| async move { Ok(Reply::NotReady { reason: "not built".into() }) })
+}
+
 /// Hold every seat the store root's seat-transfer rows commit, as an admin entering the fabric does:
 /// the leadership view is folded from the transfer rows (proposal Part C2), and a holder that died
 /// between its cut-off and its rename reads here whether its row committed (C1 failure contract). A

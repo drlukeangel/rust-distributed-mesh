@@ -131,6 +131,12 @@ const ANNOUNCE_UPDATED: &str = "rdm.mesh.seat.update.via-announce-primary-update
 const ROW_ACKNOWLEDGED: &str = "rdm.node_admin.seat.update.via-row-acknowledged";
 /// One Node RPC call at its caller: its target, op, outcome, reason and elapsed time.
 const CALL: &str = "rdm.node_rpc.request.update.via-call";
+/// The holder of a cohort that is not node-admin, commanded by its mesh-primary with the committed row,
+/// called node.primary.update on its successor (C1 step 6: "B1 then makes the call of step 6").
+const HOLDER_CALL: &str = "rdm.node_admin.seat.update.via-holder-call";
+/// The fabric-primary's command of a seat update, to the holder for a mesh seat and to the mesh-primary
+/// for any other cohort's seat (COMMANDS GO DOWN, Q3).
+const COMMAND: &str = "rdm.node_admin.seat.update.via-primary-update";
 /// The retired successor-side row writer: no span of it may appear.
 const SEATS_COMMITTED: &str = "rdm.node_admin.seat.update.via-seats-committed";
 
@@ -349,7 +355,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
                 let mut view = topology.write().await;
                 let mut lost = seats.gone();
                 lost.extend(view.nodes.iter().filter_map(|n| n.incarnation_id.clone().filter(|i| records.is_exited(&n.node_id, i))));
-                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), cohorts: Default::default(), lost };
+                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), cohorts: seats.cohorts(), lost };
                 resolve_with(&mut view.nodes, &inc);
             })
         })
@@ -2080,4 +2086,220 @@ fn source_failed(r: &Reply) -> (String, String, String) {
 fn source_fields(span: &serde_json::Value) -> (String, String, String, String) {
     let a = |k: &str| span["attributes"][k].as_str().unwrap_or_default().to_string();
     (a("reason"), a("source"), a("op"), a("cause"))
+}
+
+
+// ---- a cohort that is not node-admin: the mesh-primary commands and writes, the holder calls ----
+
+/// A member node of a cohort that is not node-admin, serving the 0x21 door every such node mounts
+/// (`fabric_handover::serve_member`): the holder its mesh-primary commands with the committed row, and
+/// the successor the holder calls.
+struct Member {
+    door: Arc<rafka_node_admin_core::fabric_handover::MemberDoor>,
+    resolved: ResolvedNode,
+    resolver: Arc<StaticResolver>,
+    _router: Router,
+}
+
+async fn member(fabric: &FabricId, mesh: &str, path: &str, node_id: &str) -> Member {
+    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+    let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+    let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
+    time.adopt(5_000_000);
+    let (node_id, incarnation) = (NodeId::parse(node_id).unwrap(), IncarnationId::mint());
+    let membership = Membership::join(&gossip, &ep, fabric, mesh, &MeshId::mint(), path, Arc::new(time), vec![]).await.unwrap();
+    let resolver = Arc::new(StaticResolver::new());
+    let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
+    let slot: rafka_node_admin_core::fabric_handover::MemberSlot = Arc::new(OnceLock::new());
+    let server = rafka_node_admin_core::fabric_handover::serve_member(ServerBuilder::new(), slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog seals");
+    let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server).spawn();
+    let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
+    let resolved = ResolvedNode { node_id: node_id.clone(), name: path.parse().unwrap(), endpoint_id: ep.id(), transport_addr: addr, incarnation: incarnation.clone() };
+    let door = Arc::new(rafka_node_admin_core::fabric_handover::MemberDoor::new(path.parse().unwrap(), node_id, incarnation, membership, client));
+    let _ = slot.set(door.clone());
+    Member { door, resolved, resolver, _router: router }
+}
+
+fn member_node(m: &Member, primary: bool) -> Node {
+    let mut n = Node::allocated(m.resolved.name.clone());
+    n.node_id = m.resolved.node_id.clone();
+    n.incarnation_id = Some(m.resolved.incarnation.clone());
+    n.endpoint_id = Some(EndpointId(m.resolved.endpoint_id.to_string()));
+    n.status = NodeStatus::ReadyForTraffic;
+    n.is_primary = primary;
+    n
+}
+
+fn member_birth(m: &Member) -> HandoverBirth {
+    HandoverBirth { mesh: m.resolved.name.mesh.clone(), node_id: m.resolved.node_id.clone(), incarnation: m.resolved.incarnation.clone() }
+}
+
+fn member_holder(m: &Member, epoch: u64) -> SeatHolder {
+    SeatHolder { mesh: m.resolved.name.mesh.clone(), node_id: m.resolved.node_id.clone(), incarnation: m.resolved.incarnation.clone(), epoch }
+}
+
+const RPC: rafka_node_admin_core::model::NodeKind = rafka_node_admin_core::model::NodeKind::RpcNode;
+
+/// P is mesh1's primary (epoch 3), X is mesh2's primary and the fabric-primary (epoch 7). B1
+/// (`mesh1.rpc.1`, the lowest rpc NodeId) holds mesh1's rpc seat at epoch 2; B2 (`mesh1.rpc.2`) is the
+/// cohort's other node, born only when `with_b2`. One store root (R14).
+struct CohortFabric {
+    p: Admin,
+    x: Admin,
+    b1: Member,
+    b2: Option<Member>,
+}
+
+impl CohortFabric {
+    fn b2(&self) -> &Member {
+        self.b2.as_ref().expect("B2 was born")
+    }
+}
+
+async fn cohort_fabric(with_b2: bool) -> CohortFabric {
+    let (fabric_id, status, store) = (FabricId::mint(), Arc::<MemoryStatusStorage>::default(), Arc::new(MemoryFabricStorage::new()) as Arc<dyn FabricStorage>);
+    let (p, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000008", true, store.clone(), status.clone()).await;
+    let (x, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, store, status).await;
+    let b1 = member(&fabric_id, "mesh1", "mesh1.rpc.1", "000000000004").await;
+    let b2 = if with_b2 { Some(member(&fabric_id, "mesh1", "mesh1.rpc.2", "000000000006").await) } else { None };
+    let mut pn = node_of(&p, NodeStatus::ReadyForTraffic, false);
+    pn.is_primary = true;
+    let xn = node_of(&x, NodeStatus::ReadyForTraffic, true);
+    let mut nodes = vec![pn, xn, member_node(&b1, true)];
+    nodes.extend(b2.iter().map(|b| member_node(b, false)));
+    let resolved: Vec<ResolvedNode> = [p.resolved.clone(), x.resolved.clone(), b1.resolved.clone()].into_iter().chain(b2.iter().map(|b| b.resolved.clone())).collect();
+    for a in [&p, &x] {
+        *a.door.topology.write().await = view(nodes.clone());
+        for r in &resolved {
+            a.resolver.insert(r.clone());
+        }
+        a.door.membership.seats().take(Seat::FabricPrimary, &holder_of(&x, 7));
+        a.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&p, 3));
+        a.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&x, 1));
+        a.door.membership.seats().take(Seat::Cohort(RPC), &member_holder(&b1, 2));
+    }
+    for m in std::iter::once(&b1).chain(b2.iter()) {
+        for r in &resolved {
+            m.resolver.insert(r.clone());
+        }
+        m.door.membership().seats().take(Seat::Cohort(RPC), &member_holder(&b1, 2));
+    }
+    CohortFabric { p, x, b1, b2 }
+}
+
+/// The rpc seat of mesh1 committed to `m` at `epoch`.
+fn committed_rpc(m: &Member, epoch: u64) -> Vec<CommittedSeat> {
+    vec![CommittedSeat::of(Seat::Cohort(RPC), &member_holder(m, epoch))]
+}
+
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1: "For a
+/// `broker` cohort the mesh-primary is commander and writer, and the holder B1 only makes the call";
+/// "For a non-admin cohort the order of steps 1 and 5 swaps: the mesh-primary is writer and commander,
+/// so it pre-checks, announces and writes the row first (steps 2-5), and its command to the holder B1
+/// comes after the row and carries it; B1 then makes the call of step 6"; step 4: "A non-admin holder
+/// has no mesh rows to drain"; step 6: "The successor ... installs itself as primary ... and answers
+/// `node.primary.updated { revisions }` on that call. A non-admin holder then answers its commander's
+/// command"; step 7: "The writer publishes 'primary updated'"; B1: "a living holder keeps its seat"):
+/// P, mesh1's primary, moves mesh1's rpc seat from B1 to B2. In order: P says "primary updating", P
+/// writes ONE row (holder B1, successor B2, the rpc seat at epoch 3), P commands B1 carrying the row,
+/// B1 calls node.primary.update on B2, B2 installs and answers node.primary.updated, P says "primary
+/// updated". P and B2 hold the committed record; P's view names B2 and keeps naming it on a later
+/// round although B1, the lowest rpc NodeId, is alive and ready. An identical retry replays from the
+/// one row.
+/// Must NOT happen: a cut-off of P's writes, a row written by B1 or B2, B1 writing or announcing
+/// anything, two rows, or a later round handing the seat back to the lower NodeId.
+#[test]
+fn a_mesh_primary_moves_its_rpc_cohorts_primary_by_commanding_the_holder_with_its_committed_row() {
+    let cap = trace_capture("fabric-handover");
+    let spans = cap.spans.clone();
+    cap.run(async {
+        let f = cohort_fabric(true).await;
+        let b1 = f.p.door.topology.read().await.members().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        let op = update_operation(Seat::Cohort(RPC), "b1", "stop-node:mesh1.rpc.1");
+        let moved = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("mesh1's rpc seat moves");
+        assert_eq!(moved, committed_rpc(f.b2(), 3), "B2 answered node.primary.updated with the committed seat");
+        assert_eq!(f.p.door.membership.seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "P, the row writer, holds the committed record");
+        assert_eq!(f.b2().door.membership().seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "B2 installed itself from the row");
+        let rows = f.p.storage.seat_transfers().await.unwrap();
+        assert_eq!(rows.len(), 1, "one row: {rows:?}");
+        assert_eq!(
+            (&rows[0].holder, &rows[0].successor, &rows[0].seats, rows[0].operation.as_str(), &rows[0].expected),
+            (&member_birth(&f.b1), &member_birth(f.b2()), &committed_rpc(f.b2(), 3), op.as_str(), &vec![SeatEpoch { seat: WireSeat::Cohort { mesh: "mesh1".into(), kind: RPC }, expected_epoch: 2 }])
+        );
+        let primary = |t: &Topology| t.cohort_primary("mesh1", RPC).map(|n| n.name.to_string());
+        assert_eq!(primary(&*f.p.door.topology.read().await).as_deref(), Some("mesh1.rpc.2"), "P's view names B2 mesh1's rpc primary");
+        (f.p.door.project_view)().await;
+        assert_eq!(primary(&*f.p.door.topology.read().await).as_deref(), Some("mesh1.rpc.2"), "a later round keeps B2: the living holder keeps its seat over the lower NodeId of B1");
+        let at = |n: &str| spans.position(n).unwrap_or_else(|| panic!("no {n} span among {:?}", spans.names()));
+        assert!(at(ANNOUNCE_UPDATING) < at(ROW_WRITTEN), "P says the primary is updating before its row (step 3)");
+        assert!(at(ROW_WRITTEN) < at(HOLDER_CALL), "P commands B1 only after its row, carrying it (steps 5, 6)");
+        assert!(at(HOLDER_CALL) < at(UPDATED), "B1 calls B2, which installs (step 6)");
+        assert!(at(UPDATED) < at(ANNOUNCE_UPDATED), "P says the primary updated once B2 answered (step 7)");
+        let nodes = |name: &str| spans.named(name).iter().map(|f| f["node"].clone()).collect::<Vec<String>>();
+        assert_eq!(nodes(ROW_WRITTEN), vec!["mesh1.admin.1".to_string()], "P, the mesh's one row writer, writes the one row");
+        assert_eq!(nodes(ANNOUNCE_UPDATING), vec!["mesh1.admin.1".to_string()], "P, sole author of member status, says updating");
+        assert_eq!(nodes(ANNOUNCE_UPDATED), vec!["mesh1.admin.1".to_string()], "P says updated; B1 and B2 announce nothing");
+        assert_eq!(nodes(HOLDER_CALL), vec!["mesh1.rpc.1".to_string()], "B1, the holder, makes the call");
+        assert_eq!(nodes(UPDATED), vec!["mesh1.rpc.2".to_string()], "B2, the successor, installs");
+        assert!(spans.named(CUT_OFF).is_empty() && f.p.cut_offs.lock().unwrap().is_empty(), "a non-admin holder has no mesh rows to drain: nothing is cut off");
+        assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
+        // An identical retry replays the committed result from the one row.
+        let again = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("the retry replays");
+        assert_eq!(again, moved);
+        assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "still one row");
+        let _ = &f.x;
+    });
+}
+
+/// CONTRACT (CLAUDE.md "COMMANDS GO DOWN": "A command the fabric-primary originates for a mesh's node
+/// reaches it as a proxy command through its mesh-primary, never directly"; proposal Part C1: "the
+/// mesh-primary for every other cohort (Q3). The mesh-primary is the owner of its nodes, always"; Q3
+/// ruled: "it can come from the FP for some reason, but as a proxy command"): X, the fabric-primary,
+/// commands the update of mesh1's rpc seat held by B1. Its command goes to P, mesh1's primary, which
+/// pre-checks, writes the row, commands B1 and answers X with B2's node.primary.updated; X installs the
+/// committed seat and its view names B2.
+/// Must NOT happen: X calling B1 or B2, or X's view naming B1 after the answer.
+#[test]
+fn the_fabric_primary_commands_an_rpc_cohorts_primary_update_only_through_its_mesh_primary() {
+    let cap = trace_capture("fabric-handover");
+    let spans = cap.spans.clone();
+    cap.run(async {
+        let f = cohort_fabric(true).await;
+        let b1 = f.x.door.topology.read().await.members().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        let op = update_operation(Seat::Cohort(RPC), "b2", "restart-node:mesh1.rpc.1");
+        let moved = f.x.door.command_update_primary(&b1, "b2", 1, &op).await.expect("the proxied update moves the seat");
+        assert_eq!(moved, committed_rpc(f.b2(), 3));
+        assert_eq!(f.x.door.membership.seats().cohort("mesh1", RPC), Some(member_holder(f.b2(), 3)), "X installed the committed seat from the answer");
+        assert_eq!(f.x.door.topology.read().await.cohort_primary("mesh1", RPC).map(|n| n.name.to_string()).as_deref(), Some("mesh1.rpc.2"));
+        let commanded: Vec<(String, String)> = spans.named(COMMAND).iter().map(|f| (f["node"].clone(), f.get("to").cloned().unwrap_or_default())).collect();
+        assert_eq!(commanded, vec![("mesh2.admin.1".to_string(), "mesh1.admin.1".to_string())], "X commands P, mesh1's primary, never the rpc holder");
+        let written: Vec<String> = spans.named(ROW_WRITTEN).iter().map(|f| f["node"].clone()).collect();
+        assert_eq!(written, vec!["mesh1.admin.1".to_string()], "P writes the row");
+        assert_eq!(spans.named(HOLDER_CALL).len(), 1, "B1 is commanded once, by P");
+        assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
+    });
+}
+
+/// CONTRACT (proposal Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update`
+/// commanded for a cohort with no other node of that type in the mesh is refused by name, `cannot
+/// transfer: no secondary of type <node_type> in mesh <mesh>`, until a secondary is available. The
+/// holder stays primary, nothing is cut off, no row is written"): B1 is mesh1's only rpc node. P's
+/// pre-check names no successor and refuses by Q7's text before anything.
+/// Must NOT happen: "primary updating" said, a row written, B1 commanded, or the record moved.
+#[test]
+fn an_rpc_cohort_with_no_other_node_of_its_type_refuses_node_primary_update_by_name() {
+    let cap = trace_capture("fabric-handover");
+    let spans = cap.spans.clone();
+    cap.run(async {
+        let f = cohort_fabric(false).await;
+        let b1 = f.p.door.topology.read().await.members().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        let op = update_operation(Seat::Cohort(RPC), "b3", "stop-node:mesh1.rpc.1");
+        let refused = f.p.door.update_cohort_primary(&b1, None, "b3", 1, &op).await.expect_err("no secondary");
+        assert_eq!(refused, Reply::RejectedNoSuccessor { reason: "cannot transfer: no secondary of type rpc-node in mesh mesh1".into() });
+        assert!(f.p.storage.seat_transfers().await.unwrap().is_empty(), "no row");
+        assert!(spans.named(ANNOUNCE_UPDATING).is_empty() && spans.named(HOLDER_CALL).is_empty(), "nothing said, B1 not commanded");
+        assert_eq!(f.p.door.membership.seats().cohort("mesh1", RPC), Some(member_holder(&f.b1, 2)), "B1 stays primary");
+        assert_eq!(refusals(&spans).iter().map(|(side, reason, _)| (side.as_str(), reason.as_str())).collect::<Vec<_>>(), vec![("writer", "no-successor")]);
+        let _ = &f.x;
+    });
 }

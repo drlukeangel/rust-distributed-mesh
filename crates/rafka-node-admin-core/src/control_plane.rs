@@ -1036,6 +1036,46 @@ mod tests {
         n
     }
 
+    /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1: "One
+    /// primitive moves the primary of any (mesh, node_type) cohort ... A mesh-primary commands the
+    /// primaries of its mesh's other cohorts (Q3)"; step 1: "The holder is commanded from above, as a
+    /// step of the Build that stops, deletes, restarts, replaces ..."; Q7, ruled: "`node.primary.update`
+    /// for a type with no other node of that type in the mesh is refused by name, `cannot transfer: no
+    /// secondary of type <node_type> in mesh <mesh>` ... the commanding workflow fails with that reason";
+    /// "a mesh's sole broker ... cannot be stopped or restarted until a secondary is ReadyForTraffic"):
+    /// mesh1.rpc.1 holds mesh1's rpc seat with mesh1.rpc.2 beside it, and mesh2.rpc.1 is mesh2's sole
+    /// rpc node. The stop of mesh1.rpc.1 moves its seat first (`executor::seat_move` names it) and no
+    /// admin executes the stop until it has; the stop of mesh1.rpc.2, which holds no seat, moves nothing
+    /// and its mesh's primary executes it. The Build door admits a stop of mesh1.rpc.1 and refuses a
+    /// stop, restart or delete of mesh2.rpc.1 by name with Q7's text.
+    /// Must NOT happen: a cohort holder stopped with its seat unmoved, or the sole node of its type in a
+    /// mesh stopped, restarted or deleted while its mesh has other nodes.
+    #[test]
+    fn an_rpc_cohorts_primary_moves_before_its_stop_and_the_sole_node_of_its_type_is_refused_by_name() {
+        let t = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            ],
+            nodes: vec![node("mesh1.admin.1", true, true), node("mesh1.rpc.1", true, false), node("mesh1.rpc.2", false, false), node("mesh2.admin.1", true, false), node("mesh2.rpc.1", true, false)],
+        };
+        let stop = |path: &str| crate::build::BuildOperation::StopNode { node: path.parse().unwrap(), from_incarnation: t.node(&path.parse().unwrap()).unwrap().incarnation_id.clone().unwrap() };
+        let holder = stop("mesh1.rpc.1");
+        assert_eq!(crate::executor::seat_move(&holder, &t).map(|m| m.holder.name.to_string()), Some("mesh1.rpc.1".to_string()), "the rpc seat moves before its holder's stop");
+        assert_eq!(crate::executor::executor_for(&holder, &t), None, "no admin executes the holder's stop until its seat moved");
+        let other = stop("mesh1.rpc.2");
+        assert_eq!(crate::executor::seat_move(&other, &t), None, "a node that holds no seat moves none");
+        assert_eq!(crate::executor::executor_for(&other, &t).map(|p| p.to_string()), Some("mesh1.admin.1".to_string()), "its mesh's primary executes it");
+        assert!(last_admin(&"mesh1.rpc.1".parse().unwrap(), "stop", &t).is_none(), "mesh1's rpc holder has a secondary: admitted");
+        for action in ["stop", "restart", "delete"] {
+            match last_admin(&"mesh2.rpc.1".parse().unwrap(), action, &t) {
+                Some(reject) => assert_eq!((reject.reason(), reject.to_string().as_str()), ("no-secondary", "cannot transfer: no secondary of type rpc-node in mesh mesh2"), "{action}"),
+                None => panic!("{action} of mesh2's sole rpc node is refused by name"),
+            }
+        }
+    }
+
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
     /// no-successor cases": "The one exception is R-MT1's: the delete of a mesh's only node skips the
     /// update"; mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): mesh1's final
