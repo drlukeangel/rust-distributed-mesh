@@ -246,10 +246,10 @@ fn at_ns(sp: &Value) -> u64 {
 
 /// CONTRACT: the fabric primary P is replaced through the control API (a Build attempt the
 /// rectifier executes: install, transfer, retire; never a signal). The executor N (P's same-mesh
-/// successor) takes both seats by TakeSeats before P drains (R-EL1a): P's one seat row fences its
+/// successor) takes both seats by TakeSeats before P stops (R-EL1a): P's one seat row fences its
 /// Build log before N does anything as fabric primary, P decides no claim after its fence, no view
 /// ever shows two holders, no observer ever resolves P's mesh or the fabric with no primary (no
-/// seatless window between P's drain and N's seat), no birth is made twice and no attempt has two
+/// seatless window between P's stop and N's seat), no birth is made twice and no attempt has two
 /// winners, and the fabric is ready again under the same Build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
@@ -292,7 +292,7 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     let ready_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.stop().await;
     let spans = estate.spans();
-    // The seats moved by TakeSeats: P committed them to N, and N installed them before P drained.
+    // The seats moved by TakeSeats: P committed them to N, and N installed them before P stopped.
     // P's seat row is its fence (node-rpc-envelope.md TakeSeats): no other fence write exists.
     let committed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seats-committed").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "successor").contains(&n_id) && attr(sp, "replay") == "false").collect();
     assert_eq!(committed.len(), 1, "P committed both seats to N once: {committed:#?}");
@@ -304,8 +304,8 @@ async fn a_planned_hand_over_fences_the_old_holder_before_the_new_one_acts() {
     assert_eq!(announced.len(), 1, "P announced SeatedTogether once: {announced:#?}");
     assert_eq!((attr(announced[0], "backbone").as_str(), attr(announced[0], "mesh_channel").as_str()), ("sent", "sent"), "{:#?}", announced[0]);
     let installed = named(&spans, "rdm.node_admin.seat.update.via-seats-installed").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "successor").contains(&n_id)).map(at_ns).min().expect("N installed the committed seats");
-    let p_drain = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p && attr(sp, "step") == "DrainNode").map(at_ns).min().expect("P was drained");
-    assert!(installed < p_drain, "N installed the seats ({installed}) before P's drain ({p_drain})");
+    let p_stop = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p && attr(sp, "step") == "StopNode").map(at_ns).min().expect("P was stopped");
+    assert!(installed < p_stop, "N installed the seats ({installed}) before P's stop ({p_stop})");
     // N's first fabric-primary action is installing the seats (or announcing one).
     let n_first = named(&spans, "rdm.mesh.seat.update.via-announce").into_iter().filter(|sp| attr(sp, "node") == n_name && attr(sp, "seat") == "fabric-primary" && attr(sp, "holder").contains(&n_id)).map(at_ns).chain([installed]).min().unwrap();
     assert!(fenced_at < n_first, "P fenced ({fenced_at}) before N acted ({n_first})");

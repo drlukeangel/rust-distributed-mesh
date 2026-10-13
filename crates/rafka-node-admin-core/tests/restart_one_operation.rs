@@ -1,6 +1,6 @@
 //! node.restart is one operation (node-restart.md): `restart-node:<path>` holds every step of the
-//! restart, its `NodeRestarting` pre-event, the stop of the live process (it drains, stops and parks,
-//! its process alive) and the start of that same process, and ends with one `Complete`. No step of it
+//! restart, its `NodeRestarting` pre-event, the stop of the live process (its connections deleted,
+//! it stops, its process alive) and the start of that same process, and ends with one `Complete`. No step of it
 //! is receipted under `retire-node:` (the delete's operation), nothing is deployed, nothing exits.
 //! The cell drives the restart pipeline over a recording provider, observer and lifecycle: nothing
 //! here depends on timing.
@@ -52,17 +52,17 @@ impl DeploymentProvider for Running {
     }
 }
 
-/// The live birth: it admits the drain and the stop, answers both, parks, and answers the start
-/// `Started`; or (`refuses_stop`) it refuses the stop by name and so never parks. Every command and
+/// The live birth: it admits the stop, answers it, stays stopped, and answers the start
+/// `Started`; or (`refuses_stop`) it refuses the stop by name and so never stops. Every command and
 /// every completion wait is recorded with the operation it carried.
 #[derive(Default)]
-struct Parks {
+struct StopsThenStarts {
     sent: Mutex<Vec<String>>,
     refuses_stop: bool,
 }
 
 #[async_trait::async_trait]
-impl NodeObserver for Parks {
+impl NodeObserver for StopsThenStarts {
     async fn send_command(&self, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
         self.sent.lock().unwrap().push(format!("{cmd:?} {} to {}", ctx.operation, node.name));
         match cmd {
@@ -116,7 +116,7 @@ impl LifecycleEvents for Events {
         self.note("joined", op);
     }
     async fn connections_deleting(&self, op: &LifecycleOp) {
-        self.note("draining", op);
+        self.note("connections-deleting", op);
     }
     async fn leaving(&self, op: &LifecycleOp) {
         self.note("leaving", op);
@@ -146,7 +146,7 @@ impl TopologySink for Discard {
 /// node.stop + the entire node.start + node.restarted. It runs on the stopped process, which never
 /// exits"; "No supersedes lineage or new incarnation is introduced"): the restart of a live rpc node
 /// is ONE Build operation, `restart-node:<path>`. Its receipts, in order: `NodeRestarting`, the stop
-/// of the live process (`DrainNode`, `AwaitNodeDrained`, `StopNode`, `AwaitNodeLeft`: it parks), the
+/// of the live process (`StopNode`, `AwaitNodeLeft`: it stays, stopped), the
 /// start of the same process (`StartNode`, `WaitForNodeReady`), and one `Complete`, last. The
 /// `NodeRestarting` pre-event carries that same operation, published once; the stop's `stopped` is
 /// not published as `NodeStopped`; nothing is deleted. Must NOT happen: any receipt under
@@ -186,7 +186,7 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         mesh_issuer: None,
     };
-    let (provider, observer, events, joins) = (Running::default(), Parks::default(), Events::default(), rafka_node_admin_core::join::Joins::default());
+    let (provider, observer, events, joins) = (Running::default(), StopsThenStarts::default(), Events::default(), rafka_node_admin_core::join::Joins::default());
     let pipeline = DeploymentPipeline {
         provider: &provider,
         joins: &joins,
@@ -219,20 +219,18 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
     let order: Vec<&str> = receipts.iter().map(|(_, s)| s.as_str()).collect();
     assert_eq!(
         order,
-        ["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"],
+        ["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"],
         "the pre-event, the stop of the live process, the start of the same process, one Complete: {out:?}"
     );
     assert!(out.is_ok(), "{out:?}");
     assert_eq!(
         *observer.sent.lock().unwrap(),
         [
-            format!("Drain drain-node:{NODE} to {NODE}"),
-            format!("await Drain drain-node:{NODE} from {NODE}"),
             format!("Stop stop-node:{NODE} to {NODE}"),
             format!("await Stop stop-node:{NODE} from {NODE}"),
             format!("Start start-node:{NODE} to {NODE}"),
         ],
-        "the restart calls the drain, the stop and the start of the same birth, once each"
+        "the restart calls the stop and the start of the same birth, once each"
     );
     assert_eq!(*provider.terminated.lock().unwrap(), Vec::<String>::new(), "a restart asks the provider for no exit");
     let published = events.published.lock().unwrap().clone();
@@ -259,7 +257,7 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
 /// stop the live birth refuses by name has no `stopped` to follow, so its stop is not complete: the
 /// restart fails at `AwaitNodeLeft`, naming the refusal, and runs nothing after it. Must NOT happen:
 /// the restart taking the refused stop as done and sending `start-node` to a birth that never
-/// parked, or receipting a `Complete`.
+/// stopped, or receipting a `Complete`.
 #[tokio::test]
 async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() {
     let builds = MemoryBuildStateAdapter::new();
@@ -289,7 +287,7 @@ async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() 
         store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
         mesh_issuer: None,
     };
-    let (provider, observer, events, joins) = (Running::default(), Parks { refuses_stop: true, ..Parks::default() }, Events::default(), rafka_node_admin_core::join::Joins::default());
+    let (provider, observer, events, joins) = (Running::default(), StopsThenStarts { refuses_stop: true, ..StopsThenStarts::default() }, Events::default(), rafka_node_admin_core::join::Joins::default());
     let pipeline = DeploymentPipeline {
         provider: &provider,
         joins: &joins,
@@ -317,13 +315,13 @@ async fn a_restart_whose_stop_is_refused_fails_at_its_stop_and_starts_nothing() 
     let view = builds.read_build(&build_id).await.unwrap();
     let receipts: Vec<(String, bool)> = view.steps.iter().map(|s| (s.step.clone(), s.outcome == rafka_node_admin_core::build_state::StepOutcome::Complete)).collect();
     let sent = observer.sent.lock().unwrap().clone();
-    assert!(!sent.iter().any(|c| c.starts_with("Start ")), "no start-node to a birth that never parked: {sent:?} (receipts {receipts:?})");
+    assert!(!sent.iter().any(|c| c.starts_with("Start ")), "no start-node to a birth that never stopped: {sent:?} (receipts {receipts:?})");
     let err = out.expect_err("a restart whose stop was refused is not complete");
     assert_eq!(err.step, "AwaitNodeLeft", "{err:?}");
     assert!(err.reason.contains("RejectedStaleIncarnation"), "the failure names the refusal: {err:?}");
     assert_eq!(
         receipts,
-        [("NodeRestarting", true), ("DrainNode", true), ("AwaitNodeDrained", true), ("StopNode", true), ("AwaitNodeLeft", false)].map(|(s, ok)| (s.to_string(), ok)),
+        [("NodeRestarting", true), ("StopNode", true), ("AwaitNodeLeft", false)].map(|(s, ok)| (s.to_string(), ok)),
         "the restart stops at its stop's wait, Failed, and receipts nothing after it"
     );
     assert_eq!(*provider.terminated.lock().unwrap(), Vec::<String>::new(), "a failed restart asks the provider for no exit either");

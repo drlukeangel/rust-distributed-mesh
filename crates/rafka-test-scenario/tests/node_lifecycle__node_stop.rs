@@ -387,7 +387,7 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
         assert!(at >= last, "{step} starts before the step it follows");
         last = at;
     }
-    for step in ["DrainNode", "AwaitNodeDrained", "TerminateRuntime", "NodeDeleting", "NodeDeleted", "RemoveTopologyMembership"] {
+    for step in ["DeleteConnections", "TerminateRuntime", "NodeDeleting", "NodeDeleted", "RemoveTopologyMembership"] {
         assert!(step_span(&spans, &birth_build, &attempt, NODE, step).is_none(), "a standalone stop runs no {step}");
     }
     assert!(named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().all(|sp| sp["attributes"]["node_id"] != before["node_id"]), "a stop publishes no NodeDeleted");
@@ -441,11 +441,11 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
         .into_iter()
         .find(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == NODE && sp["attributes"]["outcome"] == "complete" && s(&sp["attributes"]["build_id"]) == build);
     assert!(exit.is_some(), "the delete Build proved the parked process exited");
-    // The stopped birth's stop already ran: its delete sends no seat transfer, drain or stop again
+    // The stopped birth's stop already ran: its delete sends no seat transfer, node.connections.delete or stop again
     // (node-decommission.md 1, node-stop.md 6).
     let again: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .filter(|sp| s(&sp["attributes"]["build_id"]) == build && ["SeatTransfer", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"].iter().any(|st| sp["attributes"]["step"] == *st))
+        .filter(|sp| s(&sp["attributes"]["build_id"]) == build && ["SeatTransfer", "DeleteConnections", "StopNode", "AwaitNodeLeft"].iter().any(|st| sp["attributes"]["step"] == *st))
         .collect();
     assert!(again.is_empty(), "the delete of a stopped birth composes no stop again: {again:?}");
     let deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == NODE).collect();

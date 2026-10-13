@@ -180,7 +180,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     for step in ["NodeDeleting", "NodeDeleted", "DeployRuntime", "WaitForNodeReady", "Complete"] {
         assert!(victim_steps.iter().any(|n| n == step), "the recovery ran {step} for {window_victim}: {victim_steps:?}");
     }
-    for step in ["DrainNode", "StopNode"] {
+    for step in ["DeleteConnections", "StopNode"] {
         assert!(!victim_steps.iter().any(|n| n == step), "no RPC to the exited process: {step} ran for {window_victim}: {victim_steps:?}");
     }
     let gone = !std::path::Path::new(&format!("/proc/{victim_pid}")).exists() || std::fs::read_to_string(format!("/proc/{victim_pid}/stat")).unwrap_or_default().contains(") Z ");

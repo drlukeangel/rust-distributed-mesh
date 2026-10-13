@@ -875,7 +875,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
 
 /// CONTRACT: every step the create and retire pipelines record is one the client names. The
 /// receipts of a whole create fold to `node.joined`, `node.started`, `node.created`
-/// and `Complete`; the receipts of a whole delete fold to the draining, drained, connections-deleted, stopped and
+/// and `Complete`; the receipts of a whole delete fold to the connections-deleted, stopped and
 /// deleted events and `Complete`; the receipts of a whole restart, one `restart-node:<path>` operation,
 /// fold to `node.restarting`, the stop's events, `node.joined`, `node.started`, `node.restarted` and
 /// `Complete`. A step the client does not name is refused by name, never skipped.
@@ -923,8 +923,8 @@ fn every_pipeline_step_is_named_by_the_client() {
     // Its stop half done, the restart is not over: the fold stands at the start.
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart[..3].to_vec()), 1).unwrap();
     assert_eq!((f.frames.last(), f.next.as_ref().map(|(_, s)| s.as_str())), (Some(&Frame::Event(NodeEvent::Stopped)), Some("StartNode")));
-    // The SeatTransfer step runs only for a node-admin target (it moves the seats it holds before it
-    // drains or stops; the pipeline decides on the target's kind): a node-admin's workflow has the
+    // The SeatTransfer step runs only for a node-admin target (it moves the seats it holds before its
+    // connections are deleted or it stops; the pipeline decides on the target's kind): a node-admin's workflow has the
     // row and its receipts fold to the same events; an rpc node's workflow has no such row.
     let admin: rafka_mesh_entity::PathName = "mesh1.admin.2".parse().unwrap();
     let admin_retire: Vec<&str> = ["NodeDeleting", "SeatTransfer"].into_iter().chain(retire.iter().copied().skip(1)).collect();
@@ -954,9 +954,9 @@ fn every_pipeline_step_is_named_by_the_client() {
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", skipped), 1).unwrap();
     assert_eq!((f.frames.len(), f.next.as_ref().map(|(_, s)| s.as_str())), (0, Some("SeatTransfer")), "{:?}", f.frames);
     // An rpc node's workflow has no SeatTransfer row: its delete with only NodeDeleting held resumes
-    // at DrainNode, and a SeatTransfer receipt under it is refused by name, never folded.
+    // at StopNode, and a SeatTransfer receipt under it is refused by name, never folded.
     let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(name.clone()), &view("retire-node:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!(r.from, Some(("retire-node".to_string(), "DrainNode".to_string())));
+    assert_eq!(r.from, Some(("retire-node".to_string(), "StopNode".to_string())));
     for (kind, op, steps) in [
         (WorkflowKind::Delete(name.clone()), "retire-node:mesh1.rpc.3", vec!["NodeDeleting", "SeatTransfer"]),
         (WorkflowKind::Stop(name.clone()), "stop-node:mesh1.rpc.3", vec!["SeatTransfer"]),
@@ -981,18 +981,18 @@ impl InnerStream for Script {
 }
 
 /// The executor of a restart of `mesh1.rpc.1`, attempt by attempt. The first run is lost once its
-/// `DrainNode` frame has reached the fabric-primary: the receipt lived in the lost executor's own
+/// `StopNode` frame has reached the fabric-primary: the receipt lived in the lost executor's own
 /// log alone (its broadcast never left), so no Build log the successor reads holds it, and the
-/// executor's exact runtime is proven exited. The next run holds no `DrainNode` receipt: it
+/// executor's exact runtime is proven exited. The next run holds no `StopNode` receipt: it
 /// reissues that uncertain step (node-rpc-envelope.md "Caller execution and certainty") and runs
 /// the restart to its end.
-struct LostAfterDrainNode {
+struct LostAfterStopNode {
     runs: Mutex<u32>,
     proofs: Arc<crate::loopback::Proofs>,
 }
 
 #[async_trait::async_trait]
-impl Dispatcher for LostAfterDrainNode {
+impl Dispatcher for LostAfterStopNode {
     async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         use rafka_node_rpc_contract::build::BuildReply;
         let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.0.clone(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
@@ -1003,11 +1003,9 @@ impl Dispatcher for LostAfterDrainNode {
         };
         let items = if run == 1 {
             self.proofs.exited.lock().unwrap().insert(executor.to_string());
-            vec![step("restart-node", "NodeRestarting"), step("restart-node", "DrainNode"), InnerItem::Broke(format!("{executor} was lost after its DrainNode receipt"))]
+            vec![step("restart-node", "NodeRestarting"), step("restart-node", "StopNode"), InnerItem::Broke(format!("{executor} was lost after its StopNode receipt"))]
         } else {
             vec![
-                step("restart-node", "DrainNode"),
-                step("restart-node", "AwaitNodeDrained"),
                 step("restart-node", "StopNode"),
                 step("restart-node", "AwaitNodeLeft"),
                 step("restart-node", "StartNode"),
@@ -1021,19 +1019,19 @@ impl Dispatcher for LostAfterDrainNode {
 }
 
 /// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": a changing call streams each
-/// completed step's event once): the executor of a restart is lost after its `DrainNode` frame
+/// completed step's event once): the executor of a restart is lost after its `StopNode` frame
 /// reached the caller and before that receipt reached any Build log the successor reads. The
-/// successor's attempt reissues `DrainNode` (an uncertain step to it) and writes its own receipt:
+/// successor's attempt reissues `StopNode` (an uncertain step to it) and writes its own receipt:
 /// two receipts of one step, one per attempt, each a frame under its own receipt key. The caller's
 /// stream reads them as the client's receipt fold does, per step the latest attempt deciding, so
-/// `node.draining` is delivered once and every other event of the restart once, in order.
+/// `node.connections.deleted` is delivered once and every other event of the restart once, in order.
 #[test]
 fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one_event_to_the_caller() {
     let cap = capture();
     let frames = cap.run(async {
         let rig = Arc::new(Rig::new());
         let proofs = Arc::new(crate::loopback::Proofs::default());
-        let script = Arc::new(LostAfterDrainNode { runs: Mutex::new(0), proofs: proofs.clone() });
+        let script = Arc::new(LostAfterStopNode { runs: Mutex::new(0), proofs: proofs.clone() });
         let door = door_via(&rig, Duration::from_secs(60), move |_| script, proofs).await;
         let served = serve(door).await;
         let mut stream = nodes_over(&served.carrier).restart(&"mesh1.rpc.1".parse().unwrap()).await.expect("the fabric-primary accepts the restart");
@@ -1053,5 +1051,5 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
     let lost: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["outcome"] == "executor-lost").collect();
     assert_eq!(lost.len(), 1, "the first attempt's executor was lost: {spans:?}");
     assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").len(), 1, "its departure was proven before the successor's attempt");
-    assert_eq!(spans_named(&spans, "rdm.node_admin.node.draining.via-reply-frame").len(), 1, "node.draining was delivered once");
+    assert_eq!(spans_named(&spans, "rdm.node_admin.node.connections.deleted.via-reply-frame").len(), 1, "node.connections.deleted was delivered once");
 }

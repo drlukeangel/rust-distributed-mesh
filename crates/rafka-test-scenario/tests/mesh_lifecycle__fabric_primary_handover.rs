@@ -289,7 +289,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let delete_executor = converged(&c, &format!("retire-node:{final_name}"));
     assert_eq!(delete_executor, fabric_primary, "the fabric-primary executes the final primary's node.delete (mesh1 has no other admin)");
 
-    // mesh1's members left through the member workflows under B: every member drained, stopped and
+    // mesh1's members left through the member workflows under B: every member stopped and
     // proven exited in the documented order, and none of the node-removal steps ran.
     let steps = named(&spans, "rdm.node_admin.deployment.update.via-step");
     // The node.delete's run: Build `c` from attempt `c_attempt`; the mesh.delete's: every other
@@ -308,9 +308,9 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         let order = order_in(name, false);
         let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
         let want: &[&str] = if name.contains(".admin.") {
-            &["NodeDeleting", "SeatTransfer", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
+            &["NodeDeleting", "SeatTransfer", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
         } else {
-            &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
+            &["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
         };
         assert_eq!(got, want, "{name}: the ordinary node.delete under {b}, node.stop first, then the exit proof and NodeDeleted");
     }
@@ -334,14 +334,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         (start_ns(&sp), end_ns(&sp))
     };
     let terminal_end = |name: &str, node_delete: bool| order_in(name, node_delete).iter().find(|(n, _, _)| n == "TerminateRuntime").map(|(_, _, e)| *e).unwrap_or_else(|| panic!("{name} has a TerminateRuntime step in the {} run", if node_delete { "node.delete" } else { "mesh.delete" }));
-    let drain_start = |name: &str, node_delete: bool| order_in(name, node_delete).iter().find(|(n, _, _)| n == "DrainNode").map(|(_, st, _)| *st).unwrap_or_else(|| panic!("{name} has a DrainNode step in the {} run", if node_delete { "node.delete" } else { "mesh.delete" }));
+    let stop_start = |name: &str, node_delete: bool| order_in(name, node_delete).iter().find(|(n, _, _)| n == "StopNode").map(|(_, st, _)| *st).unwrap_or_else(|| panic!("{name} has a StopNode step in the {} run", if node_delete { "node.delete" } else { "mesh.delete" }));
     let (r1, r2) = (member("mesh1.rpc.1"), member("mesh1.rpc.2"));
     assert!(r1.0 < r2.1 && r2.0 < r1.1, "the ordinary nodes' workflows overlap in time: {r1:?} {r2:?}");
     let tier1_last = terminal_end("mesh1.rpc.1", false).max(terminal_end("mesh1.rpc.2", false));
     let tier2: Vec<&String> = members.iter().filter(|n| n.contains(".admin.")).collect();
     assert_eq!(tier2.len(), 1, "one other node-admin of mesh1: {members:?}");
     for n in &tier2 {
-        assert!(drain_start(n, false) > tier1_last, "{n} (a node-admin) drained only after every ordinary node's exit was proven");
+        assert!(stop_start(n, false) > tier1_last, "{n} (a node-admin) stopped only after every ordinary node's exit was proven");
     }
     let handoff = named(&spans, "rdm.node_admin.mesh.update.via-handoff-validated").into_iter().find(|sp| sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("shutdown-mesh:"))).cloned().expect("the handoff was validated");
     assert_eq!(handoff["attributes"]["outcome"], "applied", "the owner validated the mesh-leave handoff: {handoff}");
@@ -408,7 +408,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // exact exit proof, its row Deleted, NodeDeleted, its removal.
     let order = order_in(&final_name, true);
     let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
-    assert_eq!(got, ["NodeDeleting", "SeatTransfer", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name}: the ordinary node.delete, node.stop first, then the exit proof");
+    assert_eq!(got, ["NodeDeleting", "SeatTransfer", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name}: the ordinary node.delete, node.stop first, then the exit proof");
     let c_steps: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == final_name.as_str() && node_delete_run(sp)).collect();
     assert!(c_steps.iter().all(|sp| sp["attributes"]["outcome"] == "complete"), "{final_name}: every step of its node.delete completed: {c_steps:?}");
     let row_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| s(&sp["attributes"]["subject"]) == final_name && s(&sp["attributes"]["node"]) == fabric_primary).collect();
@@ -464,15 +464,16 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     for (name, id) in mesh1_ids.iter() {
         assert!(s(&dropped["attributes"]["dropped"]).split(", ").any(|d| d == format!("{name} {id}")), "mesh-left dropped the contact of {name} ({id}): {dropped}");
     }
-    // R-NS1 item 2: "Its last aggregate before a stop carries itself Leaving": after its drain and
-    // before its stop's cut, the last admin publishes mesh1's aggregate once more, itself the only
-    // member and Leaving; after the cut it publishes nothing (node-stop.md step 4, R-ON1).
+    // R-NS1 item 2: "Its last aggregate before a stop carries itself Leaving": after its stop's whole
+    // node.connections.delete { All } and before its stop's cut, the last admin publishes mesh1's
+    // aggregate once more, itself the only member and Leaving; after the cut it publishes nothing
+    // (node-stop.md step 4, R-ON1).
     let final_cut = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's transport was cut by its stop");
-    let final_drain = drain_start(&final_name, true);
+    let final_all_end = named(&spans, "rdm.node_admin.node.connections.delete.via-stop").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| end_ns(sp)).min().expect("the final primary's stop ran its node.connections.delete { All }");
     let leaving_aggregate: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-leaving-aggregate").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).collect();
     assert!(
-        leaving_aggregate.iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "Leaving" && attr_u(sp, "members") == 1 && (sp["attributes"]["published"] == json!(true) || sp["attributes"]["published"] == "true") && start_ns(sp) > final_drain && end_ns(sp) <= final_cut),
-        "the last admin {final_name} published mesh1's aggregate carrying itself Leaving after its drain and before its stop's cut: {leaving_aggregate:?}"
+        leaving_aggregate.iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "Leaving" && attr_u(sp, "members") == 1 && (sp["attributes"]["published"] == json!(true) || sp["attributes"]["published"] == "true") && start_ns(sp) >= final_all_end && end_ns(sp) <= final_cut),
+        "the last admin {final_name} published mesh1's aggregate carrying itself Leaving after its All and before its stop's cut: {leaving_aggregate:?}"
     );
     let after_cut: Vec<String> = named(&spans, "rdm.mesh.node.update.via-leave-announcement").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && start_ns(sp) > final_cut).map(|sp| format!("{}:{}", s(&sp["attributes"]["channel"]), s(&sp["attributes"]["outcome"]))).collect();
     assert!(after_cut.is_empty(), "the stopped final primary {final_name} announced nothing after its stop's cut: {after_cut:?}");
@@ -536,14 +537,14 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         let after: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == *m && start_ns(sp) > at).collect();
         assert!(after.iter().all(|sp| !routable(sp)), "no node holds {m} routable after its NodeStopped: {after:?}");
     }
-    // The Leaving row is the leave-mesh admission's commit, before the first member drains; the
-    // order the spec fixes is mesh-leaving's publication before the first drain.
+    // The Leaving row is the leave-mesh admission's commit, before the first member stops; the
+    // order the spec fixes is mesh-leaving's publication before the first stop.
     let leaving_commit: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-leaving-row").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
     assert!(leaving_commit.iter().any(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["outcome"]) == "applied"), "mesh1's primary {final_name} applied its mesh row Leaving at leave-mesh: {leaving_commit:?}");
-    let first_member_drain = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| drain_start(n, false)).min().unwrap();
-    assert!(leaving_commit.iter().all(|sp| end_ns(sp) < first_member_drain), "the Leaving row was committed before any member drained: {leaving_commit:?}");
+    let first_member_stop = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| stop_start(n, false)).min().unwrap();
+    assert!(leaving_commit.iter().all(|sp| end_ns(sp) < first_member_stop), "the Leaving row was committed before any member stopped: {leaving_commit:?}");
     let published_leaving = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leaving").into_iter().map(|sp| start_ns(sp)).min().expect("mesh-leaving was published");
-    assert!(published_leaving < first_member_drain, "mesh-leaving was published ({published_leaving}) before any member drained ({first_member_drain})");
+    assert!(published_leaving < first_member_stop, "mesh-leaving was published ({published_leaving}) before any member stopped ({first_member_stop})");
 
     // R-ST2: mesh1 held the fabric seat, so it was handed to an outside mesh-primary first. In
     // order: the command, the successor's commit at the next epoch, new-fabric-primary, the
@@ -563,7 +564,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert!(first_call < start_ns(&committed) && start_ns(&committed) < start_ns(&announced[0]) && start_ns(&announced[0]) < start_ns(&confirmed), "command, commit, new-fabric-primary, confirmation in order");
     let taken_calls = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21 && start_ns(sp) > start_ns(&announced[0]) && start_ns(sp) <= start_ns(&confirmed)).count();
     assert!(taken_calls >= 1, "FabricPrimaryTaken was called after new-fabric-primary and before the confirmation");
-    assert!(start_ns(&confirmed) < published_leaving, "the confirmation precedes mesh-leaving, LeaveMesh and every drain");
+    assert!(start_ns(&confirmed) < published_leaving, "the confirmation precedes mesh-leaving, LeaveMesh and every stop");
     assert!(named(&spans, "rdm.node_admin.fabric.reject.via-handover").is_empty(), "no handover call was refused");
     assert!(named(&spans, "rdm.node_admin.mesh.update.via-seat-inside-leaving-mesh").is_empty());
     assert_eq!(s(&committed["attributes"]["successor"]).split(':').next(), Some(fabric_primary.split('.').next().unwrap()), "the committed successor's mesh holds the seat afterwards");

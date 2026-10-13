@@ -78,7 +78,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     // 1. The removal.
     let mut removal = estate.nodes_obj().await.delete(&VICTIM.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {VICTIM}: {e}"));
     // The pre-notice is read from each receiver's overlay span below, not from a poll: the window
-    // in which the node is live and not routable is the drain and stop legs, and a poll's cadence
+    // in which the node is live and not routable is the stop leg, and a poll's cadence
     // is not evidence of it.
     let build_id = Estate::complete(&mut removal).await.build_id.0;
     let after = Estate::values(&estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 1, 1)]).await);
@@ -157,79 +157,71 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
         .expect("the runtime was terminated and inspected");
     assert!(start(deleted[0]) > terminal, "the departure follows the terminal proof");
     assert!(start(deleting[0]) < start(deleted[0]));
-    // The drain and stop legs (node-drain.md, node-stop.md): the executor's drain-node reached the
-    // exact birth (the victim's own `via-drain-node`), after the pre-notice; the victim called
-    // node-drained back and the executor accepted it; then stop-node, the victim's `via-stop-node`,
-    // its node-left call accepted by the executor, all before the terminal proof.
-    let drained_at = named(&spans, "rdm.node_admin.status.update.via-drain-node")
+    // The stop leg (node-stop.md steps 2-3): after the pre-notice the executor's stop-node reached the
+    // exact birth (the victim's own `via-stop-node`); inside it the victim ran its whole
+    // node.connections.delete { All }, then its own transport cut; its reply `stopped` is the
+    // stop's completion (no node-left call is made), all before the terminal proof.
+    let stop_span = named(&spans, "rdm.node_admin.status.update.via-stop-node")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == VICTIM)
-        .map(start)
-        .min()
-        .expect("the victim served drain-node");
-    assert!(drained_at > start(deleting[0]) && drained_at < terminal, "the drain lands between the pre-notice and the terminal proof");
-    let stopped_at = named(&spans, "rdm.node_admin.status.update.via-stop-node")
-        .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == VICTIM)
-        .map(start)
-        .min()
+        .min_by_key(|sp| start(sp))
+        .cloned()
         .expect("the victim served stop-node");
-    let node_drained_at = named(&spans, "rdm.node_admin.status.update.via-completion-accepted")
+    let stopped_at = start(&stop_span);
+    assert_eq!(s(&stop_span["attributes"]["receipt"]), "established", "the victim's All let its in-flight work reach zero: {stop_span}");
+    let all = named(&spans, "rdm.node_admin.node.connections.delete.via-stop")
         .into_iter()
-        .filter(|sp| sp["attributes"]["op"] == "node-drained" && sp["attributes"]["subject"] == victim_id.as_str() && sp["attributes"]["outcome"] == "applied")
+        .filter(|sp| sp["attributes"]["node"] == VICTIM)
+        .cloned()
+        .collect::<Vec<Value>>();
+    assert_eq!(all.len(), 1, "the victim's stop ran its node.connections.delete {{ All }} once: {all:#?}");
+    assert_eq!(all[0]["parent_span_id"], stop_span["span_id"], "the All is the stop's own step, inside its via-stop-node: {}", all[0]);
+    let all_at = start(&all[0]);
+    let all_end = all[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX);
+    assert!(all_at > start(deleting[0]) && all_at < terminal, "the All lands between the pre-notice and the terminal proof");
+    let cut_at = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == VICTIM)
         .map(start)
         .min()
-        .expect("the executor accepted no node-drained from the victim");
-    // `left` is the reply of the stop-node call itself: the command-sent span records `left` when the
+        .expect("the victim's stop cut its own transport");
+    // `left` is the reply of the stop-node call itself: the command-sent span records `stopped` when the
     // reply arrived, and no node-left call is made.
     let left_at = named(&spans, "rdm.node_admin.node.update.via-command-sent")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["command"] == "stop-node" && sp["attributes"]["admission"] == "stopped")
         .map(start)
         .min()
-        .expect("the victim answered stop-node left");
+        .expect("the victim answered stop-node stopped");
     assert!(named(&spans, "rdm.node_admin.status.update.via-completion-accepted").into_iter().all(|sp| sp["attributes"]["op"] != "node-left"), "no node-left call is made: left rides the stop reply");
-    assert!(drained_at < node_drained_at && node_drained_at < stopped_at, "stop-node follows the accepted node-drained: drain {drained_at} drained {node_drained_at} stop {stopped_at}");
-    assert!(stopped_at < left_at && left_at < terminal, "left is answered before the terminal proof: stop {stopped_at} left {left_at} terminal {terminal}");
+    assert!(stopped_at < all_at && all_end <= cut_at, "the transport cut follows the whole All: stop {stopped_at} All {all_at}..{all_end} cut {cut_at}");
+    assert!(left_at < terminal, "left is answered before the terminal proof: left {left_at} terminal {terminal}");
     // The mesh primary publishes the departure from that reply, before the runtime exits.
     let published = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).map(start).min().expect("the executor published NodeStopped from the left reply");
     assert!(left_at <= published && published < terminal, "NodeStopped follows left and precedes the terminal proof");
     let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["build_id"] == build_id).map(|sp| s(&sp["attributes"]["step"])).collect();
     assert!(!victim_steps.iter().any(|st| st == "ReleaseStorage"), "no step of the delete releases storage: {victim_steps:?}");
-    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"] {
+    // The All is the node's own, inside its stop: the delete composes no separate DeleteConnections step.
+    assert!(!victim_steps.iter().any(|st| st == "DeleteConnections"), "the delete composes no DeleteConnections step beside the stop: {victim_steps:?}");
+    for step in ["StopNode", "AwaitNodeLeft"] {
         let done = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
             .find(|sp| sp["attributes"]["step"] == step && sp["attributes"]["node"] == VICTIM && sp["attributes"]["outcome"] == "complete")
             .unwrap_or_else(|| panic!("{step} completed on the executor"));
         assert!(start(done) < terminal, "{step} precedes termination");
     }
-    // The command hooks: node-draining and node-leaving, which the owning mesh-admin authors, are heard
+    // The command hook: node-leaving, which the owning mesh-admin authors at the StopNode step, is heard
     // by the other nodes of the fabric; the node authors no node-left frame (it gossips nothing for its
-    // stop).
+    // stop), and nothing publishes node-draining or node-drained (reserved frame positions).
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == VICTIM).count(), 0, "no node-left frame of the victim is heard by anyone");
-    for kind in ["node-draining", "node-leaving"] {
-        let heard = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] != VICTIM).count();
-        assert!(heard >= 1, "{kind} for the victim was heard by another node: {heard}");
+    let heard = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-leaving" && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] != VICTIM).count();
+    assert!(heard >= 1, "node-leaving for the victim was heard by another node: {heard}");
+    for kind in ["node-draining", "node-drained"] {
+        let reserved = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count();
+        assert_eq!(reserved, 0, "no {kind} frame of the victim is published or heard");
     }
-    // The completion hook is the victim's own (gossip.md "Node-draining and node-leaving events": "The
-    // node-drained upward call runs NodeDrained in the sending node after eligible in-flight work
-    // reaches zero. The node publishes the event on its own mesh channel."). What the doc makes certain
-    // is the publication and the call, not a peer's receipt: "the directed calls are the certainty"
-    // (gossip.md §10), and NodeDrained rides no aggregate (§7: only NodeDeleting and NodeDeleted are
-    // retained, in `in_flight` and `departed`; "No event is retried by the application and no second
-    // delivery mechanism exists"). The victim's stop cuts its gossip neighbours right after the drain
-    // (node-stop.md step 3), so a peer holds the frame only if iroh-gossip pushed it before the cut.
-    // The victim takes its own frame on its mesh channel, hands it to gossip, and calls node-drained at
-    // the executor, which accepted it (asserted above).
-    let own_hook: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame")
-        .into_iter()
-        .filter(|sp| sp["attributes"]["kind"] == "node-drained" && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] == VICTIM)
-        .collect();
-    assert_eq!(own_hook.len(), 1, "the victim published its node-drained once: {own_hook:#?}");
-    assert_eq!((s(&own_hook[0]["attributes"]["via"]), s(&own_hook[0]["attributes"]["forwarded_by"])), ("mesh-channel".to_string(), String::new()), "on its own mesh channel, as its author: {}", own_hook[0]);
-    let call: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["completion"] == "node-drained").collect();
-    assert_eq!(call.len(), 1, "the victim made one node-drained completion call: {call:#?}");
-    assert_eq!((s(&call[0]["attributes"]["hook"]), s(&call[0]["attributes"]["answer"])), ("published".to_string(), "applied".to_string()), "the hook went to gossip before the call, which the executor applied: {}", call[0]);
+    let stop_calls: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && ["node-left", "node-drained"].iter().any(|c| sp["attributes"]["completion"] == *c)).collect();
+    assert!(stop_calls.is_empty(), "the victim makes no completion call for its stop, its reply is the completion: {stop_calls:#?}");
     let heard_deleting = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     // The victim's own mesh hears the pre-notice on its channel. A peer mesh gets it only inside a backbone

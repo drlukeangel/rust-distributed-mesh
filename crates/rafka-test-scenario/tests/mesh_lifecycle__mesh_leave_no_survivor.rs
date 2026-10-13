@@ -8,8 +8,8 @@ use crate::mesh_lifecycle__mesh_leave_resume::{assert_resumed, attr_u, primary_l
 use rafka_test_scenario::estate::named;
 use serde_json::Value;
 
-/// CONTRACT: mesh2's only admin, killed while it holds rpc.2's drain receipt and rpc.1's stop
-/// receipt (rpc.1 stopped, its NodeStopped unpublished, no Exited receipt), leaves no admin of the
+/// CONTRACT: mesh2's only admin, killed while it holds rpc.2's and rpc.1's StopNode
+/// receipts (both stopped, neither NodeStopped published, no Exited receipt), leaves no admin of the
 /// mesh: the fabric-primary proves and records its
 /// exact Exited first, creates the one node-admin the leaving mesh may gain at a path no birth
 /// held, amends the roster for it, and the resumed attempt finishes; MeshLeft covers the four
@@ -53,7 +53,7 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
     let captured: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-accepted-roster").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "attempt") >= 2 && sp["attributes"]["source"] == "captured").collect();
     assert!(captured.is_empty(), "the resumed attempt captures no roster: {captured:?}");
     let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "attempt") >= 2).collect();
-    // The door held rpc.2 drained and rpc.1 stopped, neither with an Exited receipt: the lost
+    // The door held rpc.2 and rpc.1 stopped, neither with an Exited receipt: the lost
     // primary's recorded exit is the one retained, and both ordinary members run under the created
     // admin. The final primary itself is no tier member.
     assert!(

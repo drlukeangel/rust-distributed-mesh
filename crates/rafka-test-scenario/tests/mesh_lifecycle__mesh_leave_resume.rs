@@ -2,7 +2,7 @@
 //! mid-leave (R11; mesh-leave.md, "Resume after the primary's loss").
 //!
 //! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 owns `shutdown-mesh:<mesh2 id>`.
-//! mesh2's primary is held by its fault door in tier 1 (rpc.2's node.delete DrainNode receipt) and
+//! mesh2's primary is held by its fault door in tier 1 (rpc.2's node.delete StopNode receipt) and
 //! SIGKILLed there by exact pid; the door dies with it. The owner's attempt ends the moment its view
 //! holds the lost primary proven exited (`via-final-primary-exited`), never on the hand-off bound,
 //! and the next attempts record the lost primary's exact Exited, amend the roster with the new final
@@ -74,7 +74,7 @@ pub(crate) struct Run {
     pub(crate) last: String,
 }
 
-/// Build {mesh1, mesh2 with `mesh2_admins` admins}, arm mesh2's primary's door at rpc.2's DrainNode
+/// Build {mesh1, mesh2 with `mesh2_admins` admins}, arm mesh2's primary's door at rpc.2's StopNode
 /// receipt (and, by `rpc1`, at rpc.1's StopNode receipt: rpc.1 stopped, its process alive, no Exited
 /// receipt, and its NodeStopped not yet published; or at rpc.1's NodeDeleted receipt: rpc.1's exit
 /// proof receipted and no NodeDeleted), submit {mesh1}, kill the held primary by exact pid once every
@@ -102,12 +102,15 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let lost = (s(&primary["name"]), s(&primary["incarnation_id"]));
     let door = Door::open(&root, &lost.0, &s(&primary["admin_api_base"])).await;
 
-    // Held in tier 1: rpc.2 drained and running, the other admin (form a) still ready for traffic.
-    let cut = "leave:rpc2-DrainNode";
+    // Held in tier 1: rpc.2's stop answered `stopped` (its node.connections.delete { All } and its
+    // transport cut done, its process alive) and its StopNode receipt is not yet durable, so a resumed
+    // attempt sends its stop-node again and the stopped birth answers the same receipt; the other
+    // admin (form a) is still ready for traffic.
+    let cut = "leave:rpc2-StopNode";
     // A member's end is its node.delete, under node.delete's own operation (mesh-delete.md step 3).
-    door.arm(cut, json!({"kind": "receipt", "step": "DrainNode", "operation": "retire-node:mesh2.rpc.2"})).await;
-    // rpc.1's stop completed (its stop-node answered stopped: drained, its mesh connections cut,
-    // its process alive) and its workflow held at that receipt: its NodeStopped, published at the
+    door.arm(cut, json!({"kind": "receipt", "step": "StopNode", "operation": "retire-node:mesh2.rpc.2"})).await;
+    // rpc.1's stop completed (its stop-node answered stopped: its connections deleted, its transport
+    // cut, its process alive) and its workflow held at that receipt: its NodeStopped, published at the
     // next step, is never published, and it has no Exited receipt. Nothing any admin holds names it.
     let stopped = "leave:rpc1-StopNode";
     if rpc1 == Rpc1::Stopped {
@@ -268,7 +271,7 @@ pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
     applied[0].clone()
 }
 
-/// CONTRACT: mesh2's primary, killed while it holds rpc.2's drain receipt, is replaced as the
+/// CONTRACT: mesh2's primary, killed while it holds rpc.2's StopNode receipt, is replaced as the
 /// leave's final primary by the surviving admin the election seats: the fabric-primary records
 /// the lost primary's exact Exited, then one RosterAmended naming the predecessor and the
 /// survivor, and the resumed attempt finishes; MeshLeft covers the four births of the accepted
@@ -292,7 +295,7 @@ async fn a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_adm
 /// step 4: the executor records the complete delete receipt and emits node.deleted; the Build
 /// carrier: "Completed steps are not rerun"). mesh2's primary is killed holding rpc.1 at its
 /// NodeDeleted receipt (rpc.1 exited and its exact Exited receipted, no NodeDeleted) and rpc.2 at
-/// its DrainNode receipt. The surviving admin the election seats finishes rpc.1's delete: its
+/// its StopNode receipt. The surviving admin the election seats finishes rpc.1's delete: its
 /// receipted TerminateRuntime is reused (the runtime is not terminated again), NodeDeleted is
 /// executed and published, and the delete ends; the leave then finishes as in form (a): mesh2 holds
 /// no ordinary node in any view once mesh.deleted ends the mesh.delete, and MeshLeft covers the four

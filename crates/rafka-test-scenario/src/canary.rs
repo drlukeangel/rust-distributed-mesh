@@ -163,7 +163,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
             .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["step"] == name && s["attributes"]["node"] == NODE && s["attributes"]["attempt"] == attempt.as_str())
             .unwrap_or_else(|| panic!("the {name} step span of the restart attempt for rpc.2"))
     };
-    for name in ["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady"] {
+    for name in ["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady"] {
         assert!(descends_from(&spans, step(name), node_op), "the {name} step descends from the node Build operation");
         assert_eq!(step(name)["attributes"]["outcome"], "complete", "{name}");
     }
