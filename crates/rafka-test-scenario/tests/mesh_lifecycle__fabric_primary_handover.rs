@@ -570,7 +570,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let said_updating = one("rdm.mesh.seat.update.via-announce-primary-updating");
     assert_eq!((attr_s(&said_updating, "node"), attr_s(&said_updating, "backbone"), attr_s(&said_updating, "mesh_channel")), (final_name.clone(), "sent".to_string(), "sent".to_string()), "{said_updating}");
     let cut_off = one("rdm.node_admin.seat.update.via-writes-cut-off");
-    assert_eq!(attr_s(&cut_off, "fabric_seat"), "true", "the holder cut off the fabric seat's writes: {cut_off}");
+    assert_eq!((attr_s(&cut_off, "mesh_seat").as_str(), attr_s(&cut_off, "fabric_seat").as_str()), ("false", "true"), "the holder cut off the fabric seat's writes and none of its mesh's (Part C1 step 4): {cut_off}");
     let row = one("rdm.node_admin.seat.update.via-seat-row-written");
     assert_eq!(attr_s(&row, "node"), final_name, "the holder, mesh1's row writer, wrote the row: {row}");
     assert!(!attr_s(&row, "fabric_epoch").is_empty() && attr_s(&row, "mesh_epoch").is_empty(), "the row moves the fabric seat alone; mesh1's seat stays with its primary: {row}");

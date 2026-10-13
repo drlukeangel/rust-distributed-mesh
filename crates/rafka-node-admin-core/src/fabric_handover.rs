@@ -136,7 +136,8 @@ pub type CutOffWrites = Arc<dyn Fn(WriteCutOff) -> std::pin::Pin<Box<dyn std::fu
 
 /// The file stores on the fabric's store root a seat transfer cuts off (R14 item 4): the
 /// mesh-primary seat's (the Mesh row, its members' Node rows and contacts, the mesh's status rows) and the fabric-primary
-/// seat's (the Fabric record, and every other mesh's rows).
+/// seat's (the Fabric record, and every other mesh's rows). Each seat's stores are cut off only when
+/// that seat moves (proposal Part C1 step 4).
 pub struct SeatStores {
     /// The Mesh rows.
     pub mesh: Arc<crate::storage::FileMeshStorage>,
@@ -150,18 +151,21 @@ pub struct SeatStores {
 
 impl SeatStores {
     /// Apply `c`: set cuts off every store the moving seats write and waits for every write already
-    /// issued; lift gives them back.
+    /// issued; lift gives them back. A seat that does not move keeps its stores: the fabric seat moved
+    /// alone (node.fabric-primary.update under mesh.delete) leaves the holder its mesh's rows, which it
+    /// writes as that mesh's primary until its own node.delete (proposal Part C2).
     pub async fn apply(&self, c: WriteCutOff) {
         // A label's rows of the tags index opened from now on are cut off at their open: set before
         // the seat's stores are collected, so a label store opened in between is in the collection
         // or cut off at its open, never neither.
-        if let WriteCutOff::Set { reason, .. } = &c {
+        if let WriteCutOff::Set { reason, mesh_seat: true, .. } = &c {
             self.nodes.cut_off_own_labels(Some(reason.clone()));
         }
         let nodes = self.nodes.mesh_primary_records();
-        let mut seat: Vec<&crate::record_store::FileRecords> = self.mesh.mesh_primary_records().into_iter().chain(nodes.iter()).chain(self.status.mesh_primary_records()).collect();
+        let mesh_stores = || -> Vec<&crate::record_store::FileRecords> { self.mesh.mesh_primary_records().into_iter().chain(nodes.iter()).chain(self.status.mesh_primary_records()).collect() };
         match c {
-            WriteCutOff::Set { reason, fabric_seat, .. } => {
+            WriteCutOff::Set { reason, mesh_seat, fabric_seat } => {
+                let mut seat = if mesh_seat { mesh_stores() } else { Vec::new() };
                 if fabric_seat {
                     seat.extend(self.fabric.fabric_primary_records());
                     // The fabric-primary seat authorizes other meshes' rows on the shared root too
@@ -174,8 +178,9 @@ impl SeatStores {
             WriteCutOff::Lift => {
                 self.nodes.cut_off_own_labels(None);
                 // A lifted store writes the rows it held through a publication made while it was
-                // cut off; one that cannot keeps holding them, and says which.
-                for s in seat.into_iter().chain(self.fabric.fabric_primary_records()) {
+                // cut off; one that cannot keeps holding them, and says which. A store that was not
+                // cut off owes nothing and lifts as a no-op.
+                for s in mesh_stores().into_iter().chain(self.fabric.fabric_primary_records()) {
                     if let Err(e) = s.lift_cut_off().await {
                         tracing::info!(error = %e, "a store whose cut-off was lifted could not write the rows it held: they stay held");
                     }
@@ -187,7 +192,8 @@ impl SeatStores {
                     tracing::info!(error = %e, "another mesh's status rows whose cut-off was lifted could not write the rows they held: they stay held");
                 }
             }
-            WriteCutOff::Committed { reason, fabric_seat, .. } => {
+            WriteCutOff::Committed { reason, mesh_seat, fabric_seat } => {
+                let mut seat = if mesh_seat { mesh_stores() } else { Vec::new() };
                 if fabric_seat {
                     seat.extend(self.fabric.fabric_primary_records());
                 }
@@ -203,7 +209,7 @@ impl SeatStores {
                     dropped.extend(self.status.drop_other_meshes().await.into_iter().map(|(store, n)| format!("{store} {n}")));
                 }
                 if !dropped.is_empty() {
-                    tracing::info_span!("rdm.node_admin.seat.reject.via-held-rows", reason = %reason, fabric_seat, dropped = %dropped.join(","))
+                    tracing::info_span!("rdm.node_admin.seat.reject.via-held-rows", reason = %reason, mesh_seat, fabric_seat, dropped = %dropped.join(","))
                         .in_scope(|| tracing::info!("the seat row ended this admin's authority over the moving seats' keys: the rows its stores still held are dropped, never written"));
                 }
             }
