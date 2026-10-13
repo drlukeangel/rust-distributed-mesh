@@ -438,10 +438,10 @@ impl NodeSelf {
     /// The apply of its row's name resolved at this birth: `Applied`, or `AlreadyApplied` for the
     /// name it holds (proposal node-properties-own-commands.md §2.4: the admission block "stays in
     /// force on the node until the apply resolves"). The block lifts for a live birth; every
-    /// connection it opens from here is under the name it now holds. A stopped birth admits no
-    /// connection while stopped: its block lifts at its start.
+    /// connection it opens from here is under the name it now holds. A birth stopping or stopped
+    /// admits no connection: its block lifts at its start.
     pub fn name_apply_resolved(&self) {
-        if !self.is_parked() {
+        if matches!(*self.cycle.lock().unwrap(), Cycle::Live(_)) {
             self.admit_new_connections();
         }
     }
