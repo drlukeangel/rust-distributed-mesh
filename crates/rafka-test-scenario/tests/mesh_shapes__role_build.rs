@@ -17,14 +17,14 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-fn owner() -> Owner {
+fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-shapes".into(),
         subfeature: "role-build".into(),
         rung: "SN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "roles_are_born_by_build_under_their_kind".into(),
+        test: test.into(),
     }
 }
 
@@ -59,7 +59,7 @@ async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn roles_are_born_by_build_under_their_kind() {
-    let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    let mut estate = Estate::bootstrap(owner("roles_are_born_by_build_under_their_kind"), "fabric1", "mesh1").await;
     let roles = [("broker", 1), ("gateway", 1), ("compute", 1)];
     let (first, nodes) = build(&estate, "roles", &roles).await;
     estate.artifact("nodes.json", &json!(nodes));
@@ -167,4 +167,50 @@ async fn roles_are_born_by_build_under_their_kind() {
         .clone();
     assert!(descends_from(&spans, &delete, &second_accepted), "the compute's removal descends from the second Build");
     estate.record_trace_url(first_accepted["trace_id"].as_str().unwrap_or(""));
+}
+
+/// The one node executable of node-admin's built-in set: every node_type but `node_admin` runs it.
+const NODE_EXECUTABLE: &str = "rafka-node";
+
+/// CONTRACT: with no explicit executable binding, node-admin's process provider launches its
+/// built-in set, which is two executables: the node-admin and the one node executable. A broker, a
+/// gateway and a compute born by one Build each run that one executable, and each boots as the
+/// node_type its launch names: the boot span (`rdm.mesh.node.create.via-deployment`) names the
+/// executable the process runs and the kind it took from its launch, and runs under the
+/// DeployRuntime step that launched it. No product role binary is launched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_build_with_no_executable_binding_launches_every_role_from_the_one_node_executable() {
+    let mut estate = Estate::bootstrap(owner("a_build_with_no_executable_binding_launches_every_role_from_the_one_node_executable"), "fabric1", "mesh1").await;
+    let roles = [("broker", 1), ("gateway", 1), ("compute", 1)];
+    let (build_id, nodes) = build(&estate, "roles", &roles).await;
+    estate.artifact("nodes.json", &json!(nodes));
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let accepted = named(&spans, "rdm.node_admin.build.create.via-rest")
+        .into_iter()
+        .find(|s| s["attributes"]["build_id"] == build_id.as_str())
+        .unwrap_or_else(|| panic!("no span accepted build {build_id}"))
+        .clone();
+    let mut launched = BTreeMap::new();
+    for (kind, _) in &roles {
+        let node = format!("mesh1.{kind}.1");
+        let step = named(&spans, "rdm.node_admin.deployment.update.via-step")
+            .into_iter()
+            .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == build_id.as_str())
+            .unwrap_or_else(|| panic!("no DeployRuntime step for {node}"))
+            .clone();
+        assert!(descends_from(&spans, &step, &accepted), "{node}'s launch runs under the Build that asked for it");
+        let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
+            .into_iter()
+            .find(|s| s["attributes"]["node"] == node.as_str())
+            .unwrap_or_else(|| panic!("{node} wrote no boot span"))
+            .clone();
+        assert!(descends_from(&spans, &boot, &step), "{node} booted under the DeployRuntime step that launched it");
+        assert_eq!(boot["attributes"]["executable"], NODE_EXECUTABLE, "{node} runs the one node executable of the built-in set: {boot}");
+        assert_eq!(boot["attributes"]["kind"], *kind, "{node} booted as the node_type its launch names: {boot}");
+        launched.insert(node, (boot["attributes"]["executable"].clone(), boot["attributes"]["kind"].clone(), boot["trace_id"].clone()));
+    }
+    estate.artifact("launched.json", &json!(launched));
+    estate.record_trace_url(accepted["trace_id"].as_str().unwrap_or(""));
 }
