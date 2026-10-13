@@ -164,6 +164,20 @@ impl std::fmt::Display for RowRefused {
     }
 }
 
+/// Which create a name claim is made for, which decides what its row takes from the `Deleted` row
+/// at its `path.name` beside the config (proposal node-properties-own-commands.md §1, tags: "set by
+/// the create spec (may be empty); inherited with the config on recover (from the Deleted row at the
+/// claim)").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimFor {
+    /// A `node.create`: the row carries its create spec's tags (RDM's create spec names none).
+    Create,
+    /// Node recovery's create over the exited birth's data dir (node-recovery.md step 4): the row
+    /// takes the tags with the config from the `Deleted` row at the key, indexed under the new node's
+    /// id in that one write (§8, recovery).
+    Recovery,
+}
+
 /// What a claim of a name did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Claimed {
@@ -254,12 +268,13 @@ impl NodeRows {
     /// once the `AllocateIdentity` receipt names `node_id` and before anything is prepared or
     /// launched for the birth, the writer of the mesh's rows puts the birth's row at `name`, status
     /// `Pending`, its config seeded from the previous row at the `path.name` (a `Deleted` row) or the
-    /// `<name>.old` row. The store adapter's insert-and-fail
+    /// `<name>.old` row, and its tags from that `Deleted` row only for a recovery's claim (`of`,
+    /// [`ClaimFor`]). The store adapter's insert-and-fail
     /// refuses a name another node's live row holds, `NameHeld { by }`, and nothing is written. A row
     /// the node holds already is left as it is. `allocated`: what the create allocated for the birth,
     /// written into the claim row with it ([`NodeRow::allocated`]), so the identity the claim is made
     /// with is durable wherever the claim is. One `via-node-row` span, `moment` `claim`.
-    pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>) -> Result<Claimed, RowRefused> {
+    pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, of: ClaimFor) -> Result<Claimed, RowRefused> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.create.via-node-row",
             node = %self.me,
@@ -277,7 +292,7 @@ impl NodeRows {
         let r = tracing::Instrument::instrument(
             async {
                 self.writer_check(&name.mesh, name).await?;
-                self.put_seeded(name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, &span).await
+                self.put_seeded(name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, of, &span).await
             },
             span.clone(),
         )
@@ -479,21 +494,24 @@ impl NodeRows {
 
     /// The row of `node_id` at `name`, `status`, its config seeded from the previous row at the
     /// `path.name` (another node's row there: the store adapter refuses it unless it is `Deleted`),
-    /// else the `<name>.old` row, else `own`; its tags seeded from that previous `Deleted` row
-    /// (proposal node-properties-own-commands.md §8, recovery: "the successor's claim over it seeds
-    /// config and tags from that Deleted row and writes the tags index entries under the successor's
-    /// id, in the same write that seeds config"). The store indexes a live row's labels under its node
-    /// in the put itself (`NodeRow::tag_moves`), so this one write is the inheritance: nothing is
-    /// copied later. A row the same node holds already is left as it is.
-    async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, span: &tracing::Span) -> Result<Claimed, RowRefused> {
+    /// else the `<name>.old` row, else `own`. Its tags: for a recovery's claim ([`ClaimFor::Recovery`])
+    /// those of that previous `Deleted` row (proposal node-properties-own-commands.md §8, recovery:
+    /// "the successor's claim over it seeds config and tags from that Deleted row and writes the tags
+    /// index entries under the successor's id, in the same write that seeds config"); for a plain
+    /// create its create spec's, none (§1: tags are "set by the create spec (may be empty)"). The
+    /// store indexes a live row's labels under its node in the put itself (`NodeRow::tag_moves`), so
+    /// this one write is the inheritance: nothing is copied later. A row the same node holds already
+    /// is left as it is.
+    #[allow(clippy::too_many_arguments)]
+    async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span) -> Result<Claimed, RowRefused> {
         let me = &self.me;
         let previous = self.storage.node_row_at(name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous row at {name} could not be read for {node_id}: {e}")))?;
         if let Some(p) = previous.as_ref().filter(|p| p.node_id == *node_id) {
             self.written.hold(p);
             return Ok(Claimed::HeldByNode(p.clone()));
         }
-        // The tags come with the config only from the Deleted row at this key (a recovery's claim).
-        let tags = previous.as_ref().filter(|p| p.status == NodeStatus::Deleted).map(|p| p.tags.clone()).unwrap_or_default();
+        // The tags come with the config only for a recovery's claim, from the Deleted row at this key.
+        let tags = previous.as_ref().filter(|p| of == ClaimFor::Recovery && p.status == NodeStatus::Deleted).map(|p| p.tags.clone()).unwrap_or_default();
         let seed = match previous {
             Some(p) => Some(p),
             None => self.storage.node_row_at(&name.renamed()).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the .old row at {} could not be read for {node_id}: {e}", name.renamed())))?.filter(|p| p.node_id != *node_id),
@@ -642,7 +660,9 @@ impl NodeRows {
                 self.written.hold(&row);
                 Claimed::HeldByNode(row)
             }
-            None => self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, span).await?,
+            // A recovery's claim precedes its birth's arrival (the create claims before it launches),
+            // so an arrival that finds no row of its node is never a recovery's: a plain create's seed.
+            None => self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, ClaimFor::Create, span).await?,
         };
         if let Claimed::HeldByNode(row) = &claimed {
             if let Err(why) = finish_release(&*self.storage, me, row, "rebuild").await {

@@ -9367,12 +9367,12 @@ mod tests {
         let capture = crate::span_capture::Capture::new("i143-3068-leaving-mesh-admin-claim");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
         let created: PathName = "mesh2.admin.2".parse().unwrap();
-        let refused = rows.claim(&created, &NodeId::mint(), "create-node:mesh2.admin.2", None).await;
+        let refused = rows.claim(&created, &NodeId::mint(), "create-node:mesh2.admin.2", None, crate::node_rows::ClaimFor::Create).await;
         assert!(matches!(&refused, Err(crate::node_rows::RowRefused::NotMeshPrimary(_))), "unheld, the lost holder still writes mesh2's rows: {refused:?}");
         prove_exit(&book, &records, &lost).await;
         records.install_projected(&view, || project("fabric1", &fabric1(), ProviderKind::Process, &book, &records)).await;
         let born = NodeId::mint();
-        match rows.claim(&created, &born, "create-node:mesh2.admin.2", None).await {
+        match rows.claim(&created, &born, "create-node:mesh2.admin.2", None, crate::node_rows::ClaimFor::Create).await {
             Ok(crate::node_rows::Claimed::Written { row, .. }) => assert_eq!((row.node_id, row.status), (born, NodeStatus::Pending)),
             other => panic!("the fabric-primary claims the created admin's name once the lost holder's exit is held: {other:?}"),
         }
