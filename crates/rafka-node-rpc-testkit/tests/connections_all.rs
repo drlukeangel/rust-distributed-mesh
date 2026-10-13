@@ -141,11 +141,11 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
 /// nothing: it still answers `All` with `ConnectionsDeleted`. What must NOT happen: `Applied`, or a
 /// `NodeDrained` call back to the commander.
 #[test]
-fn a_retired_drain_node_is_refused_by_name_and_starts_nothing() {
-    let cap = crate::common::capture("a_retired_drain_node_is_refused_by_name_and_starts_nothing");
+fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
+    let cap = crate::common::capture("a_reserved_status_position_is_refused_by_name_and_starts_nothing");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), "a_retired_drain_node_is_refused_by_name_and_starts_nothing") {
+        if crate::own_process::delegated(module_path!(), "a_reserved_status_position_is_refused_by_name_and_starts_nothing") {
             return;
         }
         let fabric = FabricId::mint();

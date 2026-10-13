@@ -664,8 +664,8 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
 /// one `Complete`.
 fn restart_order(retire_order: &[String]) -> Vec<String> {
     let mut o: Vec<String> = vec![RetireStep::NodeRestarting.name().to_string()];
-    let parked = [RetireStep::StopNode, RetireStep::AwaitNodeLeft].map(RetireStep::name);
-    o.extend(retire_order.iter().filter(|s| parked.contains(&s.as_str())).cloned());
+    let stop = [RetireStep::StopNode, RetireStep::AwaitNodeLeft].map(RetireStep::name);
+    o.extend(retire_order.iter().filter(|s| stop.contains(&s.as_str())).cloned());
     o.extend([StartStep::StartNode.name(), CreateStep::WaitForNodeReady.name(), CreateStep::Complete.name()].map(String::from));
     o
 }

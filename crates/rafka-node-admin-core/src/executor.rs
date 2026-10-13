@@ -534,11 +534,11 @@ mod tests {
         assert_eq!(who(&replace("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's replace is its mesh primary's");
         assert_eq!(who(&replace(m2), &t3), p2, "a non-primary admin's replace is its mesh primary's");
         assert_eq!(who(&replace(p2), &t3), m2, "a mesh primary's own replace is handed to the admin its mesh seats once it drains");
-        let drain = |n: &str| BuildOperation::DeleteConnections { node: n.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() };
+        let connections = |n: &str| BuildOperation::DeleteConnections { node: n.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() };
         let stop = |n: &str| BuildOperation::StopNode { node: n.parse().unwrap(), from_incarnation: crate::model::IncarnationId::mint() };
-        assert_eq!(who(&drain("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's drain is its mesh primary's");
+        assert_eq!(who(&connections("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's node.connections.delete is its mesh primary's");
         assert_eq!(who(&stop("mesh2.rpc.1"), &t), "mesh2.admin.1", "a member's stop is its mesh primary's");
-        assert_eq!(who(&drain(m2), &t3), p2, "a non-primary admin's drain is its mesh primary's");
+        assert_eq!(who(&connections(m2), &t3), p2, "a non-primary admin's node.connections.delete is its mesh primary's");
         assert_eq!(who(&stop(p2), &t3), m2, "a mesh primary's own stop is handed to the admin its mesh seats once it drains");
         assert_eq!(who(&BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }, &t), "mesh1.admin.1");
         assert_eq!(who(&shutdown("mesh2"), &t), "mesh1.admin.1");

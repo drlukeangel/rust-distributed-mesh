@@ -1433,9 +1433,9 @@ mod tests {
         retired.status = crate::model::NodeStatus::Draining;
         retired.is_primary = true;
         retired.is_fabric_primary = true;
-        let mut reborn = node("mesh1.admin.1");
-        reborn.kind = NodeKind::NodeAdmin;
-        reborn.mesh = "mesh1".into();
+        let mut successor = node("mesh1.admin.1");
+        successor.kind = NodeKind::NodeAdmin;
+        successor.mesh = "mesh1".into();
         let mut member = node("mesh1.rpc.1");
         member.kind = NodeKind::RpcNode;
         member.mesh = "mesh1".into();
@@ -1449,16 +1449,16 @@ mod tests {
             meshes: Vec::new(),
             nodes: vec![retired.clone(), member.clone(), owner.clone()],
         };
-        assert_ne!(retired.node_id, reborn.node_id, "a replace mints a new node id");
+        assert_ne!(retired.node_id, successor.node_id, "a replace mints a new node id");
         assert_eq!(view.cohort_primary("mesh1", NodeKind::NodeAdmin).map(|n| n.node_id.clone()), Some(retired.node_id.clone()), "the retired birth holds mesh1's seat in this view");
-        let auth = authority_of(&reborn, view.clone());
+        let auth = authority_of(&successor, view.clone());
         let holding_me = |r: &StatusReply| matches!(r, R::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed } } if needed == "a view holding this admin");
 
         let declare = StatusRequest::DeclareNodeState { node_id: member.node_id.clone(), incarnation: member.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic };
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare);
         assert!(holding_me(&reply) && effect.is_none(), "the retired birth's seat is not this admin's: {reply:?}");
 
-        let stop = StatusRequest::StopNode { node_id: reborn.node_id.clone(), incarnation: reborn.incarnation_id.clone().unwrap(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.admin.1".into() };
+        let stop = StatusRequest::StopNode { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.admin.1".into() };
         let reply = auth.apply(Some(owner.clone()), &stop).await;
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node naming this admin's node id reaches the subject's own door: {reply:?}");
     }

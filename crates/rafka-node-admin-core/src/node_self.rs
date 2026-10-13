@@ -694,7 +694,7 @@ impl NodeSelf {
                     node = %self.held_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt,
                     commander = %named(commander.as_ref()), state = "Leaving", receipt = tracing::field::Empty, "otel.kind" = "internal"
                 );
-                let receipt = self.park(commander.as_ref(), spare, &op).instrument(span.clone()).await;
+                let receipt = self.stop_steps(commander.as_ref(), spare, &op).instrument(span.clone()).await;
                 span.record("receipt", receipt.name());
                 *self.cycle.lock().unwrap() = Cycle::Parked(receipt.clone());
                 let _ = tx.send(Some(receipt.clone()));
@@ -704,7 +704,9 @@ impl NodeSelf {
         StatusReply::Stopped { receipt }
     }
 
-    async fn park(&self, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, op: &LifecycleOp) -> ConnectionsReceipt {
+    /// The stop's own steps (node-stop.md steps 2-3): the whole `node.connections.delete { All }`,
+    /// then the transport cut; the receipt is the All's.
+    async fn stop_steps(&self, commander: Option<&NodeId>, spare: Option<iroh::PublicKey>, op: &LifecycleOp) -> ConnectionsReceipt {
         use tracing::Instrument;
         parking().park();
         if let Some(retire) = &self.retire {
