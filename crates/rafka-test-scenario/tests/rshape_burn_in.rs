@@ -391,7 +391,7 @@ async fn check_identities_and_launches(f: &Formed, nodes: &[Value], inv: &mut In
 
 /// Exactly one mesh primary node-admin per mesh, exactly one fabric-primary and it is a mesh
 /// primary node-admin, and the fabric record agrees with the nodes' own flags.
-fn check_authorities(nodes: &[Value], fabric: &Value, inv: &mut Invariants) -> Value {
+fn check_primaries(nodes: &[Value], fabric: &Value, inv: &mut Invariants) -> Value {
     let mut per_mesh = BTreeMap::new();
     for m in MESHES {
         let primaries: Vec<String> = nodes.iter().filter(|n| n["mesh"] == m && n["kind"] == "node_admin" && n["is_primary"] == true).map(|n| s(&n["name"])).collect();
@@ -651,7 +651,7 @@ struct Views<'a> {
     actions: Vec<Value>,
     operations: Vec<Value>,
     outcomes: Vec<Value>,
-    authority_history: Vec<Value>,
+    primaries_history: Vec<Value>,
     route_history: Vec<Value>,
     runtime_history: Vec<Value>,
     inv: Invariants,
@@ -666,7 +666,7 @@ fn write_views(v: Views<'_>, spans_index: Vec<Value>, spans: &[Value]) {
     write_jsonl(dir, "actions.jsonl", &v.actions);
     write_jsonl(dir, "operations.jsonl", &v.operations);
     write_jsonl(dir, "outcomes.jsonl", &v.outcomes);
-    write_jsonl(dir, "authority-history.jsonl", &v.authority_history);
+    write_jsonl(dir, "primaries-history.jsonl", &v.primaries_history);
     write_jsonl(dir, "route-history.jsonl", &v.v_route(spans, v.route_history.clone()));
     write_jsonl(dir, "runtime-history.jsonl", &v.runtime_history);
     write_json(dir, "invariant-results.json", &json!({"cell": f.cell, "tier": f.shape.tier, "provider": provider(), "invariants": v.inv.0}));
@@ -691,7 +691,7 @@ fn write_views(v: Views<'_>, spans_index: Vec<Value>, spans: &[Value]) {
             "actions.jsonl": "every Node RPC action and call the cell issued, with the trace id of each call",
             "operations.jsonl": "every issued operation with its stable id and intent",
             "outcomes.jsonl": "the typed outcome of every operation and its provenance",
-            "authority-history.jsonl": "the fabric record and the nodes' primary flags at each checkpoint",
+            "primaries-history.jsonl": "the fabric record and the nodes' primary flags at each checkpoint",
             "route-history.jsonl": "every route.resolve span of the run (route, carrier, target, outcome)",
             "runtime-history.jsonl": "each birth's own ready-span runtime facts beside the provider's observation of its runtime",
             "spans/": "a copy of every span file the estate wrote, unchanged (estate/<feature>/<test>/spans is authoritative)",
@@ -748,7 +748,7 @@ async fn provider_left_of(bound: &[PathBuf], stop_started: Instant, inv: &mut In
     json!({"left": left, "estate_stop_returned_after_ms": stop_returned_ms, "last_exit_observed_after_ms": wall})
 }
 
-fn authority_row(phase: &str, nodes: &[Value], fabric: &Value) -> Value {
+fn primaries_row(phase: &str, nodes: &[Value], fabric: &Value) -> Value {
     json!({
         "t_ms": now_ms(), "phase": phase, "fabric_primary": fabric["fabric_primary"], "fabric_build_id": fabric["build_id"],
         "mesh_primaries": fabric["meshes"].as_array().into_iter().flatten().map(|m| json!({"mesh": m["name"], "primary_admin": m["primary_admin"], "status": m["status"]})).collect::<Vec<_>>(),
@@ -790,15 +790,15 @@ async fn mock_fast_estate_forms_and_routes_opaque_calls() {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
-    let mut authority_history = vec![authority_row("formed", &nodes, &fabric)];
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
+    let mut primaries_history = vec![primaries_row("formed", &nodes, &fabric)];
     let connections = converge_connections(&f, &mut inv).await;
     let mut routes = RouteRun::new();
     routes.run(&f, &nodes, &mut inv).await;
     f.actions.extend(routes.calls.iter().map(action_row));
     let fabric_end = fabric_now(&f.estate).await;
     let nodes_end = f.estate.node_values().await;
-    authority_history.push(authority_row("routed", &nodes_end, &fabric_end));
+    primaries_history.push(primaries_row("routed", &nodes_end, &fabric_end));
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
@@ -816,11 +816,11 @@ async fn mock_fast_estate_forms_and_routes_opaque_calls() {
             actions,
             operations: routes.operations(),
             outcomes: routes.outcomes(),
-            authority_history,
+            primaries_history,
             route_history: Vec::new(),
             runtime_history: runtime,
             inv,
-            extra: json!({"authorities": authorities, "connections": connections, "provider_after_stop": left, "services": services, "formation_chains": chains, "routes": route_obs, "note": "the reduced fast control; the twenty-node canonical receipts are separate"}),
+            extra: json!({"primaries": primaries, "connections": connections, "provider_after_stop": left, "services": services, "formation_chains": chains, "routes": route_obs, "note": "the reduced fast control; the twenty-node canonical receipts are separate"}),
         },
         index,
         &spans,
@@ -832,8 +832,8 @@ async fn formation(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
-    let authority_history = vec![authority_row("formed", &nodes, &fabric)];
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
+    let primaries_history = vec![primaries_row("formed", &nodes, &fabric)];
     let connections = converge_connections(&f, &mut inv).await;
     let fabric_end = fabric_now(&f.estate).await;
     let nodes_end = f.estate.node_values().await;
@@ -845,8 +845,8 @@ async fn formation(cell: &str, shape: Shape) {
     let chains = check_formation_chain(&f, &spans, &mut inv);
     let runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
     let index = copy_spans(&f.estate, &f.dir);
-    let mut authority_history = authority_history;
-    authority_history.push(authority_row("final", &nodes_end, &fabric_end));
+    let mut primaries_history = primaries_history;
+    primaries_history.push(primaries_row("final", &nodes_end, &fabric_end));
     let actions = f.actions.clone();
     write_views(
         Views {
@@ -855,11 +855,11 @@ async fn formation(cell: &str, shape: Shape) {
             actions,
             operations: Vec::new(),
             outcomes: Vec::new(),
-            authority_history,
+            primaries_history,
             route_history: Vec::new(),
             runtime_history: runtime,
             inv,
-            extra: json!({"authorities": authorities, "connections": connections, "provider_after_stop": left, "services": services, "formation_chains": chains}),
+            extra: json!({"primaries": primaries, "connections": connections, "provider_after_stop": left, "services": services, "formation_chains": chains}),
         },
         index,
         &spans,
@@ -1079,15 +1079,15 @@ async fn mock_roles_route_opaque_calls_to_exact_nodes() {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
-    let mut authority_history = vec![authority_row("formed", &nodes, &fabric)];
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
+    let mut primaries_history = vec![primaries_row("formed", &nodes, &fabric)];
     let connections = converge_connections(&f, &mut inv).await;
     let mut routes = RouteRun::new();
     routes.run(&f, &nodes, &mut inv).await;
     f.actions.extend(routes.calls.iter().map(action_row));
     let fabric_end = fabric_now(&f.estate).await;
     let nodes_end = f.estate.node_values().await;
-    authority_history.push(authority_row("routed", &nodes_end, &fabric_end));
+    primaries_history.push(primaries_row("routed", &nodes_end, &fabric_end));
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
@@ -1105,11 +1105,11 @@ async fn mock_roles_route_opaque_calls_to_exact_nodes() {
             actions,
             operations: routes.operations(),
             outcomes: routes.outcomes(),
-            authority_history,
+            primaries_history,
             route_history: Vec::new(),
             runtime_history: runtime,
             inv,
-            extra: json!({"authorities": authorities, "connections": connections, "provider_after_stop": left, "services": services, "formation_chains": chains, "routes": route_obs}),
+            extra: json!({"primaries": primaries, "connections": connections, "provider_after_stop": left, "services": services, "formation_chains": chains, "routes": route_obs}),
         },
         index,
         &spans,
@@ -1315,8 +1315,8 @@ async fn mock_traffic_accounts_for_every_outcome_without_uncertain_replay() {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    check_authorities(&nodes, &fabric, &mut inv);
-    let mut authority_history = vec![authority_row("formed", &nodes, &fabric)];
+    check_primaries(&nodes, &fabric, &mut inv);
+    let mut primaries_history = vec![primaries_row("formed", &nodes, &fabric)];
     converge_connections(&f, &mut inv).await;
 
     let brokers: Vec<Value> = nodes.iter().filter(|n| n["kind"] == "broker").cloned().collect();
@@ -1344,9 +1344,9 @@ async fn mock_traffic_accounts_for_every_outcome_without_uncertain_replay() {
     for _ in 0..6 {
         issue(&f, &mut ops, &mut rng, &mut seq, &brokers, &gateways, None, "steady-after").await;
     }
-    authority_history.push({
+    primaries_history.push({
         let fb = fabric_now(&f.estate).await;
-        authority_row("after-changes", &f.estate.node_values().await, &fb)
+        primaries_row("after-changes", &f.estate.node_values().await, &fb)
     });
     let during: usize = ops.iter().filter(|(o, _)| o.window == "during-restart").count();
     inv.holds("traffic was issued inside each injected change", changes.iter().all(|c| c["operations_issued_during"].as_u64().unwrap_or(0) >= 1), json!({"changes": changes, "during_total": during}));
@@ -1390,7 +1390,7 @@ async fn mock_traffic_accounts_for_every_outcome_without_uncertain_replay() {
     let chains = check_formation_chain(&f, &spans, &mut inv);
     let runtime = check_runtime_facts(&f, &nodes, &launches, &spans, &mut inv);
     let index = copy_spans(&f.estate, &f.dir);
-    authority_history.push(authority_row("final", &nodes_end, &fabric_end));
+    primaries_history.push(primaries_row("final", &nodes_end, &fabric_end));
     actions.extend(ops.iter().map(|(_, c)| action_row(c)));
     actions.extend(verification.iter().map(action_row));
     f.actions = actions.clone();
@@ -1401,7 +1401,7 @@ async fn mock_traffic_accounts_for_every_outcome_without_uncertain_replay() {
             actions,
             operations,
             outcomes,
-            authority_history,
+            primaries_history,
             route_history: Vec::new(),
             runtime_history: runtime,
             inv,
@@ -1584,7 +1584,7 @@ impl Stable {
 
 /// What an authority cell records as it goes: the traffic ledger, the authority history, the births
 /// seen, every accepted topology write, every writer probe and every scenario event.
-struct Authority {
+struct Run {
     traffic: Traffic,
     history: Vec<Value>,
     births: Vec<Value>,
@@ -1607,7 +1607,7 @@ struct Authority {
     attempts: BTreeMap<String, u64>,
 }
 
-/// An accepted topology write (`Authority::write`): the node call and the node, or the mesh, it names.
+/// An accepted topology write (`Run::write`): the node call and the node, or the mesh, it names.
 enum Write {
     /// `node.restart` of the node: the next attempt of the accepted Build.
     Restart(String),
@@ -1650,7 +1650,7 @@ impl Write {
     }
 }
 
-/// What `Authority::finish` waits for, observed from the view and the Build, never from elapsed time.
+/// What `Run::finish` waits for, observed from the view and the Build, never from elapsed time.
 enum Until {
     /// The node is ready again as the same birth: its node id and incarnation unchanged (node-restart.md: a
     /// restart keeps the node.id, the incarnation and the process).
@@ -1670,7 +1670,7 @@ fn progress(msg: &str) {
     eprintln!("[authority] {} {msg}", now_ms());
 }
 
-impl Authority {
+impl Run {
     fn new(seed: u64, nodes: &[Value]) -> Self {
         let known = nodes.iter().filter(|n| n["kind"] == "node_admin").filter_map(|n| n["admin_api_base"].as_str().map(|b| (s(&n["name"]), b.to_string()))).collect();
         Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known, probe_round: 0, build_obs: Vec::new(), roles: None, refused_writes: Vec::new(), attempts: BTreeMap::new() }
@@ -1838,7 +1838,7 @@ impl Authority {
             }
         }
         let probe = self.writer_probe(f, label, &st).await;
-        let mut row = authority_row(label, &st.nodes, &st.fabric);
+        let mut row = primaries_row(label, &st.nodes, &st.fabric);
         row["checkpoint"] = json!(true);
         row["converged_ms"] = json!(converged_ms);
         row["writer_probe"] = probe.clone();
@@ -1941,7 +1941,7 @@ fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &str) {
 
 /// SIGKILL a non-fabric-primary node-admin (a death the story names), recording the host's view of
 /// it; a fabric-primary is never signalled.
-async fn kill_admin(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str) -> Value {
+async fn kill_admin(f: &mut Formed, a: &mut Run, st: &Stable, node: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a Build");
     let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
     point_entry_away(f, st, node);
@@ -1968,7 +1968,7 @@ fn both(n: usize) -> BTreeMap<String, usize> {
 /// node-admin right now, and which Connected facts name a birth that has since been replaced.
 /// Observed, never waited for: the report is evidence, the assertions are the ones the architecture
 /// makes (authority and data-plane liveness).
-async fn edge_report(f: &Formed, a: &mut Authority) -> Value {
+async fn edge_report(f: &Formed, a: &mut Run) -> Value {
     let nodes = a.nodes_now(f).await;
     let mut out = BTreeMap::new();
     for node in f.shape.names().into_iter().filter(|n| matches!(launch_id(n), "compute" | "gateway")) {
@@ -1992,7 +1992,7 @@ async fn edge_report(f: &Formed, a: &mut Authority) -> Value {
 /// (`stable`, just taken) and keeps holding across one staleness window (every node stays
 /// ready-for-traffic in every admin's own view, so no role node went silent toward its mesh's primary),
 /// and a fresh seeded burst of puts all stored. The role nodes' Direct facts are recorded beside it.
-async fn prove_path(f: &mut Formed, a: &mut Authority, want: &BTreeMap<String, usize>, label: &str, inv: &mut Invariants) -> Value {
+async fn prove_path(f: &mut Formed, a: &mut Run, want: &BTreeMap<String, usize>, label: &str, inv: &mut Invariants) -> Value {
     let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
     let until = Instant::now() + Duration::from_millis(window);
     let mut looks = 0u32;
@@ -2015,7 +2015,7 @@ async fn prove_path(f: &mut Formed, a: &mut Authority, want: &BTreeMap<String, u
 /// until the Build is complete and the node is ready again as the same birth (node-restart.md: a restart
 /// keeps the node.id and the incarnation). The call opens the next attempt of the accepted Build: the
 /// Build id is the fabric's own.
-async fn restart_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, scenario: &str) -> Value {
+async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a retiring Build");
     let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
@@ -2039,7 +2039,7 @@ async fn restart_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node:
 /// A non-fabric-primary node-admin dies (SIGKILL) and the fabric recovers it: the surviving admin of
 /// its mesh takes the seat, and a reborn admin stands at the same path.name. Returns the kill record,
 /// what the survivor saw, and the recovered view.
-async fn kill_and_recover(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, scenario: &str) -> Value {
+async fn kill_and_recover(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
     let mesh = node.split('.').next().unwrap().to_string();
     let survivor = st.admins.iter().find(|n| n["mesh"] == mesh.as_str() && n["name"] != node).unwrap_or_else(|| panic!("{mesh} has a surviving admin")).clone();
     let victim = st.admins.iter().find(|n| n["name"] == node).unwrap().clone();
@@ -2049,7 +2049,7 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     // The survivor holds the mesh's seat in its own view; traffic runs through the window.
     let mut seat_ms = None;
     let recovered_ms;
-    let reborn = loop {
+    let recovered = loop {
         let nodes = a.nodes(f).await;
         if let Some(nodes) = &nodes {
             if seat_ms.is_none() {
@@ -2074,8 +2074,8 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     };
     let ev = json!({
         "event": "admin.kill-and-recover", "scenario": scenario, "node": node, "victim_node_id": victim["node_id"], "victim_incarnation_id": victim["incarnation_id"], "victim_was_primary": victim["is_primary"],
-        "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "survivor_held_seat_ms": seat_ms, "reborn_node_id": reborn["node_id"], "reborn_incarnation_id": reborn["incarnation_id"],
-        "reborn_same_node_id": reborn["node_id"] == victim["node_id"], "recovered_ms": recovered_ms, "fabric_build_id_before": fabric_build, "kill": kill,
+        "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "survivor_held_seat_ms": seat_ms, "recovered_node_id": recovered["node_id"], "recovered_incarnation_id": recovered["incarnation_id"],
+        "recovered_same_node_id": recovered["node_id"] == victim["node_id"], "recovered_ms": recovered_ms, "fabric_build_id_before": fabric_build, "kill": kill,
     });
     a.events.push(ev.clone());
     ev
@@ -2085,7 +2085,7 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
 /// admin (SeatTransfer), then it stops, its stop declaring it Leaving (not an election candidate). The seat's
 /// move is read from the election spans afterwards; here the host's observation of the process
 /// exit is taken so the order has a clock that does not depend on the dying process's own spans.
-async fn hand_off(f: &mut Formed, a: &mut Authority, st: &Stable, scenario: &str, inv: &mut Invariants) -> (Stable, Value) {
+async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv: &mut Invariants) -> (Stable, Value) {
     let old = st.fp.clone();
     let old_name = st.fp_name();
     let mesh = st.mesh_of_fp();
@@ -2119,7 +2119,7 @@ async fn hand_off(f: &mut Formed, a: &mut Authority, st: &Stable, scenario: &str
 
 /// After a retirement: the retired path cannot be restarted (refused by name, no Build opened), then a
 /// Build adds a node-admin to the mesh with a NodeId that was never the retired one.
-async fn replace_retired(f: &mut Formed, a: &mut Authority, after_retire: &Stable, retired: &Value, scenario: &str, inv: &mut Invariants) -> Stable {
+async fn replace_retired(f: &mut Formed, a: &mut Run, after_retire: &Stable, retired: &Value, scenario: &str, inv: &mut Invariants) -> Stable {
     let mesh = s(&retired["old_mesh"]);
     let path = s(&retired["old_fabric_primary"]);
     let fabric_build = s(&after_retire.fabric["build_id"]);
@@ -2219,7 +2219,7 @@ fn check_one_executor_per_attempt(claims: &[Value], inv: &mut Invariants) -> Val
 /// `build.update.via-node-rpc` naming the node. An admin that does not hold the fabric-primary seat refuses
 /// the call before either door (`BuildDoor::serve`), under its own `build.reject.via-not-fabric-primary` (its `route` set; the drive's refusal of the same name carries none) naming
 /// the fabric-primary it sees.
-fn check_writes_and_writer_probes(f: &Formed, a: &Authority, spans: &[Value], inv: &mut Invariants) -> Value {
+fn check_writes_and_writer_probes(f: &Formed, a: &Run, spans: &[Value], inv: &mut Invariants) -> Value {
     let creates = named(spans, "rdm.node_admin.build.create.via-node-rpc");
     let updates = named(spans, "rdm.node_admin.build.update.via-node-rpc");
     let opens_attempt = |w: &Value| matches!(w["op"].as_str(), Some("node.restart" | "node.replace")) || (w["op"] == "node.delete" && s(&w["subject"]).ends_with(".old"));
@@ -2281,7 +2281,7 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Authority, spans: &[Value], in
 
 /// Elections as the spans announce them: the order of every hand-off, the surviving admin's seat after
 /// a kill, no resurrected NodeId.
-fn check_election_history(a: &Authority, spans: &[Value], inv: &mut Invariants) -> Value {
+fn check_election_history(a: &Run, spans: &[Value], inv: &mut Invariants) -> Value {
     let recompute = named(spans, "rdm.mesh.election.resolve.via-fabric-recompute");
     let mesh_primary = named(spans, "rdm.mesh.election.resolve.via-mesh-primary");
     let steps = named(spans, "rdm.node_admin.deployment.update.via-step");
@@ -2423,9 +2423,9 @@ async fn authority_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     a.traffic.burst(&f, 12, "steady-before").await;
     let steady = a.traffic.ops.iter().filter(|(_, c)| bucket(&c.out) == Bucket::Reply).count();
@@ -2499,7 +2499,7 @@ async fn authority_run(cell: &str, shape: Shape) {
         verification.push(c);
     }
     let fabric_end = a.fabric(&mut f).await.expect("an admin answers fabric.get");
-    a.history.push(authority_row("final", &nodes_end, &fabric_end));
+    a.history.push(primaries_row("final", &nodes_end, &fabric_end));
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
@@ -2528,12 +2528,12 @@ async fn authority_run(cell: &str, shape: Shape) {
             actions,
             operations: accounted.operations,
             outcomes: accounted.outcomes,
-            authority_history: history,
+            primaries_history: history,
             route_history: Vec::new(),
             runtime_history: runtime,
             inv,
             extra: json!({
-                "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": chains,
+                "primaries_at_formation": primaries, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": chains,
                 "scenario_events": a.events, "fabric_primary_trail": fp_trail, "surviving_path_proofs": proofs, "births_seen": a.births, "topology_writes": a.writes, "writer_probes": writes_checked, "attempts": attempts, "elections": elections,
                 "final_launches": launches_end,
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
@@ -2616,9 +2616,9 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let names_initial: BTreeSet<String> = nodes.iter().map(|n| s(&n["name"])).collect();
     let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     let b0 = f.build_id.clone();
@@ -2682,8 +2682,8 @@ async fn recovery_run(cell: &str, shape: Shape) {
     // The dead executor is re-born only once its death is established: a floor to mark it silent, half a
     // floor to its tickle and a floor to the second no-path, then the create itself (a further floor of margin).
     let floor_ms = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
-    let reborn_by = (killed_instant + Duration::from_millis(floor_ms * 7 / 2)).max(Instant::now() + Duration::from_secs(30));
-    let recovered = a.stable_by(&mut f, "R3: the dead executor's path.name is re-born", &both(2), &mut inv, reborn_by).await;
+    let recovered_by = (killed_instant + Duration::from_millis(floor_ms * 7 / 2)).max(Instant::now() + Duration::from_secs(30));
+    let recovered = a.stable_by(&mut f, "R3: the dead executor's path.name is re-born", &both(2), &mut inv, recovered_by).await;
     assert_eq!(s(&recovered.fabric["build_id"]), b0, "R3: recovery accepted no new Build");
     a.events.push(json!({
         "event": "executor.death", "scenario": "R3", "executor": executor_name, "executor_node_id": executor["node_id"], "survivor": survivor["name"], "survivor_node_id": survivor["node_id"], "broker": broker,
@@ -2717,7 +2717,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
         verification.push(c);
     }
     let fabric_end = a.fabric(&mut f).await.expect("an admin answers fabric.get");
-    a.history.push(authority_row("final", &nodes_end, &fabric_end));
+    a.history.push(primaries_row("final", &nodes_end, &fabric_end));
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
@@ -2808,12 +2808,12 @@ async fn recovery_run(cell: &str, shape: Shape) {
             actions,
             operations: accounted.operations,
             outcomes: accounted.outcomes,
-            authority_history: history,
+            primaries_history: history,
             route_history: Vec::new(),
             runtime_history: runtime,
             inv,
             extra: json!({
-                "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": chains,
+                "primaries_at_formation": primaries, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": chains,
                 "scenario_events": a.events, "build_trail": trail, "surviving_path_proof": proof, "births_seen": a.births, "topology_writes": a.writes, "writer_probes": writes_checked, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
                 "build_projection_observations": a.build_obs, "successor_creates_for_the_broker": successor_creates, "final_launches": launches_end,
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
@@ -2929,7 +2929,7 @@ fn live_and_same(node: &str, before: &Rt, after: &Rt) -> Value {
 /// One synthetic put aimed at an arbitrary node (a canary: the node holds the value in its own
 /// data dir, so a same-node restart keeps it and a replacement does not). It joins the cell's
 /// ledger like every other operation. Returns the operation's index in the ledger.
-fn op_to(f: &Formed, a: &mut Authority, node: &Value, via: Option<&str>, tag: &str, window: &'static str) -> usize {
+fn op_to(f: &Formed, a: &mut Run, node: &Value, via: Option<&str>, tag: &str, window: &'static str) -> usize {
     let t = &mut a.traffic;
     t.seq += 1;
     let op = SyntheticOp {
@@ -2990,7 +2990,7 @@ fn carried_get(estate: &Estate, node: &Value, via: &str, key: &str) -> Call {
 /// `holder` originates a put to `dest` over its held projection: Direct, and the reply names the
 /// destination's current birth. The put is an operation of the cell's ledger (a stable id, its key and
 /// value), so the accounting sees every put the brokers apply. Returns the ledger index.
-fn originate_op(f: &Formed, a: &mut Authority, holder: &str, dest: &Value, window: &'static str) -> usize {
+fn originate_op(f: &Formed, a: &mut Run, holder: &str, dest: &Value, window: &'static str) -> usize {
     let t = &mut a.traffic;
     t.seq += 1;
     let op = SyntheticOp {
@@ -3016,7 +3016,7 @@ fn originate_op(f: &Formed, a: &mut Authority, holder: &str, dest: &Value, windo
 /// Restart `node` (never the fabric-primary) through the Build rectifier, keeping the seeded traffic
 /// going until the Build is complete and the node is ready again as the same birth (node-restart.md).
 /// Any role.
-async fn restart_node(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, scenario: &str) -> Value {
+async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a retiring Build");
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
@@ -3046,7 +3046,7 @@ async fn restart_node(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
 /// node.id, incarnation, OS-assigned port and exact runtime" (the port is the caller's to compare, from its
 /// settled views). A role node only: a node-admin's death is `kill_and_recover`'s, and the fabric-primary is
 /// never killed.
-async fn recover_node(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, scenario: &str) -> Value {
+async fn recover_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scenario: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a retiring Build");
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     assert_ne!(n["kind"], "node_admin", "REFUSED: {node} is a node-admin; a node recovery cell kills a broker, gateway, compute or rpc node");
@@ -3125,7 +3125,7 @@ fn representatives(f: &Formed, st: &Stable) -> Vec<String> {
 /// stops and rejoins; no relaunch"): the same logical node in the same exact birth, its runtime the same
 /// live process as the provider reports it, and routing back on that birth (a call over a held connection
 /// answered by it once its connections were deleted by the stop and dialed again).
-async fn restart_representative(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, label: &str, inv: &mut Invariants) -> (Value, Stable) {
+async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, label: &str, inv: &mut Invariants) -> (Value, Stable) {
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     let (kind, mesh, node_id, inc, endpoint) = (s(&n["kind"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["endpoint_id"]));
     let rt_before = exact_runtime(f, node).await;
@@ -3269,7 +3269,7 @@ fn check_restart_chain(spans: &[Value], rec: &Value) -> Value {
 
 /// The reads that settle the ledger: every operation's key read from the node it was aimed at, unless
 /// the node's NodeId left the fabric (`gone_ok` names the path.names allowed to have been replaced).
-fn final_reads(f: &Formed, a: &Authority, nodes_end: &[Value], gone_ok: &BTreeSet<String>) -> (BTreeMap<String, Value>, Vec<Call>) {
+fn final_reads(f: &Formed, a: &Run, nodes_end: &[Value], gone_ok: &BTreeSet<String>) -> (BTreeMap<String, Value>, Vec<Call>) {
     let mut verification = Vec::new();
     let mut final_state: BTreeMap<String, Value> = BTreeMap::new();
     for (op, _) in &a.traffic.ops {
@@ -3292,9 +3292,9 @@ async fn restart_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     a.traffic.burst(&f, 12, "steady-before").await;
     let steady = a.traffic.ops.iter().filter(|(_, c)| bucket(&c.out) == Bucket::Reply).count();
@@ -3325,7 +3325,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     let launches_end = check_final_shape(&f, &nodes_end, &mut inv).await;
     let (final_state, verification) = final_reads(&f, &a, &nodes_end, &BTreeSet::new());
     let fabric_end = a.fabric(&mut f).await.expect("an admin answers fabric.get");
-    a.history.push(authority_row("final", &nodes_end, &fabric_end));
+    a.history.push(primaries_row("final", &nodes_end, &fabric_end));
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
@@ -3360,12 +3360,12 @@ async fn restart_run(cell: &str, shape: Shape) {
             actions,
             operations: accounted.operations,
             outcomes: accounted.outcomes,
-            authority_history: history,
+            primaries_history: history,
             route_history: Vec::new(),
             runtime_history: runtime,
             inv,
             extra: json!({
-                "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
+                "primaries_at_formation": primaries, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
                 "restarts": records, "restart_chains": chains, "scenario_events": a.events, "topology_writes": a.writes, "writer_probes": writes_checked, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
                 "final_launches": launches_end, "scenarios": ["C3", "C5", "C6", "C7"],
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
@@ -3398,7 +3398,7 @@ async fn mock_role_restarts_preserve_identity_and_birth() {
 // ---- retirement, replacement and the exact-runtime kill ------------------------------------------
 
 /// Every live admin's view of `name`: whether it lists the path, and under which NodeId.
-async fn admin_views_of(a: &mut Authority, f: &Formed, name: &str) -> Vec<Value> {
+async fn admin_views_of(a: &mut Run, f: &Formed, name: &str) -> Vec<Value> {
     let mut out = Vec::new();
     for (admin, _) in a.candidates(f) {
         if let Some(ns) = nodes_at(&f.estate, &admin).await {
@@ -3411,7 +3411,7 @@ async fn admin_views_of(a: &mut Authority, f: &Formed, name: &str) -> Vec<Value>
 
 /// A topology write at an admin that is not the fabric-primary is refused by name, naming the
 /// fabric-primary, and executes nothing.
-async fn refused_by_a_non_writer(f: &Formed, a: &mut Authority, st: &Stable, path: &str, how: Removal) -> Value {
+async fn refused_by_a_non_writer(f: &Formed, a: &mut Run, st: &Stable, path: &str, how: Removal) -> Value {
     let non_writer = st.admins.iter().find(|n| n["name"] != st.fp["name"]).expect("an admin that is not the fabric-primary").clone();
     let change = match how {
         Removal::Delete => BuildChange::RemoveNode { node: path_of(path) },
@@ -3440,7 +3440,7 @@ enum Removal {
 /// traffic aimed at it. The old birth's runtime is terminal as the provider reports it, its NodeId is
 /// in no admin's view after the removal is held for a full staleness window, and a call to the exact
 /// NodeId sends nothing. Leaves `a.roles` as the shape without the node.
-async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, label: &str, how: Removal, inv: &mut Invariants) -> (Value, Stable) {
+async fn retire_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, label: &str, how: Removal, inv: &mut Invariants) -> (Value, Stable) {
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     let (kind, mesh, node_id, old_inc) = (s(&n["kind"]), s(&n["mesh"]), s(&n["node_id"]), s(&n["incarnation_id"]));
     assert!(matches!(kind.as_str(), "broker" | "gateway" | "compute"), "{node}: only a role node is retired here");
@@ -3769,7 +3769,7 @@ impl Drop for Held {
 /// listed under its NodeId in every admin's view, no Build is accepted and no attempt is opened for
 /// it, a call to it ends in a typed uncertain outcome (never a reply, never a replacement), and
 /// once released the very same runtime serves again.
-async fn hold_phase(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
+async fn hold_phase(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
     let n = at(st, node).clone();
     let (node_id, inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
     let rt = exact_runtime(f, node).await;
@@ -3861,9 +3861,9 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     a.traffic.burst(&f, 12, "steady-before").await;
     let formation_build = f.build_id.clone();
@@ -3963,7 +3963,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let gone_ok: BTreeSet<String> = BTreeSet::from([victim.clone(), victim2.clone()]);
     let (final_state, verification) = final_reads(&f, &a, &nodes_end, &gone_ok);
     let fabric_end = a.fabric(&mut f).await.expect("an admin answers fabric.get");
-    a.history.push(authority_row("final", &nodes_end, &fabric_end));
+    a.history.push(primaries_row("final", &nodes_end, &fabric_end));
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
@@ -4020,12 +4020,12 @@ async fn replacement_run(cell: &str, shape: Shape) {
             actions,
             operations: accounted.operations,
             outcomes: accounted.outcomes,
-            authority_history: history,
+            primaries_history: history,
             route_history: Vec::new(),
             runtime_history: runtime,
             inv,
             extra: json!({
-                "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
+                "primaries_at_formation": primaries, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
                 "planned_replacement": {"retired": retired, "replacement": replacement, "retire_chain": retire_chain, "add_chain": add_chain},
                 "drift_replacement": {"drift": drift, "chain": drift_chain,
                     "planned_replace_operation": "node.replace (build.create of BuildChange::Replace) opens AttemptAction::Replace through build_op.rs admit_change -> open_attempt_in (replace = true) on the accepted Build; the planned replacement above is that attempt, and a runtime death of a member is its mesh-primary's recovery: one attempt keyed on the exited birth, its delete, create and update (node-recovery.md)"},
@@ -4086,7 +4086,7 @@ fn exact_rt_from_record(r: &Value, retired: &Value) -> Rt {
 /// (node-restart.md: the live process stops and rejoins, no relaunch), so the held runtime is alive at the
 /// end of the observation. The hold is then released (acknowledged) and the Build must complete with the
 /// node ready again as the same birth on the same runtime, within the 120 s `finish` gives it.
-async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
+async fn hold_restart(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, inv: &mut Invariants) -> Value {
     let n = at(st, node).clone();
     let (node_id, inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
     let rt = exact_runtime(f, node).await;
@@ -4174,9 +4174,9 @@ async fn retire_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     a.traffic.burst(&f, 12, "steady-before").await;
     let steady = a.traffic.ops.iter().filter(|(_, c)| bucket(&c.out) == Bucket::Reply).count();
@@ -4216,7 +4216,7 @@ async fn retire_run(cell: &str, shape: Shape) {
     let gone_ok: BTreeSet<String> = BTreeSet::from([broker.clone(), gateway.clone()]);
     let (final_state, verification) = final_reads(&f, &a, &nodes_end, &gone_ok);
     let fabric_end = a.fabric(&mut f).await.expect("an admin answers fabric.get");
-    a.history.push(authority_row("final", &nodes_end, &fabric_end));
+    a.history.push(primaries_row("final", &nodes_end, &fabric_end));
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
@@ -4307,12 +4307,12 @@ async fn retire_run(cell: &str, shape: Shape) {
             actions,
             operations: accounted.operations,
             outcomes: accounted.outcomes,
-            authority_history: history,
+            primaries_history: history,
             route_history: Vec::new(),
             runtime_history: runtime,
             inv,
             extra: json!({
-                "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
+                "primaries_at_formation": primaries, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
                 "retirements": [rb, rg], "stops": stops, "hold": hold, "hold_restart": hold_restart, "scenario_events": a.events, "topology_writes": a.writes, "writer_probes": writes_checked, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
                 "final_launches": retired_runtimes, "scenarios": ["C15", "C16", "C17"],
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
@@ -4354,28 +4354,28 @@ async fn mock_drain_and_retire_preserve_status_and_terminal_proof() {
 #[allow(clippy::too_many_arguments)]
 async fn close_run(
     f: Formed,
-    a: Authority,
+    a: Run,
     inv: Invariants,
     nodes: Vec<Value>,
     launches: Vec<Value>,
-    authorities: Value,
+    primaries: Value,
     connections: Value,
     scenarios: &[&str],
     extra: Value,
     checks: impl FnOnce(&Formed, &[Value], &mut Invariants) -> Value,
 ) {
-    close_run_with(f, a, inv, nodes, launches, authorities, connections, scenarios, extra, BTreeSet::new(), checks).await
+    close_run_with(f, a, inv, nodes, launches, primaries, connections, scenarios, extra, BTreeSet::new(), checks).await
 }
 
 /// [`close_run`] for a cell that replaced or retired nodes: `gone_ok` names the paths whose old NodeIds
 /// the ledger may hold operations for.
 async fn close_run_with(
     mut f: Formed,
-    mut a: Authority,
+    mut a: Run,
     mut inv: Invariants,
     nodes: Vec<Value>,
     launches: Vec<Value>,
-    authorities: Value,
+    primaries: Value,
     connections: Value,
     scenarios: &[&str],
     extra: Value,
@@ -4389,7 +4389,7 @@ async fn close_run_with(
     let launches_end = check_final_shape(&f, &nodes_end, &mut inv).await;
     let (final_state, verification) = final_reads(&f, &a, &nodes_end, &gone_ok);
     let fabric_end = a.fabric(&mut f).await.expect("an admin answers fabric.get");
-    a.history.push(authority_row("final", &nodes_end, &fabric_end));
+    a.history.push(primaries_row("final", &nodes_end, &fabric_end));
     let stop_t = Instant::now();
     f.estate.stop().await;
     let left = provider_left(&f, stop_t, &mut inv).await;
@@ -4414,7 +4414,7 @@ async fn close_run_with(
     history.extend(claims.iter().cloned());
     history.extend(a.build_obs.iter().map(|o| json!({"phase": "build-projection", "observation": o})));
     let base = json!({
-        "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
+        "primaries_at_formation": primaries, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
         "scenario_events": a.events, "topology_writes": a.writes, "writer_probes": writes_checked, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
         "final_launches": launches_end, "scenarios": scenarios, "span_checks": proved,
         "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
@@ -4425,7 +4425,7 @@ async fn close_run_with(
         merged[k] = v;
     }
     write_views(
-        Views { f: &f, topology_final: nodes_end, actions, operations: accounted.operations, outcomes: accounted.outcomes, authority_history: history, route_history: Vec::new(), runtime_history: runtime, inv, extra: merged },
+        Views { f: &f, topology_final: nodes_end, actions, operations: accounted.operations, outcomes: accounted.outcomes, primaries_history: history, route_history: Vec::new(), runtime_history: runtime, inv, extra: merged },
         index,
         &spans,
     );
@@ -4489,9 +4489,9 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     let (src, dst, other_src) = ("mesh1.gateway.1".to_string(), "mesh1.broker.1".to_string(), "mesh2.gateway.1".to_string());
     let d0 = st.nodes.iter().find(|n| n["name"] == dst.as_str()).cloned().unwrap();
@@ -4582,7 +4582,7 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let (s0, dname, inc1, comp, lsrc) = (src.clone(), dst.clone(), d_inc1.clone(), inbound_from.clone(), lost_src.clone());
     let marks = (t_cut2, t_release, t_in0);
     let gone = BTreeSet::from([dst.clone()]);
-    close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C11"], json!({"events": events}), gone, move |_f, spans, inv| {
+    close_run_with(f, a, inv, nodes, launches, primaries, connections, &["C11"], json!({"events": events}), gone, move |_f, spans, inv| {
         let facts = observed_facts(spans, &lsrc, &dname);
         let label = |sp: &Value| format!("{}/{}/{}@{}", sp["attributes"]["state"].as_str().unwrap_or(""), sp["attributes"]["origin"].as_str().unwrap_or(""), sp["attributes"]["reason"].as_str().unwrap_or(""), start_ns(sp));
         let seq: Vec<String> = facts.iter().map(&label).collect();
@@ -4636,9 +4636,9 @@ async fn proxy_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     // The source is a compute (it originates), the carrier a gateway of its mesh (the shape's carrier kind),
     // the destination the other mesh's gateway (it serves the originate door, so it can dial the source).
@@ -4723,7 +4723,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
     a.events.extend(events.iter().cloned());
     let (s0, d0, c0) = (src.clone(), dst.clone(), car.clone());
     let w = (t_car0, t_car1, t_dur0, t_dur1, t_cut0, t_cut1, t_in0);
-    close_run(f, a, inv, nodes, launches, authorities, connections, &["C12", "C13"], json!({"events": events}), move |_f, spans, inv| {
+    close_run(f, a, inv, nodes, launches, primaries, connections, &["C12", "C13"], json!({"events": events}), move |_f, spans, inv| {
         let in_window = |sp: &Value, a: u64, b: u64| start_ns(sp) >= a && start_ns(sp) <= b;
         let route = |a: u64, b: u64| named(spans, "rdm.node_rpc.route.resolve.via-held-projection").into_iter().find(|sp| sp["attributes"]["own"] == s0.as_str() && in_window(sp, a, b)).cloned();
         let carried_route = route(w.0, w.1).unwrap_or_else(|| panic!("no held-projection route span for the carried call"));
@@ -4803,9 +4803,9 @@ async fn churn_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     assert_eq!(provider(), "process", "REFUSED: the descriptor census reads /proc of the process provider; the container provider counts through its own namespace");
     let (src, d1n, d2n, dialer) = ("mesh1.gateway.1".to_string(), "mesh1.broker.1".to_string(), "mesh2.broker.1".to_string(), "mesh1.compute.1".to_string());
@@ -4894,7 +4894,7 @@ async fn churn_run(cell: &str, shape: Shape) {
         json!({"baseline": base_census, "end": end_census, "pooled": pooled.len(), "superseded": superseded}),
     );
     a.events.extend(events.iter().cloned());
-    close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C18"], json!({"events": events}), BTreeSet::from([d1n, d2n]), |_f, _spans, _inv| json!({})).await;
+    close_run_with(f, a, inv, nodes, launches, primaries, connections, &["C18"], json!({"events": events}), BTreeSet::from([d1n, d2n]), |_f, _spans, _inv| json!({})).await;
 }
 
 /// CONTRACT: a gateway's connections are churned in a formed estate: its connection to a broker is lost
@@ -4959,9 +4959,9 @@ async fn partition_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     assert_eq!(provider(), "process", "REFUSED: the A/B cut is the process provider's UDP drop; the container provider silences a mesh through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
@@ -5063,7 +5063,7 @@ async fn partition_run(cell: &str, shape: Shape) {
     let (adm, wm) = (admins.clone(), window_ms);
     let verified_at = now_ns();
     let marks = (cut_at, held_at, healed_at, verified_at);
-    close_run(f, a, inv, nodes, launches, authorities, connections, &["C9", "C10"], json!({"events": events}), move |f, spans, inv| {
+    close_run(f, a, inv, nodes, launches, primaries, connections, &["C9", "C10"], json!({"events": events}), move |f, spans, inv| {
         // Repair: only a peer mesh's admin is re-fed across the cut, stale for at least the window, bounded by one
         // attempt per window per pair, with the neighbours kept (no mesh channel fell back to no-neighbour).
         let att = refeeds(spans, marks.0);
@@ -5168,9 +5168,9 @@ async fn control_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let mut st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     assert_eq!(provider(), "process", "REFUSED: the per-node UDP cut is the process provider's; the container provider cuts through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
@@ -5242,7 +5242,7 @@ async fn control_run(cell: &str, shape: Shape) {
     let seen = observer.seen.lock().unwrap().clone();
     let final_seats: BTreeSet<String> = st.nodes.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect();
     let marks = (cut_at, healed_at, after0, after1, quiet0, quiet1);
-    close_run(f, a, inv, nodes, launches, authorities, connections, &["C14"], json!({"events": events}), move |_f, spans, inv| {
+    close_run(f, a, inv, nodes, launches, primaries, connections, &["C14"], json!({"events": events}), move |_f, spans, inv| {
         // Status frames are event-driven: every message is five identical sends (one changed_at) and nothing else.
         let sends = named(spans, "rdm.mesh.fabric.update.via-status-send");
         // A message is five sends of one change. The sender may stop early only by losing the seat it publishes
@@ -5335,7 +5335,7 @@ async fn build_attempt(e: &Estate, st: &Stable, build_id: &str) -> Value {
 /// One path stays one birth for a full staleness window after a replacement settled: every admin
 /// that answers lists the path under the successor's NodeId and incarnation, the Build is on the
 /// attempt the replacement opened, and the current build_id is the formation's.
-async fn hold_one_birth(f: &Formed, a: &mut Authority, st: &Stable, node: &str, node_id: &str, incarnation: &str, build_id: &str, attempt: u64, label: &str) -> Value {
+async fn hold_one_birth(f: &Formed, a: &mut Run, st: &Stable, node: &str, node_id: &str, incarnation: &str, build_id: &str, attempt: u64, label: &str) -> Value {
     let window = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000) + 500;
     let until = Instant::now() + Duration::from_millis(window);
     let mut looks = 0u32;
@@ -5358,9 +5358,9 @@ async fn replace_race_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     a.traffic.burst(&f, 8, "steady-before").await;
     let formation = f.build_id.clone();
@@ -5457,7 +5457,7 @@ async fn replace_race_run(cell: &str, shape: Shape) {
     let (kx, ky) = (kill_x_ns, kill_y_ns);
     let (xp, yp) = (x.clone(), y.clone());
     let (formation_b, a1) = (formation.clone(), attempt1);
-    close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C8"], json!({"events": legs}), gone, move |_f, spans, inv| {
+    close_run_with(f, a, inv, nodes, launches, primaries, connections, &["C8"], json!({"events": legs}), gone, move |_f, spans, inv| {
         let creates = |p: &str, since: u64| -> Vec<&Value> { named(spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| sp["attributes"]["node"] == p && start_ns(sp) > since).collect() };
         // The mesh-primary's recovery admitted at the fabric-primary's door (node-recovery.md).
         let drifts = |p: &str, since: u64| -> Vec<&Value> {
@@ -5530,9 +5530,9 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     assert_eq!(provider(), "process", "REFUSED: the A/B cut is the process provider's UDP drop; the container provider silences a mesh through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
@@ -5678,7 +5678,7 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
     let (f0, far_c, victim_c, near_c) = (formation.clone(), far_mesh.clone(), victim.clone(), near_mesh.clone());
     let victim_id = s(&before["node_id"]);
     let marks = (cut_at, healed_at);
-    close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C9", "C10"], json!({"events": events}), BTreeSet::new(), move |_f, spans, inv| {
+    close_run_with(f, a, inv, nodes, launches, primaries, connections, &["C9", "C10"], json!({"events": events}), BTreeSet::new(), move |_f, spans, inv| {
         // Through cut and heal one gateway was restarted by the near side's request; nothing was replaced,
         // retired, created or declared dead, and the far side opened no attempt.
         let opened: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty() && start_ns(sp) >= marks.0).collect();
@@ -5709,9 +5709,9 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     assert_eq!(provider(), "process", "REFUSED: the A/B cut is the process provider's UDP drop; the container provider silences a mesh through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
@@ -5855,7 +5855,7 @@ async fn cut_spawn_run(cell: &str, shape: Shape) {
     let (f0, spawn_b, retire_b, far_c, added_c) = (formation.clone(), spawn.clone(), retire.clone(), far_mesh.clone(), added.clone());
     let marks = (cut_at, healed_at);
     let gone: BTreeSet<String> = BTreeSet::from([added.clone()]);
-    close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C9", "C10"], json!({"events": events}), gone, move |_f, spans, inv| {
+    close_run_with(f, a, inv, nodes, launches, primaries, connections, &["C9", "C10"], json!({"events": events}), gone, move |_f, spans, inv| {
         // Through cut and heal nothing was restarted, replaced, retired or declared dead: no attempt opened on
         // a request, no far node created or retired, no drift attempt; the Builds accepted are the formation's,
         // the added gateway's and its retirement.
@@ -5922,9 +5922,9 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     assert_eq!(provider(), "process", "REFUSED: the A/B cut is the process provider's UDP drop; the container provider silences a mesh through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
@@ -6051,7 +6051,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let (near_primary_c, far_primary_c) = (s(&st.primary_of(&near_mesh)["name"]), s(&far_primary["name"]));
     let (vid, vinc, fid, fnew) = (victim_id.clone(), victim_inc.clone(), s(&far_before["node_id"]), far_new_id.clone());
     let events = json!({"events": [{"event": "near-fault", "fault": if fault == NearFault::Restart { "restart" } else { "hard-kill" }, "node": victim, "node_id": victim_id, "near_attempt": near_builds, "far_attempt": far_attempt0, "after_heal": after_heal, "far_kill": far_kill}]});
-    close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C9", "C10"], events, gone, move |_f, spans, inv| {
+    close_run_with(f, a, inv, nodes, launches, primaries, connections, &["C9", "C10"], events, gone, move |_f, spans, inv| {
         let since = |name: &str, from: u64| -> Vec<&Value> { named(spans, name).into_iter().filter(|sp| start_ns(sp) >= from).collect() };
         // The far side opened no attempt of its own through the cut: every proven-drift attempt before the
         // heal names a near-side authority.
@@ -6183,9 +6183,9 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     assert_eq!(provider(), "process", "REFUSED: the per-node UDP cut is the process provider's; the container provider cuts through its network namespaces");
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
@@ -6294,7 +6294,7 @@ async fn victims_run(cell: &str, shape: Shape, which: Victims) {
     let (mate_n, mate_id, wm) = (s(&mate["name"]), s(&mate["node_id"]), window_ms);
     let (f0, vn2, vmeshes) = (formation.clone(), vnames.clone(), victims.iter().map(|v| (s(&v["name"]), s(&v["mesh"]))).collect::<Vec<_>>());
     let scenarios: &[&str] = &["C14"];
-    close_run(f, a, inv, nodes, launches, authorities, connections, scenarios, json!({"events": events}), move |_f, spans, inv| {
+    close_run(f, a, inv, nodes, launches, primaries, connections, scenarios, json!({"events": events}), move |_f, spans, inv| {
         // Status frames are event-driven: every message is five identical sends of one change; none in the closing quiet window.
         let sends = named(spans, "rdm.mesh.fabric.update.via-status-send");
         let (odd, status_messages) = odd_status_messages(&sends, &final_seats);
@@ -6383,9 +6383,9 @@ struct World {
     inv: Invariants,
     nodes: Vec<Value>,
     launches: Vec<Value>,
-    authorities: Value,
+    primaries: Value,
     connections: Value,
-    a: Authority,
+    a: Run,
     st: Stable,
     fp: String,
     formation: String,
@@ -6397,18 +6397,18 @@ async fn world(cell: &str, shape: Shape) -> World {
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
     let (launches, fabric) = check_identities_and_launches(&f, &nodes, &mut inv).await;
-    let authorities = check_authorities(&nodes, &fabric, &mut inv);
+    let primaries = check_primaries(&nodes, &fabric, &mut inv);
     let connections = converge_connections(&f, &mut inv).await;
-    let mut a = Authority::new(f.seed, &nodes);
+    let mut a = Run::new(f.seed, &nodes);
     let st = a.stable(&mut f, "formed", &both(2), &mut inv).await;
     let fp = st.fp_name();
     let formation = f.build_id.clone();
     let window_ms: u64 = std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(30_000);
-    World { f, inv, nodes, launches, authorities, connections, a, st, fp, formation, window_ms }
+    World { f, inv, nodes, launches, primaries, connections, a, st, fp, formation, window_ms }
 }
 
 async fn direct_edge_run(cell: &str, shape: Shape) {
-    let World { mut f, mut inv, nodes, launches, authorities, connections, mut a, st, fp, formation, window_ms } = world(cell, shape).await;
+    let World { mut f, mut inv, nodes, launches, primaries, connections, mut a, st, fp, formation, window_ms } = world(cell, shape).await;
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
     let mut events = Vec::new();
     // Leg A, a Direct edge to a mesh-primary node-admin is lost: a gateway of the mesh that does not hold the
@@ -6460,11 +6460,11 @@ async fn direct_edge_run(cell: &str, shape: Shape) {
 
     a.events.extend(events.iter().cloned());
     let _ = formation;
-    close_run(f, a, inv, nodes, launches, authorities, connections, &["C11"], json!({"events": events}), |_f, _spans, _inv| json!({})).await;
+    close_run(f, a, inv, nodes, launches, primaries, connections, &["C11"], json!({"events": events}), |_f, _spans, _inv| json!({})).await;
 }
 
 async fn carrier_edge_run(cell: &str, shape: Shape) {
-    let World { mut f, inv, nodes, launches, authorities, connections, mut a, st, fp, formation, window_ms } = world(cell, shape).await;
+    let World { mut f, inv, nodes, launches, primaries, connections, mut a, st, fp, formation, window_ms } = world(cell, shape).await;
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
     let mut events = Vec::new();
     let _ = (&formation, window_ms);
@@ -6521,7 +6521,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
 
     a.events.extend(events.iter().cloned());
     let t_call = (t_call_b0, t_call_b1, t_cut_b);
-    close_run(f, a, inv, nodes, launches, authorities, connections, &["C12"], json!({"events": events}), move |_f, spans, inv| {
+    close_run(f, a, inv, nodes, launches, primaries, connections, &["C12"], json!({"events": events}), move |_f, spans, inv| {
         // The refusal is named on a span of the carrier, once, in the one carried call's window.
         let lost: Vec<&Value> = named(spans, "rdm.node_rpc.request.reject.via-carrier-edge-lost").into_iter().filter(|sp| start_ns(sp) >= t_call.2).collect();
         assert_eq!(lost.len(), 1, "the carrier refused exactly one carried call by name: {lost:?}");
@@ -6534,7 +6534,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
 }
 
 async fn cutback_restart_run(cell: &str, shape: Shape) {
-    let World { mut f, mut inv, nodes, launches, authorities, connections, mut a, st, fp: _, formation, window_ms } = world(cell, shape).await;
+    let World { mut f, mut inv, nodes, launches, primaries, connections, mut a, st, fp: _, formation, window_ms } = world(cell, shape).await;
     let node = |n: &str| st.nodes.iter().find(|x| x["name"] == n).cloned().unwrap();
     let mut events = Vec::new();
     let (src, car, dst) = ("mesh1.compute.1".to_string(), "mesh1.gateway.1".to_string(), "mesh2.gateway.1".to_string());
@@ -6638,7 +6638,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let srcn = src.clone();
     let marks = (t_restart, t_restart_done);
     let n_calls = calls.len();
-    close_run(f, a, inv, nodes, launches, authorities, connections, &["C12", "C13"], json!({"events": events}), move |_f, spans, inv| {
+    close_run(f, a, inv, nodes, launches, primaries, connections, &["C12", "C13"], json!({"events": events}), move |_f, spans, inv| {
         // No call was resolved twice: every originate of the stream is one route resolution at the source.
         let routes = named(spans, "rdm.node_rpc.route.resolve.via-held-projection").into_iter().filter(|sp| sp["attributes"]["own"] == srcn.as_str() && start_ns(sp) >= marks.0 && start_ns(sp) <= marks.1).count();
         assert!(routes >= n_calls && routes <= n_calls + 1, "every call across the restart resolved its route once ({routes} resolutions for {n_calls} calls)");
@@ -6851,7 +6851,7 @@ async fn soak_run(cell: &str, story: Story) {
     write_jsonl(&dir, "actions.jsonl", rows);
     write_jsonl(&dir, "operations.jsonl", &report.operations.iter().map(|o| json!({"op_seq": o["op_seq"], "target": o["target"], "target_node_id": o["target_node_id"], "key": o["key"], "intent": o["intent"], "via": o["via"], "trace_id": o["trace_id"]})).collect::<Vec<_>>());
     write_jsonl(&dir, "outcomes.jsonl", &report.operations.iter().map(|o| json!({"op_seq": o["op_seq"], "route": o["route"], "trace_id": o["trace_id"], "classification": o["classification"]})).collect::<Vec<_>>());
-    write_jsonl(&dir, "authority-history.jsonl", &rows.iter().map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "authority": r.get("authority"), "handed_off_from": r.get("handed_off_from")})).collect::<Vec<_>>());
+    write_jsonl(&dir, "primaries-history.jsonl", &rows.iter().map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "authority": r.get("authority"), "handed_off_from": r.get("handed_off_from")})).collect::<Vec<_>>());
     write_jsonl(&dir, "route-history.jsonl", &routes);
     write_jsonl(&dir, "runtime-history.jsonl", &rows.iter().filter(|r| r.get("born").is_some() || r.get("killed").is_some() || r.get("wedge").is_some()).map(|r| json!({"round": r["round"], "kind": r["kind"], "at_s": r["at_s"], "born": r.get("born"), "killed": r.get("killed"), "wedge": r.get("wedge"), "retired_call": r.get("retired_call")})).collect::<Vec<_>>());
     write_json(&dir, "topology-initial.json", &json!({"shape_requested": {"tier": shape.tier, "meshes": MESHES, "per_mesh": {"node_admin": shape.node_admin, "compute": shape.compute, "gateway": shape.gateway, "broker": shape.broker}, "total": shape.total()}, "provider_state_before": provider_before, "view_at_day0": day0, "view_after_birth": born_view}));
@@ -6909,7 +6909,7 @@ async fn soak_run(cell: &str, story: Story) {
         "actions.jsonl": "one row per executed round: the seeded action, the Node RPC calls it made, its convergence and the invariants that held at its checkpoint",
         "operations.jsonl": "every issued proof-store operation with its target, key and intent, in issue order",
         "outcomes.jsonl": "the ledger's classification of every operation (bucket, typed reason)",
-        "authority-history.jsonl": "the fabric-primary and mesh primaries after each action",
+        "primaries-history.jsonl": "the fabric-primary and mesh primaries after each action",
         "route-history.jsonl": "every route.resolve span of the run (route, carrier, target, outcome)",
         "runtime-history.jsonl": "each birth, kill and hold of the run",
         "spans/": "a copy of every span file the estate wrote, unchanged",
