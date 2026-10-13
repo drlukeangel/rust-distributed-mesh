@@ -438,6 +438,23 @@ impl Records {
         let _ = self.status.set(crate::status_rpc::SeatFold::new(storage, mesh, name, me));
     }
 
+    /// Whether the initial fabric `fabric_id` has first reached ready-for-traffic, decided on the durable
+    /// fact (states.md, "The initial fabric before ready-for-traffic"): what this admin already knows
+    /// ([`crate::fabric_state::FirstReady`], or `now`, its view's fabric status), else a point read of the
+    /// ready-for-traffic row among its mesh's status rows on the store root, which holds the fact from
+    /// the moment the mesh's primary put it, while the fabric state this admin hears by gossip can still
+    /// lag it. A read that fails is named.
+    pub async fn first_ready_on_root(&self, fabric_id: &FabricId, now: ScopeStatus) -> Result<bool, String> {
+        if self.first_ready.reached(now) {
+            return Ok(true);
+        }
+        let Some(fold) = self.status.get() else {
+            return Err(format!("no status store is held to read whether fabric {fabric_id} first reached ready-for-traffic"));
+        };
+        self.first_ready.read_from(&**fold.storage(), fabric_id).await.map_err(|e| format!("the status rows of mesh {} on the store root, read for the ready-for-traffic row of fabric {fabric_id}: {e}", fold.mesh()))?;
+        Ok(self.first_ready.reached(now))
+    }
+
     /// The tick a waiter arms on to see the view change.
     pub fn subscribe_view(&self) -> tokio::sync::watch::Receiver<u64> {
         self.view_tick.subscribe()

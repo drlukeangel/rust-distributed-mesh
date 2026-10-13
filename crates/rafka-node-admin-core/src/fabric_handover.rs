@@ -387,14 +387,26 @@ impl HandoverDoor {
         let _one_at_a_time = self.locks.serving.lock().await;
         let (named_holder, named_successor) = (seats.first().map(|u| u.holder.clone()), seats.first().map(|u| u.successor.clone()));
         let of = Refusing { operation: &operation, build_id: &build_id, attempt, holder: named_holder.as_ref(), successor: named_successor.as_ref() };
-        // Before the initial fabric first reaches ready-for-traffic no seat moves (R-PB1).
+        // Before the initial fabric first reaches ready-for-traffic no seat moves (R-PB1), decided on the
+        // durable fact: the ready-for-traffic row among this mesh's status rows on the store root, which
+        // the fabric state this receiver hears by gossip can lag after the writer committed its row.
         {
-            let now = self.topology.read().await;
-            if !self.records.first_ready.reached(now.fabric.status) {
-                let status = now.fabric.status.name();
-                let detail = format!("{}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and no seat moves before it does", self.me);
-                refused("successor", "fabric-not-ready", &detail, &of, None);
-                return Reply::fabric_not_ready(&detail);
+            let (fabric_id, status) = {
+                let now = self.topology.read().await;
+                (now.fabric.id.clone(), now.fabric.status)
+            };
+            match self.records.first_ready_on_root(&fabric_id, status).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    let detail = format!("{}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {}, and its mesh's status rows on the store root hold no ready-for-traffic row of fabric {fabric_id}), and no seat moves before it does", self.me, status.name());
+                    refused("successor", "fabric-not-ready", &detail, &of, None);
+                    return Reply::fabric_not_ready(&detail);
+                }
+                Err(e) => {
+                    let failed = SourceFailure { source: format!("status storage of {}", self.me), op: format!("read whether fabric {fabric_id} first reached ready-for-traffic for node.primary.update {operation}"), cause: e };
+                    refused("successor", "source-failed", &failed.to_string(), &of, Some(&failed));
+                    return failed.reply();
+                }
             }
         }
         let Some(holder_mesh) = named_holder.as_ref().map(|h| h.mesh.clone()) else {

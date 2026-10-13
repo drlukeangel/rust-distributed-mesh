@@ -167,6 +167,11 @@ impl SeatFold {
         &self.storage
     }
 
+    /// The mesh whose status rows this fold reads.
+    pub fn mesh(&self) -> &str {
+        &self.mesh
+    }
+
     /// The view `now` is being installed: when it names this admin its mesh's primary and this
     /// tenure has not folded the mesh's rows, fold them into `declared` (R14 item 7: the rebuild on
     /// a seat change reads the shared root). Every other admin of the mesh folds none of them: what
