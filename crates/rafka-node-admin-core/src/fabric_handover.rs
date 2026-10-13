@@ -919,6 +919,14 @@ pub async fn hydrate_seats(storage: &dyn FabricStorage, seats: &SeatBook) -> Res
     Ok(rows.len())
 }
 
+/// The read of the store root's seat-transfer rows an admin makes as it enters the fabric, its
+/// restart included ([`hydrate_seats`] into its mesh channel's seat book), once it is on the backbone.
+/// Returns how many rows it read.
+pub async fn enter_seats(storage: &dyn FabricStorage, membership: &Membership, backbone: &Backbone, me: &PathName, node_id: &NodeId) -> Result<usize, String> {
+    let _ = (backbone, me, node_id);
+    hydrate_seats(storage, membership.seats()).await
+}
+
 /// How one call ended ([`HandoverDoor::call_once`]).
 enum Called {
     /// The receiver's typed reply.

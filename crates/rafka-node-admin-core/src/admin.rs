@@ -5365,7 +5365,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // The seat-transfer rows on the store root: this admin enters knowing who holds every seat a
                 // committed node.primary.update moved, its own included (proposal Part C1 failure contract:
                 // a holder that died between its drain and its rename reads here whether its row committed).
-                crate::fabric_handover::hydrate_seats(&*fabric_storage, membership.seats()).await?;
+                crate::fabric_handover::enter_seats(&*fabric_storage, &membership, &backbone, &name, &node_id).await?;
                 // The current Build: Day 0 accepts the first Build itself; every other admin hydrates it from
                 // its entry pull or the fabric control topic.
                 let accepted = Arc::new(AcceptedStore::new(fabric_storage.clone(), name.to_string()));

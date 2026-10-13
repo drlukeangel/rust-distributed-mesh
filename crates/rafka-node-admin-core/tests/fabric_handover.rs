@@ -1470,38 +1470,66 @@ fn a_seat_row_write_that_fails_after_the_cut_off_fails_the_step_by_name_and_the_
 
 /// CONTRACT (proposal Part C1 failure contract: "The one uncertain case is NA1 dying between the drain
 /// and the rename; NA1 resolves it itself on restart by reading the row (committed: it is no longer
-/// primary; absent: it is, under the unchanged epoch)"; Part C2: "the leadership view is folded from
-/// the transfer rows"): every admin over one file store root. P's update of mesh1's seat committed
-/// its row before P went down; P, restarted over the same root, holds the record its join gives it
-/// (P at 3) and reads the store root as it enters: the row is committed, so it holds N at 4 and its
-/// view names N mesh1's primary. Over a root where P died before the rename no row exists: what it
-/// reads leaves P at 3, primary under the unchanged epoch. What must NOT happen: a restarted holder
-/// naming itself primary over its own committed row, or a seat record read from anywhere but the row.
+/// primary; absent: it is, under the unchanged epoch)" and "The holder lost after the row, before
+/// 'updated': the successor and every reader take the seat from the row; the next writer to read the
+/// row publishes 'updated'"; Part C2: "the leadership view is folded from the transfer rows"): every
+/// admin over one file store root. P's update of mesh1's seat committed its row and P went down before
+/// its call on N, so nobody said "primary updated". P, restarted over the same root, holds the record
+/// its join gives it (P at 3) and reads the store root as it enters: the row is committed, so it holds
+/// N at 4, its view names N mesh1's primary, and, reading its own committed row whose record is the
+/// one it now holds, it says "primary updated" once for that operation. Over a root where P died
+/// before the rename no row exists: what it reads leaves P at 3, primary under the unchanged epoch,
+/// and it says nothing. What must NOT happen: a restarted holder naming itself primary over its own
+/// committed row, a seat record read from anywhere but the row, or a committed row nobody says
+/// "primary updated" for.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_holder_restarted_over_the_store_root_is_primary_only_when_no_row_committed_its_seat() {
+    if crate::own_process::delegated(module_path!(), "a_holder_restarted_over_the_store_root_is_primary_only_when_no_row_committed_its_seat") {
+        return;
+    }
+    let spans = capture();
+    let _file = SpanFile(spans.clone());
     let root = DataDir::new("primary-update-restart");
     let open = |dir: std::path::PathBuf| async move { Arc::new(FileFabricStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &IncarnationId::mint()).await.unwrap()) as Arc<dyn FabricStorage> };
     let f = seats_fabric_with(FabricSeat::X, || open(root.0.clone())).await;
     let op = update_operation(Seat::MeshPrimary, "b1", "restart-node:mesh1.admin.1");
-    assert_eq!(f.p.door.update_primary(Moving::MeshSeat, Some(3), "b1", 1, &op).await, Ok(committed_mesh(&f.n, 4)));
-    // P restarted over the same root: its join gives it P at 3, then it reads the root.
+    // P holds its view projection once it wrote its row and took the row's seat: its process dies
+    // there, before its call on N.
+    f.p.view_open.send_replace(false);
+    let update = tokio::spawn({
+        let (door, op) = (f.p.door.clone(), op.clone());
+        async move { door.update_primary(Moving::MeshSeat, Some(3), "b1", 1, &op).await }
+    });
+    until("P wrote its row and took the row's seat", || f.p.door.membership.seats().mesh("mesh1") == Some(holder_of(&f.n, 4))).await;
+    let _ = f.p._router.shutdown().await;
+    update.abort();
+    assert!(spans.named(ANNOUNCE_UPDATED).is_empty(), "P went down before \"primary updated\": {:?}", spans.named(ANNOUNCE_UPDATED));
+    assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "N was never called");
+    // P restarted over the same root: its join gives it P at 3, then it reads the root as it enters.
     let (restarted, _) = admin_over(&FabricId::mint(), "mesh1", "mesh1.admin.1", "000000000002", true, open(root.0.clone()).await, f.p.status.clone()).await;
     let mut nodes = vec![node_of(&restarted, NodeStatus::ReadyForTraffic, false), node_of(&f.n, NodeStatus::ReadyForTraffic, false)];
     nodes[1].is_primary = false;
     *restarted.door.topology.write().await = view(nodes);
     restarted.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&f.p, 3));
-    let read = rafka_node_admin_core::fabric_handover::hydrate_seats(&*restarted.storage, restarted.door.membership.seats()).await.expect("the root is read");
+    let enter = |a: &Admin| {
+        let d = a.door.clone();
+        async move { rafka_node_admin_core::fabric_handover::enter_seats(&*d.storage, &d.membership, &d.backbone, &d.me, &d.node_id).await }
+    };
+    let read = enter(&restarted).await.expect("the root is read");
     assert_eq!(read, 1, "one committed row");
     assert_eq!(restarted.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "committed: it is no longer primary");
     (restarted.door.project_view)().await;
     assert_eq!(restarted.door.topology.read().await.cohort_primary("mesh1", rafka_node_admin_core::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"), "its view names N");
+    let said = || spans.named(ANNOUNCE_UPDATED).iter().map(|f| (f["node"].clone(), f["operation"].clone())).collect::<Vec<_>>();
+    assert_eq!(said(), vec![("mesh1.admin.1".to_string(), op.clone())], "the restarted holder, the next to read its committed row, says the primary updated once");
     // A root where P died before the rename holds no row.
     let empty = DataDir::new("primary-update-restart-absent");
     let (absent, _) = admin_over(&FabricId::mint(), "mesh1", "mesh1.admin.1", "000000000002", true, open(empty.0.clone()).await, Arc::default()).await;
     absent.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&f.p, 3));
-    let read = rafka_node_admin_core::fabric_handover::hydrate_seats(&*absent.storage, absent.door.membership.seats()).await.expect("the root is read");
+    let read = enter(&absent).await.expect("the root is read");
     assert_eq!(read, 0, "no row");
     assert_eq!(absent.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "absent: it is primary under the unchanged epoch");
+    assert_eq!(said().len(), 1, "no row, nothing said: {:?}", said());
     let _ = (&f.m, &f.x);
 }
 
