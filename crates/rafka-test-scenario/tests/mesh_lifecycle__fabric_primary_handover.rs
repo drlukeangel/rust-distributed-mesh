@@ -31,6 +31,7 @@
 use crate::build_log;
 use rafka_node_admin_client::{Fabrics, ScopeStatus};
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
+use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -82,9 +83,19 @@ fn alive(pid: u64) -> bool {
 /// NodeDeleted in `departed`, then the fabric-primary's own aggregate for mesh1; only then, with
 /// every birth proven exited, mesh-left. No MeshLeft is published between the handoff and the final
 /// birth's exit proof.
+///
+/// Adversarial (R-NS2: "Final aggregates and leadership announcements are best-effort dissemination.
+/// A stop does not wait for their delivery. Committed lifecycle facts remain recoverable after the
+/// sender cuts gossip, and the executing authority updates its own view from the matching completion
+/// and publishes that fact as its author: ... the fabric-primary for a mesh's last admin"): the last
+/// admin's final aggregate before its stop, itself stopping, is withheld (the fault door's
+/// `announcement` cut) and its stop cuts its transport right behind it. The deleted mesh's final state
+/// reaches every surviving mesh from the fabric-primary, which executed the delete and publishes it as
+/// the author.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_deletes_it() {
-    let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    let sha = candidate_sha();
+    let mut estate = Estate::bootstrap_external(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2), ("mesh3", 2, 2)]).await;
     let before = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2", "mesh3"]), Duration::from_secs(30)).await);
     // The initial fabric refuses a mesh delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
@@ -195,6 +206,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!(s(&deleted_receipts[0]["output"]["final_primary"]["node"]), final_name, "{}", deleted_receipts[0]);
     assert!(steps_of(&build_b, "MeshLeft").is_empty(), "no MeshLeft while the final primary lives: {build_b}");
 
+    // Its last aggregate before its stop never leaves it.
+    Door::at(&estate, &final_name).await.arm("stopping-aggregate", json!({"kind": "announcement", "announcement": "stopping-aggregate", "channel": "backbone"})).await;
     // The final primary's end: an ordinary node.delete, a separate call, the fabric-primary its
     // executor. The topology names no mesh1, so the call opens its own fenced attempt of the accepted
     // Build (as a delete of a parked `.old` does), with its own trace.
@@ -355,17 +368,16 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let installed = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed");
 
     // 1. While it lives: after mesh.deleted (its mesh-leave hook) the last admin keeps publishing
-    // mesh1's aggregate with itself the only member and MeshStatus Dead, and an admin of each surviving
-    // mesh installs mesh1 from that aggregate with that one member.
+    // mesh1's aggregate with itself the only member and MeshStatus Dead. Every peer held mesh1 dead
+    // with that one member while it lived (read above, on each surviving admin's own view); which
+    // frame brought it there is best-effort dissemination (R-NS2), so no particular one is expected.
     let deleted_at = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["publisher"]) == final_name).map(|sp| start_ns(sp)).min().expect("the last admin reported mesh.deleted (its mesh-leave hook)");
     let final_exit = terminal_end(&final_name, true);
-    let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1 && start_ns(sp) > deleted_at).collect();
-    assert!(!lone.is_empty(), "after mesh.deleted the last admin {final_name} kept publishing mesh1's aggregate with itself the only member");
-    for m in survivors {
-        let held: Vec<&Value> = installed.iter().copied().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["channel"] == "backbone" && at_mesh(sp, m, "admin") && s(&sp["attributes"]["publisher"]).starts_with(&format!("{final_name}@")) && attr_u(sp, "members") == 1 && start_ns(sp) > deleted_at && start_ns(sp) < final_exit).collect();
-        assert!(!held.is_empty(), "an admin of {m} held mesh1 from its last admin {final_name}'s own aggregate, itself the only member, while it lived (fabric-primary's mesh {fp_mesh})");
-        eprintln!("bullet 1: {m} held mesh1 with {final_name} alone: trace {} at {}", s(&held[0]["trace_id"]), s(&held[0]["attributes"]["node"]));
-    }
+    // The version its aggregate took with itself the only member: the bump is at the last member's
+    // departure, before or after the mesh-leave hook as rounds fall, and every round from then on
+    // republishes it (passive anti-entropy carries no span of its own).
+    let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1 && start_ns(sp) < final_exit).collect();
+    assert!(!lone.is_empty(), "the last admin {final_name} published mesh1's aggregate with itself the only member while it lived (mesh-leave hook at {deleted_at})");
     let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-dead-row").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
     assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= deleted_at), "the last admin {final_name} committed mesh1's row Dead at mesh.deleted, before its mesh-leave hook: {dead_row:?}");
     let dead_sent: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && sp["attributes"]["scope"] == "mesh:mesh1" && sp["attributes"]["status"] == "dead").collect();
@@ -470,15 +482,15 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         assert!(s(&dropped["attributes"]["dropped"]).split(", ").any(|d| d == format!("{name} {id}")), "mesh-left dropped the contact of {name} ({id}): {dropped}");
     }
     // R-NS1 item 2: "Its last aggregate before a stop carries itself Leaving": after its stop's whole
-    // node.connections.delete { All } and before its stop's cut, the last admin publishes mesh1's
-    // aggregate once more, itself the only member and Leaving; after the cut it publishes nothing
-    // (node-stop.md step 4, R-ON1).
+    // node.connections.delete { All } and before its stop's cut, the last admin offers mesh1's
+    // aggregate once more, itself the only member and Leaving (withheld here: best-effort, R-NS2);
+    // after the cut it publishes nothing (node-stop.md step 4, R-ON1).
     let final_cut = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| start_ns(sp)).min().expect("the final primary's transport was cut by its stop");
     let final_all_end = named(&spans, "rdm.node_admin.node.connections.delete.via-stop").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).map(|sp| end_ns(sp)).min().expect("the final primary's stop ran its node.connections.delete { All }");
     let leaving_aggregate: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-leaving-aggregate").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name).collect();
     assert!(
-        leaving_aggregate.iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "Leaving" && attr_u(sp, "members") == 1 && (sp["attributes"]["published"] == json!(true) || sp["attributes"]["published"] == "true") && start_ns(sp) >= final_all_end && end_ns(sp) <= final_cut),
-        "the last admin {final_name} published mesh1's aggregate carrying itself Leaving after its All and before its stop's cut: {leaving_aggregate:?}"
+        leaving_aggregate.iter().any(|sp| sp["attributes"]["mesh"] == "mesh1" && sp["attributes"]["status"] == "Leaving" && attr_u(sp, "members") == 1 && sp["attributes"]["published"] == "withheld" && start_ns(sp) >= final_all_end && end_ns(sp) <= final_cut),
+        "the last admin {final_name} offered mesh1's aggregate carrying itself Leaving after its All and before its stop's cut, and the cut withheld it: {leaving_aggregate:?}"
     );
     let after_cut: Vec<String> = named(&spans, "rdm.mesh.node.update.via-leave-announcement").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && start_ns(sp) > final_cut).map(|sp| format!("{}:{}", s(&sp["attributes"]["channel"]), s(&sp["attributes"]["outcome"]))).collect();
     assert!(after_cut.is_empty(), "the stopped final primary {final_name} announced nothing after its stop's cut: {after_cut:?}");

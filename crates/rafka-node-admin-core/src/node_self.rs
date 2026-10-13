@@ -797,7 +797,9 @@ impl NodeSelf {
                 None => members.push(me.clone()),
             }
             let count = members.len();
-            let published = backbone.publish(&self.membership, members).await;
+            // Best-effort dissemination (R-NS2): the stop does not wait for its delivery, and the cut
+            // below follows its send at once.
+            let published = if backbone.withholds("stopping-aggregate", "backbone") { "withheld" } else if backbone.publish(&self.membership, members).await { "true" } else { "false" };
             tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %op.operation, status = "Leaving", members = count, published)
                 .in_scope(|| tracing::info!("the last aggregate before the stop carries this node Leaving"));
         }

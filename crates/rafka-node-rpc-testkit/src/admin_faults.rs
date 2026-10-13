@@ -103,6 +103,17 @@ pub enum CutSpec {
     /// step 4, and has not made it: its start waits there, the node stays Pending and takes no traffic,
     /// until the release. The joiner arms it from `<root>/faults/<name>.boot.json` before its first line.
     TopologyRead,
+    /// The admin withholds `announcement`, one of its final aggregates or leadership announcements
+    /// (`rafka_mesh_transport::membership::Withhold`: `stopping-aggregate`, `primary-updated`,
+    /// `aggregate-in-flight`), from `channel` (`mesh`, `backbone` or `any`) while the cut is armed:
+    /// each such send is skipped, so the frame is never offered to the channel. It models the
+    /// announcement lost on its way out (R-NS2: best-effort dissemination), not in a peer queue.
+    Announcement {
+        /// The announcement withheld.
+        announcement: String,
+        /// The channel: `mesh`, `backbone` or `any`.
+        channel: String,
+    },
 }
 
 /// What a decorator offers the cuts at the moment it is called.
@@ -174,6 +185,15 @@ pub enum Probe {
         /// The round's attempt.
         attempt: u32,
     },
+    /// A final aggregate or leadership announcement about to be sent on a channel.
+    Announcement {
+        /// The announcing node.
+        node: String,
+        /// The announcement.
+        announcement: &'static str,
+        /// The channel it is sent on.
+        channel: &'static str,
+    },
     /// A joining admin's topology read, about to be made.
     TopologyRead {
         /// The joining admin.
@@ -199,6 +219,7 @@ impl CutSpec {
             (CutSpec::CatchUp, Probe::CatchUp { .. }) => true,
             (CutSpec::StateSync, Probe::StateSync { .. }) => true,
             (CutSpec::TopologyRead, Probe::TopologyRead { .. }) => true,
+            (CutSpec::Announcement { announcement, channel }, Probe::Announcement { announcement: a, channel: c, .. }) => announcement == a && (channel == "any" || channel == c),
             _ => false,
         }
     }
@@ -218,6 +239,7 @@ impl Probe {
             Probe::CatchUp { node, neighbour } => Hit::CatchUp { node: node.clone(), neighbour: neighbour.clone() },
             Probe::StateSync { build_id, attempt } => Hit::StateSync { build_id: build_id.clone(), attempt: *attempt },
             Probe::TopologyRead { node, authority } => Hit::TopologyRead { node: node.clone(), reads_from: authority.clone() },
+            Probe::Announcement { node, announcement, channel } => Hit::Announcement { node: node.clone(), announcement: announcement.to_string(), channel: channel.to_string() },
         }
     }
 }
@@ -278,7 +300,7 @@ impl AdminFaults {
         // A cut that parked nothing is spent by its release too: it can no longer park.
         c.released = true;
         // A condition (not a parked call) has no parked caller to clear it.
-        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::CatchUp) {
+        if matches!(c.spec, CutSpec::ProviderDomain | CutSpec::LeaveAnnouncement { .. } | CutSpec::CatchUp | CutSpec::Announcement { .. }) {
             c.held = false;
             c.held_ms = c.held_since.take().map(|t| t.elapsed().as_millis() as u64);
             // Dropping the span ends it: the hold span lasts from the first consultation to here.
@@ -353,7 +375,14 @@ impl AdminFaults {
             c.held_since.get_or_insert_with(Instant::now);
             c.hit.get_or_insert_with(|| probe.hit());
             c.seen_while_held += 1;
-            c.condition_span.get_or_insert_with(|| tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.hit().detail()));
+            // A root of its own, following the call that consulted it first: the hold lasts until the
+            // release, and a child span would hold that call's whole ancestry open with it (a serve
+            // span that never ends, so never exported).
+            c.condition_span.get_or_insert_with(|| {
+                let hold = tracing::info_span!(parent: None, "rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.hit().detail());
+                hold.follows_from(tracing::Span::current());
+                hold
+            });
         }
         any
     }
@@ -555,6 +584,15 @@ impl rafka_node_admin_core::wiring::LeaveSeam for FaultedLeave {
     }
 }
 
+/// The backbone's announcement seam: an armed [`CutSpec::Announcement`] that matches withholds that send.
+struct FaultedAnnouncement(Arc<AdminFaults>);
+
+impl rafka_node_admin_core::wiring::AnnouncementSeam for FaultedAnnouncement {
+    fn withholds(&self, node: &str, announcement: &'static str, channel: &'static str) -> bool {
+        self.0.in_force(Probe::Announcement { node: node.to_string(), announcement, channel })
+    }
+}
+
 /// The topology read's seam: an armed [`CutSpec::TopologyRead`] parks the joining admin's start before it
 /// makes the read, until the release.
 struct FaultedRead(Arc<AdminFaults>);
@@ -576,6 +614,7 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
     let key = TransitionKey { scope: LifecycleScope::Node, from: LifecycleState::Pending, to: LifecycleState::ReadyForTraffic };
     Wiring {
         leave_seam: Some(Arc::new(FaultedLeave(faults.clone()))),
+        announcement_seam: Some(Arc::new(FaultedAnnouncement(faults.clone()))),
         catch_up_seam: Some(Arc::new(FaultedCatchUp(faults.clone()))),
         read_seam: Some(Arc::new(FaultedRead(faults.clone()))),
         builds: Some(Box::new(move |inner| Arc::new(FaultedBuilds { inner, faults: f_builds }))),

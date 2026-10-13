@@ -5398,6 +5398,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
                     .await
                     .map_err(|e| format!("backbone: {e}"))?;
+                if let Some(seam) = wiring.announcement_seam.take() {
+                    let me = name.to_string();
+                    backbone.withhold_announcements(Arc::new(move |announcement, channel| seam.withholds(&me, announcement, channel)));
+                }
                 // fabric.storage: `fabric/` on the store root, whose one writer is the fabric-primary (R14 item
                 // 2): Day 0 writes the Fabric identity (below), and every other admin reads it there. A store
                 // root holding another Fabric's identity is refused. A shutdown already held there (a restart or

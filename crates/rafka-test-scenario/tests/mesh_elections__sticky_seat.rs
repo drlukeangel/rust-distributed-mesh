@@ -6,6 +6,7 @@
 
 use rafka_node_admin_client::{BuildSpec, Change, FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{descends_from, iroh_observation_shape, named, wait_for, Estate, Owner};
+use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -47,9 +48,21 @@ async fn fabric(cell: &str) -> (Estate, Vec<Value>) {
 /// The OS-clock skew one ordinary node of a cell runs under: one hour ahead.
 const OS_CLOCK_SKEW_MS: i64 = 3_600_000;
 
+/// [`fabric`] with every node-admin the testkit's faulted node-admin (`faults::binding_set`): its fault
+/// door (testkit Node RPC op 0x75) withholds an announcement the cell arms, and nothing else of it
+/// differs.
+async fn faulted_fabric(cell: &str) -> (Estate, Vec<Value>) {
+    let sha = candidate_sha();
+    let estate = Estate::bootstrap_external(owner(cell), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    born(estate, None).await
+}
+
 /// [`fabric`], with the OS clock of the ordinary node `skewed` (if any) an hour ahead from its start.
 async fn fabric_skewing(cell: &str, skewed: Option<&str>) -> (Estate, Vec<Value>) {
-    let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
+    born(Estate::bootstrap(owner(cell), "fabric1", "mesh1").await, skewed).await
+}
+
+async fn born(estate: Estate, skewed: Option<&str>) -> (Estate, Vec<Value>) {
     if let Some(node) = skewed {
         let dir = rafka_node_rpc_testkit::os_clock_skew_dir(&estate.root);
         std::fs::create_dir_all(&dir).unwrap();
@@ -264,10 +277,17 @@ fn at_ns(sp: &Value) -> u64 {
 /// saying "primary updated"; N claiming or dispatching, or a step on P running, before P's "primary
 /// updated"; a birth made twice; an attempt with two winners. The fabric is ready again under the same
 /// Build.
+///
+/// Adversarial (R-NS2: "Final aggregates and leadership announcements are best-effort dissemination.
+/// A stop does not wait for their delivery. Committed lifecycle facts remain recoverable after the
+/// sender cuts gossip"): P's "primary updated" is withheld on both channels (the fault door's
+/// `announcement` cut) and the replace stops P right behind it. No observer is left without a
+/// primary: every node holds the committed seats naming N through the read, the replay or the
+/// surviving publisher.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts() {
     let cell = "a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts";
-    let (mut estate, nodes) = fabric(cell).await;
+    let (mut estate, nodes) = faulted_fabric(cell).await;
     let p = fabric_primary(&nodes).expect("one fabric primary");
     let p_node = node(&nodes, &p).clone();
     let p_id = s(&p_node["node_id"]);
@@ -277,6 +297,8 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     let n_id = s(&node(&nodes, &n_name)["node_id"]);
     let n_path = Estate::path(&n_name);
     estate.enter(&n_path).await;
+    // P's "primary updated" never leaves it, on either channel.
+    Door::at(&estate, &p).await.arm("primary-updated", serde_json::json!({"kind": "announcement", "announcement": "primary-updated", "channel": "any"})).await;
     let replaced_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let replace = estate.submit_change(Change::Replace { node: Estate::path(&p), incarnation: None }).await;
     let build = replace.build_id().to_string();
@@ -337,9 +359,18 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     assert_eq!(attr(&installed, "claim"), "adopted", "N took P's claim of the attempt into its Build log as it installed: {installed:#?}");
     // C1 step 7: P says "primary updated" once N answered. The successor neither says it nor writes a row.
     let p_said = one("rdm.mesh.seat.update.via-announce-primary-updated", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build);
-    assert_eq!((attr(&p_said, "backbone").as_str(), attr(&p_said, "mesh_channel").as_str()), ("sent", "sent"), "{p_said:#?}");
+    assert_eq!((attr(&p_said, "backbone").as_str(), attr(&p_said, "mesh_channel").as_str()), ("withheld", "withheld"), "P's primary updated was withheld on both channels: {p_said:#?}");
+    // N, P's next writer, says primary updated only once P's stop completed and P can say nothing more
+    // (R-NS2; C1 failure contract: "the next writer to read the row publishes 'updated'"), under the
+    // span naming the stopped holder, never before P's stop cut its transport.
     let by_n: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announce-primary-updated").into_iter().filter(|sp| attr(sp, "node") == n_name).collect();
-    assert!(by_n.is_empty(), "the successor said primary updated: {by_n:#?}");
+    let p_cut = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| attr(sp, "node") == p).map(sp_end).min();
+    for said in &by_n {
+        let after_stop = named(&spans, "rdm.mesh.seat.update.via-holder-stopped").into_iter().find(|h| attr(h, "node") == n_name && attr(h, "holder") == p && descends_from(&spans, said, h)).cloned();
+        let after_stop = after_stop.unwrap_or_else(|| panic!("the successor said primary updated other than after the holder's stop: {said:#?}"));
+        assert!(p_cut.is_some_and(|cut| cut <= at_ns(&after_stop)), "the successor said primary updated only after P's stop cut its transport ({p_cut:?}): {after_stop:#?}");
+        eprintln!("N said primary updated after P's stop: trace {}", s(&after_stop["trace_id"]));
+    }
     let n_acks: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-row-acknowledged").into_iter().filter(|sp| attr(sp, "node") == n_name && attr(sp, "build_id") == build).collect();
     assert!(n_acks.iter().all(|sp| attr(sp, "announced") == "false"), "N's acknowledgement of P's row announced nothing: {n_acks:#?}");
     let n_rows: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").into_iter().filter(|sp| attr(sp, "node") == n_name).collect();
@@ -368,6 +399,15 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
         .chain(named(&spans, "rdm.mesh.election.resolve.via-fabric-recompute").into_iter().filter(|sp| attr(sp, "winner_path").is_empty() && attr(sp, "previous_node_id") != "" && (replaced_at..ready_at).contains(&at_ns(sp))))
         .collect();
     assert!(vacant.is_empty(), "a seat was vacant during the hand-over: {vacant:#?}");
+    // Every other node holds the committed seats naming N though P's frame never left it: through the
+    // replay or the surviving publisher (each node's seat record, whichever path brought it).
+    for other in names().into_iter().filter(|x| *x != p && *x != n_name) {
+        let heard: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == other && attr(sp, "successor").contains(&n_id)).collect();
+        let seated: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announcement").into_iter().filter(|sp| attr(sp, "node") == other && attr(sp, "holder").contains(&n_id)).collect();
+        let held = heard.iter().chain(seated.iter()).any(|sp| matches!(attr(sp, "outcome").as_str(), "held" | "same"));
+        assert!(held, "{other} holds the committed seats naming N with P's frame withheld: primary updated {heard:#?}, seated {seated:#?}");
+        eprintln!("seat at {other}: {:?}", heard.iter().chain(seated.iter()).map(|sp| format!("{} via {} {} trace {}", s(&sp["name"]), attr(sp, "via"), attr(sp, "outcome"), s(&sp["trace_id"]))).collect::<Vec<_>>());
+    }
     // P was the fabric-primary driving the Build: its drive ends at its row (seat-lost), its committed
     // seat check naming N (build_drive.rs `may_act`). P moved its seats as a step of its own attempt
     // (build_drive.rs `own_seats_first`) and dispatched nothing to N: N claims the next attempt itself,

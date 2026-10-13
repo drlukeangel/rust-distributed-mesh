@@ -3411,9 +3411,41 @@ pub struct Backbone {
     /// The deleted meshes its last round published, each with the stops and departures it listed:
     /// the round is due at once when they move.
     deleted_seen: Arc<Mutex<BTreeMap<String, (Vec<LifecycleOp>, Vec<LifecycleOp>)>>>,
+    /// Test seam ([`Backbone::withhold_announcements`]): asked before each announcement this
+    /// [`Withhold`] covers is handed to a channel. The product sets none.
+    withhold: Arc<std::sync::OnceLock<Withhold>>,
 }
 
+/// Test seam (R-NS2: "Final aggregates and leadership announcements are best-effort dissemination"):
+/// whether an announcement is withheld from a channel, asked with the announcement's name and the
+/// channel (`"backbone"` or `"mesh"`). A `true` answer skips that one send and nothing else: the
+/// frame, the topic and the delivery path are untouched. It models the announcement lost on its way
+/// out, as a stop's transport cut loses what gossip has not yet pushed. The announcements asked:
+/// - `stopping-aggregate`: the aggregate a node-admin that publishes its mesh's aggregate sends
+///   once more before its stop's transport cut, itself stopping (node-stop.md step 4);
+/// - `primary-updated`: "primary updated", said by the holder of a node.primary.update;
+/// - `aggregate-in-flight`: a publication round's aggregate of this admin's own mesh while it
+///   carries a lifecycle operation in flight.
+pub type Withhold = Arc<dyn Fn(&'static str, &'static str) -> bool + Send + Sync>;
+
 impl Backbone {
+    /// Test seam: hand this backbone the [`Withhold`] it asks before each announcement it covers
+    /// (set once; the product never calls it).
+    pub fn withhold_announcements(&self, withhold: Withhold) {
+        let _ = self.withhold.set(withhold);
+    }
+
+    /// Whether the [`Withhold`] this backbone holds withholds `announcement` from `channel`; with
+    /// none held, never.
+    pub fn withholds(&self, announcement: &'static str, channel: &'static str) -> bool {
+        let withheld = self.withhold.get().is_some_and(|w| w(announcement, channel));
+        if withheld {
+            tracing::info_span!("rdm.mesh.backbone.update.via-announcement-withheld", node = %self.node, mesh = %self.mesh, announcement, channel)
+                .in_scope(|| tracing::info!("the test seam withholds this announcement from the channel: nothing is sent on it"));
+        }
+        withheld
+    }
+
     /// Leave the backbone topic: this admin is a neighbour of no one on it and sends and hears
     /// nothing there until [`Backbone::unpark`]. Resolves once the topic is left.
     pub async fn park(&self) {
@@ -3487,6 +3519,7 @@ impl Backbone {
             view_meshes: Arc::default(),
             deleted_versions: Arc::default(),
             deleted_seen: Arc::default(),
+            withhold: Arc::default(),
         };
         me.spawn_status_sender();
         Ok(me)
@@ -3627,6 +3660,7 @@ impl Backbone {
         }
         let publisher = self.publisher.clone();
         let mesh = self.mesh.clone();
+        let withheld = !full.in_flight().is_empty() && self.withholds("aggregate-in-flight", "backbone");
         for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
             mesh: mesh.clone(),
             publisher: publisher.clone(),
@@ -3639,7 +3673,10 @@ impl Backbone {
             digests,
             in_flight,
             departed,
-        }) {
+        })
+        .into_iter()
+        .filter(|_| !withheld)
+        {
             let _ = self.channel.broadcast(&frame).await;
         }
         // The primary's own member projection goes onto its own mesh channel through the same
@@ -3993,9 +4030,14 @@ impl Backbone {
                 format!("failed: {e}")
             }
         };
-        let backbone = outcome("backbone", self.channel.broadcast(frame).await);
+        let announcement = match frame {
+            Frame::PrimaryUpdated { .. } => Some("primary-updated"),
+            _ => None,
+        };
+        let withheld = |channel: &'static str| announcement.is_some_and(|a| self.withholds(a, channel));
+        let backbone = if withheld("backbone") { "withheld".to_string() } else { outcome("backbone", self.channel.broadcast(frame).await) };
         tracing::Span::current().record("backbone", backbone.as_str());
-        let mesh_channel = outcome("mesh channel", self.membership.forward(frame).await);
+        let mesh_channel = if withheld("mesh") { "withheld".to_string() } else { outcome("mesh channel", self.membership.forward(frame).await) };
         tracing::Span::current().record("mesh_channel", mesh_channel.as_str());
     }
 

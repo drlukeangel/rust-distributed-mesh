@@ -40,6 +40,7 @@ enum CutWire {
     CatchUp,
     StateSync,
     TopologyRead,
+    Announcement { announcement: String, channel: String },
 }
 
 /// A fault door call.
@@ -161,6 +162,15 @@ pub enum Hit {
         /// The admin the read goes to: the one that answered the join.
         reads_from: String,
     },
+    /// A final aggregate or leadership announcement about to be sent on a channel.
+    Announcement {
+        /// The announcing node.
+        node: String,
+        /// The announcement (`rafka_mesh_transport::membership::Withhold`).
+        announcement: String,
+        /// The channel it is sent on.
+        channel: String,
+    },
 }
 
 impl Hit {
@@ -178,6 +188,7 @@ impl Hit {
             Hit::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
             Hit::StateSync { build_id, attempt } => json!({"build_id": build_id, "attempt": attempt}),
             Hit::TopologyRead { node, reads_from } => json!({"node": node, "reads_from": reads_from}),
+            Hit::Announcement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
         }
     }
 }
@@ -369,6 +380,7 @@ mod tests {
             CutSpec::CatchUp,
             CutSpec::StateSync,
             CutSpec::TopologyRead,
+            CutSpec::Announcement { announcement: "primary-updated".into(), channel: "any".into() },
         ]
     }
 
