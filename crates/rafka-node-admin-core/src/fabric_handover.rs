@@ -238,6 +238,39 @@ pub struct UpdateLocks {
     updating: tokio::sync::Mutex<()>,
 }
 
+/// What this admin holds of each seat update, by its operation: the updates it holds
+/// node.primary.updated for (it answered the holder's call as the successor the row names, or obtained
+/// the successor's answer as the holder or the commander), and the updates it said "primary updated"
+/// for as the next writer to read the row (proposal Part C1 failure contract). Each update is
+/// acknowledged once and said once.
+#[derive(Default)]
+pub struct UpdateMemo {
+    /// Each update held acknowledged, and whether its row names this admin the successor.
+    acknowledged: std::sync::Mutex<std::collections::BTreeMap<String, bool>>,
+    /// Each update this admin said "primary updated" for.
+    announced: std::sync::Mutex<std::collections::BTreeSet<String>>,
+}
+
+impl UpdateMemo {
+    fn acknowledge(&self, operation: &str, successor: bool) {
+        self.acknowledged.lock().unwrap().insert(operation.to_string(), successor);
+    }
+
+    /// `Some(whether the row names this admin the successor)` once `operation` is acknowledged here.
+    fn acknowledged(&self, operation: &str) -> Option<bool> {
+        self.acknowledged.lock().unwrap().get(operation).copied()
+    }
+
+    /// Whether "primary updated" for `operation` is this admin's to say now: true once.
+    fn announce(&self, operation: &str) -> bool {
+        self.announced.lock().unwrap().insert(operation.to_string())
+    }
+
+    fn announced(&self, operation: &str) -> bool {
+        self.announced.lock().unwrap().contains(operation)
+    }
+}
+
 /// Every side of node.primary.update on one node-admin: the holder's update, the successor's
 /// install, the commander's command and its resume.
 pub struct HandoverDoor {
@@ -266,6 +299,8 @@ pub struct HandoverDoor {
     pub records: Arc<crate::admin::Records>,
     /// One update at a time at each side.
     pub locks: UpdateLocks,
+    /// The updates this admin holds node.primary.updated for and those it said "primary updated" for.
+    pub memo: UpdateMemo,
     /// The lock of this admin's Build-log decisions (`FabricBuildStateAdapter::decisions`): the holder
     /// holds it across its row and the move of its records, so a decision in flight commits wholly
     /// before the records move. The moved record is the target every later decision is judged
@@ -536,7 +571,10 @@ impl HandoverDoor {
             claim = %claim,
         )
         .in_scope(|| tracing::info!("the receiver installed the committed row and answers node.primary.updated"));
-        if holder_exit == "proven" {
+        if row.successor == self.me_birth() {
+            self.memo.acknowledge(&row.operation, true);
+        }
+        if holder_exit == "proven" && self.memo.announce(&row.operation) {
             self.backbone.announce_primary_updated(op, row.seats.clone()).await;
         }
         Reply::PrimaryUpdated { epochs: row.seats }
@@ -612,6 +650,9 @@ impl HandoverDoor {
             detail = tracing::field::Empty,
         );
         let r = self.update_primary_in(moving, expected, build_id, attempt, operation).instrument(span.clone()).await;
+        if r.is_ok() {
+            self.memo.acknowledge(operation, false);
+        }
         match &r {
             Ok(_) => span.record("outcome", "updated"),
             Err(incomplete @ Reply::Incomplete { .. }) => span.record("outcome", "incomplete").record("detail", refusal_reason(incomplete).1.as_str()),
@@ -824,6 +865,9 @@ impl HandoverDoor {
             detail = tracing::field::Empty,
         );
         let r = self.command_update_primary_in(holder, build_id, attempt, operation).instrument(span.clone()).await;
+        if let Ok((_, seats)) = &r {
+            self.memo.acknowledge(operation, seats.first().is_some_and(|c| c.holder == self.me_birth()));
+        }
         match &r {
             Ok((successor, _)) => span.record("outcome", "updated").record("successor", successor.as_str()),
             Err((outcome, e)) => span.record("outcome", *outcome).record("detail", e.as_str()),
@@ -912,15 +956,25 @@ impl HandoverDoor {
     /// (`named`, the node that operation acts on, when it names one)
     /// (proposal Part C1 failure contract: "The workflow continues only after the result is installed
     /// and acknowledged: node.primary.updated answered to the resuming executor's call, never a read
-    /// alone"; "the next writer to read the row publishes 'updated'. Completion needs neither gossip
-    /// delivery nor the holder's survival"). The row is point-read on the fabric's store root. A row
-    /// naming this birth the successor is installed from the row, this admin's own
-    /// node.primary.updated, and this admin, the next writer to read the row, says "primary updated"
-    /// before anything the update preceded is dispatched; a row naming another successor is that
-    /// successor's node.primary.updated, obtained on a call carrying the row, and installed. `false`:
-    /// no row, so no update happened. `Err` names why the update was not acknowledged. One
-    /// `rdm.node_admin.seat.update.via-row-acknowledged` per row acknowledged.
+    /// alone"; "The holder lost after the row, before 'updated': ... the next writer to read the row
+    /// publishes 'updated'. Completion needs neither gossip delivery nor the holder's survival"). An
+    /// update this admin already holds node.primary.updated for (it answered the holder's call as the
+    /// row's successor, or obtained the answer itself) is acknowledged with nothing installed again. A
+    /// row naming this birth the successor is installed from the row, this admin's own
+    /// node.primary.updated; the holder says "primary updated" (step 7), and this admin, the next writer
+    /// to read the row, says it only once the holder the row names is proven exited by its exit-proof
+    /// row (elections §4.1), once. A row naming another successor is that successor's
+    /// node.primary.updated, obtained on a call carrying the row, and installed. `false`: no row, so no
+    /// update happened. `Err` names why the update was not acknowledged. One
+    /// `rdm.node_admin.seat.update.via-row-acknowledged` per row read.
     pub async fn row_acknowledged(&self, mesh: &str, operation: &str, named: Option<&PathName>, build_id: &str, attempt: u32) -> Result<bool, String> {
+        let held = self.memo.acknowledged(operation);
+        match held {
+            // Acknowledged here, and nothing is this admin's to say for it.
+            Some(false) => return Ok(true),
+            Some(true) if self.memo.announced(operation) => return Ok(true),
+            _ => {}
+        }
         let row = self.storage.seat_transfer(mesh, operation).await.map_err(|e| format!("{}: fabric.storage, the seat-transfer row {operation} under mesh {mesh} could not be read: {e}", self.me))?;
         let Some(row) = row.filter(|r| !r.seats.is_empty()) else { return Ok(false) };
         let span = tracing::info_span!(
@@ -935,27 +989,45 @@ impl HandoverDoor {
             fabric_epoch = %epoch_of(&row.seats, Seat::FabricPrimary),
             by = tracing::field::Empty,
             announced = tracing::field::Empty,
+            holder_exit = tracing::field::Empty,
+            holder_exit_detail = tracing::field::Empty,
         );
         // The holder by the name this admin's view gives its birth, else the node the operation names.
         let holder = self.topology.read().await.births().find(|n| n.node_id == row.holder.node_id).map(|n| n.name.clone()).or_else(|| named.cloned());
         let Some(holder) = holder else {
             return Err(format!("{}: the row {operation} under mesh {mesh} names the holder {}, which no node of this admin's view is and the operation names no node, so the update's subject cannot be named", self.me, births(&row.holder)));
         };
-        if row.successor == self.me_birth() {
-            let op = self.op_of(&row.holder, holder, &row.build_id, row.attempt, &row.operation);
+        if row.successor != self.me_birth() {
+            let epochs = self.call_successor(&row, "commander").instrument(span.clone()).await.map_err(|e| refusal_reason(&e).1)?;
+            self.install_committed(&holder, &row.holder, epochs, &row.build_id, row.attempt, &row.operation, "row-acknowledged").instrument(span.clone()).await;
+            self.memo.acknowledge(operation, false);
+            span.record("by", "successor-call").record("announced", false);
+            span.in_scope(|| tracing::info!("the successor the row names answered node.primary.updated and its seats are installed"));
+            return Ok(true);
+        }
+        let op = self.op_of(&row.holder, holder.clone(), &row.build_id, row.attempt, &row.operation);
+        let by = if held.is_some() {
+            "answered"
+        } else {
             {
                 let _decisions = self.decisions.clone().lock_owned().await;
                 self.membership.seats().take_together(&op, &row.seats);
             }
             (self.project_view)().await;
-            span.record("by", "self-install").record("announced", true);
-            span.in_scope(|| tracing::info!("the successor the row names installed it and says primary updated before anything the update preceded runs"));
+            self.memo.acknowledge(operation, true);
+            "self-install"
+        };
+        // The holder lost after the row, before "updated": the provider's exit proof of the birth the row
+        // names as holder (never of whoever calls, R-RX1). None: the holder is alive and says it (step 7).
+        let (announce, holder_exit, detail) = match self.records.exit_row_of_birth(&row.holder.mesh, &row.holder.node_id, &row.holder.incarnation, &holder.to_string()).await {
+            Ok(Some(e)) => (self.memo.announce(operation), "proven", format!("{} exited, proof {} observed at {} ms", births(&row.holder), e.proof, e.observed_at_ms)),
+            Ok(None) => (false, "none", String::new()),
+            Err(e) => (false, "unreadable", e),
+        };
+        span.record("by", by).record("announced", announce).record("holder_exit", holder_exit).record("holder_exit_detail", detail.as_str());
+        span.in_scope(|| tracing::info!("the successor the row names holds the row installed before anything the update preceded runs"));
+        if announce {
             self.backbone.announce_primary_updated(op, row.seats.clone()).instrument(span).await;
-        } else {
-            let epochs = self.call_successor(&row, "commander").instrument(span.clone()).await.map_err(|e| refusal_reason(&e).1)?;
-            self.install_committed(&holder, &row.holder, epochs, &row.build_id, row.attempt, &row.operation, "row-acknowledged").instrument(span.clone()).await;
-            span.record("by", "successor-call").record("announced", false);
-            span.in_scope(|| tracing::info!("the successor the row names answered node.primary.updated and its seats are installed"));
         }
         Ok(true)
     }

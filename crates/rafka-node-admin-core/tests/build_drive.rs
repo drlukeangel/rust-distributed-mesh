@@ -1608,3 +1608,109 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.2".to_string(), 2)], "the successor reattached to the holder's attempt, then dispatched the next to itself");
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
 }
+
+/// The successor's gate in a holder-lost hand-over: each acknowledgement the drive asks for the rows
+/// the fixture committed, with whether the holder's departure was proven by then and how many
+/// dispatches had been made.
+struct AfterTheProof {
+    inner: Arc<Switch>,
+    rows: Vec<PrecedingUpdate>,
+    proofs: Arc<crate::loopback::Proofs>,
+    dispatch: Arc<crate::loopback::Loopback>,
+    asked: Mutex<Vec<(PrecedingUpdate, bool, usize)>>,
+}
+
+#[async_trait::async_trait]
+impl Gate for AfterTheProof {
+    fn authorizes(&self) -> bool {
+        self.inner.authorizes()
+    }
+    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+        self.inner.fence().await
+    }
+    async fn fence_set(&self) {
+        self.inner.fence_set().await
+    }
+    async fn seats_acknowledged(&self, updates: &[PrecedingUpdate], _: &BuildId, _: u32) -> Result<(), String> {
+        let proven = self.proofs.recorded.lock().unwrap().contains("mesh1.admin.1");
+        let dispatched = self.dispatch.dispatched.lock().unwrap().len();
+        for u in updates.iter().filter(|u| self.rows.contains(u)) {
+            self.asked.lock().unwrap().push((u.clone(), proven, dispatched));
+        }
+        Ok(())
+    }
+}
+
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 failure
+/// contract: "The holder lost after the row, before 'updated': the successor and every reader take the
+/// seat from the row; the next writer to read the row publishes 'updated'"; "A call that reached a
+/// process other than the named birth, a refusal or no answer is never an exit proof"; build.md: the
+/// next attempt is claimed "when the executor is lost with the attempt unfinished, after exact
+/// departure proof"): the fabric-primary `mesh1.admin.1` holds both seats and moves them in its own
+/// attempt; it dies after its row, before it says "primary updated". Its successor `mesh1.admin.2`,
+/// holding the seats from the row, finds that attempt held by the holder and its call to it reaches
+/// nothing: only the holder's proven departure lets it claim the next attempt, and only then does it
+/// acknowledge the row's update (the acknowledgement in which the successor, the next writer to read the
+/// row, says "primary updated" once the holder's exit is proven: fabric_handover.rs
+/// `a_successor_that_answered_the_holders_call_says_primary_updated_only_once_the_holder_is_proven_exited`),
+/// before it dispatches the retire.
+/// Must NOT happen: the successor claiming the holder's attempt over it on silence, the acknowledgement
+/// before the departure proof, or the retire dispatched before the acknowledgement.
+#[tokio::test(start_paused = true)]
+async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_acknowledges_the_row_and_dispatches() {
+    let r = rig_for(view_holder_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+    let (row, let_go, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(tokio::sync::Semaphore::new(0)), Arc::new(Mutex::new(Vec::new())));
+    let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row: row.clone(), let_go, events: events.clone() });
+    let e = &r.env;
+    let holder = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: holder_gate,
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        rows: e.rows.clone(),
+        turns: e.turns.clone(),
+    });
+    let p_drive = Drive::detached(r.build.clone());
+    let p_driving = tokio::spawn({
+        let (env, d) = (holder.clone(), p_drive.clone());
+        async move { env.run(&d).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), row.notified()).await.expect("the holder's update never wrote its row");
+    // The holder dies after its row, before step 7: its process (the drive and the run it held) is gone,
+    // nothing answers at its address, and the provider proves its exact runtime exited.
+    p_driving.abort();
+    let _ = p_driving.await;
+    r.dispatch.lose("mesh1.admin.1");
+    r.proofs.exited.lock().unwrap().insert("mesh1.admin.1".into());
+    let n_name: PathName = "mesh1.admin.2".parse().unwrap();
+    let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
+    let n_switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    let op = "retire-node:mesh1.admin.1";
+    let update = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rafka_mesh_entity::Seat::MeshPrimary, r.build.as_str(), op), holder: Some("mesh1.admin.1".parse().unwrap()) };
+    let n_gate = Arc::new(AfterTheProof { inner: n_switch, rows: vec![update.clone()], proofs: r.proofs.clone(), dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()) });
+    let successor = Arc::new(DriveEnv {
+        me: n_name.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        dispatcher: e.dispatcher.clone(),
+        gate: n_gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(n_name.clone(), n_id, e.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+    });
+    let n_drive = Drive::detached(r.build.clone());
+    assert_eq!(tokio::time::timeout(Duration::from_secs(60), successor.run(&n_drive)).await.expect("the successor's drive ends"), DriveEnd::Terminal);
+    assert_eq!(r.proofs.calls.load(Ordering::SeqCst), 1, "the holder's departure was proven once");
+    assert_eq!(*n_gate.asked.lock().unwrap(), vec![(update, true, 0)], "the row's update was acknowledged once, after the departure proof and before any dispatch");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt_executors.get(&1).map(String::as_str), p.attempt_executors.get(&2).map(String::as_str)), (Some("mesh1.admin.1"), Some("mesh1.admin.2")), "the successor claimed the attempt after the holder's: {:?}", p.attempt_executors);
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "nothing reached the lost holder; the retire was dispatched once, to the successor");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec![op.to_string()], "the retire ran once, at the successor");
+    assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string()], "the holder never said primary updated");
+}
