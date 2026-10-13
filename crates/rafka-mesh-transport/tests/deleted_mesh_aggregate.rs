@@ -21,6 +21,7 @@ const HELD: &str = "a_peer_holds_a_deleted_meshs_last_admin_stopped_then_deleted
 const LIVE: &str = "the_fabric_primary_executing_a_live_primaryless_meshs_stop_and_delete_publishes_no_aggregate_of_it";
 const AGAIN: &str = "a_mesh_created_again_under_the_deleted_meshs_name_ends_the_deleted_meshs_aggregate";
 const BACK: &str = "a_back_to_back_stop_and_delete_of_a_deleted_meshs_last_admin_publishes_the_stopped_stage_then_the_deleted_stage";
+const SEAT: &str = "a_fabric_seat_move_during_the_deleted_retention_keeps_the_deleted_mesh_published_by_the_new_fabric_primary";
 
 fn start_ns(sp: &Value) -> u64 {
     sp["start_unix_nano"].as_u64().or_else(|| sp["start_unix_nano"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0)
@@ -457,6 +458,195 @@ fn a_back_to_back_stop_and_delete_of_a_deleted_meshs_last_admin_publishes_the_st
         println!(
             "{BACK}: status event trace {} (v{stamped}); published stopped trace {} (v{}) then deleted trace {} (v{})",
             event["trace_id"], published[0]["trace_id"], stages[0].3, published[1]["trace_id"], stages[1].3
+        );
+    });
+}
+
+/// The publisher `bb` holds `mesh` from, by path name.
+fn held_from(bb: &Backbone, mesh: &str) -> Option<String> {
+    bb.held_source(mesh).map(|(p, _)| p.node)
+}
+
+/// CONTRACT (gossip.md "Mesh delete": "From the stop on the fabric-primary is that mesh's publisher
+/// of record ... it publishes the deleted mesh's own Members aggregate on the backbone, publisher
+/// itself, `digests` empty, the stopped admin in `in_flight` as NodeStopped on the ordinary
+/// anti-entropy cadence, until a start hands publishing back to the admin or a delete moves the
+/// birth to `deleted` as NodeDeleted ... After the deleted retention the mesh is empty and nothing
+/// publishes for it again"; the role is the fabric-primary's, whichever admin holds the seat):
+/// mesh3's last admin published itself, and the fabric-primary mesh1.admin.1, mesh2.admin.1 and a
+/// peer mesh primary mesh4.admin.1 hold it; every admin's view holds mesh3 deleted. mesh1.admin.1,
+/// the fabric-primary, stops it and publishes mesh3's aggregate with the stop in `in_flight` until
+/// mesh2.admin.1 and the peer hold it. Then the fabric seat moves to mesh2.admin.1 (the old holder
+/// gives the role up, the new one takes it; nobody is killed). From then on mesh2.admin.1 publishes
+/// mesh3's aggregate, publisher itself, no digests, the stop in `in_flight`, at its own version, and
+/// the peer installs it from mesh2.admin.1 (a new publisher of the mesh, stamped later) with
+/// mesh3.admin.1 still stopped; mesh1.admin.1 publishes nothing of mesh3 any more. mesh2.admin.1
+/// executes the delete and its aggregate moves the birth to `deleted`. The seat moves back to
+/// mesh1.admin.1 in that deleted stage, and mesh1.admin.1 publishes the birth in `deleted` from what it
+/// holds. Must NOT happen: the new fabric-primary publishing nothing of mesh3 because the stop was
+/// marked in its predecessor's process only (the peer then holds the old holder's last aggregate,
+/// never republished).
+#[test]
+fn a_fabric_seat_move_during_the_deleted_retention_keeps_the_deleted_mesh_published_by_the_new_fabric_primary() {
+    let dir = crate::evidence_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-mesh-transport-deleted-mesh-seat-move").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let (n3, fp1_n, fp2_n, peer_n) = (node().await, node().await, node().await, node().await);
+        let seed = addr_of(&fp1_n.ep);
+        for n in [&n3, &fp2_n, &peer_n] {
+            learn_addresses(&n.ep, &[seed.clone()]).unwrap();
+        }
+        let fab = fabric();
+        let clock = rafka_mesh_transport::clock::os_clock;
+        let admin3 = digest("mesh3.admin.1", 43_001);
+        let fp1_own = digest("mesh1.admin.1", 41_001);
+        let fp2_own = digest("mesh2.admin.1", 42_001);
+        let peer_own = digest("mesh4.admin.1", 44_001);
+        let m3 = Membership::join(&n3.gossip, &n3.ep, &fab, "mesh3", &MeshId::mint(), "mesh3.admin.1", clock(), vec![]).await.unwrap();
+        let fp1_m = Membership::join(&fp1_n.gossip, &fp1_n.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock(), vec![]).await.unwrap();
+        let fp2_m = Membership::join(&fp2_n.gossip, &fp2_n.ep, &fab, "mesh2", &MeshId::mint(), "mesh2.admin.1", clock(), vec![]).await.unwrap();
+        let peer_m = Membership::join(&peer_n.gossip, &peer_n.ep, &fab, "mesh4", &MeshId::mint(), "mesh4.admin.1", clock(), vec![]).await.unwrap();
+        let bb3 = Backbone::join(&n3.gossip, &n3.ep, &m3, "mesh3", "mesh3.admin.1", admin3.node.incarnation.clone(), vec![seed.clone()]).await.unwrap();
+        let fp1_bb = Backbone::join(&fp1_n.gossip, &fp1_n.ep, &fp1_m, "mesh1", "mesh1.admin.1", fp1_own.node.incarnation.clone(), vec![]).await.unwrap();
+        let fp2_bb = Backbone::join(&fp2_n.gossip, &fp2_n.ep, &fp2_m, "mesh2", "mesh2.admin.1", fp2_own.node.incarnation.clone(), vec![seed.clone()]).await.unwrap();
+        let peer_bb = Backbone::join(&peer_n.gossip, &peer_n.ep, &peer_m, "mesh4", "mesh4.admin.1", peer_own.node.incarnation.clone(), vec![seed.clone()]).await.unwrap();
+        for bb in [&bb3, &fp1_bb, &fp2_bb, &peer_bb] {
+            bb.set_mesh_primary(true);
+        }
+
+        // mesh3's last admin publishes itself alone until both seat holders and the peer hold mesh3.
+        assert!(m3.book.record(admin3.clone()));
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            bb3.publish(&m3, bb3.own_members(&m3)).await;
+            if [&fp1_bb, &fp2_bb, &peer_bb].iter().all(|bb| bb.held_source("mesh3").is_some()) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the backbone never carried mesh3's aggregate to mesh1.admin.1, mesh2.admin.1 and the peer");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // The last admin stops publishing. Every admin's view holds mesh3 deleted; mesh1.admin.1 holds
+        // the fabric seat.
+        drop(bb3);
+        n3.ep.close().await;
+        let views = view(&[("mesh1", false), ("mesh2", false), ("mesh3", true), ("mesh4", false)]);
+        for bb in [&fp1_bb, &fp2_bb, &peer_bb] {
+            bb.set_view_meshes(views.clone());
+        }
+        fp1_bb.set_fabric_primary(true);
+
+        // The stop, executed by mesh1.admin.1 from the matching stopped reply.
+        let stop = op("stop-node", &admin3);
+        let (_, stamped) = fp1_bb.publish_status_event(StatusEvent::Stopped, &stop).await;
+        let stopped_at_fp2 = |m: &Membership| m.book.in_flight().iter().any(|o| o.key() == stop.key());
+        rounds_until(&fp1_bb, &fp1_m, "mesh2.admin.1 and the peer never held mesh3 from mesh1.admin.1 with the stop in in_flight", || {
+            held_from(&fp2_bb, "mesh3").as_deref() == Some("mesh1.admin.1") && held_from(&peer_bb, "mesh3").as_deref() == Some("mesh1.admin.1") && stopped_at_fp2(&fp2_m)
+        })
+        .await;
+
+        // The fabric seat moves to mesh2.admin.1: the old holder gives the role up, the new one takes it.
+        fp1_bb.set_fabric_primary(false);
+        fp2_bb.set_fabric_primary(true);
+        let moved_at = unix_ns();
+        assert!(fp1_bb.publish_deleted_meshes(&fp1_m).await.is_empty(), "the old holder publishes nothing of mesh3 after the seat moved");
+        let fp2_publisher = format!("mesh2.admin.1@{}", fp2_own.node.incarnation.as_str());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            fp2_bb.publish(&fp2_m, fp2_bb.own_members(&fp2_m)).await;
+            let published = fp2_bb.publish_deleted_meshes(&fp2_m).await;
+            assert_eq!(published, vec!["mesh3".to_string()], "the new fabric-primary mesh2.admin.1 publishes the deleted mesh3 from the seat move on; its book holds the stop in in_flight ({}) and its view holds mesh3 deleted", stopped_at_fp2(&fp2_m));
+            if held_from(&peer_bb, "mesh3").as_deref() == Some("mesh2.admin.1") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the peer never held mesh3 from the new fabric-primary mesh2.admin.1");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let after_move = held_of(&peer_m, &peer_own, "mesh3").expect("the peer holds mesh3");
+        assert!(after_move.digests.is_empty(), "the deleted mesh's aggregate has no digests: {after_move:?}");
+        assert_eq!(keys(&after_move.in_flight), keys(std::slice::from_ref(&stop)), "the stopped admin is in in_flight: {after_move:?}");
+        let stopped_at_peer = |m: &Membership| m.book.parked().iter().any(|d| d.node.node_id == admin3.node.node_id);
+        assert!(stopped_at_peer(&peer_m), "the peer still holds mesh3.admin.1 stopped");
+        assert!(fp1_bb.publish_deleted_meshes(&fp1_m).await.is_empty(), "the old holder still publishes nothing of mesh3");
+
+        // The delete, executed by the new fabric-primary: NodeDeleted on its own mesh channel, the
+        // departure taken by its own view, as the node-admin runs it.
+        let deleted = op("retire-node", &admin3);
+        fp2_m.publish_lifecycle(&Frame::NodeDeleted { op: deleted.clone(), forwarded_by: None }).await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            fp2_bb.publish(&fp2_m, fp2_bb.own_members(&fp2_m)).await;
+            assert_eq!(fp2_bb.publish_deleted_meshes(&fp2_m).await, vec!["mesh3".to_string()], "the new fabric-primary publishes the deleted mesh3 after the delete");
+            if held_from(&peer_bb, "mesh3").as_deref() == Some("mesh2.admin.1") && held_of(&peer_m, &peer_own, "mesh3").is_some_and(|s| !s.departed.is_empty()) && fp1_m.book.is_departed(admin3.node.node_id.as_str()) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the peer and mesh1.admin.1 never held mesh3.admin.1 deleted from mesh2.admin.1's aggregate");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let at_delete = held_of(&peer_m, &peer_own, "mesh3").expect("the peer holds mesh3");
+        assert!(at_delete.digests.is_empty() && at_delete.in_flight.is_empty(), "{at_delete:?}");
+        assert_eq!(keys(&at_delete.departed), keys(std::slice::from_ref(&deleted)), "the delete moves the birth to deleted: {at_delete:?}");
+
+        // The seat moves back to mesh1.admin.1 in the deleted stage: it publishes the birth in deleted
+        // from what it holds.
+        fp2_bb.set_fabric_primary(false);
+        fp1_bb.set_fabric_primary(true);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            fp1_bb.publish(&fp1_m, fp1_bb.own_members(&fp1_m)).await;
+            assert_eq!(fp1_bb.publish_deleted_meshes(&fp1_m).await, vec!["mesh3".to_string()], "mesh1.admin.1, holding the seat again, publishes the deleted mesh3 in its deleted stage");
+            if held_from(&peer_bb, "mesh3").as_deref() == Some("mesh1.admin.1") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the peer never held mesh3 from mesh1.admin.1 after the seat moved back");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let back = held_of(&peer_m, &peer_own, "mesh3").expect("the peer holds mesh3");
+        assert!(back.digests.is_empty() && back.in_flight.is_empty(), "{back:?}");
+        assert_eq!(keys(&back.departed), keys(std::slice::from_ref(&deleted)), "the birth stays in deleted: {back:?}");
+        assert!(fp2_bb.publish_deleted_meshes(&fp2_m).await.is_empty(), "mesh2.admin.1 publishes nothing of mesh3 after the seat moved back");
+
+        fp1_bb.set_fabric_primary(false);
+        for bb in [fp1_bb, fp2_bb, peer_bb] {
+            drop(bb);
+        }
+        for n in [&fp1_n, &fp2_n, &peer_n] {
+            n.ep.close().await;
+        }
+        let spans = capture.spans().expect("the cell's spans reached its evidence file");
+        std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+        let by_new: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.backbone.update.via-deleted-mesh" && s["attributes"]["mesh"] == "mesh3" && s["attributes"]["node"] == "mesh2.admin.1").collect();
+        let new_stopped = by_new.iter().find(|s| attr_u(s, "digests") == 0 && attr_u(s, "in_flight") == 1 && attr_u(s, "departed") == 0 && start_ns(s) > moved_at).unwrap_or_else(|| panic!("the new fabric-primary published the stopped stage after the seat move: {by_new:#?}"));
+        let new_deleted = by_new.iter().find(|s| attr_u(s, "digests") == 0 && attr_u(s, "in_flight") == 0 && attr_u(s, "departed") == 1).unwrap_or_else(|| panic!("the new fabric-primary published the deleted stage: {by_new:#?}"));
+        let installed = |publisher: &str, in_flight: u64, departed: u64| {
+            spans
+                .iter()
+                .find(|s| {
+                    s["name"] == "rdm.mesh.membership.update.via-snapshot-installed"
+                        && s["attributes"]["node"] == "mesh4.admin.1"
+                        && s["attributes"]["mesh"] == "mesh3"
+                        && s["attributes"]["publisher"] == publisher
+                        && attr_u(s, "members") == 0
+                        && attr_u(s, "in_flight") == in_flight
+                        && attr_u(s, "departed") == departed
+                })
+                .cloned()
+                .unwrap_or_else(|| panic!("the peer installed mesh3 from {publisher} with in_flight={in_flight} departed={departed}"))
+        };
+        let peer_stopped = installed(&fp2_publisher, 1, 0);
+        let peer_deleted = installed(&fp2_publisher, 0, 1);
+        let fp1_publisher = format!("mesh1.admin.1@{}", fp1_own.node.incarnation.as_str());
+        let peer_back = installed(&fp1_publisher, 0, 1);
+        println!(
+            "{SEAT}: stop v{stamped} by mesh1.admin.1; after the seat move mesh2.admin.1 published stopped trace {} (v{}) and deleted trace {} (v{}); the peer installed them, traces {} and {}; after the seat moved back, installed from mesh1.admin.1 trace {}",
+            new_stopped["trace_id"],
+            attr_u(new_stopped, "topology_version"),
+            new_deleted["trace_id"],
+            attr_u(new_deleted, "topology_version"),
+            peer_stopped["trace_id"],
+            peer_deleted["trace_id"],
+            peer_back["trace_id"]
         );
     });
 }
