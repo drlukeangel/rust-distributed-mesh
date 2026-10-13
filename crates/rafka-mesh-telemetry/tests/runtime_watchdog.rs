@@ -20,12 +20,11 @@ impl Write for Buf {
 /// sampled while it was blocked; a runtime that runs is never reported.
 #[test]
 fn a_blocked_runtime_is_reported_with_its_length_and_its_threads() {
-    if crate::own_process::delegated(module_path!(), "a_blocked_runtime_is_reported_with_its_length_and_its_threads") {
-        return;
-    }
     let buf = Buf::default();
     let w = buf.clone();
-    tracing::subscriber::set_global_default(tracing_subscriber::fmt().with_writer(move || w.clone()).with_ansi(false).finish()).unwrap();
+    // This thread's own subscriber: the watchdog's OS thread reports through the dispatcher in force
+    // where `spawn` is called, so the cell needs no process-wide subscriber.
+    let _capture = tracing::subscriber::set_default(tracing_subscriber::fmt().with_writer(move || w.clone()).with_ansi(false).finish());
     let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     rt.block_on(async {
         rafka_mesh_telemetry::watchdog::spawn().expect("inside a runtime");
