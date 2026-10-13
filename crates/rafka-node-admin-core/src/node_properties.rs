@@ -84,7 +84,11 @@ pub async fn tags(me: &PathName, me_id: &NodeId, view: &RwLock<Topology>, storag
         async {
             match refused_before_first_ready(me, view, first_ready, req.op(), node_id, &span).await {
                 Some(refused) => refused,
-                None => write(me, me_id, &*view.read().await, storage, configs, node_id, incarnation, &change, &span).await,
+                None => {
+                    // A snapshot of the view: no read lock is held across the row write's I/O.
+                    let now = view.read().await.clone();
+                    write(me, me_id, &now, storage, configs, node_id, incarnation, &change, &span).await
+                }
             }
         },
         span.clone(),
