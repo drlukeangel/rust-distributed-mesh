@@ -1377,7 +1377,7 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
         assert_ne!(field("call"), "", "the look names how P's call ended: {:?}", looks[0]);
         let exit = p.door.records.exit_row_of_birth("mesh1", &n.resolved.node_id, &n.resolved.incarnation, "N").await.unwrap().expect("P put N's exit-proof row among mesh1's status rows");
         assert_eq!(exit.proof, "provider");
-        assert!(matches!(p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }, WriteCutOff::Restore { mesh_seat: true, fabric_seat: false, .. }]), "the row ended P's authority over the cut-off writes, and P seated again restores mesh1's seat only: {:?}", p.cut_offs.lock().unwrap());
+        assert!(matches!(p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }, WriteCutOff::Restore { mesh_seat: true, fabric_seat: false, .. }]), "the row ended P's writes of the cut-off stores, and P seated again restores mesh1's seat only: {:?}", p.cut_offs.lock().unwrap());
         assert_eq!(p.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 5)), "P holds mesh1's seat at the next revision over the row's");
         assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "X installs nothing on an incomplete update");
         let primary = p.door.topology.read().await.cohort_primary("mesh1", rafka_node_admin_core::model::NodeKind::NodeAdmin).map(|n| n.name.to_string());
