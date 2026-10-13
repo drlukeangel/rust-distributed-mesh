@@ -10,7 +10,7 @@
 //! endpoint, when one is set: the cell's trace is its deliverable.
 //!
 //! The capture owns its provider. Its `Drop` flushes the provider and then shuts it down, waiting
-//! at most [`crate::export::DRAIN_BOUND`] (an unreachable collector never holds a cell), before
+//! as long as [`crate::export::bounded`] allows (an unreachable collector never holds a cell), before
 //! the dispatcher guard drops.
 
 use crate::pipeline::{span_export_layer, span_processor, CountingBatchProcessor, SpanLoss};
