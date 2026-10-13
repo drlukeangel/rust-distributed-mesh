@@ -927,7 +927,8 @@ pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (N
 
 /// The seats this admin announces from one decision of its hierarchy loop: each seat the projection
 /// `t` gives it (`live`: a cut-off view authorizes nothing) whose record names another birth, at the
-/// next epoch over that record. The record is the one `t` was decided against (`decided`): a seat
+/// next epoch over that record; and, while it is its mesh's primary, each other cohort's seat of its
+/// mesh that `t` fills with a birth the cohort's record does not name. The record is the one `t` was decided against (`decided`): a seat
 /// record held after the decision (a committed handover landing while the loop awaits) is the next
 /// decision's input, and is never superseded by this one (fabric-node-lifecycle-elections.md §4.4).
 /// The record this admin already holds for itself needs no announcement.
@@ -944,6 +945,18 @@ pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&Nod
             continue;
         }
         said.push((seat, rafka_mesh_entity::SeatHolder { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), epoch: held.map(|h| h.epoch + 1).unwrap_or(1) }));
+    }
+    // The mesh-primary is its mesh's one row writer and sole author of member status (R-MT1 Q3): it
+    // says each other cohort's seat the election filled with a birth the record does not name.
+    if mesh_primary {
+        for kind in NodeKind::ALL.into_iter().filter(|k| *k != NodeKind::NodeAdmin) {
+            let Some((node_id, incarnation)) = t.cohort_primary(mesh, kind).and_then(|n| Some((n.node_id.clone(), n.incarnation_id.clone()?))) else { continue };
+            let held = decided.cohorts.get(&(mesh.to_string(), kind));
+            if held.is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
+                continue;
+            }
+            said.push((rafka_mesh_entity::Seat::Cohort(kind), rafka_mesh_entity::SeatHolder { mesh: mesh.to_string(), node_id, incarnation, epoch: held.map(|h| h.epoch + 1).unwrap_or(1) }));
+        }
     }
     said
 }
