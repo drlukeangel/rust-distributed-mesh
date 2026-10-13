@@ -69,6 +69,7 @@ const GATE_SCENARIOS: &[&str] = &[
     "mesh_lifecycle__mesh_create", "mesh_lifecycle__fabric_primary_handover", "mesh_identity__canonical_ids", "mesh_elections__cohort_election", "mesh_elections__fabric_primary", "mesh_rpc__proof_store",
     "fabric_build__accepted_topology", "fabric_build__build_op", "i143_acceptance_2803", "node_rpc__rpc_certainty", "i143_acceptance_2803_detect", "i143_acceptance_rg6", "mesh_runtime__rafka_time_discipline", "fabric_certs__issuance", "fabric_states__rounds",
     "mesh_lifecycle__mesh_leave_resume", "mesh_lifecycle__mesh_leave_no_survivor",
+    "node_rpc__apply_cuts", "node_rpc__scheduler_replay", "node_rpc__shared_dial",
 ];
 /// Gate stems that only the release gate runs (`RELEASE_ONLY`).
 const GATE_RELEASE_ONLY: &[&str] = &[
@@ -92,6 +93,7 @@ const E11: &[(&str, &str)] = &[
     ("rafka-node-base", "role_process"),
     ("rafka-node-base", "leadership"),
     ("rafka-node-rpc", "pool"),
+    ("rafka-test-scenario", "node_rpc__shared_dial"),
     ("rafka-mesh-audit", "dependency_rules"),
 ];
 

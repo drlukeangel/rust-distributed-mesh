@@ -16,8 +16,6 @@ mod exited_birth;
 mod flood;
 mod forward;
 mod forward_spans;
-mod i143_acceptance_2780;
-mod i143_acceptance_2781;
 mod moved_birth;
 mod one_endpoint;
 mod pool;

@@ -4,7 +4,7 @@
 //! emitted, captured in-process by the evidence exporter) there.
 //!
 //! The receiver under proof, `DigestBook`, lives in `rafka-mesh-transport`; the digest frame it
-//! orders lives here, so this crate dev-depends on the transport.
+//! orders, `MeshDigest`, lives in `rafka-mesh-entity`.
 //!
 //! CONTRACT: two heartbeats of one birth are ordered by `digest_seq` alone. However the supplied
 //! clock behaves (frozen, repeating, stepping back, or jumping far ahead), a higher `digest_seq`

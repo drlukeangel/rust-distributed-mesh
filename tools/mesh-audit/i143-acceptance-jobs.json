@@ -353,20 +353,20 @@
       "cells": [
         {
           "name": "network_scheduler_replays_incomplete_send_as_not_sent",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2781.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2781::network_scheduler_replays_incomplete_send_as_not_sent -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__scheduler_replay.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__scheduler_replay::network_scheduler_replays_incomplete_send_as_not_sent -- --exact",
           "dir": "target/i143-acceptance/2781/unit/network_scheduler_replays_incomplete_send_as_not_sent"
         },
         {
           "name": "network_scheduler_replays_lost_reply_as_indeterminate",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2781.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2781::network_scheduler_replays_lost_reply_as_indeterminate -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__scheduler_replay.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__scheduler_replay::network_scheduler_replays_lost_reply_as_indeterminate -- --exact",
           "dir": "target/i143-acceptance/2781/unit/network_scheduler_replays_lost_reply_as_indeterminate"
         },
         {
           "name": "pool_scheduler_supersedes_birth_preserves_current_sibling",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2781.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2781::pool_scheduler_supersedes_birth_preserves_current_sibling -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__scheduler_replay.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__scheduler_replay::pool_scheduler_supersedes_birth_preserves_current_sibling -- --exact",
           "dir": "target/i143-acceptance/2781/unit/pool_scheduler_supersedes_birth_preserves_current_sibling"
         }
       ]
@@ -377,14 +377,14 @@
       "cells": [
         {
           "name": "failpoint_explorer_before_apply_proves_not_sent_or_unapplied",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2780.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2780::failpoint_explorer_before_apply_proves_not_sent_or_unapplied -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__apply_cuts.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__apply_cuts::failpoint_explorer_before_apply_proves_not_sent_or_unapplied -- --exact",
           "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_before_apply_proves_not_sent_or_unapplied"
         },
         {
           "name": "failpoint_explorer_after_apply_lost_reply_proves_indeterminate",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2780.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2780::failpoint_explorer_after_apply_lost_reply_proves_indeterminate -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__apply_cuts.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__apply_cuts::failpoint_explorer_after_apply_lost_reply_proves_indeterminate -- --exact",
           "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_after_apply_lost_reply_proves_indeterminate"
         }
       ]
@@ -551,8 +551,8 @@
       "cells": [
         {
           "name": "digest_receiver_orders_same_birth_by_sequence_with_stalled_clock",
-          "source": "crates/rafka-mesh-entity/tests/i143_acceptance_2899.rs",
-          "command": "cargo test -p rafka-mesh-entity --test main i143_acceptance_2899::digest_receiver_orders_same_birth_by_sequence_with_stalled_clock -- --exact",
+          "source": "crates/rafka-test-scenario/tests/mesh_membership__digest_sequence.rs",
+          "command": "cargo test -p rafka-test-scenario --test main mesh_membership__digest_sequence::digest_receiver_orders_same_birth_by_sequence_with_stalled_clock -- --exact",
           "dir": "target/i143-acceptance/2899/unit/digest_receiver_orders_same_birth_by_sequence_with_stalled_clock"
         }
       ]
