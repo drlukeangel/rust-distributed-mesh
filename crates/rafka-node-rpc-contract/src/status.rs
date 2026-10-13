@@ -515,38 +515,32 @@ pub const MAX_TAG_BYTES: usize = 64;
 /// `zone_a`, `v1.2~rc`). A label keys one row of the node store's tags index, so it is a key every
 /// store can hold: no separator, no whitespace, and never `.` or `..`.
 pub fn tag_refusal(label: &str) -> Option<String> {
-    let b = label.as_bytes();
-    if b.is_empty() {
-        return Some("a tag label is empty".into());
-    }
-    if b.len() > MAX_TAG_BYTES {
-        return Some(format!("the tag label {:?} is {} bytes, over the {MAX_TAG_BYTES}-byte cap", within(label, MAX_TAG_BYTES), b.len()));
-    }
-    if b[0] == b'.' {
-        return Some(format!("the tag label {label:?} starts with '.'"));
-    }
-    if !b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_' | b'.' | b'~')) {
-        return Some(format!("the tag label {label:?} is not lowercase ASCII letters, digits, '-', '_', '.' and '~'"));
-    }
-    None
+    grammar_refusal("tag label", label)
 }
 
 /// Why `name` is not a node name, by name, or `None` when it is one (proposal
 /// node-properties-own-commands.md §9, ruled A: "a rename may take any name within the name grammar
 /// (the tag-label grammar ...: 1-64 of `a-z 0-9 - _ . ~`, no leading `.`, whitespace refused)").
 pub fn name_refusal(name: &str) -> Option<String> {
-    let b = name.as_bytes();
+    grammar_refusal("name", name)
+}
+
+/// Why `value`, a `noun` (a tag label, a node name), is outside the one grammar both take, by name, or
+/// `None` when it is within it: 1 to [`MAX_TAG_BYTES`] bytes of lowercase ASCII letters, digits, `-`,
+/// `_`, `.` and `~`, not starting with `.`.
+fn grammar_refusal(noun: &str, value: &str) -> Option<String> {
+    let b = value.as_bytes();
     if b.is_empty() {
-        return Some("the name is empty".into());
+        return Some(format!("the {noun} is empty"));
     }
     if b.len() > MAX_TAG_BYTES {
-        return Some(format!("the name {:?} is {} bytes, over the {MAX_TAG_BYTES}-byte cap", within(name, MAX_TAG_BYTES), b.len()));
+        return Some(format!("the {noun} {:?} is {} bytes, over the {MAX_TAG_BYTES}-byte cap", within(value, MAX_TAG_BYTES), b.len()));
     }
     if b[0] == b'.' {
-        return Some(format!("the name {name:?} starts with '.'"));
+        return Some(format!("the {noun} {value:?} starts with '.'"));
     }
     if !b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_' | b'.' | b'~')) {
-        return Some(format!("the name {name:?} is not lowercase ASCII letters, digits, '-', '_', '.' and '~'"));
+        return Some(format!("the {noun} {value:?} is not lowercase ASCII letters, digits, '-', '_', '.' and '~'"));
     }
     None
 }
