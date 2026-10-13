@@ -59,6 +59,10 @@ pub struct ControlPlane {
     pub loads: std::sync::OnceLock<Arc<dyn Fn() -> std::collections::BTreeMap<String, (Option<rafka_mesh_entity::NodeLoad>, Option<rafka_mesh_entity::GossipStats>)> + Send + Sync>>,
     /// Woken on every accepted Build so the executor re-plans.
     pub build_submitted: Arc<Notify>,
+    /// The fabric's climb told of a Build this admin accepted, before the door answers it: a resize or
+    /// roll puts the fabric back to pending inside the acceptance (states.md, Resize and roll), and the
+    /// view this admin answers from holds it. Set once by the admin that owns the climb.
+    pub resize: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
     /// Woken when this admin's part of a fabric shutdown is done and it should leave.
     pub shutdown: Arc<Notify>,
     /// This admin's fabric shutdown seat, set once at start.
@@ -109,6 +113,7 @@ impl ControlPlane {
             me,
             topology: Arc::new(RwLock::new(topology)),
             build_submitted: Arc::new(Notify::new()),
+            resize: std::sync::OnceLock::new(),
             shutdown: Arc::new(Notify::new()),
             fabric_shutdown: std::sync::OnceLock::new(),
             absence: std::sync::OnceLock::new(),
@@ -425,6 +430,11 @@ impl ControlPlane {
             // write after it, so the door answers the Build it accepted whatever the drive does next.
             crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &self.me.to_string(), "accepted").await.map_err(Refusal::State)?;
             tracing::info!(build_id = %build_id, "build accepted");
+            // A resize or roll puts the fabric back to pending (states.md, Resize and roll): the climb takes
+            // the accepted Build before the door answers it and before the executor is woken.
+            if let Some(resize) = self.resize.get() {
+                resize().await;
+            }
             self.build_submitted.notify_waiters();
             Ok::<Opened, Refusal>(Opened { build_id, attempt: 1, mesh: None })
         }

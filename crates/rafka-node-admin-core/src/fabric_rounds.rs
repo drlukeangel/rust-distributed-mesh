@@ -439,6 +439,31 @@ impl FabricRounds {
         }
     }
 
+    /// A Build this fabric-primary has just accepted (states.md, Resize and roll: "A resize or roll puts
+    /// the fabric back to pending"): when the current Build's topology is not the one the fabric climbs
+    /// under, the fabric is back to pending now, inside the acceptance and before its door answers, and
+    /// the status loop is woken to send the state at once. No read after the answer pairs the accepted
+    /// Build with the state the previous topology's climb reached. A climb that holds no topology yet
+    /// takes the current Build at its own next step. Whether the fabric went back to pending.
+    pub async fn accepted(self: &Arc<Self>) -> bool {
+        let mut climb = self.climb.lock().await;
+        if climb.tracked.is_none() {
+            return false;
+        }
+        let reset = match self.env.builds.current().await {
+            Ok(Some(build)) => self.resized(&mut climb, &build),
+            Ok(None) => false,
+            Err(e) => {
+                self.block(&mut climb, &[unreadable(&e)], "the acceptance reads the current Build");
+                false
+            }
+        };
+        if reset {
+            self.climb_wake.notify_one();
+        }
+        reset
+    }
+
     async fn step_ready(self: &Arc<Self>, climb: &mut Climb) {
         match self.env.builds.current().await {
             Ok(Some(build)) => {

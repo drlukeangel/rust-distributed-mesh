@@ -5705,6 +5705,19 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 actions: round_actions.clone(),
                             }));
                             rounds_slot.get().expect("set above").set_gossip(backbone.clone(), membership.clone());
+                            // A Build this admin accepts as the fabric-primary reaches its climb inside the acceptance:
+                            // a resize puts the fabric back to pending, and the view the door's caller reads next holds it.
+                            {
+                                let (rounds, me, book, records, fabric, fabric_id, provider, topology) = (rounds_slot.get().expect("set above").clone(), name.clone(), book.clone(), records.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, control.topology.clone());
+                                let _ = control.resize.set(Arc::new(move || {
+                                    let (rounds, me, book, records, fabric, fabric_id, topology) = (rounds.clone(), me.clone(), book.clone(), records.clone(), fabric.clone(), fabric_id.clone(), topology.clone());
+                                    Box::pin(async move {
+                                        if rounds.accepted().await {
+                                            records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
+                                        }
+                                    })
+                                }));
+                            }
 
                             // The deployment hand (used while this admin is fabric primary). A provider's host-wide
                             // resources (a container fabric's network and labels) are keyed by the Fabric's id: a Fabric
