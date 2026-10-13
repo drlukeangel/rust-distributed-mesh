@@ -1560,7 +1560,8 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
         rows: e.rows.clone(),
         turns: e.turns.clone(),
     });
-    // The successor: its own door, gate and park gate over the fixture's one Build log and view.
+    // The successor: its own door, gate and park gate over the fixture's one Build log, view and store
+    // root (its mesh rows, `mesh_claims`, are the holder's).
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
     let n_switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
@@ -1568,7 +1569,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
         me: n_name.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory()) }),
+        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: e.door.claims.clone() }),
         dispatcher: e.dispatcher.clone(),
         gate: n_switch,
         departure: e.departure.clone(),
@@ -1606,6 +1607,70 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
     assert_eq!(handed, vec![rafka_node_admin_core::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }], "the holder's attempt ended handed off to the successor");
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["retire-node:mesh1.admin.1".to_string()], "the retire ran once, at the successor");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.2".to_string(), 2)], "the successor reattached to the holder's attempt, then dispatched the next to itself");
+    assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
+}
+
+/// CONTRACT (build.md: "The next attempt is claimed after the running attempt's terminal receipt
+/// (Complete, Failed or HandedOff)"; R-BI7 caveat 3, mesh_claims.rs: a mesh's in-flight row "is
+/// released at that attempt's verdict", by "the admin that durably recorded the verdict"): the
+/// fabric-primary `mesh1.admin.1` holds both seats and its Build retires it, so it moves both seats in
+/// the attempt it claims for itself, on mesh1's rows of the fabric's one store root, and that attempt
+/// ends `HandedOff` to the successor `mesh1.admin.2`. The successor's drive begins only after the
+/// attempt ended, so it reads the verdict and reattaches to nothing; it claims the next attempt on the
+/// same mesh1 rows and runs the retire.
+/// Must NOT happen: the successor's claim refused build-in-progress by the holder's ended attempt, its
+/// drive stalled on a mesh no attempt in flight holds.
+#[tokio::test(start_paused = true)]
+async fn a_successor_that_reads_the_holders_attempt_ended_claims_the_next_attempt_on_the_mesh_the_holder_released() {
+    let r = rig_for(view_holder_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+    let (row, events) = (Arc::new(tokio::sync::Notify::new()), Arc::new(Mutex::new(Vec::new())));
+    // The holder says primary updated as soon as its row is written: nothing holds it at steps 6-7.
+    let holder_gate = Arc::new(HolderUpdate { inner: r.switch.clone(), topology: r.env.topology.clone(), row, let_go: Arc::new(tokio::sync::Semaphore::new(1)), events: events.clone() });
+    let e = &r.env;
+    let holder = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: holder_gate,
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        rows: e.rows.clone(),
+        turns: e.turns.clone(),
+    });
+    let p_drive = Drive::detached(r.build.clone());
+    assert!(matches!(tokio::time::timeout(Duration::from_secs(60), holder.run(&p_drive)).await.expect("the holder's drive ended"), DriveEnd::SeatLost(_)), "the holder's drive ends at its row");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    let handed: Vec<_> = r.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
+        rafka_node_admin_core::build_state::BuildFact::Attempt(a) if a.build_id == r.build && a.attempt == 1 => Some(a.outcome),
+        _ => None,
+    }).collect();
+    assert_eq!((p.attempt, handed), (1, vec![rafka_node_admin_core::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }]), "the holder's attempt ended handed off to the successor before the successor's drive begins");
+    let n_name: PathName = "mesh1.admin.2".parse().unwrap();
+    let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
+    let n_switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
+    // The successor: its own door, gate and park gate over the fixture's one Build log, view and store
+    // root (its mesh rows, `mesh_claims`, are the holder's).
+    let successor = Arc::new(DriveEnv {
+        me: n_name.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: e.door.claims.clone() }),
+        dispatcher: e.dispatcher.clone(),
+        gate: n_switch,
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(n_name.clone(), n_id, e.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+    });
+    let n_drive = Drive::detached(r.build.clone());
+    let end = tokio::time::timeout(Duration::from_secs(60), successor.run(&n_drive)).await.expect("the successor's drive ends");
+    assert_eq!(end, DriveEnd::Terminal, "the successor claimed the next attempt on mesh1 and ran the retire");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    assert_eq!((p.attempt_executors.get(&1).map(String::as_str), p.attempt_executors.get(&2).map(String::as_str)), (Some("mesh1.admin.1"), Some("mesh1.admin.2")), "the successor claimed the attempt after the holder's: {:?}", p.attempt_executors);
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "the successor reattached to nothing and dispatched the next attempt to itself");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["retire-node:mesh1.admin.1".to_string()], "the retire ran once, at the successor");
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
 }
 
@@ -1696,7 +1761,7 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
         me: n_name.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory()) }),
+        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: e.door.claims.clone() }),
         dispatcher: e.dispatcher.clone(),
         gate: n_gate.clone(),
         departure: e.departure.clone(),
