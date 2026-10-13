@@ -809,7 +809,7 @@ impl DriveEnv {
             let first = drive.note_first_attempt(attempt);
             self.replay(drive, &p.steps, if fresh { 0 } else { first }, attempt).await;
             *dispatches += 1;
-            let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %executor, node = %self.me, outcome = tracing::field::Empty);
+            let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %executor, node = %self.me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
             if let Some(tp) = &context.traceparent {
                 rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
             }
@@ -892,6 +892,8 @@ impl DriveEnv {
                 Inner::Unreached(why) | Inner::Broke(why) => {
                     let (class, detail) = ("lost", why);
                     dspan.record("outcome", "executor-lost");
+                    // Why the inner call to the executor ended: what the next step (the departure proof) answers.
+                    dspan.record("reason", detail.as_str());
                     // Only a proven departure lets another admin take the attempt; silence never does.
                     if departed.is_some() {
                         return self.stalled(drive, format!("{executor} was proven departed and the attempt claimed after it could not be dispatched either: {detail}"));
@@ -1019,7 +1021,7 @@ impl DriveEnv {
         };
         drive.note_first_attempt(p.attempt);
         let context = self.door.contexts.get(id, p.attempt).await.ok().flatten().unwrap_or_default();
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %self.me, outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %self.me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         let why = match self.run_inner(drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
             Inner::Terminal(BuildReply::Complete { .. }) => {
                 span.record("outcome", "complete");
@@ -1037,6 +1039,7 @@ impl DriveEnv {
             Inner::Unreached(w) | Inner::Broke(w) => w,
         };
         span.record("outcome", "executor-lost");
+        span.record("reason", why.as_str());
         drive.finish(BuildReply::NotReady { reason: format!("{}: Build {id} is complete, and {holder}, which ran its last attempt {}, could not replay it: {why}", self.me, p.attempt) });
         Some(DriveEnd::Terminal)
     }
