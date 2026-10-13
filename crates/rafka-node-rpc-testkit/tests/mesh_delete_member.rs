@@ -53,7 +53,7 @@ impl LifecycleEvents for Recorder {
         self.1.lock().unwrap().push(format!("MeshLeaving:{}", event.operation));
     }
     async fn mesh_leave(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
-        self.1.lock().unwrap().push(format!("MeshDeleted:{}", event.operation));
+        self.1.lock().unwrap().push(format!("MeshLeave:{}", event.operation));
     }
     async fn mesh_left(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
         self.1.lock().unwrap().push(format!("MeshLeft:{}", event.operation));

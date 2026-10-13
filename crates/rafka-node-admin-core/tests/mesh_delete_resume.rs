@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-const DOMAIN: &str = "mesh-deleted-resume";
+const DOMAIN: &str = "mesh-delete-resume";
 const FAILING: &str = "mesh2.rpc.1";
 const EXITING: &str = "mesh2.rpc.2";
 const OTHER_ADMIN: &str = "mesh2.admin.2";
@@ -315,7 +315,7 @@ fn artifact_dir() -> PathBuf {
 #[test]
 fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
     let cap = capture();
-    let data_root = std::env::temp_dir().join(format!("mesh-deleted-resume-{}", NodeId::mint()));
+    let data_root = std::env::temp_dir().join(format!("mesh-delete-resume-{}", NodeId::mint()));
     let records: Vec<Node> = [FAILING, EXITING, OTHER_ADMIN, FINAL].iter().map(|n| {
         let mut n = node(n);
         n.config = tier_of(&n.name.to_string());
@@ -365,7 +365,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
                 pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: (*build_id).clone(), attempt, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
             }
         };
-        let root = tracing::info_span!("cell.mesh-deleted-resume", build_id = %build_id, operation = %outer);
+        let root = tracing::info_span!("cell.mesh-delete-resume", build_id = %build_id, operation = %outer);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
 
