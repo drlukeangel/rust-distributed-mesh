@@ -527,7 +527,7 @@ fn run_door(executor: &str, builds: &Arc<MemoryBuildStateAdapter>, topology: Arc
     let framed: Arc<dyn BuildStateAdapter> = Arc::new(rafka_node_admin_core::build_run::FramedBuilds::new(builds.clone(), runs.clone()));
     let runner = Arc::new(RecoveryReceipts { builds: framed.clone(), executor: executor.into() });
     let exec = Arc::new(rafka_node_admin_core::executor::BuildExecutor { executor: executor.into(), builds: framed.clone(), topology, runner });
-    rafka_node_admin_core::build_run::RunDoor { me: executor.parse().unwrap(), builds: framed, exec, runs, local: builds.clone() }
+    rafka_node_admin_core::build_run::RunDoor { me: executor.parse().unwrap(), builds: framed, exec, runs, local: builds.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() }
 }
 
 /// CONTRACT (R-BI7 caveats 2 and 3, proposal Part C; node-recovery.md as R-BI7 moves it: "the

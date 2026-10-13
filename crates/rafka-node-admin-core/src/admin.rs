@@ -5793,6 +5793,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     exec,
                                     runs: runs.clone(),
                                     local: journal.clone(),
+                                    gate: park_gate.clone(),
                                 });
                                 let env = Arc::new(crate::build_drive::DriveEnv {
                                     me: name.clone(),

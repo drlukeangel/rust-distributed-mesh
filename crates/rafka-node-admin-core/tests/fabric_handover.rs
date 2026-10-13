@@ -586,7 +586,7 @@ async fn build_door(a: &Admin, builds: Arc<rafka_node_admin_core::build_state::M
     control.topology = a.door.topology.clone();
     let control = Arc::new(control);
     let exec = Arc::new(rafka_node_admin_core::executor::BuildExecutor { executor: me.to_string(), builds: dyn_builds.clone(), topology: control.topology.clone(), runner: Arc::new(NoRuns) });
-    let run = Arc::new(rafka_node_admin_core::build_run::RunDoor { me: me.clone(), builds: dyn_builds.clone(), exec, runs: Arc::default(), local: builds.clone() });
+    let run = Arc::new(rafka_node_admin_core::build_run::RunDoor { me: me.clone(), builds: dyn_builds.clone(), exec, runs: Arc::default(), local: builds.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),

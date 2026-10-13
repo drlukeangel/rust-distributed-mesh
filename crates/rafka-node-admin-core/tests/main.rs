@@ -46,6 +46,7 @@ mod build_catch_up;
 mod build_admission;
 mod build_claim;
 mod build_drive;
+mod build_run;
 mod build_facts_read;
 mod build_takeover;
 mod command_admission_status;

@@ -84,10 +84,10 @@ impl Loopback {
                     let topology = self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone());
                     let runner = Arc::new(OwnReceipts { inner: self.runner.clone(), builds: framed.clone() });
                     let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: framed.clone(), topology, runner });
-                    return Arc::new(RunDoor { me: executor.clone(), builds: framed, exec, runs, local: own });
+                    return Arc::new(RunDoor { me: executor.clone(), builds: framed, exec, runs, local: own, gate: rafka_node_admin_core::park_gate::ParkGate::new() });
                 }
                 let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: self.builds.clone(), topology: self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone()), runner: self.runner.clone() });
-                Arc::new(RunDoor { me: executor.clone(), builds: self.builds.clone(), exec, runs: Arc::new(AttemptRuns::default()), local: self.local.clone() })
+                Arc::new(RunDoor { me: executor.clone(), builds: self.builds.clone(), exec, runs: Arc::new(AttemptRuns::default()), local: self.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() })
             })
             .clone()
     }

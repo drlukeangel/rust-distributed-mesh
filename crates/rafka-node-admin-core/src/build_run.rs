@@ -486,6 +486,8 @@ pub struct RunDoor {
     /// This admin's own Build log, where the intent a call carries is absorbed before the attempt
     /// is planned.
     pub local: Arc<dyn LocalBuildLog>,
+    /// This admin's park gate (park_gate.rs): a stopped admin's tasks are held at it.
+    pub gate: crate::park_gate::ParkGate,
 }
 
 impl RunDoor {
@@ -980,7 +982,7 @@ mod tests {
             nodes: vec![admin],
         }));
         let exec = Arc::new(BuildExecutor { executor: me.into(), builds: builds.clone(), topology, runner: Arc::new(Nothing) });
-        (RunDoor { me: me.parse().unwrap(), builds, exec, runs, local: memory.clone() }, memory)
+        (RunDoor { me: me.parse().unwrap(), builds, exec, runs, local: memory.clone(), gate: crate::park_gate::ParkGate::new() }, memory)
     }
 
     async fn accepted(memory: &MemoryBuildStateAdapter) {
