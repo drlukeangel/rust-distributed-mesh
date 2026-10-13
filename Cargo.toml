@@ -38,7 +38,7 @@ tracing-opentelemetry = "0.28"
 # opentelemetry
 opentelemetry = { version = "0.27", features = ["trace", "logs"] }
 opentelemetry_sdk = { version = "0.27", features = ["trace", "logs", "rt-tokio"] }
-opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace", "logs"] }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["http-proto", "hyper-client", "trace", "logs", "internal-logs"] }
 opentelemetry-semantic-conventions = "0.27"
 
 # iroh, iroh-base and iroh-gossip come from drlukeangel's forks, each pinned to the exact carrying

@@ -43,7 +43,7 @@ fn serve(mut stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>) {
                 Ok(n) => buf.extend_from_slice(&chunk[..n]),
             }
         }
-        buf.drain(..head_end + content_length);
+        buf = buf.split_off(head_end + content_length);
         seen.lock().unwrap().push(Seen { request_line, content_type, body_len: content_length });
         if stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: 0\r\n\r\n").is_err() {
             return;

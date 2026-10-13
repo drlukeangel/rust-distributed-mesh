@@ -150,7 +150,6 @@ substrate, topology-ui, CLI, and chaos harness.
 ## Telemetry ports
 
 This repo runs against the same Jaeger/OTLP stack as v1:
-- OTLP/gRPC: `4316`
-- OTLP/HTTP: `4317`
+- OTLP/HTTP: `4318`
 - Jaeger UI: `16686`
 - topology-ui: `19090`

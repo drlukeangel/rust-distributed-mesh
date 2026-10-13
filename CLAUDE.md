@@ -226,7 +226,7 @@ No TOML, YAML, or JSON config files for substrate-layer settings (transport, ide
 **Why:** rafka v1 accumulated 4 different config patterns (env + toml + env-pointing-to-toml + hardcoded magic numbers like port 4315/4316/16686). The result: nobody knew what port the collector was on without reading the running container. v2 doesn't repeat this.
 
 **OpenTelemetry standard env vars** (use these for telemetry; do NOT invent rafka-specific shims):
-- `OTEL_EXPORTER_OTLP_ENDPOINT` — collector URL (e.g. `http://localhost:4316`)
+- `OTEL_EXPORTER_OTLP_ENDPOINT` — collector URL (e.g. `http://localhost:4318`)
 - `OTEL_SERVICE_NAME` — what shows in Jaeger left-rail filter
 - `OTEL_TRACES_SAMPLER_ARG` — sampling ratio
 - `OTEL_RESOURCE_ATTRIBUTES` — extra k=v pairs
@@ -353,7 +353,7 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 
 | Env var | Default | Description |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4316` | OTLP gRPC collector URL. Port 4316 maps to `rafka-test-jaeger` container's OTLP/gRPC port. Override for any other collector. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | OTLP/HTTP collector base URL; spans go to `<url>/v1/traces` and log records to `<url>/v1/logs`, both protobuf. Override for any other collector. |
 | `OTEL_SERVICE_NAME` | `gateway` | Service name shown in Jaeger's left-rail filter. |
 | `RDM_DATA_DIR` | `./data/node-<random-hex>` | Directory where `node-identity.json` is stored. Set this to a stable path across restarts to preserve node identity (same `node_id` across reboots). |
 | `RDM_NODE_BIND_ADDR` | `0.0.0.0:0` | IPv4 socket address iroh binds the QUIC endpoint to. Port 0 = ephemeral OS-assigned. Override to pin to a specific port for firewall rules. |
@@ -391,7 +391,7 @@ All env vars recognized by node binaries (`gateway`, `broker`, `compute`, `regis
 | `RDM_DRAIN_DEADLINE_MS` | `5000` | rpc node: on SIGTERM, how long in-flight handlers may finish before the node leaves. |
 | `RDM_LEAVE_LINGER_MS` | `1000` | Every node (rpc node and node-admin): how long a stopping node keeps announcing `Leaving` on membership (every 200 ms) before it closes (iroh-gossip acknowledges nothing; closing drops unsent data). Drain deadline plus linger stay inside node-admin's stop grace (8 s). |
 
-**Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives spans on `localhost:4317` (gRPC). The `rafka-test-jaeger` instance also accepts OTLP/gRPC directly on `localhost:4316` (host → container 4317). Sprint 01 uses port 4316 (direct to Jaeger, skips collector). Jaeger UI: `http://localhost:16686`.
+**Infrastructure context (Sprint 01):** The shared `rafka-test-otel-collector` receives OTLP/HTTP on `localhost:4318`; the nodes' exporter posts spans and log records there. Jaeger UI: `http://localhost:16686`.
 
 ---
 

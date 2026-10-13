@@ -9,7 +9,8 @@
 
 
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_http::hyper::HyperClient;
+use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, TracerProvider};
 use tracing_subscriber::filter::{filter_fn, FilterExt};
@@ -149,7 +150,7 @@ fn install_propagator() {
 
 fn resolve_endpoint_and_service(service_name: &str) -> (String, String) {
     let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-        .unwrap_or_else(|_| "http://localhost:4316".to_string());
+        .unwrap_or_else(|_| "http://localhost:4318".to_string());
     let resolved_service_name = std::env::var("OTEL_SERVICE_NAME")
         .unwrap_or_else(|_| service_name.to_string());
     (otlp_endpoint, resolved_service_name)
@@ -174,17 +175,31 @@ fn build_resource(service_name: &str) -> opentelemetry_sdk::Resource {
     opentelemetry_sdk::Resource::new(attrs)
 }
 
-/// The OTLP span exporter, built on the export runtime so its connection lives there, with
-/// every request bounded by [`export::EXPORT_TIMEOUT`].
+/// Where the collector takes one signal over OTLP/HTTP: the signal's own path under its base URL.
+/// The exporter posts to exactly the URL it is given, so the path is composed here.
+fn signal_url(base: &str, path: &str) -> String {
+    format!("{}{path}", base.trim_end_matches('/'))
+}
+
+/// The HTTP client of both exporters: hyper, non-blocking, on the export runtime, with every request
+/// bounded by [`export::EXPORT_TIMEOUT`]. The exporter builders hold the timeout they are given
+/// but do not apply it to an HTTP request; the bound lives in the client.
+fn export_client() -> HyperClient {
+    HyperClient::with_default_connector(export::EXPORT_TIMEOUT, None)
+}
+
+/// The OTLP span exporter: protobuf over HTTP to `<base>/v1/traces`, built on the export runtime.
 fn build_exporter(endpoint: String) -> WatchedSpans<SpanExporter> {
     let _export = ExportRuntime::get().enter();
+    let url = signal_url(&endpoint, "/v1/traces");
     let inner = SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(endpoint.clone())
-        .with_timeout(export::EXPORT_TIMEOUT)
+        .with_http()
+        .with_http_client(export_client())
+        .with_protocol(Protocol::HttpBinary)
+        .with_endpoint(url.clone())
         .build()
         .expect("OTLP span exporter");
-    WatchedSpans::new(inner, &endpoint)
+    WatchedSpans::new(inner, &url)
 }
 
 fn build_batch_provider(
@@ -420,16 +435,17 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         let export_rt = ExportRuntime::get();
         let _export = export_rt.enter();
         // The log adapter's provider: every log line to the collector's log store, beside spans.
-        match opentelemetry_otlp::LogExporter::builder().with_tonic().with_endpoint(endpoint.clone()).with_timeout(export::EXPORT_TIMEOUT).build() {
+        let logs_url = signal_url(&endpoint, "/v1/logs");
+        match opentelemetry_otlp::LogExporter::builder().with_http().with_http_client(export_client()).with_protocol(Protocol::HttpBinary).with_endpoint(logs_url.clone()).build() {
             Ok(exporter) => {
                 logs = Some(
                     opentelemetry_sdk::logs::LoggerProvider::builder()
                         .with_resource(build_resource(&service))
-                        .with_batch_exporter(WatchedLogs::new(exporter, &endpoint), export_rt.clone())
+                        .with_batch_exporter(WatchedLogs::new(exporter, &logs_url), export_rt.clone())
                         .build(),
                 );
             }
-            Err(e) => eprintln!("telemetry: the OTLP log exporter for {endpoint} could not be built: {e}"),
+            Err(e) => eprintln!("telemetry: the OTLP log exporter for {logs_url} could not be built: {e}"),
         }
         builder = builder.with_span_processor(span_processor("otlp", build_exporter(endpoint)));
         any = true;
@@ -496,7 +512,7 @@ pub(crate) fn span_export_filter() -> EnvFilter {
     for own in ["rafka", "rshape", "rdm", "main"] {
         f = f.add_directive(format!("{own}={level}").parse().expect("static directive"));
     }
-    for third in ["iroh", "iroh_gossip", "rg3", "noq", "noq_proto", "netwatch", "quinn", "h2", "hyper", "hyper_util", "rustls", "reqwest", "tonic", "tower", "tower_http", "opentelemetry", "opentelemetry_sdk", "opentelemetry_otlp"] {
+    for third in ["iroh", "iroh_gossip", "rg3", "noq", "noq_proto", "netwatch", "quinn", "h2", "hyper", "hyper_util", "rustls", "reqwest", "tower", "tower_http", "opentelemetry", "opentelemetry_sdk", "opentelemetry_otlp"] {
         f = f.add_directive(format!("{third}=off").parse().expect("static directive"));
     }
     f
