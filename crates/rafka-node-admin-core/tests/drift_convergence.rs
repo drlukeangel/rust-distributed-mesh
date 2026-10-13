@@ -290,11 +290,6 @@ impl OperationRunner for Runner {
                 self.builds.append_step_receipt(&receipt(op.key(), "Complete", None)).await.map_err(|e| e.to_string())?;
                 return Ok(());
             }
-            BuildOperation::UpdateNode { .. } => {
-                self.recovering.lock().unwrap().push(op.key());
-                self.builds.append_step_receipt(&receipt(op.key(), "Complete", None)).await.map_err(|e| e.to_string())?;
-                return Ok(());
-            }
             _ => {}
         }
         // A replacement is realised like a creation at a path whose exact birth the provider's proof

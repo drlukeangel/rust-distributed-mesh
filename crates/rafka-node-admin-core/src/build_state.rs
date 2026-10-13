@@ -62,7 +62,7 @@ pub enum AttemptReason {
     /// A standalone start of a parked birth was requested (`start-node:<path>`).
     Start,
     /// A mesh-primary proved a member's exact birth exited and submitted its recovery
-    /// (`retire-node:<path>`, `create-node:<path>`, `update-node:<path>`, node-recovery.md "Steps").
+    /// (`retire-node:<path>`, then `create-node:<path>`, node-recovery.md "Steps").
     Recovery,
     /// The delete of a parked birth at its `.old` path was requested (`delete-node:<path>.old`).
     Delete,
@@ -1005,7 +1005,7 @@ pub trait BuildStateAdapter: Send + Sync {
     /// operation of the node workflow at `path` that deleted the exited birth `(node_id, incarnation)`
     /// and completed: a recovery of that birth (its `retire-node:<path>`
     /// in an attempt the recovery opened, answered at the attempt its last operation,
-    /// `update-node:<path>`, completed), or a `replace-node:<path>` or `retire-node:<path>` (the birth
+    /// `create-node:<path>`, completed), or a `replace-node:<path>` or `retire-node:<path>` (the birth
     /// exited inside that workflow, node-recovery.md "Failure and receipts", so it is no drift to
     /// recover). Read from every
     /// Build's step receipts in the log (a forgotten Build's receipts included: forgetting leaves
@@ -1051,9 +1051,12 @@ pub struct OwedExit {
 /// one of them deleted is answered by it in the recovery index ([`BuildStateAdapter::recovery_of`]).
 const DELETING_WORKFLOWS: [&str; 2] = ["replace-node:", "retire-node:"];
 
-/// The last operation of a node recovery (node-recovery.md "Steps"): node.update of the new node at
-/// the exited birth's path.name. A recovery's deletion is answered once it completes.
-const RECOVERY_LAST: &str = "update-node:";
+/// The last operation of a node recovery (node-recovery.md "Steps"): node.create of the new node at
+/// the exited birth's path.name over its data dir, whose claim seeds config and tags from the
+/// Deleted row (proposal node-properties-own-commands.md §8). A recovery's deletion is answered once
+/// it completes at or after the deletion's attempt, in the deletion's lane: a create from before
+/// the deletion (the path's original create) is not the recovery's.
+const RECOVERY_LAST: &str = "create-node:";
 
 /// The path of a deleting workflow's operation `<kind>:<path>`, as text.
 fn deleting_workflow_path(operation: &str) -> Option<&str> {
@@ -1126,11 +1129,11 @@ struct FactLog {
     /// and attempt...
     recovery_deletes: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(crate::model::PathName, String, LaneOf, u32)>>,
     /// ...the attempts of each `(Build, operation)` whose `Complete` is receipted, for the deleting
-    /// operations and a recovery's last (`update-node`)...
+    /// operations and a recovery's last (`create-node`)...
     recovery_completes: std::collections::HashMap<(LaneOf, String), std::collections::BTreeSet<u32>>,
     /// ...and the attempts each recovery of a birth was opened at, by that birth, with its Build.
     /// A birth is answered once its `NodeDeleted` and a `Complete` at that attempt or later are both
-    /// held: of the recovery's `update-node:<path>` when a recovery of the birth was opened in that
+    /// held: of the recovery's `create-node:<path>` when a recovery of the birth was opened in that
     /// Build at or before the deletion's attempt (its `retire-node` is the recovery's node.delete),
     /// else of the deleting operation itself. Filled by [`FactLog::index`], the one place a fact
     /// enters the log (own appends, absorbed facts and a journal's replay alike); forgetting a Build
@@ -1227,7 +1230,7 @@ impl FactLog {
 
     /// The point read of [`BuildStateAdapter::recovery_of`]: the birth's `NodeDeleted` receipts at
     /// `path`, each answered by the first `Complete` at its attempt or later of the operation that
-    /// ends its workflow: a recovery's `update-node:<path>` when a recovery of the birth was opened in
+    /// ends its workflow: a recovery's `create-node:<path>` when a recovery of the birth was opened in
     /// that Build at or before the deletion's attempt, else the deleting operation itself. The first
     /// such attempt, with the deleting operation.
     fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, Option<String>, u32, String)> {

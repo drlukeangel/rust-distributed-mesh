@@ -62,13 +62,13 @@ pub trait OperationRunner: Send + Sync {
 pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
     let fabric = || t.fabric_primary().map(|n| n.name.clone());
     match op {
-        // Every operation of a node recovery (its node.delete, node.create and node.update) is
+        // Every operation of a node recovery (its node.delete, then its node.create) is
         // executed by the exited birth's recoverer (node-recovery.md "Reconciler", R-ON8): a member's
         // mesh-primary; for a lost node-admin of a mesh with a live mesh-primary, that mesh-primary,
         // and a mesh primary's own recovery by the admin its mesh seats in its place
         // (mesh-recovery.md:8-9). A mesh with no other live admin lost its mesh-primary: that is the
         // fabric-primary's mesh recovery, no node recovery, and no admin executes one.
-        BuildOperation::RetireNode { node, exited: Some(_) } | BuildOperation::CreateNode { node, over: Some(_) } | BuildOperation::UpdateNode { node, .. } => {
+        BuildOperation::RetireNode { node, exited: Some(_) } | BuildOperation::CreateNode { node, over: Some(_) } => {
             if node.kind == NodeKind::NodeAdmin {
                 node_admin_recoverer(node, t)
             } else {
@@ -141,7 +141,7 @@ pub fn held_admins<'a>(mesh: &str, target: Option<&PathName>, t: &'a Topology) -
 /// that the view seats no admin at all.
 pub fn why_no_executor(op: &BuildOperation, t: &Topology) -> String {
     let node = match op {
-        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DeleteConnections { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::UpdateNode { node, .. } | BuildOperation::DeleteNode { node, .. } => node,
+        BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DeleteConnections { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. } => node,
         _ => return format!("{}: no admin holds the seat that executes it in this view", op.key()),
     };
     let held: Vec<String> = held_admins(&node.mesh, Some(node), t).into_iter().map(|n| format!("{} ({:?})", n.name, n.status)).collect();
@@ -491,7 +491,7 @@ mod tests {
     /// CONTRACT (#3051, #3088, node-recovery.md "Execution" and "Steps": the fabric-primary dispatches
     /// the recovery Build to the mesh-primary as executor; mesh-recovery.md: "A lost member of a mesh
     /// with a live mesh-primary is node recovery, driven by that mesh-primary"): every operation of a
-    /// member's recovery (its node.delete, node.create and node.update), a secondary node-admin's
+    /// member's recovery (its node.delete, then its node.create), a secondary node-admin's
     /// included, is executed by its own mesh's primary admin, never by the fabric-primary of another
     /// mesh. A mesh primary's own recovery is executed by the admin its mesh seats in its place, the
     /// view still seating the exited primary included. A node-admin with no other admin in its mesh is
@@ -503,11 +503,11 @@ mod tests {
     fn a_members_recovery_is_executed_by_its_mesh_primary_a_secondary_node_admins_included() {
         let recovery = |n: &str| {
             let (node, from) = (n.parse::<PathName>().unwrap(), crate::build::ExitedBirth { node_id: crate::model::NodeId::mint(), incarnation: crate::model::IncarnationId::mint() });
-            [BuildOperation::RetireNode { node: node.clone(), exited: Some(from.clone()) }, BuildOperation::CreateNode { node: node.clone(), over: Some(from.clone()) }, BuildOperation::UpdateNode { node, from }]
+            [BuildOperation::RetireNode { node: node.clone(), exited: Some(from.clone()) }, BuildOperation::CreateNode { node, over: Some(from) }]
         };
         let recovered_by = |n: &str, t: &Topology| {
             let who: Vec<String> = recovery(n).iter().map(|op| who(op, t)).collect();
-            assert!(who.windows(2).all(|w| w[0] == w[1]), "{n}: one executor runs all three operations: {who:?}");
+            assert!(who.windows(2).all(|w| w[0] == w[1]), "{n}: one executor runs both operations: {who:?}");
             who[0].clone()
         };
         let t = mm(true);

@@ -507,7 +507,7 @@ impl rafka_node_admin_core::executor::OperationRunner for RecoveryReceipts {
         use rafka_node_admin_core::build::BuildOperation;
         let receipts = match op {
             BuildOperation::RetireNode { node, exited: Some(from) } => deletion_receipts(lane, "retire-node", build_id, attempt, node, &from.node_id, &from.incarnation, &self.executor),
-            BuildOperation::CreateNode { .. } | BuildOperation::UpdateNode { .. } => {
+            BuildOperation::CreateNode { .. } => {
                 vec![BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build_id.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: Some(self.executor.clone()) }]
             }
             other => return Err(format!("a recovery runs no {}", other.key()).into()),

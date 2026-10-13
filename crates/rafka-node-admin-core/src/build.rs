@@ -172,14 +172,6 @@ pub enum BuildOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exited: Option<ExitedBirth>,
     },
-    /// node.update of the node at `node` (node-update.md; node-recovery.md sequence step 6): the
-    /// caller-owned meta of the exited birth `from` copied onto the new node created at its path.
-    UpdateNode {
-        /// The node updated: the one created at the exited birth's path.name.
-        node: PathName,
-        /// The exited birth whose caller-owned meta is copied.
-        from: ExitedBirth,
-    },
     /// Shut a whole mesh down (mesh-leave.md): the fabric-primary owns the workflow, the mesh's
     /// primary drains and stops every other member, and the fabric-primary stops the final primary
     /// and records the departure. The operation key names the mesh by its minted id.
@@ -195,7 +187,7 @@ impl BuildOperation {
     /// The node the operation acts on; `None` for a mesh operation.
     pub fn node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::ReplaceNode { node, .. } | Self::RestartNode { node } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::UpdateNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::ReplaceNode { node, .. } | Self::RestartNode { node } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } => None,
         }
     }
@@ -210,7 +202,6 @@ impl BuildOperation {
             Self::DeleteConnections { node, .. } => format!("node.connections.delete:{node}"),
             Self::StopNode { node, .. } => format!("stop-node:{node}"),
             Self::StartNode { node, .. } => format!("start-node:{node}"),
-            Self::UpdateNode { node, .. } => format!("update-node:{node}"),
             Self::DeleteNode { node, .. } => format!("delete-node:{node}"),
             Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),

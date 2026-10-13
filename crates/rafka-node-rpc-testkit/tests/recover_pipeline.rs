@@ -1,8 +1,9 @@
-//! i143.e12.s57 functional: node recovery is three workflows, never a sequence of its own
+//! i143.e12.s57 functional: node recovery is two workflows, never a sequence of its own
 //! (node-recovery.md "Steps"; rdm-code-conformance.md §0.1, §2 item 4): the node.delete workflow on a
-//! crashed target (no RPC, no stop frames, node.deleted from the mesh-primary's exit proof), the
+//! crashed target (no RPC, no stop frames, node.deleted from the mesh-primary's exit proof), then the
 //! node.create workflow at the same path.name over the inherited data dir (the same endpoint key, a new
-//! node.id, incarnation and port), and the node.update workflow copying the caller-owned meta.
+//! node.id, incarnation and port). Nothing follows the create (proposal node-properties-own-commands.md
+//! §5 item 8).
 //!
 //! Its own module of the testkit binary: it asserts spans.
 
@@ -12,7 +13,7 @@ use common::{add_node, admin_side, publish_build, template, LiveMesh, Published,
 use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
-use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, RetireRequest, Timeouts, UpdateRequest};
+use rafka_node_admin_core::deployment::pipeline::{CreateRequest, CommandAdmission, CommandContext, Completion, DeploymentPipeline, LifecycleEvents, NodeObserver, Publication, RetireRequest, Timeouts};
 use rafka_node_admin_core::node_commands::NodeCommand;
 use rafka_node_admin_core::deployment::process::ProcessDeploymentProvider;
 use rafka_node_admin_core::deployment::provider::{DeploymentProvider, DeploymentStatus, TerminationMode};
@@ -140,23 +141,19 @@ const CREATE_ORDER: [&str; 13] = [
     "Complete",
 ];
 
-/// The node.update copying the caller-owned meta.
-const UPDATE_ORDER: [&str; 2] = ["UpdateNode", "Complete"];
-
-/// CONTRACT (node-recovery.md, Operation summary "Steps", "Retained", "New"; sequence steps 3-6;
-/// node-delete.md "Crashed target"): node recovery runs the delete, create and update workflows, each
-/// as its own operation of the Build, in order. node.delete of the exited birth (`retire-node:<path>`):
+/// CONTRACT (node-recovery.md, Operation summary "Steps", "Retained", "New"; sequence steps 3-5;
+/// node-delete.md "Crashed target"; proposal node-properties-own-commands.md §5 item 8): node recovery
+/// runs the delete and create workflows, each as its own operation of the Build, in order. node.delete of the exited birth (`retire-node:<path>`):
 /// NodeDeleting, the provider's exit proof (nothing sent to the dead process: no drain, no stop frames),
 /// NodeDeleted once for the exact exited birth, spanned with the mesh primary's exit proof it is
 /// published from, exactly that birth removed; the old birth is fenced before the new one is created;
 /// node.create at the same path.name (`create-node:<path>`): the same data dir (its storage still
-/// there) and the same endpoint key, a new node.id and incarnation, no supersedes, ready; node.update
-/// (`update-node:<path>`): UpdateNode onto the new node, then Complete. No operation writes a receipt
-/// of another, and every receipt has a wire shape on the Build topic.
-/// Must NOT happen: one fused `recover-node:<path>` operation, a rename to `<path>.old`, a drain, a
-/// stop, a storage handoff or release, a path-keyed removal.
+/// there) and the same endpoint key, a new node.id and incarnation, no supersedes, ready. No operation
+/// writes a receipt of another, and every receipt has a wire shape on the Build topic.
+/// Must NOT happen: one fused `recover-node:<path>` operation, a rename to `<path>.old`, a stop, a
+/// storage handoff or release, a path-keyed removal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over_its_data_dir_then_node_update() {
+async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over_its_data_dir() {
     let spans = Spans::default();
     let _sub = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
     let rig = rig().await;
@@ -195,23 +192,17 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
         .create(&CreateRequest { build_id: recover_build.clone(), attempt: 2, node: path(), spec: &RPC_NODE, data_dir: Some(old_dir.clone()), held_runtimes: Vec::new() })
         .await
         .unwrap_or_else(|e| panic!("create over the inherited data dir: {e}"));
-    // node.update copying the exited birth's caller-owned meta onto the new node.
-    pipeline
-        .update(&UpdateRequest { build_id: recover_build.clone(), attempt: 2, node: second.node.clone(), from: first.node.clone() })
-        .await
-        .unwrap_or_else(|e| panic!("update: {e}"));
 
-    // Three operations, each its own workflow's steps once, in order.
+    // Two operations, each its own workflow's steps once, in order.
     let view = rig.builds.read_build(&recover_build).await.unwrap();
-    let (delete, create, update) = (format!("retire-node:{}", path()), format!("create-node:{}", path()), format!("update-node:{}", path()));
+    let (delete, create) = (format!("retire-node:{}", path()), format!("create-node:{}", path()));
     assert_eq!(receipts(&view.steps, &delete), DELETE_ORDER.map(String::from).to_vec());
     assert_eq!(receipts(&view.steps, &create), CREATE_ORDER.map(String::from).to_vec());
-    assert_eq!(receipts(&view.steps, &update), UPDATE_ORDER.map(String::from).to_vec());
     let operations: Vec<&str> = view.steps.iter().map(|r| r.operation.as_str()).collect();
-    assert!(operations.iter().all(|o| [delete.as_str(), create.as_str(), update.as_str()].contains(o)), "no other operation: {operations:?}");
+    assert!(operations.iter().all(|o| [delete.as_str(), create.as_str()].contains(o)), "no other operation: {operations:?}");
     let first_of = |o: &str| operations.iter().position(|x| *x == o).unwrap();
     let last_of = |o: &str| operations.iter().rposition(|x| *x == o).unwrap();
-    assert!(last_of(&delete) < first_of(&create) && last_of(&create) < first_of(&update), "the delete, then the create, then the update: {operations:?}");
+    assert!(last_of(&delete) < first_of(&create), "the delete, then the create: {operations:?}");
     // Every receipt the recovery wrote rides the fabric's Build topic and FetchBuildFacts to the
     // fabric-primary, whose planning and recovery dedup read them: none is refused for want of a wire shape.
     let facts: Vec<rafka_node_admin_core::build_state::BuildFact> = view.steps.iter().cloned().map(rafka_node_admin_core::build_state::BuildFact::Step).collect();
@@ -245,7 +236,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
 
     // Spans: one pipeline per workflow, and node.deleted published from the exit proof.
     let all = spans.0.lock().unwrap().clone();
-    for kind in ["retire", "create", "update"] {
+    for kind in ["retire", "create"] {
         assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some(kind) && f.get("build_id") == Some(&recover_build.to_string())), "the {kind} workflow ran as its pipeline");
     }
     assert!(!all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline" && f.get("pipeline").map(String::as_str) == Some("recover")), "no recovery pipeline of its own");

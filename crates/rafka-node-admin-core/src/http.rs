@@ -638,7 +638,7 @@ impl ControlPlane {
     /// silent or absent by definition.
     ///
     /// In order: keyed on the exited birth, once a node workflow that deletes a birth completed for
-    /// that exact birth (its recovery, whose last operation `update-node:<path>` completed, or a
+    /// that exact birth (its recovery, whose last operation `create-node:<path>` completed, or a
     /// `replace-node:<path>` / `retire-node:<path>` the birth exited inside), a submit answers
     /// [`Recovery::AlreadyApplied`] naming that workflow's attempt, whoever asks, and nothing is
     /// opened. A node-admin is node-recovered only while its mesh holds another live admin to recover

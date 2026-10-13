@@ -14,11 +14,10 @@
 //!   -> RemoveTopologyMembership -> Complete
 //! delete of a crashed target: NodeDeleting -> TerminateRuntime (the exact exit proof, nothing sent)
 //!   -> NodeDeleted (from the mesh-primary's recorded exit proof) -> RemoveTopologyMembership -> Complete
-//! update: UpdateNode (node recovery's copy of the caller-owned meta) -> Complete
 //! ```
 //!
-//! Node recovery (node-recovery.md "Steps") is three operations of these, never a sequence of its
-//! own: the delete of the crashed target, the create over its data dir, the update.
+//! Node recovery (node-recovery.md "Steps") is two operations of these, never a sequence of its
+//! own: the delete of the crashed target, then the create over its data dir.
 //!
 //! A removal releases identity, never storage: the data dir and its endpoint key stay
 //! (node-delete.md "Storage"), and no step here deletes a node's storage.
@@ -165,26 +164,6 @@ impl StartStep {
     pub fn name(self) -> &'static str {
         match self {
             Self::StartNode => "StartNode",
-        }
-    }
-}
-
-/// The steps of node recovery's node.update (node-recovery.md sequence step 6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpdateStep {
-    /// The caller-owned meta of the exited birth copied onto the new node (the frame name of
-    /// node.update on 0x1B, node-update.md "Wire").
-    UpdateNode,
-    /// The update is done.
-    Complete,
-}
-
-impl UpdateStep {
-    /// The step's name as it appears in receipts and spans.
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::UpdateNode => "UpdateNode",
-            Self::Complete => "Complete",
         }
     }
 }
@@ -987,20 +966,6 @@ pub struct ReplaceRequest {
     /// The runtime rows this admin holds, handed to a node-admin successor's nodes.storage before it
     /// starts.
     pub held_runtimes: Vec<crate::storage::RuntimeRow>,
-}
-
-/// A request for node recovery's node.update (node-recovery.md sequence step 6): the caller-owned
-/// meta of the exited birth copied onto the new node created at its path.name.
-#[derive(Debug, Clone)]
-pub struct UpdateRequest {
-    /// The Build.
-    pub build_id: BuildId,
-    /// The attempt.
-    pub attempt: u32,
-    /// The node updated: the one the create made at the exited birth's path.name.
-    pub node: Node,
-    /// The exited birth's record, whose caller-owned meta is copied.
-    pub from: Node,
 }
 
 /// The proven-terminal predecessor of a replace, whose storage the successor's create takes between
@@ -2438,33 +2403,6 @@ impl DeploymentPipeline<'_> {
         })
         .await?;
         Ok(created)
-    }
-
-    /// node.update of `req.node` in node recovery (node-recovery.md sequence step 6), as ONE
-    /// operation `update-node:<path>`: `UpdateNode`, the caller-owned meta of the exited birth
-    /// `req.from` copied onto the new node (only the caller-owned group moves:
-    /// `NodeMeta::with_caller_owned_of`), then `Complete`. The new node is the one its create made
-    /// at the exited birth's path.name, never the exited birth.
-    pub async fn update(&self, req: &UpdateRequest) -> Result<(), PipelineError> {
-        use tracing::Instrument;
-        let span = self.pipeline_span("update", &req.build_id, &req.node.name, req.attempt);
-        self.update_steps(req).instrument(span).await
-    }
-
-    async fn update_steps(&self, req: &UpdateRequest) -> Result<(), PipelineError> {
-        let name = &req.node.name;
-        let mut run = self.begin(&req.build_id, req.attempt, name, format!("update-node:{name}")).await?;
-        let (onto, from) = (&req.node, &req.from);
-        self.step(&mut run, UpdateStep::UpdateNode.name(), async {
-            if onto.node_id == from.node_id || onto.incarnation_id.is_none() {
-                return Err(format!("{name}: node.update copies the exited birth {}'s caller-owned meta onto the node its create made there, and the node held at the path is {} at {}", from.node_id, onto.node_id, onto.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("no known birth")));
-            }
-            // Nothing is copied: the node record carries no caller-owned field, and nothing is written.
-            tracing::info!(node = %name, from = %from.node_id, onto = %onto.node_id, written = false, "node.update onto the new node: nothing to copy, no row written");
-            Ok(())
-        })
-        .await?;
-        self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
     }
 
     /// The exited predecessor's storage goes into the successor's directory: after the successor's

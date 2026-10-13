@@ -4001,23 +4001,6 @@ impl AdminRunner {
         Ok(())
     }
 
-    /// Node recovery's node.update (node-recovery.md sequence step 6): the caller-owned meta of the
-    /// exited birth `from` copied onto the node the create made at `node`, through the update
-    /// workflow. Refused by name when this admin holds no other birth at the path.
-    async fn update_from(&self, builds: &dyn BuildStateAdapter, build_id: &crate::build::BuildId, attempt: u32, node: &PathName, from: &crate::build::ExitedBirth) -> Result<(), String> {
-        let held = self.handles.lock().unwrap().get(node).map(|(n, _)| n.clone());
-        let seen = self.topology.read().await.node(node).cloned();
-        let onto = seen.filter(|n| n.node_id != from.node_id).or(held.filter(|n| n.node_id != from.node_id)).ok_or_else(|| {
-            format!("update-node:{node}: {} holds no node at {node} other than the exited birth {} at {}: node.update copies onto the node its create made there", self.me, from.node_id, from.incarnation.as_str())
-        })?;
-        let mut exited = Node::allocated(node.clone());
-        exited.node_id = from.node_id.clone();
-        exited.incarnation_id = Some(from.incarnation.clone());
-        let template = self.template_for(node.kind, &node.mesh).await?;
-        let req = crate::deployment::pipeline::UpdateRequest { build_id: build_id.clone(), attempt, node: onto, from: exited };
-        self.pipeline_with(&template, builds).update(&req).await.map_err(|e| e.to_string())
-    }
-
     /// node-recovery.md "Delete fences the old instance before the new join": the exited birth's
     /// resolver entry is retired and its direct paths dropped, awaited, right before the new birth
     /// with the same endpoint key is launched (the create over its data dir, [`Self::create_over`]).
@@ -4436,7 +4419,7 @@ impl AdminRunner {
         if let Some(mesh) = lane {
             // A mesh's drift lane carries a node recovery's attempts only (its open is
             // `ControlPlane::open_recovery`'s): any other operation is not one this lane runs.
-            if !matches!(op, BuildOperation::RetireNode { exited: Some(_), .. } | BuildOperation::CreateNode { over: Some(_), .. } | BuildOperation::UpdateNode { .. }) {
+            if !matches!(op, BuildOperation::RetireNode { exited: Some(_), .. } | BuildOperation::CreateNode { over: Some(_), .. }) {
                 return Err(crate::executor::RunEnd::Failed(format!("{}: {} is not an operation of a node recovery, the only work mesh {mesh}'s drift lane runs (attempt {attempt} of {build_id})", self.me, op.key())));
             }
         }
@@ -4495,10 +4478,6 @@ impl AdminRunner {
             BuildOperation::RetireNode { node, exited: None } => {
                 let span = tracing::info_span!("rdm.node_admin.node.delete.via-build", build_id = %build_id, node = %node, attempt);
                 self.retire(build_id, attempt, node).instrument(span).await.map(|_| ())
-            }
-            BuildOperation::UpdateNode { node, from } => {
-                let span = tracing::info_span!("rdm.node_admin.node.update.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
-                self.update_from(&*builds, build_id, attempt, node, from).instrument(span).await
             }
             BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.shutdown_mesh(build_id, attempt, mesh, mesh_id).await,
         };

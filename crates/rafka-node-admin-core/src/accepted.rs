@@ -413,12 +413,13 @@ pub(crate) struct ReplaceProgress {
     started: bool,
     /// The operation's `Complete` is receipted, at or after the attempt it began in.
     finished: bool,
-    /// How far a recovery's three operations got for its exited birth.
+    /// How far a recovery's two operations got for its exited birth.
     recovery: RecoveryProgress,
 }
 
-/// How far a node recovery's three operations (node-recovery.md "Steps") got for its exited birth,
-/// from the Build's receipts: each is done once its `Complete` follows the one before it.
+/// How far a node recovery's two operations (node-recovery.md "Steps": node.delete, then node.create)
+/// got for its exited birth, from the Build's receipts: each is done once its `Complete` follows the
+/// one before it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RecoveryProgress {
     /// Nothing of the recovery is done: node.delete of the exited instance is owed.
@@ -426,9 +427,9 @@ pub(crate) enum RecoveryProgress {
     Owed,
     /// The node.delete completed for the exited birth: node.create at its path.name is owed.
     Deleted,
-    /// The node.create completed after it: node.update is owed.
-    Created,
-    /// The node.update completed after it: the exited birth is recovered.
+    /// The node.create completed after it: the exited birth is recovered. Nothing follows the create:
+    /// its claim seeded config and tags from the Deleted row (proposal node-properties-own-commands.md
+    /// §8).
     Recovered,
 }
 
@@ -451,7 +452,7 @@ impl ReplaceProgress {
             let done = |step: &str| build.steps.iter().any(|s| s.operation == operation && s.step == step && s.outcome == crate::build_state::StepOutcome::Complete && build.carried(s.attempt, action));
             return Self { started: done(first), finished: done("Complete"), ..Self::default() };
         }
-        // A recovery: how far its three operations got for the exited birth.
+        // A recovery: how far its two operations got for the exited birth.
         if let Some(AttemptAction::Recover { path, node_id, from_incarnation }) = &build.action {
             let recovery = recovery_progress(build, path, node_id, from_incarnation).0;
             return Self { started: false, finished: recovery == RecoveryProgress::Recovered, recovery };
@@ -478,9 +479,9 @@ impl ReplaceProgress {
 /// (node-recovery.md "Steps"), with the attempt that completed its last done operation. The delete
 /// is done once its `retire-node:<path>` `NodeDeleted` names the exited birth (its output is the
 /// node.delete's lifecycle operation) and the operation's `Complete` follows at that attempt or later
-/// (a rerun reuses the `NodeDeleted`); the create once a `create-node:<path>` `Complete` follows that,
-/// and the update once an `update-node:<path>` `Complete` follows the create's. A `Complete` from
-/// before the deletion (the path's original create, an earlier recovery's) is not this recovery's.
+/// (a rerun reuses the `NodeDeleted`); the create, and with it the recovery, once a
+/// `create-node:<path>` `Complete` follows that. A `Complete` from before the deletion (the path's
+/// original create, an earlier recovery's) is not this recovery's.
 pub(crate) fn recovery_progress(build: &crate::build_state::BuildProjection, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> (RecoveryProgress, Option<u32>) {
     let delete = format!("retire-node:{path}");
     let completed_from = |operation: &str, from: u32| {
@@ -502,17 +503,16 @@ pub(crate) fn recovery_progress(build: &crate::build_state::BuildProjection, pat
         return (RecoveryProgress::Owed, None);
     };
     let Some(deleted) = completed_from(&delete, deleted) else { return (RecoveryProgress::Owed, None) };
-    let Some(created) = completed_from(&format!("create-node:{path}"), deleted) else { return (RecoveryProgress::Deleted, Some(deleted)) };
-    match completed_from(&format!("update-node:{path}"), created) {
-        Some(updated) => (RecoveryProgress::Recovered, Some(updated)),
-        None => (RecoveryProgress::Created, Some(created)),
+    match completed_from(&format!("create-node:{path}"), deleted) {
+        Some(created) => (RecoveryProgress::Recovered, Some(created)),
+        None => (RecoveryProgress::Deleted, Some(deleted)),
     }
 }
 
-/// The attempt whose `update-node:<path>`, the last operation of the recovery of the exited birth
+/// The attempt whose `create-node:<path>`, the last operation of the recovery of the exited birth
 /// `(node_id, incarnation)` ([`recovery_progress`]), completed in `build`. `None` while no attempt
-/// recovered that birth: a recovery that deleted the exited instance and has not created and
-/// updated the new node is not one.
+/// recovered that birth: a recovery that deleted the exited instance and has not created the new
+/// node is not one.
 pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Option<u32> {
     match recovery_progress(build, path, node_id, incarnation) {
         (RecoveryProgress::Recovered, at) => at,
@@ -569,10 +569,11 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
         }
         return BuildPlan { operations: ops };
     }
-    // A recovery is its three operations of the exited birth, in order (node-recovery.md "Steps"):
-    // node.delete of the exited instance, node.create at the same path.name over its data dir, then
-    // node.update copying its caller-owned meta. The topology is unchanged, the path is never created
-    // by the generic loop, and no other member is swept. Each is planned whatever the view holds at
+    // A recovery is its two operations of the exited birth, in order (node-recovery.md "Steps"):
+    // node.delete of the exited instance, then node.create at the same path.name over its data dir,
+    // whose claim seeds config and tags from the Deleted row (proposal node-properties-own-commands.md
+    // §8); nothing is copied after it. The topology is unchanged, the path is never created by the
+    // generic loop, and no other member is swept. Each is planned whatever the view holds at
     // the path (the exited birth unheard, nothing, or the new node mid-attempt) until the receipts say
     // it is done, so a later attempt runs only what is left and never deletes again.
     if let Some(AttemptAction::Recover { path, node_id, from_incarnation }) = action {
@@ -581,11 +582,8 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
         if done < RecoveryProgress::Deleted {
             ops.push(BuildOperation::RetireNode { node: path.clone(), exited: Some(exited.clone()) });
         }
-        if done < RecoveryProgress::Created {
-            ops.push(BuildOperation::CreateNode { node: path.clone(), over: Some(exited.clone()) });
-        }
         if done < RecoveryProgress::Recovered {
-            ops.push(BuildOperation::UpdateNode { node: path.clone(), from: exited });
+            ops.push(BuildOperation::CreateNode { node: path.clone(), over: Some(exited) });
         }
         return BuildPlan { operations: ops };
     }
