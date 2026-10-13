@@ -11,6 +11,7 @@
 use crate::build_log;
 use rafka_node_admin_client::{BuildFrame, CallEnd, Change, PathName};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use rafka_test_scenario::process_faults::{ExactRuntime, Fault};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -91,7 +92,21 @@ fn assert_parked_before_the_successor(spans: &[Value], build: &str, attempt: &st
 /// Build's id. The cells hold, kill and replace members: workflows the initial fabric refuses until it has
 /// first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
 async fn fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
-    let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    born_at(Estate::bootstrap(owner(test), "fabric1", "mesh1").await, shape, settle).await
+}
+
+/// [`fabric_of`] with every node-admin the testkit's faulted node-admin (`faults::binding_set`): its
+/// fault door (testkit Node RPC op 0x75) holds the admin at a cut the cell arms, and nothing else of it
+/// differs.
+async fn faulted_fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
+    let sha = candidate_sha();
+    let estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    born_at(estate, shape, settle).await
+}
+
+/// `estate`'s fabric born at `shape` by `build.create`, followed to its terminal frame, the view settled
+/// on it within `settle` and the fabric ready-for-traffic; the birth Build's id.
+async fn born_at(estate: Estate, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
     let born = estate.reconcile_shape("fabric1", shape).await;
     estate.settles_to(shape, settle).await;
     estate.until_fabric_ready(SETTLE).await;
@@ -1584,9 +1599,13 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_m
 /// CONTRACT (R-BI7 caveat 2: each mesh-primary claims its mesh's drift attempts on its mesh's rows;
 /// build.md :365 as the approved proposal A4 words it: "The next attempt is claimed after the running
 /// attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is lost with the
-/// attempt unfinished, after exact departure proof"): mesh2 has two node-admins. `mesh2.rpc.1` is
-/// killed; mesh2's primary P opens and claims its recovery as an attempt of mesh2's lane and is
-/// killed while that attempt runs (claimed in its own Build log, no verdict). mesh2's other admin NA2
+/// attempt unfinished, after exact departure proof"): mesh2 has two node-admins, each the testkit's
+/// faulted node-admin. `mesh2.rpc.1` is killed; mesh2's primary P opens and claims its recovery as an
+/// attempt of mesh2's lane and runs it. The fault door holds P inside the run, at the member's
+/// node.delete NodeDeleted receipt (the `receipt` cut: NodeDeleting is durable and its pre-notice
+/// published, the departure is proven, the NodeDeleted receipt is not yet durable). Once NA2's own
+/// Build log holds that attempt running under P's claim with its NodeDeleting receipt, P is killed
+/// while the cut holds it (claimed, mid-run, no verdict). mesh2's other admin NA2
 /// takes mesh2's seat, proves P's exit and submits P's recovery: at NA2's own door the attempt P left
 /// running ends Failed on that proof (`build.update.via-departed-claimant`, outcome `ended`, naming P's
 /// exact birth), then NA2 claims the next attempt of mesh2's lane for P's recovery
@@ -1596,7 +1615,7 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_m
 /// in mesh2's lane.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_mesh_primary_on_its_exit_proof() {
-    let (estate, build) = fabric_of("a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_mesh_primary_on_its_exit_proof", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+    let (estate, build) = faulted_fabric_of("a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_mesh_primary_on_its_exit_proof", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     let p = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
@@ -1604,26 +1623,27 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_me
     let na2 = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != p["name"]).expect("mesh2's other node-admin")["name"]);
     assert!(!fp.starts_with("mesh2."), "the fabric-primary is not in mesh2: {fp}");
 
+    // The member's recovery is the one node.delete of it P runs: the cut holds P at its NodeDeleted
+    // receipt until P is killed.
     const NODE: &str = "mesh2.rpc.1";
+    let door = Door::at(&estate, &p_name).await;
+    door.arm("member-deleted", json!({"kind": "receipt", "step": "NodeDeleted", "operation": "retire-node", "node": NODE})).await;
     let before = estate.node_value(NODE).await;
     estate.kill_node(NODE).await;
-    // P's recovery of the member runs: its claim is in P's own Build log. P is killed at once, its
-    // attempt unfinished. A recovery that ran to its verdict before it was caught fails the cell by name.
-    let p_log = estate.carrier_at(&Estate::path(&p_name)).await;
-    let deadline = std::time::Instant::now() + SETTLE;
-    let running = loop {
-        let b = build_log::build_value(&p_log, &build).await;
+    let held = door.wait_held("member-deleted").await;
+    assert_eq!((s(&held["hit"]["build_id"]), s(&held["hit"]["operation"])), (build.clone(), format!("retire-node:{NODE}")), "P holds the member's NodeDeleted receipt of the accepted Build: {held}");
+    let lost_attempt = held["hit"]["attempt"].as_u64().expect("the held receipt names its attempt");
+    // NA2 heard the claim and the NodeDeleting receipt on the Build topic: in its own log mesh2's lane
+    // runs that attempt for the member's recovery, claimed by P, with no verdict.
+    let heard = build_log::build_fact(&estate.carrier_at(&Estate::path(&na2)).await, &build, &format!("attempt {lost_attempt} of mesh2's lane running under {p_name}'s claim, its NodeDeleting durable"), SETTLE, |pr| {
+        let b = serde_json::to_value(pr).expect("a Build view serializes");
         let lane = &b["lanes"]["mesh2"];
-        let member = lane["action"]["action"] == "recover" && lane["action"]["path"] == NODE;
-        if member && lane["state"] == "running" && lane["claimant"] == p_name.as_str() {
-            break lane.clone();
-        }
-        assert!(!(member && matches!(lane["state"].as_str(), Some("complete" | "failed"))), "{p_name}'s recovery of {NODE} ran to its verdict before it was caught: {lane}");
-        assert!(std::time::Instant::now() < deadline, "{p_name} never ran the recovery of {NODE}: {b}");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    };
+        let deleting = lane_steps(&b, "mesh2").iter().any(|r| r["operation"] == format!("retire-node:{NODE}").as_str() && r["step"] == "NodeDeleting" && r["attempt"] == json!(lost_attempt) && r["outcome"] == "complete");
+        deleting && lane["attempt"] == json!(lost_attempt) && lane["state"] == "running" && lane["claimant"] == p_name.as_str() && lane["action"]["action"] == "recover" && lane["action"]["path"] == NODE
+    })
+    .await
+    .unwrap_or_else(|end| panic!("{end}"));
     estate.kill_node(&p_name).await;
-    let lost_attempt = running["attempt"].as_u64().expect("the running attempt's number");
 
     // NA2 takes the lane over on P's exit proof, then claims the next attempt for P's recovery.
     let ended = wait_for(&format!("{na2} ends attempt {lost_attempt} of mesh2's lane on {p_name}'s exit proof"), SETTLE, || async {
@@ -1666,8 +1686,8 @@ async fn a_recovery_whose_mesh_primary_exits_mid_run_is_taken_over_by_the_new_me
         assert!([p_name.as_str(), na2.as_str()].contains(&s(&sp["attributes"]["node"]).as_str()), "only mesh2's primaries decide claims in mesh2's lane: {sp}");
     }
     eprintln!(
-        "s78 gap 1 live: {p_name} killed running attempt {lost_attempt} of mesh2's lane of {build}; take-over trace {} | via-node-recovery span {} submitter {na2} node {p_name} | via-departed-claimant span {} outcome {} claimant {} exit_proof {} | via-claim-decision span {} attempt {} outcome {} | member complete trace {} attempt {}",
-        s(&ended["trace_id"]), s(&submit["span_id"]), s(&ended["span_id"]), s(&ended["attributes"]["outcome"]), s(&ended["attributes"]["claimant"]), s(&ended["attributes"]["exit_proof"]), s(&claim["span_id"]), s(&claim["attributes"]["attempt"]), s(&claim["attributes"]["outcome"]), s(&member["trace_id"]), s(&member["attributes"]["attempt"]),
+        "s78 gap 1 live: {p_name} held by the fault door at the member's NodeDeleted receipt {} and killed running attempt {lost_attempt} of mesh2's lane of {build} ({na2} held it running under {:?}); take-over trace {} | via-node-recovery span {} submitter {na2} node {p_name} | via-departed-claimant span {} outcome {} claimant {} exit_proof {} | via-claim-decision span {} attempt {} outcome {} | member complete trace {} attempt {}",
+        held["hit"], heard.lanes.get("mesh2").and_then(|l| l.claimant.clone()), s(&ended["trace_id"]), s(&submit["span_id"]), s(&ended["span_id"]), s(&ended["attributes"]["outcome"]), s(&ended["attributes"]["claimant"]), s(&ended["attributes"]["exit_proof"]), s(&claim["span_id"]), s(&claim["attributes"]["attempt"]), s(&claim["attributes"]["outcome"]), s(&member["trace_id"]), s(&member["attributes"]["attempt"]),
     );
     estate.record_trace_url(ended["trace_id"].as_str().unwrap_or(""));
     estate.shutdown().await;
