@@ -280,7 +280,7 @@
         {
           "name": "scenario_runner_launches_explicit_external_binary_set",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2776::scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2776::scenario_runner_launches_explicit_external_binary_set -- --exact",
           "dir": "target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set"
         }
       ]
@@ -292,7 +292,7 @@
         {
           "name": "scenario_runner_launches_explicit_external_binary_set",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
-          "command": "MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2776::scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2776::scenario_runner_launches_explicit_external_binary_set -- --exact",
           "dir": "target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set"
         }
       ]
