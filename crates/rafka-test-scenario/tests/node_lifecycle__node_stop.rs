@@ -499,7 +499,7 @@ async fn two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
 /// 4. The fabric-primary installs the committed seat from P's answer (`via-seats-installed`) before
 ///    it dispatches the stop, which NA2 executes as mesh2's primary; every admin's `node.get` names
 ///    NA2 mesh2's primary.
-/// Must NOT happen: NA2 writing a seat row (the retired `via-seats-committed`) or publishing "primary
+/// Must NOT happen: NA2 writing a seat row (`via-seat-row-written` at NA2) or publishing "primary
 /// updated", a 0x21 call to P the
 /// fabric-primary did not make or one to NA2 P did not make, a stop step before the row, or a view
 /// still naming P.
@@ -536,7 +536,7 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
     assert_eq!((attr(&upd, "successor"), attr(&upd, "outcome")), (na2_name.clone(), "updated".to_string()), "{upd:#?}");
     assert!(descends_from(&spans, &upd, &cmd), "P's update runs under the fabric-primary's command: {upd:#?}");
     // The one committed row is the holder's: the successor never writes a seat row.
-    let by_successor: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seats-committed");
+    let by_successor: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").into_iter().filter(|sp| attr(sp, "node") == na2_name).collect();
     assert!(by_successor.is_empty(), "the successor wrote a seat row: {by_successor:#?}");
     let row = one("rdm.node_admin.seat.update.via-seat-row-written", &|sp| attr(sp, "node") == p_name);
     assert!(attr(&row, "holder").contains(&p_id) && attr(&row, "successor").contains(&na2_id) && !attr(&row, "mesh_epoch").is_empty() && attr(&row, "fabric_epoch").is_empty(), "P, mesh2's writer, wrote the one committed row moving its mesh seat to NA2: {row:#?}");
