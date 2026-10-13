@@ -1180,6 +1180,10 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         }
                         _ => "unchanged",
                     };
+                    // The apply resolved: the admission block `All` set lifts, under the name now held.
+                    if matches!(decision, rafka_node_admin_core::node_name::NameApply::Applied | rafka_node_admin_core::node_name::NameApply::AlreadyApplied) {
+                        me.own.name_apply_resolved();
+                    }
                     let held_routes = routes.iter().map(rafka_node_admin_core::node_name::route_name).collect::<Vec<_>>().join(", ");
                     tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));

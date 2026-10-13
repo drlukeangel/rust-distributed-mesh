@@ -130,6 +130,9 @@ pub struct NodeRpcClient {
     observer: Option<Arc<dyn ConnectionObserver>>,
     /// The system this process originates calls for (`rdm`, `rafka`); observability only.
     caller_system: Option<String>,
+    /// Why this client opens no new connection now, while its source admits none
+    /// ([`Self::block_new_connections`]); `None` admits.
+    admission: crate::pool::Admission,
 }
 
 /// How the reply direction is decoded: after the commit cut, or after an
@@ -184,7 +187,23 @@ enum Committed {
 impl NodeRpcClient {
     /// A client on `endpoint` that resolves its targets through `resolver`.
     pub fn new(endpoint: Endpoint, resolver: Arc<dyn NodeResolver>) -> Self {
-        Self { endpoint, resolver, pool: Pool::default(), observer: None, caller_system: None }
+        Self { endpoint, resolver, pool: Pool::default(), observer: None, caller_system: None, admission: crate::pool::Admission::default() }
+    }
+
+    /// Open no new connection from now on, naming `why`, until [`Self::admit_new_connections`]: a
+    /// call that would dial ends `NotSent` `AdmissionBlocked`, and a dial already running closes the
+    /// connection it opens instead of pooling it. A pooled connection is untouched. The admission
+    /// block of the client a node originates its logged connections on (proposal
+    /// node-properties-own-commands.md §2.1 Precondition, §2.4): set when its
+    /// `node.connections.delete { All }` closes them, lifted when its name apply resolves or it
+    /// starts.
+    pub fn block_new_connections(&self, why: impl Into<String>) {
+        self.admission.block(why.into());
+    }
+
+    /// Open new connections again: the block [`Self::block_new_connections`] set is lifted.
+    pub fn admit_new_connections(&self) {
+        self.admission.lift();
     }
 
     /// Hand this client its source-owned connections writer: every Direct fact the client
@@ -340,6 +359,7 @@ impl NodeRpcClient {
                 (Some(o), Some(n)) => Some(Arc::new(move || o.direct_connected(&n)) as Arc<dyn Fn() + Send + Sync>),
                 _ => None,
             },
+            admission: self.admission.clone(),
         };
         let dial_started = Instant::now();
         let conn = match self.pool.get_or_dial(&key, spec, send_deadline).await {
@@ -362,6 +382,22 @@ impl NodeRpcClient {
                     o.direct_failed(n, "dial deadline");
                 }
                 return Phase::Done(pre.not_sent(NotSentReason::Deadline), Some(evidence));
+            }
+            Err(DialError::Blocked { at, why }) => {
+                // Not a dial that failed: the source admits no new connection, so no Direct fact
+                // is reported (nothing was tried, or what opened was closed before it was pooled).
+                tracing::info_span!(
+                    "rdm.node_rpc.connection.reject.via-admission-block",
+                    peer = %key.peer.fmt_short(),
+                    incarnation_id = %key.birth(),
+                    destination = %node.node.as_ref().map(|n| n.name.to_string()).unwrap_or_default(),
+                    destination_node_id = %node.node.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(),
+                    at,
+                    reason = %why,
+                    waited_ms = dial_started.elapsed().as_millis() as u64,
+                )
+                .in_scope(|| tracing::info!("the source admits no new connection: the call is not sent"));
+                return Phase::Done(pre.not_sent(NotSentReason::AdmissionBlocked(why)), Some(evidence));
             }
             Err(DialError::Failed(e)) => {
                 tracing::info!(step = "dial-failed", waited_ms = dial_started.elapsed().as_millis() as u64, error = %e, "the dial to the target failed");
