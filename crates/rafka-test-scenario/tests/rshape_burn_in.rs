@@ -2245,8 +2245,8 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Authority, spans: &[Value], in
     // Each probe round's one writer answer (`unknown-node`) is a refused create; its non-writers refuse before the door.
     assert_eq!(rejected_creates, a.probes.len() + at_a_door.len() - refused_opens, "every rejected topology write at the create door is a writer probe's answer or a write the cell sent the writer to see it refused");
     let non_writer_refusals = a.probes.iter().map(|p| p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary").count()).sum::<usize>() + a.refused_writes.len() - at_a_door.len();
-    let not_authority = named(spans, "rdm.node_admin.build.reject.via-not-authority").len();
-    assert_eq!(not_authority, non_writer_refusals, "every refusal by an admin without the fabric-primary seat is a writer probe's non-writer answer or a write the cell sent a non-writer to see it refused, each under its own reject span");
+    let without_the_seat = named(spans, "rdm.node_admin.build.reject.via-not-authority").len();
+    assert_eq!(without_the_seat, non_writer_refusals, "every refusal by an admin without the fabric-primary seat is a writer probe's non-writer answer or a write the cell sent a non-writer to see it refused, each under its own reject span");
     let mut rounds = Vec::new();
     for p in &a.probes {
         let path = s(&p["path"]);
@@ -3413,12 +3413,12 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
             let build_id = a.write(f, st, &format!("{label}: authorized replace"), Write::Replace(node.to_string())).await;
             assert_eq!(build_id, before_build, "{node}: a replace changes no topology, so it is the next attempt of the accepted Build and mints none");
             a.finish(f, &build_id, Until::Joined { node: node.into(), not_node_id: node_id.clone() }, "during-replace").await;
-            // The recipe's next step: the parked predecessor at `<node>.old` is deleted, the attempt
+            // The recipe's next step: the stopped predecessor at `<node>.old` is deleted, the attempt
             // after the replace (node-decommission.md: its exit proven, NodeDeleted published).
             let old_name = format!("{node}.old");
-            let delete_build = a.write(f, st, &format!("{label}: the recipe's delete of the parked {old_name}"), Write::Delete(old_name.to_string())).await;
-            assert_eq!(delete_build, before_build, "{old_name}: the delete of a parked predecessor changes no topology, so it is the next attempt of the accepted Build and mints none");
-            let fin = a.finish(f, &delete_build, Until::Gone { node: old_name }, "during-delete-of-the-parked-predecessor").await;
+            let delete_build = a.write(f, st, &format!("{label}: the recipe's delete of the stopped predecessor {old_name}"), Write::Delete(old_name.to_string())).await;
+            assert_eq!(delete_build, before_build, "{old_name}: the delete of a stopped predecessor changes no topology, so it is the next attempt of the accepted Build and mints none");
+            let fin = a.finish(f, &delete_build, Until::Gone { node: old_name }, "during-delete-of-the-stopped-predecessor").await;
             (build_id, fin)
         }
     };
