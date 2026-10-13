@@ -5144,15 +5144,21 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 seeds,
             )
         }
-        (None, None) => (
-            PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1),
-            NodeId::mint(),
-            incarnation.clone(),
-            None,
-            SocketAddr::new(cfg.api_bind.ip(), 0),
-            cfg.api_bind,
-            cfg.seeds.clone(),
-        ),
+        (None, None) => {
+            let name = PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1);
+            let node_id = NodeId::mint();
+            // Day 0 (R-OW1 item 2): the bootstrap admin, its mesh's primary, claims its own path.name by
+            // insert-and-fail, the first write of its birth, before Ready (`claim_day0_name`). A name another
+            // node holds refuses the start by name. A recovery start (both primary flags) is no Day 0: its row
+            // is written when it holds its mesh's seat, as every member's is (`NodeRows::arrivals`).
+            if !cfg.mesh_primary && !cfg.fabric_primary {
+                crate::node_rows::claim_day0_name(&*nodes_storage, &name, &node_id)
+                    .instrument(boot.clone())
+                    .await
+                    .map_err(|e| format!("refusing to start: {}: Day 0's {node_id} claims {name}: {e}", cfg.data_dir.display()))?;
+            }
+            (name, node_id, incarnation.clone(), None, SocketAddr::new(cfg.api_bind.ip(), 0), cfg.api_bind, cfg.seeds.clone())
+        }
     };
 
     // This node's own connections rows: `connections/<its path.name>/` of the store root (R14).

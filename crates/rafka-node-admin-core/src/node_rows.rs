@@ -3,10 +3,11 @@
 //! fabric-node-lifecycle.md §2.7: "It writes its own members' `Node` rows; no other node-admin
 //! writes them").
 //!
-//! The writer of a mesh's rows is that mesh's primary node-admin; the fabric-primary writes them
-//! only as the acting primary of a mesh with no primary. Every other admin refuses by name
-//! (`not-mesh-primary`), another mesh's primary included, and no node writes its own row. Writers
-//! never share a key: a row's `path.name` is `<mesh>.<kind>.<ordinal>`, so every key is
+//! The writer of a mesh's rows is that mesh's primary node-admin, for every member of its mesh, itself
+//! included (R-OW1: "The mesh-primary writes every row in its mesh, including its own"); the
+//! fabric-primary writes them only as the acting primary of a mesh with no primary. Every other admin
+//! refuses by name (`not-mesh-primary`), another mesh's primary included: a member never writes its row
+//! because it is the subject. Writers never share a key: a row's `path.name` is `<mesh>.<kind>.<ordinal>`, so every key is
 //! mesh-scoped by construction. The check reads the writer's own view at the moment of the write.
 //!
 //! The rows are written where the work is done, by the executor of the Build (`executor_for`
@@ -27,10 +28,12 @@
 //!   Exited receipt, by the deleting mesh's primary, and the final primary's in its own node.delete,
 //!   by the fabric-primary as acting primary of a mesh with no primary; a birth the view no longer
 //!   names is written from this writer's record of its row ([`NodeRows::deleted_birth`]).
-//! - A birth no create of this writer claimed (the bootstrap admin, a birth made before this
-//!   admin took its mesh's seat): written when the writer's view first holds it
+//! - Day 0 (R-OW1 item 2): the bootstrap admin, mesh1's primary, claims its own `path.name` by
+//!   insert-and-fail as the first write of its birth, before Ready ([`claim_day0_name`]).
+//! - A birth no create of this writer claimed (a birth made before this admin took its mesh's
+//!   seat, this admin's own included): written when the writer's view first holds it
 //!   ([`NodeRows::arrivals`]); an admin that takes a mesh's seat writes every member's row of that
-//!   mesh, and a row a node already holds is never overwritten.
+//!   mesh, its own included, and a row a node already holds is never overwritten.
 //!
 //! The fabric-primary admits `node.delete` of a parked predecessor at `<path>.old` from the record
 //! it holds of it ([`NodeRows::parked_at`]): no view names that path but the replace's executor's.
@@ -566,7 +569,7 @@ impl NodeRows {
 
     /// The births of `now`, the view being installed over `prev`, whose rows this admin writes: the
     /// members of each mesh it writes for in `now` (its primary, or the fabric-primary's for a mesh
-    /// with none), never its own birth. Every member of a mesh whose writing it took with this
+    /// with none), its own birth included (R-OW1). Every member of a mesh whose writing it took with this
     /// install (the rebuild after a seat change, which never overwrites a row a node holds); else
     /// each birth of that mesh this tenure's views have not held before. A birth is an arrival once
     /// per tenure: one the view dropped and holds again was written when it first arrived. Read
@@ -589,7 +592,7 @@ impl NodeRows {
             if took {
                 tenure.clear();
             }
-            out.extend(now.members().filter(|n| n.mesh == mesh && n.node_id != *me && n.incarnation_id.clone().is_some_and(|inc| tenure.insert((n.node_id.clone(), inc)))).cloned());
+            out.extend(now.members().filter(|n| n.mesh == mesh && n.incarnation_id.clone().is_some_and(|inc| tenure.insert((n.node_id.clone(), inc)))).cloned());
         }
         out
     }
@@ -766,9 +769,29 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, inherited: &crate::
         r?;
     }
     storage.remove_contact(&name.mesh, &inherited.node_id).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the contact of the inherited birth {} could not be dropped from {}'s contacts: {e}", inherited.node_id, name.mesh)))?;
+    own_claim(storage, name, node_id, operation, ClaimFor::Recovery).await
+}
+
+/// Day 0's claim of the bootstrap admin's own `path.name` (R-OW1 item 2: "Day 0: the bootstrap admin,
+/// as mesh1's primary, claims (mesh1.admin, 1) by insert-and-fail and writes its own row through the
+/// same validation and storage path as any create, the first write of its birth, before Ready. No
+/// bypass; a conflicting holder is NameHeld, never overwritten"). The bootstrap admin, `node_id` at
+/// `name`, is its mesh's primary from its birth and the only admin of its fabric, so it is the writer of
+/// its own row; the claim is the first write of its birth, made before anything else of it is written or
+/// published. It is the create door's claim ([`ClaimFor::Create`]): insert-and-fail in the store
+/// adapter, the row `Pending`, one `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`.
+/// Another node's live row at the name is `NameHeld` naming it, and nothing is written.
+pub async fn claim_day0_name(storage: &dyn NodesStorage, name: &PathName, node_id: &NodeId) -> Result<Claimed, RowRefused> {
+    own_claim(storage, name, node_id, "fabric-create", ClaimFor::Create).await
+}
+
+/// The claim of `name` by the admin born at it as `node_id`, the writer of its own row before it holds a
+/// view: [`seeded_put`] under one `rdm.node_admin.node.create.via-node-row` span, `moment` `claim`, the
+/// one write a claim is wherever it is made.
+async fn own_claim(storage: &dyn NodesStorage, name: &PathName, node_id: &NodeId, operation: &str, of: ClaimFor) -> Result<Claimed, RowRefused> {
     let span = tracing::info_span!(
         "rdm.node_admin.node.create.via-node-row",
-        node = %me,
+        node = %name,
         subject = %name,
         node_id = %node_id,
         operation,
@@ -780,7 +803,7 @@ pub async fn take_inherited_name(storage: &dyn NodesStorage, inherited: &crate::
         detail = tracing::field::Empty,
         "otel.kind" = "internal",
     );
-    let r = tracing::Instrument::instrument(seeded_put(storage, me, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, ClaimFor::Recovery, &span), span.clone()).await;
+    let r = tracing::Instrument::instrument(seeded_put(storage, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, of, &span), span.clone()).await;
     record_claim(&span, &r);
     span.in_scope(|| tracing::info!("node.create: the name claim decided"));
     r
