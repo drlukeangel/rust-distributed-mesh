@@ -6573,6 +6573,38 @@ mod tests {
         assert!(book.routable(id.as_str()), "and the birth is ready-for-traffic again");
     }
 
+    /// CONTRACT (states.md "Who sets each state": node ReadyForTraffic is set by "the node's
+    /// mesh-primary" from "the node's node.started report, after every start gate"; gossip.md `Digest`:
+    /// "a heartbeat never carries or moves a status, and a member's status comes only from its
+    /// mesh-primary"): at mesh1's primary, a birth held Pending from its join report and then set ready-for-traffic by its
+    /// node.started stays ready-for-traffic in every read that hands out its digest, whatever digest
+    /// of that birth the book holds: one read before node.started and written after it (the digest
+    /// the primary's heartbeat intake took between the two) moves nothing. Must NOT happen: `get`,
+    /// `current`, `all`, `heard_direct_since`, `silent_held` or `routable` answering Pending after
+    /// node.started, or the projection publishing it Pending.
+    #[test]
+    fn a_digest_held_after_node_started_leaves_the_started_birth_ready_for_traffic() {
+        let book = DigestBook::default();
+        *book.own_mesh.lock().unwrap() = "mesh1".into();
+        book.primary.store(true, Ordering::Relaxed);
+        hold_mesh_status(&book, "mesh1", "ready-for-traffic", 10);
+        let (id, inc) = (NodeId::mint(), IncarnationId::mint());
+        assert!(book.record_joined(digest(&id, &inc, None, MemberStatus::Pending, 100)), "the join report");
+        assert_eq!(book.member_status(&id, &inc), Some(MemberStatus::Pending), "held Pending from node.joined");
+        assert!(book.started(&id, &inc), "node.started of the birth");
+        // The digest the intake read the status for before node.started, written after it.
+        let since = Instant::now();
+        book.inner.lock().unwrap().insert(id.to_string(), (digest(&id, &inc, None, MemberStatus::Pending, 101), Instant::now(), Heard::Direct));
+        let ready = Some(MemberStatus::ReadyForTraffic);
+        assert_eq!(book.member_status(&id, &inc), ready, "node.started set it");
+        assert_eq!(book.get(id.as_str()).map(|(d, _)| d.status), ready, "get");
+        assert_eq!(book.current(Duration::from_secs(5)).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), ready, "current: the projection's members");
+        assert_eq!(book.all().into_iter().find(|d| d.node.node_id == id).map(|d| d.status), ready, "all");
+        assert_eq!(book.heard_direct_since(since).into_iter().find(|d| d.node.node_id == id).map(|d| d.status), ready, "heard_direct_since");
+        assert_eq!(book.silent_held(Instant::now()).into_iter().find(|(d, _)| d.node.node_id == id).map(|(d, _)| d.status), ready, "silent_held");
+        assert!(book.routable(id.as_str()), "the started birth of a ready mesh is routable");
+    }
+
     /// CONTRACT: an overlay that ended stays ended: a restart node.started of its birth ended, the
     /// primary re-applying the operation each round or the Build facts still naming it open (its
     /// `Complete` is not receipted yet), and a stop its mesh-primary's node.joined ended, re-sent by a
