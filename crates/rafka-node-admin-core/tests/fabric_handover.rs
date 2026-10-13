@@ -1497,6 +1497,51 @@ async fn the_successor_refuses_a_call_before_the_initial_fabric_is_ready() {
     let _ = (&f.m, &f.x);
 }
 
+/// CONTRACT (proposal Part C1: "Before the initial fabric first reaches ready-for-traffic, every call
+/// is refused `fabric-not-ready` (R-PB1)"; failure contract: "Refused before the row ...: refused by
+/// name, nothing changed, the Build's step fails by name. Nothing was cut off, so nothing is
+/// restored"; states.md "The initial fabric before ready-for-traffic": the ready-for-traffic row among
+/// the mesh's status rows is the durable fact): P, the holder, holds the initial fabric in state-sync
+/// and its mesh's status rows on the store root hold no ready-for-traffic row. The fabric-primary's
+/// command is refused `RejectedFabricNotReady` naming the state, under the holder's reject span
+/// `fabric-not-ready`, before anything: no "primary updating", no cut-off, no row, P still primary, N
+/// installs nothing. The root then holds the ready row while P's view still holds state-sync (the
+/// fabric state gossip brings can lag the row): the identical command is decided on the row (P's
+/// `rdm.node_admin.fabric.update.via-first-ready`, reason `ready-for-traffic-row-on-store-root`), P
+/// writes the row and N answers node.primary.updated. What must NOT happen: an announcement, a cut-off
+/// or a row before the fabric first reached ready-for-traffic, or a refusal once the root holds the
+/// ready row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_holder_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_on_the_root_row() {
+    if crate::own_process::delegated(module_path!(), "the_holder_refuses_an_update_before_the_initial_fabric_is_ready_and_decides_on_the_root_row") {
+        return;
+    }
+    use rafka_node_admin_core::status_storage::{FabricEventRow, StatusStorage};
+    let spans = capture();
+    let _file = SpanFile(spans.clone());
+    let f = commanded_fabric().await;
+    f.p.door.topology.write().await.fabric.status = ScopeStatus::StateSync;
+    let rows = status_rows_of(&f.p, false).await;
+    let op = "node.primary.update:b1:stop-node:mesh1.admin.1";
+    let r = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await;
+    assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
+    assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "holder" && reason == "fabric-not-ready"), "{:?}", refusals(&spans));
+    assert!(spans.named(ANNOUNCE_UPDATING).is_empty() && spans.named(CUT_OFF).is_empty() && spans.named(ROW_WRITTEN).is_empty(), "nothing is said, cut off or written: {:?}", spans.names());
+    assert!(f.p.cut_offs.lock().unwrap().is_empty(), "no cut-off: {:?}", f.p.cut_offs.lock().unwrap());
+    assert!(f.p.storage.seat_transfers().await.unwrap().is_empty(), "no row");
+    assert_eq!(f.p.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "P is still primary");
+    assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 3)), "N installs nothing");
+    // The root holds the ready row; P's view still holds state-sync.
+    let fabric_id = f.p.door.topology.read().await.fabric.id.clone();
+    rows.put_fabric_event(&FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
+    let r = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await;
+    assert_eq!(r, updated(committed_mesh(&f.n, 4)), "decided on the root's ready row");
+    let ready: Vec<String> = spans.named("rdm.node_admin.fabric.update.via-first-ready").iter().map(|f| f["reason"].clone()).collect();
+    assert_eq!(ready, vec!["ready-for-traffic-row-on-store-root".to_string()], "P decided on the root's ready row");
+    assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "one row");
+    let _ = &f.m;
+}
+
 /// `a`'s mesh's status rows on the fabric's store root (what its admin folds and point-reads), holding
 /// the ready-for-traffic row of `a`'s fabric when `ready`: the durable fact that the initial fabric
 /// first reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic").

@@ -1328,6 +1328,38 @@ fn a_node_update_before_the_fabric_first_reaches_ready_for_traffic_is_refused_by
     eprintln!("trace {trace_id}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.update mesh1.rpc.1 status=state-sync; update outcome=rejected-fabric-not-ready");
 }
 
+/// CONTRACT (R-PC1, states.md "The initial fabric before ready-for-traffic": the ready-for-traffic row
+/// among the mesh's status rows is the durable fact that the initial fabric first reached
+/// ready-for-traffic; proposal Part C1 step 2's R-PB1 pre-check is decided on the same fact): mesh1's
+/// primary has not heard the fabric ready (its view still holds the initial fabric in state-commit, as
+/// the fabric state gossip brings can lag the row, and it never knew it ready) while its mesh's status
+/// rows already hold the ready-for-traffic row. A caller's `UpdateNode` of `mesh1.rpc.1` is decided on
+/// the row and ends `NodeUpdated`, the admin saying how it knows
+/// (`rdm.node_admin.fabric.update.via-first-ready`, reason `ready-for-traffic-row-on-store-root`). What
+/// must NOT happen: `RejectedFabricNotReady` for a fabric whose ready row is on the root.
+#[test]
+fn a_node_update_at_a_mesh_primary_that_has_not_heard_the_fabric_ready_is_decided_on_the_ready_row_on_its_root() {
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let rpc1 = &b["rpc1"];
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        rig.topology.write().await.fabric.status = ScopeStatus::StateCommit;
+        let fabric_id = rig.topology.read().await.fabric.id.clone();
+        rig.storage.put_fabric_event(&rafka_node_admin_core::status_storage::FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
+        let put = reply(&call(&rig, &b["admin2"], &update_node_tagged(rpc1, "mesh1.rpc.1", &["rabbit"])).await);
+        assert_eq!(put, StatusReply::NodeUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() }, "decided on the ready row on the root");
+        assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [rpc1.node.node_id.clone()].into());
+    });
+    assert!(cap.spans("rdm.node_admin.node.reject.via-fabric-not-ready").is_empty(), "no refusal");
+    let ready: Vec<_> = cap.spans("rdm.node_admin.fabric.update.via-first-ready").into_iter().map(|(t, a)| (t, a.get("reason").cloned().unwrap_or_default())).collect();
+    assert_eq!(ready.iter().map(|(_, r)| r.as_str()).collect::<Vec<_>>(), vec!["ready-for-traffic-row-on-store-root"], "{ready:?}");
+    let updates = cap.spans("rdm.node_admin.node.update.via-update-node");
+    assert_eq!(updates.iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>(), vec!["node-updated".to_string()], "{updates:?}");
+    eprintln!("trace {}: rdm.node_admin.fabric.update.via-first-ready reason=ready-for-traffic-row-on-store-root; trace {}: rdm.node_admin.node.update.via-update-node outcome=node-updated", ready[0].0, updates[0].0);
+}
+
 /// CONTRACT (R-TG1, Luke 2026-10-12: tags are labels in the node's meta, set through node.update;
 /// node-update.md step 7: "A change that touches no name completes after the row is written";
 /// fabric-node-lifecycle.md "A rewrite is lossless for every field its writer knows"): a caller's
