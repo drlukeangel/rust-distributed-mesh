@@ -4902,7 +4902,7 @@ fn overlays_from_facts(facts: &[crate::build_state::BuildFact], book: &DigestBoo
     for op in in_flight.ops.into_iter().filter(|o| !o.is_restart()) {
         book.deleting(op);
     }
-    book.deletions_from_facts(&in_flight.attempts_converged, &in_flight.attempts_failed, &crate::build_state::forgotten_builds(facts, &builds));
+    book.deletions_from_facts(&in_flight.removals_ended, &crate::build_state::forgotten_builds(facts, &builds));
     for u in in_flight.unrecognised {
         if named.insert((u.build_id.to_string(), u.attempt, u.operation.clone(), u.step.clone())) {
             tracing::info_span!("rdm.node_admin.build.reject.via-unrecognised-step", build_id = %u.build_id, attempt = u.attempt, operation = %u.operation, step = %u.step, reason = %u.reason)

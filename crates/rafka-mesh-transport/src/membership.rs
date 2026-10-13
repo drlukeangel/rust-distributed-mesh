@@ -4645,10 +4645,12 @@ impl DigestBook {
     /// The removal overlays (`NodeDeleting`) the Build facts ended, closed: an overlay is keyed by its
     /// attempt (gossip.md: `(kind, build_id, attempt, operation)`, riding `Members.in_flight` while
     /// the operation is claimed and has no completed receipt), so it closes when its attempt's verdict
-    /// is terminal (`ended`, by Build and attempt, each named `attempt-converged` or `attempt-failed`
-    /// by `failed`) or its Build is forgotten (`forgotten`). A copy of a closed overlay opens nothing
-    /// again. Restarts and stops are not removals: their own facts end them.
-    pub fn deletions_from_facts(&self, converged: &BTreeSet<(String, u32)>, failed: &BTreeSet<(String, u32)>, forgotten: &BTreeSet<String>) {
+    /// is terminal or its Build is forgotten (`forgotten`). `by_verdict` names each removal whose own
+    /// attempt, in its own lane, has a terminal verdict, by the overlay's key, `attempt-failed` or
+    /// `attempt-converged`: the Build facts know which lane a removal's attempt is numbered in, and
+    /// one attempt number names one attempt per lane. A copy of a closed overlay opens nothing again.
+    /// Restarts and stops are not removals: their own facts end them.
+    pub fn deletions_from_facts(&self, by_verdict: &std::collections::BTreeMap<(String, u32, String), &'static str>, forgotten: &BTreeSet<String>) {
         let mut cleared = Vec::new();
         {
             let mut in_flight = self.in_flight.lock().unwrap();
@@ -4657,11 +4659,8 @@ impl DigestBook {
                 if o.is_restart() || o.is_stop() {
                     return true;
                 }
-                let attempt = (o.build_id.clone(), o.attempt);
-                let by = if failed.contains(&attempt) {
-                    "attempt-failed"
-                } else if converged.contains(&attempt) {
-                    "attempt-converged"
+                let by = if let Some(by) = by_verdict.get(&o.key()) {
+                    *by
                 } else if forgotten.contains(&o.build_id) {
                     "build-forgotten"
                 } else {

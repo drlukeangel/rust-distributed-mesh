@@ -815,9 +815,9 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
     let mut out = InFlight::default();
     // An attempt has one verdict, the first appended (as `fold` reads it), in its own lane: the
-    // terminal verdicts by (Build, lane, attempt). The sets `out` hands on are the fabric lane's
-    // alone: their readers key an operation by (Build, attempt), which a drift lane's numbering
-    // would collide with.
+    // terminal verdicts by (Build, lane, attempt). `out.attempts_converged` is the fabric lane's
+    // alone (its reader keys a restart by (Build, attempt), and only the fabric lane restarts); a
+    // removal's close is handed on by the removal's own key, decided here in its own lane.
     let mut decided: std::collections::BTreeSet<(&BuildId, Option<&str>, u32)> = std::collections::BTreeSet::new();
     let mut converged: std::collections::BTreeSet<(String, Option<String>, u32)> = std::collections::BTreeSet::new();
     let mut failed: std::collections::BTreeSet<(String, Option<String>, u32)> = std::collections::BTreeSet::new();
@@ -833,9 +833,6 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
                         converged.insert(key);
                     }
                     AttemptOutcome::Failed { .. } => {
-                        if a.mesh.is_none() {
-                            out.attempts_failed.insert((a.build_id.to_string(), a.attempt));
-                        }
                         failed.insert(key);
                     }
                     _ => {}
@@ -875,9 +872,17 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
             // no longer claims the operation).
             let verdict = (op.build_id.clone(), s.mesh.clone(), op.attempt);
             let closed = if s.step == "NodeDeleting" {
-                lane_steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete)
-                    || converged.contains(&verdict)
-                    || failed.contains(&verdict)
+                let by = if failed.contains(&verdict) {
+                    Some("attempt-failed")
+                } else if converged.contains(&verdict) {
+                    Some("attempt-converged")
+                } else {
+                    None
+                };
+                if let Some(by) = by {
+                    out.removals_ended.insert(op.key(), by);
+                }
+                lane_steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete) || by.is_some()
             } else {
                 converged.contains(&verdict) || lane_steps.iter().any(|t| t.step == "Complete" && t.operation == op.operation && t.outcome == StepOutcome::Complete)
             };
@@ -904,9 +909,10 @@ pub struct InFlight {
     /// The attempts whose verdict is `Converged`, by (Build, attempt): the facts end every restart
     /// hold of that attempt in that Build.
     pub attempts_converged: std::collections::BTreeSet<(String, u32)>,
-    /// The attempts whose verdict is `Failed`, by (Build, attempt): the facts end every removal
-    /// (`NodeDeleting`) hold of that attempt in that Build; a restart's hold stays open.
-    pub attempts_failed: std::collections::BTreeSet<(String, u32)>,
+    /// The removals (`NodeDeleting`) whose own attempt, in its own lane, has a terminal verdict, by
+    /// the removal's key (`LifecycleOp::key`), each `attempt-failed` or `attempt-converged`: the
+    /// facts end that hold. A restart's hold is not one.
+    pub removals_ended: std::collections::BTreeMap<(String, u32, String), &'static str>,
 }
 
 /// The Builds the facts forgot: each a `Forget` fact names whose Build the fold no longer holds
