@@ -6,6 +6,7 @@
 //! registered cells of `i143_acceptance_2777`, each under its own `Owner`.
 
 use crate::estate::{descends_from, named, wait_for, Estate, Owner};
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -30,22 +31,13 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let estate = Estate::bootstrap(owner, "fabric1", "mesh1").await;
 
     // 1. MN = 2 node-admins + 3 RPC nodes, through node-admin Build only.
-    let shape = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]});
-    estate.artifact("build-request.json", &json!({"route": "POST /api/build", "body": shape}));
-    let (status, accepted) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "POST /api/build: {accepted}");
-    let birth_build = accepted["build_id"].as_str().expect("build_id").to_string();
-    estate.await_build(&birth_build, SETTLE).await;
-    wait_for("MN settled: 2 admins + 3 rpc nodes ready-for-traffic", SETTLE, || async {
-        let nodes = estate.nodes().await;
-        let admins = nodes.iter().filter(|n| n["kind"] == "node_admin" && ready(n)).count();
-        let rpc = nodes.iter().filter(|n| n["kind"] == "rpc_node" && ready(n)).count();
-        (admins == 2 && rpc == 3).then_some(())
-    })
-    .await;
+    let shape = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)])] };
+    estate.artifact("build-request.json", &json!({"call": "build.create", "desired": shape}));
+    let birth_build = estate.reconcile(&shape).await.build_id.to_string();
+    estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
 
     // 2. Put{key=41, value="before-restart"} to rpc.2 by ExactNode.
-    let before = estate.node(NODE).await;
+    let before = estate.node_value(NODE).await;
     let node_id = before["node_id"].as_str().expect("node_id").to_string();
     let exact = format!("exact:{node_id}");
     let put = estate.probe(&["put", "--target", &exact, "--key", "41", "--value", "before-restart"]);
@@ -53,36 +45,37 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(put["reply"]["executing_node"], node_id.as_str(), "{put}");
 
     // 3. Capture identity, ports, deployment id and the advertised admin endpoint.
-    let (_, fabric_before) = estate.get("/api/fabric").await;
-    let control_before = fabric_before["meshes"][0]["admin_api_base"].as_str().expect("advertised admin endpoint").to_string();
+    let fabric_before = estate.fabric_view().await;
+    let control_before = fabric_before.meshes[0].admin_api_base.clone().expect("advertised admin endpoint");
     let incarnation_before = before["incarnation_id"].as_str().expect("incarnation_id").to_string();
     let deployment_before = before["deployment_id"].as_str().expect("deployment_id").to_string();
-    estate.artifact("nodes-before.json", &json!(estate.nodes().await));
+    estate.artifact("nodes-before.json", &json!(estate.node_values().await));
     let process_before = runtime_of(&estate, NODE).await;
     let transport_before = before["transport_addr"].clone();
 
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    // 4. Restart through the route; it answers with a Build id and does no bespoke work.
-    let (status, restart) = estate.post(&format!("/api/nodes/{NODE}/restart"), &json!({})).await;
-    assert_eq!(status, 202, "restart route: {restart}");
-    let restart_build = restart["build_id"].as_str().expect("restart returns a build_id").to_string();
+    // 4. Restart through node.restart; it answers with a Build id and does no bespoke work.
+    let node: PathName = NODE.parse().unwrap();
+    let mut stream = estate.nodes_obj().await.restart(&node).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart {NODE}: {e}"));
+    let restart_build = stream.accepted().build_id.to_string();
     assert_eq!(restart_build, birth_build, "a restart changes no topology: it is an attempt of the accepted Build");
-    // The attempt is opened on the admin that took the POST (the fabric-primary); that admin's Build log is the one that holds it at once.
-    let (_, submitted) = estate.http_get(&control_before, &format!("/api/builds?id={restart_build}")).await;
-    assert_eq!(submitted["build_id"], restart_build.as_str(), "the Build is visible by id: {submitted}");
-    assert_eq!(submitted["reason"], "restart", "{submitted}");
-    assert_eq!(submitted["action"]["path"], NODE, "{submitted}");
-    let status_after = estate.await_attempt(&restart_build, Estate::attempt_of(&restart), SETTLE).await;
-    estate.artifact("build-status.json", &json!({"birth": birth_build, "restart": status_after}));
+    // The attempt is opened by the fabric-primary, the one admin the Build family answers at: build.get reads it there at once.
+    let submitted = estate.builds_obj().await.get(&stream.accepted().build_id).await.unwrap_or_else(|e| panic!("build.get of {restart_build}: {e}"));
+    assert_eq!(submitted.build_id.to_string(), restart_build, "the Build is visible by id: {submitted:?}");
+    assert_eq!(submitted.reason, "restart", "{submitted:?}");
+    let restart = Estate::complete(&mut stream).await;
+    let status_after = estate.builds_obj().await.get(&restart.build_id).await.unwrap_or_else(|e| panic!("build.get of {restart_build}: {e}"));
+    estate.artifact("build-status.json", &json!({"birth": birth_build, "restart": format!("{status_after:?}")}));
 
     // The node is ready again (observed, not slept on), and no longer parked.
-    let after = wait_for("rpc.2 ready after its restart", SETTLE, || async {
-        let n = estate.node_opt(NODE).await?;
-        (ready(&n) && n["parked"] == false).then_some(n)
-    })
-    .await;
-    estate.artifact("nodes-after.json", &json!(estate.nodes().await));
+    let after = estate
+        .until_node(NODE, "rpc.2 ready after its restart", SETTLE, |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (ready(&n) && n["parked"] == false).then_some(n)
+        })
+        .await;
+    estate.artifact("nodes-after.json", &json!(estate.node_values().await));
 
     // 5. Same logical node identity returns.
     assert_eq!(after["node_id"], before["node_id"], "same logical node id");
@@ -112,10 +105,10 @@ pub async fn restart_canary(owner: Owner) -> Value {
     assert_eq!(absent["reply"]["result"]["found"], false, "the cut request was never applied: {absent}");
 
     // 10. Control did not move: the advertised admin endpoint is unchanged and still serving.
-    let (_, fabric_after) = estate.get("/api/fabric").await;
-    assert_eq!(fabric_after["meshes"][0]["admin_api_base"].as_str(), Some(control_before.as_str()));
+    let fabric_after = estate.fabric_view().await;
+    assert_eq!(fabric_after.meshes[0].admin_api_base.as_deref(), Some(control_before.as_str()));
 
-    assert_eq!(estate.nodes().await.iter().filter(|n| n["name"] == NODE).count(), 1, "the path holds exactly one birth");
+    assert_eq!(estate.node_views().await.iter().filter(|n| n.name == node).count(), 1, "the path holds exactly one birth");
 
     // 11. OTLP evidence: Build -> node operation -> start step -> the node's start, linked by ParentSpanId.
     // A span is exported once it ends, by each process's own exporter: the chain is exported when the
@@ -125,24 +118,24 @@ pub async fn restart_canary(owner: Owner) -> Value {
     let spans = wait_for("restart span chain exported", SETTLE, || async {
         let spans = estate.spans();
         let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().any(|s| s["attributes"]["node"] == NODE && s["attributes"]["outcome"] == "started");
-        let called = named(&spans, "rdm.node_admin.build.update.via-rest").into_iter().any(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE);
+        let called = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().any(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE);
         let reconciled = named(&spans, "rdm.node_admin.build.update.via-reconcile")
             .into_iter()
             .any(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == restart_op)));
         (served && called && reconciled).then_some(spans)
     })
     .await;
-    // The restart's attempt is the REST call that opened it: its reconcile is a child of that
-    // call's request span (the claim returns the attempt's context), never of the span that
-    // accepted the Build.
-    let created = named(&spans, "rdm.node_admin.build.create.via-rest")
+    // The restart's attempt is the node.restart call that opened it: its reconcile is a child of
+    // that call's request span (the claim returns the attempt's context), never of the span that
+    // accepted the Build. The request span names the node the attempt acts on.
+    let created = named(&spans, "rdm.node_admin.build.create.via-node-rpc")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == birth_build.as_str())
-        .expect("rdm.node_admin.build.create.via-rest for the accepted Build");
-    let rest = named(&spans, "rdm.node_admin.build.update.via-rest")
+        .expect("rdm.node_admin.build.create.via-node-rpc for the accepted Build");
+    let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE)
-        .expect("rdm.node_admin.build.update.via-rest for the restart call");
+        .expect("rdm.node_admin.build.update.via-node-rpc for the restart call");
     let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == restart_op)))
@@ -154,9 +147,9 @@ pub async fn restart_canary(owner: Owner) -> Value {
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == restart_build.as_str() && s["attributes"]["node"] == NODE)
         .expect("rdm.node_admin.node.update.via-build for rpc.2");
-    assert!(descends_from(&spans, node_op, rest), "node.update.via-build descends from the restart call's build.update.via-rest");
+    assert!(descends_from(&spans, node_op, rest), "node.update.via-build descends from the restart call's build.update.via-node-rpc");
     assert!(!descends_from(&spans, node_op, created), "and not from the Build's original create span");
-    let attempt = Estate::attempt_of(&restart).to_string();
+    let attempt = restart.attempt.to_string();
     let step = |name: &str| {
         named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
@@ -181,14 +174,14 @@ pub async fn restart_canary(owner: Owner) -> Value {
         "transport_after": after["transport_addr"],
         "birth_build": birth_build,
         "restart_build": restart_build,
-        "restart_attempt": Estate::attempt_of(&restart),
+        "restart_attempt": restart.attempt,
         "process_before": process_before,
         "process_after": process_after,
         "get_after_restart": get,
         "cut": cut,
         "cut_key_absent": absent,
         "trace_id": rest["trace_id"],
-        "build_update_via_rest_span": rest["span_id"],
+        "build_update_via_node_rpc_span": rest["span_id"],
         "reconcile_span": reconcile["span_id"],
         "node_update_via_build_span": node_op["span_id"],
         "start_step_span": step("StartNode")["span_id"],
