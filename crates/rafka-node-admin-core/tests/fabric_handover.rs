@@ -801,7 +801,7 @@ async fn the_holder_cuts_off(op: &'static str) {
     });
     until("P cuts off its seat writes", || !f.p.cut_offs.lock().unwrap().is_empty()).await;
     assert!(
-        matches!(&f.p.cut_offs.lock().unwrap()[..], [WriteCutOff::Set { reason, fabric_seat: false }] if reason.contains(op) && reason.contains("mesh1")),
+        matches!(&f.p.cut_offs.lock().unwrap()[..], [WriteCutOff::Set { reason, mesh_seat: true, fabric_seat: false }] if reason.contains(op) && reason.contains("mesh1")),
         "one cut-off naming the update, the mesh seat only: {:?}",
         f.p.cut_offs.lock().unwrap()
     );
@@ -1274,13 +1274,54 @@ fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
             status: std::sync::Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
         };
         let row = MeshStatusRow { mesh_id: rafka_node_admin_core::model::MeshId::mint(), state: rafka_node_rpc_contract::status::MeshState::ReadyForTraffic };
-        stores.apply(WriteCutOff::Set { reason: "node.primary.update:b1:stop-node:mesh1.admin.1".into(), fabric_seat: false }).await;
+        stores.apply(WriteCutOff::Set { reason: "node.primary.update:b1:stop-node:mesh1.admin.1".into(), mesh_seat: true, fabric_seat: false }).await;
         match stores.status.put_mesh_status(&row).await {
             Err(rafka_node_admin_core::record_store::StorageError::CutOff { reason, .. }) => assert!(reason.contains("node.primary.update:b1:stop-node:mesh1.admin.1"), "{reason}"),
             other => panic!("a status write after the moving seat's cut-off: {other:?}"),
         }
         stores.apply(WriteCutOff::Lift).await;
         stores.status.put_mesh_status(&row).await.expect("a lift gives the status writes back");
+        let _ = std::fs::remove_dir_all(&d);
+    });
+}
+
+/// CONTRACT (proposal Part C1 step 4: "The mesh seat's cut-off covers the mesh's rows (`meshes/<mesh>`,
+/// `nodes/<mesh>/`); the fabric seat's covers `fabric/` and Build acceptance"; Part C2: "Under
+/// mesh.delete the mesh seat does not move at all ... the incumbent stays mesh-primary until its own
+/// node.delete"): node.fabric-primary.update moving the fabric seat alone cuts off the fabric seat's
+/// stores and none of the holder's mesh. Through the cut-off a Fabric record write is refused naming the
+/// transfer, while the holder, still its mesh's primary, writes its mesh's status row (the Leaving row
+/// mesh.delete's leave writes next); after the row commits it still writes its mesh's status and Mesh
+/// rows. What must NOT happen: the holder's mesh rows cut off by a move of the fabric seat alone, so the
+/// mesh.delete it precedes refuses leave-mesh on its own Leaving row.
+#[test]
+fn a_fabric_seat_moved_alone_cuts_off_no_store_of_the_holders_mesh() {
+    use rafka_node_admin_core::fabric_handover::SeatStores;
+    use rafka_node_admin_core::status_storage::{MeshStatusRow, StatusStorage as _};
+    use rafka_node_admin_core::storage::MeshStorage as _;
+    use rafka_node_rpc_contract::status::MeshState;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let d = std::env::temp_dir().join(format!("seat-stores-fabric-alone-{}", NodeId::mint()));
+        let root = rafka_node_admin_core::store_root::StoreRoot::at(&d.join("store"));
+        let inc = IncarnationId::mint();
+        let stores = SeatStores {
+            mesh: Arc::new(rafka_node_admin_core::storage::FileMeshStorage::open(&root, &inc).await.unwrap()),
+            nodes: Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&d.join("data"), &root, "mesh1", &inc).await.unwrap()),
+            fabric: Arc::new(FileFabricStorage::open(&root, &inc).await.unwrap()),
+            status: Arc::new(rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &inc).await.unwrap()),
+        };
+        let reason = "the fabric-primary seat(s) of mesh1.admin.1 are updating to mesh2 000000000002 by node.fabric-primary.update:b1:shutdown-mesh:mesh1";
+        let mesh_id = MeshId::mint();
+        stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: false, fabric_seat: true }).await;
+        match stores.fabric.claim_identity(&FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await {
+            Err(e) => assert!(e.to_string().contains("node.fabric-primary.update:b1:shutdown-mesh:mesh1"), "the refusal names the transfer: {e}"),
+            Ok(claim) => panic!("a Fabric record write after the fabric seat's cut-off: {claim:?}"),
+        }
+        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Leaving }).await.expect("the holder writes its mesh's Leaving row through the fabric seat's cut-off");
+        stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: false, fabric_seat: true }).await;
+        stores.status.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.expect("the holder, still mesh1's primary, writes its mesh's status row after the row");
+        stores.mesh.claim_mesh(&rafka_node_admin_core::storage::MeshRecord { mesh_id, name: "mesh1".into(), dead: true }).await.expect("the holder writes its Mesh row after the row").expect("mesh1 is a free name");
         let _ = std::fs::remove_dir_all(&d);
     });
 }
@@ -1315,8 +1356,8 @@ fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
         stores.fabric.claim_identity(&rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }).await.unwrap().unwrap();
         assert!(stores.mesh.mesh("mesh1").await.unwrap().is_some(), "the holder reads the Mesh row it holds");
         let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by node.primary.update:b1:stop-node:mesh1.admin.1";
-        stores.apply(WriteCutOff::Set { reason: reason.into(), fabric_seat: true }).await;
-        stores.apply(WriteCutOff::Committed { reason: reason.into(), fabric_seat: true }).await;
+        stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
+        stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
         assert!(stores.mesh.mesh("mesh1").await.unwrap().is_none(), "a Mesh row dropped at the commit is never read");
         assert!(stores.fabric.fabric().await.unwrap().is_none(), "a Fabric identity dropped at the commit is never read");
         let published = pad.publish().await.unwrap();
@@ -1368,8 +1409,8 @@ fn a_committed_fabric_seat_transfer_drops_the_rows_its_holder_held_as_acting_pri
         assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), Some(row.clone()), "the holder reads the mesh2 Node row it holds");
         assert!(stores.status.mesh_status_held_of("mesh2", &dead).await.unwrap(), "the holder reads the mesh2 status row it holds");
         let reason = "the seats of mesh1.admin.1 moved to mesh1 000000000002 by node.primary.update:b1:stop-node:mesh1.admin.1";
-        stores.apply(WriteCutOff::Set { reason: reason.into(), fabric_seat: true }).await;
-        stores.apply(WriteCutOff::Committed { reason: reason.into(), fabric_seat: true }).await;
+        stores.apply(WriteCutOff::Set { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
+        stores.apply(WriteCutOff::Committed { reason: reason.into(), mesh_seat: true, fabric_seat: true }).await;
         assert_eq!(stores.nodes.node_row_at(&row.name).await.unwrap(), None, "a mesh2 Node row dropped at the commit is never read");
         assert!(!stores.status.mesh_status_held_of("mesh2", &dead).await.unwrap(), "a mesh2 status row dropped at the commit is never read");
         let published = pad.publish().await.unwrap();

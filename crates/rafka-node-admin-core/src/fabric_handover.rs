@@ -102,13 +102,17 @@ impl std::fmt::Display for SourceFailure {
 /// proposal Part C1 step 4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteCutOff {
-    /// Refuse every write the moving seats authorize (the mesh-primary's mesh, node and status rows; the
-    /// fabric record as well when the fabric seat moves), then take each store's write lock once,
-    /// which waits for every write already issued.
+    /// Refuse every write the moving seats authorize (proposal Part C1 step 4: "The mesh seat's cut-off
+    /// covers the mesh's rows (`meshes/<mesh>`, `nodes/<mesh>/`); the fabric seat's covers `fabric/` and
+    /// Build acceptance; when both move, one drain covers both"), then take each store's write lock
+    /// once, which waits for every write already issued.
     Set {
         /// Why: the transfer, naming the successor and the operation.
         reason: String,
-        /// The fabric-primary seat moves too.
+        /// The mesh-primary seat moves: its mesh, node and status rows are cut off.
+        mesh_seat: bool,
+        /// The fabric-primary seat moves: the Fabric record and the rows of other meshes it writes as
+        /// acting primary are cut off.
         fabric_seat: bool,
     },
     /// The seat row was not written: nothing moved, and the writes are this admin's again under the
@@ -120,7 +124,9 @@ pub enum WriteCutOff {
     Committed {
         /// The cut-off's reason: the transfer, naming the successor and the operation.
         reason: String,
-        /// The fabric-primary seat moved too.
+        /// The mesh-primary seat moved.
+        mesh_seat: bool,
+        /// The fabric-primary seat moved.
         fabric_seat: bool,
     },
 }
@@ -155,7 +161,7 @@ impl SeatStores {
         let nodes = self.nodes.mesh_primary_records();
         let mut seat: Vec<&crate::record_store::FileRecords> = self.mesh.mesh_primary_records().into_iter().chain(nodes.iter()).chain(self.status.mesh_primary_records()).collect();
         match c {
-            WriteCutOff::Set { reason, fabric_seat } => {
+            WriteCutOff::Set { reason, fabric_seat, .. } => {
                 if fabric_seat {
                     seat.extend(self.fabric.fabric_primary_records());
                     // The fabric-primary seat authorizes other meshes' rows on the shared root too
@@ -181,7 +187,7 @@ impl SeatStores {
                     tracing::info!(error = %e, "another mesh's status rows whose cut-off was lifted could not write the rows they held: they stay held");
                 }
             }
-            WriteCutOff::Committed { reason, fabric_seat } => {
+            WriteCutOff::Committed { reason, fabric_seat, .. } => {
                 if fabric_seat {
                     seat.extend(self.fabric.fabric_primary_records());
                 }
@@ -677,10 +683,10 @@ impl HandoverDoor {
         // Step 4: the cut-off (R14 item 4): every write the seats authorize is refused from
         // here, and each of those stores' write locks is taken once, which waits for every write
         // already issued. No write of this holder's seats lands after the row.
-        let fabric_seat = moving.fabric_seat();
+        let (mesh_seat, fabric_seat) = (moving.mesh_seat(), moving.fabric_seat());
         let reason = format!("the {} seat(s) of {} are updating to {} {} by {operation}", moving.name(), self.me, to.mesh, to.node_id);
-        (self.cut_off_writes)(WriteCutOff::Set { reason: reason.clone(), fabric_seat }).await;
-        tracing::info_span!("rdm.node_admin.seat.update.via-writes-cut-off", node = %self.me, fabric = %self.fabric, operation, build_id, attempt, holder = %births(&me), successor = %births(&to), fabric_seat)
+        (self.cut_off_writes)(WriteCutOff::Set { reason: reason.clone(), mesh_seat, fabric_seat }).await;
+        tracing::info_span!("rdm.node_admin.seat.update.via-writes-cut-off", node = %self.me, fabric = %self.fabric, operation, build_id, attempt, holder = %births(&me), successor = %births(&to), mesh_seat, fabric_seat)
             .in_scope(|| tracing::info!("the holder cut off the writes its seats authorize and every issued one finished before its row"));
         // Step 5: the ONE row, the commit, under the Build-log decision lock; from it this holder is no
         // longer primary.
@@ -697,7 +703,7 @@ impl HandoverDoor {
             }
             book.take_together(&op, &seats);
         }
-        (self.cut_off_writes)(WriteCutOff::Committed { reason, fabric_seat }).await;
+        (self.cut_off_writes)(WriteCutOff::Committed { reason, mesh_seat, fabric_seat }).await;
         tracing::info_span!(
             "rdm.node_admin.seat.update.via-seat-row-written",
             node = %self.me,
@@ -738,7 +744,8 @@ impl HandoverDoor {
         };
         if taken.iter().any(|t| matches!(t, SeatTaken::Held { .. })) {
             let reason = format!("the seat(s) of {} moved to {} by {}", self.me, births(&row.successor), row.operation);
-            (self.cut_off_writes)(WriteCutOff::Committed { reason, fabric_seat: row.seats.iter().any(|c| c.seat.kind() == Seat::FabricPrimary) }).await;
+            let moved = |seat: Seat| row.seats.iter().any(|c| c.seat.kind() == seat);
+            (self.cut_off_writes)(WriteCutOff::Committed { reason, mesh_seat: moved(Seat::MeshPrimary), fabric_seat: moved(Seat::FabricPrimary) }).await;
             (self.project_view)().await;
         }
         self.update_successor(row).await

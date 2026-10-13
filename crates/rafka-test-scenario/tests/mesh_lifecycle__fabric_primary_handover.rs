@@ -405,7 +405,11 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // Deleted, NodeDeleted, its removal.
     let order = order_in(&final_name, true);
     let got: Vec<&str> = order.iter().map(|(n, _, _)| n.as_str()).collect();
-    let moved: Vec<&Value> = ["rdm.node_admin.seat.update.via-primary-update", "rdm.node_admin.seat.update.via-primary-updating"].iter().flat_map(|n| named(&spans, n)).filter(|sp| s(&sp["attributes"]["holder"]) == final_name || s(&sp["attributes"]["node"]) == final_name).collect();
+    let moved: Vec<&Value> = ["rdm.node_admin.seat.update.via-primary-update", "rdm.node_admin.seat.update.via-primary-updating"]
+        .iter()
+        .flat_map(|n| named(&spans, n))
+        .filter(|sp| (s(&sp["attributes"]["holder"]) == final_name || s(&sp["attributes"]["node"]) == final_name) && s(&sp["attributes"]["build_id"]) == c && attr_u(sp, "attempt") == c_attempt)
+        .collect();
     assert!(moved.is_empty(), "{final_name} is its mesh's only node: its delete runs no node.primary.update: {moved:#?}");
     assert_eq!(got, ["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"], "{final_name}: the ordinary node.delete, node.stop first, then the exit proof");
     let c_steps: Vec<&Value> = steps.iter().copied().filter(|sp| sp["attributes"]["node"] == final_name.as_str() && node_delete_run(sp)).collect();
@@ -545,28 +549,48 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let published_leaving = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leaving").into_iter().map(|sp| start_ns(sp)).min().expect("mesh-leaving was published");
     assert!(published_leaving < first_member_stop, "mesh-leaving was published ({published_leaving}) before any member stopped ({first_member_stop})");
 
-    // R-ST2: mesh1 held the fabric seat, so it was handed to an outside mesh-primary first. In
-    // order: the command, the successor's commit at the next epoch, new-fabric-primary, the
-    // completion, the incumbent's confirmation; only then leave-mesh, mesh-leaving and the tiers.
+    // The approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C2 (Luke yes
+    // 2026-10-12), with mesh-delete.md step 1 as C3 edit 2 has it: "If the mesh holds the fabric-primary
+    // seat, node.fabric-primary.update runs first with this mesh excluded from the successor search";
+    // "Under mesh.delete the mesh seat does not move at all: the row commits the fabric seat to the
+    // outside mesh-primary and the incumbent stays mesh-primary until its own node.delete". In order at
+    // mesh1's primary, the holder and its mesh's row writer: "primary updating", the cut-off, the ONE row
+    // under mesh1 moving the fabric seat alone; the outside successor installs from it and answers
+    // node.primary.updated under the holder's call; the holder says "primary updated"; the leave's owner
+    // installs the row (`via-fabric-seat-updated`) before mesh-leaving, LeaveMesh and every stop.
+    let attr_s = |sp: &Value, k: &str| s(&sp["attributes"][k]);
+    let operation = format!("node.fabric-primary.update:{b}:shutdown-mesh:{mesh1_bare}");
     let one = |name: &str| -> Value {
-        let v = named(&spans, name);
-        assert_eq!(v.len(), 1, "exactly one {name} span: {v:?}");
+        let v: Vec<&Value> = named(&spans, name).into_iter().filter(|sp| attr_s(sp, "operation") == operation).collect();
+        assert_eq!(v.len(), 1, "exactly one {name} span of {operation}: {v:?}");
         v[0].clone()
     };
-    let (committed, confirmed) = (one("rdm.node_admin.fabric.update.via-handover-committed"), one("rdm.node_admin.fabric.update.via-handover-confirmed"));
-    let announced = named(&spans, "rdm.mesh.seat.update.via-announce-new-fabric-primary");
-    assert_eq!(announced.len(), 1, "new-fabric-primary was published once: {announced:?}");
-    assert_eq!(attr_u(&committed, "committed_epoch"), attr_u(&committed, "expected_epoch") + 1, "{committed}");
-    assert_eq!(attr_u(&confirmed, "committed_epoch"), attr_u(&committed, "committed_epoch"), "the incumbent confirmed the committed epoch");
-    assert_eq!(s(&committed["attributes"]["operation"]), format!("fabric-primary-handover:{mesh1_id}"));
-    let first_call = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21 && start_ns(sp) < start_ns(&committed)).map(|sp| start_ns(sp)).min().expect("TakeFabricPrimary was called before the commit");
-    assert!(first_call < start_ns(&committed) && start_ns(&committed) < start_ns(&announced[0]) && start_ns(&announced[0]) < start_ns(&confirmed), "command, commit, new-fabric-primary, confirmation in order");
-    let taken_calls = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21 && start_ns(sp) > start_ns(&announced[0]) && start_ns(sp) <= start_ns(&confirmed)).count();
-    assert!(taken_calls >= 1, "FabricPrimaryTaken was called after new-fabric-primary and before the confirmation");
-    assert!(start_ns(&confirmed) < published_leaving, "the confirmation precedes mesh-leaving, LeaveMesh and every stop");
-    assert!(named(&spans, "rdm.node_admin.fabric.reject.via-handover").is_empty(), "no handover call was refused");
-    assert!(named(&spans, "rdm.node_admin.mesh.update.via-seat-inside-leaving-mesh").is_empty());
-    assert_eq!(s(&committed["attributes"]["successor"]).split(':').next(), Some(fabric_primary.split('.').next().unwrap()), "the committed successor's mesh holds the seat afterwards");
+    let updating = one("rdm.node_admin.seat.update.via-primary-updating");
+    assert_eq!((attr_s(&updating, "node"), attr_s(&updating, "seat"), attr_s(&updating, "successor"), attr_s(&updating, "outcome")), (final_name.clone(), "fabric-primary".to_string(), fabric_primary.clone(), "updated".to_string()), "mesh1's primary moved the fabric seat alone to the outside successor: {updating}");
+    let said_updating = one("rdm.mesh.seat.update.via-announce-primary-updating");
+    assert_eq!((attr_s(&said_updating, "node"), attr_s(&said_updating, "backbone"), attr_s(&said_updating, "mesh_channel")), (final_name.clone(), "sent".to_string(), "sent".to_string()), "{said_updating}");
+    let cut_off = one("rdm.node_admin.seat.update.via-writes-cut-off");
+    assert_eq!(attr_s(&cut_off, "fabric_seat"), "true", "the holder cut off the fabric seat's writes: {cut_off}");
+    let row = one("rdm.node_admin.seat.update.via-seat-row-written");
+    assert_eq!(attr_s(&row, "node"), final_name, "the holder, mesh1's row writer, wrote the row: {row}");
+    assert!(!attr_s(&row, "fabric_epoch").is_empty() && attr_s(&row, "mesh_epoch").is_empty(), "the row moves the fabric seat alone; mesh1's seat stays with its primary: {row}");
+    assert_eq!(attr_s(&row, "successor").split(':').next(), Some(fabric_primary.split('.').next().unwrap()), "the committed successor's mesh holds the seat afterwards: {row}");
+    let installed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| attr_s(sp, "operation") == operation && attr_s(sp, "node") == fabric_primary && attr_s(sp, "replay") == "false").collect();
+    assert_eq!(installed.len(), 1, "the outside successor installed the row once and answered node.primary.updated: {installed:?}");
+    let installed = installed[0].clone();
+    assert_eq!(attr_s(&installed, "fabric_epoch"), attr_s(&row, "fabric_epoch"), "{installed}");
+    assert!(descends_from(&spans, &installed, &updating), "the successor installed under the holder's call: {installed}");
+    let said_updated = one("rdm.mesh.seat.update.via-announce-primary-updated");
+    assert_eq!((attr_s(&said_updated, "node"), attr_s(&said_updated, "backbone"), attr_s(&said_updated, "mesh_channel")), (final_name.clone(), "sent".to_string(), "sent".to_string()), "the holder said primary updated: {said_updated}");
+    let seat_updated = one("rdm.node_admin.seat.update.via-fabric-seat-updated");
+    assert_eq!((attr_s(&seat_updated, "departing"), attr_s(&seat_updated, "fabric_epoch")), ("mesh1".to_string(), attr_s(&row, "fabric_epoch")), "the leave's owner installed the fabric seat's row: {seat_updated}");
+    assert!(start_ns(&said_updating) <= start_ns(&cut_off) && end_ns(&cut_off) <= start_ns(&row), "primary updating, the cut-off, then the row");
+    assert!(end_ns(&row) <= start_ns(&installed) && end_ns(&installed) <= start_ns(&said_updated), "the row, the successor's install, then primary updated");
+    assert!(end_ns(&row) <= start_ns(&seat_updated) && end_ns(&seat_updated) < published_leaving, "the row is installed by the leave's owner before mesh-leaving, LeaveMesh and every stop");
+    assert!(named(&spans, "rdm.node_admin.seat.reject.via-primary-update").is_empty(), "no node.primary.update was refused");
+    // Commands go down: every 0x21 call is the holder's node.primary.update on its successor.
+    let calls: Vec<&Value> = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21).collect();
+    assert!(!calls.is_empty() && calls.iter().all(|sp| descends_from(&spans, sp, &updating)), "every 0x21 call is the holder's call on its successor: {calls:?}");
 
     // A desired change, not a recovery.
     assert!(!named(&spans, "rdm.node_admin.build.create.via-proven-drift").iter().any(|sp| s(&sp["attributes"]["scope"]).contains("mesh1")), "no recovery Build names mesh1");
@@ -591,28 +615,20 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         (other, "pull", "get-topology", "fabric-primary", holder.as_str())
     );
 
-    // gossip.md "New-fabric-primary and contact addresses": every surviving mesh hears
-    // new-fabric-primary naming the exact committed holder birth at the committed epoch, with that
-    // birth's own endpoint key, QUIC address and application contact.
+    // Part C3 edit 6 (gossip.md): "primary updated" rides the backbone, and every surviving mesh hears
+    // it naming the exact committed holder birth at the committed epoch.
     let h = after.iter().find(|n| s(&n["name"]) == holder).unwrap();
-    let (succ_mesh, succ_rest) = s(&committed["attributes"]["successor"]).split_once(':').map(|(m, r)| (m.to_string(), r.to_string())).unwrap();
+    let (succ_mesh, succ_rest) = attr_s(&row, "successor").split_once(':').map(|(m, r)| (m.to_string(), r.to_string())).unwrap();
     let (succ_id, succ_inc) = succ_rest.split_once(':').map(|(i, c)| (i.to_string(), c.to_string())).unwrap();
-    let exact = format!("{succ_mesh}:{succ_id}@{succ_inc} (epoch {})", attr_u(&committed, "committed_epoch"));
     assert_eq!((succ_id.as_str(), succ_inc.as_str()), (s(&h["node_id"]).as_str(), s(&h["incarnation_id"]).as_str()), "the committed successor is the holder's exact birth: {h}");
-    let announce = &announced[0];
-    assert_eq!(s(&announce["attributes"]["holder"]), exact, "new-fabric-primary names the committed holder birth and epoch: {announce}");
-    assert_eq!(s(&announce["attributes"]["endpoint_id"]), s(&h["endpoint_id"]), "the announced endpoint key is the holder's: {announce} {h}");
+    let exact = format!("{succ_mesh}:{succ_id}@{succ_inc} (epoch {})", attr_s(&row, "fabric_epoch"));
     for m in ["mesh2", "mesh3"] {
-        let heard: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-new-fabric-primary").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.")) && s(&sp["attributes"]["node"]) != holder).collect();
-        assert!(!heard.is_empty(), "{m}: an admin other than the holder heard new-fabric-primary on the backbone");
+        let heard: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-primary-updated").into_iter().filter(|sp| attr_s(sp, "operation") == operation && attr_s(sp, "node").starts_with(&format!("{m}.admin.")) && attr_s(sp, "node") != holder).collect();
+        assert!(heard.iter().any(|sp| attr_s(sp, "via") == "backbone"), "{m}: an admin other than the holder heard primary updated on the backbone: {heard:?}");
         for sp in &heard {
-            let a = &sp["attributes"];
-            assert_eq!(s(&a["holder"]), exact, "{m}: the frame names the exact holder birth: {sp}");
-            assert_ne!(s(&a["outcome"]), "refused-not-newer", "{m}: the committed holder is taken: {sp}");
-            assert_eq!(s(&a["via"]), "backbone", "{m}: heard on the backbone: {sp}");
-            for k in ["endpoint_id", "transport_addr", "admin_api_base"] {
-                assert_eq!(s(&a[k]), s(&announce["attributes"][k]), "{m}: {k} is the holder's own, as announced: {sp}");
-            }
+            assert_eq!(attr_s(sp, "successor"), exact, "{m}: the frame names the exact holder birth and epoch: {sp}");
+            assert_ne!(attr_s(sp, "outcome"), "refused-not-newer", "{m}: the committed holder is taken: {sp}");
         }
     }
+    estate.record_trace_url(&s(&row["trace_id"]));
 }
