@@ -1214,6 +1214,9 @@ impl DeploymentPipeline<'_> {
             attempt = run.attempt,
             outcome = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
+            io_calls = tracing::field::Empty,
+            io_queued_ms = tracing::field::Empty,
+            io_ms = tracing::field::Empty,
         );
         let started = Instant::now();
         if run.reusing {
@@ -1225,8 +1228,13 @@ impl DeploymentPipeline<'_> {
             }
             run.reusing = false;
         }
-        let r = work.instrument(span.clone()).await;
+        // Where the time of a step that took long went: its blocking calls' wait for a thread and their
+        // run on one, beside the elapsed time.
+        let (r, io) = crate::record_store::io_time(work.instrument(span.clone())).await;
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        if io.calls() > 0 {
+            span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
+        }
         let (outcome, output) = match &r {
             Ok(v) => (StepOutcome::Complete, serde_json::to_value(v).ok().filter(|v| !v.is_null())),
             Err(reason) => (StepOutcome::Failed { reason: reason.clone() }, None),

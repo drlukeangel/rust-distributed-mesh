@@ -840,13 +840,75 @@ fn insert_file(dir: &Path, tmp: &Path, path: &Path, bytes: &[u8]) -> Result<bool
 /// Run `f`, a blocking disk call (a write that ends in an fsync, a read, a directory made or looked
 /// at), on tokio's blocking pool. No
 /// worker thread waits on the disk, and no lock a worker could block on is held across it: a
-/// journal commit that takes seconds delays only the caller awaiting it.
+/// journal commit that takes seconds delays only the caller awaiting it. Inside [`io_time`] the call
+/// adds what it took to that work's [`IoTime`]: the wait from its issue until a blocking thread began
+/// it, and its run on that thread.
 pub(crate) async fn blocking_io<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
-    match tokio::task::spawn_blocking(f).await {
-        Ok(v) => v,
+    let issued = std::time::Instant::now();
+    let run = tokio::task::spawn_blocking(move || {
+        let began = std::time::Instant::now();
+        let v = f();
+        (v, began, began.elapsed())
+    });
+    match run.await {
+        Ok((v, began, ran)) => {
+            let _ = IO_TIME.try_with(|t| t.add(began.saturating_duration_since(issued), ran));
+            v
+        }
         Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
         Err(e) => panic!("a blocking disk call was cancelled: {e}"),
     }
+}
+
+tokio::task_local! {
+    /// The blocking time of the work [`io_time`] runs.
+    static IO_TIME: IoTime;
+}
+
+/// What the [`blocking_io`] calls of one piece of work took: how many there were, how long they
+/// waited for a blocking thread, and how long they ran on one.
+#[derive(Debug, Default)]
+pub(crate) struct IoTime {
+    calls: std::cell::Cell<u64>,
+    queued: std::cell::Cell<std::time::Duration>,
+    ran: std::cell::Cell<std::time::Duration>,
+}
+
+impl IoTime {
+    fn add(&self, queued: std::time::Duration, ran: std::time::Duration) {
+        self.calls.set(self.calls.get() + 1);
+        self.queued.set(self.queued.get() + queued);
+        self.ran.set(self.ran.get() + ran);
+    }
+
+    fn snapshot(&self) -> IoTime {
+        IoTime { calls: std::cell::Cell::new(self.calls.get()), queued: std::cell::Cell::new(self.queued.get()), ran: std::cell::Cell::new(self.ran.get()) }
+    }
+
+    /// How many blocking calls the work made.
+    pub(crate) fn calls(&self) -> u64 {
+        self.calls.get()
+    }
+
+    /// How long they waited, from issue, for a blocking thread to begin them, in milliseconds.
+    pub(crate) fn queued_ms(&self) -> u64 {
+        self.queued.get().as_millis() as u64
+    }
+
+    /// How long they ran on a blocking thread, in milliseconds.
+    pub(crate) fn ran_ms(&self) -> u64 {
+        self.ran.get().as_millis() as u64
+    }
+}
+
+/// Run `work`, answering what its [`blocking_io`] calls took ([`IoTime`]), awaited on this task.
+pub(crate) async fn io_time<F: std::future::Future>(work: F) -> (F::Output, IoTime) {
+    IO_TIME
+        .scope(IoTime::default(), async move {
+            let out = work.await;
+            (out, IO_TIME.with(IoTime::snapshot))
+        })
+        .await
 }
 
 #[cfg(test)]
