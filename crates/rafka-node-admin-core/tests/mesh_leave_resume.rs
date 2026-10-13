@@ -353,6 +353,7 @@ fn a_resumed_leave_keeps_the_exited_members_receipts_and_runs_only_the_rest() {
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let shutdown = |attempt: u32| {
@@ -507,6 +508,7 @@ fn an_incomplete_tier_is_refused_by_name_naming_the_births_without_an_exited_rec
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let root = tracing::info_span!("cell.mesh-leave-incomplete", build_id = %build_id, operation = %outer);
@@ -594,6 +596,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let root = tracing::info_span!("cell.mesh-delete-completion", build_id = %build_id, operation = %outer);
@@ -816,6 +819,7 @@ fn a_primary_lost_mid_leave_is_replaced_by_a_named_amendment_and_the_leave_compl
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let shutdown = |attempt: u32| {
@@ -1644,6 +1648,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let cut = CutBuilds { inner: &builds, cut: Mutex::new(Some(("NodeDeleted", format!("retire-node:{FAILING}")))) };
         let cut_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &departures, builds: &cut, template: &template, timeouts: Timeouts::default() };

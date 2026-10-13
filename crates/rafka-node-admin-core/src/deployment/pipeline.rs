@@ -878,6 +878,9 @@ pub struct LaunchTemplate {
     /// The issuing material a new mesh's first node-admin is launched with: set on the template of
     /// that launch alone, from the signer's `issue_mesh_issuer`. `None` for every other launch.
     pub mesh_issuer: Option<Vec<u8>>,
+    /// The bound of a `node.connections.delete { All }` every launch carries: the launching admin's
+    /// own (`AdminConfig::connections_delete_deadline`).
+    pub connections_delete_deadline: Duration,
 }
 
 impl LaunchTemplate {
@@ -1548,6 +1551,7 @@ impl DeploymentPipeline<'_> {
             store_dir: self.template.store_dir.clone(),
             mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).and_then(|v| rafka_mesh_entity::MeshId::parse(v).ok()),
             mesh_issuer: self.template.mesh_issuer.clone(),
+            connections_delete_deadline: self.template.connections_delete_deadline,
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.

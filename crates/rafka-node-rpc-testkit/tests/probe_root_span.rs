@@ -55,6 +55,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             store_dir: data.clone(),
             mesh_id: None,
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());
         let server = proof_store::serve(ServerBuilder::new(), store, &launch)

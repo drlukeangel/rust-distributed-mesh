@@ -43,6 +43,7 @@ fn a_runtime_that_dies_before_binding_fails_wait_for_bind_with_its_reason() {
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         struct Never;
         #[async_trait::async_trait]

@@ -491,6 +491,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         data_root: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline {

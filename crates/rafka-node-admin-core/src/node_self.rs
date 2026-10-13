@@ -241,6 +241,10 @@ pub struct NodeSelf {
     /// `None` for an ordinary node: its hooks go out on its mesh channel and its mesh-admin carries
     /// them onto the backbone.
     pub backbone: Option<rafka_mesh_transport::membership::Backbone>,
+    /// The bound of this birth's `node.connections.delete { All }`, standalone or inside a stop
+    /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, read once where the process reads its launch or its
+    /// admin config): the eligible work in flight is let finish until it passes.
+    pub connections_delete_deadline: Duration,
     /// Where this birth stands between a stop and a start.
     cycle: Mutex<Cycle>,
     /// How this process leaves and rejoins its mesh; filled once the process holds the parts.
@@ -273,8 +277,9 @@ impl NodeSelf {
         set_status: Arc<dyn Fn(MemberStatus) -> MeshDigest + Send + Sync>,
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
+        connections_delete_deadline: Duration,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, connections_delete_deadline, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through

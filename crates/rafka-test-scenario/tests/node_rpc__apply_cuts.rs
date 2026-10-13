@@ -201,6 +201,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
         data_dir,
         mesh_id: None,
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
     let cuts = Arc::new(ApplyCuts::default());

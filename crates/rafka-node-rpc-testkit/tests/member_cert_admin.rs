@@ -87,6 +87,7 @@ fn a_launched_admin_holds_the_member_cert_its_launcher_issued_and_the_day_zero_r
             store_dir: joiner_dir.clone(),
             mesh_id: Some(root_mesh_id),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runtime = rafka_mesh_entity::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
         let _ = root.runner.joins.expect(rafka_node_admin_core::join::Deployed {

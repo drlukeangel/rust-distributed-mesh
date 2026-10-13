@@ -527,7 +527,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                     })
                                 };
                                 Arc::new(
-                                    rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, current, Some(declare))
+                                    rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
                                         .with_retire(cancel.clone())
                                         .with_round_actions(Arc::new(rafka_node_admin_core::fabric_rounds::StorePublication::new(store_root.scratchpad().cloned(), None))),
                                 )

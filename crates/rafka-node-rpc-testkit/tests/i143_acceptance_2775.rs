@@ -123,6 +123,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
             store_dir: data_dir.clone(),
             mesh_id: None,
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
         let server = proof_store::serve(ServerBuilder::new(), store.clone(), &launch)

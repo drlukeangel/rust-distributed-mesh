@@ -262,6 +262,7 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
         data_root,
         store_dir,
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 

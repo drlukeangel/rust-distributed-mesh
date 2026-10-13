@@ -325,6 +325,7 @@ impl Rig {
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runs = Arc::new(AttemptRuns::default());
         let local = Arc::new(MemoryBuildStateAdapter::new());

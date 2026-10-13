@@ -74,6 +74,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
                 store_dir: store.clone(),
                 mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
                 mesh_issuer: None,
+                connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             };
             admin.deployed(&launch, &key);
             launch

@@ -61,6 +61,7 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let _running = node::start(&launch, |b, _| b).await.expect("the node comes up");
@@ -137,6 +138,7 @@ fn a_node_renamed_live_then_stopped_presents_the_name_it_holds_at_its_start() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let _running = node::start(&launch, |b, _| b).await.expect("the node comes up");

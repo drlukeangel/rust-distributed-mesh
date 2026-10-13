@@ -147,6 +147,7 @@ fn an_admin_launched_by_an_admin_whose_hook_has_not_passed_is_pending_until_it_d
             store_dir: joiner_dir.clone(),
             mesh_id: Some(root_mesh_id),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runtime = rafka_mesh_entity::runtime::await_own_record(&joiner_dir, Duration::from_secs(10)).unwrap();
         let _ = root.runner.joins.expect(rafka_node_admin_core::join::Deployed {

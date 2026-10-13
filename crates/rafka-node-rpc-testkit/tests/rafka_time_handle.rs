@@ -40,6 +40,7 @@ fn the_handle_a_running_node_returns_reads_the_clock_its_gossip_stamps_read() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &node::load_or_mint_key(&dir).unwrap());
         let running = node::start(&launch, |b, _| b).await.expect("the admitted node starts");

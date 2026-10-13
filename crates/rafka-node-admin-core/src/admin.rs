@@ -94,6 +94,10 @@ pub struct AdminConfig {
     /// collected by a node.delete Build the fabric-primary submits on a sweep every ttl. Read by the
     /// fabric-primary only, held by every admin (a successor sweeps with it). `None`: blank, forever.
     pub stopped_node_ttl: Option<Duration>,
+    /// The bound of a `node.connections.delete { All }` (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, its
+    /// launch's when launched): this admin's own, every birth it launches carries it in its launch,
+    /// and a command this admin sends that runs one is answered within it.
+    pub connections_delete_deadline: Duration,
 }
 
 impl AdminConfig {
@@ -172,8 +176,13 @@ impl AdminConfig {
             ));
         }
         let stopped_node_ttl = crate::stopped_gc::ttl_from_env(get(crate::stopped_gc::ENV).as_deref())?;
+        let connections_delete_deadline = match &launch {
+            Some(l) => l.connections_delete_deadline,
+            None => rafka_mesh_entity::launch::decode_connections_delete_deadline(get(rafka_mesh_entity::launch::ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
+        };
         Ok(Self {
             stopped_node_ttl,
+            connections_delete_deadline,
             fabric,
             fabric_id,
             mesh_primary,
@@ -5622,6 +5631,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 data_root,
                                 store_dir: cfg.store_dir.clone(),
                                 mesh_issuer: None,
+                                connections_delete_deadline: cfg.connections_delete_deadline,
                             };
                             let mut registry = HookRegistry::new();
                             for (spec, hook) in wiring.hooks.drain(..) {
@@ -6239,7 +6249,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             d.clone()
                                         });
                                         let status: Arc<dyn Fn() -> MemberStatus + Send + Sync> = Arc::new(move || digest_now.lock().unwrap().status);
-                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, status, None).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
+                                        let own = Arc::new(crate::node_self::NodeSelf::new(node_id.clone(), incarnation.clone(), name.clone(), rpc_server.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, status, None, cfg.connections_delete_deadline).with_retire(hydrate_cancel.clone()).with_round_actions(round_actions.clone()).with_backbone(backbone.clone()));
                                         own.set_connections(connections.clone());
                                         own.set_session(Arc::new(AdminSession {
                                             gate: park_gate.clone(),

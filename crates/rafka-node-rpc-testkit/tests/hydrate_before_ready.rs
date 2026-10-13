@@ -60,6 +60,7 @@ async fn birth(status: MemberStatus) -> Birth {
         store_dir: dir.clone(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     admin.deployed(&launch, &key);
     Birth { admin, authority, launch, dir }

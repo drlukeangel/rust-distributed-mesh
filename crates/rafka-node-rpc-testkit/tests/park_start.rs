@@ -56,6 +56,7 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let running = node::start(&launch, |b, _| b).await.expect("the node comes up");

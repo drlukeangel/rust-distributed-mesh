@@ -134,6 +134,7 @@ fn run_workflow(transfer: Result<SeatTransferOutcome, String>, workflow: Option<
             data_root: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
             store_dir: std::env::temp_dir().join(format!("seat-transfer-step-{}", NodeId::mint())),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let handle = DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("dep-{HOLDER}"))).unwrap(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };

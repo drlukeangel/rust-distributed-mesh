@@ -186,6 +186,7 @@ async fn a_step_whose_receipt_is_refused_fails_by_name_and_the_run_stops() {
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &Answers, sink: &Discard, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
@@ -375,6 +376,7 @@ async fn standalone_through(builds: &dyn BuildStateAdapter, build_id: &BuildId, 
         data_root: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3051-refusal-{}", NodeId::mint())),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer, sink: &Discard, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };

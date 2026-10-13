@@ -43,6 +43,7 @@ async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) 
         store_dir: dir.to_path_buf(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     admin.deployed(&launch, &key);
     let running = node::start(&launch, |b, _| b).await.expect("the node comes up");

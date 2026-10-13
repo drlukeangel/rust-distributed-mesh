@@ -272,6 +272,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
             data_root: data_root.to_path_buf(),
             store_dir: data_root.to_path_buf(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         },
         joins,
     }

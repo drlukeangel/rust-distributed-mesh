@@ -49,6 +49,7 @@ async fn born(role: Role, name: &str) -> RoleProcess {
         store_dir: dir.path().to_path_buf(),
         mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     launcher.deployed(&launch, &key);
     let oracles = rafka_node_base::Oracles::open(&launch).unwrap();

@@ -892,6 +892,7 @@ mod writer {
             data_root: data_root.clone(),
             store_dir: data_root.join("store"),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());
         // The Build the create runs for: a run over a Build its node holds no fact of is refused at its start.
@@ -1033,6 +1034,7 @@ mod writer {
             data_root: data_root.clone(),
             store_dir: data_root.join("store"),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
@@ -1189,6 +1191,7 @@ mod writer {
             data_root: data_root.to_path_buf(),
             store_dir: data_root.join("store"),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };

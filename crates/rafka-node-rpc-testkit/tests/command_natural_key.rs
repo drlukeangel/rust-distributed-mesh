@@ -44,11 +44,20 @@ struct Birth {
 
 impl Birth {
     async fn up(cell: &str) -> Self {
-        Self::up_hydrating(cell, None).await
+        Self::launched(cell, None, rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
     }
 
     /// [`Self::up`], its `hydrate_before_ready` hook `hydrator` when one is given.
     async fn up_hydrating(cell: &str, hydrator: Option<std::sync::Arc<TestHydrator>>) -> Self {
+        Self::launched(cell, hydrator, rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
+    }
+
+    /// [`Self::up`], launched with `deadline` as its `node.connections.delete { All }` bound.
+    async fn up_bounded(cell: &str, deadline: Duration) -> Self {
+        Self::launched(cell, None, deadline).await
+    }
+
+    async fn launched(cell: &str, hydrator: Option<std::sync::Arc<TestHydrator>>, deadline: Duration) -> Self {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
@@ -70,6 +79,7 @@ impl Birth {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
+            connections_delete_deadline: deadline,
         };
         admin.deployed(&launch, &key);
         let pull = PullServer::new(vec![]);
@@ -423,27 +433,40 @@ fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_c
     })
 }
 
-/// CONTRACT: `node.connections.delete { All }` lets the eligible in-flight work finish under
-/// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` (node-connections-delete.md step 5): a call that never
-/// finishes ends the closure at the bound with `Deadline` naming the count it last observed, never
-/// zero, and the process keeps running. What must NOT happen: `Established` while the call is held,
-/// or a closure that never ends while the call is held.
+/// CONTRACT: `node.connections.delete { All }` lets the eligible in-flight work finish under the
+/// birth's bound (node-connections-delete.md step 5), the one its launch carries
+/// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, read once where the process reads its launch): a call
+/// that never finishes ends the closure at that bound with `Deadline` naming the count it last
+/// observed, never zero, and the process keeps running. The birth is launched with a 500 ms bound
+/// and the process environment names none. What must NOT happen: `Established` while the call is
+/// held, a closure that never ends while the call is held, or a closure that runs to any bound but
+/// the launch's (the 5000 ms default an unset environment means).
 #[test]
 fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receipt() {
     let cell = "an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receipt";
     let cap = crate::common::capture(cell);
+    let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        // Its own process, started with the bound: every other cell of this binary runs under the default.
-        if crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_CONNECTIONS_DELETE_DEADLINE_MS", Some(std::ffi::OsStr::new("500")))]) {
-            return;
-        }
-        let birth = std::sync::Arc::new(Birth::up("connections-delete-bound").await);
+        assert!(std::env::var_os("RDM_CONNECTIONS_DELETE_DEADLINE_MS").is_none(), "this binary's process environment names no connections-delete bound");
+        let bound = Duration::from_millis(500);
+        let birth = std::sync::Arc::new(Birth::up_bounded("connections-delete-bound", bound).await);
         let held = birth.hold_one_call().await;
         let all = StatusRequest::DeleteConnections { node_id: birth.launch.node_id.clone(), incarnation: birth.launch.incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+        let began = std::time::Instant::now();
         let reply = tokio::time::timeout(Duration::from_secs(10), birth.call(&all)).await.expect("the closure ends at its bound while the held call is in flight");
+        let took = began.elapsed();
+        assert!(
+            took >= bound && took < Duration::from_secs(2),
+            "the closure ends at the launch's 500 ms bound, never at the 5000 ms an unset environment means: it took {took:?}"
+        );
         assert!(
             matches!(&reply, StatusReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Deadline { last_in_flight: 1, .. }), .. }),
             "the Deadline receipt names the one call it last observed in flight, never zero: {reply:?}"
+        );
+        let decided = spans_named(&spans, "rdm.node_admin.node.connections.delete.via-delete-connections");
+        assert!(
+            decided.iter().any(|f| f.get("deadline_ms").map(String::as_str) == Some("500") && f.get("receipt").map(String::as_str) == Some("deadline")),
+            "the birth's node.connections.delete span names the bound it ran under and the Deadline receipt: {decided:?}"
         );
         birth.pull.release();
         held.await.unwrap();

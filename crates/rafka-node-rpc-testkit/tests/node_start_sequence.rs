@@ -92,6 +92,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path, listeners: Vec<(
         store_dir: dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 
