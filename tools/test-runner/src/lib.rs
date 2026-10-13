@@ -30,7 +30,7 @@ use tokio::sync::Notify;
 
 const DEFAULT_TREE: &str = "/home/admin/rust-distributed-mesh";
 const REGISTRY: &str = "tools/mesh-audit/i143-acceptance-jobs.json";
-const OTLP: &str = "http://192.168.68.99:5317";
+const OTLP: &str = "http://192.168.68.99:5318";
 const JAEGER_UI: &str = "http://192.168.68.99:16687";
 const TAIL_BYTES: u64 = 24 * 1024;
 
