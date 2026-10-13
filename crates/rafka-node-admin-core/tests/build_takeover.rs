@@ -267,7 +267,7 @@ async fn a_successor_admin_completes_the_same_build_after_the_executor_dies_mid_
     // Silence is not proof: A is unreachable, its departure is not proven, and the attempt it holds
     // is not claimed for another admin.
     match b_env.run(&b_drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("departure is not proven"), "{why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("departure is not proven") && why.contains("mesh1.admin.1 is gone: nothing answers at its address"), "the stall names the unproven departure and why the call to A ended: {why}"),
         other => panic!("an unreachable executor without proof stalls the drive: {other:?}"),
     }
     assert_eq!(b.builds.read_build(&build_id).await.unwrap().attempt, 1, "no attempt was claimed on silence");
