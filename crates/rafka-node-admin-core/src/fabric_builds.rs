@@ -495,9 +495,10 @@ impl FabricBuildStateAdapter {
         self.authority.decisions()
     }
 
-    /// The fabric-primary seat record moved off this birth, or this holder leaves: hand every active
-    /// committed fact to the neighbours before the new holder acts. `to` is the admin the record
-    /// names now (none for a leaving holder). Returns how many facts were handed on. Nothing is
+    /// The fabric-primary seat record moved off this birth: hand every active committed fact to the
+    /// neighbours before the new holder acts. `to` is the admin the record names now, by the name
+    /// this admin's view holds for it (none while its view holds no name for that birth). A leave
+    /// hands nothing on (R-SB1). Returns how many facts were handed on. Nothing is
     /// fenced here: the record is the fence. A send that fails is named (`via-broadcast-refused`,
     /// fact `hand-over`) and fails nothing: the new holder's catch-up and `FetchBuildFacts` carry the
     /// facts.
