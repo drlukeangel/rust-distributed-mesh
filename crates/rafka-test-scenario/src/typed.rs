@@ -549,22 +549,14 @@ impl Estate {
     }
 
     /// `build.create` of `change` (a change of the accepted Build the carrier carries without a
-    /// [`BuildSpec`]: a replace, a mesh removal), accepted: the stream of the Build that runs it. A Build
-    /// still reconciling is awaited on its own stream first, and `change` is submitted after it, for up to
-    /// two minutes.
+    /// [`BuildSpec`]: a replace, a mesh removal), accepted: the stream of the Build that runs it. A cell
+    /// that does not test a refusal never has a submit refused: the Build it started itself is followed to
+    /// its terminal frame (`Estate::follow`) before the next change is submitted, so a refusal here, a
+    /// Build in progress included, is a defect of the cell and panics naming the change and the refusal.
     pub async fn submit_change(&self, change: Change) -> BuildStream {
-        let carrier = self.carrier().await;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-        loop {
-            match carrier.create(change.clone()).await {
-                Ok(stream) => return stream,
-                Err(CallEnd::BuildInProgress { current }) => {
-                    assert!(tokio::time::Instant::now() < deadline, "{change:?}: Build {current} was still reconciling after 120 s");
-                    let mut running = carrier.resubmit(&current, 1).await.unwrap_or_else(|e| panic!("the fabric-primary does not stream the Build {current} it is reconciling: {e}"));
-                    Self::until_complete(&mut running).await;
-                }
-                Err(e) => panic!("the fabric-primary refused {change:?}: {e}"),
-            }
+        match self.carrier().await.create(change.clone()).await {
+            Ok(stream) => stream,
+            Err(e) => panic!("the fabric-primary refused {change:?}: {e}"),
         }
     }
 

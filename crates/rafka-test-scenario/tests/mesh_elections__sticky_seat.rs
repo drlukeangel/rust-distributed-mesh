@@ -401,7 +401,10 @@ async fn a_claim_in_flight_commits_before_the_old_holders_seat_row_and_none_is_d
     let n_name = if p.ends_with(".1") { format!("{mesh}.admin.2") } else { format!("{mesh}.admin.1") };
     estate.enter(&Estate::path(&n_name)).await;
     let grow = FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 3)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 5)])] };
+    // The Build this cell started first is the grow: it is followed to its terminal frame before the replace
+    // is submitted, because the fabric-primary accepts one change of the accepted Build at a time.
     let growing = estate.submit(&BuildSpec::Fabric(grow)).await;
+    estate.follow(growing).await;
     let replace = estate.submit_change(Change::Replace { node: Estate::path(&p), incarnation: None }).await;
     let replace_id = replace.build_id().to_string();
     let all: BTreeSet<String> = names().into_iter().chain(["mesh2.rpc.4".to_string(), "mesh2.rpc.5".to_string()]).collect();
@@ -412,7 +415,7 @@ async fn a_claim_in_flight_commits_before_the_old_holders_seat_row_and_none_is_d
         let replaced = ns.iter().any(|x| x["name"] == p.as_str() && x["incarnation_id"] != p_birth && x["status"] == "ready-for-traffic");
         (replaced && all.iter().all(|n| ns.iter().any(|x| x["name"] == n.as_str() && x["status"] == "ready-for-traffic")) && ns.iter().filter(|x| x["is_fabric_primary"] == true).count() == 1).then_some(())
     });
-    tokio::join!(estate.follow(growing), estate.follow(replace), settled);
+    tokio::join!(estate.follow(replace), settled);
     estate.stop().await;
     let spans = estate.spans();
     // C1 step 5: P's ONE row is the commit, written under its Build-log decision lock
