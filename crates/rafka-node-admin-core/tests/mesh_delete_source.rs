@@ -1,22 +1,22 @@
 //! The mesh delete command pair's refusals when what the receiver must read to decide a call fails
 //! (node-rpc-envelope.md, "Mesh delete command pair"; CLAUDE.md error rule: "Name what failed and
 //! where ... 'Never written' and 'could not be read' are different errors"). The leaving
-//! mesh-primary resolves the owner a `LeaveMesh` hands back to (`mesh_leave::leave_owner`, which its
-//! door `admin::leave::admit_leave` answers from); the fabric-primary adopts the final primary's
-//! runtime and reads its manifest before it accepts a `MeshLeave` (`mesh_leave::adopt_final_runtime`
-//! and `mesh_leave::handoff_verdict_from_read`, which its door `validate_handoff` answers from). A
+//! mesh-primary resolves the owner a `DeleteMesh` hands back to (`mesh_delete::leave_owner`, which its
+//! door `admin::mesh_delete::admit_delete_mesh` answers from); the fabric-primary adopts the final primary's
+//! runtime and reads its manifest before it accepts a `MeshDeleted` (`mesh_delete::adopt_final_runtime`
+//! and `mesh_delete::handoff_verdict_from_read`, which its door `validate_handoff` answers from). A
 //! read that fails is `RejectedSourceFailed` naming what failed, the operation and the cause, under
 //! the reject span `rdm.node_admin.mesh.reject.via-source-failed`; it is never this admin's own
 //! `NotReady`, which is the readiness door's answer (node-rpc-envelope.md, "Node RPC readiness
 //! gate").
 // @feature: node-lifecycle
 
-use crate::mesh_leave_resume::{capture, trace_id};
+use crate::mesh_delete_resume::{capture, trace_id};
 use rafka_mesh_entity::{BuildId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_admin_core::build_facts_read::FetchFailure;
 use rafka_node_admin_core::deployment::pipeline::RuntimeProof;
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::mesh_leave::{adopt_final_runtime, handoff_verdict_from_read, leave_owner, manifest_reference, operation, Admitted, LeaveKey, LeaveOwner, RosterBirth};
+use rafka_node_admin_core::mesh_delete::{adopt_final_runtime, handoff_verdict_from_read, leave_owner, manifest_reference, operation, Admitted, MeshDeleteKey, MeshDeleteOwner, RosterBirth};
 use rafka_node_rpc::NodeTarget;
 use rafka_node_admin_core::model::ProviderKind;
 use rafka_node_rpc_contract::status::StatusReply;
@@ -25,8 +25,8 @@ use serde_json::Value;
 const SOURCE_FAILED: &str = "rdm.node_admin.mesh.reject.via-source-failed";
 const DOMAIN: &str = "mesh-delete-source";
 
-fn key(mesh_id: &MeshId) -> LeaveKey {
-    LeaveKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse("pdz453kf4br6").unwrap(), attempt: 1, operation: operation(mesh_id) }
+fn key(mesh_id: &MeshId) -> MeshDeleteKey {
+    MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse("pdz453kf4br6").unwrap(), attempt: 1, operation: operation(mesh_id) }
 }
 
 /// The cell's spans, written to `target/cells/mesh_delete_source/<cell>/spans.json`; its trace id and
@@ -58,8 +58,8 @@ fn source_failed<T: std::fmt::Debug>(r: &Result<T, StatusReply>) -> (String, Str
     }
 }
 
-/// CONTRACT (mesh-leave.md step 4: the fabric-primary validates the manifest it reads from the final
-/// primary; node-rpc-envelope.md, "Mesh delete command pair"): a `MeshLeave` whose manifest cannot be
+/// CONTRACT (mesh-delete.md step 4: the fabric-primary validates the manifest it reads from the final
+/// primary; node-rpc-envelope.md, "Mesh delete command pair"): a `MeshDeleted` whose manifest cannot be
 /// read from the final primary (its Build facts unreached, or its door not ready) is refused
 /// `RejectedSourceFailed` naming the final primary's Build log, the fetch of the Build with the
 /// manifest reference, and the read's own failure; the leave stays open (no verdict, so nothing
@@ -67,7 +67,7 @@ fn source_failed<T: std::fmt::Debug>(r: &Result<T, StatusReply>) -> (String, Str
 /// or the read answered as an incomplete manifest (that is the final primary holding no fact of the
 /// Build, never written there).
 #[test]
-fn a_mesh_leave_whose_manifest_cannot_be_read_is_refused_by_name_and_the_leave_stays_open() {
+fn a_mesh_deleted_report_whose_manifest_cannot_be_read_is_refused_by_name_and_the_leave_stays_open() {
     let mesh_id = MeshId::mint();
     let k = key(&mesh_id);
     let fp = RosterBirth { node: "mesh2.admin.1".into(), node_id: NodeId::mint().to_string(), incarnation_id: "i1".into() };
@@ -92,33 +92,33 @@ fn a_mesh_leave_whose_manifest_cannot_be_read_is_refused_by_name_and_the_leave_s
     let named = refusals(&spans, &trace_id);
     for r in [&unreached, &not_ready] {
         let (source, op, cause) = source_failed(r);
-        assert!(named.contains(&("mesh-leave".to_string(), source, op, cause)), "each read failure is its reject span naming the call and the three fields: {named:?}");
+        assert!(named.contains(&("mesh-deleted".to_string(), source, op, cause)), "each read failure is its reject span naming the call and the three fields: {named:?}");
     }
 }
 
-/// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair": LeaveMesh is the fabric-primary's
+/// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair": DeleteMesh is the fabric-primary's
 /// command and its handoff goes back to the workflow's owner; node-start.md step 2: a node "joins
 /// back over the endpoint and path of the call that commanded it; it holds no record of the
 /// commander", the way the leaving mesh-primary hands back too): the leaving mesh-primary hands the
 /// leave back over the call that sent it, the caller's endpoint at the call's path, whatever its
 /// view holds of the caller; with no call to reach back over, to the fabric-primary its view names.
-/// With neither, the `LeaveMesh` is refused `RejectedSourceFailed` naming its view, the resolution
+/// With neither, the `DeleteMesh` is refused `RejectedSourceFailed` naming its view, the resolution
 /// of the owner and why, under its reject span. What must NOT happen: the handoff aimed at a birth
 /// the view names when the call's endpoint is there, `NotReady`, or a leave admitted with nobody to
 /// hand it back to.
 #[test]
-fn a_leave_mesh_hands_back_over_its_call_else_to_the_fabric_primary_else_is_refused_by_name() {
+fn a_delete_mesh_hands_back_over_its_call_else_to_the_fabric_primary_else_is_refused_by_name() {
     let mesh_id = MeshId::mint();
     let k = key(&mesh_id);
-    let caller = LeaveOwner { target: NodeTarget::Endpoint { endpoint_id: iroh::SecretKey::generate().public(), addr: "127.0.0.1:4100".parse().unwrap() }, name: "the admin at its call's endpoint".into() };
+    let caller = MeshDeleteOwner { target: NodeTarget::Endpoint { endpoint_id: iroh::SecretKey::generate().public(), addr: "127.0.0.1:4100".parse().unwrap() }, name: "the admin at its call's endpoint".into() };
     let fp_id = NodeId::mint();
-    let fp = LeaveOwner { target: NodeTarget::ExactNode(fp_id), name: "mesh1.admin.1".into() };
+    let fp = MeshDeleteOwner { target: NodeTarget::ExactNode(fp_id), name: "mesh1.admin.1".into() };
     let cap = capture();
     let (none, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.mesh.reject.via-no-owner", mesh_id = %mesh_id);
         let trace_id = trace_id(&root);
         let _in_root = root.enter();
-        assert_eq!(leave_owner(Some(caller.clone()), Some(fp.clone()), "mesh2.admin.1", &k), Ok(caller.clone()), "the handoff goes back over the call that sent leave-mesh");
+        assert_eq!(leave_owner(Some(caller.clone()), Some(fp.clone()), "mesh2.admin.1", &k), Ok(caller.clone()), "the handoff goes back over the call that sent delete-mesh");
         assert_eq!(leave_owner(None, Some(fp.clone()), "mesh2.admin.1", &k), Ok(fp.clone()), "else to the fabric-primary the view names");
         (leave_owner(None, None, "mesh2.admin.1", &k), trace_id)
     });
@@ -126,7 +126,7 @@ fn a_leave_mesh_hands_back_over_its_call_else_to_the_fabric_primary_else_is_refu
     keep("no_owner", &trace_id, &spans);
     let (source, op, cause) = source_failed(&none);
     assert!(source == "the view of mesh2.admin.1" && op.contains("owner") && op.contains(&mesh_id.to_string()) && cause.contains("no call") && cause.contains("no fabric-primary"), "{source} | {op} | {cause}");
-    assert_eq!(refusals(&spans, &trace_id), vec![("leave-mesh".to_string(), source, op, cause)], "one reject span, naming the call and the three fields");
+    assert_eq!(refusals(&spans, &trace_id), vec![("delete-mesh".to_string(), source, op, cause)], "one reject span, naming the call and the three fields");
 }
 
 /// A process provider whose control domain is [`DOMAIN`]: it adopts only what its domain controls.
@@ -157,13 +157,13 @@ impl DeploymentProvider for Host {
     }
 }
 
-/// CONTRACT (mesh-leave.md step 5: the owner stops the final primary through its provider proof
-/// path): a `MeshLeave` naming a final runtime this admin's provider cannot adopt (another control
+/// CONTRACT (mesh-delete.md step 5: the owner stops the final primary through its provider proof
+/// path): a `MeshDeleted` naming a final runtime this admin's provider cannot adopt (another control
 /// domain) is refused `RejectedSourceFailed` naming the provider, the adoption of the runtime and the
 /// provider's refusal, under its reject span; a runtime in the provider's domain is adopted. What must
 /// NOT happen: `NotReady`.
 #[test]
-fn a_mesh_leave_naming_a_runtime_the_provider_cannot_adopt_is_refused_by_name() {
+fn a_mesh_deleted_report_naming_a_runtime_the_provider_cannot_adopt_is_refused_by_name() {
     let mesh_id = MeshId::mint();
     let k = key(&mesh_id);
     let fact = |domain: &str| RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60("dep-final"), provider: RuntimeProvider::Process, control_domain: domain.into(), locator: RuntimeLocator::Process { pid: 4242, start: 7 } };
@@ -179,5 +179,5 @@ fn a_mesh_leave_naming_a_runtime_the_provider_cannot_adopt_is_refused_by_name() 
     keep("provider_refused", &trace_id, &spans);
     let (source, op, cause) = source_failed(&foreign);
     assert!(source.contains("provider of mesh1.admin.1") && op.contains("adopt") && op.contains(&rafka_mesh_entity::fixture_crockford60("dep-final")) && cause.contains("control domain"), "{source} | {op} | {cause}");
-    assert_eq!(refusals(&spans, &trace_id), vec![("mesh-leave".to_string(), source, op, cause)], "one reject span, naming the call and the three fields");
+    assert_eq!(refusals(&spans, &trace_id), vec![("mesh-deleted".to_string(), source, op, cause)], "one reject span, naming the call and the three fields");
 }

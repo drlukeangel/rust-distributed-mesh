@@ -537,10 +537,10 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
 /// holds mesh1.rpc.1 ready-for-traffic while its row says Draining.
 #[test]
 fn a_seat_taken_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let (rows, view_status, succ, fresh, old_pred, deleted_pred, trace_id) = cap.run(async {
         let root_span = tracing::info_span!("rdm.test.node.create.via-shared-root-rebuild");
-        let trace_id = crate::mesh_leave_resume::trace_id(&root_span);
+        let trace_id = crate::mesh_delete_resume::trace_id(&root_span);
         tracing::Instrument::instrument(rebuild_over_one_root(trace_id), root_span).await
     });
     println!("trace_id={trace_id}");

@@ -38,7 +38,7 @@ mod ids_crockford;
 mod backbone_anti_entropy;
 mod boot_stop;
 mod loopback;
-mod mesh_leave_resume;
+mod mesh_delete_resume;
 mod mesh_delete_round;
 mod mesh_delete_source;
 mod mesh_delete_view;

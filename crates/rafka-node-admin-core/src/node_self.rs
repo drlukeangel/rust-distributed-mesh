@@ -784,7 +784,7 @@ impl NodeSelf {
         if let Some(declare) = &self.declare {
             declare(NodeState::Leaving).await;
         }
-        // 4. R-NS1 item 2 (gossip.md mesh-leave section): a node-admin that still publishes its
+        // 4. R-NS1 item 2 (gossip.md mesh-deleted section): a node-admin that still publishes its
         // mesh's aggregate (the last admin of a deleted mesh, still its primary) publishes it once
         // more before the cut, itself Leaving: "Its last aggregate before a stop carries itself
         // Leaving." It follows the hold, so no gated turn publishes after it; after the cut it

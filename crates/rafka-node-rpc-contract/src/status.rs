@@ -196,10 +196,10 @@ pub enum StatusRequest {
         /// The operation: `stop-node:<path>`.
         operation: String,
     },
-    /// Downward: the fabric-primary tells the leaving mesh's primary to run the mesh-leave
-    /// workflow (`leave-mesh`; mesh-leave.md). `Applied` / `AlreadyApplied` admit the command; the
+    /// Downward: the fabric-primary tells the leaving mesh's primary to run the mesh-deleted
+    /// workflow (`delete-mesh`; mesh-delete.md). `Applied` / `AlreadyApplied` admit the command; the
     /// departure is complete only when the fabric-primary records `MeshLeft`.
-    LeaveMesh {
+    DeleteMesh {
         /// The mesh that leaves.
         mesh_id: MeshId,
         /// The Build the operation belongs to.
@@ -210,10 +210,10 @@ pub enum StatusRequest {
         operation: String,
     },
     /// Upward: the still-running mesh-primary hands the fabric-primary the proof that every other
-    /// member exited and its own exact runtime (`mesh-leave`). The manifest is a reference to
+    /// member exited and its own exact runtime (`mesh-deleted`). The manifest is a reference to
     /// immutable receipts in the accepted Build's records; the fabric-primary reads and validates
     /// them before it accepts. The primary keeps running: the outside owner stops it next.
-    MeshLeave {
+    MeshDeleted {
         /// The mesh that leaves.
         mesh_id: MeshId,
         /// The Build the operation belongs to.
@@ -634,7 +634,7 @@ pub fn create_tags_refusal(labels: &BTreeSet<String>) -> Option<String> {
     tags_refusal(labels)
 }
 
-/// The longest `receipt_manifest` reference a `MeshLeave` carries.
+/// The longest `receipt_manifest` reference a `MeshDeleted` carries.
 pub const MAX_RECEIPT_MANIFEST_BYTES: usize = 128;
 
 /// The most bytes postcard spends on one varint length prefix of a config key or value: one string
@@ -665,8 +665,8 @@ impl StatusRequest {
             Self::NodeDrained { .. } => "node-drained",
             Self::StopNode { .. } => "stop-node",
             Self::NodeLeft { .. } => "node-left",
-            Self::LeaveMesh { .. } => "leave-mesh",
-            Self::MeshLeave { .. } => "mesh-leave",
+            Self::DeleteMesh { .. } => "delete-mesh",
+            Self::MeshDeleted { .. } => "mesh-deleted",
             Self::CommitState { .. } => "commit-state",
             Self::StateCommitted { .. } => "state-committed",
             Self::OpenTraffic { .. } => "open-traffic",
@@ -749,7 +749,7 @@ impl ConnectionsReceipt {
     }
 }
 
-/// The round of one mesh.delete, as a `LeaveMesh` or `MeshLeave` names it: its workflow identity
+/// The round of one mesh.delete, as a `DeleteMesh` or `MeshDeleted` names it: its workflow identity
 /// `(mesh_id, build_id, attempt, operation)` (node-rpc-envelope.md, "Mesh delete command pair") less
 /// the mesh id, which the call itself names. A round refusal carries the round the receiver holds and
 /// the one offered, so the mismatch is named whole.
@@ -1037,7 +1037,7 @@ pub enum StatusReply {
         /// The Status reply bound, in bytes.
         max: u64,
     },
-    /// A `LeaveMesh` or `MeshLeave` names an earlier attempt of the round the receiver holds for the
+    /// A `DeleteMesh` or `MeshDeleted` names an earlier attempt of the round the receiver holds for the
     /// mesh: same Build and operation, a lower attempt (node-rpc-envelope.md, "Mesh delete command
     /// pair": "A stale/conflicting round ... is refused by name"). Nothing is admitted or accepted.
     RejectedStaleRound {
@@ -1046,8 +1046,8 @@ pub enum StatusReply {
         /// The round the call names.
         offered: MeshDeleteRound,
     },
-    /// A `LeaveMesh` or `MeshLeave` names a round of the mesh the receiver does not hold and that is
-    /// no earlier attempt of the one it holds: another Build or operation, or (for `MeshLeave`) an
+    /// A `DeleteMesh` or `MeshDeleted` names a round of the mesh the receiver does not hold and that is
+    /// no earlier attempt of the one it holds: another Build or operation, or (for `MeshDeleted`) an
     /// attempt the receiver never opened. Nothing is admitted or accepted.
     RejectedConflictingRound {
         /// The round the receiver holds for the mesh.
@@ -1055,7 +1055,7 @@ pub enum StatusReply {
         /// The round the call names.
         offered: MeshDeleteRound,
     },
-    /// A `MeshLeave` whose manifest is incomplete: the leaving mesh-primary recorded no exit manifest
+    /// A `MeshDeleted` whose manifest is incomplete: the leaving mesh-primary recorded no exit manifest
     /// for the round, so the member workflows are incomplete and the open leave ends
     /// (node-rpc-envelope.md, "Mesh delete command pair": "A ... incomplete manifest is refused by
     /// name with a typed Status refusal naming the mismatch").
@@ -1562,8 +1562,8 @@ mod tests {
             StatusRequest::NodeDrained { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
             StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
             StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
-            StatusRequest::LeaveMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "shutdown-mesh:m".into() },
-            StatusRequest::MeshLeave {
+            StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "shutdown-mesh:m".into() },
+            StatusRequest::MeshDeleted {
                 mesh_id: MeshId::mint(),
                 build_id: "66h8qrqvaajk".into(),
                 attempt: 1,

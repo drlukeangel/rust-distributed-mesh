@@ -135,7 +135,7 @@ impl LifecycleEvents for Events {
         self.published.lock().unwrap().push(("mesh-leaving", String::new()));
     }
     async fn mesh_leave(&self, _: &MeshLeaveEvent) {
-        self.published.lock().unwrap().push(("mesh-leave", String::new()));
+        self.published.lock().unwrap().push(("mesh-deleted", String::new()));
     }
     async fn mesh_left(&self, _: &MeshLeaveEvent) {
         self.published.lock().unwrap().push(("mesh-left", String::new()));

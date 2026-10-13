@@ -100,7 +100,7 @@ fn run_with(workflow: NodeCommand) -> (Result<(), rafka_node_admin_core::deploym
 /// Run `workflow` on the holder (a drain or a stop; `None` is a replace of it): the result, the
 /// commands sent, the step receipts, the trace id and the path.names the view saw given up.
 fn run_workflow(workflow: Option<NodeCommand>) -> (Result<(), rafka_node_admin_core::deployment::pipeline::PipelineError>, Vec<NodeCommand>, Vec<(String, StepOutcome)>, String, Vec<PathName>) {
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let observer = Executor { sent: Mutex::new(Vec::new()) };
     let view = NoView::default();
     let (r, steps, trace_id) = cap.run(async {
@@ -126,7 +126,7 @@ fn run_workflow(workflow: Option<NodeCommand>) -> (Result<(), rafka_node_admin_c
         let pipeline = DeploymentPipeline { provider: &Running, joins: &joins, observer: &observer, sink: &view, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let handle = DeploymentHandle { deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("dep-{HOLDER}"))).unwrap(), provider: ProviderKind::Process, pid: Some(42_001), start: Some(1), container: None, domain: Some(DOMAIN.into()) };
         let root = tracing::info_span!("cell.seat-transfer-step", build_id = %build_id, node = HOLDER);
-        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let r = {
             use tracing::Instrument;
             let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node: holder(), handle, exit: None };

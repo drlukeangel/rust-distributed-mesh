@@ -182,7 +182,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         republish: Arc::new(OnceLock::new()),
         commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
         own: Arc::new(OnceLock::new()),
-        leaver: Arc::new(OnceLock::new()),
+        mesh_deleter: Arc::new(OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         rounds: Default::default(),

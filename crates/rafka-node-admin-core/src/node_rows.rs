@@ -436,7 +436,7 @@ impl NodeRows {
     }
 
     /// The `Deleted` row of a birth the executor holds no record of any more (a mesh leave's
-    /// member that departed the view after its exact Exited receipt, mesh-leave.md steps 3 and
+    /// member that departed the view after its exact Exited receipt, mesh-delete.md steps 3 and
     /// 7): the row at `name` for `node_id`, the config this writer holds for the node. A writer that
     /// holds no record of the node's row refuses by name and writes nothing: a `Deleted` row is never
     /// written with a config the writer does not know. One `via-node-row` span.

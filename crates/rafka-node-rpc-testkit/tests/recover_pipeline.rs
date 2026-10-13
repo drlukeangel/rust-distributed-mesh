@@ -68,7 +68,7 @@ impl LifecycleEvents for Recorder {
     async fn restarting(&self, op: &LifecycleOp) {
         self.0.lock().unwrap().push(format!("NodeRestarting:{}", op.node_id));
     }
-    // A recovery publishes no stop, drain, leaving or mesh-leave event; this cell records the removal
+    // A recovery publishes no stop, drain, leaving or mesh-deleted event; this cell records the removal
     // and restart events it asserts, and states the rest as not recorded.
     async fn stopped(&self, _op: &LifecycleOp) {}
     async fn stop_completed(&self, _op: &LifecycleOp) {}

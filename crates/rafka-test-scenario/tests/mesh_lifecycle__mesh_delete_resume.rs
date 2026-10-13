@@ -1,5 +1,5 @@
 //! i143.e12.s39 (#3066) process E2E: a mesh leave resumed after the leaving mesh's primary is lost
-//! mid-leave (R11; mesh-leave.md, "Resume after the primary's loss").
+//! mid-leave (R11; mesh-delete.md, "Resume after the primary's loss").
 //!
 //! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 owns `shutdown-mesh:<mesh2 id>`.
 //! mesh2's primary is held by its fault door in tier 1 (rpc.2's node.delete StopNode receipt) and
@@ -13,7 +13,7 @@
 //!
 //! This stem is form (a): a surviving admin of mesh2 the election seats. Form (b), no admin of mesh2
 //! survives and the fabric-primary creates the one node-admin the leaving mesh may gain, is
-//! `mesh_lifecycle__mesh_leave_no_survivor`, over the shared run and assertions here. Form (c) is
+//! `mesh_lifecycle__mesh_delete_no_survivor`, over the shared run and assertions here. Form (c) is
 //! form (a) with a member's delete cut right after its exit proof: the primary is killed holding
 //! rpc.1 at its NodeDeleted receipt, so the Build holds rpc.1's exact Exited (TerminateRuntime) and
 //! no NodeDeleted.
@@ -30,7 +30,7 @@ pub(crate) fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-lifecycle".into(),
-        subfeature: "mesh-leave-resume".into(),
+        subfeature: "mesh-deleted-resume".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
         test: test.into(),
@@ -100,7 +100,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let mut want: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh2.rpc.1", "mesh2.rpc.2"].iter().map(|n| n.to_string()).collect();
     want.extend((1..=mesh2_admins).map(|i| format!("mesh2.admin.{i}")));
     let before = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(60)).await);
-    // The rows mesh2's primary commits (its mesh row Leaving at leave-mesh) are durable only once the
+    // The rows mesh2's primary commits (its mesh row Leaving at delete-mesh) are durable only once the
     // fabric's state-commit published them (states.md, Rounds: "Before state-commit, RDM holds its
     // rows in the scratchpad"; R14 item 9): the fabric is ready-for-traffic before mesh2 goes, so the
     // admin seated after the primary's loss reads mesh2 deleting from its mesh's own rows.
@@ -285,7 +285,7 @@ pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
     let drift: Vec<&Value> = named(spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains("mesh2.") && sp["attributes"]["action"] != "none").collect();
     assert!(drift.is_empty(), "no drift attempt acts on a mesh2 birth while the leave resumes: {drift:?}");
     assert!(named(spans, "rdm.node_admin.mesh.reject.via-second-amendment").is_empty());
-    eprintln!("{test} trace {} build {b}", s(&applied[0]["trace_id"]), test = "mesh_leave_resume");
+    eprintln!("{test} trace {} build {b}", s(&applied[0]["trace_id"]), test = "mesh_delete_resume");
     applied[0].clone()
 }
 

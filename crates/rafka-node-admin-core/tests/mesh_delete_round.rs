@@ -1,17 +1,17 @@
 //! The round of a mesh.delete, as the two Status bodies of the mesh delete command pair name it
 //! (node-rpc-envelope.md, "Mesh delete command pair": "The workflow identity is (mesh_id, build_id,
 //! attempt, operation) ... A stale/conflicting round or incomplete manifest is refused by name with
-//! a typed Status refusal naming the mismatch"). The leaving mesh-primary decides a `LeaveMesh` on
-//! the round of the leave it holds (`mesh_leave::LeaveRuns::admit`, which its door
-//! `admin::leave::admit_leave` answers from); the fabric-primary decides a `MeshLeave` on the
-//! rounds it holds open (`mesh_leave::LeaveBook::admitted_for`, which its door `validate_handoff`
+//! a typed Status refusal naming the mismatch"). The leaving mesh-primary decides a `DeleteMesh` on
+//! the round of the leave it holds (`mesh_delete::MeshDeleteRuns::admit`, which its door
+//! `admin::mesh_delete::admit_delete_mesh` answers from); the fabric-primary decides a `MeshDeleted` on the
+//! rounds it holds open (`mesh_delete::MeshDeleteBook::admitted_for`, which its door `validate_handoff`
 //! answers from).
 // @feature: node-lifecycle
 
-use crate::mesh_leave_resume::{capture, trace_id};
+use crate::mesh_delete_resume::{capture, trace_id};
 use rafka_mesh_entity::{BuildId, MeshId, NodeId};
 use rafka_node_admin_core::deployment::pipeline::RuntimeProof;
-use rafka_node_admin_core::mesh_leave::{admit_leave_mesh, operation, run_admitted, Admitted, ExitManifest, LeaveAdmission, LeaveBook, LeaveKey, LeaveMeshAdmission, LeaveRunEnd, LeaveRuns, RosterBirth};
+use rafka_node_admin_core::mesh_delete::{admit_delete_mesh, operation, run_admitted, Admitted, ExitManifest, MeshDeleteAdmission, MeshDeleteBook, MeshDeleteKey, DeleteMeshAdmission, MeshDeleteRunEnd, MeshDeleteRuns, RosterBirth};
 use rafka_node_admin_core::status_rpc::Declared;
 use rafka_node_admin_core::status_storage::{MemoryStatusStorage, MeshStatusRow, StatusStorage};
 use rafka_node_rpc_contract::status::{MeshDeleteRound, MeshState, StatusReply};
@@ -21,16 +21,16 @@ const STALE: &str = "rdm.node_admin.mesh.reject.via-stale-round";
 const CONFLICTING: &str = "rdm.node_admin.mesh.reject.via-conflicting-round";
 
 /// An owner of a leave, named by a fresh node id.
-fn owner_named() -> rafka_node_admin_core::mesh_leave::LeaveOwner {
+fn owner_named() -> rafka_node_admin_core::mesh_delete::MeshDeleteOwner {
     let id = NodeId::mint();
-    rafka_node_admin_core::mesh_leave::LeaveOwner { name: id.to_string(), target: rafka_node_rpc::NodeTarget::ExactNode(id) }
+    rafka_node_admin_core::mesh_delete::MeshDeleteOwner { name: id.to_string(), target: rafka_node_rpc::NodeTarget::ExactNode(id) }
 }
 
-fn key(mesh_id: &MeshId, build_id: &str, attempt: u32) -> LeaveKey {
-    LeaveKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse(build_id).unwrap(), attempt, operation: operation(mesh_id) }
+fn key(mesh_id: &MeshId, build_id: &str, attempt: u32) -> MeshDeleteKey {
+    MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::parse(build_id).unwrap(), attempt, operation: operation(mesh_id) }
 }
 
-fn round(k: &LeaveKey) -> MeshDeleteRound {
+fn round(k: &MeshDeleteKey) -> MeshDeleteRound {
     MeshDeleteRound { build_id: k.build_id.to_string(), attempt: k.attempt, operation: k.operation.clone() }
 }
 
@@ -63,25 +63,25 @@ fn named_rounds(span: &Value) -> (String, String, String, String, String, String
 }
 
 /// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair"): the leaving mesh-primary holds the
-/// round of the `leave-mesh` it admitted last. A `leave-mesh` of an earlier attempt of that Build is
+/// round of the `delete-mesh` it admitted last. A `delete-mesh` of an earlier attempt of that Build is
 /// `RejectedStaleRound { held, offered }`; one of another Build is `RejectedConflictingRound { held,
 /// offered }`. Neither is admitted: the run keeps its round and its handoff goes to the sender of the
 /// round held. After the manifest is recorded the same holds: the round held resends its handoff and
 /// an earlier attempt is still stale. Each refusal is its reject span (`via-stale-round`,
 /// `via-conflicting-round`) naming the call, the round held and the round offered. What must NOT
-/// happen: a stale or conflicting `leave-mesh` admitted (`Running`, `Start`), or the handoff moved to
+/// happen: a stale or conflicting `delete-mesh` admitted (`Running`, `Start`), or the handoff moved to
 /// its sender.
 #[test]
-fn a_leave_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_the_run_keeps_its_round() {
+fn a_delete_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_the_run_keeps_its_round() {
     let cap = capture();
     let mesh_id = MeshId::mint();
     let (held, stale, other) = (key(&mesh_id, "ay59nvr5jw53", 2), key(&mesh_id, "ay59nvr5jw53", 1), key(&mesh_id, "k4eyvfmr6wmf", 1));
     let (owner, late) = (owner_named(), owner_named());
     let last = final_primary();
     let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };
-    let runs = LeaveRuns::default();
+    let runs = MeshDeleteRuns::default();
     let ((running, end, exited), trace_id) = cap.run(async {
-        let root = tracing::info_span!("rdm.test.mesh.reject.via-leave-mesh-round");
+        let root = tracing::info_span!("rdm.test.mesh.reject.via-delete-mesh-round");
         let trace_id = trace_id(&root);
         let out = tracing::Instrument::instrument(
             async {
@@ -103,49 +103,49 @@ fn a_leave_mesh_of_an_earlier_attempt_or_another_build_is_refused_by_name_and_th
     assert_eq!(
         running,
         vec![
-            LeaveAdmission::Start,
-            LeaveAdmission::Refused(StatusReply::RejectedStaleRound { held: round(&held), offered: round(&stale) }),
-            LeaveAdmission::Refused(StatusReply::RejectedConflictingRound { held: round(&held), offered: round(&other) }),
-            LeaveAdmission::Running,
+            MeshDeleteAdmission::Start,
+            MeshDeleteAdmission::Refused(StatusReply::RejectedStaleRound { held: round(&held), offered: round(&stale) }),
+            MeshDeleteAdmission::Refused(StatusReply::RejectedConflictingRound { held: round(&held), offered: round(&other) }),
+            MeshDeleteAdmission::Running,
         ],
         "while the members run, an earlier attempt is stale and another Build conflicts; the round held is the same leave"
     );
-    assert_eq!(end, LeaveRunEnd::Exited { key: held.clone(), owner: owner.clone(), manifest: manifest.clone() }, "the run ends under the round held, its handoff to that round's sender");
-    assert_eq!(exited, vec![LeaveAdmission::Refused(StatusReply::RejectedStaleRound { held: round(&held), offered: round(&stale) }), LeaveAdmission::Resend(manifest)], "after the manifest, an earlier attempt is still stale and the round held resends");
+    assert_eq!(end, MeshDeleteRunEnd::Exited { key: held.clone(), owner: owner.clone(), manifest: manifest.clone() }, "the run ends under the round held, its handoff to that round's sender");
+    assert_eq!(exited, vec![MeshDeleteAdmission::Refused(StatusReply::RejectedStaleRound { held: round(&held), offered: round(&stale) }), MeshDeleteAdmission::Resend { manifest, recorded: held.attempt }], "after the manifest, an earlier attempt is still stale and the round held resends");
     let spans = cap.spans();
-    keep("leave_mesh_round", &trace_id, &spans);
+    keep("delete_mesh_round", &trace_id, &spans);
     let stale_spans = refusals(&spans, &trace_id, STALE);
     let conflicting_spans = refusals(&spans, &trace_id, CONFLICTING);
-    let named = |k: &LeaveKey| (k.build_id.to_string(), k.attempt.to_string(), k.operation.clone());
-    let expect = |offered: &LeaveKey| {
+    let named = |k: &MeshDeleteKey| (k.build_id.to_string(), k.attempt.to_string(), k.operation.clone());
+    let expect = |offered: &MeshDeleteKey| {
         let (h, o) = (named(&held), named(offered));
-        ("leave-mesh".to_string(), h.0, h.1, h.2, o.0, o.1, o.2)
+        ("delete-mesh".to_string(), h.0, h.1, h.2, o.0, o.1, o.2)
     };
     assert_eq!(stale_spans.iter().map(named_rounds).collect::<Vec<_>>(), vec![expect(&stale), expect(&stale)], "{stale_spans:?}");
     assert_eq!(conflicting_spans.iter().map(named_rounds).collect::<Vec<_>>(), vec![expect(&other)], "{conflicting_spans:?}");
 }
 
-/// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair": the fabric-primary "answers MeshLeave
+/// CONTRACT (node-rpc-envelope.md, "Mesh delete command pair": the fabric-primary "answers MeshDeleted
 /// Applied or AlreadyApplied after handoff validation"; "A stale/conflicting round ... is refused by
-/// name"): the fabric-primary holds attempt 2 of the leave open. A `mesh-leave` naming attempt 1 is
+/// name"): the fabric-primary holds attempt 2 of the leave open. A `mesh-deleted` naming attempt 1 is
 /// `RejectedStaleRound { held, offered }`; one naming attempt 3, which the owner never opened, or
 /// another Build, is `RejectedConflictingRound { held, offered }`; the round held is admitted. A
-/// refused round ends nothing: the open leave still waits for its handoff. A `mesh-leave` for a mesh
+/// refused round ends nothing: the open leave still waits for its handoff. A `mesh-deleted` for a mesh
 /// with no open leave names no open command (`RejectedUnmatchedCompletion { field: "command" }`).
 /// Each round refusal is its reject span naming the call, the round held and the round offered. What
 /// must NOT happen: a round other than the one held admitted, or the open leave ended by it.
 #[test]
-fn a_mesh_leave_naming_a_round_the_fabric_primary_does_not_hold_is_refused_by_name() {
+fn a_mesh_deleted_report_naming_a_round_the_fabric_primary_does_not_hold_is_refused_by_name() {
     let cap = capture();
     let mesh_id = MeshId::mint();
     let (held, stale, unopened, other) = (key(&mesh_id, "ay59nvr5jw53", 2), key(&mesh_id, "ay59nvr5jw53", 1), key(&mesh_id, "ay59nvr5jw53", 3), key(&mesh_id, "k4eyvfmr6wmf", 2));
     let elsewhere = key(&MeshId::mint(), "xe5k179s7rw5", 1);
     let last = final_primary();
     let admitted = Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime(), amendments: Vec::new() };
-    let book = LeaveBook::default();
+    let book = MeshDeleteBook::default();
     let handoff = book.open(held.clone(), admitted);
     let ((refused, accepted, unknown), trace_id) = cap.run(async {
-        let root = tracing::info_span!("rdm.test.mesh.reject.via-mesh-leave-round");
+        let root = tracing::info_span!("rdm.test.mesh.reject.via-mesh-deleted-round");
         let trace_id = trace_id(&root);
         let out = tracing::Instrument::instrument(
             async {
@@ -172,42 +172,42 @@ fn a_mesh_leave_naming_a_round_the_fabric_primary_does_not_hold_is_refused_by_na
     assert!(matches!(&unknown, Err(StatusReply::RejectedUnmatchedCompletion { field, reported, .. }) if field == "command" && reported.contains(elsewhere.build_id.as_str())), "a mesh with no open leave names no open command: {unknown:?}");
     assert!(handoff.borrow().is_none(), "a refused round ends nothing: the open leave still waits for its handoff");
     let spans = cap.spans();
-    keep("mesh_leave_round", &trace_id, &spans);
-    let named = |k: &LeaveKey| (k.build_id.to_string(), k.attempt.to_string(), k.operation.clone());
-    let expect = |offered: &LeaveKey| {
+    keep("mesh_deleted_round", &trace_id, &spans);
+    let named = |k: &MeshDeleteKey| (k.build_id.to_string(), k.attempt.to_string(), k.operation.clone());
+    let expect = |offered: &MeshDeleteKey| {
         let (h, o) = (named(&held), named(offered));
-        ("mesh-leave".to_string(), h.0, h.1, h.2, o.0, o.1, o.2)
+        ("mesh-deleted".to_string(), h.0, h.1, h.2, o.0, o.1, o.2)
     };
     assert_eq!(refusals(&spans, &trace_id, STALE).iter().map(named_rounds).collect::<Vec<_>>(), vec![expect(&stale)]);
     assert_eq!(refusals(&spans, &trace_id, CONFLICTING).iter().map(named_rounds).collect::<Vec<_>>(), vec![expect(&unopened), expect(&other)]);
 }
 
-/// CONTRACT (states.md: the mesh's `leaving` is entered by the `leave-mesh` down op, "one commit
+/// CONTRACT (states.md: the mesh's `leaving` is entered by the `delete-mesh` down op, "one commit
 /// stores the row, applies it, gossips it and answers the op"; mesh-delete.md step 5: at mesh.deleted
 /// the mesh-primary writes the mesh row deleted; node-rpc-envelope.md, "Mesh delete command pair":
-/// `LeaveMesh` answers Applied or AlreadyApplied on admission, and a stale round is refused by name):
-/// the first `leave-mesh` of the mesh commits its row Leaving and is admitted. Once the members exited
-/// and the row is Dead (mesh.deleted, the handoff's own write), a `leave-mesh` of the round held
+/// `DeleteMesh` answers Applied or AlreadyApplied on admission, and a stale round is refused by name):
+/// the first `delete-mesh` of the mesh commits its row Leaving and is admitted. Once the members exited
+/// and the row is Dead (mesh.deleted, the handoff's own write), a `delete-mesh` of the round held
 /// resends its handoff, an earlier attempt is `RejectedStaleRound`, and the Build's next attempt
 /// starts again from the receipts; none of them commits the row again, which stays Dead. What must
 /// NOT happen: a round after mesh.deleted answered `RejectedInvalidMeshTransition { current: Dead }`
 /// (a lost handoff could then never be sent again, and the leave never ends), or a second Leaving
 /// commit.
 #[test]
-fn a_leave_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leaving_row_once() {
+fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leaving_row_once() {
     let cap = capture();
     let mesh_id = MeshId::mint();
     let (held, stale, next) = (key(&mesh_id, "ay59nvr5jw53", 2), key(&mesh_id, "ay59nvr5jw53", 1), key(&mesh_id, "ay59nvr5jw53", 3));
     let (owner, late) = (owner_named(), owner_named());
     let last = final_primary();
     let manifest = ExitManifest { mesh_id: mesh_id.to_string(), roster: vec![last.clone()], final_primary: last, final_runtime: Some(runtime()), receipts: vec![] };
-    let (runs, storage, declared) = (LeaveRuns::default(), MemoryStatusStorage::default(), std::sync::Mutex::new(Declared::default()));
+    let (runs, storage, declared) = (MeshDeleteRuns::default(), MemoryStatusStorage::default(), std::sync::Mutex::new(Declared::default()));
     let ((first, end, after, row), trace_id) = cap.run(async {
-        let root = tracing::info_span!("rdm.test.mesh.update.via-leave-mesh-after-deleted");
+        let root = tracing::info_span!("rdm.test.mesh.update.via-delete-mesh-after-deleted");
         let trace_id = trace_id(&root);
         let out = tracing::Instrument::instrument(
             async {
-                let first = admit_leave_mesh(&runs, &storage, &declared, &held, &owner).await;
+                let first = admit_delete_mesh(&runs, &storage, &declared, &held, &owner).await;
                 let m = manifest.clone();
                 let end = run_admitted(&runs, &mesh_id, move |_, _| {
                     let m = m.clone();
@@ -215,12 +215,12 @@ fn a_leave_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leavi
                 })
                 .await;
                 // mesh.deleted: the mesh-primary's handoff commits its mesh row Dead before it calls
-                // mesh-leave; the call is lost, so the owner sends leave-mesh again.
+                // mesh-deleted; the call is lost, so the owner sends delete-mesh again.
                 storage.put_mesh_status(&MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
                 declared.lock().unwrap().meshes.insert(mesh_id.clone(), MeshState::Dead);
                 let mut after = Vec::new();
                 for (k, sender) in [(&held, &owner), (&stale, &late), (&next, &owner)] {
-                    after.push(admit_leave_mesh(&runs, &storage, &declared, k, sender).await);
+                    after.push(admit_delete_mesh(&runs, &storage, &declared, k, sender).await);
                 }
                 let row = storage.mesh_statuses().await.unwrap().get(&mesh_id).copied();
                 (first, end, after, row)
@@ -231,17 +231,17 @@ fn a_leave_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leavi
         (out, trace_id)
     });
     let spans = cap.spans();
-    keep("leave_mesh_after_deleted", &trace_id, &spans);
-    assert_eq!(first, LeaveMeshAdmission { leaving_row: Some(StatusReply::Applied), admission: LeaveAdmission::Start }, "the first leave-mesh commits the row Leaving and starts the leave");
-    assert_eq!(end, LeaveRunEnd::Exited { key: held.clone(), owner: owner.clone(), manifest: manifest.clone() });
+    keep("delete_mesh_after_deleted", &trace_id, &spans);
+    assert_eq!(first, DeleteMeshAdmission { leaving_row: Some(StatusReply::Applied), admission: MeshDeleteAdmission::Start }, "the first delete-mesh commits the row Leaving and starts the leave");
+    assert_eq!(end, MeshDeleteRunEnd::Exited { key: held.clone(), owner: owner.clone(), manifest: manifest.clone() });
     assert_eq!(
         after,
         vec![
-            LeaveMeshAdmission { leaving_row: None, admission: LeaveAdmission::Resend(manifest) },
-            LeaveMeshAdmission { leaving_row: None, admission: LeaveAdmission::Refused(StatusReply::RejectedStaleRound { held: round(&held), offered: round(&stale) }) },
-            LeaveMeshAdmission { leaving_row: None, admission: LeaveAdmission::Start },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Resend { manifest, recorded: 1 } },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Refused(StatusReply::RejectedStaleRound { held: round(&held), offered: round(&stale) }) },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Start },
         ],
-        "after mesh.deleted each leave-mesh is decided on its round, and none commits the row again"
+        "after mesh.deleted each delete-mesh is decided on its round, and none commits the row again"
     );
     assert_eq!(row, Some(MeshState::Dead), "the mesh row stays Dead");
     assert_eq!(refusals(&spans, &trace_id, STALE).len(), 1, "the stale round is refused by its own span");
