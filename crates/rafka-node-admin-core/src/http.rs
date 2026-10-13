@@ -216,12 +216,15 @@ impl ControlPlane {
         Ok((admission, current))
     }
 
-    /// The current Build (R-BI3) for an attempt that acts in `mesh` alone, and the refusal when an
-    /// attempt holds `mesh` in this admin's fold (R-BI7 caveat 3: one attempt in flight per mesh,
-    /// not per fabric): the fabric lane's claimed attempt whose executor is of `mesh`, or `mesh`'s own
-    /// drift lane's open attempt. An attempt in progress in another mesh refuses nothing. The
-    /// admission is taken first and returned with the Build.
-    async fn mesh_settled(&self, mesh: &str) -> Result<(tokio::sync::OwnedMutexGuard<()>, crate::build_state::BuildProjection), Refusal> {
+    /// The current Build (R-BI3) for an attempt that acts in `mesh` alone with `action`, and the
+    /// refusal when an attempt holds `mesh` in this admin's fold (R-BI7 caveat 3: one attempt in
+    /// flight per mesh, not per fabric): the fabric lane's claimed attempt whose executor is of
+    /// `mesh`, or `mesh`'s own drift lane's open attempt. An attempt in progress in another mesh
+    /// refuses nothing. The lane's attempt that is opened with `action` and claimed by no one is
+    /// not a refusal: it is answered as the attempt to claim (build.md :365 as the approved proposal
+    /// A4 words it: claims are insert-and-fail on the attempt, so its first claim takes it,
+    /// whoever opened it). The admission is taken first and returned with the Build.
+    async fn mesh_settled(&self, mesh: &str, action: &AttemptAction) -> Result<(tokio::sync::OwnedMutexGuard<()>, crate::build_state::BuildProjection, Option<u32>), Refusal> {
         let admission = self.admission.clone().lock_owned().await;
         let read = || async {
             self.builds.current().await.map_err(Refusal::State)?.ok_or_else(|| {
@@ -234,12 +237,23 @@ impl ControlPlane {
         if holding(&current, Some(mesh)).is_some() && self.end_departed_attempt(&current, mesh).await? {
             current = read().await?;
         }
-        if let Some(held) = holding(&current, Some(mesh)) {
+        if let Some(attempt) = open_unclaimed(&current, mesh, action) {
+            return Ok((admission, current, Some(attempt)));
+        }
+        if let Some(mut held) = holding(&current, Some(mesh)) {
+            // An attempt opened and claimed by no one has no claimant in the fold: the holder is the
+            // admin whose in-flight row of the mesh names it, the one that opened it.
+            if held.held_by.is_none() {
+                let row = self.claims.held(mesh).await.map_err(|e| {
+                    Refusal::Unavailable(format!("{}: mesh {mesh} is held by an attempt of {} that no one claimed, and the mesh's in-flight row naming its holder could not be read: {e}", self.me, held.current_build_id))
+                })?;
+                held.held_by = row.filter(|r| r.build_id == held.current_build_id && r.lane.as_deref() == Some(mesh)).map(|r| r.claimant);
+            }
             tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %held.current_build_id, mesh, held_by = %held.held_by.as_deref().unwrap_or(""))
                 .in_scope(|| tracing::info!("an attempt holds the mesh: one attempt in flight per mesh"));
             return Err(Refusal::BuildInProgress(held));
         }
-        Ok((admission, current))
+        Ok((admission, current, None))
     }
 
     /// The exit-proof row of the exact birth this admin's view names at `claimant` in `mesh`, a point
@@ -634,9 +648,11 @@ impl ControlPlane {
     /// topology operation's claimed attempt there, or the mesh's own drift attempt) answers
     /// `BuildInProgress` naming the Build, the mesh and its claimant; an attempt in another mesh
     /// refuses nothing. Then the mesh's in-flight row is taken on the store root before any fact is
-    /// written, the attempt is opened in the mesh's lane, and its claim is decided by this admin.
+    /// written, the attempt is opened in the mesh's lane, and its claim is decided by this admin. The
+    /// lane's attempt already opened with this very recovery and claimed by no one (its opener lost
+    /// between its open and its claim) is claimed as it stands: never opened again, and nothing ends it.
     pub async fn open_recovery(&self, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovery, Refusal> {
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, mesh = %path.mesh, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), outcome = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-recovery", route, build_id = tracing::field::Empty, attempt = tracing::field::Empty, mesh = %path.mesh, node = %path, node_id = %node_id, incarnation_id = %incarnation.as_str(), open_attempt = tracing::field::Empty, outcome = tracing::field::Empty);
         let outer = tracing::Span::current();
         let r = async {
             // Keyed on the exited birth across the Build log: a birth a node workflow already
@@ -675,7 +691,8 @@ impl ControlPlane {
                 });
                 return Err(Refusal::NotClaimant { mesh: path.mesh.clone(), fabric_primary, mesh_primary });
             }
-            let (_admitted, current) = self.mesh_settled(&path.mesh).await?;
+            let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() };
+            let (_admitted, current, open) = self.mesh_settled(&path.mesh, &action).await?;
             if !current.topology.contains(&path) {
                 let reject = BuildReject::UnknownNode { node: path.to_string() };
                 outer.in_scope(|| reject_span(route, &reject));
@@ -684,7 +701,10 @@ impl ControlPlane {
             // The mesh's in-flight row decides first, on the store root: whichever claims first on the
             // mesh's rows wins (R-BI7 caveat 3). Nothing of the attempt is written before it.
             let lane = Some(path.mesh.as_str());
-            let attempt = next_in_lane(&current, lane);
+            // The lane's attempt opened with this very recovery and claimed by no one is claimed as
+            // it stands; otherwise the lane's next attempt is opened for it.
+            let attempt = open.unwrap_or_else(|| next_in_lane(&current, lane));
+            span.record("open_attempt", if open.is_some() { "held-open" } else { "opened-here" });
             let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: self.me.to_string() };
             let mut taken = self.claims.take(&path.mesh, &row).await;
             // A row a departed claimant took for a drift attempt that holds no lane in this admin's
@@ -719,14 +739,17 @@ impl ControlPlane {
                 Err(e) => return Err(Refusal::Unavailable(format!("{}: the in-flight row of mesh {} could not be taken for attempt {attempt} of {}: {e}", self.me, path.mesh, current.build_id))),
             }
             let node_name = path.to_string();
-            let action = AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() };
-            let opened = match self.open_with(&current, lane, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await {
-                Ok(o) => o,
-                Err(e) => {
-                    // Nothing of the attempt was written: the row taken for it goes.
-                    let _ = self.claims.release(&path.mesh, &row).await;
-                    return Err(e);
-                }
+            let opened = match open {
+                // Its open is on the Build log already, whoever wrote it: nothing is written again.
+                Some(attempt) => Opened { build_id: current.build_id.clone(), attempt, mesh: lane.map(str::to_string) },
+                None => match self.open_with(&current, lane, AttemptReason::Recovery, action, route, &outer, &node_name, span.clone()).await {
+                    Ok(o) => o,
+                    Err(e) => {
+                        // Nothing of the attempt was written: the row taken for it goes.
+                        let _ = self.claims.release(&path.mesh, &row).await;
+                        return Err(e);
+                    }
+                },
             };
             let claim = crate::build_state::BuildAttemptClaim { build_id: opened.build_id.clone(), attempt: opened.attempt, executor: self.me.to_string(), claimant: Some(self.me.to_string()), mesh: opened.mesh.clone() };
             match crate::build_claim::decide_claim(&self.me, &*self.builds, &self.claims, &self.contexts, &claim, &path.mesh).await {
@@ -995,6 +1018,15 @@ fn holding(p: &crate::build_state::BuildProjection, mesh: Option<&str>) -> Optio
             p.lanes.get(mesh).filter(|l| l.is_open()).map(|l| InProgress { current_build_id: p.build_id.clone(), mesh: Some(mesh.to_string()), held_by: l.claimant.clone() })
         }
     }
+}
+
+/// The attempt of `mesh`'s drift lane of `p` that is opened with `action` and claimed by no one,
+/// while the fabric lane's attempt does not hold `mesh`: the lane stands at its open (`Pending`, the
+/// open one past the highest claim). An attempt handed off or claimed is not one.
+fn open_unclaimed(p: &crate::build_state::BuildProjection, mesh: &str, action: &AttemptAction) -> Option<u32> {
+    let fabric_holds = p.state == BuildState::Running && p.executor.as_deref().and_then(|e| e.parse::<PathName>().ok()).is_some_and(|e| e.mesh == mesh);
+    let lane = p.lanes.get(mesh).filter(|l| !fabric_holds && l.state == BuildState::Pending && l.opened == l.attempt + 1)?;
+    (lane.action.as_ref() == Some(action)).then_some(lane.opened)
 }
 
 /// The next attempt of `p` in `lane`: the fabric lane's numbering is the Build's; a drift lane's
