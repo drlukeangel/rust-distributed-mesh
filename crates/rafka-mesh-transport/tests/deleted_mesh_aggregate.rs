@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 const HELD: &str = "a_peer_holds_a_deleted_meshs_last_admin_stopped_then_deleted_from_the_fabric_primarys_aggregate";
 const LIVE: &str = "the_fabric_primary_executing_a_live_primaryless_meshs_stop_and_delete_publishes_no_aggregate_of_it";
 const AGAIN: &str = "a_mesh_created_again_under_the_deleted_meshs_name_ends_the_deleted_meshs_aggregate";
+const BACK: &str = "a_back_to_back_stop_and_delete_of_a_deleted_meshs_last_admin_publishes_the_stopped_stage_then_the_deleted_stage";
 
 fn evidence_dir(cell: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s53").join(cell)
@@ -40,6 +41,14 @@ fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
         }
     }
     spans
+}
+
+fn start_ns(sp: &Value) -> u64 {
+    sp["start_unix_nano"].as_u64().or_else(|| sp["start_unix_nano"].as_str().and_then(|v| v.parse().ok())).unwrap_or(0)
+}
+
+fn unix_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
 }
 
 fn attr_u(sp: &Value, k: &str) -> u64 {
@@ -414,4 +423,77 @@ async fn a_mesh_created_again_under_the_deleted_meshs_name_ends_the_deleted_mesh
     assert_eq!(ended.len(), 1, "the end is said once, by name: {ended:#?}");
     assert_eq!(attr_u(ended[0], "in_flight"), 1, "{}", ended[0]);
     println!("{AGAIN}: ended trace {}", ended[0]["trace_id"]);
+}
+
+/// CONTRACT (lifecycles/mesh-delete.md "Command, completion and gossip messages", the separate
+/// node.delete of the mesh-primary: "F->>M: node.stop", "F->>B: deleted mesh's aggregate: NodeStopped
+/// in in_flight", then the exit proof, "F->>F: mesh-primary row deleted; node.deleted", "F->>B: deleted
+/// mesh's aggregate: NodeDeleted in Members.deleted"; gossip.md `Members`: "at once on a material
+/// change"): the fabric-primary mesh1.admin.1, its view holding mesh3 deleted, executes the stop of
+/// mesh3's last admin and then its delete back to back, with no anti-entropy round between them (a
+/// stop that is answered at once, the exit proof right behind it). The stop's status event publishes
+/// the deleted mesh's aggregate itself: no digests, the stopped admin in `in_flight`, at the version
+/// it stamped, before the delete is applied. The round the delete wakes publishes the aggregate with
+/// the birth in `deleted`, at the next version. Two publishes, in that order. Must NOT happen: the
+/// stopped stage left only for the round loop, so a delete applied before the loop woke is the only
+/// stage that ever leaves (`mesh_lifecycle__fabric_primary_handover` at :426, the fabric-primary's one
+/// publish at +563 ms already `departed=1`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_back_to_back_stop_and_delete_of_a_deleted_meshs_last_admin_publishes_the_stopped_stage_then_the_deleted_stage() {
+    if crate::own_process::delegated(module_path!(), BACK) {
+        return;
+    }
+    let dir = evidence_dir(BACK);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-deleted-mesh-back-to-back");
+
+    let fp_n = node().await;
+    let fab = fabric();
+    let fp_own = digest("mesh1.admin.1", 41_001);
+    let fp_m = Membership::join(&fp_n.gossip, &fp_n.ep, &fab, "mesh1", &MeshId::mint(), "mesh1.admin.1", rafka_mesh_transport::clock::os_clock(), vec![]).await.unwrap();
+    let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", "mesh1.admin.1", fp_own.node.incarnation.clone(), vec![]).await.unwrap();
+    fp_bb.set_mesh_primary(true);
+    fp_bb.set_fabric_primary(true);
+    let admin3 = digest("mesh3.admin.1", 43_001);
+    assert!(fp_m.book.record(admin3.clone()));
+    fp_bb.set_view_meshes(view(&[("mesh1", false), ("mesh3", true)]));
+
+    // The stop, from the matching stopped reply; then at once the delete, as the node-admin runs it
+    // (admin.rs `deleted`): read before the departure is taken, NodeDeleted on the executor's own mesh
+    // channel, the departure taken. No round runs between them.
+    let stop = op("stop-node", &admin3);
+    let (_, stamped) = fp_bb.publish_status_event(StatusEvent::Stopped, &stop).await;
+    let delete_applied_at = unix_ns();
+    let deleted = op("retire-node", &admin3);
+    let of_deleted_mesh = fp_bb.publishes_deleted_mesh_of(&deleted);
+    assert!(of_deleted_mesh, "the fabric-primary publishes the birth it stopped");
+    fp_m.publish_lifecycle(&Frame::NodeDeleted { op: deleted.clone(), forwarded_by: None }).await.unwrap();
+    fp_bb.executed_delete(&deleted, of_deleted_mesh);
+    // The round the delete wakes.
+    assert_eq!(fp_bb.publish_deleted_meshes(&fp_m).await, vec!["mesh3".to_string()], "the round the delete wakes publishes the deleted mesh3");
+
+    fp_bb.set_fabric_primary(false);
+    drop(fp_bb);
+    fp_n.ep.close().await;
+    drop(telemetry);
+    let spans = collect_spans(&dir);
+    std::fs::write(dir.join("spans.json"), serde_json::to_vec_pretty(&spans).unwrap()).unwrap();
+    let mut published: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.backbone.update.via-deleted-mesh" && s["attributes"]["mesh"] == "mesh3").collect();
+    published.sort_by_key(|s| start_ns(s));
+    let stages: Vec<(u64, u64, u64, u64)> = published.iter().map(|s| (attr_u(s, "digests"), attr_u(s, "in_flight"), attr_u(s, "departed"), attr_u(s, "topology_version"))).collect();
+    assert_eq!(stages.len(), 2, "two publishes of the deleted mesh3, the stopped stage then the deleted stage; the stopped stage (in_flight=1 departed=0 at v{stamped}) is missing when it waits for the round: (digests, in_flight, departed, topology_version) = {stages:?}");
+    assert_eq!(stages[0], (0, 1, 0, stamped), "first the stopped stage, at the version the stop's status event stamped: {stages:?}");
+    assert!(stages[1].0 == 0 && stages[1].1 == 0 && stages[1].2 == 1 && stages[1].3 > stamped, "then the deleted stage, at the next version: {stages:?}");
+    assert!(start_ns(published[0]) < delete_applied_at, "the stopped stage left from the stop's status event, before the delete was applied at {delete_applied_at}: {}", published[0]);
+    assert!(start_ns(published[1]) > delete_applied_at, "the deleted stage left after the delete was applied: {}", published[1]);
+    let event = spans
+        .iter()
+        .find(|s| s["name"] == "rdm.mesh.membership.update.via-status-event" && s["attributes"]["subject"] == "mesh3.admin.1")
+        .unwrap_or_else(|| panic!("the stop the fabric-primary executed is spanned"));
+    assert_eq!(event["attributes"]["role"], "deleted-mesh-publisher", "{event}");
+    println!(
+        "{BACK}: status event trace {} (v{stamped}); published stopped trace {} (v{}) then deleted trace {} (v{})",
+        event["trace_id"], published[0]["trace_id"], stages[0].3, published[1]["trace_id"], stages[1].3
+    );
 }
