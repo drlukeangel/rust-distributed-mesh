@@ -218,6 +218,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         departure,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
@@ -244,6 +245,7 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), node_id, control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
@@ -269,6 +271,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
         rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }

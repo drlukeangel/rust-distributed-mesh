@@ -7,8 +7,8 @@
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`) at the gate's cadence
 //! (`tools/test-runner` CADENCE, set by the binary's ctor in `tests/main.rs`: a digest heartbeat is
-//! never slower than 2 s, gossip.md §3.2, and the Day-0 admin's own Ready reaches its book on that
-//! heartbeat), in a process of its own (the parking flag is process-wide).
+//! never slower than 2 s, gossip.md §3.2), in a process of its own (the parking flag is
+//! process-wide).
 
 use rafka_mesh_entity::NodeId;
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
@@ -89,15 +89,20 @@ impl Capture {
 /// waited for, and the stop's connection cut begins only after the quiesce ended: the cut finds no
 /// turn in progress, and no aggregate of the admin's mesh is published once the cut began. Between
 /// the quiesce and the cut the stop publishes the admin's last aggregate, carrying itself Leaving
-/// (gossip.md, "Mesh delete"), in the stop's own trace. Must
-/// NOT happen: a turn that was in progress at the park running on past the cut, so a stopped admin
-/// plans, publishes or calls out after it was cut.
+/// (gossip.md, "Mesh delete"), in the stop's own trace. Nothing of the admin's Build drive (its
+/// claim, its dispatch, the run it called, the facts it broadcast) runs on past the cut: a drive
+/// whose turn was in progress at the park ended it before the cut, and one that would begin after
+/// the park waits at the gate. Must NOT happen: a turn that was in progress at the park running on
+/// past the cut, so a stopped admin plans, publishes or calls out after it was cut.
 ///
 /// The executor is the turn held because its idle wait (`select!` on a submitted Build or its
 /// 300 ms poll, admin.rs) touches no lock: it always reaches its turn and holds there, at the
 /// cell's writer. The hierarchy's idle wait reads the view on a view change (admin.rs, its
 /// `view_changed` branch), so a hierarchy woken by the install the cell's writer queued behind
-/// would hold at the writer outside its turn.
+/// would hold at the writer outside its turn. The writer takes the view lock only while no
+/// executor turn is in progress: a turn already in progress when the writer took it may be past
+/// the one place a turn takes the lock (`install_read`, admin.rs), and would end without holding
+/// at the writer.
 #[test]
 fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_running() {
     let cell = "a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_running";
@@ -124,10 +129,20 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
         .await
         .expect("the Day-0 admin never became its mesh's publisher with its hierarchy idle");
 
-        // The view lock is taken; the executor's next poll begins its turn and holds where it takes
-        // the lock.
+        // The view lock is taken while no executor turn is in progress; the executor's next poll
+        // begins its turn after it and holds where it takes the lock.
         let topology = running.control.topology.clone();
-        let holder = topology.write().await;
+        let holder = tokio::time::timeout(NEVER, async {
+            loop {
+                state.wait_for(|s| !s.turns.contains_key("executor")).await.expect("the gate lives as long as the admin");
+                let holder = topology.write().await;
+                if !state.borrow_and_update().turns.contains_key("executor") {
+                    return holder;
+                }
+            }
+        })
+        .await
+        .expect("the executor was never between turns");
         let own = running.digest.lock().unwrap().clone();
         tokio::time::timeout(NEVER, state.wait_for(|s| s.turns.contains_key("executor"))).await.expect("the executor began no turn within its poll").unwrap();
 
@@ -189,6 +204,12 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
     // Nothing of a turn follows the cut: no aggregate of the admin's mesh is published after it began.
     let late: Vec<&Value> = named("rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|s| s["start_ns"].as_u64().unwrap() >= cut_began).collect();
     assert!(late.is_empty(), "the stopped admin published its mesh's aggregate after its cut began: {late:?}");
+    // Nothing of the Build drive runs on past the cut: every span of a drive's trace, and of a run
+    // it called (its own trace), ended before the cut began. A drive held at the gate ends no span.
+    let build_traces: std::collections::BTreeSet<&str> =
+        spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-drive" || s["name"] == "rdm.node_admin.build.update.via-reconcile").filter_map(|s| s["trace_id"].as_str()).collect();
+    let after_cut: Vec<&Value> = spans.iter().filter(|s| s["trace_id"].as_str().is_some_and(|t| build_traces.contains(t)) && s["end_ns"].as_u64().unwrap() > cut_began).collect();
+    assert!(after_cut.is_empty(), "the stopped admin's Build drive ran on past its cut (stop trace {stop_trace}): {after_cut:?}");
     println!(
         "stop trace {stop_trace}; quiesce waited for [{waited_for}] {} us, ended {} us before the cut began; spans in {}",
         (quiesce["end_ns"].as_u64().unwrap() - quiesce["start_ns"].as_u64().unwrap()) / 1000,

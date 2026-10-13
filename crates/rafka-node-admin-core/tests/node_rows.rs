@@ -177,6 +177,7 @@ async fn rig(change: TopologyChange, acts: Vec<Act>, storage: Arc<MemoryNodesSto
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         rows,
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     });
     Rig { env, storage, build: opened.build_id, accepted }
 }

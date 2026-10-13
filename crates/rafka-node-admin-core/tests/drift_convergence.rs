@@ -407,6 +407,7 @@ impl Estate {
             departure: Arc::new(crate::loopback::Proofs::default()),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
             rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(primary, primary_id, self.view.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+            turns: rafka_node_admin_core::park_gate::ParkGate::new(),
         })
     }
 

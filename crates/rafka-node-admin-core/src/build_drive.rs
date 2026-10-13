@@ -441,6 +441,9 @@ pub struct DriveEnv {
     /// `node.delete`: the live `Step` frames of a replace and a delete feed it, and write no row
     /// (`crate::node_rows::NodeRows::on_step`).
     pub rows: Arc<crate::node_rows::NodeRows>,
+    /// The admin's park gate (`crate::park_gate`): a drive takes the view lock and calls executors,
+    /// so it begins each turn at the gate's wait point and a stop's quiesce waits for a turn of it.
+    pub turns: crate::park_gate::ParkGate,
 }
 
 /// The drives this admin holds, by Build.

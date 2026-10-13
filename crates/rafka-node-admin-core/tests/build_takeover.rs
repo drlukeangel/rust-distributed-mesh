@@ -133,6 +133,7 @@ fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Ar
         departure: proofs,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
         rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.parse().unwrap(), topology.try_read().expect("the view is free").node(&me.parse().unwrap()).expect("the fabric-primary is in the view").node_id.clone(), topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     })
 }
 
