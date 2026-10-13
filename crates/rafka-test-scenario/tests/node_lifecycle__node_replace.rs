@@ -1333,11 +1333,13 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClie
 /// CONTRACT: a recovered node keeps the config its mesh-primary told its predecessor
 /// (node-recovery.md "Retained: ... config (seeded from the Deleted row)"; fabric-node-lifecycle.md
 /// "A rewrite is lossless for every field its writer knows"). The caller puts `<mesh>.rpc.1`'s config
-/// through its mesh-primary (not the fabric-primary), the node carries it, then its runtime is
-/// killed: the mesh-primary's recovery writes the exited birth's Deleted row with that config, the
-/// new node's name claim is seeded from it (`via-node-row` moment `claim`, `seeded_from` the exited
-/// node, one key), the new node's join answer hands it that config (`via-join` `config_keys` 1),
-/// and the new node (new node.id, same path.name) carries the config.
+/// through its mesh-primary (not the fabric-primary), which answers `config-updated` (the row
+/// written, the node applied it), then its runtime is killed: the mesh-primary's recovery writes the
+/// exited birth's Deleted row with that config, the new node's name claim is seeded from it
+/// (`via-node-row` moment `claim`, `seeded_from` the exited node, one key), and the new node (new
+/// node.id, same path.name) is handed that config in its join answer (`via-join` `config_keys` 1,
+/// outcome `installed`). No typed read carries a node's config (`node.config.get` is not backed by an
+/// op), so what the new node holds is read from the join's span.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor() {
     let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor").await;
