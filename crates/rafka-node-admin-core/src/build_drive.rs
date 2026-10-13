@@ -1135,10 +1135,13 @@ impl DriveEnv {
             _ => self.me.clone(),
         };
         // Refused before the row: nothing changed and the Build's step fails by name (C1 failure
-        // contract; R-BI4: only a named terminal failure makes the Build failed). Every other end
-        // hands the attempt to the view's fabric-primary.
+        // contract; R-BI4: only a named terminal failure makes the Build failed). The successor proven
+        // exited after the row: the step fails by name whoever the ordinary rule seats, this admin
+        // included, and the workflow never goes on to the operation (ruling R-PU2 recovery order 4).
+        // Every other end hands the attempt to the view's fabric-primary.
         let refused = match &moved {
             Err(SeatMoveEnd::Refused(why)) => Some(format!("{}: its seats did not move before {}: node.primary.update was refused before its row: {why}", self.me, op.key())),
+            Err(exited @ SeatMoveEnd::SuccessorExited(_)) => Some(format!("{exited}; {} does not run {}", self.me, op.key())),
             _ => None,
         };
         let terminal = match &refused {

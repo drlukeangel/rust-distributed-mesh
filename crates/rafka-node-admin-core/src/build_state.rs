@@ -302,6 +302,10 @@ pub struct BuildProjection {
     /// continue by hand-off or take-over. A step receipt from it on is this run's.
     #[serde(default)]
     pub opened: u32,
+    /// The attempt whose `Failed` verdict last failed the Build, when one did: the attempt after it,
+    /// which a caller's resubmit opens (R-BI3), begins a new run ([`Self::run_of`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<u32>,
     /// The attempt whose `Converged` verdict first completed the Build, when one did. Kept when a
     /// later attempt reopens it (a restart, a recovery, proven drift: attempts of an unchanged
     /// topology, build.md §4.1), so a Build that once realized its topology stays the known state
@@ -407,6 +411,8 @@ impl BuildProjection {
         p.reported = l.reported;
         p.attempt_actions = l.attempt_actions;
         p.completed_at = (l.state == BuildState::Complete && l.attempt > 0).then_some(l.attempt);
+        // A drift lane numbers its attempts per mesh: the fabric lane's failed attempt is not one of them.
+        p.failed_at = None;
         p
     }
 
@@ -425,8 +431,10 @@ impl BuildProjection {
     /// transfer key is `(build_id, run)` ([`crate::fabric_handover::update_operation`]): the attempts
     /// of one run (hand-offs and take-overs) share it and replay its row; a new run makes a new one.
     pub fn run_of(&self, attempt: u32) -> u32 {
-        let _ = attempt;
-        self.opened.max(1)
+        // The attempt after a Failed verdict begins a new run: only a caller's resubmit drives a failed
+        // Build on (R-BI3), and that is never the continuation of the failed run.
+        let after_failure = self.failed_at.filter(|f| *f < attempt).map_or(1, |f| f + 1);
+        self.opened.max(after_failure)
     }
 
     /// Whether `attempt` carried exactly `action`.
@@ -665,6 +673,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     attempt_actions: BTreeMap::new(),
                     attempt_executors: BTreeMap::new(),
                     opened: 0,
+                    failed_at: None,
                     completed_at: None,
                     reported: Default::default(),
                     claimant: None,
@@ -796,6 +805,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                         AttemptOutcome::Failed { reason } => {
                             p.state = BuildState::Failed;
                             p.last_failure = Some(reason.clone());
+                            p.failed_at = Some(a.attempt);
                         }
                         // No attempt is in flight: the Build waits for the next claim.
                         AttemptOutcome::HandedOff { .. } => p.state = BuildState::Pending,
