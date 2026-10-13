@@ -464,7 +464,7 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     assert_eq!(claimed.len(), 1, "this node's name claim, once: {claimed:?}");
     assert_eq!(
         (attr(claimed[0], "node_id"), attr(claimed[0], "moment"), attr(claimed[0], "seeded_from"), attr(claimed[0], "outcome")),
-        (node_id.clone(), "claim".to_string(), root.node_id.to_string(), "row-written".to_string()),
+        (node_id.clone(), "claim".to_string(), root.node_id.to_string(), "row-seeded".to_string()),
         "{}",
         claimed[0]
     );
