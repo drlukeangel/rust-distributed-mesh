@@ -612,7 +612,10 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     let test = "a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt";
     let mut estate = estate_with(test, "hold").await;
     let door = Door::at(&estate, "mesh1.admin.1").await;
-    let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
+    // mesh2 holds two rpc nodes: the restart the cell admits once the fabric is ready is of the one holding no
+    // seat, so no seat moves (a seat holder's restart runs node.primary.update first, and a cohort of one
+    // node has no successor, Q7).
+    let shape = [("mesh1", 1, 1), ("mesh2", 1, 2)];
     let first = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
     estate.settled_views(&shape).await;
     let path = |n: &str| -> PathName { n.parse().unwrap() };
@@ -669,7 +672,8 @@ async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused
     // The application answers: the fabric climbs, and the same kind of workflow is accepted.
     door.release("state-sync").await;
     estate.fabrics_obj().await.fact("ready-for-traffic under the initial Build", Duration::from_secs(90), |f| f.status == ScopeStatus::ReadyForTraffic && f.build_id.as_deref() == Some(first.as_str())).await.unwrap_or_else(|end| panic!("{end}"));
-    let mut admitted = estate.nodes_obj().await.restart(&path("mesh2.rpc.1")).await.unwrap_or_else(|end| panic!("once the fabric is ready-for-traffic a restart is accepted: {end}"));
+    let member = estate.node_views().await.into_iter().filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && !n.is_primary).map(|n| n.name.to_string()).min().expect("an rpc node of mesh2 holding no seat");
+    let mut admitted = estate.nodes_obj().await.restart(&path(&member)).await.unwrap_or_else(|end| panic!("once the fabric is ready-for-traffic a restart is accepted: {end}"));
     let accepted = Estate::complete(&mut admitted).await;
     assert_eq!((accepted.build_id.as_str(), accepted.attempt), (first.as_str(), log_before["attempt"].as_u64().unwrap() as u32 + 1), "the admitted restart is the next attempt of the initial Build");
     let log_end = build_log::build_value(&carrier, &first).await;

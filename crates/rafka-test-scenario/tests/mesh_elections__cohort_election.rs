@@ -259,6 +259,10 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let nodes = estate.node_values().await;
     let killed = primary_of(&nodes, &rpc).unwrap();
     let killed_id = id_of(&nodes, &killed);
+    // Until this kill the holder the restart's node.primary.update seated lives; after it the vacancy is
+    // filled by the ordinary rule, which may seat the restarted node (elections §5: "a restarted node is a
+    // candidate for a later vacancy").
+    let holder_lived_until = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.kill_node(&killed).await;
     let (_succ, succ_id) = successor(&estate, &admin1, &nodes, &rpc, &killed_id).await;
     build(&estate, &[("mesh1", 2, 3)]).await;
@@ -365,10 +369,10 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     // The restart's node.primary.update moved the rpc seat to the next-lowest ready NodeId, and
     // the mesh-primary announced it (C1 step 7).
     assert!(primary_updated(&spans, &rpc, &format!("restart-node:{rpc_p}"), &succ_r_id), "the mesh-primary announced the rpc seat updated to {succ_r} ({succ_r_id}) before the restart of {rpc_p}");
-    // The restarted node never took its seat back.
+    // The restarted node never took its seat back while the holder lived.
     let back = named(&spans, "rdm.mesh.election.resolve.via-recompute").iter().any(|sp| {
         let a = &sp["attributes"];
-        a["mesh"] == "mesh1" && a["kind"] == "rpc_node" && a["winner_node_id"] == rpc_p_id.as_str() && a["previous_node_id"] == succ_r_id.as_str()
+        sp["start_unix_nano"].as_u64().unwrap_or(0) < holder_lived_until && a["mesh"] == "mesh1" && a["kind"] == "rpc_node" && a["winner_node_id"] == rpc_p_id.as_str() && a["previous_node_id"] == succ_r_id.as_str()
     });
     assert!(!back, "the restarted {rpc_p} displaced the holder {succ_r}");
 }
