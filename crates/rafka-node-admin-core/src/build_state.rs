@@ -1624,7 +1624,7 @@ pub(crate) const JOURNAL_FILE: &str = "build-journal.jsonl";
 /// data dir before the fact counts. Re-opening it replays to the same view, so a Build accepted
 /// before an all-admin restart is still held after it.
 #[derive(Debug)]
-pub(crate) struct FileJournal {
+pub struct FileJournal {
     path: PathBuf,
     /// The replayed facts and their indexes. Held only for a snapshot, a point read or a
     /// publication's swap, never across the disk, a fold or the derivation.
