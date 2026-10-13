@@ -17,6 +17,7 @@ pub mod resolve_probe;
 pub mod faults;
 pub mod originate;
 pub mod admin_faults;
+pub mod fault_door;
 pub mod test_certs;
 pub mod test_app;
 
