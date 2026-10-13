@@ -1057,4 +1057,39 @@ mod tests {
         }
         assert!(crate::executor::seat_move(&delete, &t).is_some_and(|m| m.mesh_seat), "a birth marked offline is still mesh2's other node: the seat moves first");
     }
+
+    /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C2
+    /// "Successor search for the commanded transfer": "2. only when that mesh has none ... the lowest
+    /// NodeId among the other ReadyForTraffic mesh-primaries; 3. neither found: refused by name,
+    /// `cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh <mesh>, no other
+    /// mesh-primary ReadyForTraffic` ... the commanding workflow fails with that reason"; C1: "the
+    /// delete of a mesh's only node skips the update"): the fabric primary `mesh2.admin.1` is mesh2's
+    /// only node. Its retire and delete skip node.primary.update, and its fabric seat moves out of
+    /// mesh2: with mesh1's primary ReadyForTraffic the Build door admits them; with no other
+    /// mesh-primary ReadyForTraffic the door refuses them `last-admin` with C2 step 3's text.
+    /// Must NOT happen: a Build admitted whose fabric seat has nowhere to go.
+    #[test]
+    fn the_delete_of_a_fabric_primary_that_is_its_meshs_only_node_needs_another_ready_mesh_primary() {
+        let mut t = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            ],
+            nodes: vec![node("mesh1.admin.1", true, false), node("mesh1.rpc.1", true, false), node("mesh2.admin.1", true, true)],
+        };
+        let fp: PathName = "mesh2.admin.1".parse().unwrap();
+        for action in ["retire", "delete"] {
+            assert!(last_admin(&fp, action, &t).is_none(), "{action}: mesh1's Ready primary takes the fabric seat: {:?}", last_admin(&fp, action, &t));
+        }
+        for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh1.admin.1") {
+            n.status = NodeStatus::Pending;
+        }
+        for action in ["retire", "delete"] {
+            match last_admin(&fp, action, &t) {
+                Some(BuildReject::LastAdmin { refusal, .. }) => assert_eq!(refusal, "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh2, no other mesh-primary ReadyForTraffic", "{action}"),
+                other => panic!("{action}: no other mesh-primary is ReadyForTraffic: refused last-admin: {other:?}"),
+            }
+        }
+    }
 }
