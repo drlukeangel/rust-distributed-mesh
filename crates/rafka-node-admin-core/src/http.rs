@@ -969,3 +969,48 @@ pub fn router(cp: Arc<ControlPlane>, runtime_routes: Router) -> Router {
         .with_state(cp)
         .merge(runtime_routes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Fabric, FabricId, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
+
+    fn node(name: &str, primary: bool, fabric: bool) -> Node {
+        let mut n = Node::allocated(name.parse().unwrap());
+        n.status = NodeStatus::ReadyForTraffic;
+        n.incarnation_id = Some(crate::model::IncarnationId::mint());
+        n.is_primary = primary;
+        n.is_fabric_primary = fabric;
+        n
+    }
+
+    /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
+    /// no-successor cases": "The one exception is R-MT1's: the delete of a mesh's only node skips the
+    /// update"; mesh-delete.md step 7: "A separate node.delete deletes the mesh-primary"): mesh1's final
+    /// primary, the only node a mesh.delete left in mesh1 and still its mesh-primary, is deleted through
+    /// the node.delete route (`delete`) and through a desired-state retire (`retire`) with no
+    /// node.primary.update and no refusal. A stop of that node is refused with Q7's text, and so is the
+    /// delete of mesh2's primary while mesh2 still holds another node and no other node-admin. What must
+    /// NOT happen: the node.delete mesh-delete.md step 7 names refused `last-admin`.
+    #[test]
+    fn the_delete_of_a_meshs_only_node_skips_the_update_on_every_delete_route() {
+        let t = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![
+                Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            ],
+            nodes: vec![node("mesh1.admin.1", true, false), node("mesh2.admin.1", true, true), node("mesh2.rpc.1", true, false)],
+        };
+        let only: PathName = "mesh1.admin.1".parse().unwrap();
+        for action in ["delete", "retire"] {
+            assert!(last_admin(&only, action, &t).is_none(), "{action} of mesh1's only node skips the update: {:?}", last_admin(&only, action, &t));
+        }
+        let refusal = |path: &str, action: &str| match last_admin(&path.parse().unwrap(), action, &t) {
+            Some(BuildReject::LastAdmin { refusal, .. }) => refusal,
+            other => panic!("{action} of {path} is refused last-admin: {other:?}"),
+        };
+        assert_eq!(refusal("mesh1.admin.1", "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
+        assert_eq!(refusal("mesh2.admin.1", "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
+    }
+}
