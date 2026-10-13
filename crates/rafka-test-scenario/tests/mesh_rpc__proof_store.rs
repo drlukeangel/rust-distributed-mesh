@@ -12,6 +12,7 @@
 //!    publishes its departure, `exact:<old>` resolves Gone and never follows the replacement.
 //! 5. A key or value over its limit is refused by name, and writes nothing.
 
+use crate::build_log;
 use rafka_node_admin_client::{Change, NodeStatus};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
@@ -93,6 +94,8 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     // 3. A killed node is recovered by its mesh-primary over its inherited data dir: a new logical
     //    node at the same path.name, with the same endpoint key, that keeps the store.
     let data_dir = estate.data_dir(NODE).await;
+    let accepted = estate.accepted_build_id().await;
+    let attempt_before = estate.attempt_of_build(&accepted).await;
     estate.kill_node(NODE).await;
     let recovered = estate
         .until_node(NODE, "the recovered node holds the path", crate::node_recovery_due(), |n| {
@@ -106,6 +109,12 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let inherited = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&inherited, &recovered, "get");
     assert_eq!(inherited["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the recovered node serves the store it inherited: {inherited}");
+
+    // The recovery is an attempt of the accepted Build; the node holding the path is that attempt's work, not its end.
+    // One Build at a time: the replace below is submitted once the recovery attempt has completed.
+    build_log::build_fact(&estate.carrier().await, &accepted, "the recovery attempt complete", Duration::from_secs(60), |b| u64::from(b.attempt) > attempt_before && b.state == rafka_node_admin_core::build_state::BuildState::Complete)
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
 
     // 4. A planned replacement does not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
