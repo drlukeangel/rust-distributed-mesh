@@ -500,6 +500,16 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     let join_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForMeshJoin").collect();
     assert_eq!(join_step.len(), 1, "the pipeline ran the join step once");
     assert_eq!(join_step[0]["attributes"]["outcome"], "failed", "and it failed there");
+    // Each step's wall and, for one that ran blocking calls, their wait for a thread and their run.
+    let walls: Vec<String> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step")
+        .into_iter()
+        .map(|s| {
+            let a = &s["attributes"];
+            let io = a.get("io_calls").map(|_| format!(" io_calls={} io_queued_ms={} io_ms={}", a["io_calls"], a["io_queued_ms"], a["io_ms"])).unwrap_or_default();
+            format!("{}={}ms{io}", a["step"].as_str().unwrap_or_default(), a.get("elapsed_ms").and_then(Value::as_str).unwrap_or("?"))
+        })
+        .collect();
+    eprintln!("trace {}: rdm.node_admin.node.create.via-workflow outcome=failed failed_step=node.join; steps {}", call[0]["trace_id"], walls.join(", "));
 }
 
 /// CONTRACT: a create whose node has joined but is not ready (its Ready check names a blocker, as an
