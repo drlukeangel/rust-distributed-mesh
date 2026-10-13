@@ -411,6 +411,10 @@ fn an_admin_started_on_a_prepared_root_boots_from_its_own_row_in_recovery_with_i
     }
     let (_, fabric_id, mesh_id) = root.own_row().unwrap();
     assert_eq!((fabric_id, mesh_id), (root.fabric_id.to_string(), root.mesh_id.to_string()), "the own row keeps the FabricId and MeshId");
+    let spans = root.until(&mut running, "rdm.mesh.node.update.via-ready", BOOTS_WITHIN);
+    let ready = spans.iter().find(|s| s["name"] == "rdm.mesh.node.update.via-ready").unwrap();
+    assert_eq!((attr(ready, "fabric_id"), attr(ready, "mesh_id"), attr(ready, "build_id")), (root.fabric_id.to_string(), root.mesh_id.to_string(), root.build_id.to_string()), "Ready in the prepared Fabric and mesh, holding the accepted Build: {ready}");
+    assert_eq!(ready["trace_id"], opened["trace_id"], "Ready ends the boot's own story");
     root.end(running);
     assert_eq!(fabric_dirs(&root.store), vec![root.fabric_id.to_string()], "no second fabric directory");
     let mesh_row: serde_json::Value = serde_json::from_slice(&std::fs::read(root.store.join(root.fabric_id.to_string()).join("meshes").join("mesh1.json")).unwrap()).unwrap();
