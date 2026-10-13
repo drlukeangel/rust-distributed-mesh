@@ -6,12 +6,16 @@
 //! `iptables` (root, or `sudo -n`); where the host cannot, the fault answers
 //! `LinkRefusal::Unavailable` and the cell skips by that reason, or fails with it when
 //! `RDM_REQUIRE_NETFAULT=1`.
+//!
+//! The spans a cell asserts are this process's own: the kit's fault spans. Each cell captures them
+//! with its own `EvidenceCapture` on the runtime it runs the estate on, in a directory of its own
+//! beside the estate's artifacts, and reads back that file and no other.
 
 use rafka_mesh_entity::NodeId;
 use rafka_node_admin_client::{NodeStatus, NodeView};
 use rafka_test_scenario::disk_faults::DiskFull;
 use rafka_test_scenario::elections::advertised_fabric_primaries;
-use rafka_test_scenario::estate::{named, Estate, Owner};
+use rafka_test_scenario::estate::{artifacts_root, named, Estate, Owner};
 use rafka_test_scenario::link_faults::{flap_link, FirewallInbound, LinkRefusal, PartitionSubset};
 use rafka_test_scenario::process_faults::{burst_kill, gone, ExactRuntime};
 use serde_json::Value;
@@ -38,15 +42,21 @@ fn attr(sp: &Value, k: &str) -> String {
     sp["attributes"][k].as_str().unwrap_or_default().to_string()
 }
 
-/// mesh1 with two node-admins and three rpc nodes, all ready; this process's own spans go to the
-/// estate's evidence dir beside the nodes' (and to OTLP when configured).
-async fn estate(test: &str) -> (Estate, Option<rafka_mesh_telemetry::TelemetryGuard>) {
+/// This cell's capture of the kit's spans, in `<artifacts>/chaos-kit/<test>.capture`: the estate
+/// replaces its own artifacts directory when it is born, so the capture's file is not under it.
+fn capture(test: &str) -> rafka_mesh_telemetry::EvidenceCapture {
+    let dir = artifacts_root().join("chaos-kit").join(format!("{test}.capture"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-chaos-kit").expect("the cell's evidence file can be created")
+}
+
+/// mesh1 with two node-admins and three rpc nodes, all ready.
+async fn estate(test: &str) -> Estate {
     let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
     estate.reconcile_shape("fabric1", &[("mesh1", 2, 3)]).await;
     estate.settles_to(&[("mesh1", 2, 3)], SETTLE).await;
-    std::env::set_var("RDM_EVIDENCE_DIR", &estate.evidence);
-    let guard = rafka_mesh_telemetry::init_evidence_telemetry("rafka-chaos-kit");
-    (estate, guard)
+    estate
 }
 
 async fn published(estate: &Estate, node: &str) -> ExactRuntime {
@@ -69,10 +79,8 @@ fn host_cannot(why: &LinkRefusal) -> bool {
     }
 }
 
-async fn finish(mut estate: Estate, guard: Option<rafka_mesh_telemetry::TelemetryGuard>) -> Vec<Value> {
+async fn finish(mut estate: Estate) {
     estate.stop().await;
-    drop(guard);
-    estate.spans()
 }
 
 async fn back_ready(estate: &Estate, node: &str, node_id: &NodeId) -> NodeView {
@@ -83,166 +91,171 @@ async fn back_ready(estate: &Estate, node: &str, node_id: &NodeId) -> NodeView {
 /// exit; the third rpc node and the fabric-primary node-admin (protected) are untouched; the view
 /// stops holding either victim's birth as ready. What must NOT happen: a signal to a protected or
 /// unnamed process.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
-    if crate::own_process::delegated(module_path!(), "burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest") {
-        return;
-    }
-    let (estate, guard) = estate("burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest").await;
-    let views = estate.node_views().await;
-    let nodes = Estate::values(&views);
-    let fp = advertised_fabric_primaries(&nodes).into_iter().next().expect("a fabric primary is advertised");
-    // The fabric primary's runtime: its published fact, or (the self-adopted bootstrap admin
-    // publishes none) the OS's own record of the process this estate started.
-    let protected = match ExactRuntime::published(std::path::Path::new(&estate.data_dir(&fp).await)) {
-        Ok(r) => r,
-        Err(_) => {
-            let pid = estate.bootstrap_pid().expect("the bootstrap admin runs");
-            ExactRuntime { deployment_id: String::new(), control_domain: rafka_test_scenario::process_faults::local_control_domain(), pid, start: rafka_test_scenario::process_faults::start_token(pid).expect("it runs") }
+#[test]
+fn burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest() {
+    let capture = capture("burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest");
+    capture.run(4, async {
+        let estate = estate("burst_kill_takes_two_exact_runtimes_together_and_spares_the_rest").await;
+        let views = estate.node_views().await;
+        let nodes = Estate::values(&views);
+        let fp = advertised_fabric_primaries(&nodes).into_iter().next().expect("a fabric primary is advertised");
+        // The fabric primary's runtime: its published fact, or (the self-adopted bootstrap admin
+        // publishes none) the OS's own record of the process this estate started.
+        let protected = match ExactRuntime::published(std::path::Path::new(&estate.data_dir(&fp).await)) {
+            Ok(r) => r,
+            Err(_) => {
+                let pid = estate.bootstrap_pid().expect("the bootstrap admin runs");
+                ExactRuntime { deployment_id: String::new(), control_domain: rafka_test_scenario::process_faults::local_control_domain(), pid, start: rafka_test_scenario::process_faults::start_token(pid).expect("it runs") }
+            }
+        };
+        let (a, b, spared) = (published(&estate, "mesh1.rpc.1").await, published(&estate, "mesh1.rpc.2").await, published(&estate, "mesh1.rpc.3").await);
+        let births: Vec<_> = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| views.iter().find(|x| x.name.to_string() == *n).unwrap().incarnation_id.clone()).collect();
+        let done = tokio::task::spawn_blocking({
+            let (targets, protected) = (vec![a.clone(), b.clone()], vec![protected.clone()]);
+            move || burst_kill(&targets, &protected)
+        })
+        .await
+        .unwrap()
+        .expect("the burst applies");
+        assert!(done.killed.iter().all(|k| k.exited), "{done:?}");
+        assert!(gone(a.pid) && gone(b.pid), "both victims exited");
+        assert!(!gone(spared.pid) && !gone(protected.pid), "the spared rpc node and the protected fabric primary still run");
+        for (name, birth) in [("mesh1.rpc.1", &births[0]), ("mesh1.rpc.2", &births[1])] {
+            estate.until_node(name, &format!("{name}'s birth no longer ready in the view"), SETTLE, |n| n.filter(|n| !ready(n) || n.incarnation_id != *birth).map(|_| ())).await;
         }
-    };
-    let (a, b, spared) = (published(&estate, "mesh1.rpc.1").await, published(&estate, "mesh1.rpc.2").await, published(&estate, "mesh1.rpc.3").await);
-    let births: Vec<_> = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| views.iter().find(|x| x.name.to_string() == *n).unwrap().incarnation_id.clone()).collect();
-    let done = tokio::task::spawn_blocking({
-        let (targets, protected) = (vec![a.clone(), b.clone()], vec![protected.clone()]);
-        move || burst_kill(&targets, &protected)
-    })
-    .await
-    .unwrap()
-    .expect("the burst applies");
-    assert!(done.killed.iter().all(|k| k.exited), "{done:?}");
-    assert!(gone(a.pid) && gone(b.pid), "both victims exited");
-    assert!(!gone(spared.pid) && !gone(protected.pid), "the spared rpc node and the protected fabric primary still run");
-    for (name, birth) in [("mesh1.rpc.1", &births[0]), ("mesh1.rpc.2", &births[1])] {
-        estate.until_node(name, &format!("{name}'s birth no longer ready in the view"), SETTLE, |n| n.filter(|n| !ready(n) || n.incarnation_id != *birth).map(|_| ())).await;
-    }
-    let spans = finish(estate, guard).await;
-    let burst: Vec<&Value> = named(&spans, "rdm.testkit.fault.update.via-process-burst");
-    assert_eq!(burst.len(), 1, "one burst span: {burst:?}");
-    assert_eq!(attr(burst[0], "targets"), "2");
-    assert!(attr(burst[0], "outcome").contains("\"applied\":\"kill\""), "{}", attr(burst[0], "outcome"));
+        finish(estate).await;
+        let spans = capture.spans().expect("the cell's spans can be read");
+        let burst: Vec<&Value> = named(&spans, "rdm.testkit.fault.update.via-process-burst");
+        assert_eq!(burst.len(), 1, "one burst span: {burst:?}");
+        assert_eq!(attr(burst[0], "targets"), "2");
+        assert!(attr(burst[0], "outcome").contains("\"applied\":\"kill\""), "{}", attr(burst[0], "outcome"));
+    });
 }
 
 /// CONTRACT: a disk fill really allocates its bounded filler inside ONE node's own data dir, the
 /// node keeps serving (a bounded filler is not an exhausted host), and the heal removes the file.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal() {
-    if crate::own_process::delegated(module_path!(), "disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal") {
-        return;
-    }
-    let (estate, guard) = estate("disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal").await;
-    let dir = std::path::PathBuf::from(estate.data_dir("mesh1.rpc.2").await);
-    let other = std::path::PathBuf::from(estate.data_dir("mesh1.rpc.1").await);
-    let fill = DiskFull::fill(&dir, 16 << 20).expect("16 MiB fits");
-    assert!(fill.allocated >= 16 << 20, "{fill:?}");
-    assert!(fill.path.starts_with(&dir) && !other.join(rafka_test_scenario::disk_faults::FILLER).exists(), "only the named node's dir holds a filler");
-    let held = estate.node_view("mesh1.rpc.2").await;
-    assert!(ready(&held), "a bounded filler leaves the node serving: {held:?}");
-    let path = fill.path.clone();
-    drop(fill);
-    assert!(!path.exists(), "the heal removed the filler");
-    let spans = finish(estate, guard).await;
-    let fills = named(&spans, "rdm.testkit.fault.update.via-disk-fill");
-    assert!(fills.iter().any(|sp| attr(sp, "outcome").starts_with("allocated")), "{fills:?}");
-    assert!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().any(|sp| attr(sp, "fault") == "disk-fill"));
+#[test]
+fn disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal() {
+    let capture = capture("disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal");
+    capture.run(4, async {
+        let estate = estate("disk_fill_allocates_in_one_nodes_data_dir_and_heals_by_removal").await;
+        let dir = std::path::PathBuf::from(estate.data_dir("mesh1.rpc.2").await);
+        let other = std::path::PathBuf::from(estate.data_dir("mesh1.rpc.1").await);
+        let fill = DiskFull::fill(&dir, 16 << 20).expect("16 MiB fits");
+        assert!(fill.allocated >= 16 << 20, "{fill:?}");
+        assert!(fill.path.starts_with(&dir) && !other.join(rafka_test_scenario::disk_faults::FILLER).exists(), "only the named node's dir holds a filler");
+        let held = estate.node_view("mesh1.rpc.2").await;
+        assert!(ready(&held), "a bounded filler leaves the node serving: {held:?}");
+        let path = fill.path.clone();
+        drop(fill);
+        assert!(!path.exists(), "the heal removed the filler");
+        finish(estate).await;
+        let spans = capture.spans().expect("the cell's spans can be read");
+        let fills = named(&spans, "rdm.testkit.fault.update.via-disk-fill");
+        assert!(fills.iter().any(|sp| attr(sp, "outcome").starts_with("allocated")), "{fills:?}");
+        assert!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().any(|sp| attr(sp, "fault") == "disk-fill"));
+    });
 }
 
 /// CONTRACT: a partition subset cuts two rpc nodes from every other node: while it stands the view
 /// stops holding either as ready; the fabric-primary is protected and refused by name; when the cut
 /// is dropped both are ready again as the same nodes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn partition_subset_cuts_a_node_set_from_the_rest_until_healed() {
-    if crate::own_process::delegated(module_path!(), "partition_subset_cuts_a_node_set_from_the_rest_until_healed") {
-        return;
-    }
-    let (estate, guard) = estate("partition_subset_cuts_a_node_set_from_the_rest_until_healed").await;
-    let views = estate.node_views().await;
-    let nodes = Estate::values(&views);
-    let fp = advertised_fabric_primaries(&nodes);
-    let ids: Vec<NodeId> = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| views.iter().find(|x| x.name.to_string() == *n).unwrap().node_id.clone()).collect();
-    assert_eq!(PartitionSubset::start(&nodes, &fp, &fp).err(), Some(LinkRefusal::Protected { name: fp[0].clone() }), "the fabric primary is never a target");
-    let cut = match PartitionSubset::start(&nodes, &names(&["mesh1.rpc.1", "mesh1.rpc.2"]), &fp) {
-        Ok(c) => c,
-        Err(why) => {
-            host_cannot(&why);
-            finish(estate, guard).await;
-            return;
+#[test]
+fn partition_subset_cuts_a_node_set_from_the_rest_until_healed() {
+    let capture = capture("partition_subset_cuts_a_node_set_from_the_rest_until_healed");
+    capture.run(4, async {
+        let estate = estate("partition_subset_cuts_a_node_set_from_the_rest_until_healed").await;
+        let views = estate.node_views().await;
+        let nodes = Estate::values(&views);
+        let fp = advertised_fabric_primaries(&nodes);
+        let ids: Vec<NodeId> = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| views.iter().find(|x| x.name.to_string() == *n).unwrap().node_id.clone()).collect();
+        assert_eq!(PartitionSubset::start(&nodes, &fp, &fp).err(), Some(LinkRefusal::Protected { name: fp[0].clone() }), "the fabric primary is never a target");
+        let cut = match PartitionSubset::start(&nodes, &names(&["mesh1.rpc.1", "mesh1.rpc.2"]), &fp) {
+            Ok(c) => c,
+            Err(why) => {
+                host_cannot(&why);
+                finish(estate).await;
+                return;
+            }
+        };
+        for n in ["mesh1.rpc.1", "mesh1.rpc.2"] {
+            estate.until_node(n, &format!("{n} not ready in the view under the cut"), SETTLE, |x| x.filter(|x| !ready(x)).map(|_| ())).await;
         }
-    };
-    for n in ["mesh1.rpc.1", "mesh1.rpc.2"] {
-        estate.until_node(n, &format!("{n} not ready in the view under the cut"), SETTLE, |x| x.filter(|x| !ready(x)).map(|_| ())).await;
-    }
-    drop(cut);
-    back_ready(&estate, "mesh1.rpc.1", &ids[0]).await;
-    back_ready(&estate, "mesh1.rpc.2", &ids[1]).await;
-    let spans = finish(estate, guard).await;
-    assert!(named(&spans, "rdm.testkit.fault.update.via-partition-subset").iter().any(|sp| attr(sp, "outcome").starts_with("cut:")));
-    assert!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().any(|sp| attr(sp, "fault") == "partition-subset"));
+        drop(cut);
+        back_ready(&estate, "mesh1.rpc.1", &ids[0]).await;
+        back_ready(&estate, "mesh1.rpc.2", &ids[1]).await;
+        finish(estate).await;
+        let spans = capture.spans().expect("the cell's spans can be read");
+        assert!(named(&spans, "rdm.testkit.fault.update.via-partition-subset").iter().any(|sp| attr(sp, "outcome").starts_with("cut:")));
+        assert!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().any(|sp| attr(sp, "fault") == "partition-subset"));
+    });
 }
 
 /// CONTRACT: a link between one rpc node and the rest flaps three times, each cut shorter than the
 /// staleness floor and healed between; afterwards the same node is ready with the same node id and
 /// the estate holds no ghost birth. Each cut and each heal leaves a span.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth() {
-    if crate::own_process::delegated(module_path!(), "link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth") {
-        return;
-    }
-    let (estate, guard) = estate("link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth").await;
-    let views = estate.node_views().await;
-    let nodes = Estate::values(&views);
-    let fp = advertised_fabric_primaries(&nodes);
-    let victim = "mesh1.rpc.1";
-    let rest: Vec<String> = nodes.iter().filter_map(|n| n["name"].as_str()).filter(|n| *n != victim).map(String::from).collect();
-    let before = views.iter().find(|n| n.name.to_string() == victim).unwrap().clone();
-    let out = tokio::task::spawn_blocking({
-        let (nodes, rest) = (nodes.clone(), rest.clone());
-        move || flap_link(&nodes, &names(&[victim]), &rest, &fp, 3, Duration::from_millis(1200), Duration::from_millis(800))
-    })
-    .await
-    .unwrap();
-    let flapped = match out {
-        Ok(f) => f,
-        Err(why) => {
-            host_cannot(&why);
-            finish(estate, guard).await;
-            return;
-        }
-    };
-    assert_eq!(flapped.cycles, 3);
-    let back = back_ready(&estate, victim, &before.node_id).await;
-    assert_eq!(back.incarnation_id, before.incarnation_id, "a flap shorter than the floor leaves the same birth");
-    assert_eq!(estate.node_views().await.len(), nodes.len(), "no ghost birth");
-    let spans = finish(estate, guard).await;
-    assert_eq!(named(&spans, "rdm.testkit.fault.update.via-link-flap").len(), 1);
-    assert_eq!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().filter(|sp| attr(sp, "fault") == "link-flap").count(), 3, "one heal per cycle");
+#[test]
+fn link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth() {
+    let capture = capture("link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth");
+    capture.run(4, async {
+        let estate = estate("link_flap_cuts_and_heals_on_schedule_and_leaves_the_same_birth").await;
+        let views = estate.node_views().await;
+        let nodes = Estate::values(&views);
+        let fp = advertised_fabric_primaries(&nodes);
+        let victim = "mesh1.rpc.1";
+        let rest: Vec<String> = nodes.iter().filter_map(|n| n["name"].as_str()).filter(|n| *n != victim).map(String::from).collect();
+        let before = views.iter().find(|n| n.name.to_string() == victim).unwrap().clone();
+        let out = tokio::task::spawn_blocking({
+            let (nodes, rest) = (nodes.clone(), rest.clone());
+            move || flap_link(&nodes, &names(&[victim]), &rest, &fp, 3, Duration::from_millis(1200), Duration::from_millis(800))
+        })
+        .await
+        .unwrap();
+        let flapped = match out {
+            Ok(f) => f,
+            Err(why) => {
+                host_cannot(&why);
+                finish(estate).await;
+                return;
+            }
+        };
+        assert_eq!(flapped.cycles, 3);
+        let back = back_ready(&estate, victim, &before.node_id).await;
+        assert_eq!(back.incarnation_id, before.incarnation_id, "a flap shorter than the floor leaves the same birth");
+        assert_eq!(estate.node_views().await.len(), nodes.len(), "no ghost birth");
+        finish(estate).await;
+        let spans = capture.spans().expect("the cell's spans can be read");
+        assert_eq!(named(&spans, "rdm.testkit.fault.update.via-link-flap").len(), 1);
+        assert_eq!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().filter(|sp| attr(sp, "fault") == "link-flap").count(), 3, "one heal per cycle");
+    });
 }
 
 /// CONTRACT: inbound UDP to one rpc node is dropped while its own sends are not: the view stops
 /// holding it as ready; when the drop is removed it is ready again as the same node.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn firewall_inbound_deafens_one_node_until_healed() {
-    if crate::own_process::delegated(module_path!(), "firewall_inbound_deafens_one_node_until_healed") {
-        return;
-    }
-    let (estate, guard) = estate("firewall_inbound_deafens_one_node_until_healed").await;
-    let views = estate.node_views().await;
-    let nodes = Estate::values(&views);
-    let fp = advertised_fabric_primaries(&nodes);
-    let victim = "mesh1.rpc.2";
-    let id = views.iter().find(|n| n.name.to_string() == victim).unwrap().node_id.clone();
-    let drop_in = match FirewallInbound::start(&nodes, victim, &fp) {
-        Ok(f) => f,
-        Err(why) => {
-            host_cannot(&why);
-            finish(estate, guard).await;
-            return;
-        }
-    };
-    estate.until_node(victim, &format!("{victim} not ready under the inbound drop"), SETTLE, |x| x.filter(|x| !ready(x)).map(|_| ())).await;
-    drop(drop_in);
-    back_ready(&estate, victim, &id).await;
-    let spans = finish(estate, guard).await;
-    assert!(named(&spans, "rdm.testkit.fault.update.via-inbound-drop").iter().any(|sp| attr(sp, "target") == victim));
-    assert!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().any(|sp| attr(sp, "fault") == "inbound-drop"));
+#[test]
+fn firewall_inbound_deafens_one_node_until_healed() {
+    let capture = capture("firewall_inbound_deafens_one_node_until_healed");
+    capture.run(4, async {
+        let estate = estate("firewall_inbound_deafens_one_node_until_healed").await;
+        let views = estate.node_views().await;
+        let nodes = Estate::values(&views);
+        let fp = advertised_fabric_primaries(&nodes);
+        let victim = "mesh1.rpc.2";
+        let id = views.iter().find(|n| n.name.to_string() == victim).unwrap().node_id.clone();
+        let drop_in = match FirewallInbound::start(&nodes, victim, &fp) {
+            Ok(f) => f,
+            Err(why) => {
+                host_cannot(&why);
+                finish(estate).await;
+                return;
+            }
+        };
+        estate.until_node(victim, &format!("{victim} not ready under the inbound drop"), SETTLE, |x| x.filter(|x| !ready(x)).map(|_| ())).await;
+        drop(drop_in);
+        back_ready(&estate, victim, &id).await;
+        finish(estate).await;
+        let spans = capture.spans().expect("the cell's spans can be read");
+        assert!(named(&spans, "rdm.testkit.fault.update.via-inbound-drop").iter().any(|sp| attr(sp, "target") == victim));
+        assert!(named(&spans, "rdm.testkit.fault.remove.via-heal").iter().any(|sp| attr(sp, "fault") == "inbound-drop"));
+    });
 }
