@@ -1,13 +1,13 @@
 //! i143.e11.s4 process E2E: a role cohort's seat is the one election (PRD §11, §13.1).
 //!
 //! One fabric, `{node_admin: 1, broker: 3, gateway: 1, compute: 1}`. From public surfaces only:
-//! - every cohort's advertised primary is the one the canonical election computes from the
-//!   view's NodeIds and statuses (`seats_as_expected`), a role cohort like an rpc cohort;
+//! - every cohort advertises exactly one primary (`seats_as_expected`), a role cohort like an rpc
+//!   cohort;
 //! - kill the broker primary (SIGKILL): the next-lowest ready broker is announced by a
 //!   `rdm.mesh.election.resolve.via-recompute` span with `kind = broker`; the view's one broker
-//!   primary is the election's answer on the same sample (drift rebirths the path as a new NodeId
-//!   that wins or not by it) — read the way a product reads it, by `is_primary` on `node.get`
-//!   (`Nodes::get`), never computed product-side.
+//!   primary is that successor, which keeps its seat over the birth drift recovery brings back at the
+//!   killed path whatever NodeId it drew (elections §5) — read the way a product reads it, by
+//!   `is_primary` on `node.get` (`Nodes::get`), never computed product-side.
 
 use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
 use rafka_test_scenario::elections::{advertised_primaries, seats_as_expected, Cohort};
@@ -78,17 +78,16 @@ async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
     .await;
 
     // A product reads the seat from node-admin's view and never computes it. Drift recovery
-    // rebirths the killed path within seconds as a new NodeId that wins or not by it, so the seat
-    // is checked against the election's answer on the same sample, never against the announced
-    // successor alone: the one advertised broker primary is the lowest ready NodeId of that view,
-    // and the killed birth is no longer ready anywhere in it.
+    // brings a new birth back at the killed path within seconds, a new NodeId, a candidate for a later vacancy that
+    // never displaces the successor, whatever NodeId it drew (fabric-node-lifecycle-elections.md §5:
+    // "a living holder keeps its seat; a lower-NodeId candidate that later becomes Ready never
+    // displaces it"): the one advertised broker primary is the announced successor, and the killed
+    // birth is no longer ready anywhere in the view.
     let view = estate
-        .until_view("the view's one broker primary is the election's answer and the killed birth is gone", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), |view| {
-            let ready: Vec<_> = view.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::Broker && n.status == NodeStatus::ReadyForTraffic).collect();
-            let advertised: Vec<_> = ready.iter().filter(|n| n.is_primary).collect();
-            let lowest = ready.iter().min_by(|a, b| a.node_id.to_string().cmp(&b.node_id.to_string()))?;
+        .until_view("the view's one broker primary is the announced successor and the killed birth is gone", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), |view| {
+            let advertised: Vec<_> = view.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::Broker && n.is_primary).collect();
             let killed_gone = !view.iter().any(|n| n.node_id.to_string() == killed_id && n.status == NodeStatus::ReadyForTraffic);
-            (advertised.len() == 1 && advertised[0].node_id == lowest.node_id && killed_gone).then(|| view.to_vec())
+            (advertised.len() == 1 && advertised[0].node_id.to_string() == succ_id && killed_gone).then(|| view.to_vec())
         })
         .await;
     estate.artifact("view-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "successor": succ, "view": view}));
