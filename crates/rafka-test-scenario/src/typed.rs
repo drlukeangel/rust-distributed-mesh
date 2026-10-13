@@ -534,6 +534,11 @@ impl Estate {
 
     /// The node client the typed objects share: what a peer node holds of its mesh, by `Peers::fact`.
     pub async fn peers(&self) -> Arc<Peers> {
+        // The client outlives the entry admin: a read at a named admin (`fabric_view_at`, `node_views_at`) is made
+        // after the entry died, and only the first call, which has no client yet, needs the handover.
+        if let Some(w) = self.wire.lock().await.as_ref() {
+            return w.peers.clone();
+        }
         self.carrier().await;
         self.wire.lock().await.as_ref().expect("the handover was made").peers.clone()
     }
