@@ -575,7 +575,6 @@ pub struct Estate {
     seed: Option<u64>,
     /// Admins this estate restarted on their own data dirs.
     restarted: Vec<Child>,
-    http: reqwest::Client,
     /// The handover of the typed objects (`crate::typed`): made once per control base.
     pub(crate) wire: tokio::sync::Mutex<Option<crate::typed::Wire>>,
     /// The births the admins this estate started printed, with the control base each printed beside
@@ -668,7 +667,7 @@ impl Estate {
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin: admin.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(vec![(admin, birth)]), advertised: Default::default(), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin: admin.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(vec![(admin, birth)]), advertised: Default::default(), _scope: scope };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when it first answers. `fabric.get` at it names the seat and the Fabric.
@@ -713,192 +712,6 @@ impl Estate {
         writeln!(f, "{entry}").unwrap();
     }
 
-    /// `GET base/api/fabric`, only when the admin at `base` answers for this estate's Fabric.
-    pub async fn fabric_at(&self, base: &str) -> Option<Value> {
-        own_fabric_at(base, &self.fabric_id).await
-    }
-
-    pub async fn get(&self, path: &str) -> (u16, Value) {
-        let r = self.http.get(format!("{}{path}", self.admin)).send().await.expect("control API reachable");
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// `GET path` on another admin's control API (`base`).
-    pub async fn http_get(&self, base: &str, path: &str) -> (u16, Value) {
-        let r = self.http.get(format!("{base}{path}")).send().await.expect("control API reachable");
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// `POST base+path` with `body`: status and the JSON body (or `Null`).
-    pub async fn http_post(&self, base: &str, path: &str, body: &Value) -> (u16, Value) {
-        let r = self.http.post(format!("{base}{path}")).json(body).send().await.unwrap_or_else(|e| panic!("POST {base}{path}: {e}"));
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// `POST` to this estate's entry admin, as is.
-    pub async fn post_raw(&self, path: &str, body: &Value) -> (u16, Value) {
-        self.http_post(&self.admin, path, body).await
-    }
-
-    /// `DELETE base+path`, as is.
-    pub async fn delete_at(&self, base: &str, path: &str) -> (u16, Value) {
-        let r = self.http.delete(format!("{base}{path}")).send().await.unwrap_or_else(|e| panic!("DELETE {base}{path}: {e}"));
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// `DELETE` at this estate's entry admin, as is.
-    pub async fn delete_raw(&self, path: &str) -> (u16, Value) {
-        let r = self.http.delete(format!("{}{path}", self.admin)).send().await.expect("control API reachable");
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// A topology request: what an operator does. Topology is accepted only by the current
-    /// fabric-primary, one Build at a time, so the request goes to the fabric control endpoint
-    /// the entry admin advertises, follows the seat if it answers `rejected-not-authority`, and
-    /// waits out a Build still reconciling (`build-in-progress`, or `attempt-taken`: the number the
-    /// request computed was opened first for the Build's own drift attempt), for up to two minutes. Every
-    /// other answer is returned as is.
-    async fn topology_request(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        let mut last = (0u16, Value::Null);
-        loop {
-            let advertised = self.get("/api/fabric").await.1["admin_api_base"].as_str().filter(|b| !b.is_empty()).map(String::from);
-            let base = match advertised {
-                Some(b) if self.fabric_at(&b).await.is_some() => b,
-                _ => self.admin.clone(),
-            };
-            // Removing a node: the authority removes a birth it sees, so give its view the moment
-            // gossip needs to hear a node another Mesh just created.
-            if method == "DELETE" {
-                if let Some(name) = path.strip_prefix("/api/nodes/") {
-                    let seen_by = Instant::now() + Duration::from_secs(10);
-                    while Instant::now() < seen_by {
-                        let v = self.http_get(&base, "/api/nodes").await.1;
-                        if v["nodes"].as_array().is_some_and(|ns| ns.iter().any(|n| n["name"] == name && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")))) {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                }
-            }
-            let r = match (method, body) {
-                ("DELETE", _) => self.http.delete(format!("{base}{path}")).send().await,
-                (_, Some(b)) => self.http.post(format!("{base}{path}")).json(b).send().await,
-                _ => self.http.post(format!("{base}{path}")).send().await,
-            };
-            if let Ok(r) = r {
-                let status = r.status().as_u16();
-                let v = r.json().await.unwrap_or(Value::Null);
-                let waits = status == 409 && matches!(v["error"].as_str(), Some("rejected-not-authority") | Some("build-in-progress") | Some("attempt-taken"));
-                if !waits {
-                    return (status, v);
-                }
-                last = (status, v);
-            }
-            assert!(Instant::now() < deadline, "{method} {path}: no fabric-primary accepted it within 120s; last answer: {} {}", last.0, last.1);
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
-
-    pub async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
-        if path.starts_with("/api/build") || path.starts_with("/api/nodes") || path.starts_with("/api/meshes") {
-            return self.topology_request("POST", path, Some(body)).await;
-        }
-        self.post_raw(path, body).await
-    }
-
-    pub async fn delete(&self, path: &str) -> (u16, Value) {
-        if path.starts_with("/api/nodes") || path.starts_with("/api/meshes") {
-            return self.topology_request("DELETE", path, None).await;
-        }
-        self.delete_raw(path).await
-    }
-
-    /// Wait until Build `id` is `complete`; a `failed` Build fails the test.
-    pub async fn await_build(&self, id: &str, within: Duration) -> Value {
-        wait_for(&format!("build {id} complete"), within, || async {
-            let (_, b) = self.get(&format!("/api/builds?id={id}")).await;
-            match b["state"].as_str() {
-                Some("complete") => Some(b),
-                Some("failed") => panic!("build {id} failed: {b:#}"),
-                _ => None,
-            }
-        })
-        .await
-    }
-
-    /// The attempt a 202 named: the one its request opened (attempt 1 for an accepted Build).
-    pub fn attempt_of(accepted: &Value) -> u64 {
-        accepted["attempt"].as_u64().unwrap_or_else(|| panic!("the 202 names the attempt it opened: {accepted}"))
-    }
-
-    /// Wait until attempt `attempt` of Build `id` is complete, where `attempt` is the one the
-    /// request that opened it answered 202 with. The Build's reported attempt must have reached
-    /// `attempt` and that attempt must have converged; a Build still reporting an earlier
-    /// attempt's `complete` is not yet this attempt's. A failed attempt fails the test with the
-    /// Build JSON.
-    pub async fn await_attempt(&self, id: &str, attempt: u64, within: Duration) -> Value {
-        wait_for(&format!("build {id} attempt {attempt} complete"), within, || async {
-            let (_, b) = self.get(&format!("/api/builds?id={id}")).await;
-            attempt_verdict(id, attempt, &b)
-        })
-        .await
-    }
-
-    pub async fn nodes(&self) -> Vec<Value> {
-        let (status, v) = self.get("/api/nodes").await;
-        assert_eq!(status, 200, "GET /api/nodes: {v}");
-        v["nodes"].as_array().cloned().unwrap_or_default()
-    }
-
-    /// `GET /api/nodes` from the admin serving `base` (another admin's view).
-    pub async fn nodes_at(&self, base: &str) -> Vec<Value> {
-        let r = self.http.get(format!("{base}/api/nodes")).send().await.expect("control API reachable");
-        assert_eq!(r.status().as_u16(), 200, "GET {base}/api/nodes");
-        let v: Value = r.json().await.unwrap_or(Value::Null);
-        v["nodes"].as_array().cloned().unwrap_or_default()
-    }
-
-    /// The view once every cohort holds exactly its desired count of nodes
-    /// (`(mesh, node_admin, rpc_node)`), every one ready for traffic. A
-    /// Build's shape is counts, not paths: shrink retires non-primaries, so
-    /// which ordinals remain depends on where the seats are.
-    pub async fn settled_shape(&self, meshes: &[(&str, u32, u32)], within: Duration) -> Vec<Value> {
-        let want: std::collections::BTreeMap<(String, String), usize> = meshes
-            .iter()
-            .flat_map(|(m, a, r)| [((m.to_string(), "node_admin".to_string()), *a as usize), ((m.to_string(), "rpc_node".to_string()), *r as usize)])
-            .collect();
-        self.settled_counts(want, within).await
-    }
-
-    /// The view once every `(mesh, kind)` cohort holds exactly its count of nodes, every one ready
-    /// for traffic.
-    pub async fn settled_counts(&self, want: std::collections::BTreeMap<(String, String), usize>, within: Duration) -> Vec<Value> {
-        let until = Instant::now() + within;
-        loop {
-            let nodes = self.nodes().await;
-            let mut have: std::collections::BTreeMap<(String, String), usize> = std::collections::BTreeMap::new();
-            for n in &nodes {
-                *have.entry((n["mesh"].as_str().unwrap_or("").into(), n["kind"].as_str().unwrap_or("").into())).or_default() += 1;
-            }
-            if have == want && nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
-                return nodes;
-            }
-            if Instant::now() >= until {
-                panic!("the view never settled on {want:?} within {within:?}; last view: {have:?}: {nodes:#?}");
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// `node`'s data dir. Only the admin that launched a node advertises it,
-    /// and that is whichever admin executed its creation, so every live
-    /// admin's view is asked.
     /// The fabric's store root, `<estate store_dir>/<fabric id>/` (R14): the one fabric directory the
     /// estate's store_dir holds beside the fabrics' name index (`fabrics/`, R-FN1).
     pub fn fabric_store_root(&self) -> PathBuf {
@@ -921,21 +734,6 @@ impl Estate {
         self.fabric_store_root().join("connections").join(node)
     }
 
-    pub async fn data_dir_of(&self, node: &str) -> String {
-        let bases: Vec<String> = std::iter::once(self.admin.clone())
-            .chain(self.nodes().await.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").filter_map(|n| n["admin_api_base"].as_str().map(String::from)))
-            .collect();
-        for base in bases {
-            let Ok(r) = self.http.get(format!("{base}/api/nodes")).timeout(Duration::from_secs(2)).send().await else { continue };
-            let v: Value = r.json().await.unwrap_or(Value::Null);
-            let dir = v["nodes"].as_array().into_iter().flatten().find(|n| n["name"] == node).and_then(|n| n["data_dir"].as_str().map(String::from));
-            if let Some(dir) = dir {
-                return dir;
-            }
-        }
-        panic!("no live admin advertises {node}'s data dir")
-    }
-
     /// The pid of `node`'s runtime: its process (process provider: its `deployment.json`), or its
     /// container's init as the host sees it (container provider).
     pub async fn pid_of(&self, node: &str) -> u64 {
@@ -953,51 +751,6 @@ impl Estate {
         let pid = self.pid_of(node).await;
         let ok = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status().unwrap().success();
         assert!(ok, "kill -9 {pid} ({node})");
-    }
-
-    /// The view once it holds exactly `names`, every one ready for traffic.
-    /// A Build can complete on another admin (a mesh's own primary) before
-    /// this admin hears the last member it created: the view converges
-    /// within gossip delay, and a view that does not within `within` fails.
-    pub async fn settled(&self, names: &std::collections::BTreeSet<String>, within: Duration) -> Vec<Value> {
-        let deadline = Instant::now() + within;
-        loop {
-            let nodes = self.nodes().await;
-            let have: std::collections::BTreeSet<String> = nodes.iter().filter_map(|n| n["name"].as_str().map(str::to_string)).collect();
-            if &have == names && nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
-                return nodes;
-            }
-            if Instant::now() >= deadline {
-                let seen: Vec<String> = nodes.iter().map(|n| format!("{}={}", n["name"], n["status"])).collect();
-                panic!("the view never settled on {names:?} within {within:?}; last view: {seen:?}");
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// Wait until the node at `witness` (a probe target such as `path:mesh1.gateway.1`) holds the
-    /// birth the admin's view lists for `node` (same node id, same incarnation). A node learns a
-    /// peer's birth by gossip, not from the admin's settled view: a call through a witness is made
-    /// only once the witness's own resolver holds the birth it will call.
-    pub async fn witness_holds(&self, witness: &str, node: &str) {
-        let birth = self.node(node).await;
-        let (id, incarnation) = (birth["node_id"].as_str().unwrap_or_default().to_string(), birth["incarnation_id"].as_str().unwrap_or_default().to_string());
-        let exact = format!("exact:{id}");
-        wait_for(&format!("{witness} holds incarnation {incarnation} of {node}"), Duration::from_secs(30), || async {
-            let r = self.probe(&["resolve", "--target", witness, "--query", &exact]);
-            (r["reply"]["resolution"] == "found" && r["reply"]["incarnation_id"] == incarnation.as_str()).then_some(())
-        })
-        .await;
-    }
-
-    pub async fn node(&self, name: &str) -> Value {
-        self.node_opt(name).await.unwrap_or_else(|| panic!("no node {name}"))
-    }
-
-    /// The node at `name` if the view lists it now. A departed birth leaves the view before its
-    /// replacement's record appears, so a wait on a path uses this, never [`Self::node`].
-    pub async fn node_opt(&self, name: &str) -> Option<Value> {
-        self.nodes().await.into_iter().find(|n| n["name"] == name)
     }
 
     /// Run one probe invocation and record it in the RPC ledger.
@@ -1408,68 +1161,6 @@ pub fn descends_from(spans: &[Value], child: &Value, ancestor: &Value) -> bool {
         }
     }
     false
-}
-
-/// `GET base/api/fabric`, only when the admin at `base` answers within 2s and its view names the
-/// Fabric `fabric_id`. A loopback control port freed by a dead runtime is reused by other estates
-/// on the host, so an answer from an address is never taken as this Fabric's on its own.
-pub async fn own_fabric_at(base: &str, fabric_id: &str) -> Option<Value> {
-    let r = reqwest::Client::new().get(format!("{base}/api/fabric")).timeout(Duration::from_secs(2)).send().await.ok()?;
-    if !r.status().is_success() {
-        return None;
-    }
-    let f: Value = r.json().await.ok()?;
-    (f["id"].as_str() == Some(fabric_id)).then_some(f)
-}
-
-/// What one reading of Build `id` says about attempt `attempt`: its converged Build, or nothing
-/// yet. A failed attempt panics with the Build JSON.
-pub fn attempt_verdict(id: &str, attempt: u64, b: &Value) -> Option<Value> {
-    // The Build reports the highest attempt claimed; a reading below the awaited attempt is an
-    // earlier attempt's state (its `complete` included), never this attempt's.
-    if b["attempt"].as_u64()? < attempt {
-        return None;
-    }
-    match b["state"].as_str() {
-        Some("complete") => Some(b.clone()),
-        Some("failed") => panic!("build {id} failed: {b:#}"),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod attempt_verdict_tests {
-    use super::*;
-
-    fn at(state: &str, attempt: u64) -> Value {
-        json!({"build_id": "b", "state": state, "attempt": attempt})
-    }
-
-    /// CONTRACT: a reading that still carries the previous attempt's `complete` is not the
-    /// awaited attempt's verdict, and neither is the opened-but-unclaimed or running reading.
-    #[test]
-    fn the_previous_attempts_complete_is_not_the_awaited_attempts_verdict() {
-        assert!(attempt_verdict("b", 2, &at("complete", 1)).is_none(), "the previous attempt's complete");
-        assert!(attempt_verdict("b", 2, &at("pending", 1)).is_none(), "opened, not yet claimed");
-        assert!(attempt_verdict("b", 2, &at("running", 2)).is_none(), "claimed, running");
-    }
-
-    /// CONTRACT: the awaited attempt converging, or a later one, is the verdict.
-    #[test]
-    fn the_awaited_attempt_or_a_later_one_complete_is_the_verdict() {
-        assert!(attempt_verdict("b", 2, &at("complete", 2)).is_some());
-        assert!(attempt_verdict("b", 2, &at("complete", 3)).is_some());
-    }
-
-    /// CONTRACT: a failed awaited attempt fails the test carrying the Build; an earlier attempt's
-    /// failure is not this attempt's.
-    #[test]
-    fn a_failed_awaited_attempt_panics_with_the_build_and_an_earlier_failure_does_not() {
-        assert!(attempt_verdict("b", 2, &at("failed", 1)).is_none());
-        let e = std::panic::catch_unwind(|| attempt_verdict("b", 2, &at("failed", 2))).expect_err("a failed attempt fails the test");
-        let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
-        assert!(msg.contains("build b failed") && msg.contains("\"attempt\": 2"), "{msg}");
-    }
 }
 
 #[cfg(test)]

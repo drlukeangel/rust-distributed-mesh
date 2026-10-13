@@ -1355,7 +1355,7 @@ impl Driver {
         let back = {
             let est = &self.estate;
             let back = wait_for_opt(&format!("{path} back as its own birth"), floor * 2 + Duration::from_secs(60), || async {
-                est.node_opt(&path).await.filter(|x| x["incarnation_id"] == inc.as_str() && x["status"] == "ready-for-traffic")
+                est.node_value_opt(&path).await.filter(|x| x["incarnation_id"] == inc.as_str() && x["status"] == "ready-for-traffic")
             })
             .await;
             back.ok_or_else(|| broken("silence-is-not-death", format!("{path} did not come back as {inc} after the release")))?
