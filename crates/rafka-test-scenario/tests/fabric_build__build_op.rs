@@ -118,23 +118,13 @@ async fn born(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> B
     born_framed(estate, caller, shape).await.0
 }
 
-/// [`born`], with every frame the Builds that birthed the shape streamed.
+/// [`born`], with every frame the Build that birthed the shape streamed. The estate's birth followed
+/// the Day-0 Build to its end, so the shape is accepted at once.
 async fn born_framed(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> (BuildCarrier, Vec<BuildFrame>) {
-    let mut frames = Vec::new();
     let carrier = caller.carrier().await;
     let desired = FabricDesired { fabric: FABRIC.into(), meshes: shape.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
-    let builds = Builds::new(carrier.clone());
-    let mut stream = match builds.create(&BuildSpec::Fabric(desired.clone())).await {
-        // The Build the fabric accepted on its Day 0 is still reconciling: its own stream says when it
-        // is done, and the shape is accepted after it.
-        Err(CallEnd::BuildInProgress { current }) => {
-            let mut day_zero = carrier.resubmit(&current, 1).await.expect("the fabric-primary streams the Build in flight");
-            frames.extend(until_complete(&mut day_zero).await);
-            builds.create(&BuildSpec::Fabric(desired)).await.expect("the fabric-primary accepts the shape once the Day-0 Build is done")
-        }
-        other => other.expect("the fabric-primary accepts the shape"),
-    };
-    frames.extend(until_complete(&mut stream).await);
+    let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(desired)).await.expect("the fabric-primary accepts the shape");
+    let frames = until_complete(&mut stream).await;
     estate.settles_to(shape, Duration::from_secs(90)).await;
     caller.learn().await;
     // A workflow a caller submits is refused until the initial fabric has first reached ready-for-traffic
@@ -411,7 +401,7 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     assert_eq!(receipts.attempt, accepted.attempt, "the successor started the attempt that was claimed and opened no other");
 
     // The estate stops through the admin that holds the seat now.
-    estate.admin = caller.base_of(&successor);
+    estate.enter(&path(&successor)).await;
     estate.stop().await;
     let spans = estate.spans();
     let build = &accepted.build_id.to_string();
@@ -468,8 +458,7 @@ async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_se
     assert_eq!(resumed.build_id(), &build_id, "never a second Build");
     until_complete(&mut resumed).await;
 
-    let base = caller.bases.lock().unwrap().get(&new_seat).cloned().expect("the new seat's control API is known");
-    estate.admin = base;
+    estate.enter(&path(&new_seat)).await;
     estate.stop().await;
     let spans = estate.spans();
     let build = &build_id.as_str();

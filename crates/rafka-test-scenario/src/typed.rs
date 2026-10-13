@@ -524,27 +524,15 @@ impl Estate {
         u64::from(self.builds_obj().await.get(&BuildId::parse(build_id).unwrap_or_else(|e| panic!("build.get of {build_id}: {e}"))).await.unwrap_or_else(|e| panic!("build.get of {build_id}: {e}")).attempt)
     }
 
-    /// `build.create` of `spec`, accepted: the stream of the Build that runs it. The Build the fabric
-    /// holds may still be reconciling (the Day-0 Build, or an earlier call's): its own stream says when
-    /// it is done, and `spec` is accepted after it.
+    /// `build.create` of `spec`, accepted: the stream of the Build that runs it. A cell that does not
+    /// test a refusal never has a submit refused: the estate's birth followed the Day-0 Build to its
+    /// terminal frame, and a cell follows each Build it started (`Estate::follow`) before it submits the
+    /// next, so a refusal here, a Build in progress included, is a defect of the cell and panics naming
+    /// the spec and the refusal.
     pub async fn submit(&self, spec: &BuildSpec) -> BuildStream {
-        match self.try_submit(spec).await {
+        match Builds::new(self.carrier().await).create(spec).await {
             Ok(stream) => stream,
             Err(e) => panic!("the fabric-primary refused build.create {spec:?}: {e}"),
-        }
-    }
-
-    /// [`Self::submit`], the refusal returned by name.
-    pub async fn try_submit(&self, spec: &BuildSpec) -> Result<BuildStream, CallEnd> {
-        let carrier = self.carrier().await;
-        let builds = Builds::new(carrier.clone());
-        match builds.create(spec).await {
-            Err(CallEnd::BuildInProgress { current }) => {
-                let mut running = carrier.resubmit(&current, 1).await.unwrap_or_else(|e| panic!("the fabric-primary does not stream the Build {current} it is reconciling: {e}"));
-                Self::until_complete(&mut running).await;
-                builds.create(spec).await
-            }
-            other => other,
         }
     }
 

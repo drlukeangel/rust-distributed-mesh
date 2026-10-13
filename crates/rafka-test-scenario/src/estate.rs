@@ -670,13 +670,23 @@ impl Estate {
         let mut estate = Self { owner, root, artifacts, evidence, admin: admin.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(vec![(admin, birth)]), advertised: Default::default(), _scope: scope };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
-        // Ready and elected, not when it first answers. `fabric.get` at it names the seat and the Fabric.
-        estate.fabric_id = wait_for("the bootstrap admin holds the fabric", Duration::from_secs(30), || async {
+        // Ready and elected, not when it first answers. `fabric.get` at it names the seat, the Fabric
+        // and the current Build, which is the Day-0 Build it accepted at its start (its own mesh with
+        // one node-admin, R-BI3).
+        let (fabric_id, day_zero) = wait_for("the bootstrap admin holds the fabric", Duration::from_secs(30), || async {
             let f = estate.try_fabric_view().await.ok()?;
             f.fabric_primary.as_ref()?;
-            Some(f.id.to_string()).filter(|i| !i.is_empty())
+            Some(f.id.to_string()).filter(|i| !i.is_empty()).map(|id| (id, f.build_id))
         })
         .await;
+        estate.fabric_id = fabric_id;
+        // The estate started the Day-0 Build by starting its admin, so it follows that Build to its
+        // terminal frame before a cell submits anything: a cell's first build.create is never refused
+        // for a Build in progress it did not start.
+        let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
+        let id = rafka_node_admin_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
+        let mut stream = estate.carrier().await.resubmit(&id, 1).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));
+        Self::until_complete(&mut stream).await;
         estate
     }
 
