@@ -21,7 +21,7 @@ use std::sync::Arc;
 pub struct FaultDoor;
 
 /// The fault door's op tag.
-pub const OP: u8 = 0x75;
+pub const OP: u8 = <FaultDoor as NodeProtocol>::OP;
 
 /// A cut as the wire carries it. [`CutSpec`] is the cut as a scenario writes it in JSON (a boot file,
 /// a cell's arm), internally tagged on `kind`; postcard is not self-describing and cannot decode an
@@ -288,7 +288,7 @@ pub enum FaultReply {
 }
 
 impl NodeProtocol for FaultDoor {
-    const OP: u8 = OP;
+    const OP: u8 = 0x75;
     const NAME: &'static str = "fault-door";
     const MAX_REQUEST_FRAME_BYTES: usize = 4 * 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
