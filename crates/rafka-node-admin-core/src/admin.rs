@@ -8379,6 +8379,131 @@ mod tests {
         }
     }
 
+    /// A status store counting every exit-proof row it is offered (`put_node_exit`); every row is
+    /// the memory store's.
+    #[derive(Default)]
+    struct CountsExitPuts {
+        inner: crate::status_storage::MemoryStatusStorage,
+        exit_puts: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::status_storage::StatusStorage for CountsExitPuts {
+        async fn put_mesh_status(&self, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status(row).await
+        }
+        async fn mesh_statuses(&self) -> Result<HashMap<crate::model::MeshId, rafka_node_rpc_contract::status::MeshState>, crate::record_store::StorageError> {
+            self.inner.mesh_statuses().await
+        }
+        async fn put_fabric_event(&self, row: &crate::status_storage::FabricEventRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_fabric_event(row).await
+        }
+        async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.inner.fabric_events().await
+        }
+        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.inner.fabric_events_of(mesh).await
+        }
+        async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_declared(row).await
+        }
+        async fn remove_node_declared(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<(), crate::record_store::StorageError> {
+            self.inner.remove_node_declared(node_id, incarnation_id).await
+        }
+        async fn node_declared(&self) -> Result<Vec<crate::status_storage::NodeDeclaredRow>, crate::record_store::StorageError> {
+            self.inner.node_declared().await
+        }
+        async fn put_node_silence(&self, row: &crate::status_storage::NodeSilenceRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_node_silence(row).await
+        }
+        async fn node_silences(&self) -> Result<Vec<crate::status_storage::NodeSilenceRow>, crate::record_store::StorageError> {
+            self.inner.node_silences().await
+        }
+        async fn put_node_exit(&self, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+            self.exit_puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put_node_exit(row).await
+        }
+        async fn node_exit(&self, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+            self.inner.node_exit(node_id, incarnation_id).await
+        }
+        async fn mesh_status_held_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<bool, crate::record_store::StorageError> {
+            self.inner.mesh_status_held_of(mesh, row).await
+        }
+        async fn put_mesh_status_of(&self, mesh: &str, row: &crate::status_storage::MeshStatusRow) -> Result<(), crate::record_store::StorageError> {
+            self.inner.put_mesh_status_of(mesh, row).await
+        }
+        async fn node_exit_of(&self, mesh: &str, node_id: &NodeId, incarnation_id: &IncarnationId) -> Result<Option<crate::status_storage::NodeExitRow>, crate::record_store::StorageError> {
+            self.inner.node_exit_of(mesh, node_id, incarnation_id).await
+        }
+        async fn put_node_exit_of(&self, mesh: &str, row: &crate::status_storage::NodeExitRow) -> Result<(), crate::record_store::StorageError> {
+            self.exit_puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.put_node_exit_of(mesh, row).await
+        }
+    }
+
+    /// CONTRACT (node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded
+    /// durably"; the exit-proof row is a blind put of the birth's own key, offline.rs
+    /// `put_exit_proof`): the mesh primary's tick finds the same exited birth TRUE OFFLINE on three
+    /// ticks, and the birth's exit-proof row is put once, on the tick that proved the exit. Both arms
+    /// of the tick hold it: a birth whose removal was announced (its `retire-node` NodeDeleting
+    /// overlay; `via-exit-inside-workflow` names the row `put` on the first tick and `recorded`
+    /// after), and a member outside any workflow whose recovery submit ends without the recovery
+    /// (here its Build door is not built), submitted again on each tick (node-recovery.md "Failure
+    /// and receipts"). Must NOT happen: the row put again on every tick for an exit already recorded
+    /// (admin.rs `recover_if_proven`, s60 part 15's finding: the refusal arm puts it per tick).
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn the_mesh_primary_records_a_proven_exit_once_over_every_tick_that_finds_it() {
+        let fact = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-exit-once")).unwrap();
+        for case in ["announced", "submitted"] {
+            let mut member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+            member.node.runtime = Some(fact.clone());
+            let book = DigestBook::default();
+            for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+                book.record(d);
+            }
+            let view = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
+            if case == "announced" {
+                let op = rafka_mesh_entity::LifecycleOp {
+                    build_id: "dbs8z9896j0f".into(),
+                    attempt: 2,
+                    operation: "retire-node:mesh2.rpc.1".into(),
+                    node_id: member.node.node_id.clone(),
+                    incarnation: member.node.incarnation.clone(),
+                    name: member.node.name.clone(),
+                    event_at_rafka_ms: 1,
+                };
+                assert!(book.deleting(op), "{case}: the overlay is taken");
+            }
+            let provider = Arc::new(Answers { domain: fact.control_domain.clone(), status: crate::deployment::provider::DeploymentStatus::Exited { code: Some(137) }, inspected: Default::default() });
+            let counting = Arc::new(CountsExitPuts::default());
+            let (recovery, status, node) = recovery_of(&view, book, provider.clone(), Arc::new(crate::storage::MemoryNodesStorage::default()), counting.clone());
+            let capture = crate::span_capture::Capture::new(&format!("i143-s78-exit-recorded-once-{case}"));
+            let verdicts = Mutex::new(HashMap::new());
+            {
+                let _g = tracing::dispatcher::set_default(&capture.dispatch);
+                for tick in 1..=3 {
+                    assert_eq!(recovery.recover_if_proven(&node, &verdicts).await, Inspected::Exited(Some(137), "provider"), "{case}: tick {tick} proves the exit");
+                }
+            }
+            assert_eq!(provider.inspected.load(std::sync::atomic::Ordering::SeqCst), 3, "{case}: the provider is asked on every tick");
+            assert!(status.node_exit(&node.node_id, node.incarnation_id.as_ref().unwrap()).await.unwrap().is_some_and(|r| r.exit_code == Some(137) && r.proof == "provider"), "{case}: the birth's exit-proof row stands");
+            assert_eq!(counting.exit_puts.load(std::sync::atomic::Ordering::SeqCst), 1, "{case}: the exit-proof row is put once, on the tick that proved the exit, never per tick");
+            let inspections = capture.named("rdm.node_admin.node.resolve.via-provider-inspection");
+            assert_eq!(inspections.len(), 1, "{case}: the verdict is named once: {inspections:?}");
+            if case == "announced" {
+                let rejects = capture.named("rdm.node_admin.build.reject.via-exit-inside-workflow");
+                let rows: Vec<String> = rejects.iter().map(|r| r.attributes.get("exit_proof_row").cloned().unwrap_or_default()).collect();
+                assert_eq!(rows, ["put", "recorded", "recorded"], "{case}: each tick's refusal names the row: put when that tick put it, recorded after: {rejects:?}");
+                eprintln!("span rdm.node_admin.build.reject.via-exit-inside-workflow trace_id={} {:?}", rejects[0].trace_id, rejects[0].attributes);
+            } else {
+                let submits = capture.named("rdm.node_admin.build.update.via-node-recovery");
+                assert_eq!(submits.len(), 3, "{case}: the recovery is submitted on each tick it is still owed: {submits:?}");
+                eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {:?}", submits[0].trace_id, submits[0].attributes);
+            }
+        }
+    }
+
     /// CONTRACT (gossip.md `NodeDeleting`: keyed `(kind, build_id, attempt, operation)`, "the fact
     /// rides `Members.in_flight` until the operation completes", and `Members.in_flight` is "while
     /// the operation is claimed and has no completed receipt (derived from Build facts each round)";
