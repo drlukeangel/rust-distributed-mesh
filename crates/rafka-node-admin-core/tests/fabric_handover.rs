@@ -21,6 +21,8 @@ use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, Provide
 use rafka_node_admin_core::status_storage::MemoryStatusStorage;
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
+use rafka_node_rpc_contract::catalog::OpOwner;
+use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use rafka_node_rpc_contract::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatEpoch, SeatUpdate};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -114,6 +116,9 @@ const UPDATED: &str = "rdm.node_admin.seat.update.via-primary-updated";
 const INSTALLED: &str = "rdm.node_admin.seat.update.via-seats-installed";
 /// A refusal of the primitive, at the holder or the successor.
 const REJECTED: &str = "rdm.node_admin.seat.reject.via-primary-update";
+/// The look at the successor's exact birth after a call that did not answer node.primary.updated:
+/// node-recovery's tickle ladder, then at most one retry of the call (C1 failure contract).
+const LADDER: &str = "rdm.node_admin.seat.resolve.via-successor-ladder";
 /// "primary updating", said by the holder before its cut-off (C1 step 3).
 const ANNOUNCE_UPDATING: &str = "rdm.mesh.seat.update.via-announce-primary-updating";
 /// "primary updated", said by the holder once the successor answered node.primary.updated (C1 step 7;
@@ -154,6 +159,9 @@ struct Admin {
     facts_slot: BuildFactsSlot,
     /// The admin's Build door (op `0x20`): `NotReady` until a cell fills it.
     build_slot: BuildSlot,
+    /// A door set here fills the admin's handover slot (op `0x21`, `NotReady` while empty) as its
+    /// server answers a ping.
+    ready_on_ping: Arc<OnceLock<Arc<HandoverDoor>>>,
     _router: Router,
 }
 
@@ -254,7 +262,24 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let client = Arc::new(NodeRpcClient::new(ep.clone(), resolver.clone()));
     let slot: HandoverSlot = Arc::new(OnceLock::new());
     let (facts_slot, build_slot): (BuildFactsSlot, BuildSlot) = (Arc::new(OnceLock::new()), Arc::new(OnceLock::new()));
-    let served = rafka_node_admin_core::build_facts_read::serve(rafka_node_admin_core::fabric_handover::serve(ServerBuilder::new(), slot.clone()), facts_slot.clone());
+    // Ping, the core family every node built on Node RPC serves: the tickle ladder's direct rung. A door
+    // left in `ready_on_ping` fills the handover slot as the ping is answered: an admin whose door held
+    // no view at one call and holds it by the next.
+    let ready_on_ping: Arc<OnceLock<Arc<HandoverDoor>>> = Arc::new(OnceLock::new());
+    let pinged = {
+        let (slot, ready) = (slot.clone(), ready_on_ping.clone());
+        ServerBuilder::new().serve::<Ping, _, _>(OpOwner::Core, move |_peer: rafka_node_rpc::PeerContext, req: PingRequest| {
+            let (slot, ready) = (slot.clone(), ready.clone());
+            async move {
+                if let Some(door) = ready.get() {
+                    let _ = slot.set(door.clone());
+                }
+                let PingRequest::Ping { payload } = req;
+                Ok(PingReply::Pong { payload })
+            }
+        })
+    };
+    let served = rafka_node_admin_core::build_facts_read::serve(rafka_node_admin_core::fabric_handover::serve(pinged, slot.clone()), facts_slot.clone());
     let server = rafka_node_admin_core::build_op::serve(served, build_slot.clone()).seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).expect("the catalog seals");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -312,7 +337,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, client, resolver, resolved, storage, status, cut_offs, writes_finish, view_open, server, facts_slot, build_slot, _router: router }, ep)
+    (Admin { door, client, resolver, resolved, storage, status, cut_offs, writes_finish, view_open, server, facts_slot, build_slot, ready_on_ping, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -649,10 +674,29 @@ async fn seats_fabric_shared(fp: FabricSeat) -> Seats {
 
 /// The seats fabric with each admin's fabric.storage given by `storage`.
 async fn seats_fabric_with<F: std::future::Future<Output = Arc<dyn FabricStorage>>>(fp: FabricSeat, storage: impl Fn() -> F) -> Seats {
+    seats_fabric_over(fp, true, storage).await
+}
+
+/// The seats fabric over the one shared store whose N holds no view at the first call it is made
+/// (its handover door `NotReady`) and holds it from its first answered ping on.
+async fn seats_fabric_n_ready_on_ping(fp: FabricSeat) -> Seats {
+    let store: Arc<dyn FabricStorage> = Arc::new(MemoryFabricStorage::new());
+    let f = seats_fabric_over(fp, false, || {
+        let store = store.clone();
+        async move { store }
+    })
+    .await;
+    let _ = f.n.ready_on_ping.set(f.n.door.clone());
+    f
+}
+
+/// The seats fabric with each admin's fabric.storage given by `storage`; N's handover door is filled
+/// at its birth when `n_ready`.
+async fn seats_fabric_over<F: std::future::Future<Output = Arc<dyn FabricStorage>>>(fp: FabricSeat, n_ready: bool, storage: impl Fn() -> F) -> Seats {
     // One store root per fabric (R14): every admin's status rows are the one store's.
     let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryStatusStorage>::default());
     let (p, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true, storage().await, status.clone()).await;
-    let (n, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true, storage().await, status.clone()).await;
+    let (n, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", n_ready, storage().await, status.clone()).await;
     let (m, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true, storage().await, status.clone()).await;
     let (x, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, storage().await, status).await;
     let mut pn = node_of(&p, NodeStatus::ReadyForTraffic, fp == FabricSeat::P);
@@ -1261,6 +1305,54 @@ fn a_successor_lost_mid_call_leaves_the_update_incomplete_and_the_seat_the_succe
         assert_eq!(spans.named(ROW_WRITTEN).len(), 1, "one row written");
         let _ = m;
     });
+}
+
+/// CONTRACT (proposal Part C1 failure contract: "After the row, the successor is the committed holder
+/// whatever the call returns ... A call that reached a process other than the named birth, a refusal
+/// or no answer is never an exit proof (elections §4.1: only the provider's exit proof vacates a seat;
+/// R-SW1: a failed probe never proves death). The holder's call fails by name, the workflow runs
+/// node-recovery's tickle ladder on the successor's exact birth and retries the call against the
+/// resolved birth"; step 7: the holder says "primary updated" once the successor answered
+/// node.primary.updated): P holds both its seats and moves them to N by one row. N's door holds no
+/// view when P's call reaches it: N refuses the call `NotReady`, a refusal, which proves nothing of N's
+/// birth. P looks at N's exact birth with the tickle ladder (node-recovery.md step 2): its direct ping
+/// is answered, N's door holding its view by then. P retries the call once against that birth, N
+/// installs from the row and answers node.primary.updated, and P says "primary updated" once, after
+/// N's answer. What must NOT happen: the update ending `Incomplete` while N answers, a second row, a
+/// second look or a second retry, N installing twice, or "primary updated" said before N's answer or
+/// twice.
+#[test]
+fn a_successor_that_refuses_the_holders_call_is_looked_at_and_the_call_is_retried_once_against_its_answering_birth() {
+    let cap = trace_capture("fabric-handover");
+    let spans = cap.spans.clone();
+    let _file = SpanFile(spans.clone());
+    let (trace_id, ()) = cap.story("successor_ladder_retry", async {
+        let f = seats_fabric_n_ready_on_ping(FabricSeat::P).await;
+        let op = update_operation(Seat::MeshPrimary, "b1", "stop-node:mesh1.admin.1");
+        let n_id = f.n.resolved.node_id.to_string();
+        let out = tokio::time::timeout(std::time::Duration::from_secs(20), f.p.door.update_primary(Moving::BothSeats, None, "b1", 1, &op)).await.expect("the update ends");
+        let calls: Vec<String> = spans.named(CALL).into_iter().filter(|c| c.get("op").map(String::as_str) == Some("33") && c.get("target").is_some_and(|t| t.contains(&n_id))).map(|c| c.get("outcome").cloned().unwrap_or_else(|| "open".into())).collect();
+        assert_eq!(out, Ok(committed_both(&f.n, 4, 8)), "P's update completes on N's answer to the retried call: calls to N {calls:?}, refusals {:?}\n{}", refusals(&spans), spans.lines().join("\n"));
+        assert_eq!(calls, vec!["Reply".to_string(), "Reply".to_string()], "P called N twice: the refused call and its one retry");
+        let looks = spans.named(LADDER);
+        assert_eq!(looks.len(), 1, "one look at N's birth: {looks:?}");
+        let look = &looks[0];
+        let field = |k: &str| look.get(k).cloned().unwrap_or_default();
+        assert_eq!((field("node"), field("side"), field("call"), field("finding"), field("retry")), ("mesh1.admin.1".to_string(), "holder".to_string(), "refused".to_string(), "answered".to_string(), "primary-updated".to_string()), "{look:?}");
+        assert!(field("successor").contains(&n_id) && field("successor").contains(f.n.resolved.incarnation.as_str()), "the look names N's exact birth: {look:?}");
+        assert_eq!(spans.named(ROW_WRITTEN).len(), 1, "one row");
+        assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "one row on the store root");
+        assert_eq!(spans.named(UPDATED).len(), 1, "N installed from the row once, on the retried call");
+        assert_eq!(spans.named(ANNOUNCE_UPDATED).iter().map(|s| s["node"].clone()).collect::<Vec<_>>(), vec!["mesh1.admin.1".to_string()], "P says the primary updated once");
+        let at = |name: &str| spans.position(name).unwrap_or_else(|| panic!("no {name}"));
+        assert!(at(ROW_WRITTEN) < at(LADDER) && at(LADDER) < at(UPDATED) && at(UPDATED) < at(ANNOUNCE_UPDATED), "row, look, N's install, then primary updated:\n{}", spans.lines().join("\n"));
+        assert!(refusals(&spans).is_empty(), "the update was refused nowhere: {:?}", refusals(&spans));
+        for a in [&f.p, &f.n] {
+            assert_eq!((a.door.membership.seats().mesh("mesh1"), a.door.membership.seats().fabric()), (Some(holder_of(&f.n, 4)), Some(holder_of(&f.n, 8))), "{} holds both seats as the row names them", a.resolved.name);
+        }
+        let _ = (&f.m, &f.x);
+    });
+    println!("cell=successor_ladder_retry trace_id={trace_id}");
 }
 
 /// CONTRACT (proposal Part C3 edit 5: "An identical repeat replays the committed result";
