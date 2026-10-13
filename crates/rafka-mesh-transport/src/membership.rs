@@ -650,8 +650,8 @@ pub enum Frame {
     },
     /// "primary updated" (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part
     /// C3 edit 6): the successor of a node.primary.update installed the holder's ONE committed row and
-    /// answered node.primary.updated. Published by the successor, the cohort's row writer and its mesh's
-    /// primary from the row's epoch, on its own mesh channel and the backbone; peer mesh primaries
+    /// answered node.primary.updated. Published by the holder on that answer (R-MT1: "NA1 gossips that
+    /// the primary updated to NA2"), on its own mesh channel and the backbone; peer mesh primaries
     /// carry it unchanged. An announcement, never authority: the committed row is. Every node holds the
     /// seats together. Its order key in the one receive path is each seat's committed epoch, per
     /// cohort, an "updated" after the "updating" of the same epoch (R-RX3, `crate::receive_order`).
@@ -3971,9 +3971,9 @@ impl Backbone {
         }
     }
 
-    /// "primary updated", said once by the successor of a node.primary.update that installed the
-    /// holder's committed row (proposal Part C1 step 7): the backbone, its own mesh channel and its own
-    /// view.
+    /// "primary updated", said by the holder of a node.primary.update once its successor installed the
+    /// holder's committed row and answered node.primary.updated (proposal Part C1 step 7, R-MT1): the
+    /// backbone, its own mesh channel and its own view.
     pub async fn announce_primary_updated(&self, op: LifecycleOp, seats: Vec<CommittedSeat>) {
         let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-primary-updated", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, seats = %seats_named(&seats), backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
         let frame = Frame::PrimaryUpdated { op, seats };

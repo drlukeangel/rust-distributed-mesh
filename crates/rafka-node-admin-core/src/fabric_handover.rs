@@ -380,9 +380,9 @@ impl HandoverDoor {
     /// edit 5: the refusals are a conflicting payload and `fabric-not-ready`, "There is no
     /// RejectedWrongBirth ... no RejectedStaleSeat and no RejectedNotEligible on the receiver").
     /// Whoever calls and whichever birth receives it, the call installs the committed view from the
-    /// row the store root holds for its operation under the holder's mesh, answers from it, and says
-    /// "primary updated". A row never written there, or a store that cannot be read, is a runtime fact
-    /// named by its own reply, never an answer.
+    /// row the store root holds for its operation under the holder's mesh and answers from it; the
+    /// holder, not this receiver, says "primary updated" on the answer (R-MT1). A row never written
+    /// there, or a store that cannot be read, is a runtime fact named by its own reply, never an answer.
     async fn serve_primary_update(self: &Arc<Self>, seats: Vec<SeatUpdate>, build_id: String, attempt: u32, operation: String) -> Reply {
         let _one_at_a_time = self.locks.serving.lock().await;
         let (named_holder, named_successor) = (seats.first().map(|u| u.holder.clone()), seats.first().map(|u| u.successor.clone()));
@@ -465,10 +465,6 @@ impl HandoverDoor {
             outcome,
         )
         .in_scope(|| tracing::info!("the receiver installed the committed row and answers node.primary.updated"));
-        // "primary updated" (C1 step 7): this receiver is the writer that read the row.
-        if outcome != "refused-not-newer" {
-            self.backbone.announce_primary_updated(op, row.seats.clone()).await;
-        }
         Reply::PrimaryUpdated { epochs: row.seats }
     }
 
@@ -673,13 +669,24 @@ impl HandoverDoor {
         )
         .in_scope(|| tracing::info!("the holder, its cohort's row writer, wrote the one committed row: the seats are the successor's"));
         (self.project_view)().await;
-        // Step 6: the call carrying the row.
-        self.call_successor(&row, "holder").await
+        // Steps 6-7: the call carrying the row, then "primary updated".
+        self.update_successor(&row).await
+    }
+
+    /// The holder's steps 6-7 for its committed `row`: PrimaryUpdate carrying it, and on the
+    /// successor's node.primary.updated, "primary updated" (R-MT1: "NA2 updates itself ... and answers
+    /// node.primary.updated; NA1 gossips that the primary updated to NA2"; the announcer is the
+    /// mesh-primary, the holder itself for the node-admin cohort).
+    async fn update_successor(&self, row: &SeatTransferRow) -> Result<Vec<CommittedSeat>, Reply> {
+        let epochs = self.call_successor(row, "holder").await?;
+        let op = self.op_of(&row.holder, self.me.clone(), &row.build_id, row.attempt, &row.operation);
+        self.backbone.announce_primary_updated(op, row.seats.clone()).await;
+        Ok(epochs)
     }
 
     /// The update `row` committed, completed from it: this holder takes the row's seats if an earlier
     /// attempt left them untaken (its authority over the cut-off writes ended at the row), then calls
-    /// the successor carrying the row.
+    /// the successor carrying the row and says "primary updated" on its answer.
     async fn complete_from_row(&self, row: &SeatTransferRow) -> Result<Vec<CommittedSeat>, Reply> {
         let op = self.op_of(&row.holder, self.me.clone(), &row.build_id, row.attempt, &row.operation);
         let taken = {
@@ -691,7 +698,7 @@ impl HandoverDoor {
             (self.cut_off_writes)(WriteCutOff::Committed { reason, fabric_seat: row.seats.iter().any(|c| c.seat.kind() == Seat::FabricPrimary) }).await;
             (self.project_view)().await;
         }
-        self.call_successor(row, "holder").await
+        self.update_successor(row).await
     }
 
     /// PrimaryUpdate carrying `row`, made once on the row's successor by `side`: its node.primary.updated
