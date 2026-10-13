@@ -295,12 +295,16 @@ impl ControlPlane {
                 .put(&build_id, 1, &crate::build_claim::current_context())
                 .await
                 .map_err(|e| Refusal::Unavailable(format!("attempt-context: {e}")))?;
-            // The Build is current the moment it is durable in the builds store: nothing else is written.
-            crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &self.me.to_string(), "accepted").await.map_err(Refusal::State)?;
-            // The Build topic carries the Fabric record, its identity.
+            // The Build topic carries the Fabric record, its identity, before the Build is accepted: a
+            // refusal here (the seat moved) accepts nothing.
             if let Some(identity) = self.accepted.record().await.map_err(|e| Refusal::Unavailable(format!("fabric.storage: {e}")))? {
                 self.builds.publish_fabric(&identity).await.map_err(Refusal::State)?;
             }
+            // The Build is current the moment it is durable in the builds store: nothing else is written.
+            // It is the door's last write: the reconcile loop drives a current Build at once, and its first
+            // step can move the fabric seat (a retire of this admin's own mesh), which refuses every gated
+            // write after it, so the door answers the Build it accepted whatever the drive does next.
+            crate::build_state::accept(&*self.builds, &accepted, Some(&current.build_id), &self.me.to_string(), "accepted").await.map_err(Refusal::State)?;
             tracing::info!(build_id = %build_id, "build accepted");
             self.build_submitted.notify_waiters();
             Ok::<Opened, Refusal>(Opened { build_id, attempt: 1 })
