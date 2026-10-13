@@ -808,3 +808,37 @@ impl Forwarder {
         self.published.get(mesh).map(|p| (p.publisher.clone(), p.version))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rafka_mesh_entity::IncarnationId;
+
+    fn chunk(publisher: &PublisherId, topology_version: u64) -> Chunk {
+        Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], departed: vec![] }
+    }
+
+    /// CONTRACT (R-RX3, Luke 2026-10-13: an earlier frame is ignored "once, in the gossip receive
+    /// path"; i143 s53: out-of-order frames are ignored only in receive_order.rs; gossip.md §3.1: "A
+    /// receiver applies a delta only when it holds exactly base_version of that source and
+    /// publisher"): the receiver is handed only what the receive path took, so it orders nothing by
+    /// version. Holding mesh1.admin.1's v8, a complete snapshot of the same publisher at v6 installs;
+    /// a copy of the delta it applied (its `topology_version` is the one held) is absorbed as a copy;
+    /// a delta whose base it does not hold is a version gap, whatever its version. Must NOT happen: the
+    /// receiver refusing a snapshot as older than the one held, or absorbing as a copy a delta it never
+    /// applied.
+    #[test]
+    fn a_receiver_orders_nothing_by_version_and_absorbs_only_a_copy_of_the_delta_it_applied() {
+        let p = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let mut rx = SnapshotReceiver::default();
+        assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
+        assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Applied { topology_version: 8, .. }));
+        assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Duplicate { held_version: 8 }), "a copy of the applied delta is absorbed");
+        let gap = rx.take_delta("mesh1", &p, 6, 7, &Delta::default());
+        assert!(matches!(gap, Moved::Desynced { gap: Gap::Version { held: 8, base: 6 }, .. }), "a delta whose base is not held is a gap, not a copy: {gap:?}");
+        let taken = rx.take_chunk(chunk(&p, 6));
+        assert!(matches!(&taken, Taken::Installed(i) if i.topology_version == 6 && !i.new_epoch), "the receiver installs what it is handed: {taken:?}");
+        assert_eq!(rx.held_version("mesh1"), Some((p, 6)));
+        assert!(rx.desynced().is_empty(), "the complete snapshot resumed the source");
+    }
+}
