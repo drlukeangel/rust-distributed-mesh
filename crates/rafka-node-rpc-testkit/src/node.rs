@@ -379,7 +379,9 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     let data_plane = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
     // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
-    let seams = crate::originate::Seams { resolver: resolver.clone(), client: data_plane.clone(), connections: connections.clone(), fault };
+    // The name this birth holds, read per call by every door that names it: its launch's until it joins.
+    let held_name = crate::held_name::HeldName::of_birth(launch.name.clone());
+    let seams = crate::originate::Seams { resolver: resolver.clone(), client: data_plane.clone(), connections: connections.clone(), fault, name: held_name.clone() };
     let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
@@ -469,10 +471,13 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
 
             let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds).await?;
             // The name this birth holds is its membership's (R12): its connections rows name it as their
-            // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
+            // source from here on, and every door names the node by it, whatever name the join hands it
+            // or an `ApplyNodeName` gives it.
             {
                 let (held, birth) = (membership.clone(), launch.name.clone());
                 connections.follow_held_name(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
+                let (held, birth) = (membership.clone(), launch.name.clone());
+                held_name.follow(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
             }
             // The row's name and config the join answer handed are held before this node publishes
             // anything or declares readiness: every digest from its first carries them (R-JN1).

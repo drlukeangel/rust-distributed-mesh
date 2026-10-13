@@ -43,7 +43,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());
-        let server = proof_store::serve(ServerBuilder::new(), store, &launch)
+        let server = proof_store::serve(ServerBuilder::new(), store, &launch, &rafka_node_rpc_testkit::held_name::HeldName::of_birth(launch.name.clone()))
             .carry::<rafka_node_rpc_testkit::proof_store::ProofStore>()
             .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .unwrap();

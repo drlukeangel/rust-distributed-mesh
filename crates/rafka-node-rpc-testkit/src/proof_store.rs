@@ -15,6 +15,7 @@
 //!
 //! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
 
+use crate::held_name::HeldName;
 use rafka_mesh_entity::launch::Launch;
 use rafka_node_rpc::{HandlerFault, PeerContext, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
@@ -461,19 +462,18 @@ pub struct ApplyCuts {
 }
 
 /// Serve `store` (opened from `launch`'s data dir). Every reply's provenance
-/// names this birth.
-pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch) -> ServerBuilder {
-    serve_with_cuts(b, store, launch, Arc::new(ApplyCuts::default()))
+/// names this birth, by the name it holds at that call (`name`).
+pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, name: &HeldName) -> ServerBuilder {
+    serve_with_cuts(b, store, launch, name, Arc::new(ApplyCuts::default()))
 }
 
 /// [`serve`], with the handler crossing `cuts` before and after its apply.
-pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, cuts: Arc<ApplyCuts>) -> ServerBuilder {
-    let (node_id, node, mesh, incarnation) =
-        (launch.node_id.to_string(), launch.name.to_string(), launch.name.mesh.clone(), launch.incarnation.to_string());
+pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, name: &HeldName, cuts: Arc<ApplyCuts>) -> ServerBuilder {
+    let (node_id, mesh, incarnation, name) = (launch.node_id.to_string(), launch.name.mesh.clone(), launch.incarnation.to_string(), name.clone());
     b.serve::<ProofStore, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ProofRequest| {
         let at = Provenance {
             node_id: node_id.clone(),
-            node: node.clone(),
+            node: name.now().to_string(),
             mesh: mesh.clone(),
             incarnation_id: incarnation.clone(),
             op: req.op(),

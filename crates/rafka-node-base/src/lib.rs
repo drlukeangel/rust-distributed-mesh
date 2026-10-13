@@ -109,10 +109,11 @@ impl Oracles {
         Ok(Self { store: Arc::new(store), declare_client: Arc::new(std::sync::OnceLock::new()) })
     }
 
-    /// Add the proof store, resolve probe and declare probe protocols to `b`.
-    pub fn serve(&self, b: ServerBuilder, launch: &Launch, resolver: Arc<rafka_node_rpc::LiveNodeResolver>) -> ServerBuilder {
+    /// Add the proof store, resolve probe and declare probe protocols to `b`; each names the node by
+    /// the name it holds at the call (`name`).
+    pub fn serve(&self, b: ServerBuilder, launch: &Launch, resolver: Arc<rafka_node_rpc::LiveNodeResolver>, name: &rafka_node_rpc_testkit::held_name::HeldName) -> ServerBuilder {
         use rafka_node_rpc_testkit::{declare_probe, proof_store, resolve_probe};
-        declare_probe::serve(resolve_probe::serve(proof_store::serve(b, self.store.clone(), launch), resolver, launch), self.declare_client.clone(), launch)
+        declare_probe::serve(resolve_probe::serve(proof_store::serve(b, self.store.clone(), launch, name), resolver, launch, name), self.declare_client.clone(), launch)
     }
 }
 
@@ -159,7 +160,7 @@ pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydrati
     let oracles = Oracles::open(&launch)?;
     let running = {
         use tracing::Instrument;
-        let started = rafka_node_rpc_testkit::node::start_hydrating(&launch, hydration, |b, seams| serve_app(oracles.serve(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver)))
+        let started = rafka_node_rpc_testkit::node::start_hydrating(&launch, hydration, |b, seams| serve_app(oracles.serve(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver, &seams.name)))
             .instrument(tracing::Span::none());
         let started = tokio::select! {
             r = started => r,

@@ -54,7 +54,7 @@ async fn main() {
             None => rafka_node_rpc_testkit::app_hydration::Hydration::none(),
         };
         let started = node::start_hydrating(&launch, hydration, |b, seams| {
-            let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch), seams.resolver.clone(), &launch), declare_client.clone(), &launch);
+            let b = declare_probe::serve(resolve_probe::serve(proof_store::serve(b, store, &launch, &seams.name), seams.resolver.clone(), &launch, &seams.name), declare_client.clone(), &launch);
             rafka_node_rpc_testkit::originate::serve(b, seams, &launch)
         })
         .instrument(tracing::Span::none());

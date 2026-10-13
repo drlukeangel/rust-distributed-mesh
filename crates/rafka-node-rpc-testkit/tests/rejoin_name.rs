@@ -68,7 +68,7 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
         };
         admin.deployed(&launch, &key);
         let store = std::sync::Arc::new(proof_store::FileProofStore::open(&dir).unwrap());
-        let _running = node::start_with_seams(&launch, |b, _| proof_store::serve(b, store, &launch)).await.expect("the node comes up");
+        let _running = node::start_with_seams(&launch, |b, seams| proof_store::serve(b, store, &launch, &seams.name)).await.expect("the node comes up");
 
         let book = &admin.observer.membership.book;
         let mut digests = book.digest_changes();
