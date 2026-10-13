@@ -8,20 +8,14 @@
 //! no attempt opened and no Build accepted. The initial accepted Build, and growth, run as usual. Every
 //! cell reads the Build log it decides from: nothing here depends on timing.
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use axum::Router;
-use http_body_util::BodyExt;
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build::{BuildReject, FabricDesired, MeshDesired};
 use rafka_node_admin_core::build_state::{AttemptReason, BuildStateAdapter, MemoryBuildStateAdapter};
-use rafka_node_admin_core::http::{router, ActionKind, ControlPlane, Refusal};
+use rafka_node_admin_core::http::{ActionKind, ControlPlane, Refusal};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc_contract::build::BuildReply;
-use serde_json::Value;
 use std::sync::Arc;
-use tower::ServiceExt;
 
 fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
     let mut n = Node::allocated(name.parse().unwrap());
@@ -235,7 +229,8 @@ async fn an_admin_booting_on_a_root_in_state_commit_refuses_and_one_booting_afte
 /// CONTRACT (node-rpc-envelope.md, "Build refusals": "the existing `Rejected { reason, detail }` reply with
 /// reason `fabric-not-ready`, whose `detail` names the refused workflow and the fabric's current
 /// status"): the refusal the Build door answers is `Rejected` with that reason, and its detail names
-/// both. Over REST the same refusal is a 422 `fabric-not-ready`.
+/// both, for a node workflow the door opens as an attempt (node.stop) and for a change it submits as a
+/// Build (mesh.delete).
 /// What must NOT happen: `NotReady`, which stays the serving door's answer.
 #[tokio::test]
 async fn the_build_door_answers_the_refusal_as_rejected_fabric_not_ready_naming_the_workflow_and_the_status() {
@@ -247,14 +242,20 @@ async fn the_build_door_answers_the_refusal_as_rejected_fabric_not_ready_naming_
         }
         other => panic!("expected Rejected: {other:?}"),
     }
+    // The two ways a change reaches the door's admission (build_op.rs `admit_change`): a node workflow
+    // opens an attempt of the accepted Build, a topology change is submitted as a Build. Each refusal is
+    // answered through `refusal_reply`, as the door answers it.
     let r = rig(ScopeStatus::StateSync).await;
-    let app = router(r.cp.clone(), Router::new());
-    for (method, uri, workflow) in [("POST", "/api/nodes/mesh1.rpc.1/stop", "node.stop mesh1.rpc.1"), ("DELETE", "/api/meshes/mesh2", "mesh.delete mesh2")] {
-        let req = Request::builder().method(method).uri(uri).header("content-type", "application/json").body(Body::empty()).unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        let status = res.status();
-        let v: Value = serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
-        assert_eq!((status, v["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("fabric-not-ready")), "{method} {uri}: {v}");
-        assert!(v["detail"].as_str().is_some_and(|d| d.contains(workflow) && d.contains("state-sync")), "{v}");
+    let stop = r.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await.map(|o| o.attempt);
+    let delete = r.cp.submit("build.create", TopologyChange::RemoveMesh { mesh: "mesh2".into() }).await.map(|o| o.attempt);
+    for (refused, workflow) in [(stop, "node.stop mesh1.rpc.1"), (delete, "mesh.delete mesh2")] {
+        let refusal = refused.expect_err(&format!("{workflow} is refused before the fabric first reaches ready-for-traffic"));
+        match rafka_node_admin_core::build_op::refusal_reply(refusal) {
+            BuildReply::Rejected { reason, detail } => {
+                assert_eq!(reason, "fabric-not-ready", "{workflow}: {detail}");
+                assert!(detail.contains(workflow) && detail.contains("state-sync"), "{workflow}: the detail names the workflow and the status: {detail}");
+            }
+            other => panic!("{workflow}: expected Rejected: {other:?}"),
+        }
     }
 }

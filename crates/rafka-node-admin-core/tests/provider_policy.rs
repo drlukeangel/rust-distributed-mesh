@@ -13,11 +13,12 @@ use rafka_node_admin_core::deployment::provider::{FabricPolicy, PolicyRefusal};
 use rafka_node_admin_core::http::{router, ControlPlane};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
+use rafka_node_rpc_contract::status::StatusReply;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tower::ServiceExt;
 
-async fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuildStateAdapter>) {
+async fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuildStateAdapter>, Arc<ControlPlane>) {
     let policy = FabricPolicy::bootstrap(spawn_type).expect("bootstrap");
     let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
     admin.status = NodeStatus::ReadyForTraffic;
@@ -31,7 +32,17 @@ async fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuild
     };
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*builds, topology.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&topology), "mesh1.admin.1").await.unwrap();
-    (router(Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), topology, crate::adopted_time())), axum::Router::new()), builds)
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), topology, crate::adopted_time()));
+    (router(cp.clone(), axum::Router::new()), builds, cp)
+}
+
+/// What `fabric.get` answers at the admin `cp` serves (`StatusRequest::GetFabric`, answered from its view by
+/// `views::fabric_answer`), as the JSON the view serializes to.
+async fn fabric_get(cp: &ControlPlane) -> Value {
+    match rafka_node_admin_core::views::fabric_answer(&cp.me, &*cp.topology.read().await, None) {
+        StatusReply::Fabric { fabric } => serde_json::to_value(fabric).expect("a view serializes"),
+        other => panic!("fabric.get answered {other:?}"),
+    }
 }
 
 async fn call(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -55,8 +66,8 @@ fn policy_from_view(view: &Value) -> FabricPolicy {
 
 #[tokio::test]
 async fn a_second_admin_inherits_the_fabric_policy_or_refuses_by_name() {
-    let (first, _) = first_admin(Some("container")).await;
-    let (_, view) = call(&first, "GET", "/api/fabric", None).await;
+    let (_, _, cp) = first_admin(Some("container")).await;
+    let view = fabric_get(&cp).await;
     assert_eq!(view["provider"], "container");
     let established = policy_from_view(&view);
     assert_eq!(FabricPolicy::inherit(established, None).unwrap().provider, ProviderKind::Container, "unset inherits");
@@ -73,7 +84,7 @@ async fn an_unknown_provider_never_bootstraps_a_fabric() {
 
 #[tokio::test]
 async fn a_build_carrying_a_provider_is_refused_and_publishes_nothing() {
-    let (app, builds) = first_admin(None).await;
+    let (app, builds, _) = first_admin(None).await;
     let seed = builds.facts().await.unwrap().len();
     for body in [
         json!({"fabric": "fabric1", "provider": "container", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]}),
