@@ -382,6 +382,33 @@ impl HandoverDoor {
         }
     }
 
+    /// The R-PB1 refusal of every node.primary.update call, at the holder or the successor (`side`):
+    /// before the initial fabric first reaches ready-for-traffic no seat moves (proposal Part C1:
+    /// "Before the initial fabric first reaches ready-for-traffic, every call is refused
+    /// `fabric-not-ready`"), decided on the durable fact, the ready-for-traffic row among this mesh's
+    /// status rows on the store root, which the fabric state this admin hears by gossip can lag. `None`:
+    /// the fabric has first reached ready-for-traffic. A store that cannot be read is named.
+    async fn refused_before_first_ready(&self, side: &'static str, of: &Refusing<'_>) -> Option<Reply> {
+        let (fabric_id, status) = {
+            let now = self.topology.read().await;
+            (now.fabric.id.clone(), now.fabric.status)
+        };
+        let operation = of.operation;
+        match self.records.first_ready_on_root(&fabric_id, status).await {
+            Ok(true) => None,
+            Ok(false) => {
+                let detail = format!("{}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {}, and its mesh's status rows on the store root hold no ready-for-traffic row of fabric {fabric_id}), and no seat moves before it does", self.me, status.name());
+                refused(side, "fabric-not-ready", &detail, of, None);
+                Some(Reply::fabric_not_ready(&detail))
+            }
+            Err(e) => {
+                let failed = SourceFailure { source: format!("status storage of {}", self.me), op: format!("read whether fabric {fabric_id} first reached ready-for-traffic for node.primary.update {operation}"), cause: e };
+                refused(side, "source-failed", &failed.to_string(), of, Some(&failed));
+                Some(failed.reply())
+            }
+        }
+    }
+
     // ---- the successor: install from the row (C1 step 6) ----
 
     /// node.primary.update at its receiver (proposal Part C1 step 6: "The successor reads the row,
@@ -396,27 +423,8 @@ impl HandoverDoor {
         let _one_at_a_time = self.locks.serving.lock().await;
         let (named_holder, named_successor) = (seats.first().map(|u| u.holder.clone()), seats.first().map(|u| u.successor.clone()));
         let of = Refusing { operation: &operation, build_id: &build_id, attempt, holder: named_holder.as_ref(), successor: named_successor.as_ref() };
-        // Before the initial fabric first reaches ready-for-traffic no seat moves (R-PB1), decided on the
-        // durable fact: the ready-for-traffic row among this mesh's status rows on the store root, which
-        // the fabric state this receiver hears by gossip can lag after the writer committed its row.
-        {
-            let (fabric_id, status) = {
-                let now = self.topology.read().await;
-                (now.fabric.id.clone(), now.fabric.status)
-            };
-            match self.records.first_ready_on_root(&fabric_id, status).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    let detail = format!("{}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {}, and its mesh's status rows on the store root hold no ready-for-traffic row of fabric {fabric_id}), and no seat moves before it does", self.me, status.name());
-                    refused("successor", "fabric-not-ready", &detail, &of, None);
-                    return Reply::fabric_not_ready(&detail);
-                }
-                Err(e) => {
-                    let failed = SourceFailure { source: format!("status storage of {}", self.me), op: format!("read whether fabric {fabric_id} first reached ready-for-traffic for node.primary.update {operation}"), cause: e };
-                    refused("successor", "source-failed", &failed.to_string(), &of, Some(&failed));
-                    return failed.reply();
-                }
-            }
+        if let Some(refusal) = self.refused_before_first_ready("successor", &of).await {
+            return refusal;
         }
         let Some(holder_mesh) = named_holder.as_ref().map(|h| h.mesh.clone()) else {
             refused("successor", "conflict", &format!("{}: the call names no seat, so it is no committed row's content", self.me), &of, None);
@@ -560,6 +568,11 @@ impl HandoverDoor {
         let me = self.me_birth();
         let book = self.membership.seats();
         let of = Refusing { operation, build_id, attempt, holder: Some(&me), successor: None };
+        // Before the initial fabric first reaches ready-for-traffic: refused before anything, the row
+        // included; nothing is said, cut off or written.
+        if let Some(refusal) = self.refused_before_first_ready("holder", &of).await {
+            return Err(refusal);
+        }
         // A retry or a later attempt after the row: the row stands, and the update completes from it.
         match self.storage.seat_transfer(&self.me.mesh, operation).await {
             Ok(Some(row)) if row.holder == me => return self.complete_from_row(&row).await,

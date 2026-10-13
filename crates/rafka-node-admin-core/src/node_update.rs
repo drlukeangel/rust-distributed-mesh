@@ -39,9 +39,20 @@ pub struct UpdateDoors<'a> {
     pub rename: &'a crate::status_rpc::Rename,
 }
 
+/// Whether the initial fabric first reached ready-for-traffic, as a mesh-primary decides it for a
+/// caller's `node.update`: what it knows, and its mesh's status rows on the store root, which hold the
+/// ready-for-traffic row from the moment it was put.
+#[derive(Clone, Copy)]
+pub struct FirstReadyOnRoot<'a> {
+    /// What this admin knows.
+    pub first_ready: &'a crate::fabric_state::FirstReady,
+    /// This admin's mesh's status rows on the store root.
+    pub status: &'a dyn crate::status_storage::StatusStorage,
+}
+
 /// Serve an `UpdateNode` at the admin `me` (born `me_id`): one span holds the whole put.
 #[allow(clippy::too_many_arguments)]
-pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: UpdateDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, first_ready: &crate::fabric_state::FirstReady, req: &StatusRequest) -> StatusReply {
+pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: UpdateDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, first_ready: FirstReadyOnRoot<'_>, req: &StatusRequest) -> StatusReply {
     let StatusRequest::UpdateNode { node_id, incarnation, name, tags } = req else { unreachable!("update is called for UpdateNode only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
@@ -66,18 +77,28 @@ pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwL
 
 /// The refusal of a caller's `node.update` while the initial fabric has not first reached
 /// ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"; R-PC1): before
-/// state-commit the node's row would live only in this mesh-primary's scratchpad. Nothing is read of
-/// the node, claimed or written.
-async fn refused_before_first_ready(me: &PathName, view: &RwLock<Topology>, first_ready: &crate::fabric_state::FirstReady, node_id: &rafka_mesh_entity::NodeId, span: &tracing::Span) -> Option<StatusReply> {
-    let now = view.read().await;
-    if first_ready.reached(now.fabric.status) {
-        return None;
-    }
-    let status = now.fabric.status.name();
-    let subject = now.nodes.iter().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_else(|| node_id.to_string());
+/// state-commit the node's row would live only in this mesh-primary's scratchpad. Decided on the durable
+/// fact, the ready-for-traffic row among this mesh's status rows on the store root, which the fabric state
+/// this admin hears by gossip can lag; a store that cannot be read is refused naming it. Nothing is read
+/// of the node, claimed or written.
+async fn refused_before_first_ready(me: &PathName, view: &RwLock<Topology>, first_ready: FirstReadyOnRoot<'_>, node_id: &rafka_mesh_entity::NodeId, span: &tracing::Span) -> Option<StatusReply> {
+    let (fabric_id, now, subject) = {
+        let now = view.read().await;
+        (now.fabric.id.clone(), now.fabric.status, now.nodes.iter().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_else(|| node_id.to_string()))
+    };
     let workflow = format!("node.update {subject}");
+    let status = now.name();
+    match first_ready.first_ready.reached_on_root(first_ready.status, &fabric_id, now).await {
+        Ok(true) => return None,
+        Ok(false) => {}
+        Err(e) => {
+            let (source, op) = (format!("status storage of {me}"), format!("read whether fabric {fabric_id} first reached ready-for-traffic for {workflow}"));
+            span.record("detail", format!("{me}: {workflow} is refused: {source} could not be read to {op}: {e}; nothing is claimed or written").as_str());
+            return Some(StatusReply::source_failed(&source, &op, &e.to_string()));
+        }
+    }
     let refused = StatusReply::rejected_fabric_not_ready(&workflow, status);
-    span.record("detail", format!("{me}: {workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit the row would live only in this mesh-primary's scratchpad; nothing is claimed or written").as_str());
+    span.record("detail", format!("{me}: {workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}, and its mesh's status rows on the store root hold no ready-for-traffic row of fabric {fabric_id}), and before state-commit the row would live only in this mesh-primary's scratchpad; nothing is claimed or written").as_str());
     tracing::info_span!("rdm.node_admin.node.reject.via-fabric-not-ready", node = %me, workflow = %workflow, status, "otel.kind" = "internal")
         .in_scope(|| tracing::info!("node.update is refused until the initial fabric has first reached ready-for-traffic"));
     Some(refused)

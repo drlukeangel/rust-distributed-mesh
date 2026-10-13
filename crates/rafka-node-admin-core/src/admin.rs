@@ -451,8 +451,7 @@ impl Records {
         let Some(fold) = self.status.get() else {
             return Err(format!("no status store is held to read whether fabric {fabric_id} first reached ready-for-traffic"));
         };
-        self.first_ready.read_from(&**fold.storage(), fabric_id).await.map_err(|e| format!("the status rows of mesh {} on the store root, read for the ready-for-traffic row of fabric {fabric_id}: {e}", fold.mesh()))?;
-        Ok(self.first_ready.reached(now))
+        self.first_ready.reached_on_root(&**fold.storage(), fabric_id, now).await.map_err(|e| format!("the status rows of mesh {} on the store root, read for the ready-for-traffic row of fabric {fabric_id}: {e}", fold.mesh()))
     }
 
     /// The tick a waiter arms on to see the view change.

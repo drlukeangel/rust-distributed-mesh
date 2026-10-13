@@ -104,6 +104,20 @@ impl FirstReady {
     pub fn reached(&self, now: crate::model::ScopeStatus) -> bool {
         self.0.load(std::sync::atomic::Ordering::SeqCst) || matches!(now, crate::model::ScopeStatus::ReadyForTraffic | crate::model::ScopeStatus::Degraded)
     }
+
+    /// Whether the initial fabric `fabric_id` has first reached ready-for-traffic, decided on the durable
+    /// fact (states.md, "The initial fabric before ready-for-traffic"): what this admin already knows (or
+    /// `now`, its view's fabric status), else a point read of the ready-for-traffic row among `status`, its
+    /// mesh's status rows on the store root, which hold the fact from the moment the mesh's primary put
+    /// it, while the fabric state this admin hears by gossip can still lag it. A read that fails is the
+    /// caller's to refuse by name.
+    pub async fn reached_on_root(&self, status: &dyn crate::status_storage::StatusStorage, fabric_id: &crate::model::FabricId, now: crate::model::ScopeStatus) -> Result<bool, crate::record_store::StorageError> {
+        if self.reached(now) {
+            return Ok(true);
+        }
+        self.read_from(status, fabric_id).await?;
+        Ok(self.reached(now))
+    }
 }
 
 /// Why an admin knows the fabric first reached ready-for-traffic when its root holds the fact.
