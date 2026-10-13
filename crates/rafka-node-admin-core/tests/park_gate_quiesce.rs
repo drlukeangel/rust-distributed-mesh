@@ -161,8 +161,12 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
     std::fs::write(artifact.join("spans.jsonl"), spans.iter().map(|s| s.to_string() + "\n").collect::<String>()).unwrap();
     let me = "mesh1.admin.1";
     let named = |name: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && s["attributes"]["node"] == me).collect() };
-    let cut = named("rdm.node_admin.node.connections.delete.via-stop");
-    assert_eq!(cut.len(), 1, "one connection cut for the stop: {cut:?}");
+    // node-stop.md steps 2-3: the whole node.connections.delete { All } first, then the hold, then the
+    // stop's own transport cut, whose span wraps the cut (its start is when the cut began).
+    let all = named("rdm.node_admin.node.connections.delete.via-stop");
+    assert_eq!(all.len(), 1, "one node.connections.delete {{ All }} for the stop: {all:?}");
+    let cut = named("rdm.node_admin.node.update.via-stop-transport-cut");
+    assert_eq!(cut.len(), 1, "one transport cut for the stop: {cut:?}");
     assert_eq!(cut[0]["trace_id"], stop_trace.as_str(), "the cut is in the stop's own trace");
     let cut_began = cut[0]["start_ns"].as_u64().unwrap();
     let quiesce = named("rdm.node_admin.node.update.via-stop-quiesce");
@@ -172,6 +176,7 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
     let waited_for = quiesce["attributes"]["waited_for"].as_str().unwrap_or_default();
     assert!(waited_for.split(',').any(|t| t.split(':').next() == Some("executor")), "the quiesce waited for the executor's held turn (stop trace {stop_trace}): {quiesce}");
     assert!(quiesce["end_ns"].as_u64().unwrap() <= cut_began, "the cut began before the quiesce ended: {quiesce}");
+    assert!(all[0]["end_ns"].as_u64().unwrap() <= quiesce["start_ns"].as_u64().unwrap(), "the hold began before the All ended: {}", all[0]);
     // The admin publishes its mesh's aggregate, so its last one, carrying itself Leaving, goes out
     // after the hold and before the cut (gossip.md, "Mesh delete": "Its last aggregate before a stop
     // carries itself Leaving"): no gated turn publishes after it.

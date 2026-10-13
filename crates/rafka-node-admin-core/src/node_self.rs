@@ -757,18 +757,24 @@ impl NodeSelf {
         }
         // 5. The stop's own step after its connections are deleted (node-stop.md step 3): cut its
         // transport, its gossip neighbours and its Node RPC pool, sparing the commander's connection the
-        // stop call rides. Never its endpoint.
+        // stop call rides. Never its endpoint. The cut runs inside its own span: the span's start is
+        // when the cut began, and what it cut is recorded on it once it ends.
+        let cut = tracing::info_span!(
+            "rdm.node_admin.node.update.via-stop-transport-cut",
+            node = %self.held_name(), operation = %op.operation,
+            neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
+        );
         let report = match &session {
-            Some(session) => session.cut(spare.as_slice()).await,
+            Some(session) => session.cut(spare.as_slice()).instrument(cut.clone()).await,
             None => CutReport::default(),
         };
+        cut.record("neighbours", report.neighbours);
+        cut.record("pooled", report.pooled);
+        cut.record("accepted", report.accepted);
+        cut.record("turns_in_progress", report.turns_in_progress);
         // stopping is this node's own status from the moment its tasks are cut; nothing publishes it.
         let _ = (self.set_status)(MemberStatus::Leaving);
-        tracing::info_span!(
-            "rdm.node_admin.node.update.via-stop-transport-cut",
-            node = %self.held_name(), operation = %op.operation, neighbours = report.neighbours, pooled = report.pooled, accepted = report.accepted, turns_in_progress = report.turns_in_progress
-        )
-        .in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound and the commander's connection stays open"));
+        cut.in_scope(|| tracing::info!("the stop cut its transport: gossip neighbours and the Node RPC pool; the endpoint stays bound and the commander's connection stays open"));
         receipt
     }
 
