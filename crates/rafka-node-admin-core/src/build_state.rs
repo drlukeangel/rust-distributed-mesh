@@ -2310,4 +2310,98 @@ mod tests {
         }
         assert!(offenders.is_empty(), "only build_state.rs and the admin's own boot may open a journal: {offenders:?}");
     }
+
+    /// An attempt of `id` opened on `mesh`'s drift lane (R-BI7): the recovery of `path`'s exited birth.
+    fn lane_open(id: &str, mesh: &str, attempt: u32, path: &str) -> AttemptOpened {
+        AttemptOpened {
+            mesh: Some(mesh.into()),
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(),
+            attempt,
+            reason: AttemptReason::Recovery,
+            action: Some(crate::accepted::AttemptAction::Recover { path: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }),
+            opened_by: format!("{mesh}.admin.1"),
+            opened_at_ms: 6,
+        }
+    }
+
+    /// A claim of `mesh`'s drift-lane attempt for `who`, decided by `who` (a mesh-primary claims its own).
+    fn lane_claim(id: &str, mesh: &str, attempt: u32, who: &str) -> BuildAttemptClaim {
+        BuildAttemptClaim { claimant: Some(who.into()), mesh: Some(mesh.into()), build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, executor: who.into() }
+    }
+
+    /// CONTRACT (R-BI7 caveat 2, proposal Part C: "The claim key becomes `(build_id, mesh, attempt)`.
+    /// Each mesh-primary claims drift attempts for its own mesh by insert-and-fail on its own mesh's
+    /// rows"): attempt 1 of one Build opened on mesh1's lane and on mesh2's lane are two attempts, and
+    /// each mesh-primary's claim of its own is `Won`; a second claimant of mesh2's attempt 1 is `Lost`
+    /// naming the first. Must NOT happen: mesh2's claim refused because mesh1 holds the Build's
+    /// attempt number, or two winners of one mesh's attempt.
+    #[tokio::test]
+    async fn claims_of_one_attempt_number_in_two_meshes_both_win_and_a_second_claimant_in_one_mesh_loses() {
+        let m = MemoryBuildStateAdapter::new();
+        m.publish_accepted(&intent("b1")).await.unwrap();
+        m.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+        m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
+        m.open_attempt(&lane_open("b1", "mesh1", 1, "mesh1.rpc.2")).await.expect("mesh1's drift lane opens its attempt 1");
+        m.open_attempt(&lane_open("b1", "mesh2", 1, "mesh2.rpc.2")).await.expect("mesh2's drift lane opens its own attempt 1");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh1", 1, "mesh1.admin.1")).await.unwrap(), ClaimOutcome::Won, "mesh1's mesh-primary claims its attempt");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.1")).await.unwrap(), ClaimOutcome::Won, "mesh2's attempt 1 is another key than mesh1's");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.2")).await.unwrap(), ClaimOutcome::Lost { holder: "mesh2.admin.1".into() }, "one winner per (build, mesh, attempt)");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.1")).await.unwrap(), ClaimOutcome::Won, "re-claiming your own attempt is idempotent");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh3", 1, "mesh3.admin.1")).await.unwrap(), ClaimOutcome::NotOpen { next: None }, "a lane with no attempt opened has nothing to claim");
+    }
+
+    /// CONTRACT (R-BI7 caveats 2 and 3; proposal Part C: "A recovery in mesh 2 is no longer refused
+    /// because a node.create runs in mesh 1"): the fold reads the fabric lane (the topology Build's own
+    /// attempts) and each mesh's drift lane apart. With the fabric lane's attempt running in mesh1 and
+    /// mesh2's drift attempt claimed, the Build view shows both running, each with its own attempt,
+    /// executor and claimant, and the drift lane's steps never enter the fabric lane's. A Build whose
+    /// fabric lane completed while a drift lane is open is in progress (the LIFO read's
+    /// `InProgress`), and once the drift attempt converges it is completed again. Must NOT happen:
+    /// mesh2's attempt 1 read as a stale fabric attempt (ignored) or as the fabric lane's next attempt.
+    #[tokio::test]
+    async fn the_fold_reads_the_fabric_lane_and_each_drift_lane_apart() {
+        let m = MemoryBuildStateAdapter::new();
+        m.publish_accepted(&intent("b1")).await.unwrap();
+        let id = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        let mut fabric = claim("b1", 1, "mesh1.admin.1");
+        fabric.claimant = Some("mesh1.admin.1".into());
+        m.claim_attempt(&fabric).await.unwrap();
+        m.open_attempt(&lane_open("b1", "mesh2", 1, "mesh2.rpc.2")).await.unwrap();
+        m.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.1")).await.unwrap();
+        let mut drift_step = step("b1", 1, "retire-node:mesh2.rpc.2");
+        drift_step.mesh = Some("mesh2".into());
+        m.append_step_receipt(&drift_step).await.unwrap();
+        let p = m.read_build(&id).await.unwrap();
+        assert_eq!((p.state, p.attempt, p.executor.as_deref()), (BuildState::Running, 1, Some("mesh1.admin.1")), "the fabric lane's attempt runs in mesh1: {p:?}");
+        assert!(p.steps.is_empty(), "the drift lane's step is not the fabric lane's: {:?}", p.steps);
+        let view = serde_json::to_value(&p).unwrap();
+        assert_eq!(view["claimant"], "mesh1.admin.1", "the fabric lane's claimant: {view}");
+        let lane = &view["lanes"]["mesh2"];
+        assert_eq!((lane["state"].as_str(), lane["attempt"].as_u64(), lane["executor"].as_str(), lane["claimant"].as_str()), (Some("running"), Some(1), Some("mesh2.admin.1"), Some("mesh2.admin.1")), "mesh2's drift lane runs its own attempt 1: {view}");
+        assert_eq!(lane["steps"].as_array().map(Vec::len), Some(1), "the drift step is the lane's: {view}");
+
+        // The fabric lane converges; the drift lane keeps the Build in progress until its verdict.
+        m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
+        assert_eq!(m.read_build(&id).await.unwrap().state, BuildState::Complete);
+        assert_eq!(m.current_build().await.unwrap(), CurrentBuild::InProgress(id.clone()), "an open drift lane keeps the Build in progress");
+        let mut verdict = attempt("b1", 1, AttemptOutcome::Converged);
+        verdict.mesh = Some("mesh2".into());
+        m.append_attempt_receipt(&verdict).await.unwrap();
+        assert_eq!(m.current_build().await.unwrap(), CurrentBuild::Completed(id.clone()), "both lanes settled: the known state");
+        assert_eq!(serde_json::to_value(m.read_build(&id).await.unwrap()).unwrap()["lanes"]["mesh2"]["state"], "complete");
+    }
+
+    /// CONTRACT (durable format moved, R-BI7): a journal line written before lanes and claimants
+    /// existed (no `mesh`, no `claimant`) decodes as the fabric lane, with no claimant recorded; a
+    /// line with them round-trips them.
+    #[test]
+    fn a_fact_line_written_before_lanes_decodes_as_the_fabric_lane() {
+        let id = rafka_mesh_entity::fixture_crockford60("b1");
+        let old: BuildFact = serde_json::from_str(&format!(r#"{{"fact":"claim","build_id":"{id}","attempt":2,"executor":"mesh1.admin.1"}}"#)).unwrap();
+        assert!(matches!(&old, BuildFact::Claim(c) if c.mesh.is_none() && c.claimant.is_none()), "{old:?}");
+        let new = BuildFact::Claim(lane_claim("b1", "mesh2", 1, "mesh2.admin.1"));
+        assert_eq!(serde_json::from_str::<BuildFact>(&serde_json::to_string(&new).unwrap()).unwrap(), new);
+        let fabric = serde_json::to_value(BuildFact::Claim(claim("b1", 2, "mesh1.admin.1"))).unwrap();
+        assert!(fabric.get("mesh").is_none() && fabric.get("claimant").is_none(), "a fabric-lane line is written as before: {fabric}");
+    }
 }
