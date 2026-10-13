@@ -3054,6 +3054,66 @@ async fn restart_node(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
     ev
 }
 
+/// A node recovery of `node` (node-recovery.md), never a restart: its exact runtime is killed outside any
+/// workflow, acknowledged by the provider, and its mesh-primary proves the exit and recovers it. The seeded
+/// traffic keeps going until the view holds a ready node at the path.name under a node.id other than the
+/// exited one and the Build the fabric view names is complete. Which Build that is (the next attempt of the
+/// accepted Build, or a recovery Build of its own) is recorded, never asserted. The new node is held to the
+/// page's operation summary, "Retained: path.name, placement, inherited data dir, endpoint key" and "New:
+/// node.id, incarnation, OS-assigned port and exact runtime" (the port is the caller's to compare, from its
+/// settled views). A role node only: a node-admin's death is `kill_and_recover`'s, and the fabric-primary is
+/// never killed.
+async fn recover_node(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str, scenario: &str) -> Value {
+    assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a retiring Build");
+    let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
+    assert_ne!(n["kind"], "node_admin", "REFUSED: {node} is a node-admin; a node recovery cell kills a broker, gateway, compute or rpc node");
+    let (old_id, old_inc) = (s(&n["node_id"]), s(&n["incarnation_id"]));
+    let fabric_build = s(&st.fabric["build_id"]);
+    let dir_old = f.estate.data_dir(node).await;
+    let rt_old = exact_runtime(f, node).await;
+    let t0 = now_ns();
+    let kill = kill_exact_runtime(node, &rt_old);
+    f.actions.push(json!({"t_ms": now_ms(), "action": "fault.kill-runtime", "node": node, "node_id": old_id, "incarnation_id": old_inc, "ack": kill}));
+    progress(&format!("{scenario}: {node} ({old_id}) exact runtime killed; its mesh-primary recovers it"));
+    let started = Instant::now();
+    let mut seen_failed = 0u32;
+    let (born, build) = loop {
+        let nodes = a.nodes(f).await;
+        let bid = a.fabric(f).await.map(|v| s(&v["build_id"])).unwrap_or_default();
+        let b = if bid.is_empty() { Value::Null } else { a.build(f, &bid).await.unwrap_or(Value::Null) };
+        a.observe_build(&b);
+        if b["state"] == "failed" {
+            seen_failed += 1;
+        }
+        let born = nodes.as_ref().and_then(|v| v.iter().find(|x| x["name"] == node && x["status"] == "ready-for-traffic" && x["node_id"] != old_id.as_str()).cloned());
+        if let (Some(born), true) = (born, b["state"] == "complete") {
+            break (born, b);
+        }
+        assert!(started.elapsed() < Duration::from_secs(120), "{scenario}: {node}'s exact runtime was killed and no new node stood ready at its path.name with the fabric's Build complete within 120 s: build {b:#}");
+        if nodes.is_some() {
+            a.traffic.burst(f, 1, "during-recovery").await;
+        } else {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    };
+    let wall_ms = started.elapsed().as_millis() as u64;
+    assert_ne!(s(&born["incarnation_id"]), old_inc, "{node}: a node recovery is a new incarnation (node-recovery.md, New)");
+    assert_eq!(born["endpoint_id"], n["endpoint_id"], "{node}: a node recovery keeps the endpoint key, loaded from the inherited data dir (node-recovery.md, Retained)");
+    let dir_new = f.estate.data_dir(node).await;
+    assert_eq!(dir_new, dir_old, "{node}: a node recovery creates the new node over the exited node's data dir (node-recovery.md, Retained)");
+    let rt_new = exact_runtime(f, node).await;
+    let runtimes = live_and_distinct(node, &rt_old, &rt_new);
+    let terminal = terminal_proof(node, &rt_old);
+    let ev = json!({
+        "event": "node.recovery", "scenario": scenario, "node": node, "kind": n["kind"], "endpoint_id": n["endpoint_id"], "data_dir": dir_old,
+        "old_node_id": old_id, "old_incarnation_id": old_inc, "new_node_id": born["node_id"], "new_incarnation_id": born["incarnation_id"],
+        "fabric_build_id_before": fabric_build, "build_id_after": build["build_id"], "attempt_after": build["attempt"], "executor_after": build["executor"],
+        "kill": kill, "kill_ns": t0, "wall_ms": wall_ms, "runtimes": runtimes, "old_runtime_terminal": terminal, "build_failed_observations": seen_failed,
+    });
+    a.events.push(ev.clone());
+    ev
+}
+
 /// The representative of each role the restart cell restarts, drawn from the seed: a broker, a
 /// gateway, a compute and a node-admin that is neither the fabric-primary nor the Day-0 admin the
 /// harness holds its control address on, each in a different draw of the two meshes.
@@ -4492,14 +4552,15 @@ async fn supersession_run(cell: &str, shape: Shape) {
     f.actions.push(action_row(&inbound));
     events.push(json!({"event": "inbound-accepted", "from": inbound_from, "dial": inbound.out, "t0_ns": t_in0}));
 
-    // Birth supersession: the broker restarts (same logical node, a new exact birth on a new socket).
+    // Birth supersession: the broker's exact runtime is killed and its mesh-primary recovers it (node-recovery.md):
+    // a new node.id and incarnation at the same path.name, on a new socket.
     a.traffic.aim = Some(dst.clone());
-    let restart = restart_node(&mut f, &mut a, &st, &dst, "C11 destination birth supersession").await;
+    let recovery = recover_node(&mut f, &mut a, &st, &dst, "C11 destination birth supersession").await;
     a.traffic.aim = None;
-    let st2 = a.stable(&mut f, "C11: destination reborn", &both(2), &mut inv).await;
+    let st2 = a.stable(&mut f, "C11: destination recovered", &both(2), &mut inv).await;
     let d1 = st2.nodes.iter().find(|n| n["name"] == dst.as_str()).cloned().unwrap();
-    let d_inc1 = s(&d1["incarnation_id"]);
-    assert_eq!((s(&d1["node_id"]), d_inc1 != d_inc0), (d_id.clone(), true), "a restart is the same logical node in a new exact birth");
+    let (d_id1, d_inc1) = (s(&d1["node_id"]), s(&d1["incarnation_id"]));
+    assert!(d_id1 != d_id && d_inc1 != d_inc0, "a node recovery is a new node.id and incarnation at the same path.name (node-recovery.md, New): {d_id}@{d_inc0} -> {d_id1}@{d_inc1}");
     assert_ne!(udp_ports(&st.nodes, &[dst.clone()]), udp_ports(&st2.nodes, &[dst.clone()]), "the new birth is on a new socket (the OS assigns it)");
 
     // C11, a dial lost: a node that has never connected to the new birth (another mesh's compute) dials it
@@ -4531,12 +4592,14 @@ async fn supersession_run(cell: &str, shape: Shape) {
     let pooled: Vec<String> = a.traffic.ops[after].1.out["pooled"].as_array().into_iter().flatten().map(s).collect();
     assert!(!pooled.iter().any(|k| k.contains(&d_inc0)), "the source's pool names nothing of the superseded birth {d_inc0}: {pooled:?}");
     assert!(pooled.iter().any(|k| k.contains(&d_inc1)), "the source's pool holds a connection to the current birth {d_inc1}: {pooled:?}");
-    let edge2 = await_edge(&f.estate, &src, &d_id, &d_inc1, Some(&d_inc0)).await;
-    events.push(json!({"event": "recovered", "redial_attempts": attempts, "edge": edge1, "recovered_op": recovered_op, "old_incarnation": d_inc0, "new_incarnation": d_inc1, "restart": restart, "pooled_after": pooled, "superseded_edge_gone": edge2, "ledger_after": after}));
+    let edge2 = await_edge(&f.estate, &src, &d_id1, &d_inc1, None).await;
+    let superseded_gone = await_no_edge(&f.estate, &src, &d_id).await;
+    events.push(json!({"event": "recovered", "redial_attempts": attempts, "edge": edge1, "recovered_op": recovered_op, "old_node_id": d_id, "old_incarnation": d_inc0, "new_node_id": d_id1, "new_incarnation": d_inc1, "recovery": recovery, "pooled_after": pooled, "current_edge": edge2, "superseded_edge_gone": superseded_gone, "ledger_after": after}));
     a.events.extend(events.iter().cloned());
     let (s0, dname, inc1, comp, lsrc) = (src.clone(), dst.clone(), d_inc1.clone(), inbound_from.clone(), lost_src.clone());
     let marks = (t_cut2, t_release, t_in0);
-    close_run(f, a, inv, nodes, launches, authorities, connections, &["C11"], json!({"events": events}), move |_f, spans, inv| {
+    let gone = BTreeSet::from([dst.clone()]);
+    close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C11"], json!({"events": events}), gone, move |_f, spans, inv| {
         let facts = observed_facts(spans, &lsrc, &dname);
         let label = |sp: &Value| format!("{}/{}/{}@{}", sp["attributes"]["state"].as_str().unwrap_or(""), sp["attributes"]["origin"].as_str().unwrap_or(""), sp["attributes"]["reason"].as_str().unwrap_or(""), start_ns(sp));
         let seq: Vec<String> = facts.iter().map(&label).collect();
@@ -4566,12 +4629,14 @@ async fn supersession_run(cell: &str, shape: Shape) {
 /// broker does not reply, its latest Direct fact toward the broker is no longer Connected, and the other
 /// gateway still reaches the broker (the cut is selected, not global). Released, the gateway redials and its
 /// next call is answered by the same birth, the fact Connected again. The broker dialling the gateway is an
-/// accepted fact at the gateway. The cut is installed again and the broker is restarted by the Build
-/// rectifier (a new exact birth on a new socket); once released, the gateway's pool names nothing of the
-/// superseded birth, holds a connection to the new one, its edge to the old birth is not Connected, and its
-/// call is answered by the new birth. What must NOT happen: a reply under the cut, a call answered by a
-/// superseded birth, a pooled connection to the old birth after the supersession, a topology write other
-/// than the one restart attempt.
+/// accepted fact at the gateway. The broker's exact runtime is then killed (acknowledged by the provider) and
+/// its mesh-primary recovers it (node-recovery.md): a new node.id and incarnation at the same path.name, the
+/// endpoint key and data dir retained, on a new socket in a new runtime. Another mesh's compute dials the new
+/// birth under a cut and its dial is a Failed fact that sent nothing; once released, the dial is Connected on
+/// the new birth. The gateway's pool names nothing of the superseded birth and holds a connection to the new
+/// one, it holds a Connected edge to the new node.id and none to the exited one, and its call is answered by
+/// the new birth. What must NOT happen: a reply under the cut, a call answered by a superseded birth, a pooled
+/// connection to the old birth after the supersession, a topology write sent by the cell.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_routes_survive_connection_and_birth_supersession() {
     supersession_run("mock_routes_survive_connection_and_birth_supersession", any_tier()).await;
@@ -4797,26 +4862,29 @@ async fn churn_run(cell: &str, shape: Shape) {
     }
     events.push(json!({"event": "loss-rounds", "rounds": rounds}));
 
-    // Supersession: each broker is restarted in turn; the source reaches the new birth and its pool and
-    // facts name nothing of the old one.
+    // Supersession: each broker's exact runtime is killed in turn and its mesh-primary recovers it
+    // (node-recovery.md: a new node.id and incarnation at the same path.name); the source reaches the new
+    // birth and its pool and facts name nothing of the old one.
     let mut superseded = Vec::new();
-    let mut restarts = Vec::new();
+    let mut recoveries = Vec::new();
     for d in [&d1n, &d2n] {
         let old = cur(&st, d);
         a.traffic.aim = Some(d.clone());
-        let ev = restart_node(&mut f, &mut a, &st, d, "C18 superseding restart").await;
+        let ev = recover_node(&mut f, &mut a, &st, d, "C18 superseding recovery").await;
         a.traffic.aim = None;
-        st = a.stable(&mut f, &format!("C18: {d} reborn"), &both(2), &mut inv).await;
+        st = a.stable(&mut f, &format!("C18: {d} recovered"), &both(2), &mut inv).await;
         let new = cur(&st, d);
-        assert_ne!(old["incarnation_id"], new["incarnation_id"]);
+        let (old_id, new_id) = (s(&old["node_id"]), s(&new["node_id"]));
+        assert!(old_id != new_id && old["incarnation_id"] != new["incarnation_id"], "{d}: a node recovery is a new node.id and incarnation at the same path.name (node-recovery.md, New): {old_id}@{} -> {new_id}@{}", old["incarnation_id"], new["incarnation_id"]);
         superseded.push(s(&old["incarnation_id"]));
         let x = dial(&f, &src, d);
         f.actions.push(action_row(&x));
         let i = originate_op(&f, &mut a, &src, &new, "after-supersession");
-        let edge = await_edge(&f.estate, &src, &s(&new["node_id"]), &s(&new["incarnation_id"]), Some(&s(&old["incarnation_id"]))).await;
-        restarts.push(json!({"node": d, "old_incarnation": old["incarnation_id"], "new_incarnation": new["incarnation_id"], "restart": ev, "ledger_op": i, "edge": edge}));
+        let edge = await_edge(&f.estate, &src, &new_id, &s(&new["incarnation_id"]), None).await;
+        let gone = await_no_edge(&f.estate, &src, &old_id).await;
+        recoveries.push(json!({"node": d, "old_node_id": old_id, "old_incarnation": old["incarnation_id"], "new_node_id": new_id, "new_incarnation": new["incarnation_id"], "recovery": ev, "ledger_op": i, "edge": edge, "superseded_edge_gone": gone}));
     }
-    events.push(json!({"event": "supersessions", "restarts": restarts}));
+    events.push(json!({"event": "supersessions", "recoveries": recoveries}));
 
     // Terminal teardown: every pooled connection names a current birth, none a superseded one; the source's
     // descriptors are no more than the baseline's; the provider runs exactly the shape's runtimes.
@@ -4838,23 +4906,24 @@ async fn churn_run(cell: &str, shape: Shape) {
     assert_eq!(end_procs, f.shape.total(), "the provider runs one runtime per node: the superseded births' runtimes are gone");
     events.push(json!({"event": "terminal", "pooled": pooled, "superseded": superseded, "fd_census_baseline": base_census, "fd_census_end": end_census, "provider_processes": end_procs}));
     inv.holds(
-        "C18: after loss rounds, inbound acceptance, redials and two superseding restarts, the source's pool names only current births, it holds no more sockets or descriptors than at its baseline, and the provider runs exactly the shape's runtimes",
+        "C18: after loss rounds, inbound acceptance, redials and two superseding node recoveries, the source's pool names only current births, it holds no more sockets or descriptors than at its baseline, and the provider runs exactly the shape's runtimes",
         true,
         json!({"baseline": base_census, "end": end_census, "pooled": pooled.len(), "superseded": superseded}),
     );
     a.events.extend(events.iter().cloned());
-    close_run(f, a, inv, nodes, launches, authorities, connections, &["C18"], json!({"events": events}), |_f, _spans, _inv| json!({})).await;
+    close_run_with(f, a, inv, nodes, launches, authorities, connections, &["C18"], json!({"events": events}), BTreeSet::from([d1n, d2n]), |_f, _spans, _inv| json!({})).await;
 }
 
 /// CONTRACT: a gateway's connections are churned in a formed estate: its connection to a broker is lost
 /// under an acknowledged UDP cut and released three times, a compute dials it (an accepted connection) and
-/// it dials again, then each of two brokers is restarted by the Build rectifier (a new exact birth) and
-/// reached again. At the baseline (every peer dialled once) and at the end the gateway's descriptors and
-/// sockets are read from the process table and the provider's runtimes are counted. The end shows no more
-/// descriptors or sockets than the baseline, a pool whose every connection names a current birth and none a
-/// superseded one (one per peer birth), a Connected edge to each new birth and none to the old, and exactly
-/// the shape's runtimes. What must NOT happen: a pooled connection to a superseded birth, a leaked
-/// descriptor, a runtime of a superseded birth, a call answered by a superseded birth.
+/// it dials again, then each of two brokers has its exact runtime killed (acknowledged by the provider) and
+/// is recovered by its mesh-primary (node-recovery.md: a new node.id and incarnation at the same path.name, in
+/// a new runtime) and reached again. At the baseline (every peer dialled once) and at the end the gateway's
+/// descriptors and sockets are read from the process table and the provider's runtimes are counted. The end
+/// shows no more descriptors or sockets than the baseline, a pool whose every connection names a current
+/// birth and none a superseded one (one per peer birth), a Connected edge to each new node.id and none to the
+/// exited one, and exactly the shape's runtimes. What must NOT happen: a pooled connection to a superseded
+/// birth, a leaked descriptor, a runtime of a superseded birth, a call answered by a superseded birth.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_connection_churn_releases_superseded_resources() {
     churn_run("mock_connection_churn_releases_superseded_resources", any_tier()).await;
