@@ -50,7 +50,7 @@ struct Held {
 }
 
 impl Held {
-    fn fenced(&self) -> Result<(), BuildStateError> {
+    fn refused_once_moved(&self) -> Result<(), BuildStateError> {
         if self.moved.load(Ordering::SeqCst) {
             return Err(BuildStateError::Fenced { node: "mesh1.admin.1".into(), by: "the fabric seat record names mesh2 (epoch 2)".into(), to: Some("mesh2.admin.1".into()) });
         }
@@ -65,7 +65,7 @@ impl BuildStateAdapter for Held {
             self.entered.notify_one();
             self.release.notified().await;
         }
-        self.fenced()?;
+        self.refused_once_moved()?;
         self.inner.publish_accepted(accepted).await?;
         if self.moves_at_accept.load(Ordering::SeqCst) {
             self.moved.store(true, Ordering::SeqCst);
@@ -73,7 +73,7 @@ impl BuildStateAdapter for Held {
         Ok(())
     }
     async fn publish_fabric(&self, record: &rafka_node_admin_core::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
-        self.fenced()?;
+        self.refused_once_moved()?;
         self.inner.publish_fabric(record).await
     }
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
