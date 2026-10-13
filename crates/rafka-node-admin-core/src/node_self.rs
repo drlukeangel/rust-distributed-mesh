@@ -184,8 +184,11 @@ enum RoundProgress {
 
 /// Where a birth stands between a stop and a start.
 enum Cycle {
-    /// Running: a stop has not been admitted.
-    Live,
+    /// Running: a stop has not been admitted. A birth a start brought back holds that start's command,
+    /// `(build_id, operation)`: its reissue by a later attempt of the same Build replays `Started`
+    /// (node-rpc-envelope.md: "Reissuing a naturally idempotent uncertain step can settle it"); a birth
+    /// that never stopped holds `None`.
+    Live(Option<(String, String)>),
     /// A stop is under way; later stops of the birth wait for the same receipt.
     Stopping(tokio::sync::watch::Receiver<Option<ConnectionsReceipt>>),
     /// Stopped, its process alive, with the receipt its node.connections.delete { All } established.
@@ -270,7 +273,7 @@ impl NodeSelf {
         status: Arc<dyn Fn() -> MemberStatus + Send + Sync>,
         declare: Option<Declare>,
     ) -> Self {
-        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
+        Self { node_id, incarnation, name, server, client, resolver, membership, set_status, status, declare, retire: None, backbone: None, cycle: Mutex::new(Cycle::Live(None)), session: Mutex::new(None), data_plane: Mutex::new(None), connections: Mutex::new(None), round_actions: Mutex::new(Arc::new(crate::fabric_rounds::NoScratchpad)), rounds_seen: Mutex::new(std::collections::HashMap::new()) }
     }
 
     /// The name this birth holds and publishes: its row's name once it took one (live through
@@ -674,7 +677,7 @@ impl NodeSelf {
                 // answer for a birth on its way out of Leaving, as a start does not run beside a stop.
                 Cycle::Starting { .. } => return StatusReply::NotReady { reason: format!("{}: a start is under way; the stop is decided on the cycle it ends in", self.held_name()) },
                 Cycle::Stopping(rx) => Next::Wait(rx.clone()),
-                Cycle::Live => {
+                Cycle::Live(_) => {
                     let (tx, rx) = tokio::sync::watch::channel(None);
                     *cycle = Cycle::Stopping(rx);
                     Next::Run(tx)
@@ -826,7 +829,8 @@ impl NodeSelf {
                         Next::Join(outcome.clone())
                     }
                     Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
-                    Cycle::Live => {
+                    Cycle::Live(Some((build_id, operation))) if *build_id == op.build_id && *operation == op.operation => return StatusReply::Started,
+                    Cycle::Live(_) => {
                         return StatusReply::RejectedInvalidNodeTransition { current: crate::status_rpc::declared_of_member((self.status)()) };
                     }
                 }
@@ -864,7 +868,7 @@ impl NodeSelf {
                 Ok(()) => {
                     // A new cycle: its next drain is a new drain.
                     let mut cycle = self.cycle.lock().unwrap();
-                    *cycle = Cycle::Live;
+                    *cycle = Cycle::Live(Some((op.build_id.clone(), op.operation.clone())));
                     drop(cycle);
                     parking().unpark();
                     StatusReply::Started
