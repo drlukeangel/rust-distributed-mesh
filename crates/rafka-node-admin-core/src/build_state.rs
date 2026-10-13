@@ -1022,12 +1022,14 @@ pub trait BuildStateAdapter: Send + Sync {
     /// The exited births of `mesh` whose node workflow in `build_id` stopped at a Failed attempt and
     /// is not done (node-recovery.md "Failure and receipts": the mesh-primary submits each again):
     /// for each birth an attempt of `build_id` was opened for with `AttemptAction::Recover`, the run
-    /// that its latest such open began (up to the next attempt opened in the Build, whatever it
+    /// that its latest claimed such open began (up to the next attempt opened in the Build, whatever it
     /// carries) ended with its last claimed attempt's verdict `Failed`, and
-    /// [`BuildStateAdapter::recovery_of`] does not answer the birth. A run still in flight (opened and
-    /// not claimed, or claimed with no verdict) or handed off is not owed. A point read by the Build:
-    /// every adapter answers it from its index (or delegates to the adapter it decorates), never by
-    /// reading or folding the fact log.
+    /// [`BuildStateAdapter::recovery_of`] does not answer the birth. An open no one claimed ran nothing
+    /// and ends no run: a resubmit whose opener was lost between its open and its claim leaves the
+    /// birth owed, and the submit claims that open attempt as it stands (build.md :365, claims are
+    /// insert-and-fail on the attempt). A run claimed with no verdict yet, or handed off, is not owed.
+    /// A point read by the Build: every adapter answers it from its index (or delegates to the adapter
+    /// it decorates), never by reading or folding the fact log.
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
 }
 
@@ -1256,9 +1258,9 @@ impl FactLog {
     }
 
     /// The point read of [`BuildStateAdapter::exits_owed`]: per exited birth of `mesh`, the run its
-    /// latest `Recover` open in `build_id` began, up to the next attempt opened in the Build; owed when
-    /// the run's last claimed attempt holds the verdict `Failed` and [`FactLog::recovery_of`] does not
-    /// answer the birth.
+    /// latest claimed `Recover` open in `build_id` began, up to the next attempt opened in the Build;
+    /// owed when the run's last claimed attempt holds the verdict `Failed` and [`FactLog::recovery_of`]
+    /// does not answer the birth. An open with no claim (no entry in `verdicts`) starts no run.
     fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Vec<OwedExit> {
         // The fabric lane's recoveries of the mesh's births, and the mesh's own drift lane's.
         let mut owed: Vec<OwedExit> = [None, Some(mesh.to_string())].into_iter().flat_map(|lane| self.exits_owed_in(&(build_id.clone(), lane), mesh)).collect();
@@ -1269,10 +1271,12 @@ impl FactLog {
     /// [`FactLog::exits_owed`] in one lane of the Build.
     fn exits_owed_in(&self, lane: &LaneOf, mesh: &str) -> Vec<OwedExit> {
         let Some(exit_opens) = self.exit_opens.get(lane) else { return Vec::new() };
-        // The latest open per birth: the attempts ascend, so the last one seen stands.
+        let claimed = |attempt: &u32| self.verdicts.get(lane).is_some_and(|v| v.contains_key(attempt));
+        // The latest claimed open per birth: the attempts ascend, so the last one seen stands. An open
+        // no one claimed ran nothing, so the run before it stands.
         let mut latest: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), (u32, crate::model::PathName)> = std::collections::HashMap::new();
         for (attempt, (path, node_id, incarnation)) in exit_opens {
-            if path.mesh == mesh {
+            if path.mesh == mesh && claimed(attempt) {
                 latest.insert((node_id.clone(), incarnation.clone()), (*attempt, path.clone()));
             }
         }
