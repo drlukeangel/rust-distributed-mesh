@@ -78,6 +78,7 @@ mod recovery_admission;
 mod restart_hold_from_facts;
 mod restart_one_operation;
 mod pipeline_moves_no_seat;
+mod pipeline_step_io;
 mod status_declarations;
 mod status_seat_fold;
 mod stopped_delete;
