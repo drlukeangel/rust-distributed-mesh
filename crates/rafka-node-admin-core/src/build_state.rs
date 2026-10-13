@@ -373,6 +373,43 @@ impl BuildProjection {
         self.lanes.values().any(Lane::is_open)
     }
 
+    /// The Build as an attempt of `lane` reads it (R-BI7): `None` the fabric lane, the Build itself;
+    /// `Some(mesh)` that mesh's drift lane, whose state, attempt, executor, claimant, reason, action,
+    /// steps and verdicts stand where the fabric lane's do, so the executor, its pipelines and the
+    /// plan read the lane's own numbering and receipts and never the fabric lane's. The accepted
+    /// topology and the Build's identity are the Build's. A lane never opened reads as no attempt yet.
+    pub fn in_lane(&self, lane: Option<&str>) -> BuildProjection {
+        let Some(mesh) = lane else { return self.clone() };
+        let mut p = self.clone();
+        let l = self.lanes.get(mesh).cloned().unwrap_or(Lane {
+            state: BuildState::Complete,
+            attempt: 0,
+            executor: None,
+            claimant: None,
+            reason: AttemptReason::Recovery,
+            action: None,
+            opened: 0,
+            last_failure: None,
+            steps: Vec::new(),
+            reported: Default::default(),
+            attempt_actions: BTreeMap::new(),
+        });
+        p.state = l.state;
+        p.attempt = l.attempt;
+        p.attempt_executors = l.executor.iter().map(|e| (l.attempt, e.clone())).collect();
+        p.executor = l.executor;
+        p.claimant = l.claimant;
+        p.reason = l.reason;
+        p.action = l.action;
+        p.opened = l.opened;
+        p.last_failure = l.last_failure;
+        p.steps = l.steps;
+        p.reported = l.reported;
+        p.attempt_actions = l.attempt_actions;
+        p.completed_at = (l.state == BuildState::Complete && l.attempt > 0).then_some(l.attempt);
+        p
+    }
+
     /// The attempt a drive of this Build covers as it reads now: the current attempt while it runs or
     /// once it completed; the next one while it waits for its claim (an attempt opened on it, a
     /// complete Build reopened included, or the hand-off of the current one) or after it failed.
@@ -953,10 +990,11 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
     /// Drop a finished Build from the views (history administration).
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
-    /// The step in flight of `operation` in `attempt` waits on `reason`: live progress for a call
-    /// attached to the run, never a fact, never durable. A state with no call attached to its runs
+    /// The step in flight of `operation` in `attempt` of `lane` (`None` the fabric lane, `Some(mesh)`
+    /// that mesh's drift lane) waits on `reason`: live progress for a call attached to the run, never
+    /// a fact, never durable. A state with no call attached to its runs
     /// has nobody to tell.
-    async fn note_blocked(&self, _build_id: &BuildId, _attempt: u32, _operation: &str, _step: &str, _reason: &str) {}
+    async fn note_blocked(&self, _build_id: &BuildId, _lane: Option<&str>, _attempt: u32, _operation: &str, _step: &str, _reason: &str) {}
     /// The Build, lane (`None` the fabric lane, `Some(mesh)` that mesh's drift lane), attempt and
     /// operation of the node workflow at `path` that deleted the exited birth `(node_id, incarnation)`
     /// and completed: a recovery of that birth (its `retire-node:<path>`

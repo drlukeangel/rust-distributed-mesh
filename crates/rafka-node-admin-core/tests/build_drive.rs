@@ -88,7 +88,7 @@ struct Creates(Mutex<Vec<String>>, Arc<MemoryBuildStateAdapter>);
 
 #[async_trait::async_trait]
 impl OperationRunner for Creates {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+    async fn run(&self, build: &BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.0.lock().unwrap().push(op.key());
         let receipt = BuildStepReceipt { mesh: None, build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
         self.1.append_step_receipt(&receipt).await.map_err(|e| e.to_string().into())
@@ -399,8 +399,8 @@ struct Reborn {
 
 #[async_trait::async_trait]
 impl OperationRunner for Reborn {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
-        self.ran.run(build, attempt, op).await?;
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        self.ran.run(build, lane, attempt, op).await?;
         if op.key() == "create-node:mesh2.admin.1" {
             let mut v = self.topology.write().await;
             v.nodes.retain(|n| n.name.to_string() != "mesh2.admin.1");
@@ -541,8 +541,8 @@ struct Lands {
 
 #[async_trait::async_trait]
 impl OperationRunner for Lands {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
-        self.ran.run(build, attempt, op).await?;
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        self.ran.run(build, lane, attempt, op).await?;
         if let (true, BuildOperation::CreateNode { node: p, .. }) = (self.lands, op) {
             self.topology.write().await.nodes.push(node(&p.to_string(), false, false));
         }
@@ -619,7 +619,7 @@ struct Records(Arc<Creates>);
 
 #[async_trait::async_trait]
 impl OperationRunner for Records {
-    async fn run(&self, _: &BuildId, _: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+    async fn run(&self, _: &BuildId, _lane: Option<&str>, _: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.0 .0.lock().unwrap().push(op.key());
         Ok(())
     }
@@ -691,8 +691,8 @@ struct LandsAndSeats {
 
 #[async_trait::async_trait]
 impl OperationRunner for LandsAndSeats {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
-        self.ran.run(build, attempt, op).await?;
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        self.ran.run(build, lane, attempt, op).await?;
         if let BuildOperation::CreateNode { node: p, .. } = op {
             let mut v = self.topology.write().await;
             v.nodes.push(node(&p.to_string(), false, false));
@@ -892,8 +892,8 @@ struct MeshBirth {
 
 #[async_trait::async_trait]
 impl OperationRunner for MeshBirth {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
-        self.ran.run(build, attempt, op).await?;
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        self.ran.run(build, lane, attempt, op).await?;
         if op.key() == "create-node:mesh2.admin.1" {
             self.topology.write().await.nodes.push(node("mesh2.admin.1", true, false));
         }
@@ -924,7 +924,7 @@ struct HeldOpen {
 
 #[async_trait::async_trait]
 impl OperationRunner for HeldOpen {
-    async fn run(&self, _: &BuildId, _: u32, _: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+    async fn run(&self, _: &BuildId, _lane: Option<&str>, _: u32, _: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.began.notify_one();
         std::future::pending().await
     }
@@ -1018,7 +1018,7 @@ struct LostLeaver {
 
 #[async_trait::async_trait]
 impl OperationRunner for LostLeaver {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         let ends = self.ends.lock().unwrap().clone();
         if let (BuildOperation::ShutdownMesh { .. }, Some(end)) = (op, ends) {
             if self.progress.load(Ordering::SeqCst) {
@@ -1030,7 +1030,7 @@ impl OperationRunner for LostLeaver {
             }
             return Err(end);
         }
-        self.ran.get().expect("the rig set the recorder").run(build, attempt, op).await?;
+        self.ran.get().expect("the rig set the recorder").run(build, lane, attempt, op).await?;
         if let BuildOperation::ShutdownMesh { mesh, .. } = op {
             self.topology.write().await.nodes.retain(|n| n.mesh != *mesh);
         }
@@ -1302,10 +1302,10 @@ struct HeldUntilLetGo {
 
 #[async_trait::async_trait]
 impl OperationRunner for HeldUntilLetGo {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.began.send_replace(true);
         let _go = self.let_go.acquire().await.expect("the cell never closes its semaphore");
-        self.ran.run(build, attempt, op).await
+        self.ran.run(build, lane, attempt, op).await
     }
 }
 

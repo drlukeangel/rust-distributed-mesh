@@ -42,9 +42,9 @@ struct OwnReceipts {
 
 #[async_trait::async_trait]
 impl OperationRunner for OwnReceipts {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
-        self.inner.run(build, attempt, op).await?;
-        let receipt = BuildStepReceipt { mesh: None, build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        self.inner.run(build, lane, attempt, op).await?;
+        let receipt = BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
         self.builds.append_step_receipt(&receipt).await.map_err(|e| e.to_string().into())
     }
 }

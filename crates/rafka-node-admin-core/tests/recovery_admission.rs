@@ -506,9 +506,8 @@ struct RecoveryReceipts {
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::executor::OperationRunner for RecoveryReceipts {
-    async fn run(&self, build_id: &rafka_node_admin_core::build::BuildId, attempt: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+    async fn run(&self, build_id: &rafka_node_admin_core::build::BuildId, lane: Option<&str>, attempt: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         use rafka_node_admin_core::build::BuildOperation;
-        let lane: Option<&str> = None;
         let receipts = match op {
             BuildOperation::RetireNode { node, exited: Some(from) } => deletion_receipts(lane, "retire-node", build_id, attempt, node, &from.node_id, &from.incarnation, &self.executor),
             BuildOperation::CreateNode { .. } | BuildOperation::UpdateNode { .. } => {

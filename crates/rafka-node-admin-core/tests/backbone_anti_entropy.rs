@@ -107,8 +107,8 @@ impl BuildStateAdapter for HeldBuilds {
     async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(id).await
     }
-    async fn note_blocked(&self, build_id: &BuildId, attempt: u32, operation: &str, step: &str, reason: &str) {
-        self.inner.note_blocked(build_id, attempt, operation, step, reason).await
+    async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
+        self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
     }
     async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await

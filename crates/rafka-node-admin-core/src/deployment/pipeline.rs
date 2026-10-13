@@ -1757,7 +1757,7 @@ impl DeploymentPipeline<'_> {
                             return Err(format!("runtime exited (code {code:?}) before it was Ready ({not_ready}): {detail}"));
                         }
                         if let Some(blocker) = self.observer.ready_blocker(&node).await {
-                            self.builds.note_blocked(run_build, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
+                            self.builds.note_blocked(run_build, None, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await
                     }

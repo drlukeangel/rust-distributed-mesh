@@ -237,13 +237,13 @@ struct Runner {
 
 #[async_trait::async_trait]
 impl OperationRunner for Runner {
-    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+    async fn run(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         // A node recovery's three operations (node-recovery.md "Steps"), each writing the receipts its
         // workflow writes: the delete's NodeDeleted naming the exited birth and its Complete, the
         // create's Complete, the update's Complete. The fabric-primary's planning and recovery dedup
         // read them.
         let receipt = |operation: String, step: &str, output: Option<serde_json::Value>| rafka_node_admin_core::build_state::BuildStepReceipt {
-            mesh: None,
+            mesh: lane.map(str::to_string),
             build_id: build_id.clone(),
             attempt,
             operation,

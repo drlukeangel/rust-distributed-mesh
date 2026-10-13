@@ -52,9 +52,10 @@ impl std::fmt::Display for RunEnd {
 /// Realises one planned operation (the deployment and lifecycle pipelines).
 #[async_trait::async_trait]
 pub trait OperationRunner: Send + Sync {
-    /// Realise `op` of `attempt` of `build_id`; `Err` names how it ended short of complete
-    /// ([`RunEnd`]).
-    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), RunEnd>;
+    /// Realise `op` of `attempt` of `build_id` in `lane` (`None` the fabric lane, `Some(mesh)` that
+    /// mesh's drift lane, R-BI7: its receipts carry the lane); `Err` names how it ended short of
+    /// complete ([`RunEnd`]).
+    async fn run(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), RunEnd>;
 }
 
 /// The admin that executes `op` in view `t`; `None` while no admin can.
@@ -333,9 +334,14 @@ impl BuildExecutor {
     /// Run attempt `attempt` of `build_id`, which the fabric-primary won for this admin. The span is
     /// parented to the attempt's context the claim returned, so a restart reads under its request
     /// and a drift repair under the span that proved it.
-    pub async fn run_attempt(&self, build_id: &BuildId, attempt: u32, context: &rafka_node_rpc_contract::context::CallContext, plan: &RunPlan) -> Reconciled {
+    ///
+    /// `lane` is the attempt's lane: `None` the fabric lane, `Some(mesh)` that mesh's drift lane
+    /// (R-BI7), which the mesh's own primary claimed and runs: every fact the run writes carries the
+    /// lane and every read of the Build is the lane's ([`crate::build_run::LaneBuilds`]).
+    pub async fn run_attempt(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, context: &rafka_node_rpc_contract::context::CallContext, plan: &RunPlan) -> Reconciled {
         use tracing::Instrument;
-        let previous = self.builds.read_build(build_id).await.ok();
+        let builds = crate::build_run::LaneBuilds::of(&self.builds, lane);
+        let previous = builds.read_build(build_id).await.ok();
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-reconcile",
             build_id = %build_id,
@@ -354,7 +360,7 @@ impl BuildExecutor {
         if let Some(tp) = &context.traceparent {
             rafka_mesh_telemetry::set_remote_parent(&span, tp, context.tracestate.as_deref());
         }
-        let r = self.run_claimed(build_id, attempt, plan, &span).instrument(span.clone()).await;
+        let r = self.run_claimed(&*builds, build_id, lane, attempt, plan, &span).instrument(span.clone()).await;
         span.record(
             "outcome",
             match &r {
@@ -366,13 +372,14 @@ impl BuildExecutor {
         r
     }
 
-    async fn run_claimed(&self, build_id: &BuildId, attempt: u32, plan: &RunPlan, span: &tracing::Span) -> Reconciled {
-        // The fabric-primary decided the claim; this admin's own log takes the fact with it.
+    async fn run_claimed(&self, builds: &dyn BuildStateAdapter, build_id: &BuildId, lane: Option<&str>, attempt: u32, plan: &RunPlan, span: &tracing::Span) -> Reconciled {
+        // The claim was decided (by the fabric-primary for the fabric lane, by this mesh-primary for
+        // its mesh's drift lane); this admin's own log takes the fact with it.
         let claim = BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: self.executor.clone() };
-        if let Err(e) = self.builds.adopt_claim(&claim).await {
+        if let Err(e) = builds.adopt_claim(&claim).await {
             return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording the claim of attempt {attempt}: {e}") };
         }
-        let build = match self.builds.read_build(build_id).await {
+        let build = match builds.read_build(build_id).await {
             Ok(b) => b,
             Err(e) => return Reconciled::Failed { attempt, operation: String::new(), reason: format!("reading Build {build_id} after the claim of attempt {attempt}: {e}") },
         };
@@ -386,18 +393,18 @@ impl BuildExecutor {
             // always the fabric-primary's plan.
             if i > 0 {
                 if let Some(to) = executor_for(op, &*self.topology.read().await).filter(|to| to.to_string() != self.executor) {
-                    return self.hand_off(&build, attempt, operations[..i].to_vec(), to.to_string()).await;
+                    return self.hand_off(builds, &build, attempt, operations[..i].to_vec(), to.to_string()).await;
                 }
             }
-            match self.runner.run(&build.build_id, attempt, op).await {
+            match self.runner.run(&build.build_id, lane, attempt, op).await {
                 Ok(()) => {}
-                Err(RunEnd::Failed(reason)) => return self.finish(&build, attempt, Err((op.key(), reason))).await,
-                Err(RunEnd::Incomplete(reason)) => return self.hand_back(&build, attempt, operations[..i].to_vec(), op, reason, span).await,
+                Err(RunEnd::Failed(reason)) => return self.finish(builds, &build, attempt, Err((op.key(), reason))).await,
+                Err(RunEnd::Incomplete(reason)) => return self.hand_back(builds, &build, attempt, operations[..i].to_vec(), op, reason, span).await,
             }
         }
         match &plan.hand_off_to {
-            Some(to) => self.hand_off(&build, attempt, operations.clone(), to.clone()).await,
-            None => self.finish(&build, attempt, Ok(operations.clone())).await,
+            Some(to) => self.hand_off(builds, &build, attempt, operations.clone(), to.clone()).await,
+            None => self.finish(builds, &build, attempt, Ok(operations.clone())).await,
         }
     }
 
@@ -406,30 +413,31 @@ impl BuildExecutor {
     /// that stops at another executor's operation ends: handed to the fabric-primary of the view the
     /// run ends with, which claims the next attempt, and that attempt resumes from the receipts. The
     /// Build stays in progress. The reason is the attempt's blocker, framed to the caller.
-    async fn hand_back(&self, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, op: &BuildOperation, reason: String, span: &tracing::Span) -> Reconciled {
+    #[allow(clippy::too_many_arguments)]
+    async fn hand_back(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, op: &BuildOperation, reason: String, span: &tracing::Span) -> Reconciled {
         span.record("incomplete", reason.as_str());
         let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or_else(|| self.executor.clone());
-        self.builds.note_blocked(&build.build_id, attempt, &op.key(), "incomplete", &reason).await;
+        builds.note_blocked(&build.build_id, None, attempt, &op.key(), "incomplete", &reason).await;
         tracing::info!(operation = %op.key(), reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
-        self.hand_off(build, attempt, ran, to).await
+        self.hand_off(builds, build, attempt, ran, to).await
     }
 
-    async fn hand_off(&self, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {
+    async fn hand_off(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, operations: Vec<BuildOperation>, to: String) -> Reconciled {
         let receipt = BuildAttemptReceipt { mesh: None, build_id: build.build_id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } };
-        if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
+        if let Err(e) = builds.append_attempt_receipt(&receipt).await {
             return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") };
         }
         tracing::info!(to = %to, "the next operation belongs to another admin; handed off");
         Reconciled::HandedOff { attempt, operations, to }
     }
 
-    async fn finish(&self, build: &BuildProjection, attempt: u32, r: Result<Vec<BuildOperation>, (String, String)>) -> Reconciled {
+    async fn finish(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, r: Result<Vec<BuildOperation>, (String, String)>) -> Reconciled {
         let outcome = match &r {
             Ok(_) => AttemptOutcome::Converged,
             Err((op, reason)) => AttemptOutcome::Failed { reason: format!("{op}: {reason}") },
         };
         let receipt = BuildAttemptReceipt { mesh: None, build_id: build.build_id.clone(), attempt, outcome };
-        if let Err(e) = self.builds.append_attempt_receipt(&receipt).await {
+        if let Err(e) = builds.append_attempt_receipt(&receipt).await {
             return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording attempt {attempt}: {e}") };
         }
         match r {
