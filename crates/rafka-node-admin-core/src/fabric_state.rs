@@ -68,10 +68,14 @@ impl FabricState {
 /// pending, and the rows it already published to the store root stay there. One handle is shared by
 /// everything on an admin that refuses a workflow until it is true.
 ///
-/// The durable fact is the ready-for-traffic Fabric event's row among the status rows of the admin's
-/// mesh (`crate::status_storage::FabricEventRow`): the fabric-primary applies the event at every mesh
-/// primary once the fabric reaches ready-for-traffic. The Fabric row on the store root is published at
-/// the first state-commit, before that, and is not the signal.
+/// The durable fact is the ready-for-traffic Fabric event's row (`crate::status_storage::FabricEventRow`).
+/// The initial fabric first reaching ready-for-traffic is the fabric-primary's one fact (states.md: "The
+/// fabric-primary declares fabric state through the completed rounds"): it puts the row among its own
+/// mesh's status rows as the first act of entering ready-for-traffic, before it latches or admits
+/// anything, then applies the event at every other mesh primary. An admin of any mesh reads the row among
+/// its own mesh's rows, else among the fabric-primary's mesh's rows on the store root, so a command the
+/// fabric-primary admitted once the fabric was ready finds the fact wherever it lands. The Fabric row on
+/// the store root is published at the first state-commit, before that, and is not the signal.
 #[derive(Debug, Clone, Default)]
 pub struct FirstReady(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
@@ -90,12 +94,21 @@ impl FirstReady {
         }
     }
 
-    /// Read the durable fact once: the status rows of this admin's mesh hold the ready-for-traffic event of
-    /// `fabric_id`. A read that fails is the caller's to refuse by name.
-    pub async fn read_from(&self, status: &dyn crate::status_storage::StatusStorage, fabric_id: &crate::model::FabricId) -> Result<(), crate::record_store::StorageError> {
+    /// Read the durable fact once: the status rows of this admin's mesh, else those of the
+    /// fabric-primary's mesh `fabric_primary_mesh` (the mesh the seat book names the fabric seat's holder
+    /// in; `None` when it names none), hold the ready-for-traffic event of `fabric_id`. A read that fails
+    /// is the caller's to refuse by name.
+    pub async fn read_from(&self, status: &dyn crate::status_storage::StatusStorage, fabric_id: &crate::model::FabricId, fabric_primary_mesh: Option<&str>) -> Result<(), crate::record_store::StorageError> {
         let ready = crate::status_rpc::event_key(&rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic);
-        if status.fabric_events().await?.iter().any(|row| row.fabric_id == *fabric_id && row.event == ready) {
+        let holds = |rows: &[crate::status_storage::FabricEventRow]| rows.iter().any(|row| row.fabric_id == *fabric_id && row.event == ready);
+        if holds(&status.fabric_events().await?) {
             self.reach(READY_ROW_ON_ROOT);
+            return Ok(());
+        }
+        if let Some(mesh) = fabric_primary_mesh {
+            if holds(&status.fabric_events_of(mesh).await?) {
+                self.reach(READY_ROW_OF_FABRIC_PRIMARY);
+            }
         }
         Ok(())
     }
@@ -108,20 +121,26 @@ impl FirstReady {
     /// Whether the initial fabric `fabric_id` has first reached ready-for-traffic, decided on the durable
     /// fact (states.md, "The initial fabric before ready-for-traffic"): what this admin already knows (or
     /// `now`, its view's fabric status), else a point read of the ready-for-traffic row among `status`, its
-    /// mesh's status rows on the store root, which hold the fact from the moment the mesh's primary put
-    /// it, while the fabric state this admin hears by gossip can still lag it. A read that fails is the
-    /// caller's to refuse by name.
-    pub async fn reached_on_root(&self, status: &dyn crate::status_storage::StatusStorage, fabric_id: &crate::model::FabricId, now: crate::model::ScopeStatus) -> Result<bool, crate::record_store::StorageError> {
+    /// mesh's status rows on the store root, else among the rows of the fabric-primary's mesh
+    /// `fabric_primary_mesh`, which hold the fact from the moment the fabric-primary entered
+    /// ready-for-traffic, while the fabric state this admin hears by gossip, and its own mesh's row, can
+    /// still lag it. A read that fails is the caller's to refuse by name.
+    pub async fn reached_on_root(&self, status: &dyn crate::status_storage::StatusStorage, fabric_id: &crate::model::FabricId, now: crate::model::ScopeStatus, fabric_primary_mesh: Option<&str>) -> Result<bool, crate::record_store::StorageError> {
         if self.reached(now) {
             return Ok(true);
         }
-        self.read_from(status, fabric_id).await?;
+        self.read_from(status, fabric_id, fabric_primary_mesh).await?;
         Ok(self.reached(now))
     }
 }
 
 /// Why an admin knows the fabric first reached ready-for-traffic when its root holds the fact.
 pub const READY_ROW_ON_ROOT: &str = "ready-for-traffic-row-on-store-root";
+
+/// Why an admin knows the fabric first reached ready-for-traffic when the fabric-primary's mesh's status
+/// rows on the root hold the row the fabric-primary put as it entered ready-for-traffic, before the
+/// admin's own mesh's row is put.
+pub const READY_ROW_OF_FABRIC_PRIMARY: &str = "ready-for-traffic-row-of-the-fabric-primary-on-store-root";
 
 /// Which of the two rounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

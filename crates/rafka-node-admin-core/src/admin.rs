@@ -438,20 +438,43 @@ impl Records {
         let _ = self.status.set(crate::status_rpc::SeatFold::new(storage, mesh, name, me));
     }
 
+    /// The fabric-primary's own ready-for-traffic row (states.md, "Who sets each state": "The
+    /// fabric-primary declares fabric state through the completed rounds"): put among this admin's mesh's
+    /// status rows on the store root as the first act of entering ready-for-traffic, before the fabric
+    /// state latches and the door admits anything, so the fact is durable before anything acts on it.
+    /// Committed as an `ApplyFabricEvent` at this admin is (`crate::status_rpc::commit_fabric_event`):
+    /// the declarer's later one for this mesh answers `AlreadyApplied`. `Err` names what refused it, and
+    /// nothing is held.
+    pub async fn put_ready_row(&self, fabric_id: &FabricId) -> Result<rafka_node_rpc_contract::status::StatusReply, String> {
+        let Some(fold) = self.status.get() else {
+            return Err(format!("no status store is held to put the ready-for-traffic row of fabric {fabric_id}"));
+        };
+        let ready = crate::status_rpc::event_key(&rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic);
+        match crate::status_rpc::commit_fabric_event(&**fold.storage(), &self.declared, fabric_id, &ready).await {
+            r @ (rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) => Ok(r),
+            rafka_node_rpc_contract::status::StatusReply::NotReady { reason } => Err(format!("the status rows of mesh {} on the store root: {reason}", fold.mesh())),
+            other => Err(format!("the status rows of mesh {} on the store root answered {}", fold.mesh(), other.name())),
+        }
+    }
+
     /// Whether the initial fabric `fabric_id` has first reached ready-for-traffic, decided on the durable
     /// fact (states.md, "The initial fabric before ready-for-traffic"): what this admin already knows
     /// ([`crate::fabric_state::FirstReady`], or `now`, its view's fabric status), else a point read of the
-    /// ready-for-traffic row among its mesh's status rows on the store root, which holds the fact from
-    /// the moment the mesh's primary put it, while the fabric state this admin hears by gossip can still
-    /// lag it. A read that fails is named.
-    pub async fn first_ready_on_root(&self, fabric_id: &FabricId, now: ScopeStatus) -> Result<bool, String> {
+    /// ready-for-traffic row among its mesh's status rows on the store root, else among those of the
+    /// fabric-primary's mesh `fabric_primary_mesh` (the row it put as it entered ready-for-traffic), while
+    /// the fabric state this admin hears by gossip, and its own mesh's row, can still lag it. A read that
+    /// fails is named.
+    pub async fn first_ready_on_root(&self, fabric_id: &FabricId, now: ScopeStatus, fabric_primary_mesh: Option<&str>) -> Result<bool, String> {
         if self.first_ready.reached(now) {
             return Ok(true);
         }
         let Some(fold) = self.status.get() else {
             return Err(format!("no status store is held to read whether fabric {fabric_id} first reached ready-for-traffic"));
         };
-        self.first_ready.reached_on_root(&**fold.storage(), fabric_id, now).await.map_err(|e| format!("the status rows of mesh {} on the store root, read for the ready-for-traffic row of fabric {fabric_id}: {e}", fold.mesh()))
+        self.first_ready.reached_on_root(&**fold.storage(), fabric_id, now, fabric_primary_mesh).await.map_err(|e| {
+            let fabric_primary = fabric_primary_mesh.map(|m| format!(" and of the fabric-primary's mesh {m}")).unwrap_or_default();
+            format!("the status rows of mesh {}{fabric_primary} on the store root, read for the ready-for-traffic row of fabric {fabric_id}: {e}", fold.mesh())
+        })
     }
 
     /// The tick a waiter arms on to see the view change.
@@ -5391,7 +5414,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // first reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"): an
                 // admin booting on a root that holds it knows it whatever status it hears next (a resize puts the
                 // fabric back to pending). The Fabric row is published at the first state-commit, before it.
-                records.first_ready.read_from(&*status_storage, &cfg.fabric_id).await.map_err(storage_err)?;
+                records.first_ready.read_from(&*status_storage, &cfg.fabric_id, None).await.map_err(storage_err)?;
                 records.set_book(membership.book.clone());
                 let builds = Arc::new(
                     FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name), wiring.catch_up_seam.take())
@@ -10171,6 +10194,9 @@ mod tests {
         }
         async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
             self.inner.fabric_events().await
+        }
+        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.inner.fabric_events_of(mesh).await
         }
         async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_node_declared(row).await

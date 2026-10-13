@@ -204,7 +204,7 @@ impl Declarer {
     /// it hears by gossip can lag (an outside successor of the fabric seat). A row found latches the
     /// handle the derivation reads. A read that fails is the caller's to name.
     pub(crate) async fn read_first_ready(&self, rows: &dyn crate::status_storage::StatusStorage, view: &Topology) -> Result<bool, crate::record_store::StorageError> {
-        self.first_ready.reached_on_root(rows, &view.fabric.id, view.fabric.status).await
+        self.first_ready.reached_on_root(rows, &view.fabric.id, view.fabric.status, view.fabric_primary().map(|n| n.mesh.as_str())).await
     }
 
     /// Owe `request` to `to` under `key`; a key already owed or answered is left as it is.

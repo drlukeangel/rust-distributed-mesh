@@ -160,11 +160,11 @@ impl ControlPlane {
     /// row among its mesh's status rows on the store root, which the fabric state it hears by gossip
     /// can lag (an outside successor of the fabric seat). A read that fails is refused by name.
     async fn admit_once_ready(&self, route: &'static str, workflow: String, outer: &tracing::Span) -> Result<(), Refusal> {
-        let (status, fabric_id) = {
+        let (status, fabric_id, fabric_primary_mesh) = {
             let t = self.topology.read().await;
-            (t.fabric.status, t.fabric.id.clone())
+            (t.fabric.status, t.fabric.id.clone(), t.fabric_primary().map(|n| n.mesh.clone()))
         };
-        match self.first_ready.reached_on_root(&*self.ready_rows, &fabric_id, status).await {
+        match self.first_ready.reached_on_root(&*self.ready_rows, &fabric_id, status, fabric_primary_mesh.as_deref()).await {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(e) => {

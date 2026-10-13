@@ -78,17 +78,18 @@ pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwL
 /// The refusal of a caller's `node.update` while the initial fabric has not first reached
 /// ready-for-traffic (states.md, "The initial fabric before ready-for-traffic"; R-PC1): before
 /// state-commit the node's row would live only in this mesh-primary's scratchpad. Decided on the durable
-/// fact, the ready-for-traffic row among this mesh's status rows on the store root, which the fabric state
-/// this admin hears by gossip can lag; a store that cannot be read is refused naming it. Nothing is read
+/// fact, the ready-for-traffic row among this mesh's status rows on the store root, else among the
+/// fabric-primary's mesh's (the one it put as it entered ready-for-traffic), which the fabric state this
+/// admin hears by gossip can lag; a store that cannot be read is refused naming it. Nothing is read
 /// of the node, claimed or written.
 async fn refused_before_first_ready(me: &PathName, view: &RwLock<Topology>, first_ready: FirstReadyOnRoot<'_>, node_id: &rafka_mesh_entity::NodeId, span: &tracing::Span) -> Option<StatusReply> {
-    let (fabric_id, now, subject) = {
+    let (fabric_id, now, subject, fabric_primary_mesh) = {
         let now = view.read().await;
-        (now.fabric.id.clone(), now.fabric.status, now.nodes.iter().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_else(|| node_id.to_string()))
+        (now.fabric.id.clone(), now.fabric.status, now.nodes.iter().find(|n| n.node_id == *node_id).map(|n| n.name.to_string()).unwrap_or_else(|| node_id.to_string()), now.fabric_primary().map(|n| n.mesh.clone()))
     };
     let workflow = format!("node.update {subject}");
     let status = now.name();
-    match first_ready.first_ready.reached_on_root(first_ready.status, &fabric_id, now).await {
+    match first_ready.first_ready.reached_on_root(first_ready.status, &fabric_id, now, fabric_primary_mesh.as_deref()).await {
         Ok(true) => return None,
         Ok(false) => {}
         Err(e) => {

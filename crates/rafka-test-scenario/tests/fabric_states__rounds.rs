@@ -174,7 +174,8 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
     let app = at("rdm.testkit.app.update.via-sync-state", &|_| true);
     let synced = at("rdm.node_admin.fabric.update.via-state-synced", &|_| true);
     let notice = at("rdm.node_admin.fabric.update.via-traffic-opened-hook", &|_| true);
-    let ready_row = at("rdm.node_admin.fabric.update.via-ready-row-put", &|sp| sp["attributes"]["outcome"] == "applied" && s(&sp["attributes"]["node"]) == fp);
+    // `already-applied` when an earlier climb of this fabric put it (the one-mesh Build's, before the resize).
+    let ready_row = at("rdm.node_admin.fabric.update.via-ready-row-put", &|sp| matches!(sp["attributes"]["outcome"].as_str(), Some("applied" | "already-applied")) && s(&sp["attributes"]["node"]) == fp);
     assert!(ready_row["end_unix_nano"].as_u64().unwrap() <= start(entered("ready-for-traffic")), "the row is durable before the fabric-primary enters ready-for-traffic: {ready_row}");
     let order = [
         ("state-sync", start(entered("state-sync"))),

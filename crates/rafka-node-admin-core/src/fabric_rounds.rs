@@ -645,6 +645,14 @@ impl FabricRounds {
                 climb.key = Some(RoundKey { kind: RoundKind::OpenTraffic, ..key });
             }
             Phase::Open => {
+                // The fact is durable before anything acts on it: the fabric-primary's own mesh's
+                // ready-for-traffic row first, then the state, which latches the fact and lets the door
+                // admit workflows; the declarer applies the event at every other mesh primary after.
+                if let Err(why) = self.put_ready_row(&parent).await {
+                    let missing = [Missing { who: self.env.me.mesh.clone(), why: "ready-row-unwritten" }];
+                    self.block(climb, &missing, &format!("ready-for-traffic puts the fabric-primary's ready-for-traffic row on the store root first ({why})"));
+                    return;
+                }
                 self.enter(climb, FabricState::ReadyForTraffic);
                 let notice = RoundKey { kind: RoundKind::OpenTraffic, ..key };
                 if !climb.notified {
@@ -656,6 +664,25 @@ impl FabricRounds {
                 climb.phase = None;
             }
         }
+    }
+
+    /// The fabric-primary's own ready-for-traffic row, put among its mesh's status rows on the store root
+    /// before it enters ready-for-traffic (`Records::put_ready_row`), under one span in the climb. `Err`
+    /// names what refused it: the fabric stays where it is and nothing is latched.
+    async fn put_ready_row(&self, parent: &tracing::Span) -> Result<(), String> {
+        let span = tracing::info_span!(parent: parent, "rdm.node_admin.fabric.update.via-ready-row-put", node = %self.env.me, fabric_id = %self.env.fabric_id, mesh = %self.env.me.mesh, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let put = self.env.records.put_ready_row(&self.env.fabric_id).instrument(span.clone()).await;
+        match &put {
+            Ok(reply) => {
+                span.record("outcome", reply.name());
+                span.in_scope(|| tracing::info!("the fabric-primary's ready-for-traffic row is on the store root: the fabric may enter ready-for-traffic"));
+            }
+            Err(why) => {
+                span.record("outcome", "refused").record("detail", why.as_str());
+                span.in_scope(|| tracing::info!("the fabric-primary's ready-for-traffic row could not be put: the fabric does not enter ready-for-traffic"));
+            }
+        }
+        put.map(|_| ())
     }
 
     /// One turn of a fabric-level round: open its checklist, command the mesh primaries not yet

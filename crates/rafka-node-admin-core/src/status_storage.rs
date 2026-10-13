@@ -176,6 +176,10 @@ pub trait StatusStorage: Send + Sync {
     async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError>;
     /// The events held, per Fabric, each once.
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError>;
+    /// The events among the status rows of the mesh named `mesh` (`status/<mesh>/fabric/` of the store
+    /// root: this store's own mesh or another's), each once: the fabric-primary's ready-for-traffic row
+    /// among its own mesh's rows is read here by an admin of any mesh.
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError>;
     /// A blind put of the declared-state fact's own key.
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError>;
     /// A blind tombstone of every declared-state key of the birth `(node_id, incarnation_id)`.
@@ -268,6 +272,16 @@ impl StatusStorage for MemoryStatusStorage {
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
         Ok(self.events.lock().unwrap().clone())
     }
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError> {
+        // A store held in memory names no mesh of its own: a named mesh's rows, and this store's own.
+        let mut rows = self.events_named.lock().unwrap().get(mesh).cloned().unwrap_or_default();
+        for row in self.events.lock().unwrap().iter() {
+            if !rows.contains(row) {
+                rows.push(row.clone());
+            }
+        }
+        Ok(rows)
+    }
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
         self.declared.lock().unwrap().insert(row.key(), row.clone());
         Ok(())
@@ -340,7 +354,7 @@ pub struct FileStatusStorage {
     mesh: String,
     root: crate::store_root::StoreRoot,
     writer: IncarnationId,
-    /// Every other mesh's status rows this admin has read or written (`meshes`, `exits`), by mesh
+    /// Every other mesh's status rows this admin has read or written (`meshes`, `exits`, `fabric`), by mesh
     /// and directory, opened on first use.
     others: Mutex<std::collections::BTreeMap<(String, &'static str), std::sync::Arc<FileRecords>>>,
     /// Set when the fabric-primary seat this admin held moved (a seat transfer's cut-off): every
@@ -373,7 +387,7 @@ impl FileStatusStorage {
         [&self.meshes, &self.fabric, &self.declared, &self.silence, &self.exits]
     }
 
-    /// The `dir` status rows (`meshes`, `exits`) of another mesh `mesh` on the shared root, opened
+    /// The `dir` status rows (`meshes`, `exits`, `fabric`) of another mesh `mesh` on the shared root, opened
     /// outside the lock and kept once under it (the cut-off read under the same lock).
     async fn other(&self, mesh: &str, dir: &'static str) -> Result<std::sync::Arc<FileRecords>, StorageError> {
         let key = (mesh.to_string(), dir);
@@ -447,6 +461,12 @@ impl StatusStorage for FileStatusStorage {
     }
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
         self.fabric.list(FABRIC_EVENT_FORMAT).await
+    }
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError> {
+        if mesh == self.mesh {
+            return self.fabric_events().await;
+        }
+        self.other(mesh, "fabric").await?.list(FABRIC_EVENT_FORMAT).await
     }
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
         self.declared.write(&row.key(), NODE_DECLARED_FORMAT, row).await

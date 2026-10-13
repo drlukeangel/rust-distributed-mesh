@@ -1269,6 +1269,9 @@ pub(crate) mod tests {
             self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.inner.fabric_events().await
         }
+        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.inner.fabric_events_of(mesh).await
+        }
         async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_node_declared(row).await
         }
@@ -1372,6 +1375,9 @@ pub(crate) mod tests {
         }
         async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
             self.inner.fabric_events().await
+        }
+        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.inner.fabric_events_of(mesh).await
         }
         async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_node_declared(row).await

@@ -1713,8 +1713,12 @@ async fn the_holder_and_successor_decide_ready_for_traffic_on_the_fabric_primary
     for a in [&f.p, &f.n] {
         a.door.topology.write().await.fabric.status = ScopeStatus::StateCommit;
     }
-    let rows = status_rows_of(&f.p, false).await;
+    // One fabric: every admin's view names the same fabric id (the fixture's views mint one each).
     let fabric_id = f.x.door.topology.read().await.fabric.id.clone();
+    for a in [&f.p, &f.n, &f.m] {
+        a.door.topology.write().await.fabric.id = fabric_id.clone();
+    }
+    let rows = status_rows_of(&f.p, false).await;
     rows.put_fabric_event_of("mesh2", &FabricEventRow { fabric_id, event: "ready-for-traffic".into() });
     assert!(rows.fabric_events().await.unwrap().is_empty(), "mesh1's own status rows hold no ready-for-traffic row");
     assert_eq!(f.p.door.membership.seats().fabric().map(|h| h.mesh), Some("mesh2".to_string()), "P's seat book names the fabric-primary in mesh2");

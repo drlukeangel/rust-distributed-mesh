@@ -590,6 +590,9 @@ impl StatusStorage for Refusing {
     async fn fabric_events(&self) -> Result<Vec<rafka_node_admin_core::status_storage::FabricEventRow>, rafka_node_admin_core::record_store::StorageError> {
         self.inner.fabric_events().await
     }
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<rafka_node_admin_core::status_storage::FabricEventRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.fabric_events_of(mesh).await
+    }
     async fn put_node_declared(&self, row: &rafka_node_admin_core::status_storage::NodeDeclaredRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.check()?;
         self.inner.put_node_declared(row).await

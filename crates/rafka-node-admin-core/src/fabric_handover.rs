@@ -400,18 +400,24 @@ impl HandoverDoor {
     /// before the initial fabric first reaches ready-for-traffic no seat moves (proposal Part C1:
     /// "Before the initial fabric first reaches ready-for-traffic, every call is refused
     /// `fabric-not-ready`"), decided on the durable fact, the ready-for-traffic row among this mesh's
-    /// status rows on the store root, which the fabric state this admin hears by gossip can lag. `None`:
-    /// the fabric has first reached ready-for-traffic. A store that cannot be read is named.
+    /// status rows on the store root, else among the fabric-primary's mesh's (the row it put as it entered
+    /// ready-for-traffic, before it admitted the workflow that commands this update), which the fabric
+    /// state this admin hears by gossip can lag. `None`: the fabric has first reached ready-for-traffic. A
+    /// store that cannot be read is named.
     async fn refused_before_first_ready(&self, side: &'static str, of: &Refusing<'_>) -> Option<Reply> {
         let (fabric_id, status) = {
             let now = self.topology.read().await;
             (now.fabric.id.clone(), now.fabric.status)
         };
         let operation = of.operation;
-        match self.records.first_ready_on_root(&fabric_id, status).await {
+        // The fabric-primary's mesh, from the seat book: its row there is the fact the fabric-primary put as
+        // it entered ready-for-traffic, before it admitted the workflow that commands this update.
+        let fabric_primary_mesh = self.membership.seats().fabric().map(|h| h.mesh);
+        match self.records.first_ready_on_root(&fabric_id, status, fabric_primary_mesh.as_deref()).await {
             Ok(true) => None,
             Ok(false) => {
-                let detail = format!("{}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {}, and its mesh's status rows on the store root hold no ready-for-traffic row of fabric {fabric_id}), and no seat moves before it does", self.me, status.name());
+                let fabric_primary = fabric_primary_mesh.as_deref().map(|m| format!(", nor do those of the fabric-primary's mesh {m}")).unwrap_or_else(|| ", and the seat book names no fabric-primary whose mesh's rows it could read".into());
+                let detail = format!("{}: node.primary.update {operation} is refused: the initial fabric has not first reached ready-for-traffic (it is {}, and its mesh's status rows on the store root hold no ready-for-traffic row of fabric {fabric_id}{fabric_primary}), and no seat moves before it does", self.me, status.name());
                 refused(side, "fabric-not-ready", &detail, of, None);
                 Some(Reply::fabric_not_ready(&detail))
             }

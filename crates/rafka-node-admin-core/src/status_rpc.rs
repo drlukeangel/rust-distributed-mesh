@@ -476,6 +476,25 @@ pub(crate) fn event_key(e: &FabricEvent) -> String {
     }
 }
 
+/// One commit of a Fabric event among the status rows of this admin's mesh: the keyed row put and
+/// acknowledged, then held as applied once and answered (`Applied` the first time, `AlreadyApplied`
+/// after). A refused put answers `NotReady` naming the store and holds nothing, so the same commit again
+/// is decided afresh. The fabric-primary's own ready-for-traffic row, put as it enters ready-for-traffic
+/// (`crate::fabric_rounds`), and an `ApplyFabricEvent` it sends a mesh primary commit here alike.
+pub(crate) async fn commit_fabric_event(storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<Declared>, fabric_id: &FabricId, event: &str) -> StatusReply {
+    if let Err(e) = storage.put_fabric_event(&crate::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: event.to_string() }).await {
+        return StatusReply::NotReady { reason: format!("status.storage refused the Fabric event row: {e}") };
+    }
+    let mut declared = declared.lock().unwrap();
+    let events = declared.fabric.entry(fabric_id.clone()).or_default();
+    if events.iter().any(|e| e == event) {
+        StatusReply::AlreadyApplied
+    } else {
+        events.push(event.to_string());
+        StatusReply::Applied
+    }
+}
+
 /// One commit of a Mesh status at its writer: decided over what is held, the keyed row put and
 /// acknowledged, then held as applied and answered. A refused put answers `NotReady` naming the
 /// store and holds nothing, so the same commit again is decided afresh; the commit decides again
@@ -823,12 +842,19 @@ impl StatusAuthority {
         if let Effect::Mesh(mesh_id, state) = &effect {
             return commit_mesh_state(&*self.status_storage, &self.declared, mesh_id, *state).await;
         }
+        if let Effect::Fabric(fabric_id, event) = &effect {
+            let reply = commit_fabric_event(&*self.status_storage, &self.declared, fabric_id, event).await;
+            // The row of the ready-for-traffic event is the durable fact that the fabric first reached
+            // ready-for-traffic: the admin that put it knows it from that moment (`FirstReady`).
+            if matches!(reply, StatusReply::Applied | StatusReply::AlreadyApplied) && *event == event_key(&FabricEvent::ReadyForTraffic) {
+                self.first_ready.reach("ready-for-traffic-row-put");
+            }
+            return reply;
+        }
         let put = match &effect {
             Effect::Node(row, _) => self.status_storage.put_node_declared(row).await.map_err(|e| format!("status.storage refused the node declared-state row: {e}")),
             Effect::Mesh(..) => unreachable!("a Mesh status is committed by commit_mesh_state above"),
-            Effect::Fabric(fabric_id, event) => {
-                self.status_storage.put_fabric_event(&crate::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: event.clone() }).await.map_err(|e| format!("status.storage refused the Fabric event row: {e}"))
-            }
+            Effect::Fabric(..) => unreachable!("a Fabric event is committed by commit_fabric_event above"),
         };
         if let Err(reason) = put {
             return StatusReply::NotReady { reason };
@@ -846,24 +872,9 @@ impl StatusAuthority {
                     Transition::Backward { current } => StatusReply::RejectedInvalidNodeTransition { current },
                 },
                 Effect::Mesh(..) => unreachable!("a Mesh status is committed by commit_mesh_state above"),
-                Effect::Fabric(fabric_id, event) => {
-                    let events = declared.fabric.entry(fabric_id.clone()).or_default();
-                    if events.contains(event) {
-                        StatusReply::AlreadyApplied
-                    } else {
-                        events.push(event.clone());
-                        StatusReply::Applied
-                    }
-                }
+                Effect::Fabric(..) => unreachable!("a Fabric event is committed by commit_fabric_event above"),
             }
         };
-        // The row of the ready-for-traffic event is the durable fact that the fabric first reached
-        // ready-for-traffic: the admin that put it knows it from that moment (`FirstReady`).
-        if let (StatusReply::Applied | StatusReply::AlreadyApplied, Effect::Fabric(_, event)) = (&reply, &effect) {
-            if *event == event_key(&FabricEvent::ReadyForTraffic) {
-                self.first_ready.reach("ready-for-traffic-row-put");
-            }
-        }
         if let (StatusReply::Applied, Effect::Node(row, _)) = (&reply, &effect) {
             // The node's report, applied, sets its status (node-status.md "Status report": "A node
             // reports to its mesh's primary, which sets its status"), carried by this primary's member
@@ -1192,6 +1203,9 @@ mod tests {
         }
         async fn fabric_events(&self) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
             self.inner.fabric_events().await
+        }
+        async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<crate::status_storage::FabricEventRow>, crate::record_store::StorageError> {
+            self.inner.fabric_events_of(mesh).await
         }
         async fn put_node_declared(&self, row: &crate::status_storage::NodeDeclaredRow) -> Result<(), crate::record_store::StorageError> {
             self.inner.put_node_declared(row).await?;
