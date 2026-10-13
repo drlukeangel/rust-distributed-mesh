@@ -12,14 +12,9 @@ members = [
     "crates/rafka-node-rpc-contract",
     "crates/rafka-mesh-entity",
     "crates/rafka-test-scenario",
-    "crates/rafka-consumer-fixture",
-    "crates/test-roles/gateway",
-    "crates/test-roles/broker",
-    "crates/test-roles/compute",
     "tools/mesh-audit",
     "tools/docgen",
     "tools/test-runner",
-    "crates/scratch-json-dumper",
 ]
 # The R-shape qualification consumer is an independent customer: its own workspace root and
 # lockfile, importing RDM by git rev (scripts/i143-rshape-build-consumer.sh).
