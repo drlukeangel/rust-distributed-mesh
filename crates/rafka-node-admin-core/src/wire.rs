@@ -982,17 +982,17 @@ mod tests {
 
     #[test]
     fn an_exit_manifest_output_with_an_unknown_field_is_refused_by_name() {
-        let step = crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED;
-        unknown_field_is_refused_by_name("mesh-leave:mesh1", step, exit_manifest(), "");
-        unknown_field_is_refused_by_name("mesh-leave:mesh1", step, exit_manifest(), "/roster/0");
-        unknown_field_is_refused_by_name("mesh-leave:mesh1", step, exit_manifest(), "/final_primary");
-        unknown_field_is_refused_by_name("mesh-leave:mesh1", step, exit_manifest(), "/receipts/0");
+        let step = crate::mesh_delete::STEP_OTHER_MEMBERS_EXITED;
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "");
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "/roster/0");
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "/final_primary");
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "/receipts/0");
     }
 
     #[test]
     fn a_roster_amended_output_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "predecessor": roster_birth("mesh1.admin.1"), "final_primary": roster_birth("mesh1.admin.2"), "final_runtime": runtime_proof() });
-        unknown_field_is_refused_by_name("mesh-leave:mesh1", crate::mesh_leave::STEP_ROSTER_AMENDED, valid.clone(), "");
-        unknown_field_is_refused_by_name("mesh-leave:mesh1", crate::mesh_leave::STEP_ROSTER_AMENDED, valid, "/final_runtime");
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", crate::mesh_delete::STEP_ROSTER_AMENDED, valid.clone(), "");
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", crate::mesh_delete::STEP_ROSTER_AMENDED, valid, "/final_runtime");
     }
 }

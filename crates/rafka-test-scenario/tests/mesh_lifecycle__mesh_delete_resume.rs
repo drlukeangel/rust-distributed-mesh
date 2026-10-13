@@ -30,7 +30,7 @@ pub(crate) fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-lifecycle".into(),
-        subfeature: "mesh-deleted-resume".into(),
+        subfeature: "mesh-delete-resume".into(),
         rung: "MM".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
         test: test.into(),

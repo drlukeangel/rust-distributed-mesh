@@ -891,7 +891,7 @@ pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
         "unknown-mesh",
         "unknown-node",
         "node-not-live",
-        "would-delete-mesh-without-admin",
+        "would-leave-mesh-without-admin",
         "mesh-already-exists",
         "fabric-mismatch",
         "empty-fabric",

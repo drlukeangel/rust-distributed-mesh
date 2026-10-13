@@ -372,7 +372,7 @@ impl BuildReject {
             Self::MeshIdUnknown { .. } => "mesh-id-unknown",
             Self::UnknownNode { .. } => "unknown-node",
             Self::NodeNotLive { .. } => "node-not-live",
-            Self::WouldLeaveMeshWithoutAdmin { .. } => "would-delete-mesh-without-admin",
+            Self::WouldLeaveMeshWithoutAdmin { .. } => "would-leave-mesh-without-admin",
             Self::MeshAlreadyExists { .. } => "mesh-already-exists",
             Self::FabricMismatch { .. } => "fabric-mismatch",
             Self::EmptyFabric => "empty-fabric",
