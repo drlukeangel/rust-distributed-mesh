@@ -15,7 +15,7 @@
 //! skips by name and starts nothing.
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::process::Command;
 use std::time::Duration;
 
@@ -53,13 +53,10 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
         "mesh1",
     )
     .await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 2}]})).await;
-    assert_eq!(status, 202, "{a}");
-    let build_id = s(&a["build_id"]);
-    estate.await_build(&build_id, Duration::from_secs(120)).await;
-    estate.settled_shape(&[("mesh1", 1, 2)], Duration::from_secs(30)).await;
+    let build_id = estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await.build_id.to_string();
+    estate.settles_to(&[("mesh1", 1, 2)], Duration::from_secs(30)).await;
 
-    let before = estate.node(NODE).await;
+    let before = estate.node_value(NODE).await;
     assert_eq!(before["provider"], "container", "{before}");
     let killed = estate.container_of(NODE).expect("the rpc node runs in a container labelled with its fabric and path");
     assert_eq!(killed.len(), 64, "the immutable container id: {killed}");
@@ -71,13 +68,14 @@ async fn a_killed_container_is_proven_terminal_by_inspection_and_the_build_recre
 
     // Silent past the staleness floor, proven exited, re-created by the next attempt.
     let floor = rafka_mesh_transport::membership::staleness_floor();
-    let after = wait_for("mesh1.rpc.1 re-created ready under a new incarnation", floor + Duration::from_secs(90), || async {
-        let n = estate.node_opt(NODE).await?;
-        (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
-    })
-    .await;
-    let reborn = estate.container_of(NODE).expect("the re-created node runs in a container");
-    assert_ne!(reborn, killed, "a new container, never the killed one restarted");
+    let after = estate
+        .until_node(NODE, "mesh1.rpc.1 re-created ready under a new incarnation", floor + Duration::from_secs(90), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).then_some(n)
+        })
+        .await;
+    let recreated = estate.container_of(NODE).expect("the re-created node runs in a container");
+    assert_ne!(recreated, killed, "a new container, never the killed one restarted");
     // The provider's inspection of the killed container's exact id is the proof (exit 137, SIGKILL); the
     // replace that follows stops the exited container, keeps its logs beside the node's data and removes it,
     // so the proof is read from the drift attempt's span, never from a container the replace has removed.
@@ -194,9 +192,7 @@ async fn sigkill_cell_estate_body() {
         "mesh1",
     )
     .await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(&s(&a["build_id"]), Duration::from_secs(120)).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
     std::fs::write(&file, estate.root.display().to_string()).unwrap();
     tokio::time::sleep(Duration::from_secs(600)).await;
 }
