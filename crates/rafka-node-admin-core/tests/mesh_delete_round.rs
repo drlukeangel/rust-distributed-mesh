@@ -188,8 +188,11 @@ fn a_mesh_deleted_report_naming_a_round_the_fabric_primary_does_not_hold_is_refu
 /// `DeleteMesh` answers Applied or AlreadyApplied on admission, and a stale round is refused by name):
 /// the first `delete-mesh` of the mesh commits its row Leaving and is admitted. Once the members exited
 /// and the row is Dead (mesh.deleted, the handoff's own write), a `delete-mesh` of the round held
-/// resends its handoff, an earlier attempt is `RejectedStaleRound`, and the Build's next attempt
-/// starts again from the receipts; none of them commits the row again, which stays Dead. What must
+/// replays the recorded MeshDeleted report, an earlier attempt is `RejectedStaleRound`, and the Build's
+/// next attempt is replayed the same recorded report, naming the attempt its manifest was recorded under,
+/// with no member workflow run again (Luke 2026-10-13: "Re-admitting DeleteMesh must replay the recorded
+/// MeshDeleted report without repeating completed deletions"); none of them commits the row again,
+/// which stays Dead. What must
 /// NOT happen: a round after mesh.deleted answered `RejectedInvalidMeshTransition { current: Dead }`
 /// (a lost handoff could then never be sent again, and the leave never ends), or a second Leaving
 /// commit.
@@ -237,9 +240,9 @@ fn a_delete_mesh_after_mesh_deleted_is_decided_on_its_round_and_commits_the_leav
     assert_eq!(
         after,
         vec![
-            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Resend { manifest, recorded: 1 } },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Resend { manifest: manifest.clone(), recorded: held.attempt } },
             DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Refused(StatusReply::RejectedStaleRound { held: round(&held), offered: round(&stale) }) },
-            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Start },
+            DeleteMeshAdmission { leaving_row: None, admission: MeshDeleteAdmission::Resend { manifest, recorded: held.attempt } },
         ],
         "after mesh.deleted each delete-mesh is decided on its round, and none commits the row again"
     );
