@@ -35,7 +35,7 @@ async fn node() -> Node {
             let PingRequest::Ping { payload, .. } = req;
             Ok(PingReply::Pong { payload })
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
