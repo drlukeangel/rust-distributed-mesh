@@ -129,6 +129,12 @@ impl StoreRoot {
         self.dir.join("nodes").join(mesh)
     }
 
+    /// `meshes/<mesh>/`: the mesh's own rows beside its Mesh row (`meshes/<mesh>/claims/`, its
+    /// in-flight attempt: `crate::mesh_claims`).
+    pub fn meshes(&self, mesh: &str) -> PathBuf {
+        self.dir.join("meshes").join(mesh)
+    }
+
     /// `connections/<node>/`: the node's own connections rows and raw log.
     pub fn connections(&self, node: &PathName) -> PathBuf {
         self.dir.join("connections").join(node.to_string())
