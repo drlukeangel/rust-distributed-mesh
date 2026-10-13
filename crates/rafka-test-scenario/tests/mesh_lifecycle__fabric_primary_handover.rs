@@ -449,8 +449,25 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         .filter(|sp| s(&sp["attributes"]["member"]) == final_name && s(&sp["attributes"]["node"]).starts_with(&format!("{other_mesh}.")) && (sp["attributes"]["parked"] == json!(true) || sp["attributes"]["parked"] == "true") && start_ns(sp) >= stop_answered)
         .collect();
     assert!(parked_at_other.iter().any(|sp| at_mesh(sp, other_mesh, "admin") && sp["attributes"]["channel"] == "backbone"), "an admin of {other_mesh} held {final_name} parked from the fabric-primary's aggregate on the backbone: {parked_at_other:?}");
-    assert!(parked_at_other.iter().any(|sp| at_mesh(sp, other_mesh, "rpc")), "an ordinary node of {other_mesh} held {final_name} parked from its primary's forward: {parked_at_other:?}");
-    eprintln!("bullet 2: node.delete of {final_name} by {fabric_primary} (build {c} attempt {c_attempt}): TerminateRuntime then NodeDeleted trace {}; deleted mesh's aggregate NodeStopped trace {}, NodeDeleted trace {}; {other_mesh} parked trace {}", s(&node_deleted["trace_id"]), s(&stopped_aggregate["trace_id"]), s(&deleted_aggregate["trace_id"]), s(&parked_at_other[0]["trace_id"]));
+    // gossip.md "External topology when a mesh is deleted": "its mesh-primary forwards it on its own
+    // mesh channel; ordinary nodes install that projection", and a frame received after a newer one of
+    // its source is ignored (R-RX3). An ordinary node of the other mesh installs the fabric-primary's
+    // aggregate through its primary: it holds the final primary parked from the forwarded stop
+    // aggregate, or, the NodeDeleted aggregate having reached it first (Plumtree delivers a forward
+    // lazily pushed after a later eager one), it installed that newer aggregate from its primary and
+    // ignored the stop aggregate by name when it arrived.
+    let rpc_parked = parked_at_other.iter().any(|sp| at_mesh(sp, other_mesh, "rpc") && sp["attributes"]["channel"] == "mesh-channel");
+    let superseded: Vec<String> = ["rpc.1", "rpc.2"]
+        .iter()
+        .map(|r| format!("{other_mesh}.{r}"))
+        .filter(|rx| {
+            let installed_newer = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed").into_iter().any(|sp| s(&sp["attributes"]["node"]) == *rx && sp["attributes"]["mesh"] == "mesh1" && by_fabric_primary(sp) && attr_u(sp, "departed") == 1 && matches!(s(&sp["attributes"]["channel"]).as_str(), "mesh-channel" | "topology-read") && start_ns(sp) >= stop_answered);
+            let ignored_stop = named(&spans, "rdm.mesh.membership.reject.via-earlier-version").into_iter().any(|sp| s(&sp["attributes"]["node"]) == *rx && sp["attributes"]["frame"] == "members" && sp["attributes"]["source"] == "mesh1" && s(&sp["attributes"]["offered"]).ends_with("topology_version=1") && start_ns(sp) >= stop_answered);
+            installed_newer && ignored_stop
+        })
+        .collect();
+    assert!(rpc_parked || !superseded.is_empty(), "an ordinary node of {other_mesh} held {final_name} parked from its primary's forward, or installed the fabric-primary's later aggregate from its primary and ignored the stop aggregate by name: parked {parked_at_other:?}");
+    eprintln!("bullet 2: node.delete of {final_name} by {fabric_primary} (build {c} attempt {c_attempt}): TerminateRuntime then NodeDeleted trace {}; deleted mesh's aggregate NodeStopped trace {}, NodeDeleted trace {}; {other_mesh} parked trace {}; {other_mesh} ordinary nodes parked: {rpc_parked}, superseded: {superseded:?}", s(&node_deleted["trace_id"]), s(&stopped_aggregate["trace_id"]), s(&deleted_aggregate["trace_id"]), s(&parked_at_other[0]["trace_id"]));
     // mesh-left once every birth is proven exited: the receipt over all four births, then the hook,
     // at the fabric-primary, after the final birth's exit proof.
     let left_recorded: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt").into_iter().filter(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4).collect();
