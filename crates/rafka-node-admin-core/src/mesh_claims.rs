@@ -16,8 +16,9 @@
 //! broadcast on the Build topic only after the take won, exactly as before.
 
 use crate::build::BuildId;
-use crate::record_store::StorageError;
+use crate::record_store::{FileRecords, StorageError};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The key of a mesh's in-flight row under `meshes/<mesh>/claims/`.
 pub const IN_FLIGHT: &str = "in-flight";
@@ -53,36 +54,104 @@ pub enum Taken {
     Held(InFlight),
 }
 
+/// The format of a mesh's in-flight row.
+const FORMAT: &str = "mesh-in-flight/1";
+
+enum Backing {
+    /// `meshes/<mesh>/claims/` on the store root, one store per mesh, opened on its first use.
+    Root { root: crate::store_root::StoreRoot, writer: crate::model::IncarnationId, stores: tokio::sync::Mutex<BTreeMap<String, FileRecords>> },
+    /// One process's rows.
+    Memory(std::sync::Mutex<BTreeMap<String, InFlight>>),
+}
+
 /// The in-flight rows of every mesh, as this admin reaches them.
 pub struct MeshClaims {
-    _backing: (),
+    backing: Backing,
 }
 
 impl MeshClaims {
     /// The rows on the fabric's store root, `meshes/<mesh>/claims/`, written by the process born as
     /// `writer`.
-    pub fn on_root(_root: crate::store_root::StoreRoot, _writer: crate::model::IncarnationId) -> Self {
-        Self { _backing: () }
+    pub fn on_root(root: crate::store_root::StoreRoot, writer: crate::model::IncarnationId) -> Self {
+        Self { backing: Backing::Root { root, writer, stores: tokio::sync::Mutex::new(BTreeMap::new()) } }
     }
 
     /// The rows held in this process only: a control plane built with no store root (a fixture).
     pub fn in_memory() -> Self {
-        Self { _backing: () }
+        Self { backing: Backing::Memory(std::sync::Mutex::new(BTreeMap::new())) }
     }
 
-    /// Take `mesh`'s in-flight row for `claim`.
-    pub async fn take(&self, _mesh: &str, _claim: &InFlight) -> Result<Taken, StorageError> {
-        Ok(Taken::Won)
+    async fn store(&self, mesh: &str) -> Result<Option<FileRecords>, StorageError> {
+        let Backing::Root { root, writer, stores } = &self.backing else { return Ok(None) };
+        let mut stores = stores.lock().await;
+        if let Some(s) = stores.get(mesh) {
+            return Ok(Some(s.clone()));
+        }
+        let s = root.records(&root.meshes(mesh), "claims", writer).await?;
+        stores.insert(mesh.to_string(), s.clone());
+        Ok(Some(s))
     }
 
-    /// Release `mesh`'s in-flight row held for `attempt`.
-    pub async fn release(&self, _mesh: &str, _attempt: &InFlight) -> Result<(), StorageError> {
-        Ok(())
+    /// Take `mesh`'s in-flight row for `claim`: the insert of the key decides. A row standing for the
+    /// same attempt is that attempt's own (a repeat take, by any claimant): `Won`, and the claim of
+    /// the attempt itself is decided by the Build log. A row standing for another attempt is
+    /// `Held`, naming it. A row the insert met and the read no longer finds was released between
+    /// the two: refused by name, never answered as either outcome.
+    pub async fn take(&self, mesh: &str, claim: &InFlight) -> Result<Taken, StorageError> {
+        let Some(store) = self.store(mesh).await? else {
+            let Backing::Memory(rows) = &self.backing else { unreachable!("a store-root backing opens a store") };
+            let mut rows = rows.lock().unwrap_or_else(|e| e.into_inner());
+            return Ok(match rows.get(mesh) {
+                Some(held) if held.same_attempt(claim) => Taken::Won,
+                Some(held) => Taken::Held(held.clone()),
+                None => {
+                    rows.insert(mesh.to_string(), claim.clone());
+                    Taken::Won
+                }
+            });
+        };
+        if store.insert(IN_FLIGHT, FORMAT, claim).await? {
+            return Ok(Taken::Won);
+        }
+        match store.read::<InFlight>(IN_FLIGHT, FORMAT).await? {
+            Some(held) if held.same_attempt(claim) => Ok(Taken::Won),
+            Some(held) => Ok(Taken::Held(held)),
+            None => Err(StorageError::Io {
+                file: format!("{}/{IN_FLIGHT}.json", store.store_name()),
+                reason: format!("mesh {mesh}'s in-flight row was live at the insert for attempt {} of {} and gone at the read after it: its holder's verdict released it between the two; nothing is claimed, and the next claim decides on the free row", claim.attempt, claim.build_id),
+            }),
+        }
     }
 
-    /// The attempt holding `mesh`, when one does.
-    pub async fn held(&self, _mesh: &str) -> Result<Option<InFlight>, StorageError> {
-        Ok(None)
+    /// Release `mesh`'s in-flight row held for `attempt`, at that attempt's verdict: the row goes only
+    /// while it names that attempt, so a release never removes another attempt's row. Its one writer
+    /// is the admin that durably recorded the verdict (the seat that holds the attempt's lane), so no
+    /// two releases of one row race.
+    pub async fn release(&self, mesh: &str, attempt: &InFlight) -> Result<(), StorageError> {
+        let Some(store) = self.store(mesh).await? else {
+            let Backing::Memory(rows) = &self.backing else { unreachable!("a store-root backing opens a store") };
+            let mut rows = rows.lock().unwrap_or_else(|e| e.into_inner());
+            if rows.get(mesh).is_some_and(|held| held.same_attempt(attempt)) {
+                rows.remove(mesh);
+            }
+            return Ok(());
+        };
+        if !store.read::<InFlight>(IN_FLIGHT, FORMAT).await?.is_some_and(|held| held.same_attempt(attempt)) {
+            return Ok(());
+        }
+        let attempt = attempt.clone();
+        store.remove_released::<InFlight>(IN_FLIGHT, FORMAT, move |held| held.same_attempt(&attempt)).await
+    }
+
+    /// The attempt holding `mesh`, when one does: a point read of its row.
+    pub async fn held(&self, mesh: &str) -> Result<Option<InFlight>, StorageError> {
+        match self.store(mesh).await? {
+            Some(store) => store.read(IN_FLIGHT, FORMAT).await,
+            None => {
+                let Backing::Memory(rows) = &self.backing else { unreachable!("a store-root backing opens a store") };
+                Ok(rows.lock().unwrap_or_else(|e| e.into_inner()).get(mesh).cloned())
+            }
+        }
     }
 }
 
