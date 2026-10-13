@@ -1333,13 +1333,11 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClie
 /// CONTRACT: a recovered node keeps the config its mesh-primary told its predecessor
 /// (node-recovery.md "Retained: ... config (seeded from the Deleted row)"; fabric-node-lifecycle.md
 /// "A rewrite is lossless for every field its writer knows"). The caller puts `<mesh>.rpc.1`'s config
-/// through its mesh-primary (not the fabric-primary), which answers `config-updated` (the row
-/// written, the node applied it), then its runtime is killed: the mesh-primary's recovery writes the
-/// exited birth's Deleted row with that config, the new node's name claim is seeded from it
-/// (`via-node-row` moment `claim`, `seeded_from` the exited node, one key), and the new node (new
-/// node.id, same path.name) is handed that config in its join answer (`via-join` `config_keys` 1,
-/// outcome `installed`). No typed read carries a node's config (`node.config.get` is not backed by an
-/// op), so what the new node holds is read from the join's span.
+/// through its mesh-primary (not the fabric-primary), the node carries it, then its runtime is
+/// killed: the mesh-primary's recovery writes the exited birth's Deleted row with that config, the
+/// new node's name claim is seeded from it (`via-node-row` moment `claim`, `seeded_from` the exited
+/// node, one key), the new node's join answer hands it that config (`via-join` `config_keys` 1),
+/// and the new node (new node.id, same path.name) carries the config.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor() {
     let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor").await;
@@ -1357,6 +1355,8 @@ async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor
         .await
         .unwrap_or_else(|e| panic!("node.config.update of {node_path} at {mesh_primary}: {e:?}"));
     assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
+    let told_json = json!({"tier": "gold"});
+    wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
 
     estate.kill_node(node_path).await;
     let after = until_node_where(&estate, node_path, &format!("{node_path} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
@@ -1381,6 +1381,8 @@ async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor
     })
     .await;
     assert_eq!((s(&joined["attributes"]["outcome"]), s(&joined["attributes"]["config_keys"])), ("installed".to_string(), "1".to_string()), "the new node's join answer hands its row's config: {joined}");
+    let carried = wait_for(&format!("the new {node_path} carries the config"), Duration::from_secs(30), || async { let n = estate.node_value(node_path).await; (n["config"] == told_json).then_some(n) }).await;
+    assert_eq!(carried["node_id"], after["node_id"], "the new node, not the exited one, carries it");
     let told: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.update.via-config").into_iter().filter(|sp| sp["attributes"]["node_id"] == after["node_id"]).cloned().collect();
     assert!(told.is_empty(), "the join handed the config: no config call is sent to the starting node: {told:?}");
     eprintln!("trace {}: via-node-row delete node_id={} keys={}; trace {}: via-node-row claim node={} seeded_from={} keys={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&claim["trace_id"]), mesh_primary, s(&a["seeded_from"]), a["keys"]);
