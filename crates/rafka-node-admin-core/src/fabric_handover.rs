@@ -271,6 +271,10 @@ pub struct HandoverDoor {
     /// before the records move. The moved record is the target every later decision is judged
     /// against; nothing else is written.
     pub decisions: Arc<tokio::sync::Mutex<()>>,
+    /// This admin's Build log. The successor takes the holder's claim of the attempt its update runs
+    /// in from the row, before it holds the seats the row commits: from then on it may drive the
+    /// Build, and it reads that attempt held by the holder, never an attempt open to claim.
+    pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
     /// Projects this admin's view from the records it holds now. Run once a committed seat record is
     /// held, before the call that depends on it is answered: the committed record is the resolver's
     /// authoritative input (fabric-node-lifecycle-elections.md §4.4), and every reader of the view
@@ -477,9 +481,22 @@ impl HandoverDoor {
             return Reply::record_absent(&record, &self.me.to_string());
         };
         let op = self.op_of(&row.holder, name.clone(), &row.build_id, row.attempt, &row.operation);
-        let taken = {
+        // The update runs as a step of the holder's own attempt (C1 step 1, "as a step of the Build"):
+        // the row's attempt, claimed by the holder before its row. Taken into this admin's Build log
+        // before the seats, so the drive this admin may begin once it holds them reads that attempt
+        // held by the holder and reattaches to it ("A live run is reattached, never re-claimed").
+        // The successor installs whatever the adoption comes to (no successor-side refusal but a
+        // conflicting payload and fabric-not-ready); a claim not taken is named on the span.
+        let (taken, claim) = {
             let _decisions = self.decisions.clone().lock_owned().await;
-            self.membership.seats().take_together(&op, &row.seats)
+            let claim = match crate::build::BuildId::parse(&row.build_id) {
+                Ok(build_id) => match self.builds.adopt_claim(&crate::build_state::BuildAttemptClaim { build_id, attempt: row.attempt, executor: name.to_string(), claimant: Some(name.to_string()), mesh: None }).await {
+                    Ok(()) => "adopted".to_string(),
+                    Err(e) => format!("not taken: {e}"),
+                },
+                Err(e) => format!("not taken: the row names Build {:?}, which is not a Crockford id: {e}", row.build_id),
+            };
+            (self.membership.seats().take_together(&op, &row.seats), claim)
         };
         (self.project_view)().await;
         let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
@@ -516,6 +533,7 @@ impl HandoverDoor {
             outcome,
             holder_exit,
             holder_exit_detail = %holder_exit_detail,
+            claim = %claim,
         )
         .in_scope(|| tracing::info!("the receiver installed the committed row and answers node.primary.updated"));
         if holder_exit == "proven" {

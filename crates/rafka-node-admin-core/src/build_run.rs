@@ -394,6 +394,58 @@ impl BuildStateAdapter for LaneBuilds {
     }
 }
 
+/// A run of an attempt this admin holds itself while it acts as a step of the Build outside the
+/// executor (the holder's own node.primary.update, run from its drive: the approved proposal
+/// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 1, "as a step of the Build"; build.md
+/// "A live run is reattached, never re-claimed"). A call for the attempt while it is held reattaches to
+/// it and reads its terminal once [`HeldRun::finish`] says it.
+pub struct HeldRun {
+    build_id: BuildId,
+    attempt: u32,
+    log: Arc<RunLog>,
+    runs: Arc<AttemptRuns>,
+    builds: Arc<dyn BuildStateAdapter>,
+    finished: bool,
+}
+
+impl HeldRun {
+    /// The attempt ended with `terminal`: its verdict receipt first, on this admin's own Build state as
+    /// an executor's run writes it, so a call that reads the attempt after the run ends finds the
+    /// verdict; then the terminal frame to every reader; then the run is no longer held. A verdict
+    /// that cannot be recorded ends the attempt `Failed` naming why, with no verdict, as an executor's
+    /// run does.
+    pub async fn finish(mut self, terminal: BuildReply) {
+        let outcome = match &terminal {
+            BuildReply::HandedOff { to, .. } => Some(AttemptOutcome::HandedOff { to: to.clone() }),
+            BuildReply::Complete { .. } => Some(AttemptOutcome::Converged),
+            BuildReply::Failed { reason, .. } => Some(AttemptOutcome::Failed { reason: reason.clone() }),
+            _ => None,
+        };
+        let terminal = match outcome {
+            Some(outcome) => match self.builds.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: self.build_id.clone(), attempt: self.attempt, outcome, mesh: None }).await {
+                Ok(()) => terminal,
+                Err(e) => BuildReply::Failed { build_id: self.build_id.to_string(), attempt: self.attempt, operation: String::new(), step: "attempt".into(), reason: bounded_reason(format!("recording attempt {}: {e}", self.attempt)) },
+            },
+            None => terminal,
+        };
+        self.log.finish(terminal);
+        self.runs.end(&self.build_id, None, self.attempt);
+        self.finished = true;
+    }
+}
+
+impl Drop for HeldRun {
+    /// A held run dropped unfinished (its task ended or was aborted): every reader reads a named
+    /// `NotReady`, never a stream that waits forever, and the attempt has no verdict, so a later call
+    /// starts it here.
+    fn drop(&mut self) {
+        if !self.finished {
+            self.log.finish(BuildReply::NotReady { reason: format!("attempt {} of Build {} was held by its run on this admin, which ended before it said the attempt's terminal", self.attempt, self.build_id) });
+            self.runs.end(&self.build_id, None, self.attempt);
+        }
+    }
+}
+
 /// What `build.attempt.run` came to on this admin.
 pub enum Attached {
     /// The attempt is running here: `replay` first, then the reader.
@@ -468,6 +520,15 @@ impl RunDoor {
             _ => tracing::info!("build.attempt.run accepted"),
         });
         attached
+    }
+
+    /// Hold the run of `attempt` of `build_id` on this admin while the Build's own step runs outside
+    /// the executor ([`HeldRun`]): a call for the attempt reattaches to it. The holder's seat update
+    /// is a topology attempt, so the run is the fabric lane's (`None`). `None` when a run of the
+    /// attempt is already held here.
+    pub fn hold(&self, build_id: &BuildId, attempt: u32) -> Option<HeldRun> {
+        let (log, created) = self.runs.begin(build_id, None, attempt);
+        created.then(|| HeldRun { build_id: build_id.clone(), attempt, log, runs: self.runs.clone(), builds: self.builds.clone(), finished: false })
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -292,6 +292,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         },
         locks: Default::default(),
         decisions: Arc::default(),
+        builds: Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
         project_view,
         cut_off_writes: {
             let cut_offs = cut_offs.clone();

@@ -615,6 +615,9 @@ pub const DISPATCH_SEND: Duration = Duration::from_secs(10);
 
 #[async_trait::async_trait]
 impl Dispatcher for RpcDispatcher {
+    fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<crate::build_run::HeldRun> {
+        (*me == self.me).then(|| self.local.hold(build_id, attempt)).flatten()
+    }
     async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched {
         if *executor == self.me {
             // The fabric-primary runs the attempt itself: it plans from the log the claim was decided on.
