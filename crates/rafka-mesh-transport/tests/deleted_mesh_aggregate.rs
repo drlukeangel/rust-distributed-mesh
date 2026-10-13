@@ -207,10 +207,8 @@ fn a_peer_holds_a_deleted_meshs_last_admin_stopped_then_deleted_from_the_fabric_
         // The delete: the provider's exit proof, NodeDeleted on the executor's own mesh channel, and the
         // departure taken by its own view, as the node-admin runs it.
         let deleted = op("retire-node", &admin3);
-        let of_deleted_mesh = fp_bb.publishes_deleted_mesh_of(&deleted);
-        assert!(of_deleted_mesh, "the fabric-primary publishes the birth it stopped");
+        assert!(fp_bb.publishes_deleted_mesh_of(&deleted), "the fabric-primary is mesh3's publisher of record");
         fp_m.publish_lifecycle(&Frame::NodeDeleted { op: deleted.clone(), forwarded_by: None }).await.unwrap();
-        fp_bb.executed_delete(&deleted, of_deleted_mesh);
         rounds_until(&fp_bb, &fp_m, "the peer never held mesh3's last admin deleted from the fabric-primary's aggregate", || {
             held_of(&peer_m, &peer_own, "mesh3").is_some_and(|s| !s.departed.is_empty())
         })
@@ -315,10 +313,8 @@ fn the_fabric_primary_executing_a_live_primaryless_meshs_stop_and_delete_publish
         fp_bb.set_view_meshes(view(&[("mesh1", false), ("mesh2", false), ("mesh4", false)]));
         let (_, stamped) = fp_bb.publish_status_event(StatusEvent::Stopped, &op("stop-node", &rpc)).await;
         let deleted = op("retire-node", &admin2);
-        let of_deleted_mesh = fp_bb.publishes_deleted_mesh_of(&deleted);
-        assert!(!of_deleted_mesh, "a live mesh is not deleted");
+        assert!(!fp_bb.publishes_deleted_mesh_of(&deleted), "a live mesh is not deleted");
         fp_m.publish_lifecycle(&Frame::NodeDeleted { op: deleted.clone(), forwarded_by: None }).await.unwrap();
-        fp_bb.executed_delete(&deleted, of_deleted_mesh);
         for _ in 0..5 {
             fp_bb.publish(&fp_m, fp_bb.own_members(&fp_m)).await;
             assert!(fp_bb.publish_deleted_meshes(&fp_m).await.is_empty(), "the fabric-primary publishes no aggregate of the live mesh2");
@@ -430,10 +426,8 @@ fn a_back_to_back_stop_and_delete_of_a_deleted_meshs_last_admin_publishes_the_st
         let (_, stamped) = fp_bb.publish_status_event(StatusEvent::Stopped, &stop).await;
         let delete_applied_at = unix_ns();
         let deleted = op("retire-node", &admin3);
-        let of_deleted_mesh = fp_bb.publishes_deleted_mesh_of(&deleted);
-        assert!(of_deleted_mesh, "the fabric-primary publishes the birth it stopped");
+        assert!(fp_bb.publishes_deleted_mesh_of(&deleted), "the fabric-primary is mesh3's publisher of record");
         fp_m.publish_lifecycle(&Frame::NodeDeleted { op: deleted.clone(), forwarded_by: None }).await.unwrap();
-        fp_bb.executed_delete(&deleted, of_deleted_mesh);
         // The round the delete wakes.
         assert_eq!(fp_bb.publish_deleted_meshes(&fp_m).await, vec!["mesh3".to_string()], "the round the delete wakes publishes the deleted mesh3");
 
@@ -635,6 +629,10 @@ fn a_fabric_seat_move_during_the_deleted_retention_keeps_the_deleted_mesh_publis
                 .unwrap_or_else(|| panic!("the peer installed mesh3 from {publisher} with in_flight={in_flight} departed={departed}"))
         };
         let peer_stopped = installed(&fp2_publisher, 1, 0);
+        // The receiver's rule for a successor publisher: a later publication of the mesh is taken
+        // whatever its version (receive_order.rs, R-RX3), and a publisher other than the held one's
+        // installs as a new epoch (snapshot.rs `SnapshotReceiver::install`), so its own counter from 1 is installed.
+        assert_eq!(peer_stopped["attributes"]["new_epoch"], "true", "the peer installed the new fabric-primary's aggregate as a new publisher of mesh3: {peer_stopped}");
         let peer_deleted = installed(&fp2_publisher, 0, 1);
         let fp1_publisher = format!("mesh1.admin.1@{}", fp1_own.node.incarnation.as_str());
         let peer_back = installed(&fp1_publisher, 0, 1);

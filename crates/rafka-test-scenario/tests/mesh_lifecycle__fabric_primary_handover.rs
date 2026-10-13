@@ -419,16 +419,19 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let node_deleted = named(&spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().find(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["build_id"]) == c).cloned().unwrap_or_else(|| panic!("NodeDeleted was published for {final_name} under {c}"));
     assert!(start_ns(&node_deleted) >= final_exit, "NodeDeleted follows the exit proof: {node_deleted}");
     // mesh-delete.md step 7: "from that admin's stop on it publishes the deleted mesh's aggregate"
-    // (gossip.md "Mesh delete": publisher itself, `digests` empty, the stopped admin in `in_flight` as
-    // NodeStopped, then the birth in `deleted` as NodeDeleted). mesh1's row is deleted: R-RX4, which is
-    // a live mesh's, does not cover it.
+    // (gossip.md "Mesh delete": "the deleted mesh's own Members aggregate", publisher itself, `digests`
+    // empty, the stopped admin in `in_flight` as NodeStopped, then the birth in `deleted` as
+    // NodeDeleted). The mesh's own aggregate keeps the departures of the members its mesh.delete
+    // deleted for the deleted retention, as the last admin's own aggregate carried them. mesh1's row
+    // is deleted: R-RX4, which is a live mesh's, does not cover it.
     let stop_answered = order.iter().find(|(n, _, _)| n == "StopNode").map(|(_, _, e)| *e).expect("the final primary's stop was answered");
+    let members_deleted = deleted_receipts[0]["output"]["receipts"].as_array().map(Vec::len).expect("the receipt manifest lists the deleted members") as u64;
     let by_fabric_primary = |sp: &Value| s(&sp["attributes"]["publisher"]).starts_with(&format!("{fabric_primary}@"));
     let published: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-deleted-mesh").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == fabric_primary).collect();
-    let stopped_aggregate = published.iter().copied().find(|sp| attr_u(sp, "digests") == 0 && attr_u(sp, "in_flight") == 1 && attr_u(sp, "departed") == 0 && start_ns(sp) >= stop_answered && start_ns(sp) < start_ns(&node_deleted));
-    let stopped_aggregate = stopped_aggregate.unwrap_or_else(|| panic!("after {final_name}'s stop and before its NodeDeleted the fabric-primary {fabric_primary} published mesh1's aggregate, no digests, the stopped admin in in_flight: {published:?}"));
-    let deleted_aggregate = published.iter().copied().find(|sp| attr_u(sp, "digests") == 0 && attr_u(sp, "in_flight") == 0 && attr_u(sp, "departed") == 1 && start_ns(sp) >= start_ns(&node_deleted));
-    let deleted_aggregate = deleted_aggregate.unwrap_or_else(|| panic!("after NodeDeleted the fabric-primary {fabric_primary} published mesh1's aggregate with the deleted birth in departed: {published:?}"));
+    let stopped_aggregate = published.iter().copied().find(|sp| attr_u(sp, "digests") == 0 && attr_u(sp, "in_flight") == 1 && attr_u(sp, "departed") == members_deleted && start_ns(sp) >= stop_answered && start_ns(sp) < start_ns(&node_deleted));
+    let stopped_aggregate = stopped_aggregate.unwrap_or_else(|| panic!("after {final_name}'s stop and before its NodeDeleted the fabric-primary {fabric_primary} published mesh1's aggregate, no digests, the stopped admin in in_flight, the {members_deleted} deleted members in departed: {published:?}"));
+    let deleted_aggregate = published.iter().copied().find(|sp| attr_u(sp, "digests") == 0 && attr_u(sp, "in_flight") == 0 && attr_u(sp, "departed") == members_deleted + 1 && start_ns(sp) >= start_ns(&node_deleted));
+    let deleted_aggregate = deleted_aggregate.unwrap_or_else(|| panic!("after NodeDeleted the fabric-primary {fabric_primary} published mesh1's aggregate with the deleted birth in departed beside the {members_deleted} deleted members: {published:?}"));
     // A peer holds it: an admin of each surviving mesh installs mesh1 from the fabric-primary, no
     // digests, after the stop: from the backbone, or, in the fabric-primary's own mesh, from the
     // source its primary puts into the mesh (gossip.md "External topology when a mesh is deleted"),

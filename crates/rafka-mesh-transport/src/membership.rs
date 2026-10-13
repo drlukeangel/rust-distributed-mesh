@@ -3405,10 +3405,6 @@ pub struct Backbone {
     /// deleted at mesh.deleted), as the view the admin installed last names them
     /// ([`Backbone::set_view_meshes`], handed at each install).
     view_meshes: Arc<Mutex<BTreeMap<String, bool>>>,
-    /// The births of a deleted mesh this admin, as the fabric-primary, stopped or deleted as their
-    /// executor, by `(NodeId, incarnation)`: what it publishes that mesh's aggregate for (gossip.md
-    /// "Mesh delete": "From the stop on the fabric-primary is that mesh's publisher of record").
-    deleted_births: Arc<Mutex<BTreeSet<(String, String)>>>,
     /// The version counter of each deleted mesh this admin publishes, and the version its rounds last
     /// published (a stop stamps its version before a round publishes it).
     deleted_versions: Arc<Mutex<BTreeMap<String, (SourceVersion, u64)>>>,
@@ -3489,7 +3485,6 @@ impl Backbone {
             version: Arc::default(),
             own: Arc::default(),
             view_meshes: Arc::default(),
-            deleted_births: Arc::default(),
             deleted_versions: Arc::default(),
             deleted_seen: Arc::default(),
         };
@@ -3696,62 +3691,50 @@ impl Backbone {
         }
     }
 
-    /// Whether this admin publishes the aggregate of `op`'s mesh on its stop or delete of `op`'s
-    /// birth: it is the fabric-primary, the birth is of another mesh, and either its view holds that
-    /// mesh deleted or it already publishes that birth (gossip.md "Mesh delete": from the stop of a
-    /// deleted mesh's last admin on, the fabric-primary is that mesh's publisher of record). A mesh
-    /// its view does not name, or names live, is not deleted: a live mesh with no primary goes
-    /// unheard (R-RX4, mesh-investigation.md), and nothing here publishes it.
+    /// Whether this admin is the publisher of record of `op`'s mesh, a deleted mesh, when it stops
+    /// `op`'s birth: it is the fabric-primary, the birth is of another mesh, and its view holds that
+    /// mesh deleted (gossip.md "Mesh delete": from the stop of a deleted mesh's last admin on, the
+    /// fabric-primary is that mesh's publisher of record). A mesh its view does not name, or names
+    /// live, is not deleted: a live mesh with no primary goes unheard (R-RX4,
+    /// mesh-investigation.md), and nothing here publishes it.
     pub fn publishes_deleted_mesh_of(&self, op: &LifecycleOp) -> bool {
-        if op.name.mesh == self.mesh || !self.status_publishing.load(Ordering::Relaxed) {
-            return false;
-        }
-        self.view_meshes.lock().unwrap().get(&op.name.mesh) == Some(&true) || self.deleted_births.lock().unwrap().contains(&(op.node_id.to_string(), op.incarnation.to_string()))
+        op.name.mesh != self.mesh && self.status_publishing.load(Ordering::Relaxed) && self.view_meshes.lock().unwrap().get(&op.name.mesh) == Some(&true)
     }
 
-    /// This admin holds `op`'s birth stopped or departed in its book and, by
-    /// [`Backbone::publishes_deleted_mesh_of`] read before the book took it (`of_deleted_mesh`),
-    /// publishes the deleted mesh's aggregate for it: the birth is listed from now on, and the round
-    /// looks at once.
-    fn hold_deleted_mesh_birth(&self, op: &LifecycleOp, of_deleted_mesh: bool) {
-        if !of_deleted_mesh {
-            return;
-        }
-        self.deleted_births.lock().unwrap().insert((op.node_id.to_string(), op.incarnation.to_string()));
-        self.membership.book.overlays_moved();
+    /// Each deleted mesh's aggregate as this admin holds it now: for every other mesh its view holds
+    /// deleted, the stops and departures its book holds of that mesh's births, once its book holds
+    /// no birth of the mesh that is neither stopped nor departed ([`DigestBook::deleted_mesh_listing`]).
+    /// Read from what the admin holds, never from what one process did: the role is the
+    /// fabric-primary's, so whichever admin takes the seat lists the same meshes (gossip.md "Mesh
+    /// delete").
+    fn deleted_listing(&self, membership: &Membership) -> BTreeMap<String, (Vec<LifecycleOp>, Vec<LifecycleOp>)> {
+        let deleted: BTreeSet<String> = self.view_meshes.lock().unwrap().iter().filter(|(_, deleted)| **deleted).map(|(m, _)| m.clone()).collect();
+        membership.book.deleted_mesh_listing(&deleted, &self.mesh)
     }
 
-    /// This admin executed `op`'s delete and its book holds the departure (the provider's exit
-    /// proof, NodeDeleted): when [`Backbone::publishes_deleted_mesh_of`] answered `true` for it before
-    /// the departure was taken, the deleted mesh's aggregate moves the birth to `deleted`.
-    pub fn executed_delete(&self, op: &LifecycleOp, of_deleted_mesh: bool) {
-        self.hold_deleted_mesh_birth(op, of_deleted_mesh);
-    }
-
-    /// While this admin is the fabric-primary, the aggregate of each deleted mesh whose births it
-    /// stopped or deleted as executor (mesh-delete.md step 7: "from that admin's stop on it publishes
-    /// the deleted mesh's aggregate"; gossip.md "Mesh delete": "it publishes the deleted mesh's own
-    /// Members aggregate on the backbone, publisher itself, `digests` empty, the stopped admin in
-    /// `in_flight` as NodeStopped on the ordinary anti-entropy cadence, until a start hands publishing
-    /// back to the admin or a delete moves the birth to `deleted` as NodeDeleted ... After the deleted
-    /// retention the mesh is empty and nothing publishes for it again"). The same source goes into its
-    /// own mesh. A mesh its view names live again (created again under the name, R-MN1) is a new
-    /// mesh with its own primary: the deleted mesh's aggregate ends there, by name. Returns the
-    /// meshes published.
+    /// While this admin is the fabric-primary, the aggregate of each deleted mesh whose last admin is
+    /// stopped or deleted, as [`Backbone::deleted_listing`] reads it from the admin's view and book
+    /// (mesh-delete.md step 7: "from that admin's stop on it publishes the deleted mesh's aggregate";
+    /// gossip.md "Mesh delete": "it publishes the deleted mesh's own Members aggregate on the
+    /// backbone, publisher itself, `digests` empty, the stopped admin in `in_flight` as NodeStopped on
+    /// the ordinary anti-entropy cadence, until a start hands publishing back to the admin or a
+    /// delete moves the birth to `deleted` as NodeDeleted ... After the deleted retention the mesh is
+    /// empty and nothing publishes for it again"). An admin that takes the fabric seat during the
+    /// deleted retention publishes from its first round on, at its own version. The same source goes
+    /// into its own mesh. A mesh its last round published that its view now names live (created
+    /// again under the name, R-MN1) is a new mesh with its own primary: the deleted mesh's aggregate
+    /// ends there, by name. Returns the meshes published.
     pub async fn publish_deleted_meshes(&self, membership: &Membership) -> Vec<String> {
         if !self.status_publishing.load(Ordering::Relaxed) {
             self.deleted_seen.lock().unwrap().clear();
             return Vec::new();
         }
-        let mut listed = membership.book.deleted_mesh_listing(&mut self.deleted_births.lock().unwrap(), &self.mesh);
-        let live: Vec<String> = {
+        let listed = self.deleted_listing(membership);
+        let live: Vec<(String, (Vec<LifecycleOp>, Vec<LifecycleOp>))> = {
             let view = self.view_meshes.lock().unwrap();
-            listed.keys().filter(|m| view.get(*m) == Some(&false)).cloned().collect()
+            self.deleted_seen.lock().unwrap().iter().filter(|(m, _)| view.get(*m) == Some(&false)).map(|(m, l)| (m.clone(), l.clone())).collect()
         };
-        for mesh in live {
-            let (in_flight, departed) = listed.remove(&mesh).unwrap_or_default();
-            let births: BTreeSet<(String, String)> = in_flight.iter().chain(departed.iter()).map(|op| (op.node_id.to_string(), op.incarnation.to_string())).collect();
-            self.deleted_births.lock().unwrap().retain(|b| !births.contains(b));
+        for (mesh, (in_flight, departed)) in live {
             self.deleted_versions.lock().unwrap().remove(&mesh);
             tracing::info_span!("rdm.mesh.backbone.reject.via-mesh-live", node = %self.node, mesh = %mesh, publisher = %self.publisher, in_flight = in_flight.len(), departed = departed.len())
                 .in_scope(|| tracing::info!("this admin's view names a live mesh of that name, created again with its own primary: the deleted mesh's aggregate is published no more"));
@@ -3819,10 +3802,10 @@ impl Backbone {
             heard.borrow_and_update();
             births.borrow_and_update();
             overlays.borrow_and_update();
-            // A stop or delete of a deleted mesh's birth this fabric-primary executed moved what it
-            // publishes for that mesh: the round publishes at once (gossip.md, `Members`: "at once on
-            // a material change").
-            if self.status_publishing.load(Ordering::Relaxed) && membership.book.deleted_mesh_listing(&mut self.deleted_births.lock().unwrap(), &self.mesh) != *self.deleted_seen.lock().unwrap() {
+            // A stop or delete of a deleted mesh's birth moved what this fabric-primary publishes for
+            // that mesh: the round publishes at once (gossip.md, `Members`: "at once on a material
+            // change").
+            if self.status_publishing.load(Ordering::Relaxed) && self.deleted_listing(membership) != *self.deleted_seen.lock().unwrap() {
                 return;
             }
             if self.publishing.load(Ordering::Relaxed) {
@@ -3897,13 +3880,18 @@ impl Backbone {
         } else if kind == StatusEvent::Stopped && self.publishes_deleted_mesh_of(op) {
             let mut versions = self.deleted_versions.lock().unwrap();
             membership.view.apply_status_event(kind, op, None, "executed");
-            self.hold_deleted_mesh_birth(op, true);
-            let (in_flight, departed) = membership.book.deleted_mesh_listing(&mut self.deleted_births.lock().unwrap(), &self.mesh).remove(&op.name.mesh).unwrap_or_default();
-            // What this event sends is what the round has seen published for the mesh.
-            self.deleted_seen.lock().unwrap().insert(op.name.mesh.clone(), (in_flight.clone(), departed.clone()));
-            let full = Full::new(Vec::new(), in_flight, departed);
-            let stamp = Self::stamp_deleted_mesh(&mut versions, &op.name.mesh, &full);
-            ("deleted-mesh-publisher", stamp.version, Some((full, stamp)))
+            match self.deleted_listing(membership).remove(&op.name.mesh) {
+                Some((in_flight, departed)) => {
+                    // What this event sends is what the round has seen published for the mesh.
+                    self.deleted_seen.lock().unwrap().insert(op.name.mesh.clone(), (in_flight.clone(), departed.clone()));
+                    let full = Full::new(Vec::new(), in_flight, departed);
+                    let stamp = Self::stamp_deleted_mesh(&mut versions, &op.name.mesh, &full);
+                    ("deleted-mesh-publisher", stamp.version, Some((full, stamp)))
+                }
+                // Another birth of the mesh is held neither stopped nor departed: its aggregate is
+                // still that birth's, and this stop is a plain executor's.
+                None => ("executor", self.version.lock().unwrap().version(), None),
+            }
         } else {
             membership.view.apply_status_event(kind, op, None, "executed");
             ("executor", self.version.lock().unwrap().version(), None)
@@ -5432,23 +5420,26 @@ impl DigestBook {
         v
     }
 
-    /// The stops and departures of the births in `births` (each `(NodeId, incarnation)`), by mesh,
-    /// for every mesh but `own`: what a fabric-primary publishes as each deleted mesh's aggregate
-    /// (gossip.md "Mesh delete"). A birth whose stop ended (a start: publishing goes back to the
-    /// admin) and that holds no departure, or whose departure passed the deleted retention, leaves
-    /// `births` and is listed no more, ever. A birth leaves the stop for the departure in one step:
-    /// the departure is held before the stop ends, and this reads the stops first.
-    pub(crate) fn deleted_mesh_listing(&self, births: &mut BTreeSet<(String, String)>, own: &str) -> BTreeMap<String, (Vec<LifecycleOp>, Vec<LifecycleOp>)> {
+    /// The aggregate of each mesh of `deleted` but `own`, as this book holds it, by mesh: the stops
+    /// of its births in `in_flight` and its departures within the deleted retention, once this book
+    /// holds no birth of the mesh that is neither stopped nor departed: what the fabric-primary
+    /// publishes as each deleted mesh's own aggregate (gossip.md "Mesh delete": after mesh.deleted the
+    /// last admin publishes itself until it is stopped or deleted, and "From the stop on the
+    /// fabric-primary is that mesh's publisher of record"). A mesh whose admin still holds a digest
+    /// here (not stopped yet, or started again: "until a start hands publishing back to the admin")
+    /// is not listed, nor one with nothing left to list ("After the deleted retention the mesh is
+    /// empty and nothing publishes for it again"). Read from the book alone, so every admin that
+    /// holds the same facts lists the same aggregate. A birth leaves the stop for the departure in
+    /// one step: the departure is held before the stop ends.
+    pub(crate) fn deleted_mesh_listing(&self, deleted: &BTreeSet<String>, own: &str) -> BTreeMap<String, (Vec<LifecycleOp>, Vec<LifecycleOp>)> {
+        let held: BTreeSet<String> = self.inner.lock().unwrap().values().map(|(d, _, _)| d.node.name.mesh.clone()).collect();
+        let listed = |mesh: &str| mesh != own && deleted.contains(mesh) && !held.contains(mesh);
         let (in_flight, departed) = (self.in_flight(), self.departed());
-        let birth = |op: &LifecycleOp| (op.node_id.to_string(), op.incarnation.to_string());
-        let stops: Vec<LifecycleOp> = in_flight.into_iter().filter(|op| op.is_stop() && op.name.mesh != own && births.contains(&birth(op))).collect();
-        let deletes: Vec<LifecycleOp> = departed.into_iter().filter(|op| op.name.mesh != own && births.contains(&birth(op))).collect();
-        births.retain(|b| stops.iter().chain(deletes.iter()).any(|op| birth(op) == *b));
         let mut out: BTreeMap<String, (Vec<LifecycleOp>, Vec<LifecycleOp>)> = BTreeMap::new();
-        for op in stops {
+        for op in in_flight.into_iter().filter(|op| op.is_stop() && listed(&op.name.mesh)) {
             out.entry(op.name.mesh.clone()).or_default().0.push(op);
         }
-        for op in deletes {
+        for op in departed.into_iter().filter(|op| listed(&op.name.mesh)) {
             out.entry(op.name.mesh.clone()).or_default().1.push(op);
         }
         out
@@ -7520,48 +7511,64 @@ mod tests {
         LifecycleOp { name: path.parse().unwrap(), ..op(id, inc, operation) }
     }
 
-    /// CONTRACT (gossip.md "Mesh delete": the fabric-primary publishes the deleted mesh's aggregate
-    /// with "the stopped admin in `in_flight` as NodeStopped ... until a start hands publishing back
-    /// to the admin or a delete moves the birth to `deleted` as NodeDeleted ... After the deleted
-    /// retention the mesh is empty and nothing publishes for it again"): a deleted mesh's listing
-    /// carries exactly the births the fabric-primary holds for it: the last admin's stop in
-    /// `in_flight` while it is open, its departure in `deleted` while it is retained. Another birth's
-    /// stop, and the fabric-primary's own mesh, are never listed. A start ends the listing for good,
-    /// and so does the end of the deleted retention. Must NOT happen: a birth listed after a start
-    /// handed it back, or after its departure aged out (a mesh published forever).
+    /// CONTRACT (gossip.md "Mesh delete": after mesh.deleted the last admin publishes itself "until it
+    /// is stopped or deleted ... From the stop on the fabric-primary is that mesh's publisher of record
+    /// ... the stopped admin in `in_flight` as NodeStopped ... until a start hands publishing back to
+    /// the admin or a delete moves the birth to `deleted` as NodeDeleted ... After the deleted
+    /// retention the mesh is empty and nothing publishes for it again"): a deleted mesh's listing is
+    /// read from the book alone. While the book holds its last admin's digest nothing is listed; from
+    /// the admin's stop on the mesh's stops and retained departures are (its members' departures from
+    /// the mesh.delete with them). A start hands it back: nothing is listed while the admin's digest is
+    /// held again. Stopped again, then deleted: the stop, then the departure. The own mesh and a mesh
+    /// not held deleted are never listed. After the deleted retention nothing is. Must NOT happen: a
+    /// mesh listed while its admin is held unstopped, after a start, or after its departures aged out.
     #[test]
-    fn a_deleted_meshs_listing_holds_its_last_admin_stopped_then_deleted_until_a_start_or_the_retention_ends_it() {
-        let book = DigestBook::with_retention(Duration::from_millis(40));
-        let (last, other, own) = ((NodeId::mint(), IncarnationId::mint()), (NodeId::mint(), IncarnationId::mint()), (NodeId::mint(), IncarnationId::mint()));
-        let stop_last = op_at("mesh1.admin.1", &last.0, &last.1, "stop-node:mesh1.admin.1");
-        let stop_other = op_at("mesh1.rpc.1", &other.0, &other.1, "stop-node:mesh1.rpc.1");
-        let stop_own = op_at("mesh2.rpc.1", &own.0, &own.1, "stop-node:mesh2.rpc.1");
-        for o in [&stop_last, &stop_other, &stop_own] {
-            assert!(book.stopped(o.clone()));
+    fn a_deleted_meshs_listing_holds_its_stops_and_departures_from_its_last_admins_stop_until_a_start_or_the_retention_ends_it() {
+        let book = DigestBook::with_retention(Duration::from_millis(200));
+        let last = born("mesh1", "admin.1", None, 1);
+        let (last_id, last_inc) = (last.node.node_id.clone(), last.node.incarnation.clone());
+        assert!(book.record(last.clone()));
+        let member = op_at("mesh1.rpc.1", &NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh1.rpc.1");
+        let other = op_at("mesh5.rpc.1", &NodeId::mint(), &IncarnationId::mint(), "retire-node:mesh5.rpc.1");
+        for o in [&member, &other] {
+            assert!(book.depart(o.clone()));
         }
-        let birth = |o: &LifecycleOp| (o.node_id.to_string(), o.incarnation.to_string());
-        let mut births: BTreeSet<(String, String)> = [birth(&stop_last), birth(&stop_own)].into_iter().collect();
-        let listed = book.deleted_mesh_listing(&mut births, "mesh2");
-        assert_eq!(listed.keys().cloned().collect::<Vec<_>>(), ["mesh1"], "the own mesh is never listed: {listed:?}");
-        assert_eq!(listed["mesh1"], (vec![stop_last.clone()], vec![]), "only the last admin's stop, never another birth's");
+        let stop_own = op_at("mesh2.rpc.1", &NodeId::mint(), &IncarnationId::mint(), "stop-node:mesh2.rpc.1");
+        assert!(book.stopped(stop_own.clone()));
+        let deleted: BTreeSet<String> = ["mesh1".to_string(), "mesh2".to_string()].into_iter().collect();
+        let keys = |l: &(Vec<LifecycleOp>, Vec<LifecycleOp>)| {
+            let mut d: Vec<_> = l.1.iter().map(LifecycleOp::key).collect();
+            d.sort();
+            (l.0.iter().map(LifecycleOp::key).collect::<Vec<_>>(), d)
+        };
+        let sorted = |ops: &[&LifecycleOp]| {
+            let mut v: Vec<_> = ops.iter().map(|o| o.key()).collect();
+            v.sort();
+            v
+        };
+        assert!(book.deleted_mesh_listing(&deleted, "mesh2").is_empty(), "the last admin's digest is held: it still publishes mesh1 itself");
 
-        // A start hands publishing back to the admin: its stop ends and it is listed no more, ever.
+        // The last admin's stop: from here on the mesh's stops and departures are listed.
+        let stop_last = op_at("mesh1.admin.1", &last_id, &last_inc, "stop-node:mesh1.admin.1");
+        assert!(book.stopped(stop_last.clone()));
+        let listed = book.deleted_mesh_listing(&deleted, "mesh2");
+        assert_eq!(listed.keys().cloned().collect::<Vec<_>>(), ["mesh1"], "the own mesh and a mesh not held deleted are never listed: {listed:?}");
+        assert_eq!(keys(&listed["mesh1"]), (vec![stop_last.key()], vec![member.key()]), "the stopped admin in in_flight, the member's departure in deleted");
+
+        // A start hands publishing back to the admin: its stop ends and its digest is held again.
         assert!(book.joined(&LifecycleOp { operation: "start-node:mesh1.admin.1".into(), ..stop_last.clone() }));
-        assert!(book.deleted_mesh_listing(&mut births, "mesh2").is_empty(), "a start ends the listing");
-        assert!(!births.contains(&birth(&stop_last)), "the started birth is held no more");
+        assert!(book.get(last_id.as_str()).is_some(), "the started admin is held again");
+        assert!(book.deleted_mesh_listing(&deleted, "mesh2").is_empty(), "a start ends the listing while the admin is held");
 
-        // Stopped again and deleted: the stop, then the departure; the departure is listed until the
-        // retention ends it.
+        // Stopped again and deleted: the stop, then the departure; listed until the retention ends.
         let stop_again = LifecycleOp { build_id: "b2".into(), ..stop_last.clone() };
         assert!(book.stopped(stop_again.clone()));
-        births.insert(birth(&stop_again));
-        assert_eq!(book.deleted_mesh_listing(&mut births, "mesh2")["mesh1"], (vec![stop_again.clone()], vec![]));
-        let deleted = LifecycleOp { operation: "retire-node:mesh1.admin.1".into(), ..stop_again.clone() };
-        assert!(book.depart(deleted.clone()));
-        assert_eq!(book.deleted_mesh_listing(&mut births, "mesh2")["mesh1"], (vec![], vec![deleted.clone()]), "the delete moves the birth to deleted");
-        std::thread::sleep(Duration::from_millis(60));
-        assert!(book.deleted_mesh_listing(&mut births, "mesh2").is_empty(), "after the deleted retention nothing is listed");
-        assert!(births.is_empty(), "nothing is held: {births:?}");
+        assert_eq!(keys(&book.deleted_mesh_listing(&deleted, "mesh2")["mesh1"]), (vec![stop_again.key()], vec![member.key()]));
+        let gone = LifecycleOp { operation: "retire-node:mesh1.admin.1".into(), ..stop_again.clone() };
+        assert!(book.depart(gone.clone()));
+        assert_eq!(keys(&book.deleted_mesh_listing(&deleted, "mesh2")["mesh1"]), (vec![], sorted(&[&member, &gone])), "the delete moves the birth to deleted");
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(book.deleted_mesh_listing(&deleted, "mesh2").is_empty(), "after the deleted retention nothing is listed");
     }
 
     /// CONTRACT (R-RX1, Luke 2026-10-12: no receiver refuses an input because of who sent it; gossip.md
