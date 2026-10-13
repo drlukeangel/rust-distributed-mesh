@@ -18,7 +18,9 @@ use rafka_node_admin_core::build_op::{BuildDoor, BuildSlot};
 use rafka_node_admin_core::fabric_handover::{update_operation, HandoverDoor, HandoverSlot, Moving, ProjectView, WriteCutOff};
 use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, MemoryFabricStorage, SeatTransferRow};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
+use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::status_storage::MemoryStatusStorage;
+use rafka_node_admin_core::storage::MemoryNodesStorage;
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::OpOwner;
@@ -162,6 +164,10 @@ struct Admin {
     /// A door set here fills the admin's handover slot (op `0x21`, `NotReady` while empty) as its
     /// server answers a ping.
     ready_on_ping: Arc<OnceLock<Arc<HandoverDoor>>>,
+    /// The provider the admin's tickle ladder inspects a runtime through.
+    provider: Arc<Inspected>,
+    /// The admin's nodes.storage: the runtime row of each birth its ladder's provider rung reads.
+    nodes: Arc<MemoryNodesStorage>,
     _router: Router,
 }
 
@@ -244,6 +250,42 @@ struct Pair {
     successor: Admin,
 }
 
+/// The deployment provider an admin of a cell inspects runtimes through: it launched nothing here,
+/// and it answers a runtime exited when the cell names its deployment in `exited`, running otherwise.
+#[derive(Default)]
+struct Inspected {
+    exited: Mutex<std::collections::BTreeSet<String>>,
+}
+
+#[async_trait::async_trait]
+impl DeploymentProvider for Inspected {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Process
+    }
+    fn control_domain(&self) -> String {
+        "fabric-handover".into()
+    }
+    async fn spawn(&self, spec: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        Err(DeployError::Spawn { node: spec.node.to_string(), reason: "a fabric_handover cell births nothing".into() })
+    }
+    async fn terminate(&self, _: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+        Ok(())
+    }
+    async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
+        if self.exited.lock().unwrap().contains(&h.deployment_id.to_string()) {
+            DeploymentStatus::Exited { code: Some(0) }
+        } else {
+            DeploymentStatus::Running
+        }
+    }
+    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+        Ok(())
+    }
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<Found, DeployError> {
+        Ok(Found::NeverLaunched)
+    }
+}
+
 async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_slot: bool) -> (Admin, iroh::Endpoint) {
     admin_over(fabric, mesh, path, node_id, fill_slot, Arc::new(MemoryFabricStorage::new()), Arc::default()).await
 }
@@ -291,17 +333,29 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     // The cell's view is set by hand, not projected from digests: the projection re-runs the one
     // election over its members with the seat records this admin holds now, as the admin's own
     // projection does (`admin::view_projector`).
+    let records = {
+        let records = Arc::new(Records::default());
+        records.set_status(status.clone(), mesh.to_string(), path.parse().unwrap(), node_id.clone());
+        records
+    };
+    // The births proven gone are the seat book's and those whose exit-proof row the records read, as
+    // the admin's own lost set (`admin::incumbency_of`).
     let project_view: ProjectView = {
-        let (topology, seats) = (topology.clone(), membership.seats().clone());
+        let (topology, seats, records) = (topology.clone(), membership.seats().clone(), records.clone());
         Arc::new(move || {
-            let (topology, seats, mut gate) = (topology.clone(), seats.clone(), view_gate.clone());
+            let (topology, seats, records, mut gate) = (topology.clone(), seats.clone(), records.clone(), view_gate.clone());
             Box::pin(async move {
                 let _ = gate.wait_for(|open| *open).await;
-                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), lost: seats.gone() };
-                resolve_with(&mut topology.write().await.nodes, &inc);
+                let mut view = topology.write().await;
+                let mut lost = seats.gone();
+                lost.extend(view.nodes.iter().filter_map(|n| n.incarnation_id.clone().filter(|i| records.is_exited(&n.node_id, i))));
+                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), lost };
+                resolve_with(&mut view.nodes, &inc);
             })
         })
     };
+    let (provider, nodes) = (Arc::new(Inspected::default()), Arc::new(MemoryNodesStorage::default()));
+    let looker = rafka_node_admin_core::seat_watch::Looker { me: path.parse().unwrap(), me_id: node_id.clone(), membership: membership.clone(), client: client.clone(), provider: provider.clone(), nodes: Some(nodes.clone()) };
     let door = Arc::new(HandoverDoor {
         fabric: "fabric1".into(),
         me: path.parse().unwrap(),
@@ -313,11 +367,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         backbone,
         storage: storage.clone(),
         client: client.clone(),
-        records: {
-            let records = Arc::new(Records::default());
-            records.set_status(status.clone(), mesh.to_string(), path.parse().unwrap(), node_id.clone());
-            records
-        },
+        records,
         locks: Default::default(),
         memo: Default::default(),
         decisions: Arc::default(),
@@ -333,11 +383,12 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
                 })
             })
         },
+        looker,
     });
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, client, resolver, resolved, storage, status, cut_offs, writes_finish, view_open, server, facts_slot, build_slot, ready_on_ping, _router: router }, ep)
+    (Admin { door, client, resolver, resolved, storage, status, cut_offs, writes_finish, view_open, server, facts_slot, build_slot, ready_on_ping, provider, nodes, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {

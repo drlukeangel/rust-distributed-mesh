@@ -23,8 +23,11 @@
 //!
 //! The successor refuses only a conflicting payload and a fabric not first ready-for-traffic; it never
 //! refuses a call for the birth it names (R-UC1a, R-RX5). After the row the seat is the successor's
-//! whatever the call returns: a call that does not answer node.primary.updated ends the update
-//! `Incomplete`, and a later attempt replays from the row (an identical call answers from it). A
+//! whatever the call returns: a call that does not answer node.primary.updated is followed by
+//! node-recovery's tickle ladder on the successor's exact birth and one retry against the birth that
+//! answered it; the provider's exit proof vacates the seat for the cohort's ordinary rule, and anything
+//! else ends the update `Incomplete`, and a later attempt replays from the row (an identical call
+//! answers from it) while the successor is not proven exited. A
 //! resuming executor that reads the row of a holder proven gone has discovered the commit, not
 //! installed it: it calls PrimaryUpdate on the successor and installs only on node.primary.updated.
 //! "primary updated" is published by the holder once the successor answered node.primary.updated
@@ -319,6 +322,10 @@ pub struct HandoverDoor {
     /// issued, before the seat row
     /// (R14 item 4), or lifts the cut-off when the row was not written.
     pub cut_off_writes: CutOffWrites,
+    /// node-recovery's tickle ladder on one exact birth, as the seat watch runs it (node-recovery.md
+    /// step 2, ruling R-SW1): run on the row's successor after a call that did not answer
+    /// node.primary.updated ([`HandoverDoor::call_successor`]).
+    pub looker: crate::seat_watch::Looker,
 }
 
 fn birth_of(n: &crate::model::Node) -> Option<HandoverBirth> {
@@ -813,7 +820,12 @@ impl HandoverDoor {
 
     /// The update `row` committed, completed from it: this holder takes the row's seats if an earlier
     /// attempt left them untaken (its authority over the cut-off writes ended at the row), then calls
-    /// the successor carrying the row and says "primary updated" on its answer.
+    /// the successor carrying the row and says "primary updated" on its answer. A successor whose exact
+    /// birth is proven exited by its exit-proof row is called no more: the seat the row gave it vacated
+    /// on that proof and the cohort's ordinary rule fills it, so there is no second update under the
+    /// row's operation (C1 failure contract: "the seat vacates only on the provider's exit proof, and
+    /// then the ordinary rule fills it ... No row is rewritten"; "An identical retry of the call replays
+    /// the committed result" while the successor is the committed holder).
     async fn complete_from_row(&self, row: &SeatTransferRow) -> Result<Vec<CommittedSeat>, Reply> {
         let op = self.op_of(&row.holder, self.me.clone(), &row.build_id, row.attempt, &row.operation);
         let taken = {
@@ -826,23 +838,114 @@ impl HandoverDoor {
             (self.cut_off_writes)(WriteCutOff::Committed { reason, mesh_seat: moved(Seat::MeshPrimary), fabric_seat: moved(Seat::FabricPrimary) }).await;
             (self.project_view)().await;
         }
+        let of = Refusing { operation: &row.operation, build_id: &row.build_id, attempt: row.attempt, holder: Some(&row.holder), successor: Some(&row.successor) };
+        match self.records.exit_row_of_birth(&row.successor.mesh, &row.successor.node_id, &row.successor.incarnation, &births(&row.successor)).await {
+            Ok(Some(exit)) => {
+                let detail = format!(
+                    "{}: node.primary.update {} committed the seat(s) to {}, whose exit is proven (proof {} observed at {} ms): the seat vacated on that proof and the cohort's ordinary rule fills it; no row is rewritten and no second update is made under this operation",
+                    self.me,
+                    row.operation,
+                    births(&row.successor),
+                    exit.proof,
+                    exit.observed_at_ms
+                );
+                refused("holder", "exit-proven", &detail, &of, None);
+                return Err(Reply::incomplete(&detail));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let failed = SourceFailure { source: format!("status.storage of {}, the exit-proof row of {} under mesh {}", self.me, births(&row.successor), row.successor.mesh), op: format!("read the exit-proof row of the successor {} names", row.operation), cause: e };
+                refused("holder", "source-failed", &failed.to_string(), &of, Some(&failed));
+                return Err(failed.reply());
+            }
+        }
         self.update_successor(row).await
     }
 
-    /// PrimaryUpdate carrying `row`, made once on the row's successor by `side`: its node.primary.updated
-    /// is the answer. Anything else ends the update `Incomplete`, named; the seat stays the
-    /// successor's from the row and no row is rewritten.
+    /// PrimaryUpdate carrying `row`, made on the row's successor by `side`: its node.primary.updated is
+    /// the answer (proposal Part C1 failure contract: "A call that reached a process other than the
+    /// named birth, a refusal or no answer is never an exit proof ... The holder's call fails by name,
+    /// the workflow runs node-recovery's tickle ladder on the successor's exact birth and retries the
+    /// call against the resolved birth; the seat vacates only on the provider's exit proof, and then the
+    /// ordinary rule fills it ... No row is rewritten"). A call that does not answer it is followed by
+    /// one look at the successor's exact birth ([`crate::seat_watch::Looker::look`]): an answer from
+    /// that birth, direct or through a peer of its mesh, retries the call once; the provider's exit
+    /// proof is recorded as the birth's exit-proof row, so the seat the row gave it vacates and the
+    /// cohort's ordinary rule fills it; a runtime that still runs, or nothing proven, retries nothing.
+    /// Anything but node.primary.updated in the end leaves the update `Incomplete`, named. One
+    /// `rdm.node_admin.seat.resolve.via-successor-ladder` per look.
     async fn call_successor(&self, row: &SeatTransferRow, side: &'static str) -> Result<Vec<CommittedSeat>, Reply> {
         let of = Refusing { operation: &row.operation, build_id: &row.build_id, attempt: row.attempt, holder: Some(&row.holder), successor: Some(&row.successor) };
-        let (reason, why) = match self.call_once(&row.successor.node_id, &call_of(row), &CallOptions::default()).await {
+        let req = call_of(row);
+        let (call, call_why) = match self.call_once(&row.successor.node_id, &req, &CallOptions::default()).await {
             Called::Reply(Reply::PrimaryUpdated { epochs }) if !epochs.is_empty() => return Ok(epochs),
-            Called::Reply(other) => ("refused", format!("answered {}: {}", other.name(), refusal_reason(&other).1)),
-            Called::NotDispatched(why) => ("not-dispatched", why),
-            Called::Indeterminate(why) => ("indeterminate", why),
+            other => other.failure(),
         };
-        let detail = format!("{}: node.primary.update {} to {} did not answer node.primary.updated; the seat is the successor's from the row and the update is incomplete until a later attempt obtains its answer: {why}", self.me, row.operation, births(&row.successor));
+        let span = tracing::info_span!(
+            "rdm.node_admin.seat.resolve.via-successor-ladder",
+            node = %self.me,
+            side,
+            operation = %row.operation,
+            build_id = %row.build_id,
+            attempt = row.attempt,
+            successor = %births(&row.successor),
+            call,
+            call_detail = %call_why,
+            finding = tracing::field::Empty,
+            detail = tracing::field::Empty,
+            retry = tracing::field::Empty,
+            retry_detail = tracing::field::Empty,
+            exit_proof_row = tracing::field::Empty,
+        );
+        let (reason, why) = match self.look_and_retry(row, &req).instrument(span.clone()).await {
+            Ok(epochs) => {
+                span.record("retry", "primary-updated");
+                return Ok(epochs);
+            }
+            Err(ended) => ended,
+        };
+        let detail = format!("{}: node.primary.update {} to {} did not answer node.primary.updated; the call {call} ({call_why}); {why}", self.me, row.operation, births(&row.successor));
         refused(side, reason, &detail, &of, None);
         Err(Reply::incomplete(&detail))
+    }
+
+    /// The look at `row`'s successor after its call failed, and the one retry of `req` it allows, under
+    /// the caller's ladder span: `Err` carries the refusal reason and how the update stands.
+    async fn look_and_retry(&self, row: &SeatTransferRow, req: &Request) -> Result<Vec<CommittedSeat>, (&'static str, String)> {
+        let span = tracing::Span::current();
+        let view = self.topology.read().await.clone();
+        let birth = view.births().find(|n| n.node_id == row.successor.node_id && n.incarnation_id.as_ref() == Some(&row.successor.incarnation)).cloned();
+        let finding = match &birth {
+            Some(n) => self.looker.look(&view, n).await,
+            None => crate::seat_watch::Finding::Unproven { reason: format!("{}'s view holds no node of the exact birth {}", self.me, births(&row.successor)) },
+        };
+        span.record("finding", finding.name()).record("detail", finding.detail().as_str());
+        let stands = "the seat stays the successor's from the row and the update is incomplete until a later attempt obtains its answer";
+        match (&finding, birth) {
+            (crate::seat_watch::Finding::Answered | crate::seat_watch::Finding::AnsweredViaPeer { .. }, _) => match self.call_once(&row.successor.node_id, req, &CallOptions::default()).await {
+                Called::Reply(Reply::PrimaryUpdated { epochs }) if !epochs.is_empty() => Ok(epochs),
+                other => {
+                    let (retry, retry_why) = other.failure();
+                    span.record("retry", retry).record("retry_detail", retry_why.as_str());
+                    Err((retry, format!("its exact birth answered the tickle ladder ({}), and the one retry against it {retry} ({retry_why}); {stands}", finding.name())))
+                }
+            },
+            (crate::seat_watch::Finding::Exited { code }, Some(n)) => {
+                span.record("retry", "none");
+                // The provider's exit proof: recorded durably as the birth's exit-proof row, which every
+                // projection reads as its proven loss; this admin's own view reads it now.
+                let recorded = self.records.put_exit(&n, *code, "provider").await;
+                span.record("exit_proof_row", recorded.as_ref().map(|_| "put".to_string()).unwrap_or_else(|e| e.clone()).as_str());
+                self.records.read_exits(&self.book).await;
+                (self.project_view)().await;
+                let code = code.map(|c| format!(" with code {c}")).unwrap_or_default();
+                Err(("exit-proven", format!("the provider proved its exact birth exited{code}: the seat the row gave it vacates and the cohort's ordinary rule fills it; no row is rewritten and no second update is made under {}", row.operation)))
+            }
+            _ => {
+                span.record("retry", "none");
+                Err(("unproven", format!("its exact birth neither answered the tickle ladder nor is proven exited ({}: {}); {stands}", finding.name(), finding.detail())))
+            }
+        }
     }
 
     // ---- the fabric-primary: command the update, and resume it ----
@@ -1137,6 +1240,18 @@ enum Called {
     NotDispatched(String),
     /// Committed, with no stronger proof: the receiver may have done what it asks.
     Indeterminate(String),
+}
+
+impl Called {
+    /// A call that did not answer node.primary.updated: how it ended (`refused`, `not-dispatched`,
+    /// `indeterminate`) and why.
+    fn failure(self) -> (&'static str, String) {
+        match self {
+            Called::Reply(other) => ("refused", format!("answered {}: {}", other.name(), refusal_reason(&other).1)),
+            Called::NotDispatched(why) => ("not-dispatched", why),
+            Called::Indeterminate(why) => ("indeterminate", why),
+        }
+    }
 }
 
 fn refusal_reason(r: &Reply) -> (&'static str, String) {
