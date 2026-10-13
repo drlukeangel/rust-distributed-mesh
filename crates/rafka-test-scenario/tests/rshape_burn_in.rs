@@ -2977,23 +2977,6 @@ async fn await_edge(estate: &Estate, holder: &str, node_id: &str, new_inc: &str,
     }
 }
 
-/// What `holder` holds toward `node_id` after `within`, without asserting: whether a Connected Direct
-/// edge to the current birth exists and whether one to the superseded birth still does. The wait ends
-/// as soon as both are as a converged pool would have them.
-async fn observe_edge(estate: &Estate, holder: &str, node_id: &str, new_inc: &str, old_inc: &str, within: Duration) -> Value {
-    let until = Instant::now() + within;
-    let t0 = Instant::now();
-    loop {
-        let d = directs_to(estate, holder, node_id);
-        let current = d.iter().any(|x| x["state"] == "Connected" && x["destination"]["incarnation"] == new_inc);
-        let stale = d.iter().any(|x| x["state"] == "Connected" && x["destination"]["incarnation"] == old_inc);
-        if (!stale) || Instant::now() >= until {
-            return json!({"holder": holder, "node_id": node_id, "current_connected": current, "superseded_connected": stale, "waited_ms": t0.elapsed().as_millis() as u64, "edges": d});
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
-}
-
 /// A carried call (through `via`) to `node`, so `via` dials it and holds an edge; the reply names
 /// the birth that answered.
 fn carried_get(estate: &Estate, node: &Value, via: &str, key: &str) -> Call {
