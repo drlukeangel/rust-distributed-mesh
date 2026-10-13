@@ -7,14 +7,40 @@
 //!
 //! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
 
-use crate::admin_faults::CutSpec;
-use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
+use crate::admin_faults::{AdminFaults, CutSpec};
+use rafka_mesh_entity::PathName;
+use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
+use rafka_node_rpc_contract::catalog::OpOwner;
+use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
-/// The fault door protocol on op `0x75`.
+/// The fault door protocol on op [`OP`].
 pub struct FaultDoor;
+
+/// The fault door's op tag.
+pub const OP: u8 = 0x75;
+
+/// A cut as the wire carries it. [`CutSpec`] is the cut as a scenario writes it in JSON (a boot file,
+/// a cell's arm), internally tagged on `kind`; postcard is not self-describing and cannot decode an
+/// internally tagged enum, so on the wire the same variants travel externally tagged (serde's remote
+/// form: the compiler holds every variant and field of this mirror to `CutSpec`'s).
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "CutSpec")]
+enum CutWire {
+    Receipt { step: String, operation: Option<String>, node: Option<String> },
+    Event { event: String, node: Option<String> },
+    Hook { phase: String, node: Option<String> },
+    AcceptedBuild,
+    ClaimedAttempt { attempt: Option<u32> },
+    ProviderDomain,
+    LeaveAnnouncement { announcements: Vec<u32>, channel: String },
+    CatchUp,
+    StateSync,
+    TopologyRead,
+}
 
 /// A fault door call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,7 +49,8 @@ pub enum FaultRequest {
     Arm {
         /// The cut's id.
         id: String,
-        /// Where the cut parks a call.
+        /// Where the cut holds a call.
+        #[serde(with = "CutWire")]
         spec: CutSpec,
     },
     /// Release cut `id`.
@@ -31,7 +58,7 @@ pub enum FaultRequest {
         /// The cut's id.
         id: String,
     },
-    /// Every cut the admin holds and what it parked.
+    /// Every cut the admin holds and what each held.
     State,
 }
 
@@ -50,7 +77,7 @@ impl FaultRequest {
     }
 }
 
-/// The call a cut parked first, as the decorator offered it.
+/// The call a cut held first, as the decorator offered it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Hit {
     /// A Build step receipt about to become durable.
@@ -131,27 +158,47 @@ pub enum Hit {
     TopologyRead {
         /// The joining admin.
         node: String,
-        /// The admin the read goes to.
-        authority: String,
+        /// The admin the read goes to: the one that answered the join.
+        reads_from: String,
     },
 }
 
-/// One armed cut and what it parked.
+impl Hit {
+    /// The hit as the cells and the hold span read it: one flat object of its fields.
+    pub fn detail(&self) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            Hit::Receipt { step, operation, build_id, attempt } => json!({"step": step, "operation": operation, "build_id": build_id, "attempt": attempt}),
+            Hit::Event { event, operation, build_id, attempt, node, incarnation_id } => json!({"event": event, "operation": operation, "build_id": build_id, "attempt": attempt, "node": node, "incarnation_id": incarnation_id}),
+            Hit::Hook { phase, target, transition_id } => json!({"phase": phase, "target": target, "transition_id": transition_id}),
+            Hit::Accepted { build_id } => json!({"build_id": build_id}),
+            Hit::Claimed { build_id, attempt, executor } => json!({"build_id": build_id, "attempt": attempt, "executor": executor}),
+            Hit::ProviderDomain => json!({"control_domain": "reported foreign"}),
+            Hit::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
+            Hit::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
+            Hit::StateSync { build_id, attempt } => json!({"build_id": build_id, "attempt": attempt}),
+            Hit::TopologyRead { node, reads_from } => json!({"node": node, "reads_from": reads_from}),
+        }
+    }
+}
+
+/// One armed cut and what it held.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CutRow {
-    /// Where the cut parks a call.
+    /// Where the cut holds a call.
+    #[serde(with = "CutWire")]
     pub spec: CutSpec,
     /// Not released yet.
     pub armed: bool,
-    /// A call is parked at it now (or, for a condition, it is in force).
+    /// It holds a call now (or, for a condition, it is in force).
     pub held: bool,
-    /// Released: it parks nothing more.
+    /// Released: it holds nothing more.
     pub released: bool,
-    /// The first call it parked.
+    /// The first call it held.
     pub hit: Option<Hit>,
     /// How long it has held, or held.
     pub held_for_ms: Option<u64>,
-    /// Matching calls that arrived while another was parked here.
+    /// Matching calls that arrived while another was held here.
     pub seen_while_held: u64,
 }
 
@@ -175,7 +222,8 @@ pub enum FaultReply {
         node: String,
         /// The cut's id.
         id: String,
-        /// Where it parks a call.
+        /// Where it holds a call.
+        #[serde(with = "CutWire")]
         spec: CutSpec,
     },
     /// The cut is released.
@@ -229,7 +277,7 @@ pub enum FaultReply {
 }
 
 impl NodeProtocol for FaultDoor {
-    const OP: u8 = 0x75;
+    const OP: u8 = OP;
     const NAME: &'static str = "fault-door";
     const MAX_REQUEST_FRAME_BYTES: usize = 4 * 1024;
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
@@ -272,6 +320,38 @@ impl NodeProtocol for FaultDoor {
     }
 }
 
+/// Serve the door over `faults` on the admin's Node RPC server: arm, release and read its cuts. The
+/// door answers whoever calls (R-SV1): it is the testkit's own executable's.
+pub fn serve(b: ServerBuilder, faults: Arc<AdminFaults>) -> ServerBuilder {
+    b.serve::<FaultDoor, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: FaultRequest| {
+        let faults = faults.clone();
+        async move {
+            let node = faults.name.clone();
+            Ok(match req {
+                FaultRequest::Arm { id, spec } => match faults.arm(&id, spec.clone()) {
+                    Ok(()) => FaultReply::Armed { node, id, spec },
+                    Err(reason) => FaultReply::Refused { reason },
+                },
+                FaultRequest::Release { id } => match faults.release(&id) {
+                    Ok((was_held, held_ms)) => FaultReply::Released { node, id, was_held, held_ms },
+                    Err(reason) => FaultReply::Refused { reason },
+                },
+                FaultRequest::State => FaultReply::State(faults.state()),
+            })
+        }
+    })
+}
+
+/// One call of the door at the admin `admin`, by its `path.name`: the door's answer, or how the call
+/// ended, named. A NotReady answer is the admin's Node RPC door not ready yet.
+pub async fn ask(client: &NodeRpcClient, admin: &PathName, req: &FaultRequest) -> Result<FaultReply, String> {
+    let (out, _) = client.call::<FaultDoor>(&NodeTarget::CurrentPath(admin.clone()), req, &CallOptions::default()).await;
+    match out {
+        RpcOutcome::Reply(r) => Ok(r.into_value()),
+        other => Err(format!("the fault door call at {admin} ended {}: {other:?}", other.name())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,12 +387,12 @@ mod tests {
         }
     }
 
-    // CONTRACT: every answer the door gives decodes as it was sent, the state's cuts with what they parked.
+    // CONTRACT: every answer the door gives decodes as it was sent, the state's cuts with what they held.
     #[test]
     fn every_reply_variant_encodes_and_round_trips() {
         let row = |spec: CutSpec, hit: Option<Hit>| CutRow { spec, armed: false, held: true, released: true, hit, held_for_ms: Some(7), seen_while_held: 1 };
         let cuts: BTreeMap<String, CutRow> = [
-            ("a".to_string(), row(CutSpec::TopologyRead, Some(Hit::TopologyRead { node: "mesh1.admin.4".into(), authority: "mesh1.admin.1".into() }))),
+            ("a".to_string(), row(CutSpec::TopologyRead, Some(Hit::TopologyRead { node: "mesh1.admin.4".into(), reads_from: "mesh1.admin.1".into() }))),
             ("b".to_string(), row(CutSpec::ClaimedAttempt { attempt: None }, Some(Hit::Claimed { build_id: "b".into(), attempt: 1, executor: "mesh1.admin.1".into() }))),
             ("c".to_string(), row(CutSpec::CatchUp, None)),
         ]

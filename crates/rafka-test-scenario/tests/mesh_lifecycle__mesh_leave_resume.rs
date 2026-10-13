@@ -94,7 +94,6 @@ pub(crate) struct Run {
 pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: Rpc1) -> Run {
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let root = estate.root.clone();
     let mesh1 = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2)]);
     let mesh2 = MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, mesh2_admins), (NodeKind::RpcNode, 2)]);
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1.clone(), mesh2] }).await;
@@ -109,7 +108,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     let mesh2_id = estate.mesh_view("mesh2").await.id.map(|i| i.to_string()).unwrap_or_else(|| panic!("mesh2 has a minted id"));
     let primary = before.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().unwrap_or_else(|| panic!("mesh2 has an admin primary: {before:#?}"));
     let lost = (s(&primary["name"]), s(&primary["incarnation_id"]));
-    let door = Door::open(&root, &lost.0, "").await;
+    let door = Door::at(&estate, &lost.0).await;
 
     // Held in tier 1: rpc.2's stop answered `stopped` (its node.connections.delete { All } and its
     // transport cut done, its process alive) and its StopNode receipt is not yet durable, so a resumed

@@ -246,8 +246,7 @@ impl Run {
         if let Some(d) = self.doors.lock().unwrap().get(name) {
             return d.clone();
         }
-        let api = self.estate.node_view(name).await.admin_api_base.unwrap_or_else(|| panic!("{name} advertises its control API"));
-        let d = Door::open(&self.root, name, &api).await;
+        let d = Door::at(&self.estate, name).await;
         self.doors.lock().unwrap().insert(name.to_string(), d.clone());
         d
     }
@@ -822,15 +821,13 @@ async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
 async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: Value, group: &str, admin: &str, receipts_before: usize, blocked_detail: &str) {
     let faults = run.root.join("faults");
     std::fs::create_dir_all(&faults).unwrap();
-    // A door file from an earlier birth of this path is stale; the birth rewrites it.
-    let _ = std::fs::remove_file(faults.join(format!("{admin}.door")));
     let mut spec = boot.clone();
     spec["id"] = json!(id);
     std::fs::write(faults.join(format!("{admin}.boot.json")), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
     let exec = run.fabric_door().await;
     let mut stream = run.spawn("mesh1", NodeKind::NodeAdmin).await;
     let build_id = Run::id_of(&stream);
-    let door = Door::open(&run.root, admin, "").await;
+    let door = Door::at(&run.estate, admin).await;
     let ack = json!({"armed": id, "node": admin, "spec": boot, "armed_by": "boot file before the birth's first line"});
     let held = door.wait_held(id).await;
     // The pipeline goes on while the admin boots, and stops at the step that needs the admin Ready,

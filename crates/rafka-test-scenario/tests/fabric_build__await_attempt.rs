@@ -33,7 +33,6 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(), "fabric1", "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let root = estate.root.clone();
 
     // A lone admin hears no other member and is cut off: two admins before anything else.
     let shape = estate.reconcile_shape("fabric1", &[("mesh1", 2, 0)]).await;
@@ -48,7 +47,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     estate.until_node(node, &format!("{node} ready"), Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic).map(|_| ())).await;
 
     let primary = estate.node_views().await.into_iter().find(|n| n.kind == NodeKind::NodeAdmin && n.mesh == "mesh1" && n.is_primary).expect("mesh1 has an admin primary");
-    let door = Door::open(&root, &primary.name.to_string(), primary.admin_api_base.as_deref().expect("the admin primary advertises its control API")).await;
+    let door = Door::at(&estate, &primary.name.to_string()).await;
 
     let cut = "restart:NodeRestarting";
     door.arm(cut, json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "restart-node", "node": node})).await;

@@ -1,46 +1,67 @@
-//! The fault door of a faulted node-admin, as a scenario drives it (i143.e8.s2, #2780): found by
-//! the path the admin recorded it at (`<root>/faults/<name>.door`), armed, observed through
-//! `GET /faults` and released. Shared by every cell that holds a real admin at a named cut.
+//! The fault door of a faulted node-admin, as a scenario drives it (i143.e8.s2, #2780): the testkit
+//! Node RPC op `0x75` (`rafka_node_rpc_testkit::fault_door`), reached by the admin's `path.name` on the
+//! estate's Node RPC client; armed, observed and released. Shared by every cell that holds a real admin
+//! at a named cut. A cut that must be in force before the admin's Node RPC door is ready is armed from
+//! `<root>/faults/<name>.boot.json` instead.
 
-use crate::estate::{bin_dir, wait_for};
+use crate::estate::{bin_dir, wait_for, wait_for_observed, Estate};
 use rafka_node_admin_client::binding::{sha256_file, Binding, BindingSet, Candidate};
+use rafka_node_admin_client::{PathName, Peers};
+use rafka_node_rpc_testkit::admin_faults::CutSpec;
+use rafka_node_rpc_testkit::fault_door::{self, FaultReply, FaultRequest, FaultState};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
-/// One faulted admin's door (`rafka_node_rpc_testkit::admin_faults::router`), found by the path
-/// the admin recorded it at.
+/// One faulted admin's fault door, reached over Node RPC by the admin's `path.name`.
 #[derive(Clone)]
 pub struct Door {
     pub name: String,
-    /// The fault door.
-    pub base: String,
-    /// The admin's control API: the Build state it holds is the one it wrote.
-    pub api: String,
-    pub http: reqwest::Client,
+    path: PathName,
+    peers: Arc<Peers>,
 }
 
 impl Door {
-    pub async fn open(root: &Path, name: &str, api: &str) -> Door {
-        let file = root.join("faults").join(format!("{name}.door"));
-        let base = wait_for(&format!("{name} records its fault door at {}", file.display()), Duration::from_secs(60), || async { std::fs::read_to_string(&file).ok().filter(|b| !b.is_empty()) }).await;
-        Door { name: name.into(), base, api: api.into(), http: reqwest::Client::new() }
+    /// The door of the faulted admin `name`, once it answers. The admin's Node RPC door answers NotReady
+    /// until it is ready (node-rpc-envelope.md, "Node RPC readiness gate"), and an admin the estate did not
+    /// start is dialled from the views the estate reads, so until then each turn reads them again.
+    pub async fn at(estate: &Estate, name: &str) -> Door {
+        let door = Door { name: name.into(), path: Estate::path(name), peers: estate.peers().await };
+        wait_for_observed(&format!("{name}'s fault door answers over Node RPC"), Duration::from_secs(60), || async {
+            match door.ask(&FaultRequest::State).await {
+                Ok(FaultReply::State(_)) => Ok(()),
+                other => {
+                    let _ = estate.try_node_views().await;
+                    Err(format!("{other:?}"))
+                }
+            }
+        })
+        .await;
+        door
     }
 
+    async fn ask(&self, req: &FaultRequest) -> Result<FaultReply, String> {
+        fault_door::ask(self.peers.carrier_at(self.path.clone()).client(), &self.path, req).await
+    }
+
+    /// Arm `spec` (a cut as JSON: `{"kind": .., ..}`) under `id`; the acknowledgement, as JSON.
     pub async fn arm(&self, id: &str, spec: Value) -> Value {
-        let mut body = spec;
-        body["id"] = json!(id);
-        let r = self.http.post(format!("{}/faults/arm", self.base)).json(&body).send().await.unwrap_or_else(|e| panic!("{}: arm {id}: {e}", self.name));
-        let status = r.status().as_u16();
-        let v: Value = r.json().await.unwrap_or(Value::Null);
-        assert_eq!(status, 200, "{}: arming `{id}` is acknowledged: {v}", self.name);
-        assert_eq!(v["armed"], id, "{v}");
-        v
+        let cut: CutSpec = serde_json::from_value(spec.clone()).unwrap_or_else(|e| panic!("{}: `{id}` is not a cut: {spec}: {e}", self.name));
+        match self.ask(&FaultRequest::arm(id, cut)).await {
+            Ok(FaultReply::Armed { node, id: armed, spec }) => {
+                assert_eq!(armed, id, "{}: the door armed another cut", self.name);
+                json!({"armed": armed, "node": node, "spec": spec})
+            }
+            other => panic!("{}: arming `{id}` is acknowledged: {other:?}", self.name),
+        }
     }
 
+    /// Every cut and what it held, and the consequence counters, as JSON.
     pub async fn state(&self) -> Value {
-        let r = self.http.get(format!("{}/faults", self.base)).send().await.unwrap_or_else(|e| panic!("{}: fault state: {e}", self.name));
-        r.json().await.unwrap()
+        match self.ask(&FaultRequest::State).await {
+            Ok(FaultReply::State(s)) => state_value(&s),
+            other => panic!("{}: fault state: {other:?}", self.name),
+        }
     }
 
     pub async fn cut(&self, id: &str) -> Value {
@@ -62,13 +83,31 @@ impl Door {
     }
 
     pub async fn release(&self, id: &str) -> Value {
-        let r = self.http.post(format!("{}/faults/release", self.base)).json(&json!({"id": id})).send().await.unwrap_or_else(|e| panic!("{}: release {id}: {e}", self.name));
-        let status = r.status().as_u16();
-        let v: Value = r.json().await.unwrap_or(Value::Null);
-        assert_eq!(status, 200, "{}: releasing `{id}` is acknowledged: {v}", self.name);
-        assert_eq!(v["released"], id, "{v}");
-        v
+        match self.ask(&FaultRequest::Release { id: id.into() }).await {
+            Ok(FaultReply::Released { node, id: released, was_held, held_ms }) => {
+                assert_eq!(released, id, "{}: the door released another cut", self.name);
+                json!({"released": released, "node": node, "was_held": was_held, "held_ms": held_ms})
+            }
+            other => panic!("{}: releasing `{id}` is acknowledged: {other:?}", self.name),
+        }
     }
+}
+
+/// The door's state as the cells read it: `{"node", "cuts": {<id>: {"spec", "armed", "held", "released",
+/// "hit", "held_for_ms", "seen_while_held"}}, "receipts_seen"}`, each hit one flat object of its fields.
+fn state_value(s: &FaultState) -> Value {
+    let cuts: serde_json::Map<String, Value> = s
+        .cuts
+        .iter()
+        .map(|(id, c)| {
+            let row = json!({
+                "spec": c.spec, "armed": c.armed, "held": c.held, "released": c.released, "hit": c.hit.as_ref().map(|h| h.detail()),
+                "held_for_ms": c.held_for_ms, "seen_while_held": c.seen_while_held,
+            });
+            (id.clone(), row)
+        })
+        .collect();
+    json!({"node": s.node, "cuts": cuts, "receipts_seen": s.receipts_seen})
 }
 
 /// The candidate SHA: `I143_CANDIDATE_SHA`, else this checkout's HEAD.

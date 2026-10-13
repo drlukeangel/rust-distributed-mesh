@@ -110,8 +110,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
     // Either admin may execute: arm the same cut on both doors.
     let mut doors = Vec::new();
     for n in estate.node_views().await.iter().filter(|n| n.kind == NodeKind::NodeAdmin) {
-        let api = n.admin_api_base.clone().expect("a node-admin advertises its control API");
-        doors.push(Door::open(&estate.root, &n.name.to_string(), &api).await);
+        doors.push(Door::at(&estate, &n.name.to_string()).await);
     }
     let id = "poc:deploy-runtime";
     let spec = json!({"kind": "receipt", "step": "DeployRuntime", "operation": "create-node", "node": "mesh1.rpc.1"});

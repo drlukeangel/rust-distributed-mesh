@@ -10,14 +10,14 @@
 //! until the door releases it. Nothing else changes: every other call passes straight through.
 //!
 //! A cut is one-shot: it parks the first matching call, records what parked ([`AdminFaults::state`]),
-//! and after its release it is spent. The door ([`router`]) is `POST /faults/arm`,
-//! `POST /faults/release` and `GET /faults`; `GET /faults` is the active-injection acknowledgement
-//! (`held: true` with the exact call that parked) and the observed consequence counters.
+//! and after its release it is spent. The door is the testkit Node RPC op `0x75`
+//! ([`crate::fault_door`]): arm, release and state; the state is the active-injection
+//! acknowledgement (`held: true` with the exact call it holds) and the observed consequence
+//! counters. A cut that must be in force before the admin's Node RPC door is ready is armed from
+//! `<root>/faults/<name>.boot.json` ([`arm_boot_cuts`]).
 
+use crate::fault_door::{CutRow, FaultState, Hit};
 use async_trait::async_trait;
-use axum::extract::State;
-use axum::routing::{get, post};
-use axum::{Json, Router};
 use rafka_mesh_entity::LifecycleOp;
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::certs::CertChoice;
@@ -32,7 +32,6 @@ use rafka_node_admin_core::lifecycle::{HookContext, HookPhase, LifecycleHook, Li
 use rafka_node_admin_core::model::ProviderKind;
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -206,18 +205,19 @@ impl CutSpec {
 }
 
 impl Probe {
-    fn detail(&self) -> Value {
+    /// What a cut that holds this call records of it.
+    fn hit(&self) -> Hit {
         match self {
-            Probe::Receipt { step, operation, build_id, attempt } => json!({"step": step, "operation": operation, "build_id": build_id, "attempt": attempt}),
-            Probe::Event { event, op } => json!({"event": event, "operation": op.operation, "build_id": op.build_id, "attempt": op.attempt, "node": op.name.to_string(), "incarnation_id": op.incarnation.as_str()}),
-            Probe::Hook { phase, target, transition_id } => json!({"phase": phase, "target": target, "transition_id": transition_id}),
-            Probe::Accepted { build_id } => json!({"build_id": build_id}),
-            Probe::Claimed { build_id, attempt, executor } => json!({"build_id": build_id, "attempt": attempt, "executor": executor}),
-            Probe::ProviderDomain => json!({"control_domain": "reported foreign"}),
-            Probe::LeaveAnnouncement { node, announcement, channel } => json!({"node": node, "announcement": announcement, "channel": channel}),
-            Probe::CatchUp { node, neighbour } => json!({"node": node, "neighbour": neighbour}),
-            Probe::StateSync { build_id, attempt } => json!({"build_id": build_id, "attempt": attempt}),
-            Probe::TopologyRead { node, authority } => json!({"node": node, "authority": authority}),
+            Probe::Receipt { step, operation, build_id, attempt } => Hit::Receipt { step: step.clone(), operation: operation.clone(), build_id: build_id.clone(), attempt: *attempt },
+            Probe::Event { event, op } => Hit::Event { event: event.to_string(), operation: op.operation.clone(), build_id: op.build_id.clone(), attempt: op.attempt, node: op.name.to_string(), incarnation_id: op.incarnation.as_str().to_string() },
+            Probe::Hook { phase, target, transition_id } => Hit::Hook { phase: phase.to_string(), target: target.clone(), transition_id: transition_id.clone() },
+            Probe::Accepted { build_id } => Hit::Accepted { build_id: build_id.clone() },
+            Probe::Claimed { build_id, attempt, executor } => Hit::Claimed { build_id: build_id.clone(), attempt: *attempt, executor: executor.clone() },
+            Probe::ProviderDomain => Hit::ProviderDomain,
+            Probe::LeaveAnnouncement { node, announcement, channel } => Hit::LeaveAnnouncement { node: node.clone(), announcement: *announcement, channel: channel.to_string() },
+            Probe::CatchUp { node, neighbour } => Hit::CatchUp { node: node.clone(), neighbour: neighbour.clone() },
+            Probe::StateSync { build_id, attempt } => Hit::StateSync { build_id: build_id.clone(), attempt: *attempt },
+            Probe::TopologyRead { node, authority } => Hit::TopologyRead { node: node.clone(), reads_from: authority.clone() },
         }
     }
 }
@@ -225,7 +225,7 @@ impl Probe {
 struct Armed {
     spec: CutSpec,
     /// The first call that parked here.
-    hit: Option<Value>,
+    hit: Option<Hit>,
     held: bool,
     released: bool,
     /// Flips to `true` on release; every parked call waits on it.
@@ -256,19 +256,20 @@ impl AdminFaults {
     }
 
     /// Arm `spec` under `id`. Refused by name when `id` is already armed and not spent.
-    pub fn arm(&self, id: &str, spec: CutSpec) -> Result<Value, String> {
+    pub fn arm(&self, id: &str, spec: CutSpec) -> Result<(), String> {
         let mut cuts = self.cuts.lock().unwrap();
         if cuts.get(id).is_some_and(|c| !c.released) {
             return Err(format!("{}: cut `{id}` is already armed and not released", self.name));
         }
         let span = tracing::info_span!("rdm.testkit.fault.update.via-arm", node = %self.name, cut = id, spec = %serde_json::to_string(&spec).unwrap_or_default());
         span.in_scope(|| tracing::info!("cut armed"));
-        cuts.insert(id.to_string(), Armed { spec: spec.clone(), hit: None, held: false, released: false, release: tokio::sync::watch::channel(false).0, parked: 0, held_since: None, held_ms: None, seen_while_held: 0, condition_span: None });
-        Ok(json!({"armed": id, "node": self.name, "spec": spec}))
+        cuts.insert(id.to_string(), Armed { spec, hit: None, held: false, released: false, release: tokio::sync::watch::channel(false).0, parked: 0, held_since: None, held_ms: None, seen_while_held: 0, condition_span: None });
+        Ok(())
     }
 
-    /// Release cut `id`: its parked call goes on. Refused by name when nothing is armed under `id`.
-    pub fn release(&self, id: &str) -> Result<Value, String> {
+    /// Release cut `id`: the call it holds goes on. Returns whether it held a call and for how long.
+    /// Refused by name when nothing is armed under `id`.
+    pub fn release(&self, id: &str) -> Result<(bool, Option<u64>), String> {
         let mut cuts = self.cuts.lock().unwrap();
         let c = cuts.get_mut(id).ok_or_else(|| format!("{}: no cut `{id}` is armed", self.name))?;
         let was_held = c.held;
@@ -286,25 +287,28 @@ impl AdminFaults {
         let held_ms = c.held_ms.or(held_so_far);
         tracing::info_span!("rdm.testkit.fault.update.via-release", node = %self.name, cut = id, was_held)
             .in_scope(|| tracing::info!("cut released"));
-        Ok(json!({"released": id, "node": self.name, "was_held": was_held, "held_ms": held_ms}))
+        Ok((was_held, held_ms))
     }
 
     /// Every cut and what it parked, and the consequence counters.
-    pub fn state(&self) -> Value {
+    pub fn state(&self) -> FaultState {
         let cuts = self.cuts.lock().unwrap();
-        let rows: serde_json::Map<String, Value> = cuts
+        let rows = cuts
             .iter()
             .map(|(id, c)| {
-                (
-                    id.clone(),
-                    json!({
-                        "spec": c.spec, "armed": !c.released, "held": c.held, "released": c.released, "hit": c.hit,
-                        "held_for_ms": c.held_since.map(|t| t.elapsed().as_millis() as u64).or(c.held_ms), "seen_while_held": c.seen_while_held,
-                    }),
-                )
+                let row = CutRow {
+                    spec: c.spec.clone(),
+                    armed: !c.released,
+                    held: c.held,
+                    released: c.released,
+                    hit: c.hit.clone(),
+                    held_for_ms: c.held_since.map(|t| t.elapsed().as_millis() as u64).or(c.held_ms),
+                    seen_while_held: c.seen_while_held,
+                };
+                (id.clone(), row)
             })
             .collect();
-        json!({"node": self.name, "cuts": rows, "receipts_seen": self.receipts_seen.load(Ordering::SeqCst)})
+        FaultState { node: self.name.clone(), cuts: rows, receipts_seen: self.receipts_seen.load(Ordering::SeqCst) }
     }
 
     /// Park the caller if an armed cut matches `probe`; returns when the cut is released. Every
@@ -317,7 +321,7 @@ impl AdminFaults {
                 if c.parked > 0 {
                     c.seen_while_held += 1;
                 }
-                c.hit.get_or_insert_with(|| probe.detail());
+                c.hit.get_or_insert_with(|| probe.hit());
                 c.parked += 1;
                 c.held = true;
                 c.held_since.get_or_insert_with(Instant::now);
@@ -325,7 +329,7 @@ impl AdminFaults {
             })
         };
         let Some((id, mut release)) = parked else { return };
-        let span = tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.detail());
+        let span = tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.hit().detail());
         span.in_scope(|| tracing::info!("cut holds"));
         let _ = release.wait_for(|released| *released).instrument(span).await;
         let mut cuts = self.cuts.lock().unwrap();
@@ -347,9 +351,9 @@ impl AdminFaults {
             any = true;
             c.held = true;
             c.held_since.get_or_insert_with(Instant::now);
-            c.hit.get_or_insert_with(|| probe.detail());
+            c.hit.get_or_insert_with(|| probe.hit());
             c.seen_while_held += 1;
-            c.condition_span.get_or_insert_with(|| tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.detail()));
+            c.condition_span.get_or_insert_with(|| tracing::info_span!("rdm.testkit.fault.update.via-hold", node = %self.name, cut = %id, detail = %probe.hit().detail()));
         }
         any
     }
@@ -595,43 +599,26 @@ pub fn wiring(faults: Arc<AdminFaults>) -> Wiring {
     }
 }
 
-// ---- the door ------------------------------------------------------------------------------------
+// ---- the boot cuts --------------------------------------------------------------------------------
 
+/// One cut a boot file lists: `{"id": .., "kind": .., ..}`.
 #[derive(Deserialize)]
-struct ArmBody {
+struct BootArm {
     id: String,
     #[serde(flatten)]
     spec: CutSpec,
 }
 
-#[derive(Deserialize)]
-struct ReleaseBody {
-    id: String,
-}
-
-type Refused = (axum::http::StatusCode, Json<Value>);
-
-fn refuse(e: String) -> Refused {
-    (axum::http::StatusCode::CONFLICT, Json(json!({"error": "refused", "detail": e})))
-}
-
-/// The door: `POST /faults/arm {id, kind, ...}`, `POST /faults/release {id}`, `GET /faults`.
-pub fn router(faults: Arc<AdminFaults>) -> Router {
-    Router::new()
-        .route("/faults/arm", post(|State(f): State<Arc<AdminFaults>>, Json(b): Json<ArmBody>| async move { f.arm(&b.id, b.spec).map(Json).map_err(refuse) }))
-        .route("/faults/release", post(|State(f): State<Arc<AdminFaults>>, Json(b): Json<ReleaseBody>| async move { f.release(&b.id).map(Json).map_err(refuse) }))
-        .route("/faults", get(|State(f): State<Arc<AdminFaults>>| async move { Json(f.state()) }))
-        .with_state(faults)
-}
-
-/// Where a node's door address and boot arms live: `<root>/faults/<path.name>.door` and
-/// `<root>/faults/<path.name>.boot.json`, with `root` the directory holding every node's data dir.
+/// Where a node's boot arms live: `<root>/faults/<path.name>.boot.json`, with `root` the directory
+/// holding every node's data dir.
 pub(crate) fn faults_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("faults")
 }
 
 /// Arm what `<root>/faults/<name>.boot.json` lists (`[{"id": .., "kind": .., ..}]`) and remove the
 /// file: a birth at this path arms its boot cuts once, so a later birth of the same path is clean.
+/// A cut that must be in force before the admin's Node RPC door is ready (which answers NotReady
+/// until then) is armed here.
 pub fn arm_boot_cuts(faults: &AdminFaults, root: &std::path::Path) -> Result<usize, String> {
     let file = faults_dir(root).join(format!("{}.boot.json", faults.name));
     let bytes = match std::fs::read(&file) {
@@ -639,27 +626,10 @@ pub fn arm_boot_cuts(faults: &AdminFaults, root: &std::path::Path) -> Result<usi
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(format!("{}: {e}", file.display())),
     };
-    let arms: Vec<ArmBody> = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+    let arms: Vec<BootArm> = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
     for a in &arms {
         faults.arm(&a.id, a.spec.clone())?;
     }
     std::fs::remove_file(&file).map_err(|e| format!("{}: {e}", file.display()))?;
     Ok(arms.len())
-}
-
-/// Bind the door on loopback, record its base in `<root>/faults/<name>.door`, and serve it on the
-/// current runtime. Returns the base.
-pub fn open_door(faults: Arc<AdminFaults>, root: &std::path::Path) -> Result<String, String> {
-    let dir = faults_dir(root);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("fault door: {e}"))?;
-    listener.set_nonblocking(true).map_err(|e| format!("fault door: {e}"))?;
-    let base = format!("http://{}", listener.local_addr().map_err(|e| e.to_string())?);
-    let name = faults.name.clone();
-    let listener = tokio::net::TcpListener::from_std(listener).map_err(|e| format!("fault door: {e}"))?;
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, router(faults)).await;
-    });
-    std::fs::write(dir.join(format!("{name}.door")), &base).map_err(|e| format!("{}: {e}", dir.display()))?;
-    Ok(base)
 }

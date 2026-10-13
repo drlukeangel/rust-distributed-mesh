@@ -367,7 +367,7 @@ async fn ready_under(estate: &Estate, build: &str) {
 async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node_holds() {
     let test = "the_store_root_holds_no_row_until_state_commit_publishes_what_each_node_holds";
     let mut estate = estate_with(test, "hold").await;
-    let door = Door::open(&estate.root, "mesh1.admin.1", "").await;
+    let door = Door::at(&estate, "mesh1.admin.1").await;
     let root = estate.fabric_store_root();
     let shape = |m: &str, rpc: u32| MeshDesired::of(m, [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, rpc)]);
     let first = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![shape("mesh1", 1), shape("mesh2", 1)] }).await.build_id.to_string();
@@ -597,7 +597,7 @@ fn refused<T>(what: &str, call: Result<T, CallEnd>) -> CallEnd {
 async fn a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt() {
     let test = "a_seat_move_and_a_mesh_delete_during_the_initial_state_sync_are_refused_fabric_not_ready_and_claim_no_attempt";
     let mut estate = estate_with(test, "hold").await;
-    let door = Door::open(&estate.root, "mesh1.admin.1", "").await;
+    let door = Door::at(&estate, "mesh1.admin.1").await;
     let shape = [("mesh1", 1, 1), ("mesh2", 1, 1)];
     let first = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
     estate.settled_views(&shape).await;
