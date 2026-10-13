@@ -340,9 +340,15 @@ async fn ready_under(estate: &Estate, build: &str) {
 /// the other mesh's primary and a member in each mesh), the fabric's store root holds no row: each
 /// node holds what it wrote in its scratchpad. The state-commit round publishes it: each node's
 /// commit-state action writes what it holds before its check-in (the fabric-primary the Fabric row,
-/// each mesh primary its Mesh row and its members' Node rows, every node its connections rows). After
+/// each mesh primary its Mesh row and its members' Node rows, a node the connections rows it holds). After
 /// that first state-commit the store exists: a node born later writes straight to it, and the next
 /// round's commit-state action of every node has nothing held to publish.
+///
+/// A connections row is a data-plane connection a node originated (connections.md: "The data plane is
+/// the connections log"; R-CR6: the control plane, gossip and the control-plane Node RPC pool, writes
+/// nothing to it): mesh1.rpc.1 originates one through the testkit door while the fabric is held in
+/// state-sync, so it alone holds connections rows to publish; mesh2.rpc.2, born after state-commit,
+/// originates one and its row goes straight to the store.
 ///
 /// `fabric/` has one writer, the fabric-primary (R14 item 2: "Fabric-primary: `fabric/`. ... Keys
 /// never overlap across writers"): only its publication names a `fabric/` store (the Fabric
@@ -365,6 +371,9 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     // fabric cannot reach state-commit.
     until_fabric(&estate, ScopeStatus::StateSync, Some(first.as_str()), Duration::from_secs(60)).await;
     door.wait_held("state-sync").await;
+    let held = estate.probe(&["originate", "--target", "path:mesh1.rpc.1", "--destination", "path:mesh2.rpc.1", "--key", "held-before-commit"]);
+    estate.artifact("originate-before-state-commit.json", &held);
+    assert_eq!(held["call_outcome"].as_str(), Some("reply"), "mesh1.rpc.1 originated its connection to mesh2.rpc.1 during state-sync: {held}");
     let before = rows_on(&root);
     estate.artifact("rows-before-state-commit.json", &json!(before));
     assert!(before.is_empty(), "no row reaches the store root {} before state-commit; found {}: {before:#?}", root.display(), before.len());
@@ -389,7 +398,10 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     for name in &want {
         let mesh = name.split('.').next().unwrap();
         assert!(holds(&format!("nodes/{mesh}/contacts/{}.json", id_of[name])), "{mesh}'s primary published {name}'s Node row: {after:#?}");
-        assert!(holds(&format!("connections/{name}/")), "{name} published its connections rows: {after:#?}");
+    }
+    assert!(holds("connections/mesh1.rpc.1/"), "mesh1.rpc.1 published the connection it originated and held: {after:#?}");
+    for name in want.iter().filter(|n| *n != "mesh1.rpc.1") {
+        assert!(!holds(&format!("connections/{name}/")), "{name} originated no connection, so it holds no connections row; the control plane writes none: {after:#?}");
     }
 
     // A node born after the first state-commit writes straight to the store, and the second round's
@@ -399,6 +411,9 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     want_later.insert("mesh2.rpc.2".into());
     estate.settles_to_named(&want_later, Duration::from_secs(60)).await;
     ready_under(&estate, &second).await;
+    let straight = estate.probe(&["originate", "--target", "path:mesh2.rpc.2", "--destination", "path:mesh1.rpc.1", "--key", "after-commit"]);
+    estate.artifact("originate-after-state-commit.json", &straight);
+    assert_eq!(straight["call_outcome"].as_str(), Some("reply"), "mesh2.rpc.2 originated its connection to mesh1.rpc.1 after state-commit: {straight}");
     let later = rows_on(&root);
     estate.artifact("rows-after-second-state-commit.json", &json!(later));
     // The fabric-primary accepted the second Build after the first state-commit: the Build is its own
@@ -420,9 +435,11 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     for name in &want {
         let a = published.get(name).unwrap_or_else(|| panic!("{name}'s commit-state action is in the first climb: {:?}", published.keys().collect::<Vec<_>>()));
         assert!(flag(&a["attributes"]["bound"]), "{name}'s commit-state action publishes its scratchpad: {a}");
-        assert!(num(&a["attributes"]["rows"]).unwrap_or(0) > 0, "{name} published the rows it held: {a}");
         let stores = s(&a["attributes"]["stores"]);
-        assert!(stores.contains("connections"), "{name} published its connections rows: {stores}");
+        if name == "mesh1.rpc.1" || name.contains(".admin.") {
+            assert!(num(&a["attributes"]["rows"]).unwrap_or(0) > 0, "{name} published the rows it held: {a}");
+        }
+        assert_eq!(stores.contains("connections"), name == "mesh1.rpc.1", "only mesh1.rpc.1, which originated a connection, published connections rows: {name}: {stores}");
         if name.contains(".admin.") {
             assert!(stores.contains("meshes") && stores.contains("nodes"), "{name}, its mesh's primary, published its Mesh row and its members' Node rows: {stores}");
         }
@@ -456,7 +473,7 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
 
     // The node born after the first state-commit opened its store on the store root; the second
     // round's actions had nothing held.
-    assert!(later.iter().any(|r| r.starts_with("connections/mesh2.rpc.2/")), "mesh2.rpc.2 wrote its connections rows straight to the store: {later:#?}");
+    assert!(later.iter().any(|r| r.starts_with("connections/mesh2.rpc.2/")), "mesh2.rpc.2 wrote the connection it originated straight to the store: {later:#?}");
     let opened = named(&spans, "rdm.mesh.node.resolve.via-connections-hydrated").into_iter().find(|sp| sp["attributes"]["node"] == "mesh2.rpc.2").expect("mesh2.rpc.2 opened its connections store");
     assert_eq!(opened["attributes"]["writes_to"], "store-root", "a node born after state-commit writes to the store root: {opened}");
     let (_, second_climb) = climb_of(&spans, &second);
