@@ -456,7 +456,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // aggregate, or, the NodeDeleted aggregate having reached it first (Plumtree delivers a forward
     // lazily pushed after a later eager one), it installed that newer aggregate from its primary and
     // ignored the stop aggregate by name when it arrived.
-    let rpc_parked = parked_at_other.iter().any(|sp| at_mesh(sp, other_mesh, "rpc") && sp["attributes"]["channel"] == "mesh-channel");
+    let rpc_held_stopped = parked_at_other.iter().any(|sp| at_mesh(sp, other_mesh, "rpc") && sp["attributes"]["channel"] == "mesh-channel");
     let superseded: Vec<String> = ["rpc.1", "rpc.2"]
         .iter()
         .map(|r| format!("{other_mesh}.{r}"))
@@ -466,8 +466,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
             installed_newer && ignored_stop
         })
         .collect();
-    assert!(rpc_parked || !superseded.is_empty(), "an ordinary node of {other_mesh} held {final_name} parked from its primary's forward, or installed the fabric-primary's later aggregate from its primary and ignored the stop aggregate by name: parked {parked_at_other:?}");
-    eprintln!("bullet 2: node.delete of {final_name} by {fabric_primary} (build {c} attempt {c_attempt}): TerminateRuntime then NodeDeleted trace {}; deleted mesh's aggregate NodeStopped trace {}, NodeDeleted trace {}; {other_mesh} parked trace {}; {other_mesh} ordinary nodes parked: {rpc_parked}, superseded: {superseded:?}", s(&node_deleted["trace_id"]), s(&stopped_aggregate["trace_id"]), s(&deleted_aggregate["trace_id"]), s(&parked_at_other[0]["trace_id"]));
+    assert!(rpc_held_stopped || !superseded.is_empty(), "an ordinary node of {other_mesh} held {final_name} parked from its primary's forward, or installed the fabric-primary's later aggregate from its primary and ignored the stop aggregate by name: parked {parked_at_other:?}");
+    eprintln!("bullet 2: node.delete of {final_name} by {fabric_primary} (build {c} attempt {c_attempt}): TerminateRuntime then NodeDeleted trace {}; deleted mesh's aggregate NodeStopped trace {}, NodeDeleted trace {}; {other_mesh} parked trace {}; {other_mesh} ordinary nodes parked: {rpc_held_stopped}, superseded: {superseded:?}", s(&node_deleted["trace_id"]), s(&stopped_aggregate["trace_id"]), s(&deleted_aggregate["trace_id"]), s(&parked_at_other[0]["trace_id"]));
     // mesh-left once every birth is proven exited: the receipt over all four births, then the hook,
     // at the fabric-primary, after the final birth's exit proof.
     let left_recorded: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-mesh-left-receipt").into_iter().filter(|sp| attr_u(sp, "receipts") == 4 && attr_u(sp, "roster") == 4).collect();

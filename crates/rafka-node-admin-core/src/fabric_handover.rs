@@ -104,8 +104,8 @@ impl std::fmt::Display for SourceFailure {
 pub enum WriteCutOff {
     /// Refuse every write the moving seats authorize (proposal Part C1 step 4: "The mesh seat's cut-off
     /// covers the mesh's rows (`meshes/<mesh>`, `nodes/<mesh>/`); the fabric seat's covers `fabric/` and
-    /// Build acceptance; when both move, one drain covers both"), then take each store's write lock
-    /// once, which waits for every write already issued.
+    /// Build acceptance"), then take each store's write lock once, which waits for every write already
+    /// issued.
     Set {
         /// Why: the transfer, naming the successor and the operation.
         reason: String,
