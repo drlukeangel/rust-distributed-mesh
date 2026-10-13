@@ -81,7 +81,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let victim_id = before.iter().find(|n| s(&n["name"]) == window_victim).map(|n| s(&n["node_id"])).expect("the member's node id");
 
     // Control goes through the fabric primary's advertised API, which the fault never touches.
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_holder).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
+    estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_holder).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary names its application contact");
 
     // The fault: both admins at once, then, with the mesh admin-less, one ordinary member.
     let mut killed = Vec::new();

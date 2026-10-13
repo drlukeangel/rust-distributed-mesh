@@ -96,7 +96,7 @@ async fn fixture(cell: &str) -> Fixture {
     let lost_mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let attempt_before = estate.attempt_of_build(&accepted).await;
     // Control goes through the fabric primary's advertised API, which no fault here touches.
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_primary).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
+    estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_primary).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary names its application contact");
     // The fault falls on an established fabric: a cut that falls while the commit-state or
     // open-traffic round runs holds that round on the planned birth it cuts (states.md, "The round
     // checklist"), so the cells that assert the fabric stays ready start from ready-for-traffic.
@@ -673,7 +673,7 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     for m in &lost {
         mesh_ids.insert(m.clone(), estate.mesh_view(m).await.id.expect("the mesh has its id").to_string());
     }
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fp).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
+    estate.admin = before.iter().find(|n| s(&n["name"]) == fp).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary names its application contact");
     let old = births(&before);
     for (path, pid) in estate.live_runtimes() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();

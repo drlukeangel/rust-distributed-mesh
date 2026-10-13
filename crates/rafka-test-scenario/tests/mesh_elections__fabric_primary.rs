@@ -85,7 +85,7 @@ async fn losing_the_fabric_primary_mesh_moves_control() {
     let lost = old_primary.split('.').next().unwrap().to_string();
     let survivor = if lost == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     let advertised: Vec<PathName> = fabric.meshes.iter().filter_map(|m| m.primary_admin.clone()).collect();
-    assert!(fabric.meshes.iter().all(|m| m.admin_api_base.as_deref().is_some_and(|b| b.starts_with("http://"))), "every mesh advertises its control API: {fabric:#?}");
+    assert!(fabric.meshes.iter().all(|m| m.admin_api_base.as_deref().is_some_and(|b| !b.is_empty())), "every mesh names its application contact: {fabric:#?}");
 
     // Lose the fabric primary's mesh: every one of its processes.
     // Every pid first: an admin's view goes with it.

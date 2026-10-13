@@ -1254,7 +1254,7 @@ mod spawn_tests {
         assert!(!left, "the reaper left the node running 30 s after its owner was killed");
     }
 
-    /// CONTRACT: a node-admin that never advertises its control API is refused by name, and the
+    /// CONTRACT: a node-admin that never names its application contact is refused by name, and the
     /// refusal leaves nothing running: no Estate exists yet to stop it. What must NOT happen: a
     /// panic that leaves the process alive.
     #[test]

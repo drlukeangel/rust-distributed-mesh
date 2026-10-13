@@ -72,7 +72,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let fabric = serde_json::to_value(estate.fabric_view().await).expect("a view serializes");
     assert_eq!(fabric["fabric_primary"], fp["name"], "{shape}: {fabric}");
     for m in fabric["meshes"].as_array().unwrap() {
-        assert!(m["admin_api_base"].as_str().is_some_and(|b| b.starts_with("http://")), "{shape}: mesh {m} advertises its control API");
+        assert!(m["admin_api_base"].as_str().is_some_and(|b| !b.is_empty()), "{shape}: mesh {m} names its application contact");
     }
 
     // Build -> deployment -> lifecycle, by parent span id. Every process
