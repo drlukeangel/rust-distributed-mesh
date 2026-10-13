@@ -6,7 +6,7 @@
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildFact, BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
-use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, CommandContext, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, ReplaceRequest, ReplaceStep, RetireRequest, RetireStep, Timeouts, TopologySink};
+use rafka_node_admin_core::deployment::pipeline::{CommandAdmission, CommandContext, CreateStep, DeploymentPipeline, LaunchTemplate, NodeObserver, NoLifecycleEvents, Publication, ReplaceRequest, ReplaceStep, RetireRequest, RetireStep, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
 use rafka_node_admin_core::model::{DeploymentId, Node, NodeStatus, PathName, ProviderKind};
@@ -29,8 +29,8 @@ impl DeploymentProvider for Running {
         DOMAIN.into()
     }
     async fn spawn(&self, launch: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
-        // A node.connections.delete or a stop launches nothing; a replace whose predecessor is not stopped must not
-        // reach its successor's launch either: refused here so the cell's assertion names it.
+        // A node.connections.delete or a stop launches nothing; a replace's successor launch is refused
+        // here so the cell's assertion names it.
         Err(DeployError::Spawn { node: format!("{launch:?}").chars().take(80).collect(), reason: "this cell launches nothing".into() })
     }
     async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
@@ -173,19 +173,21 @@ fn a_standalone_connections_delete_or_stop_whose_command_was_never_admitted_fail
     }
 }
 
-/// CONTRACT (node-replace.md recipe step 1; node-stop.md, the complete stop; node-recovery.md): a
-/// replace's predecessor is stopped before it gives up its path.name, and the stop's only proof is
-/// the birth's `stopped` reply. A predecessor that never admitted stop-node is not stopped: the
-/// replace fails its wait step by name with the admission it got, renames nothing, launches no
-/// successor and receipts no `Complete`. A birth that does not answer goes to node recovery, never
-/// a lenient replace.
+/// CONTRACT (node-replace.md step 1: the successor is created at `<name>.new` and reaches Ready
+/// before the predecessor is stopped; "A missing or failed receipt leaves the recipe at the named
+/// step"; R-MT1: the pipeline moves no seat): a replace of the seat-holding admin whose successor
+/// cannot be launched fails at the successor's `DeployRuntime` by name. The predecessor is sent
+/// nothing (no stop-node), keeps its path.name, and no `Complete` is receipted; the run's first step
+/// is the successor's `AllocateIdentity`, never a seat move. (A predecessor that never admits its
+/// stop: the testkit's replace_pipeline cell, with a successor that launches.)
 #[test]
-fn a_replace_whose_predecessor_never_admitted_stop_node_fails_by_name_and_renames_nothing() {
+fn a_replace_whose_successor_cannot_launch_sends_the_predecessor_nothing_and_renames_nothing() {
     let (r, sent, steps, trace_id, renamed) = run_workflow(None);
-    assert_eq!(sent, vec![NodeCommand::Stop], "the stop was asked for");
-    let e = r.expect_err("a predecessor that never admitted stop-node is not stopped");
-    assert_eq!(e.step, RetireStep::AwaitNodeLeft.name(), "{e}");
-    assert!(e.reason.contains(HOLDER) && e.reason.contains("stop-node") && e.reason.contains("NotSent"), "the failure names the birth, the command and the admission it got: {e}");
+    let e = r.expect_err("a successor that cannot launch is not created");
+    assert_eq!(e.step, CreateStep::DeployRuntime.name(), "{e}");
+    assert!(e.reason.contains("this cell launches nothing"), "the failure names the refused launch: {e}");
+    assert!(sent.is_empty(), "the predecessor is sent nothing before its successor is Ready: {sent:?}");
     assert!(renamed.is_empty(), "the predecessor keeps its path.name: {renamed:?}");
-    assert!(!steps.iter().any(|(s, _)| s == ReplaceStep::RenamePredecessor.name() || s == "Complete"), "no RenamePredecessor and no Complete receipt (trace {trace_id}): {steps:?}");
+    assert_eq!(steps.first().map(|(s, _)| s.as_str()), Some(CreateStep::AllocateIdentity.name()), "the pipeline moves no seat: its first step is the successor's create (trace {trace_id}): {steps:?}");
+    assert!(!steps.iter().any(|(s, _)| s == RetireStep::StopNode.name() || s == ReplaceStep::RenamePredecessor.name() || s == "Complete"), "no StopNode, no RenamePredecessor and no Complete receipt (trace {trace_id}): {steps:?}");
 }
