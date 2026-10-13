@@ -76,7 +76,7 @@ mod receipt_refusal;
 mod recovery_admission;
 mod restart_hold_from_facts;
 mod restart_one_operation;
-mod seat_transfer_step;
+mod pipeline_moves_no_seat;
 mod status_declarations;
 mod status_seat_fold;
 mod stopped_delete;
