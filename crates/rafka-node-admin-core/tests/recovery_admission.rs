@@ -799,3 +799,121 @@ async fn an_in_flight_row_a_departed_mesh_primary_left_after_its_verdict_is_rele
     let held = claims.held("mesh2").await.unwrap().expect("mesh2's in-flight row");
     assert_eq!((held.attempt, held.claimant.as_str()), (2, "mesh2.admin.2"), "the row names attempt 2 and its claimant");
 }
+
+/// CONTRACT (build.md :365 as the approved proposal A4 words it: "The next attempt is claimed after
+/// the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is
+/// lost with the attempt unfinished, after exact departure proof ... Claims are insert-and-fail on
+/// `(build_id, attempt)`, which prevents two claims of one attempt"; R-BI7 caveat 2: each mesh-primary
+/// claims its mesh's drift attempts on its mesh's rows; caveat 3: one attempt in flight per mesh):
+/// mesh2's primary `mesh2.admin.1` takes mesh2's in-flight row for attempt 1 of mesh2's lane and opens
+/// it with the recovery of its exited member `mesh2.rpc.1`, and is lost before it claims it. No one
+/// claimed attempt 1, and no executor ran it. `mesh2.admin.2` takes mesh2's seat over the same Build
+/// log and rows. Its recovery of another birth (the lost primary's own) is refused build-in-progress
+/// naming mesh2 and the opener the row names: the open attempt holds the mesh. Its recovery of the
+/// member's exited birth claims the open attempt 1 itself: the claim is the attempt's first, so it
+/// wins, and the lane runs attempt 1 under `mesh2.admin.2` with the action the opener opened.
+/// Must NOT happen: mesh2 held for good by an attempt no one claimed, a verdict written for an
+/// attempt no one ran, or a second attempt opened for the birth an open attempt already carries.
+#[tokio::test]
+async fn a_recovery_attempt_a_lost_mesh_primary_opened_and_never_claimed_is_claimed_by_the_new_mesh_primary() {
+    use rafka_node_admin_core::accepted::AttemptAction;
+    use rafka_node_admin_core::build_state::{AttemptOpened, BuildState};
+    use rafka_node_admin_core::mesh_claims::InFlight;
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-unclaimed-open", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let claims = Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory());
+    let rows: Arc<rafka_node_admin_core::status_storage::MemoryStatusStorage> = Arc::new(Default::default());
+    let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
+    let member: PathName = "mesh2.rpc.1".parse().unwrap();
+    let exited = before.node(&member).unwrap().clone();
+    let mut accepted_view = before.clone();
+    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::ReadyForTraffic);
+    let accepted = AcceptedStore::seeded(&*builds, before.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
+    let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0).await;
+
+    // What mesh2's primary wrote before it was lost: mesh2's in-flight row for attempt 1, then the
+    // attempt's open carrying the member's recovery. Its claim was never written.
+    let action = AttemptAction::Recover { path: member.clone(), node_id: exited.node_id.clone(), from_incarnation: exited.incarnation_id.clone().unwrap() };
+    let row = InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into() };
+    assert_eq!(claims.take("mesh2", &row).await.unwrap(), rafka_node_admin_core::mesh_claims::Taken::Won);
+    builds
+        .open_attempt(&AttemptOpened { build_id: b0.clone(), attempt: 1, reason: AttemptReason::Recovery, action: Some(action.clone()), opened_by: "mesh2.admin.1".into(), opened_at_ms: 1, mesh: Some("mesh2".into()) })
+        .await
+        .unwrap();
+    let lane = builds.read_build(&b0).await.unwrap().lanes.get("mesh2").cloned().expect("mesh2's lane");
+    assert_eq!((lane.state, lane.attempt, lane.opened, lane.claimant.as_deref()), (BuildState::Pending, 0, 1, None), "attempt 1 is open and unclaimed: {lane:?}");
+
+    let departed: PathName = "mesh2.admin.1".parse().unwrap();
+    let departed_birth = before.node(&departed).unwrap().clone();
+    let mut after = two_meshes_two_mesh2_admins("mesh2.admin.2");
+    after.nodes.iter_mut().filter(|n| n.name == departed).for_each(|n| {
+        n.node_id = departed_birth.node_id.clone();
+        n.incarnation_id = departed_birth.incarnation_id.clone();
+        n.status = NodeStatus::Dead;
+    });
+    after.nodes.iter_mut().filter(|n| n.name == member).for_each(|n| {
+        n.node_id = exited.node_id.clone();
+        n.incarnation_id = exited.incarnation_id.clone();
+    });
+    let heir = Arc::new(
+        ControlPlane::new(builds.clone(), accepted, "mesh2.admin.2".parse().unwrap(), after, crate::adopted_time())
+            .with_claims(claims.clone())
+            .with_first_ready(rafka_node_admin_core::fabric_state::FirstReady::new(), rows.clone()),
+    );
+    let departed_incarnation = departed_birth.incarnation_id.clone().unwrap();
+
+    // Another birth's recovery waits for the open attempt: one attempt in flight per mesh.
+    let other_before = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), departed_incarnation.clone()).await {
+        Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
+        other => panic!("while attempt 1 is open for the member, mesh2 refuses another birth's recovery: {other:?}"),
+    };
+    assert_eq!((other_before["current_build_id"].as_str(), other_before["mesh"].as_str()), (Some(b0.as_str()), Some("mesh2")), "{other_before}");
+
+    // The member's recovery claims the open attempt: it is not reopened, and nothing ends it.
+    let taken = match heir.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("the new mesh-primary claims the attempt its lost opener left unclaimed: {other:?}"),
+    };
+    assert_eq!((taken.build_id.clone(), taken.mesh.as_deref(), taken.attempt), (b0.clone(), Some("mesh2"), 1), "attempt 1 of mesh2's lane, the one open");
+    let p = builds.read_build(&b0).await.unwrap();
+    let lane = p.lanes.get("mesh2").expect("mesh2's lane");
+    assert_eq!((lane.state, lane.attempt, lane.claimant.as_deref(), lane.executor.as_deref()), (BuildState::Running, 1, Some("mesh2.admin.2"), Some("mesh2.admin.2")), "the new primary claimed attempt 1: {lane:?}");
+    assert_eq!(lane.attempt_actions.get(&1), Some(&action), "attempt 1 runs the action its opener opened");
+    let facts = builds.facts().await.unwrap();
+    let opens: Vec<u32> = facts.iter().filter_map(|f| match f {
+        BuildFact::Opened(o) if o.mesh.as_deref() == Some("mesh2") => Some(o.attempt),
+        _ => None,
+    }).collect();
+    assert_eq!(opens, vec![1], "one open in mesh2's lane: the attempt is claimed, never reopened");
+    assert!(!facts.iter().any(|f| matches!(f, BuildFact::Attempt(a) if a.mesh.as_deref() == Some("mesh2"))), "no verdict for an attempt no one ran: {facts:?}");
+    assert!(builds.exits_owed(&b0, "mesh2").await.unwrap().is_empty(), "nothing is owed: the member's recovery is the running attempt");
+    let held = claims.held("mesh2").await.unwrap().expect("mesh2's in-flight row");
+    assert_eq!((held.build_id.clone(), held.lane.as_deref(), held.attempt), (b0.clone(), Some("mesh2"), 1), "the row names attempt 1");
+
+    // Once claimed, the attempt holds mesh2 under its claimant.
+    let other_after = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), departed_incarnation).await {
+        Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
+        other => panic!("while attempt 1 runs, mesh2 refuses another birth's recovery: {other:?}"),
+    };
+    assert_eq!((other_after["mesh"].as_str(), other_after["held_by"].as_str()), (Some("mesh2"), Some("mesh2.admin.2")), "{other_after}");
+
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-departed-claimant", "rdm.node_admin.build.update.via-claim-decision"] {
+        for (trace_id, attrs) in capture.spans(name) {
+            eprintln!("span {name} trace_id={trace_id} {attrs:?}");
+        }
+    }
+    let decided = capture.spans("rdm.node_admin.build.update.via-claim-decision");
+    assert_eq!(decided.len(), 1, "one claim decided: {decided:?}");
+    let (_, d) = &decided[0];
+    assert_eq!((d["lane"].as_str(), d["attempt"].as_str(), d["node"].as_str(), d["outcome"].as_str()), ("mesh2", "1", "mesh2.admin.2", "won"), "{d:?}");
+    assert!(capture.spans("rdm.node_admin.build.update.via-departed-claimant").is_empty(), "nothing is ended or released: no one claimed the attempt");
+    let recovery = capture.spans("rdm.node_admin.build.update.via-recovery").into_iter().find(|(_, a)| a["node"] == member.to_string()).expect("the member's recovery span");
+    assert_eq!((recovery.1["attempt"].as_str(), recovery.1["outcome"].as_str(), recovery.1["open_attempt"].as_str()), ("1", "admitted", "held-open"), "{recovery:?}");
+    // The refusal before the claim named the opener the row names: an open attempt's holder.
+    assert_eq!(other_before["held_by"].as_str(), Some("mesh2.admin.1"), "{other_before}");
+}
