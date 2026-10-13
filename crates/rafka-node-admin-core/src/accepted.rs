@@ -12,7 +12,7 @@
 //! exact paths before anything is persisted, so the executor never decides which node a count
 //! means.
 
-use rafka_mesh_entity::meta::NodeMeta;
+use rafka_mesh_entity::meta::PathConfig;
 use crate::build::{BuildId, BuildOperation, BuildPlan, BuildReject, FabricDesired, MeshDesired};
 use crate::build_state::{BuildStateAdapter, BuildStateError};
 use crate::fabric_storage::{FabricIdentity, FabricStorage, FabricStorageError};
@@ -34,44 +34,44 @@ pub struct MeshTopology {
     pub mesh_id: MeshId,
     /// Every node the mesh should have, by `path.name`.
     pub nodes: BTreeSet<PathName>,
-    /// The typed desired-state meta of every materialized path, explicit after ingress
+    /// The typed desired-state config of every materialized path, explicit after ingress
     /// normalization: one entry per node, no entry without a node (`validate`).
     #[serde(default)]
-    pub node_meta_by_path: BTreeMap<PathName, NodeMeta>,
+    pub path_config_by_path: BTreeMap<PathName, PathConfig>,
 }
 
 impl MeshTopology {
     /// A new mesh from its counts, entering the accepted topology: its id minted, and every path
-    /// minted with its kind's migration default meta (ingress normalization; the Build is explicit
-    /// from here).
+    /// minted with its kind's migration default path config (ingress normalization; the Build is
+    /// explicit from here).
     pub fn of(desired: &MeshDesired) -> Self {
         Self::with_id(desired, MeshId::mint())
     }
 
-    /// The mesh `mesh_id` from its counts: every path minted with its kind's migration default meta.
+    /// The mesh `mesh_id` from its counts: every path minted with its kind's migration default path config.
     fn with_id(desired: &MeshDesired, mesh_id: MeshId) -> Self {
         let mut nodes = BTreeSet::new();
-        let mut node_meta_by_path = BTreeMap::new();
+        let mut path_config_by_path = BTreeMap::new();
         for (kind, want) in desired.counts() {
             for ord in 1..=want {
                 let path = PathName::new(&desired.name, kind, ord);
-                node_meta_by_path.insert(path.clone(), NodeMeta::default_for(kind));
+                path_config_by_path.insert(path.clone(), PathConfig::default_for(kind));
                 nodes.insert(path);
             }
         }
-        Self { name: desired.name.clone(), mesh_id, nodes, node_meta_by_path }
+        Self { name: desired.name.clone(), mesh_id, nodes, path_config_by_path }
     }
-    /// The meta of one of this mesh's paths; `None` for a path this mesh does not hold.
-    pub fn meta(&self, path: &PathName) -> Option<&NodeMeta> {
-        self.node_meta_by_path.get(path)
+    /// The path config of one of this mesh's paths; `None` for a path this mesh does not hold.
+    pub fn path_config(&self, path: &PathName) -> Option<&PathConfig> {
+        self.path_config_by_path.get(path)
     }
-    /// Set one path's meta explicitly (a build request that carries it); refused by name for a
+    /// Set one path's config explicitly (a build request that carries it); refused by name for a
     /// path the mesh does not hold.
-    pub fn set_meta(&mut self, path: &PathName, meta: NodeMeta) -> Result<(), BuildReject> {
+    pub fn set_path_config(&mut self, path: &PathName, config: PathConfig) -> Result<(), BuildReject> {
         if !self.nodes.contains(path) {
             return Err(BuildReject::UnknownNode { node: path.to_string() });
         }
-        self.node_meta_by_path.insert(path.clone(), meta);
+        self.path_config_by_path.insert(path.clone(), config);
         Ok(())
     }
 
@@ -137,10 +137,10 @@ impl FabricTopology {
             if m.nodes.iter().any(|p| p.mesh != *name) {
                 return Err(BuildReject::InvalidMeshName { mesh: name.clone() });
             }
-            let missing: Vec<String> = m.nodes.iter().filter(|p| !m.node_meta_by_path.contains_key(p)).map(ToString::to_string).collect();
-            let extra: Vec<String> = m.node_meta_by_path.keys().filter(|p| !m.nodes.contains(p)).map(ToString::to_string).collect();
+            let missing: Vec<String> = m.nodes.iter().filter(|p| !m.path_config_by_path.contains_key(p)).map(ToString::to_string).collect();
+            let extra: Vec<String> = m.path_config_by_path.keys().filter(|p| !m.nodes.contains(p)).map(ToString::to_string).collect();
             if !missing.is_empty() || !extra.is_empty() {
-                return Err(BuildReject::NodeMetaMismatch { mesh: name.clone(), missing, extra });
+                return Err(BuildReject::PathConfigMismatch { mesh: name.clone(), missing, extra });
             }
         }
         Ok(())
@@ -151,11 +151,11 @@ impl FabricTopology {
     /// fixtures and Day-0 adoption, never planning: a mesh whose id no member of the view has stated
     /// takes a fresh id, as a fixture's new mesh does.
     pub fn of_observed(observed: &Topology) -> Self {
-        let empty = |name: &str, mesh_id: Option<MeshId>| MeshTopology { name: name.to_string(), mesh_id: mesh_id.unwrap_or_else(MeshId::mint), nodes: BTreeSet::new(), node_meta_by_path: BTreeMap::new() };
+        let empty = |name: &str, mesh_id: Option<MeshId>| MeshTopology { name: name.to_string(), mesh_id: mesh_id.unwrap_or_else(MeshId::mint), nodes: BTreeSet::new(), path_config_by_path: BTreeMap::new() };
         let mut meshes: BTreeMap<String, MeshTopology> = observed.meshes.iter().map(|m| (m.name.clone(), empty(&m.name, m.id.clone()))).collect();
         for n in observed.members().filter(|n| n.status.is_live()) {
             let mesh = meshes.entry(n.mesh.clone()).or_insert_with(|| empty(&n.mesh, None));
-            mesh.node_meta_by_path.insert(n.name.clone(), NodeMeta::default_for(n.name.kind));
+            mesh.path_config_by_path.insert(n.name.clone(), PathConfig::default_for(n.name.kind));
             mesh.nodes.insert(n.name.clone());
         }
         Self { fabric: observed.fabric.name.clone(), meshes }
@@ -298,14 +298,14 @@ fn resize(mesh: &mut MeshTopology, counts: &MeshDesired, observed: &Topology) {
             have.push(ord);
             have.sort_unstable();
             let path = PathName::new(&mesh.name, kind, ord);
-            mesh.node_meta_by_path.insert(path.clone(), NodeMeta::default_for(kind));
+            mesh.path_config_by_path.insert(path.clone(), PathConfig::default_for(kind));
             mesh.nodes.insert(path);
         }
         while (have.len() as u32) > want {
             let drop = have.iter().rev().copied().find(|o| Some(*o) != keep_ord).or_else(|| have.last().copied()).expect("a member to drop");
             have.retain(|o| *o != drop);
             let path = PathName::new(&mesh.name, kind, drop);
-            mesh.node_meta_by_path.remove(&path);
+            mesh.path_config_by_path.remove(&path);
             mesh.nodes.remove(&path);
         }
     }
@@ -333,7 +333,7 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
             next.meshes.retain(|name, _| names.contains(name));
             for m in &desired.meshes {
                 // A mesh the topology does not hold enters it here: its id is minted now, once.
-                let mesh = next.meshes.entry(m.name.clone()).or_insert_with(|| MeshTopology { name: m.name.clone(), mesh_id: MeshId::mint(), nodes: BTreeSet::new(), node_meta_by_path: BTreeMap::new() });
+                let mesh = next.meshes.entry(m.name.clone()).or_insert_with(|| MeshTopology { name: m.name.clone(), mesh_id: MeshId::mint(), nodes: BTreeSet::new(), path_config_by_path: BTreeMap::new() });
                 resize(mesh, m, observed);
             }
         }
@@ -364,7 +364,7 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
                 return Err(BuildReject::WouldLeaveMeshWithoutAdmin { mesh: node.mesh.clone() });
             }
             m.nodes.remove(node);
-            m.node_meta_by_path.remove(node);
+            m.path_config_by_path.remove(node);
         }
         TopologyChange::CreateMesh { desired } => {
             validate_counts(desired)?;
@@ -1397,23 +1397,24 @@ mod tests {
         }
     }
 
-    /// CONTRACT (lock D): a mesh from its counts carries explicit meta for every path, the kind's
-    /// migration default; a grow mints meta with the path and a shrink drops it; a path without
-    /// meta, or meta without a path, is refused by name; meta set explicitly stands.
+    /// CONTRACT (lock D): a mesh from its counts carries an explicit path config for every path, the
+    /// kind's migration default; a grow mints a path config with the path and a shrink drops it; a
+    /// path without a path config, or a path config without a path, is refused by name; a path
+    /// config set explicitly stands.
     #[test]
-    fn every_materialized_path_carries_exactly_one_node_meta() {
-        use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, StorageMeta};
+    fn every_materialized_path_carries_exactly_one_path_config() {
+        use rafka_mesh_entity::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
         let mut m = MeshTopology::of(&MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1), (NodeKind::RpcNode, 1)]));
         assert_eq!(m.nodes.len(), 5);
-        assert_eq!(m.node_meta_by_path.len(), 5);
+        assert_eq!(m.path_config_by_path.len(), 5);
         let preserve = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
-        assert_eq!(m.meta(&"mesh1.broker.2".parse().unwrap()).unwrap().storage, preserve);
-        assert_eq!(m.meta(&"mesh1.admin.1".parse().unwrap()).unwrap().storage, preserve);
-        assert_eq!(m.meta(&"mesh1.gateway.1".parse().unwrap()).unwrap().storage, StorageMeta::Ephemeral);
-        assert_eq!(m.meta(&"mesh1.rpc.1".parse().unwrap()).unwrap().storage, StorageMeta::Ephemeral);
+        assert_eq!(m.path_config(&"mesh1.broker.2".parse().unwrap()).unwrap().storage, preserve);
+        assert_eq!(m.path_config(&"mesh1.admin.1".parse().unwrap()).unwrap().storage, preserve);
+        assert_eq!(m.path_config(&"mesh1.gateway.1".parse().unwrap()).unwrap().storage, StorageMeta::Ephemeral);
+        assert_eq!(m.path_config(&"mesh1.rpc.1".parse().unwrap()).unwrap().storage, StorageMeta::Ephemeral);
         let mut topology = FabricTopology { fabric: "fabric1".into(), meshes: [("mesh1".to_string(), m.clone())].into_iter().collect() };
         assert_eq!(topology.validate(), Ok(()));
-        // Grow and shrink keep the meta in step with the paths.
+        // Grow and shrink keep the path configs in step with the paths.
         let observed = Topology {
             fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
             meshes: vec![],
@@ -1421,21 +1422,21 @@ mod tests {
         };
         resize(&mut m, &MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 3), (NodeKind::Gateway, 0), (NodeKind::RpcNode, 1)]), &observed);
         assert_eq!(m.nodes.len(), 5);
-        assert_eq!(m.node_meta_by_path.len(), 5);
-        assert_eq!(m.meta(&"mesh1.broker.3".parse().unwrap()).unwrap().storage, preserve, "the grown path carries its default");
-        assert!(m.meta(&"mesh1.gateway.1".parse().unwrap()).is_none(), "the dropped path's meta goes with it");
-        // Explicit meta stands; a path the mesh does not hold is refused.
-        let release = NodeMeta { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default() };
-        assert_eq!(m.set_meta(&"mesh1.rpc.1".parse().unwrap(), release.clone()), Ok(()));
-        assert_eq!(m.meta(&"mesh1.rpc.1".parse().unwrap()), Some(&release));
-        assert!(matches!(m.set_meta(&"mesh1.rpc.9".parse().unwrap(), release.clone()), Err(BuildReject::UnknownNode { .. })));
+        assert_eq!(m.path_config_by_path.len(), 5);
+        assert_eq!(m.path_config(&"mesh1.broker.3".parse().unwrap()).unwrap().storage, preserve, "the grown path carries its default");
+        assert!(m.path_config(&"mesh1.gateway.1".parse().unwrap()).is_none(), "the dropped path's config goes with it");
+        // An explicit path config stands; a path the mesh does not hold is refused.
+        let release = PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default() };
+        assert_eq!(m.set_path_config(&"mesh1.rpc.1".parse().unwrap(), release.clone()), Ok(()));
+        assert_eq!(m.path_config(&"mesh1.rpc.1".parse().unwrap()), Some(&release));
+        assert!(matches!(m.set_path_config(&"mesh1.rpc.9".parse().unwrap(), release.clone()), Err(BuildReject::UnknownNode { .. })));
         // The consistency ratchet.
-        m.node_meta_by_path.remove(&"mesh1.rpc.1".parse().unwrap());
-        m.node_meta_by_path.insert("mesh1.compute.7".parse().unwrap(), release);
+        m.path_config_by_path.remove(&"mesh1.rpc.1".parse().unwrap());
+        m.path_config_by_path.insert("mesh1.compute.7".parse().unwrap(), release);
         topology.meshes.insert("mesh1".into(), m);
         assert_eq!(
             topology.validate(),
-            Err(BuildReject::NodeMetaMismatch { mesh: "mesh1".into(), missing: vec!["mesh1.rpc.1".into()], extra: vec!["mesh1.compute.7".into()] })
+            Err(BuildReject::PathConfigMismatch { mesh: "mesh1".into(), missing: vec!["mesh1.rpc.1".into()], extra: vec!["mesh1.compute.7".into()] })
         );
     }
 }

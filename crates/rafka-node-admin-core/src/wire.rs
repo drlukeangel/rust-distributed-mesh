@@ -23,7 +23,7 @@ use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::{FabricIdentity, FabricShutdown};
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use rafka_mesh_entity::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rafka_mesh_entity::LifecycleOp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -114,11 +114,11 @@ struct WireMesh {
     name: String,
     mesh_id: MeshId,
     nodes: BTreeSet<PathName>,
-    node_meta_by_path: BTreeMap<PathName, WireNodeMeta>,
+    path_config_by_path: BTreeMap<PathName, WirePathConfig>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct WireNodeMeta {
+struct WirePathConfig {
     storage: WireStorage,
     placement: PlacementMeta,
 }
@@ -236,8 +236,8 @@ impl From<WireAction> for AttemptAction {
         }
     }
 }
-impl From<&NodeMeta> for WireNodeMeta {
-    fn from(m: &NodeMeta) -> Self {
+impl From<&PathConfig> for WirePathConfig {
+    fn from(m: &PathConfig) -> Self {
         let storage = match m.storage {
             StorageMeta::Ephemeral => WireStorage::Ephemeral,
             StorageMeta::Persistent { on_retire } => WireStorage::Persistent { on_retire },
@@ -245,8 +245,8 @@ impl From<&NodeMeta> for WireNodeMeta {
         Self { storage, placement: m.placement }
     }
 }
-impl From<WireNodeMeta> for NodeMeta {
-    fn from(m: WireNodeMeta) -> Self {
+impl From<WirePathConfig> for PathConfig {
+    fn from(m: WirePathConfig) -> Self {
         let storage = match m.storage {
             WireStorage::Ephemeral => StorageMeta::Ephemeral,
             WireStorage::Persistent { on_retire } => StorageMeta::Persistent { on_retire },
@@ -264,7 +264,7 @@ impl From<&FabricTopology> for WireTopology {
                     name: m.name.clone(),
                     mesh_id: m.mesh_id.clone(),
                     nodes: m.nodes.clone(),
-                    node_meta_by_path: m.node_meta_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect(),
+                    path_config_by_path: m.path_config_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect(),
                 };
                 (k.clone(), mesh)
             })
@@ -278,7 +278,7 @@ impl From<WireTopology> for FabricTopology {
             .meshes
             .into_iter()
             .map(|(k, m)| {
-                let mesh = MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, node_meta_by_path: m.node_meta_by_path.into_iter().map(|(p, meta)| (p, meta.into())).collect() };
+                let mesh = MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, path_config_by_path: m.path_config_by_path.into_iter().map(|(p, meta)| (p, meta.into())).collect() };
                 (k, mesh)
             })
             .collect();
