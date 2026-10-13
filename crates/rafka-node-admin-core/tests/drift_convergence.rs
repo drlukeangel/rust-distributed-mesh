@@ -1155,18 +1155,6 @@ mod one_attempt_number {
         }
     }
 
-    /// Every span this process emitted, from the evidence exporter's JSONL files in `dir`.
-    fn collect_spans(dir: &std::path::Path) -> Vec<serde_json::Value> {
-        let mut spans = Vec::new();
-        for e in std::fs::read_dir(dir).unwrap().flatten() {
-            let p = e.path();
-            if p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".spans.jsonl")) {
-                spans.extend(std::fs::read_to_string(&p).unwrap().lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()));
-            }
-        }
-        spans
-    }
-
     /// CONTRACT: the proven-drift pass has read the accepted Build settled and computed attempt k+1
     /// for a lost node while a submitted topology change, past the same check, is inside its durable
     /// write. The submitted change is admitted as the next Build; the drift pass opens nothing on
@@ -1178,13 +1166,11 @@ mod one_attempt_number {
     async fn a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing() {
         let cell = "a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing";
         let dir = evidence_dir(cell);
-        // Its own process, started with its evidence directory as `RDM_EVIDENCE_DIR`.
-        if crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_EVIDENCE_DIR", Some(dir.as_os_str()))]) {
-            return;
-        }
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s35");
+        // The cell's own capture, in its own file of `dir`: this thread's default dispatcher, and
+        // every task of the cell runs on this thread (a current-thread runtime).
+        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s35").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.build.admission.drift-versus-submit");
         use tracing::Instrument as _;
         let e = estate().await;
@@ -1220,8 +1206,7 @@ mod one_attempt_number {
         let active = e.builds.list_active().await.unwrap();
         assert_eq!(active.iter().map(|b| b.build_id.clone()).collect::<Vec<_>>(), vec![admitted.clone()], "one Build is active: the submitted one");
         drop(root);
-        drop(telemetry);
-        let spans = collect_spans(&dir);
+        let spans = capture.spans().expect("the cell's spans can be read");
         let refused: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.reject.via-build-in-progress").collect();
         assert_eq!(refused.len(), 1, "the drift pass is refused once, by name: {refused:?}");
         assert!(!spans.iter().any(|s| s["name"] == "rdm.node_admin.build.update.via-proven-drift"), "a refused drift pass opened nothing and names no attempt update");
