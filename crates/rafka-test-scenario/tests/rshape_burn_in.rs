@@ -4535,7 +4535,8 @@ async fn supersession_run(cell: &str, shape: Shape) {
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
     events.push(json!({"event": "established-connection-lost", "ack": ack1, "call_outcome": out1, "source_fact_after": fact_after, "other_source_op": still, "t_cut_ns": t_cut1}));
 
-    // Inbound acceptance: a compute dials the source gateway; the source accepts and records the same Connected evidence.
+    // Inbound acceptance: a compute dials the source gateway; the source accepts and writes nothing (R-CN1: an accept
+    // is never Direct evidence, and the gateway reaches the compute by no Proxy, so it is no recovery trigger either).
     let t_in0 = now_ns();
     let inbound_from = "mesh1.compute.1".to_string();
     let inbound = probe_call(&f.estate, &["dial", "--target", &format!("path:{inbound_from}"), "--destination", &format!("path:{src}"), "--key", "x"]);
@@ -4603,9 +4604,11 @@ async fn supersession_run(cell: &str, shape: Shape) {
             .into_iter()
             .filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == comp.as_str() && sp["attributes"]["origin"] == "accept" && start_ns(sp) >= marks.2)
             .count();
-        assert!(accepted >= 1, "{s0} recorded the accepted inbound connection from {comp} as a fact of origin accept");
+        assert_eq!(accepted, 0, "{s0} wrote no fact for the accepted inbound connection from {comp} (R-CN1)");
+        let woken = named(spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == comp.as_str()).count();
+        assert_eq!(woken, 0, "{s0} reaches {comp} by no Proxy: the accept arms no recovery attempt");
         inv.holds(
-            "C11: a dial lost under an acknowledged cut is a Failed fact toward the exact new birth and sends nothing; the Failed Direct is no route; a redial after the release is a Connected fact and the route recovers on the new birth; an inbound connection is an accepted fact; the superseded birth leaves the pool",
+            "C11: a dial lost under an acknowledged cut is a Failed fact toward the exact new birth and sends nothing; the Failed Direct is no route; a redial after the release is a Connected fact and the route recovers on the new birth; an inbound connection writes no fact; the superseded birth leaves the pool",
             true,
             json!({"facts": seq, "new_incarnation": inc1}),
         );
@@ -4619,8 +4622,8 @@ async fn supersession_run(cell: &str, shape: Shape) {
 /// two nodes' sockets is then dropped (acknowledged by the host's rule install): the gateway's call to the
 /// broker does not reply, its latest Direct fact toward the broker is no longer Connected, and the other
 /// gateway still reaches the broker (the cut is selected, not global). Released, the gateway redials and its
-/// next call is answered by the same birth, the fact Connected again. The broker dialling the gateway is an
-/// accepted fact at the gateway. The broker's exact runtime is then killed (acknowledged by the provider) and
+/// next call is answered by the same birth, the fact Connected again. A compute dialling the gateway writes no
+/// fact at the gateway (R-CN1). The broker's exact runtime is then killed (acknowledged by the provider) and
 /// its mesh-primary recovers it (node-recovery.md): a new node.id and incarnation at the same path.name, the
 /// endpoint key and data dir retained, on a new socket in a new runtime. Another mesh's compute dials the new
 /// birth under a cut and its dial is a Failed fact that sent nothing; once released, the dial is Connected on
@@ -4676,7 +4679,8 @@ async fn proxy_run(cell: &str, shape: Shape) {
     assert!(!pooled.iter().any(|k| k.contains(&s(&dn["incarnation_id"]))), "the source holds no connection to the destination while carried: {pooled:?}");
     events.push(json!({"event": "carried", "seeded": seeded.out, "call": carried.out, "t0_ns": t_car0, "t1_ns": t_car1}));
 
-    // C13: Direct returns while the Proxy is proven. The retirement write is refused (the accepted Direct's own
+    // C13: the destination dials the source while the Proxy is proven: the accept wakes the source's own dial
+    // (R-CN1), and only that dial's Direct Connected owes the retirement. The retirement write is refused (the dial's own
     // history append goes through): the Proxy stays the route; the retirement lands once the write can, and only
     // then is Direct effective.
     let armed = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
@@ -4751,9 +4755,16 @@ async fn proxy_run(cell: &str, shape: Shape) {
         assert!(refused.iter().all(|sp| start_ns(sp) <= start_ns(lands[0])), "every refusal precedes the landing");
         assert!(start_ns(&during_route) < start_ns(lands[0]), "the call during the refusal chose its route before the landing");
         assert!(start_ns(&cut_route) >= lands[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the first Direct route is chosen after the retirement landed");
-        let accepted = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && sp["attributes"]["origin"] == "accept" && start_ns(sp) >= w.6).count();
-        assert_eq!(accepted, 1, "one accepted connection, one fact");
-        inv.holds("C12/C13: a call is carried by the gateway in one hop to the destination's exact birth; Direct returning does not cut back while the retirement write is refused; the retirement lands durably before the first Direct route", true, json!({"carried_route": carried_route["span_id"], "inner_calls": inner, "refused_retirements": refused.len()}));
+        let observed: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
+        assert!(!observed.iter().any(|sp| sp["attributes"]["origin"] == "accept"), "the accept is no fact (R-CN1): {observed:?}");
+        let wakes: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
+        assert_eq!(wakes.iter().filter(|sp| sp["attributes"]["outcome"] == "pending").count(), 1, "the destination's accept armed one attempt of the source's own: {wakes:?}");
+        let dials: Vec<&Value> = named(spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str()).collect();
+        assert_eq!(dials.len(), 1, "one dial of the source's own: {dials:?}");
+        assert_eq!(dials[0]["attributes"]["fact"], "connected", "{:?}", dials[0]);
+        let entry = observed.iter().find(|sp| sp["attributes"]["origin"] == "dial" && sp["attributes"]["state"] == "connected" && sp["attributes"]["entry"] == dials[0]["attributes"]["entry"]).unwrap_or_else(|| panic!("the dial's own Direct Connected entry: {observed:?}"));
+        assert!(refused.iter().all(|sp| start_ns(sp) >= start_ns(entry)), "every retirement attempt follows the dial's entry");
+        inv.holds("C12/C13: a call is carried by the gateway in one hop to the destination's exact birth; the destination's accept wakes the source's own dial, whose Direct does not cut back while the retirement write is refused; the retirement lands durably before the first Direct route", true, json!({"carried_route": carried_route["span_id"], "inner_calls": inner, "refused_retirements": refused.len()}));
         json!({"carried_route_span": carried_route["span_id"], "route_while_refused": during_route["span_id"], "route_after_retirement": cut_route["span_id"], "landed_retirement": lands[0]["span_id"], "refused": refused.len()})
     })
     .await;
@@ -4764,7 +4775,8 @@ async fn proxy_run(cell: &str, shape: Shape) {
 /// carried: the route is via-peer through that gateway, the gateway makes exactly one inner call (it never
 /// forwards again), the other mesh's gateway executes it as its exact birth, and the compute holds no
 /// connection to it. The destination then dials the compute while the compute's retirement write is refused
-/// (the accepted Direct's own append goes through): the retirement is owed, refused by name, the Proxy
+/// (the accept wakes the compute's own dial once its backoff ends, R-CN1, and that dial's Direct Connected append
+/// goes through): the retirement is owed, refused by name, the Proxy
 /// stays the route, nothing durable says it retired; released, the retirement lands durably once, and only
 /// then does a call go Direct. What must NOT happen: a Direct leg while the Proxy is owed, a second
 /// forward, a Direct route chosen before the durable retirement, a retirement without a durable row.
