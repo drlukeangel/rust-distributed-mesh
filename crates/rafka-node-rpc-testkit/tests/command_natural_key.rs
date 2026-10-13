@@ -433,11 +433,10 @@ fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receip
     let cell = "an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receipt";
     let cap = crate::common::capture(cell);
     cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), cell) {
+        // Its own process, started with the bound: every other cell of this binary runs under the default.
+        if crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_CONNECTIONS_DELETE_DEADLINE_MS", Some(std::ffi::OsStr::new("500")))]) {
             return;
         }
-        // This process's bound.
-        std::env::set_var("RDM_CONNECTIONS_DELETE_DEADLINE_MS", "500");
         let birth = std::sync::Arc::new(Birth::up("connections-delete-bound").await);
         let held = birth.hold_one_call().await;
         let all = StatusRequest::DeleteConnections { node_id: birth.launch.node_id.clone(), incarnation: birth.launch.incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };

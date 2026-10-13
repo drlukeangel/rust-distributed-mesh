@@ -4,6 +4,18 @@
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 
+/// The binary's process environment, set once, here, before `main` and before any thread exists
+/// (one binary is one process): a cell never sets or removes a variable. The gate's cadence
+/// (`tools/test-runner/src/lib.rs` CADENCE): every node a cell starts in this process reads it once
+/// (`rafka_mesh_entity::cadence`). A cell whose process needs another value is started as its own
+/// process with that value in its environment (`own_process::delegated_with_env`).
+#[ctor::ctor]
+fn process_env() {
+    for (k, v) in [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")] {
+        std::env::set_var(k, v);
+    }
+}
+
 mod common;
 mod container_pipeline;
 mod hydrate_before_ready;

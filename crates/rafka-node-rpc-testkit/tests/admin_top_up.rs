@@ -12,8 +12,6 @@
 //! and never topped up: only the testkit node spawned the top-up. A non-primary serves its own mesh
 //! from its mesh-channel sources, and a desynchronized source is not served, so its topology door
 //! answered `unknown-mesh` for mesh1 until the run ended.
-//!
-//! Its own process: the cell sets the gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
 
 use iroh::protocol::Router;
 use rafka_mesh_entity::launch::{Launch, Launcher};
@@ -29,8 +27,6 @@ use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
 /// A top-up is one GetTopology to the primary, signalled by the gap itself: no cadence stands
@@ -144,12 +140,6 @@ async fn gossip_node() -> GossipNode {
 #[test]
 fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
     let cell = "a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary";
-    if crate::own_process::delegated(module_path!(), cell) {
-        return;
-    }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
-    }
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     let dir = cap.dir.clone();

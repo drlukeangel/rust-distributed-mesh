@@ -6,6 +6,9 @@
 //! the joining end is the `rafka-rpc-probe` process, which dials the maker's address expecting
 //! another endpoint's key. The maker answers the Initial, the probe verifies the maker's key, finds
 //! it is not the one it dialled and closes: a failed handshake with work on both ends.
+//!
+//! Each cell is its own process (the telemetry init is process-wide) started with the environment its
+//! subject reads, as the estate starts a node: the cell never sets a variable.
 
 use iroh::protocol::ProtocolHandler;
 use rafka_mesh_entity::{IncarnationId, NodeId};
@@ -15,6 +18,11 @@ use std::net::TcpListener;
 
 /// The diagnostic file each process writes in its node log directory.
 const DIAG: &str = "transport-diag.log";
+
+/// The directory a cell owns: both of its processes compute the same one.
+fn cell_dir(cell: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell)
+}
 
 /// A one-route admin: every request is answered with the same node view.
 fn serve_view(view: String) -> String {
@@ -49,19 +57,22 @@ fn line_with<'a>(file: &'a str, parts: &[&str]) -> Option<&'a str> {
 /// names it: `node="mesh1.admin.1"`, `mesh="mesh1"`.
 #[test]
 fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs() {
-    if crate::own_process::delegated(module_path!(), "a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs") {
+    let cell = "a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs";
+    let root = cell_dir(cell);
+    let (run, maker_dir, dialler_dir) = (root.join("spans"), root.join("mesh1.admin.1"), root.join("mesh1.rpc.9-diag"));
+    // As the estate launches the bootstrap admin: an evidence run, a mesh and a data dir, no node name.
+    let env = [
+        ("RDM_EVIDENCE_DIR", Some(run.as_os_str())),
+        ("RDM_DATA_DIR", Some(maker_dir.as_os_str())),
+        ("RDM_NODE_NAME", None),
+        ("RDM_MESH", Some(std::ffi::OsStr::new("mesh1"))),
+        ("RDM_FABRIC", Some(std::ffi::OsStr::new("diag"))),
+    ];
+    if crate::own_process::delegated_with_env(module_path!(), cell, &env) {
         return;
     }
-    let root = std::env::temp_dir().join(format!("rdm-transport-diag-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let (run, maker_dir, dialler_dir) = (root.join("spans"), root.join("mesh1.admin.1"), root.join("mesh1.rpc.9-diag"));
     std::fs::create_dir_all(&run).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &run);
-    std::env::set_var("RDM_DATA_DIR", &maker_dir);
-    // As the estate launches the bootstrap admin: a mesh and a data dir, no node name.
-    std::env::remove_var("RDM_NODE_NAME");
-    std::env::set_var("RDM_MESH", "mesh1");
-    std::env::set_var("RDM_FABRIC", "diag");
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let telemetry = rt.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin") });
     let maker_key = iroh::SecretKey::generate();
@@ -148,15 +159,14 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
 /// debug-only), or a diagnostic file written outside a gate run.
 #[test]
 fn a_process_outside_an_evidence_run_installs_no_transport_diagnostics() {
-    if crate::own_process::delegated(module_path!(), "a_process_outside_an_evidence_run_installs_no_transport_diagnostics") {
+    let cell = "a_process_outside_an_evidence_run_installs_no_transport_diagnostics";
+    let data_dir = cell_dir(cell);
+    // A node outside an evidence run: a node log dir and a node name, no evidence dir.
+    let env = [("RDM_EVIDENCE_DIR", None), ("RUST_LOG", None), ("RDM_DATA_DIR", Some(data_dir.as_os_str())), ("RDM_NODE_NAME", Some(std::ffi::OsStr::new("mesh1.rpc.1")))];
+    if crate::own_process::delegated_with_env(module_path!(), cell, &env) {
         return;
     }
-    let data_dir = std::env::temp_dir().join(format!("rdm-transport-diag-off-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data_dir);
-    std::env::remove_var("RDM_EVIDENCE_DIR");
-    std::env::remove_var("RUST_LOG");
-    std::env::set_var("RDM_DATA_DIR", &data_dir);
-    std::env::set_var("RDM_NODE_NAME", "mesh1.rpc.1");
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let telemetry = rt.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node") });
     let (noq_trace, diag_target) = (tracing::enabled!(target: "noq_proto::endpoint", tracing::Level::TRACE), tracing::enabled!(target: "transport_diag", tracing::Level::INFO));

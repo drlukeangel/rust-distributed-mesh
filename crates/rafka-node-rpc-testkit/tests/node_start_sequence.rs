@@ -26,7 +26,7 @@
 //! The authority is a real Day-0 node-admin in this process; it launches the second admin and the rpc
 //! node, and commands their stops and starts over Node RPC, so each start after a stop joins it back
 //! through its call (node-start.md step 2). Its own process: the cell holds process-wide state (the
-//! parking flag) and sets the gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
+//! parking flag).
 
 use rafka_mesh_entity::launch::{Launch, Launcher};
 use rafka_mesh_entity::runtime::RuntimeFact;
@@ -39,8 +39,6 @@ use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use std::time::Duration;
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
 
@@ -168,9 +166,6 @@ fn overlaps(steps: &[(String, u64, Option<u64>)]) -> Vec<String> {
 fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
     if crate::own_process::delegated(module_path!(), "every_start_path_runs_the_same_start_steps_in_the_same_order") {
         return;
-    }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
     }
     let cap = crate::common::capture("every_start_path_runs_the_same_start_steps_in_the_same_order");
     let spans = cap.spans.clone();

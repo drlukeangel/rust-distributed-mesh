@@ -11,8 +11,7 @@
 //! the birth's status stays what node.joined set).
 //!
 //! The mesh's primary is a real Day-0 node-admin in this process; it launches the second admin and
-//! commands its stop and start. Its own process: the cell holds process-wide state (the parking flag)
-//! and sets the gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
+//! commands its stop and start. Its own process: the cell holds process-wide state (the parking flag).
 
 use rafka_mesh_entity::launch::{Launch, Launcher};
 use rafka_mesh_entity::runtime::RuntimeFact;
@@ -26,8 +25,6 @@ use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
 /// What a declaration owed at a report is given: the declarer's round runs on the report's wake.
@@ -122,9 +119,6 @@ fn own_declarations(spans: &crate::common::Spans, node: &str) -> Vec<BTreeMap<St
 fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_primary_again() {
     if crate::own_process::delegated(module_path!(), "a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_primary_again") {
         return;
-    }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
     }
     let cap = crate::common::capture("a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_primary_again");
     let spans = cap.spans.clone();

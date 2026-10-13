@@ -10,8 +10,7 @@
 //! view lists, so every call to the admin is refused typed `NotReady` for the life of the process.
 //!
 //! The mesh's primary is a real Day-0 node-admin in this process; it launches the second admin. Its own
-//! process: the cell holds process-wide state (the parking flag) and sets the gate's cadence
-//! (`tools/test-runner/src/lib.rs` CADENCE).
+//! process: the cell holds process-wide state (the parking flag).
 
 use rafka_mesh_entity::launch::{Launch, Launcher};
 use rafka_mesh_entity::runtime::RuntimeFact;
@@ -24,8 +23,6 @@ use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
 use std::time::Duration;
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
 /// What the admitted admin's router is given to open once the authority holds it under its row's
@@ -80,9 +77,6 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
 fn a_node_admin_booted_under_the_name_its_authority_last_accepted_serves_once_its_view_holds_its_exact_birth_under_the_rows_name() {
     if crate::own_process::delegated(module_path!(), "a_node_admin_booted_under_the_name_its_authority_last_accepted_serves_once_its_view_holds_its_exact_birth_under_the_rows_name") {
         return;
-    }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
     }
     let cap = crate::common::capture("a_node_admin_booted_under_the_name_its_authority_last_accepted_serves_once_its_view_holds_its_exact_birth_under_the_rows_name");
     let spans = cap.spans.clone();
