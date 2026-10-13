@@ -492,13 +492,15 @@ async fn two_meshes(test: &str, admins: u32) -> (Estate, Vec<NodeView>) {
 ///    row itself (`seat.update.via-seat-row-written` at P, holder P, successor NA2, the mesh seat's
 ///    next epoch).
 /// 3. P calls node.primary.update on NA2 carrying the row; NA2 installs from the row and answers
-///    node.primary.updated (`seat.update.via-primary-updated` at NA2, under P's update) and publishes
-///    "primary updated" (`via-announce-primary-updated` at NA2), which every other node of both meshes
-///    hears naming NA2 (`rdm.mesh.seat.update.via-primary-updated`).
+///    node.primary.updated (`seat.update.via-primary-updated` at NA2, under P's update); P then
+///    publishes "primary updated" (`via-announce-primary-updated` at P; R-MT1: "NA1 gossips that the
+///    primary updated to NA2"), which every other node of both meshes hears naming NA2
+///    (`rdm.mesh.seat.update.via-primary-updated`).
 /// 4. The fabric-primary installs the committed seat from P's answer (`via-seats-installed`) before
 ///    it dispatches the stop, which NA2 executes as mesh2's primary; every admin's `node.get` names
 ///    NA2 mesh2's primary.
-/// Must NOT happen: NA2 writing a seat row (the retired `via-seats-committed`), a 0x21 call to P the
+/// Must NOT happen: NA2 writing a seat row (the retired `via-seats-committed`) or publishing "primary
+/// updated", a 0x21 call to P the
 /// fabric-primary did not make or one to NA2 P did not make, a stop step before the row, or a view
 /// still naming P.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -544,15 +546,17 @@ async fn a_stop_of_a_mesh_primary_moves_its_seat_by_node_primary_update_before_i
     let installed_at_na2 = one("rdm.node_admin.seat.update.via-primary-updated", &|sp| attr(sp, "node") == na2_name);
     assert_eq!((attr(&installed_at_na2, "replay"), attr(&installed_at_na2, "holder").contains(&p_id), attr(&installed_at_na2, "successor").contains(&na2_id)), ("false".to_string(), true, true), "NA2 installed from P's row and answered node.primary.updated: {installed_at_na2:#?}");
     assert!(descends_from(&spans, &installed_at_na2, &upd), "NA2 installs under P's node.primary.update call: {installed_at_na2:#?}");
-    let announced = one("rdm.mesh.seat.update.via-announce-primary-updated", &|sp| attr(sp, "node") == na2_name);
+    let announced = one("rdm.mesh.seat.update.via-announce-primary-updated", &|sp| attr(sp, "node") == p_name);
     assert!(attr(&announced, "seats").contains(&na2_id), "{announced:#?}");
+    let by_na2: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announce-primary-updated").into_iter().filter(|sp| attr(sp, "node") == na2_name).collect();
+    assert!(by_na2.is_empty(), "the successor published primary updated: {by_na2:#?}");
     let installed = one("rdm.node_admin.seat.update.via-seats-installed", &|sp| attr(sp, "node") == fp);
     assert!(attr(&installed, "successor").contains(&na2_id), "{installed:#?}");
     // The order of the sequence (C1 steps 3-7).
     assert!(start_ns(&updating) <= start_ns(&cut_off), "P said the primary is updating before its cut-off");
     assert!(end_ns(&cut_off) <= start_ns(&row), "P cut off its writes before it wrote the row");
     assert!(end_ns(&row) <= start_ns(&installed_at_na2), "NA2 installed only after P's row");
-    assert!(end_ns(&installed_at_na2) <= start_ns(&announced), "NA2 said the primary updated only after it installed");
+    assert!(end_ns(&installed_at_na2) <= start_ns(&announced), "P said the primary updated only after NA2 installed and answered");
     // Every other node of both meshes heard "primary updated" naming NA2.
     for n in before.iter().filter(|n| n.name != p.name && n.name != na2.name) {
         let heard: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "node") == n.name.to_string() && attr(sp, "successor").contains(&na2_id)).collect();

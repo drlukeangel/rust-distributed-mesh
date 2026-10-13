@@ -75,7 +75,8 @@ const INSTALLED: &str = "rdm.node_admin.seat.update.via-seats-installed";
 const REJECTED: &str = "rdm.node_admin.seat.reject.via-primary-update";
 /// "primary updating", said by the holder before its cut-off (C1 step 3).
 const ANNOUNCE_UPDATING: &str = "rdm.mesh.seat.update.via-announce-primary-updating";
-/// "primary updated", said by the successor once it installed from the row (C1 step 7).
+/// "primary updated", said by the holder once the successor answered node.primary.updated (C1 step 7;
+/// R-MT1: "NA2 updates itself and answers node.primary.updated; NA1 gossips that the primary updated to NA2").
 const ANNOUNCE_UPDATED: &str = "rdm.mesh.seat.update.via-announce-primary-updated";
 /// The retired successor-side row writer: no span of it may appear.
 const SEATS_COMMITTED: &str = "rdm.node_admin.seat.update.via-seats-committed";
@@ -637,7 +638,7 @@ fn refusals(spans: &Spans) -> Vec<(String, String, String)> {
 /// mesh-primary and fabric-primary at the same boundary"): P, the fabric-primary, holds both seats and
 /// moves them by one node.primary.update to N, its pre-check's successor. In order: P says "primary
 /// updating", P cuts off its writes, P writes ONE row moving both seats to N (mesh1 4, fabric 8), N
-/// installs from the row and answers node.primary.updated, N says "primary updated". P and N hold both
+/// installs from the row and answers node.primary.updated, P says "primary updated". P and N hold both
 /// committed records; M, a third admin that heard nothing, reads the one row from the store root and
 /// holds both too. P's moved fabric record is the target its Build log is judged against, naming N.
 /// What must NOT happen: two
@@ -673,7 +674,9 @@ async fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
     assert!(at(ANNOUNCE_UPDATING) < at(CUT_OFF), "P says the primary is updating before its cut-off");
     assert!(at(CUT_OFF) < at(ROW_WRITTEN), "P cuts off its writes before it writes the row");
     assert!(at(ROW_WRITTEN) < at(UPDATED), "N installs only after P's row");
-    assert!(at(UPDATED) < at(ANNOUNCE_UPDATED), "N says the primary updated once it installed");
+    assert!(at(UPDATED) < at(ANNOUNCE_UPDATED), "P says the primary updated once N answered node.primary.updated");
+    let said: Vec<String> = spans.named(ANNOUNCE_UPDATED).iter().map(|f| f["node"].clone()).collect();
+    assert_eq!(said, vec!["mesh1.admin.1".to_string()], "the holder P, never the successor, says the primary updated");
     let written = spans.named(ROW_WRITTEN);
     assert_eq!(written.len(), 1, "{written:?}");
     assert_eq!((written[0]["node"].as_str(), written[0]["mesh_epoch"].as_str(), written[0]["fabric_epoch"].as_str()), ("mesh1.admin.1", "4", "8"), "P, the cohort's row writer, writes the one row: {written:?}");
