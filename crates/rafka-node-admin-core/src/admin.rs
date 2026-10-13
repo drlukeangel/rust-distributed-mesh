@@ -4810,11 +4810,9 @@ impl Running {
     }
 
     async fn leave_with(self, parked: bool) {
-        // A leaving admin hands its committed Build facts to the neighbours before it says
-        // anything. Its Build authority is what its fabric seat record says: a seat moved by
-        // node.primary.update or node.fabric-primary.update ended it at that record; a fabric shutdown
-        // freezes the drive.
-        self.builds.hand_over_facts("leaving", None).await;
+        // A leave hands nothing on and yields no seat (R-SB1): a seat moves only by node.primary.update
+        // or node.fabric-primary.update, whose committed row the seat watch hands the Build facts on at,
+        // or by the provider's exit proof; a fabric shutdown freezes the drive.
         self.executor.abort();
         self.hierarchy.abort();
         self.anti_entropy.abort();
