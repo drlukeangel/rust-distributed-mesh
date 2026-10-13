@@ -21,7 +21,7 @@ use crate::build_state::{BuildFact, BuildStateAdapter, BuildStateError, BuildSte
 use crate::deployment::pipeline::{RuntimeProof, TerminalReceipt};
 use crate::model::{Node, NodeKind};
 use futures_util::future::join_all;
-use rafka_mesh_entity::{MeshId, NodeId};
+use rafka_mesh_entity::{LifecycleOp, MeshId, NodeId};
 use rafka_node_rpc_contract::status::{MeshDeleteRound, StatusReply, StatusRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -243,16 +243,28 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], operation: &str, roster: &[Rost
     exit_proofs(steps, operation, roster).into_iter().map(|(birth, (t, _))| (birth, t)).collect()
 }
 
-/// Whether the node.delete of `b` has every step's receipt: its `NodeDeleted` names the exact birth
-/// and its `Complete` is receipted at that attempt or later ([`BuildStateAdapter::recovery_of`], a
-/// point read of the Build log's index). A delete cut anywhere after its exit proof (before
-/// `NodeDeleted`'s receipt, before its publication, before `Complete`) is not complete.
-async fn delete_complete(builds: &dyn BuildStateAdapter, executor: &str, b: &RosterBirth) -> Result<bool, String> {
+/// The `NodeDeleted` op of `b`'s node.delete when that delete has every step's receipt: its
+/// `NodeDeleted` names the exact birth and its `Complete` is receipted at that attempt or later
+/// ([`BuildStateAdapter::recovery_of`], a point read of the Build log's index), and the op is the one
+/// that `NodeDeleted` receipt among `steps` holds. `None` for a delete cut anywhere after its exit
+/// proof (before `NodeDeleted`'s receipt, before its publication, before `Complete`). A finished
+/// delete whose `NodeDeleted` receipt `steps` do not hold for the exact birth is refused by name.
+async fn finished_delete(builds: &dyn BuildStateAdapter, steps: &[BuildStepReceipt], executor: &str, b: &RosterBirth) -> Result<Option<LifecycleOp>, String> {
     let named = format!("{} {}", b.node, b.incarnation_id);
     let path: crate::model::PathName = b.node.parse().map_err(|e| format!("{executor}: the roster birth {named} names no path.name: {e:?}"))?;
     let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("{executor}: the roster birth {named}'s node id {} does not parse: {e}", b.node_id))?;
     let birth = b.birth().map_err(|e| format!("{executor}: the roster birth {named}: {e}"))?;
-    builds.recovery_of(&path, &node_id, &birth).await.map(|done| done.is_some()).map_err(|e| format!("{executor}: the Build log could not say whether the node.delete of {named} is complete: {e}"))
+    let Some((build, completed, operation)) = builds.recovery_of(&path, &node_id, &birth).await.map_err(|e| format!("{executor}: the Build log could not say whether the node.delete of {named} is complete: {e}"))? else {
+        return Ok(None);
+    };
+    let deleted = crate::deployment::pipeline::RetireStep::NodeDeleted.name();
+    steps
+        .iter()
+        .filter(|r| r.build_id == build && r.operation == operation && r.step == deleted && r.outcome == StepOutcome::Complete)
+        .filter_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<LifecycleOp>(v).ok()))
+        .find(|op| op.node_id == node_id && op.incarnation == birth)
+        .map(Some)
+        .ok_or_else(|| format!("{executor}: the node.delete of {named} is complete in Build {build} (its Complete at attempt {completed}, {operation}), and the receipts read hold no {deleted} op of that birth to publish"))
 }
 
 /// Where the fabric-primary's outer workflow `operation` resumes, read from its own Build facts
@@ -750,7 +762,9 @@ pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executo
 /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
 /// step receipt of the accepted Build. A member whose node.delete the Build already holds every
 /// step's receipt of (a successful child of an earlier, incomplete run) keeps it and is not run
-/// again; a member whose delete holds its exact Exited receipt and not every later step (the executor
+/// again: its row is written Deleted again and this primary publishes its NodeDeleted, the op its
+/// `NodeDeleted` receipt holds, through `lifecycle`, the door the delete's own publication goes
+/// through; a member whose delete holds its exact Exited receipt and not every later step (the executor
 /// was cut after the provider's proof) runs on: its receipted steps are reused and the steps without
 /// a receipt are executed in order, `NodeDeleted` included. A failed or unrunnable member leaves its
 /// tier incomplete. `me` is the final primary (still running, its exact
@@ -766,7 +780,7 @@ pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executo
 /// "On that receipt the mesh-primary, the writer of its mesh's rows, writes the member's row
 /// Deleted"), a keyed write that is repeated for a retained receipt, never inferred done from it.
 #[allow(clippy::too_many_arguments)]
-pub async fn members_exited<F, Fut, G, GFut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], _lifecycle: &dyn crate::deployment::pipeline::LifecycleEvents, shutdown: F, delete_row: G) -> Result<ExitManifest, String>
+pub async fn members_exited<F, Fut, G, GFut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], lifecycle: &dyn crate::deployment::pipeline::LifecycleEvents, shutdown: F, delete_row: G) -> Result<ExitManifest, String>
 where
     F: Fn(Node) -> Fut,
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
@@ -783,7 +797,10 @@ where
     let proofs = exit_proofs(&steps, &key.operation, roster);
     let mut receipts: Vec<TerminalReceipt> = Vec::new();
     let mut remaining: Vec<&RosterBirth> = Vec::new();
-    let mut retained: Vec<&RosterBirth> = Vec::new();
+    // Births kept with their receipts: a member whose own delete finished, with the op its
+    // `NodeDeleted` receipt holds, or a lost final primary (no op: its exit is recorded, never
+    // published deleted in this leave; mesh-left covers it, "Resume after the primary's loss" step 4).
+    let mut retained: Vec<(&RosterBirth, Option<LifecycleOp>)> = Vec::new();
     // Births whose own node.delete holds the provider's exact Exited and not every later step.
     let mut owed: Vec<&RosterBirth> = Vec::new();
     for b in roster.iter().filter(|b| *b != me) {
@@ -791,13 +808,19 @@ where
             // The exit proof is a step of the delete, not the delete: a birth is done once its delete
             // has every step's receipt. One that holds the proof alone is run on (its receipted steps
             // are reused, the rest executed in order, NodeDeleted included).
-            Some((_, ExitProof::OwnDelete)) if !delete_complete(builds, executor, b).await? => {
-                owed.push(b);
-                remaining.push(b);
-            }
-            Some((t, _)) => {
+            Some((t, ExitProof::OwnDelete)) => match finished_delete(builds, &steps, executor, b).await? {
+                Some(op) => {
+                    receipts.push(t.clone());
+                    retained.push((b, Some(op)));
+                }
+                None => {
+                    owed.push(b);
+                    remaining.push(b);
+                }
+            },
+            Some((t, ExitProof::Predecessor)) => {
                 receipts.push(t.clone());
-                retained.push(b);
+                retained.push((b, None));
             }
             None => remaining.push(b),
         }
@@ -824,9 +847,14 @@ where
             }
         }
         // A retained member of this tier exited in an earlier run: its row is written Deleted again
-        // (keyed and repeatable), never taken as written because its receipt is held.
-        let kept: Vec<RosterBirth> = retained.iter().filter(|b| is_admin(b) == admins).map(|b| (*b).clone()).collect();
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-leave-tier", tier, members = members.len(), retained = kept.len(), mesh_id = %key.mesh_id, operation = %key.operation, attempt = key.attempt, outcome = tracing::field::Empty);
+        // (keyed and repeatable), never taken as written because its receipt is held. A member whose
+        // own delete finished then has its NodeDeleted published by this primary, the op its
+        // `NodeDeleted` receipt holds (mesh-delete.md, per member: "member row deleted; node.deleted",
+        // then "aggregate: NodeDeleted in Members.deleted"): the primary that finished the delete
+        // may have been lost before its frame landed, and this primary's aggregate departs the birth
+        // from its own publication. A lost final primary's exit is published by no one here.
+        let kept: Vec<(RosterBirth, Option<LifecycleOp>)> = retained.iter().filter(|(b, _)| is_admin(b) == admins).map(|(b, op)| ((*b).clone(), op.clone())).collect();
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-leave-tier", tier, members = members.len(), retained = kept.len(), node_deleted = tracing::field::Empty, mesh_id = %key.mesh_id, operation = %key.operation, attempt = key.attempt, outcome = tracing::field::Empty);
         let exit_then_row = |n: Node| {
             let (shutdown, delete_row) = (&shutdown, &delete_row);
             async move {
@@ -835,14 +863,26 @@ where
                 Ok::<TerminalReceipt, String>(t)
             }
         };
-        let (outcomes, kept_rows) = futures_util::future::join(join_all(members.iter().cloned().map(exit_then_row)), join_all(kept.iter().cloned().map(&delete_row))).instrument(span.clone()).await;
+        let kept_end = |(b, op): (RosterBirth, Option<LifecycleOp>)| {
+            let delete_row = &delete_row;
+            async move {
+                delete_row(b).await?;
+                if let Some(op) = &op {
+                    lifecycle.deleted(op).await;
+                }
+                Ok::<bool, String>(op.is_some())
+            }
+        };
+        let (outcomes, kept_rows) = futures_util::future::join(join_all(members.iter().cloned().map(exit_then_row)), join_all(kept.iter().cloned().map(kept_end))).instrument(span.clone()).await;
+        let published: Vec<&str> = kept.iter().zip(&kept_rows).filter(|(_, r)| matches!(r, Ok(true))).map(|((b, _), _)| b.node.as_str()).collect();
+        span.record("node_deleted", published.join(",").as_str());
         for (n, r) in members.iter().zip(outcomes) {
             match r {
                 Ok(t) => receipts.push(t),
                 Err(e) => failed.push(format!("{}: {e}", n.name)),
             }
         }
-        for (b, r) in kept.iter().zip(kept_rows) {
+        for ((b, _), r) in kept.iter().zip(kept_rows) {
             if let Err(e) = r {
                 failed.push(format!("{} {} (Exited receipt retained): {e}", b.node, b.incarnation_id));
             }
