@@ -187,7 +187,7 @@ async fn a_build_with_no_executable_binding_launches_every_role_from_the_one_nod
     estate.stop().await;
 
     let spans = estate.spans();
-    let accepted = named(&spans, "rdm.node_admin.build.create.via-rest")
+    let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == build_id.as_str())
         .unwrap_or_else(|| panic!("no span accepted build {build_id}"))
