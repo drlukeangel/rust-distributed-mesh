@@ -496,7 +496,7 @@ pub(crate) fn owed_from_view(d: &Declarer, me: &PathName, me_id: &NodeId, me_inc
         }
     }
     // My Mesh's Leaving, as its primary, to the fabric-primary: its own mesh row committed Leaving
-    // when it admitted leave-mesh ("one commit stores the row, applies it, gossips it and answers
+    // when it admitted delete-mesh ("one commit stores the row, applies it, gossips it and answers
     // the op", states.md), reported upward as committed state like its ready-for-traffic, and not
     // gated on a round: the fabric-primary's map holds the mesh's state it hands an admin it creates.
     if i_am_mesh_primary && own_mesh_held == Some(MeshState::Leaving) {
@@ -1008,7 +1008,7 @@ mod tests {
 
     /// CONTRACT (states.md: "One commit stores the row, applies it, gossips it and answers the op";
     /// fabric-mesh-ops.md: "`DeclareNodeState` and `DeclareMeshState` report committed state
-    /// upward"): a mesh primary whose own Mesh status row is committed Leaving (leave-mesh admitted)
+    /// upward"): a mesh primary whose own Mesh status row is committed Leaving (delete-mesh admitted)
     /// owes `DeclareMeshState(Leaving)` to the fabric-primary, whether or not its round is done, so
     /// the fabric-primary's map holds the mesh's Leaving and hands it to an admin it creates for the
     /// mesh. An admin that is not its mesh's primary owes none: the Mesh declaration is the seat's.

@@ -4,7 +4,7 @@
 //! The fabric-primary owns the outer workflow `shutdown-mesh:<mesh_id>`. The deleting mesh's primary
 //! deletes every other member with the whole node.delete (ordinary nodes first, the other
 //! node-admins after, each tier a set of parallel member workflows), records one exit manifest, hands it to the
-//! fabric-primary (`MeshLeave`, mesh.deleted) and keeps running. The fabric-primary validates the
+//! fabric-primary (`MeshDeleted`, mesh.deleted) and keeps running. The fabric-primary validates the
 //! manifest against the roster it captured at admission and records mesh.deleted's completion
 //! (`MeshDeleted`): the mesh.delete ends there, its primary alive. The primary's end is a separate
 //! node.delete with the fabric-primary as executor; once that node.delete holds the final birth's
@@ -38,12 +38,12 @@ pub const STEP_MESH_DELETED: &str = "MeshDeleted";
 /// holds its exact exit proof.
 pub const STEP_MESH_LEFT: &str = "MeshLeft";
 /// The step at the fabric-primary that records the accepted roster it captured at admission
-/// (mesh-leave.md step 1).
+/// (mesh-delete.md step 1).
 pub const STEP_ACCEPTED_ROSTER: &str = "AcceptedRoster";
 /// The step at the leaving mesh-primary that records the roster its member workflows run over.
 pub const STEP_LEAVING_ROSTER: &str = "LeavingRoster";
 /// The step at the fabric-primary that admits a new final primary after the admitted one (or the
-/// last amended one) was lost mid-leave (mesh-leave.md, "Resume after the primary's loss").
+/// last amended one) was lost mid-leave (mesh-delete.md, "Resume after the primary's loss").
 pub const STEP_ROSTER_AMENDED: &str = "RosterAmended";
 
 /// The outer operation key of `mesh_id`'s shutdown.
@@ -153,7 +153,7 @@ pub fn first_mismatch(manifest: &ExitManifest, roster: &[RosterBirth], final_pri
     None
 }
 
-/// The accepted roster of the leave `key` (mesh-leave.md step 1): captured once, at the first
+/// The accepted roster of the leave `key` (mesh-delete.md step 1): captured once, at the first
 /// admission of the operation in its Build, and kept as its own step receipt under `step`
 /// (`AcceptedRoster` at the fabric-primary, `LeavingRoster` at the leaving mesh-primary). The row
 /// is an [`ExitManifest`] with no receipts yet: the roster, the final primary and its exact runtime
@@ -162,7 +162,7 @@ pub fn first_mismatch(manifest: &ExitManifest, roster: &[RosterBirth], final_pri
 /// exited is no longer live, and the proof set must still cover it. With no receipt recorded,
 /// `capture()` (the roster as this admin's view holds it now) is recorded with one blind append and
 /// returned.
-pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, step: &str, executor: &str, final_primary: &RosterBirth, final_runtime: &RuntimeProof, capture: impl FnOnce() -> Result<Vec<RosterBirth>, String>) -> Result<Vec<RosterBirth>, String> {
+pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, step: &str, executor: &str, final_primary: &RosterBirth, final_runtime: &RuntimeProof, capture: impl FnOnce() -> Result<Vec<RosterBirth>, String>) -> Result<Vec<RosterBirth>, String> {
     let build_id = key.build_id.clone();
     let view = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the {step} receipt of {}: {e}", key.operation))?;
     let recorded = view.steps.iter().filter(|r| r.operation == key.operation && r.step == step && r.outcome == StepOutcome::Complete).min_by_key(|r| r.attempt);
@@ -281,7 +281,7 @@ pub enum OwnerResume {
     /// mesh.delete ended, its final primary alive. Nothing is called: its end is a separate
     /// node.delete, and mesh-left follows that node.delete's exit proof.
     Deleted(ExitManifest),
-    /// Nothing recorded settles the mesh.delete: the owner leads it (admission, `LeaveMesh`, the
+    /// Nothing recorded settles the mesh.delete: the owner leads it (admission, `DeleteMesh`, the
     /// handoff, the completion).
     Lead,
 }
@@ -308,7 +308,7 @@ pub fn completion_of(steps: &[BuildStepReceipt], operation: &str) -> Option<Resu
 /// manifest `manifest` (every birth of the mesh but its final primary) as the `MeshDeleted` step
 /// receipt, by `executor`, the fabric-primary that owns the mesh.delete. One
 /// `rdm.node_admin.mesh.update.via-mesh-deleted-receipt` span.
-pub async fn record_completion(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, manifest: &ExitManifest) -> Result<(), String> {
+pub async fn record_completion(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, manifest: &ExitManifest) -> Result<(), String> {
     builds
         .append_step_receipt(&BuildStepReceipt {
             mesh: None,
@@ -358,7 +358,7 @@ pub fn accepted_row(steps: &[BuildStepReceipt], operation: &str, step: &str) -> 
     Some(r.output.clone().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| format!("the {step} receipt of {operation} (attempt {}) holds no readable roster: the accepted roster cannot be named", r.attempt)))
 }
 
-/// A roster amendment (mesh-leave.md, "Resume after the primary's loss", step 2): `final_primary`
+/// A roster amendment (mesh-delete.md, "Resume after the primary's loss", step 2): `final_primary`
 /// replaces `predecessor`, whose exact Exited receipt the Build already holds. `final_runtime` is the
 /// new final primary's exact runtime as the fabric-primary's provider domain holds it at the
 /// amendment, what a later resume checks the final runtime against, as `AcceptedRoster` carries the
@@ -416,8 +416,8 @@ fn amendment_chain(first: &RosterBirth, steps: &[BuildStepReceipt], operation: &
 }
 
 /// What the fabric-primary admitted for `operation`, read from `steps`: the `AcceptedRoster` row
-/// extended by every `RosterAmended` receipt (mesh-leave.md, "Resume after the primary's loss";
-/// node-rpc-envelope.md, mesh-leave manifest): the roster is the accepted one plus every amended
+/// extended by every `RosterAmended` receipt (mesh-delete.md, "Resume after the primary's loss";
+/// node-rpc-envelope.md, mesh-deleted manifest): the roster is the accepted one plus every amended
 /// birth, the final primary and its runtime are the last amendment's, else the admitted ones.
 /// `None` when no roster is recorded.
 pub fn admitted_of(steps: &[BuildStepReceipt], operation: &str) -> Option<Result<Admitted, String>> {
@@ -438,7 +438,7 @@ pub fn admitted_of(steps: &[BuildStepReceipt], operation: &str) -> Option<Result
 
 /// The span of a resume refused because the lost final primary `predecessor` is silent but not
 /// proven exited (R-D1: unheard is not dead).
-pub fn span_unproven(key: &LeaveKey, predecessor: &RosterBirth, reason: &str) {
+pub fn span_unproven(key: &MeshDeleteKey, predecessor: &RosterBirth, reason: &str) {
     tracing::info_span!("rdm.node_admin.mesh.reject.via-unproven-primary", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, predecessor = %format!("{} {}", predecessor.node, predecessor.incarnation_id), reason = %reason)
         .in_scope(|| tracing::info!("the lost final primary is not proven exited: the resume is refused and nothing is amended"));
 }
@@ -447,7 +447,7 @@ pub fn span_unproven(key: &LeaveKey, predecessor: &RosterBirth, reason: &str) {
 /// the resume): the `TerminateRuntime` step receipt of its member operation, which every reader of
 /// exit receipts (`exit_receipts`) takes. `terminal` must name the current final primary's exact
 /// birth and the runtime admitted (or amended) for it; anything else proves nothing and is refused.
-pub async fn record_predecessor_exit(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, terminal: &TerminalReceipt) -> Result<(), String> {
+pub async fn record_predecessor_exit(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, terminal: &TerminalReceipt) -> Result<(), String> {
     let build_id = key.build_id.clone();
     let operation = key.operation.as_str();
     let steps = builds.read_build(&build_id).await.map_err(|e| format!("{executor}: the Build {build_id} could not be read for the receipts of {operation}: {e}"))?.steps;
@@ -484,7 +484,7 @@ pub async fn record_predecessor_exit(builds: &dyn BuildStateAdapter, key: &Leave
 /// exact Exited receipt is recorded for that birth and runtime. The identical amendment replays
 /// `AlreadyApplied`; a second amendment for the same predecessor is refused by name; an amendment
 /// of a birth that is not the current final primary, or that names an exited birth, is refused.
-pub async fn amend_roster(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, amendment: &RosterAmended) -> Result<Amended, String> {
+pub async fn amend_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, amendment: &RosterAmended) -> Result<Amended, String> {
     let build_id = key.build_id.clone();
     let operation = key.operation.as_str();
     let named = |b: &RosterBirth| format!("{} {}", b.node, b.incarnation_id);
@@ -549,7 +549,7 @@ pub fn amended_roster(roster: &[RosterBirth], steps: &[BuildStepReceipt], operat
 }
 
 /// The provider's exact Exited of the lost final primary `lost`, whose runtime was admitted as
-/// `runtime` (mesh-leave.md, "Resume after the primary's loss", step 1), proven from the durable
+/// `runtime` (mesh-delete.md, "Resume after the primary's loss", step 1), proven from the durable
 /// runtime row this admin stored for that birth (`row`, the point read of the blind put every admin
 /// makes the moment it first holds a birth): the same runtime by fingerprint, adopted in this
 /// admin's provider domain, and that runtime's own terminal status. A birth with no row, another
@@ -570,13 +570,13 @@ pub async fn prove_predecessor_exit(provider: &dyn crate::deployment::provider::
 }
 
 /// The fabric-primary's resume after the leaving mesh's final primary `admitted.final_primary` was
-/// lost and `held` (runtime `held_runtime`) is the mesh's node-admin primary now (mesh-leave.md,
+/// lost and `held` (runtime `held_runtime`) is the mesh's node-admin primary now (mesh-delete.md,
 /// "Resume after the primary's loss", steps 1-2): the lost birth's exact Exited, proven from its
 /// durable runtime row `row` unless the Build already holds it, is recorded as its roster receipt,
 /// then `RosterAmended` admits `held`. A lost primary not proven exited refuses the resume by name
 /// and nothing is amended (R-D1).
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, records: &crate::admin::Records, row: Option<&crate::storage::RuntimeRow>, key: &LeaveKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, crate::executor::RunEnd> {
+pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn crate::deployment::provider::DeploymentProvider, records: &crate::admin::Records, row: Option<&crate::storage::RuntimeRow>, key: &MeshDeleteKey, executor: &str, admitted: &Admitted, held: &RosterBirth, held_runtime: &RuntimeProof) -> Result<Amended, crate::executor::RunEnd> {
     let operation = key.operation.as_str();
     let lost = &admitted.final_primary;
     let steps = builds.read_build(&key.build_id.clone()).await.map_err(|e| format!("{executor}: the Build {} could not be read for the receipts of {operation}: {e}", key.build_id))?.steps;
@@ -594,8 +594,8 @@ pub async fn resume_after_loss(builds: &dyn BuildStateAdapter, provider: &dyn cr
     Ok(amend_roster(builds, key, executor, &RosterAmended { predecessor: lost.clone(), final_primary: held.clone(), final_runtime: held_runtime.clone() }).await?)
 }
 
-/// The roster a leaving primary runs `LeaveMesh` over, and the owner's step receipts it read for it
-/// (mesh-leave.md, "Resume after the primary's loss", step 3): its `LeavingRoster` `roster` extended
+/// The roster a leaving primary runs `DeleteMesh` over, and the owner's step receipts it read for it
+/// (mesh-delete.md, "Resume after the primary's loss", step 3): its `LeavingRoster` `roster` extended
 /// by every roster amendment. This Build's own facts (`own`) are gossip-fed and may not yet hold the
 /// amendment that names `me` final primary, nor the lost primary's exit receipt recorded before it;
 /// gossip is never authority, so when the amendment chain `own` gives does not end at `me`, the
@@ -632,7 +632,7 @@ where
 }
 
 /// The path of the one node-admin the fabric-primary creates for a leaving mesh no admin of which
-/// survives (mesh-leave.md, "Resume after the primary's loss", step 2: "the one node-admin the
+/// survives (mesh-delete.md, "Resume after the primary's loss", step 2: "the one node-admin the
 /// fabric-primary created for it, the only new birth a leaving mesh may gain"): a new birth, so a
 /// path no birth ever held, the next admin ordinal of `mesh` above every one the accepted roster
 /// (`roster`) and the view (`held`, every status, `.old` names included) hold. A path a lost birth
@@ -644,11 +644,11 @@ pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate
     Ok(crate::model::PathName::new(mesh, NodeKind::NodeAdmin, next))
 }
 
-/// The roster a leaving primary `me` runs `LeaveMesh` over, and the owner's step receipts it read
-/// for it (mesh-leave.md step 1 and "Resume after the primary's loss"). A `LeavingRoster` this admin
+/// The roster a leaving primary `me` runs `DeleteMesh` over, and the owner's step receipts it read
+/// for it (mesh-delete.md step 1 and "Resume after the primary's loss"). A `LeavingRoster` this admin
 /// holds is the roster captured once ([`admission_roster`] extends it by the amendments). With none
 /// held, this admin does not know from its own facts whether it is admitted at all: the owner's
-/// Build facts are read (`fetch_owner`, the sender of `LeaveMesh`; gossip is never authority) and
+/// Build facts are read (`fetch_owner`, the sender of `DeleteMesh`; gossip is never authority) and
 /// what the owner admitted decides. Admitted as the final primary at admission: the first run of the
 /// leave, and `capture()` is recorded as the `LeavingRoster`. Admitted by a `RosterAmended` (the admin
 /// the election seated, or the one node-admin the fabric-primary created when none survived): the
@@ -657,13 +657,13 @@ pub fn leaving_mesh_admin_path(mesh: &str, roster: &[RosterBirth], held: &[crate
 /// name, both births named.
 ///
 /// When this admin's own log (`local`, the log `builds` reads) holds no fact of the Build at all
-/// (`LeaveMesh` outran the gossip that carries the Build's facts), the owner's Build facts are read
+/// (`DeleteMesh` outran the gossip that carries the Build's facts), the owner's Build facts are read
 /// once and absorbed into `local` before anything else is decided (node-build-hydration.md: "Facts
 /// are absorbed into the existing Build log"), as an executor absorbs the intent its claim names;
 /// no Build gossip is authored for them, and that one read is what the rest of the admission uses.
 /// A Build log that could not be read refuses the run by name.
 #[allow(clippy::too_many_arguments)]
-pub async fn leaving_roster<C, F, Fut>(builds: &dyn BuildStateAdapter, local: &dyn LocalBuildLog, key: &LeaveKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, capture: C, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
+pub async fn leaving_roster<C, F, Fut>(builds: &dyn BuildStateAdapter, local: &dyn LocalBuildLog, key: &MeshDeleteKey, executor: &str, me: &RosterBirth, my_runtime: &RuntimeProof, capture: C, fetch_owner: F) -> Result<(Vec<RosterBirth>, Vec<BuildStepReceipt>), String>
 where
     C: FnOnce() -> Result<Vec<RosterBirth>, String>,
     F: FnOnce() -> Fut,
@@ -716,7 +716,7 @@ where
 }
 
 /// The records the leave's member workflows act on (R11: the leave acts on the immutable accepted
-/// roster's exact births; mesh-leave.md "Failure/certainty behavior": "No timeout or gossip absence
+/// roster's exact births; mesh-delete.md "Failure/certainty behavior": "No timeout or gossip absence
 /// proves exit"): every roster birth as `view` holds that exact birth (node id and incarnation), else
 /// as `held` gives it, the record this admin's membership holds of the birth. A birth the view does
 /// not list and that has no Exited receipt is worked from the held record. A birth neither holds is
@@ -762,7 +762,7 @@ pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executo
     }
 }
 
-/// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-leave.md steps 3-4):
+/// The leaving mesh-primary's member workflows over the accepted `roster` (mesh-delete.md steps 3-4):
 /// every ordinary node in parallel, then, only once every one has its exact terminal receipt, every
 /// other node-admin in parallel; then the one exit manifest, recorded as the `OtherMembersExited`
 /// step receipt of the accepted Build. A member whose node.delete the Build already holds every
@@ -785,7 +785,7 @@ pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executo
 /// "On that receipt the mesh-primary, the writer of its mesh's rows, writes the member's row
 /// Deleted"), a keyed write that is repeated for a retained receipt, never inferred done from it.
 #[allow(clippy::too_many_arguments)]
-pub async fn members_exited<F, Fut, G, GFut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], lifecycle: &dyn crate::deployment::pipeline::LifecycleEvents, shutdown: F, delete_row: G) -> Result<ExitManifest, String>
+pub async fn members_exited<F, Fut, G, GFut>(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], lifecycle: &dyn crate::deployment::pipeline::LifecycleEvents, shutdown: F, delete_row: G) -> Result<ExitManifest, String>
 where
     F: Fn(Node) -> Fut,
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,
@@ -942,7 +942,7 @@ pub async fn birth_row_deleted(rows: Option<&crate::node_rows::NodeRows>, execut
 /// held in `declared`, and the Mesh row Dead on `meshes`, which releases the mesh's name (R-MD1
 /// item 2, R-MN1 item 2).
 #[allow(clippy::too_many_arguments)]
-pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
+pub async fn mesh_left_rows(rows: Option<&crate::node_rows::NodeRows>, status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
     drop_departed_contacts(rows, executor, key, mesh, proof).await?;
     ensure_mesh_dead(status, meshes, declared, executor, key, mesh).await
 }
@@ -971,7 +971,7 @@ pub(crate) async fn mesh_row_dead(meshes: &dyn crate::storage::MeshStorage, mesh
 /// name (`dropped_contacts`, as a seated primary drops a departed member's). A blind removal of each
 /// birth's own key; one `rdm.node_admin.node.remove.via-mesh-left-contact` span names them, and a
 /// refused removal ends mesh-left by name.
-async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &LeaveKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
+async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, executor: &str, key: &MeshDeleteKey, mesh: &str, proof: &[TerminalReceipt]) -> Result<(), String> {
     let rows = rows.ok_or_else(|| format!("{}: {executor} holds no nodes store to drop {mesh}'s contacts from", key.operation))?;
     let span = tracing::info_span!("rdm.node_admin.node.remove.via-mesh-left-contact", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, dropped = tracing::field::Empty, error = tracing::field::Empty);
     let mut dropped = Vec::new();
@@ -996,7 +996,7 @@ async fn drop_departed_contacts(rows: Option<&crate::node_rows::NodeRows>, execu
 /// No row held means no primary survived to write it: this fabric-primary puts it as acting primary
 /// of a mesh with none left and records it as applied. One
 /// `rdm.node_admin.mesh.update.via-dead-row` span names the outcome and who wrote the row.
-async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &LeaveKey, mesh: &str) -> Result<(), String> {
+async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, meshes: &dyn crate::storage::MeshStorage, declared: &std::sync::Mutex<crate::status_rpc::Declared>, executor: &str, key: &MeshDeleteKey, mesh: &str) -> Result<(), String> {
     let dead = rafka_node_rpc_contract::status::MeshState::Dead;
     let row = crate::status_storage::MeshStatusRow { mesh_id: key.mesh_id.clone(), state: dead };
     let span = tracing::info_span!("rdm.node_admin.mesh.update.via-dead-row", node = %executor, mesh = %mesh, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, outcome = tracing::field::Empty, writer = tracing::field::Empty, mesh_row = tracing::field::Empty, error = tracing::field::Empty);
@@ -1023,7 +1023,7 @@ async fn ensure_mesh_dead(status: &dyn crate::status_storage::StatusStorage, mes
     Ok(())
 }
 
-/// What the fabric-primary decides of a `MeshLeave` handoff from the Build facts it read from the
+/// What the fabric-primary decides of a `MeshDeleted` handoff from the Build facts it read from the
 /// sender (node-rpc-envelope.md, "Mesh leave command pair").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandoffVerdict {
@@ -1062,7 +1062,7 @@ impl HandoffVerdict {
 
 /// The verdict on the handoff of the leave `key`, admitted with `admitted`, over `facts` (the
 /// sender's Build facts, read now); `receipt_manifest` is the reference the call carried.
-pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str) -> HandoffVerdict {
+pub fn handoff_verdict(facts: &[BuildFact], key: &MeshDeleteKey, admitted: &Admitted, receipt_manifest: &str) -> HandoffVerdict {
     let unmatched = |field: &str, expected: String, reported: String| HandoffVerdict::Unmatched { field: field.into(), expected, reported };
     let (operation, attempt) = (key.operation.as_str(), key.attempt);
     let receipt = facts.iter().find_map(|f| match f {
@@ -1106,11 +1106,11 @@ pub fn handoff_verdict(facts: &[BuildFact], key: &LeaveKey, admitted: &Admitted,
 /// read them from it (`read`, the sender `sender`'s FetchBuildFacts answer). A sender that holds no
 /// fact of the Build (`UnknownBuild`) recorded no exit manifest when it called: its member
 /// workflows are incomplete, every roster birth but the final primary without an Exited receipt,
-/// and the open leave ends now (mesh-leave.md: "Missing receipts ... leave the workflow
+/// and the open leave ends now (mesh-delete.md: "Missing receipts ... leave the workflow
 /// incomplete"). `Err` is a read that decides nothing (not ready, unreached, interrupted, refused
 /// or an incomplete stream): the refusal is `RejectedSourceFailed` naming the final primary's Build
 /// log, the fetch and the read's own failure ([`refuse_source_failed`]), and the open leave stays open.
-pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &LeaveKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, StatusReply> {
+pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts_read::FetchFailure>, key: &MeshDeleteKey, admitted: &Admitted, receipt_manifest: &str, reader: &str, sender: &str) -> Result<HandoffVerdict, StatusReply> {
     match read {
         Ok(facts) => Ok(handoff_verdict(&facts, key, admitted, receipt_manifest)),
         Err(crate::build_facts_read::FetchFailure::UnknownBuild(detail)) => Ok(match handoff_verdict(&[], key, admitted, receipt_manifest) {
@@ -1119,16 +1119,16 @@ pub fn handoff_verdict_from_read(read: Result<Vec<BuildFact>, crate::build_facts
         }),
         // A read that failed is not the final primary holding nothing: the leave stays open and the
         // call is refused naming the read.
-        Err(e) => Err(refuse_source_failed("mesh-leave", key, &format!("the Build log of {sender} (the final primary), read by {reader} over fetch-build-facts"), &format!("fetch-build-facts {} for the manifest {receipt_manifest}", key.build_id), &e.to_string())),
+        Err(e) => Err(refuse_source_failed("mesh-deleted", key, &format!("the Build log of {sender} (the final primary), read by {reader} over fetch-build-facts"), &format!("fetch-build-facts {} for the manifest {receipt_manifest}", key.build_id), &e.to_string())),
     }
 }
 
-/// The refusal of `call` (`leave-mesh` at the leaving mesh-primary, `mesh-leave` at the
+/// The refusal of `call` (`delete-mesh` at the leaving mesh-primary, `mesh-deleted` at the
 /// fabric-primary) for the leave `key` because what it had to read failed: `source` failed `op` for
 /// `cause`. `RejectedSourceFailed`, under its reject span naming the call, the round and the three
 /// fields; it is never this admin's own `NotReady` (node-rpc-envelope.md, "Node RPC readiness gate").
 /// Nothing is admitted or accepted.
-pub fn refuse_source_failed(call: &'static str, key: &LeaveKey, source: &str, op: &str, cause: &str) -> StatusReply {
+pub fn refuse_source_failed(call: &'static str, key: &MeshDeleteKey, source: &str, op: &str, cause: &str) -> StatusReply {
     tracing::info_span!("rdm.node_admin.mesh.reject.via-source-failed", call, mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %key.operation, source, op, cause)
         .in_scope(|| tracing::info!("what the call needed to read failed: it is refused by name and nothing is admitted"));
     StatusReply::source_failed(source, op, cause)
@@ -1136,50 +1136,50 @@ pub fn refuse_source_failed(call: &'static str, key: &LeaveKey, source: &str, op
 
 /// The admin a leave hands back to, the owner of the workflow, and where a call to it goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaveOwner {
+pub struct MeshDeleteOwner {
     /// Where the handoff and the read of the owner's Build facts go: the endpoint and path of the
-    /// `leave-mesh` call, or the fabric-primary's birth.
+    /// `delete-mesh` call, or the fabric-primary's birth.
     pub target: rafka_node_rpc::NodeTarget,
     /// What spans name the owner: its `path.name` where a record names it, else its endpoint.
     pub name: String,
 }
 
-impl std::fmt::Display for LeaveOwner {
+impl std::fmt::Display for MeshDeleteOwner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.name)
     }
 }
 
-/// The admin a `leave-mesh`'s handoff goes back to, the owner of the workflow: the admin whose call
+/// The admin a `delete-mesh`'s handoff goes back to, the owner of the workflow: the admin whose call
 /// sent the command, reached back over that call's endpoint and path (`call`; no record of it is
 /// read, as a stopped node joins back to the call that commanded its start, node-start.md step 2),
-/// else the fabric-primary its view names (`fabric_primary`; LeaveMesh is the fabric-primary's
+/// else the fabric-primary its view names (`fabric_primary`; DeleteMesh is the fabric-primary's
 /// command, node-rpc-envelope.md "Mesh delete command pair"). Nothing checks who is calling
 /// (node-rpc.md §14). With neither (a command that came on no Node RPC call, and a view naming no
 /// fabric-primary), the leave has no owner to hand back to and is refused by name.
-pub fn leave_owner(call: Option<LeaveOwner>, fabric_primary: Option<LeaveOwner>, me: &str, key: &LeaveKey) -> Result<LeaveOwner, StatusReply> {
+pub fn leave_owner(call: Option<MeshDeleteOwner>, fabric_primary: Option<MeshDeleteOwner>, me: &str, key: &MeshDeleteKey) -> Result<MeshDeleteOwner, StatusReply> {
     match call.or(fabric_primary) {
         Some(owner) => Ok(owner),
-        None => Err(refuse_source_failed("leave-mesh", key, &format!("the view of {me}"), &format!("resolve the owner of leave-mesh for {}", key.mesh_id), "the command came on no call this admin can reach back over, and its view names no fabric-primary to hand the leave back to")),
+        None => Err(refuse_source_failed("delete-mesh", key, &format!("the view of {me}"), &format!("resolve the owner of delete-mesh for {}", key.mesh_id), "the command came on no call this admin can reach back over, and its view names no fabric-primary to hand the leave back to")),
     }
 }
 
-/// The final primary's runtime, as a `MeshLeave` names it, adopted by this admin's provider: the
-/// provider proof path the owner stops it through (mesh-leave.md step 5). A runtime the provider
+/// The final primary's runtime, as a `MeshDeleted` names it, adopted by this admin's provider: the
+/// provider proof path the owner stops it through (mesh-delete.md step 5). A runtime the provider
 /// refuses is refused by name.
-pub fn adopt_final_runtime(provider: &dyn crate::deployment::provider::DeploymentProvider, final_runtime: &rafka_mesh_entity::RuntimeFact, me: &str, key: &LeaveKey) -> Result<(), StatusReply> {
+pub fn adopt_final_runtime(provider: &dyn crate::deployment::provider::DeploymentProvider, final_runtime: &rafka_mesh_entity::RuntimeFact, me: &str, key: &MeshDeleteKey) -> Result<(), StatusReply> {
     match crate::deployment::provider::adopt(provider, final_runtime) {
         Ok(_) => Ok(()),
-        Err(refusal) => Err(refuse_source_failed("mesh-leave", key, &format!("the {:?} provider of {me}", provider.kind()), &format!("adopt the final primary's runtime {}", final_runtime.deployment_id), &refusal.to_string())),
+        Err(refusal) => Err(refuse_source_failed("mesh-deleted", key, &format!("the {:?} provider of {me}", provider.kind()), &format!("adopt the final primary's runtime {}", final_runtime.deployment_id), &refusal.to_string())),
     }
 }
 
-/// The answer to a `MeshLeave` for `key` that holds no open leave, from the fabric-primary's own
+/// The answer to a `MeshDeleted` for `key` that holds no open leave, from the fabric-primary's own
 /// Build facts `steps`: once mesh.deleted's completion receipt is recorded, a repeated handoff of the
 /// same final birth (`final_node_id`, `final_incarnation`) is `AlreadyApplied` and records nothing; a
 /// handoff naming another birth is refused by name, both births named. `None` when no completion is
 /// recorded: the handoff matches no open mesh.delete.
-pub fn replayed_handoff(steps: &[BuildStepReceipt], key: &LeaveKey, final_node_id: &NodeId, final_incarnation: &str) -> Option<StatusReply> {
+pub fn replayed_handoff(steps: &[BuildStepReceipt], key: &MeshDeleteKey, final_node_id: &NodeId, final_incarnation: &str) -> Option<StatusReply> {
     let completion = match completion_of(steps, &key.operation)? {
         Ok(m) => m,
         Err(reason) => return Some(StatusReply::NotReady { reason }),
@@ -1197,7 +1197,7 @@ pub fn replayed_handoff(steps: &[BuildStepReceipt], key: &LeaveKey, final_node_i
 
 /// The key of one open mesh leave at the fabric-primary.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct LeaveKey {
+pub struct MeshDeleteKey {
     /// The mesh that leaves.
     pub mesh_id: MeshId,
     /// The Build the operation belongs to.
@@ -1208,14 +1208,14 @@ pub struct LeaveKey {
     pub operation: String,
 }
 
-impl LeaveKey {
+impl MeshDeleteKey {
     /// The round this key names, as a round refusal carries it (its mesh id is the call's own).
     pub fn round(&self) -> MeshDeleteRound {
         MeshDeleteRound { build_id: self.build_id.to_string(), attempt: self.attempt, operation: self.operation.clone() }
     }
 }
 
-/// How the round a `leave-mesh` or `mesh-leave` offers for a mesh stands against the round held for
+/// How the round a `delete-mesh` or `mesh-deleted` offers for a mesh stands against the round held for
 /// it (node-rpc-envelope.md, "Mesh delete command pair": the workflow identity is `(mesh_id,
 /// build_id, attempt, operation)`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1231,7 +1231,7 @@ pub enum RoundOrder {
 }
 
 /// Where `offered` stands against `held`, both rounds of one mesh.
-pub fn round_order(held: &LeaveKey, offered: &LeaveKey) -> RoundOrder {
+pub fn round_order(held: &MeshDeleteKey, offered: &MeshDeleteKey) -> RoundOrder {
     if held.build_id != offered.build_id || held.operation != offered.operation {
         return RoundOrder::Other;
     }
@@ -1242,11 +1242,11 @@ pub fn round_order(held: &LeaveKey, offered: &LeaveKey) -> RoundOrder {
     }
 }
 
-/// The refusal of the round `offered` by `call` (`leave-mesh` at the leaving mesh-primary,
-/// `mesh-leave` at the fabric-primary) against the round `held` for its mesh: `RejectedStaleRound`
+/// The refusal of the round `offered` by `call` (`delete-mesh` at the leaving mesh-primary,
+/// `mesh-deleted` at the fabric-primary) against the round `held` for its mesh: `RejectedStaleRound`
 /// for an earlier attempt of the round held, `RejectedConflictingRound` for any other round it does
 /// not admit. Its reject span names the call and both rounds. Nothing is admitted.
-pub fn refuse_round(call: &'static str, held: &LeaveKey, offered: &LeaveKey) -> StatusReply {
+pub fn refuse_round(call: &'static str, held: &MeshDeleteKey, offered: &MeshDeleteKey) -> StatusReply {
     let (h, o) = (held.round(), offered.round());
     if round_order(held, offered) == RoundOrder::Earlier {
         tracing::info_span!("rdm.node_admin.mesh.reject.via-stale-round", call, mesh_id = %offered.mesh_id, held_build_id = %h.build_id, held_attempt = h.attempt, held_operation = %h.operation, build_id = %o.build_id, attempt = o.attempt, operation = %o.operation)
@@ -1274,37 +1274,37 @@ pub struct Admitted {
 
 /// How an open leave ends at the fabric-primary: the validated manifest, or the named reason the
 /// leaving primary's member workflows are incomplete.
-pub type LeaveOutcome = Result<ExitManifest, String>;
+pub type MeshDeleteOutcome = Result<ExitManifest, String>;
 
 struct OpenLeave {
     admitted: Admitted,
-    handoff: watch::Sender<Option<LeaveOutcome>>,
+    handoff: watch::Sender<Option<MeshDeleteOutcome>>,
 }
 
-/// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a `MeshLeave` for.
+/// The mesh leaves this admin, as the fabric-primary, has admitted and awaits a `MeshDeleted` for.
 #[derive(Default)]
-pub struct LeaveBook {
-    open: Mutex<HashMap<LeaveKey, OpenLeave>>,
+pub struct MeshDeleteBook {
+    open: Mutex<HashMap<MeshDeleteKey, OpenLeave>>,
 }
 
-impl LeaveBook {
-    /// Open `key` before `LeaveMesh` is sent, holding what admission captured; returns what
+impl MeshDeleteBook {
+    /// Open `key` before `DeleteMesh` is sent, holding what admission captured; returns what
     /// resolves when a validated handoff arrives. Opening again keeps the first capture.
-    pub fn open(&self, key: LeaveKey, admitted: Admitted) -> watch::Receiver<Option<LeaveOutcome>> {
+    pub fn open(&self, key: MeshDeleteKey, admitted: Admitted) -> watch::Receiver<Option<MeshDeleteOutcome>> {
         self.open.lock().unwrap().entry(key).or_insert_with(|| OpenLeave { admitted, handoff: watch::channel(None).0 }).handoff.subscribe()
     }
 
     /// What admission captured for `key`, when it is open.
-    pub fn admitted(&self, key: &LeaveKey) -> Option<Admitted> {
+    pub fn admitted(&self, key: &MeshDeleteKey) -> Option<Admitted> {
         self.open.lock().unwrap().get(key).map(|o| o.admitted.clone())
     }
 
-    /// What admission captured for the round a `MeshLeave` names, or the reply that refuses it. Only
+    /// What admission captured for the round a `MeshDeleted` names, or the reply that refuses it. Only
     /// a round this owner holds open is admitted; any other round of a mesh it holds a leave open for
     /// is refused by name against that round ([`refuse_round`]: an earlier attempt is stale, a later
     /// attempt it never opened or another Build conflicts); a mesh it holds no leave open for names
     /// no open command.
-    pub fn admitted_for(&self, key: &LeaveKey) -> Result<Admitted, StatusReply> {
+    pub fn admitted_for(&self, key: &MeshDeleteKey) -> Result<Admitted, StatusReply> {
         let open = self.open.lock().unwrap();
         if let Some(o) = open.get(key) {
             return Ok(o.admitted.clone());
@@ -1314,24 +1314,24 @@ impl LeaveBook {
         let held = open.keys().filter(|k| k.mesh_id == key.mesh_id).max_by_key(|k| (k.build_id == key.build_id && k.operation == key.operation, k.attempt)).cloned();
         drop(open);
         match held {
-            Some(held) => Err(refuse_round("mesh-leave", &held, key)),
+            Some(held) => Err(refuse_round("mesh-deleted", &held, key)),
             None => Err(StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: format!("an open leave of mesh {}", key.mesh_id), reported: key.round().to_string() }),
         }
     }
 
     /// A validated handoff for `key`: whether it was the first outcome of the leave.
-    pub fn resolve(&self, key: &LeaveKey, manifest: ExitManifest) -> bool {
+    pub fn resolve(&self, key: &MeshDeleteKey, manifest: ExitManifest) -> bool {
         self.end(key, Ok(manifest))
     }
 
     /// The leaving primary reported its member workflows incomplete for `key`: the leave ends
     /// with `reason` at once (the owner's attempt ends inside the call, never on a wait); whether it
     /// was the first outcome of the leave.
-    pub fn incomplete(&self, key: &LeaveKey, reason: String) -> bool {
+    pub fn incomplete(&self, key: &MeshDeleteKey, reason: String) -> bool {
         self.end(key, Err(reason))
     }
 
-    fn end(&self, key: &LeaveKey, outcome: LeaveOutcome) -> bool {
+    fn end(&self, key: &MeshDeleteKey, outcome: MeshDeleteOutcome) -> bool {
         match self.open.lock().unwrap().get(key) {
             Some(o) => o.handoff.send_if_modified(|held| {
                 if held.is_some() {
@@ -1345,21 +1345,21 @@ impl LeaveBook {
     }
 
     /// Forget the leave: its receipts are the record.
-    pub fn close(&self, key: &LeaveKey) {
+    pub fn close(&self, key: &MeshDeleteKey) {
         self.open.lock().unwrap().remove(key);
     }
 }
 
-/// The bound on the owner's wait for a `MeshLeave` handoff that no event ends: the final primary's
-/// `MeshLeave` call lost while it lives (the call answered NotSent or Indeterminate;
-/// `call_mesh_leave` records the outcome and nothing calls again), or the final primary exiting
+/// The bound on the owner's wait for a `MeshDeleted` handoff that no event ends: the final primary's
+/// `MeshDeleted` call lost while it lives (the call answered NotSent or Indeterminate;
+/// `call_mesh_deleted` records the outcome and nothing calls again), or the final primary exiting
 /// after the owner found it silent and not exited, with no later change of the owner's view to
 /// prove it on. Every other end is an event: the handoff, the incomplete report inside the call,
-/// or the final primary proven exited ([`await_handoff`]). An attempt that ends incomplete is handed back to the
+/// or the final primary proven exited ([`await_mesh_deleted`]). An attempt that ends incomplete is handed back to the
 /// fabric-primary ([`crate::executor::RunEnd::Incomplete`]): the Build stays in progress and the
 /// fabric-primary's drive claims the next attempt once what it decides on moves, and that attempt
 /// resumes from the receipts.
-pub const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+pub const MESH_DELETED_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// The owner's wait for the handoff of the open leave `key` (mesh-delete.md step 5), sent by the
 /// final primary `primary` (its exact birth, named): the validated manifest, or the attempt's
@@ -1369,13 +1369,13 @@ pub const HANDOFF_WAIT: std::time::Duration = std::time::Duration::from_secs(120
 /// order "Resume after the primary's loss" gives (the lost primary's exact Exited recorded first,
 /// then `RosterAmended`, then a fresh claim). A view change that proves nothing keeps the wait open:
 /// silence is not death.
-pub async fn await_handoff<F, Fut>(key: &LeaveKey, primary: &str, mut handoff: watch::Receiver<Option<LeaveOutcome>>, mut view: watch::Receiver<u64>, mut final_primary_exited: F) -> Result<ExitManifest, crate::executor::RunEnd>
+pub async fn await_mesh_deleted<F, Fut>(key: &MeshDeleteKey, primary: &str, mut handoff: watch::Receiver<Option<MeshDeleteOutcome>>, mut view: watch::Receiver<u64>, mut final_primary_exited: F, within: std::time::Duration) -> Result<ExitManifest, crate::executor::RunEnd>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Option<String>>,
 {
     let outer = key.operation.as_str();
-    let bound = tokio::time::sleep(HANDOFF_WAIT);
+    let bound = tokio::time::sleep(within);
     tokio::pin!(bound);
     view.borrow_and_update();
     loop {
@@ -1385,9 +1385,9 @@ where
         }
         if let Some(proof) = final_primary_exited().await {
             tracing::info_span!("rdm.node_admin.mesh.update.via-final-primary-exited", mesh_id = %key.mesh_id, build_id = %key.build_id, attempt = key.attempt, operation = %outer, final_primary = %primary, proof = %proof)
-                .in_scope(|| tracing::info!("the final primary is proven exited before it sent mesh-leave: this attempt ends and the next resumes the leave from its receipts"));
+                .in_scope(|| tracing::info!("the final primary is proven exited before it sent mesh-deleted: this attempt ends and the next resumes the leave from its receipts"));
             return Err(crate::executor::RunEnd::Incomplete(format!(
-                "{outer}: the final primary {primary} is proven exited ({proof}) and sent no mesh-leave; the workflow is incomplete, its receipts stand, and the next attempt resumes it from that exit"
+                "{outer}: the final primary {primary} is proven exited ({proof}) and sent no mesh-deleted; the workflow is incomplete, its receipts stand, and the next attempt resumes it from that exit"
             )));
         }
         tokio::select! {
@@ -1402,7 +1402,7 @@ where
                 }
             }
             _ = &mut bound => {
-                return Err(crate::executor::RunEnd::Incomplete(format!("{outer}: {primary}, live and not proven exited, sent no valid mesh-leave within {HANDOFF_WAIT:?}; the workflow is incomplete and its receipts stand")));
+                return Err(crate::executor::RunEnd::Incomplete(format!("{outer}: {primary}, live and not proven exited, sent no valid mesh-deleted within {within:?}; the workflow is incomplete and its receipts stand")));
             }
         }
     }
@@ -1410,18 +1410,18 @@ where
 
 /// One mesh leave at the leaving mesh's primary, on its natural key `(mesh_id, Leaving)`.
 #[derive(Debug, Clone)]
-enum LeaveRun {
-    /// The member workflows are running; `key` is the `leave-mesh` admitted last and `owner` its
+enum MeshDeleteRun {
+    /// The member workflows are running; `key` is the `delete-mesh` admitted last and `owner` its
     /// sender, whom the handoff goes to.
-    Running { key: LeaveKey, owner: LeaveOwner },
+    Running { key: MeshDeleteKey, owner: MeshDeleteOwner },
     /// Every other member exited and the manifest is recorded under `key`: the handoff to `owner`
     /// is what is left.
-    Exited { key: LeaveKey, owner: LeaveOwner, manifest: ExitManifest },
+    Exited { key: MeshDeleteKey, owner: MeshDeleteOwner, manifest: ExitManifest },
 }
 
-/// What a `leave-mesh` admission does for the leave of its mesh.
+/// What a `delete-mesh` admission does for the leave of its mesh.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LeaveAdmission {
+pub enum MeshDeleteAdmission {
     /// No run is held, or the one held exited under an earlier attempt of the same round: the
     /// member workflows run for this sender under its key (a run under a later attempt resumes from
     /// the receipts).
@@ -1429,8 +1429,13 @@ pub enum LeaveAdmission {
     /// The member workflows are running: their handoff goes to this sender, under its key.
     Running,
     /// The manifest is recorded under this key: the handoff is what repeats, to this sender.
-    Resend(ExitManifest),
-    /// The `leave-mesh` names an earlier attempt of the round held (`RejectedStaleRound`) or another
+    Resend {
+        /// The manifest recorded.
+        manifest: ExitManifest,
+        /// The attempt it was recorded under: the replayed report's `receipt_manifest` names it.
+        recorded: u32,
+    },
+    /// The `delete-mesh` names an earlier attempt of the round held (`RejectedStaleRound`) or another
     /// Build or operation (`RejectedConflictingRound`): nothing is admitted and the leave held, its
     /// round and its sender, is unchanged.
     Refused(StatusReply),
@@ -1439,8 +1444,8 @@ pub enum LeaveAdmission {
 /// What a run's manifest found the leave holding when it was recorded.
 enum RunExit {
     /// The leave is still held under the key the run recorded under: the handoff goes to `owner`.
-    Exited(LeaveOwner),
-    /// A later `leave-mesh` was admitted while the run ran: its manifest is recorded under its own key.
+    Exited(MeshDeleteOwner),
+    /// A later `delete-mesh` was admitted while the run ran: its manifest is recorded under its own key.
     Moved,
     /// The leave is no longer held.
     Forgotten,
@@ -1448,24 +1453,24 @@ enum RunExit {
 
 /// How a run of the member workflows ended ([`run_admitted`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LeaveRunEnd {
+pub enum MeshDeleteRunEnd {
     /// Every other member exited and the manifest is recorded under `key`: the handoff goes to
     /// `owner` under it.
     Exited {
-        /// The `leave-mesh` admitted last, whose key the manifest is recorded under.
-        key: LeaveKey,
+        /// The `delete-mesh` admitted last, whose key the manifest is recorded under.
+        key: MeshDeleteKey,
         /// Its sender.
-        owner: LeaveOwner,
+        owner: MeshDeleteOwner,
         /// The manifest.
         manifest: ExitManifest,
     },
-    /// The member workflows are incomplete: `owner`, the sender of the `leave-mesh` admitted last
+    /// The member workflows are incomplete: `owner`, the sender of the `delete-mesh` admitted last
     /// (`key`), is told so.
     Incomplete {
-        /// The `leave-mesh` admitted last.
-        key: LeaveKey,
+        /// The `delete-mesh` admitted last.
+        key: MeshDeleteKey,
         /// Its sender.
-        owner: LeaveOwner,
+        owner: MeshDeleteOwner,
         /// Why.
         reason: String,
     },
@@ -1475,174 +1480,174 @@ pub enum LeaveRunEnd {
 
 /// The mesh leaves this admin, as a leaving mesh's primary, is running or has finished, one per
 /// mesh: the natural key `(mesh_id, Leaving)` (node-rpc-envelope.md, "Status"), never the attempt.
-/// The owner a handoff goes to is the admin that sent `leave-mesh` last for the mesh (a successor
+/// The owner a handoff goes to is the admin that sent `delete-mesh` last for the mesh (a successor
 /// fabric-primary re-dispatching the attempt, or the owner's next attempt, takes the handoff over),
 /// under the key it sent.
 #[derive(Default)]
-pub struct LeaveRuns(Mutex<HashMap<MeshId, LeaveRun>>);
+pub struct MeshDeleteRuns(Mutex<HashMap<MeshId, MeshDeleteRun>>);
 
-impl LeaveRuns {
-    /// `leave-mesh` for `key` from `sender`. The round held for the mesh decides it: the same round
+impl MeshDeleteRuns {
+    /// `delete-mesh` for `key` from `sender`. The round held for the mesh decides it: the same round
     /// or a later attempt of it is the same leave; an earlier attempt or another Build or operation
     /// is refused by name against the round held ([`refuse_round`]) and changes nothing.
-    pub fn admit(&self, key: &LeaveKey, sender: &LeaveOwner) -> LeaveAdmission {
+    pub fn admit(&self, key: &MeshDeleteKey, sender: &MeshDeleteOwner) -> MeshDeleteAdmission {
         let mut runs = self.0.lock().unwrap();
         let held = runs.get(&key.mesh_id).cloned();
-        if let Some(LeaveRun::Running { key: h, .. } | LeaveRun::Exited { key: h, .. }) = &held {
+        if let Some(MeshDeleteRun::Running { key: h, .. } | MeshDeleteRun::Exited { key: h, .. }) = &held {
             if matches!(round_order(h, key), RoundOrder::Earlier | RoundOrder::Other) {
                 drop(runs);
-                return LeaveAdmission::Refused(refuse_round("leave-mesh", h, key));
+                return MeshDeleteAdmission::Refused(refuse_round("delete-mesh", h, key));
             }
         }
         match held {
-            Some(LeaveRun::Running { .. }) => {
-                runs.insert(key.mesh_id.clone(), LeaveRun::Running { key: key.clone(), owner: sender.clone() });
-                LeaveAdmission::Running
+            Some(MeshDeleteRun::Running { .. }) => {
+                runs.insert(key.mesh_id.clone(), MeshDeleteRun::Running { key: key.clone(), owner: sender.clone() });
+                MeshDeleteAdmission::Running
             }
-            Some(LeaveRun::Exited { key: held, manifest, .. }) if &held == key => {
-                runs.insert(key.mesh_id.clone(), LeaveRun::Exited { key: held, owner: sender.clone(), manifest: manifest.clone() });
-                LeaveAdmission::Resend(manifest)
+            Some(MeshDeleteRun::Exited { key: held, manifest, .. }) if &held == key => {
+                runs.insert(key.mesh_id.clone(), MeshDeleteRun::Exited { key: held.clone(), owner: sender.clone(), manifest: manifest.clone() });
+                MeshDeleteAdmission::Resend { recorded: held.attempt, manifest }
             }
             _ => {
-                runs.insert(key.mesh_id.clone(), LeaveRun::Running { key: key.clone(), owner: sender.clone() });
-                LeaveAdmission::Start
+                runs.insert(key.mesh_id.clone(), MeshDeleteRun::Running { key: key.clone(), owner: sender.clone() });
+                MeshDeleteAdmission::Start
             }
         }
     }
 
     /// Whether a leave of `mesh_id` is held, running or exited: only a round admitted after its
-    /// mesh row was committed Leaving begins one ([`admit_leave_mesh`]).
+    /// mesh row was committed Leaving begins one ([`admit_delete_mesh`]).
     pub fn holds(&self, mesh_id: &MeshId) -> bool {
         self.0.lock().unwrap().contains_key(mesh_id)
     }
 
-    /// The `leave-mesh` admitted last for `mesh_id` while its member workflows run, and its sender.
-    fn running(&self, mesh_id: &MeshId) -> Option<(LeaveKey, LeaveOwner)> {
+    /// The `delete-mesh` admitted last for `mesh_id` while its member workflows run, and its sender.
+    fn running(&self, mesh_id: &MeshId) -> Option<(MeshDeleteKey, MeshDeleteOwner)> {
         match self.0.lock().unwrap().get(mesh_id) {
-            Some(LeaveRun::Running { key, owner }) => Some((key.clone(), owner.clone())),
+            Some(MeshDeleteRun::Running { key, owner }) => Some((key.clone(), owner.clone())),
             _ => None,
         }
     }
 
     /// A run recorded its manifest under `ran`.
-    fn exited(&self, ran: &LeaveKey, manifest: &ExitManifest) -> RunExit {
+    fn exited(&self, ran: &MeshDeleteKey, manifest: &ExitManifest) -> RunExit {
         let mut runs = self.0.lock().unwrap();
         match runs.get(&ran.mesh_id).cloned() {
-            Some(LeaveRun::Running { key, owner }) if &key == ran => {
-                runs.insert(key.mesh_id.clone(), LeaveRun::Exited { key, owner: owner.clone(), manifest: manifest.clone() });
+            Some(MeshDeleteRun::Running { key, owner }) if &key == ran => {
+                runs.insert(key.mesh_id.clone(), MeshDeleteRun::Exited { key, owner: owner.clone(), manifest: manifest.clone() });
                 RunExit::Exited(owner)
             }
-            Some(LeaveRun::Running { .. }) => RunExit::Moved,
+            Some(MeshDeleteRun::Running { .. }) => RunExit::Moved,
             _ => RunExit::Forgotten,
         }
     }
 
     /// The run of `mesh_id` ended incomplete: it is forgotten (its receipts stand) and the
-    /// `leave-mesh` admitted last, with its sender, is returned.
-    fn incomplete(&self, mesh_id: &MeshId) -> Option<(LeaveKey, LeaveOwner)> {
+    /// `delete-mesh` admitted last, with its sender, is returned.
+    fn incomplete(&self, mesh_id: &MeshId) -> Option<(MeshDeleteKey, MeshDeleteOwner)> {
         match self.0.lock().unwrap().remove(mesh_id) {
-            Some(LeaveRun::Running { key, owner } | LeaveRun::Exited { key, owner, .. }) => Some((key, owner)),
+            Some(MeshDeleteRun::Running { key, owner } | MeshDeleteRun::Exited { key, owner, .. }) => Some((key, owner)),
             None => None,
         }
     }
 }
 
-/// What a `leave-mesh` did at the leaving mesh-primary ([`admit_leave_mesh`]).
+/// What a `delete-mesh` did at the leaving mesh-primary ([`admit_delete_mesh`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LeaveMeshAdmission {
+pub struct DeleteMeshAdmission {
     /// The commit of the mesh row `Leaving` this round made, as the commit answered, or `None` when
     /// it made none.
     pub leaving_row: Option<StatusReply>,
     /// What the round does for the leave: `Refused` with the commit's refusal when the row's commit
     /// was refused, so nothing is admitted.
-    pub admission: LeaveAdmission,
+    pub admission: MeshDeleteAdmission,
 }
 
-/// `leave-mesh` for `key` from `sender` at the leaving mesh-primary (states.md: the mesh's
+/// `delete-mesh` for `key` from `sender` at the leaving mesh-primary (states.md: the mesh's
 /// `leaving` is entered by this down op, and "one commit stores the row, applies it, gossips it and
 /// answers the op"; fabric-node-lifecycle.md 2.7: the mesh's primary writes every status of its own
 /// mesh row). The first round of the mesh's leave puts and applies the row before it is admitted: a
-/// refused put admits nothing and is the reply, so the owner's repeated `leave-mesh` is decided
+/// refused put admits nothing and is the reply, so the owner's repeated `delete-mesh` is decided
 /// afresh. A round that finds a leave of the mesh held commits nothing: the round that began the
 /// leave committed the row, and the leave may since have written it Dead (mesh.deleted, before its
-/// handoff); it is decided on the round held alone ([`LeaveRuns::admit`]), so the round held resends
+/// handoff); it is decided on the round held alone ([`MeshDeleteRuns::admit`]), so the round held resends
 /// a lost handoff, a later attempt resumes from the receipts and a stale or conflicting round is
 /// refused by name.
-pub async fn admit_leave_mesh(runs: &LeaveRuns, storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<crate::status_rpc::Declared>, key: &LeaveKey, sender: &LeaveOwner) -> LeaveMeshAdmission {
+pub async fn admit_delete_mesh(runs: &MeshDeleteRuns, storage: &dyn crate::status_storage::StatusStorage, declared: &Mutex<crate::status_rpc::Declared>, key: &MeshDeleteKey, sender: &MeshDeleteOwner) -> DeleteMeshAdmission {
     if runs.holds(&key.mesh_id) {
-        return LeaveMeshAdmission { leaving_row: None, admission: runs.admit(key, sender) };
+        return DeleteMeshAdmission { leaving_row: None, admission: runs.admit(key, sender) };
     }
     let committed = crate::status_rpc::commit_mesh_state(storage, declared, &key.mesh_id, rafka_node_rpc_contract::status::MeshState::Leaving).await;
     let admission = match &committed {
         StatusReply::Applied | StatusReply::AlreadyApplied => runs.admit(key, sender),
-        refused => LeaveAdmission::Refused(refused.clone()),
+        refused => MeshDeleteAdmission::Refused(refused.clone()),
     };
-    LeaveMeshAdmission { leaving_row: Some(committed), admission }
+    DeleteMeshAdmission { leaving_row: Some(committed), admission }
 }
 
-/// The one run of the member workflows of the leave `mesh_id` admitted ([`LeaveAdmission::Start`]):
-/// `run(key, owner)` runs them under the `leave-mesh` admitted last and records its manifest under
-/// that key. A `leave-mesh` of a later attempt admitted while they run joins this run
-/// ([`LeaveAdmission::Running`]): when the run ends, its manifest is recorded again under the later
+/// The one run of the member workflows of the leave `mesh_id` admitted ([`MeshDeleteAdmission::Start`]):
+/// `run(key, owner)` runs them under the `delete-mesh` admitted last and records its manifest under
+/// that key. A `delete-mesh` of a later attempt admitted while they run joins this run
+/// ([`MeshDeleteAdmission::Running`]): when the run ends, its manifest is recorded again under the later
 /// key by `run` over the receipts every member's exit already holds, so no member is stopped twice
 /// and the handoff names the attempt whose open leave the owner holds (node-rpc-envelope.md, "Mesh
 /// delete command pair": the manifest is scoped to `(mesh_id, build_id, attempt, operation)`; a
 /// later attempt resumes from the recorded receipts, "Caller execution and certainty").
-pub async fn run_admitted<F, Fut>(runs: &LeaveRuns, mesh_id: &MeshId, run: F) -> LeaveRunEnd
+pub async fn run_admitted<F, Fut>(runs: &MeshDeleteRuns, mesh_id: &MeshId, run: F) -> MeshDeleteRunEnd
 where
-    F: Fn(LeaveKey, LeaveOwner) -> Fut,
+    F: Fn(MeshDeleteKey, MeshDeleteOwner) -> Fut,
     Fut: std::future::Future<Output = Result<ExitManifest, String>>,
 {
-    let mut ran: Option<LeaveKey> = None;
+    let mut ran: Option<MeshDeleteKey> = None;
     loop {
-        let Some((key, owner)) = runs.running(mesh_id) else { return LeaveRunEnd::Forgotten };
+        let Some((key, owner)) = runs.running(mesh_id) else { return MeshDeleteRunEnd::Forgotten };
         if let Some(earlier) = &ran {
-            tracing::info_span!("rdm.node_admin.mesh.resolve.via-later-leave-mesh", mesh_id = %mesh_id, build_id = %key.build_id, attempt = key.attempt, ran_build_id = %earlier.build_id, ran_attempt = earlier.attempt, operation = %key.operation, owner = %owner)
-                .in_scope(|| tracing::info!("a later leave-mesh joined the run: its manifest is recorded under its own key from the receipts every member's exit already holds"));
+            tracing::info_span!("rdm.node_admin.mesh.resolve.via-later-delete-mesh", mesh_id = %mesh_id, build_id = %key.build_id, attempt = key.attempt, ran_build_id = %earlier.build_id, ran_attempt = earlier.attempt, operation = %key.operation, owner = %owner)
+                .in_scope(|| tracing::info!("a later delete-mesh joined the run: its manifest is recorded under its own key from the receipts every member's exit already holds"));
         }
         match run(key.clone(), owner).await {
             Ok(manifest) => match runs.exited(&key, &manifest) {
-                RunExit::Exited(owner) => return LeaveRunEnd::Exited { key, owner, manifest },
+                RunExit::Exited(owner) => return MeshDeleteRunEnd::Exited { key, owner, manifest },
                 RunExit::Moved => ran = Some(key),
-                RunExit::Forgotten => return LeaveRunEnd::Forgotten,
+                RunExit::Forgotten => return MeshDeleteRunEnd::Forgotten,
             },
             Err(reason) => {
                 return match runs.incomplete(mesh_id) {
-                    Some((key, owner)) => LeaveRunEnd::Incomplete { key, owner, reason },
-                    None => LeaveRunEnd::Forgotten,
+                    Some((key, owner)) => MeshDeleteRunEnd::Incomplete { key, owner, reason },
+                    None => MeshDeleteRunEnd::Forgotten,
                 };
             }
         }
     }
 }
 
-/// What serves `LeaveMesh` (at the deleting mesh's primary) and `MeshLeave` (at the
+/// What serves `DeleteMesh` (at the deleting mesh's primary) and `MeshDeleted` (at the
 /// fabric-primary); the status door hands each to it. The executor's lifecycle hooks hand it every
 /// birth they publish deleted, so the fabric-primary's mesh.delete observes the final birth's exit
 /// proof (mesh-left), while node.delete stays the ordinary workflow it is.
 #[async_trait::async_trait]
-pub trait MeshLeaver: Send + Sync {
-    /// `LeaveMesh` from `sender`, on a call from the endpoint `peer` (as the transport proved it):
+pub trait MeshDeleter: Send + Sync {
+    /// `DeleteMesh` from `sender`, on a call from the endpoint `peer` (as the transport proved it):
     /// admit and run the member workflows; the handoff goes back over that call.
-    async fn leave_mesh(&self, peer: Option<iroh::PublicKey>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
-    /// `MeshLeave` from `sender`: validate the handoff.
-    async fn mesh_leave(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
+    async fn delete_mesh(&self, peer: Option<iroh::PublicKey>, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
+    /// `MeshDeleted` from `sender`: validate the handoff.
+    async fn mesh_deleted(&self, sender: Option<&Node>, req: &StatusRequest) -> StatusReply;
     /// This admin, as an executor, published `op`'s birth deleted (NodeDeleted, from the provider's
     /// exact exit proof).
     async fn birth_deleted(&self, _op: &rafka_mesh_entity::LifecycleOp) {}
 }
 
 /// The door a running admin fills once its runner exists.
-pub type LeaverSlot = Arc<OnceLock<Arc<dyn MeshLeaver>>>;
+pub type MeshDeleterSlot = Arc<OnceLock<Arc<dyn MeshDeleter>>>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// An owner of a leave, named by a fresh node id.
-    fn owner() -> LeaveOwner {
+    fn owner() -> MeshDeleteOwner {
         let id = NodeId::mint();
-        LeaveOwner { name: id.to_string(), target: rafka_node_rpc::NodeTarget::ExactNode(id) }
+        MeshDeleteOwner { name: id.to_string(), target: rafka_node_rpc::NodeTarget::ExactNode(id) }
     }
 
     fn birth(node: &str, inc: &str) -> RosterBirth {
@@ -1658,76 +1663,76 @@ mod tests {
         }
     }
 
-    /// CONTRACT: the handoff of a running leave goes to the admin that sent `leave-mesh` last: a
+    /// CONTRACT: the handoff of a running leave goes to the admin that sent `delete-mesh` last: a
     /// successor fabric-primary re-dispatching the same attempt while the member workflows run
-    /// takes the handoff over, and a repeated `leave-mesh` after the manifest is recorded resends
+    /// takes the handoff over, and a repeated `delete-mesh` after the manifest is recorded resends
     /// it to that sender.
     #[test]
-    fn a_leave_mesh_from_a_successor_owner_takes_over_the_running_leaves_handoff() {
-        let runs = LeaveRuns::default();
-        let key = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
+    fn a_delete_mesh_from_a_successor_owner_takes_over_the_running_leaves_handoff() {
+        let runs = MeshDeleteRuns::default();
+        let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
         let (first, successor) = (owner(), owner());
-        assert_eq!(runs.admit(&key, &first), LeaveAdmission::Start);
-        assert_eq!(runs.admit(&key, &successor), LeaveAdmission::Running);
+        assert_eq!(runs.admit(&key, &first), MeshDeleteAdmission::Start);
+        assert_eq!(runs.admit(&key, &successor), MeshDeleteAdmission::Running);
         let last = birth("mesh2.admin.1", "i3");
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
-        assert!(matches!(runs.exited(&key, &manifest), RunExit::Exited(o) if o == successor), "the handoff goes to the owner that sent leave-mesh last");
+        assert!(matches!(runs.exited(&key, &manifest), RunExit::Exited(o) if o == successor), "the handoff goes to the owner that sent delete-mesh last");
         let third = owner();
-        assert_eq!(runs.admit(&key, &third), LeaveAdmission::Resend(manifest));
+        assert_eq!(runs.admit(&key, &third), MeshDeleteAdmission::Resend { manifest, recorded: 1 });
         assert_eq!(runs.incomplete(&key.mesh_id), Some((key.clone(), third)), "a resend is owned by its sender");
         // A later attempt after the manifest is recorded runs again under its own key, from the receipts.
-        let later = LeaveKey { attempt: 2, ..key.clone() };
+        let later = MeshDeleteKey { attempt: 2, ..key.clone() };
         let fourth = owner();
-        assert_eq!(runs.admit(&later, &fourth), LeaveAdmission::Start);
+        assert_eq!(runs.admit(&later, &fourth), MeshDeleteAdmission::Start);
     }
 
-    /// CONTRACT: `leave-mesh` admission at the leaving primary is keyed on the natural key
+    /// CONTRACT: `delete-mesh` admission at the leaving primary is keyed on the natural key
     /// `(mesh_id, Leaving)` (node-rpc-envelope.md, "Status": "Idempotency is the natural key ...
-    /// `(mesh_id, state)`"), never on the attempt: a `leave-mesh` of a later attempt of the Build
+    /// `(mesh_id, state)`"), never on the attempt: a `delete-mesh` of a later attempt of the Build
     /// that reaches the primary while the member workflows of an earlier attempt run is the same
     /// leave, answered `AlreadyApplied` (`Running`), and starts no second set of member workflows.
     /// What must NOT happen: `Start` for it, a second run beside the first stopping the same members.
     #[test]
-    fn a_leave_mesh_of_a_later_attempt_while_the_members_run_joins_the_run_under_way() {
-        let runs = LeaveRuns::default();
-        let first = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
-        let later = LeaveKey { attempt: 2, ..first.clone() };
+    fn a_delete_mesh_of_a_later_attempt_while_the_members_run_joins_the_run_under_way() {
+        let runs = MeshDeleteRuns::default();
+        let first = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let later = MeshDeleteKey { attempt: 2, ..first.clone() };
         let (owner1, owner2) = (owner(), owner());
-        assert_eq!(runs.admit(&first, &owner1), LeaveAdmission::Start, "the first leave-mesh starts the member workflows");
-        assert_eq!(runs.admit(&later, &owner2), LeaveAdmission::Running, "a later attempt's leave-mesh while the member workflows run is the same leave (mesh_id, Leaving)");
+        assert_eq!(runs.admit(&first, &owner1), MeshDeleteAdmission::Start, "the first delete-mesh starts the member workflows");
+        assert_eq!(runs.admit(&later, &owner2), MeshDeleteAdmission::Running, "a later attempt's delete-mesh while the member workflows run is the same leave (mesh_id, Leaving)");
     }
 
     /// CONTRACT: the leave of a mesh has one run of its member workflows (the natural key
-    /// `(mesh_id, Leaving)`). A `leave-mesh` of a later attempt admitted while the run is under way
+    /// `(mesh_id, Leaving)`). A `delete-mesh` of a later attempt admitted while the run is under way
     /// joins it; when the run ends, its manifest is recorded again under the later attempt's key by
     /// the run over the receipts every member's exit already holds (one more call of the run, after
     /// the first ended, never beside it), and the run ends naming the later attempt and its sender,
     /// whom the handoff goes to (node-rpc-envelope.md, "Mesh delete command pair": the manifest is
-    /// scoped to `(mesh_id, build_id, attempt, operation)`). A repeat of that `leave-mesh` resends
+    /// scoped to `(mesh_id, build_id, attempt, operation)`). A repeat of that `delete-mesh` resends
     /// the handoff. What must NOT happen: two runs at once, or a handoff naming the earlier attempt,
     /// whose open leave the owner no longer holds.
     #[tokio::test]
-    async fn a_later_leave_mesh_joins_the_one_run_and_the_run_ends_naming_the_later_attempt() {
+    async fn a_later_delete_mesh_joins_the_one_run_and_the_run_ends_naming_the_later_attempt() {
         use tracing_subscriber::layer::SubscriberExt;
         let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
         let (capture, layer) = rafka_mesh_telemetry::span_capture("i143-s48-leave-admission", exporter.clone());
         let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
-        let runs = Arc::new(LeaveRuns::default());
-        let first = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
-        let later = LeaveKey { attempt: 2, ..first.clone() };
+        let runs = Arc::new(MeshDeleteRuns::default());
+        let first = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let later = MeshDeleteKey { attempt: 2, ..first.clone() };
         let (owner1, owner2) = (owner(), owner());
         let last = birth("mesh2.admin.1", "i3");
         let manifest = ExitManifest { mesh_id: "m".into(), roster: vec![last.clone()], final_primary: last, final_runtime: None, receipts: vec![] };
-        assert_eq!(runs.admit(&first, &owner1), LeaveAdmission::Start);
+        assert_eq!(runs.admit(&first, &owner1), MeshDeleteAdmission::Start);
 
         // The run: the first call holds until the cell opens the gate.
-        let calls: Arc<Mutex<Vec<(u32, LeaveOwner)>>> = Arc::default();
+        let calls: Arc<Mutex<Vec<(u32, MeshDeleteOwner)>>> = Arc::default();
         let (live, most) = (Arc::new(std::sync::atomic::AtomicUsize::new(0)), Arc::new(std::sync::atomic::AtomicUsize::new(0)));
         let (entered, gate) = (Arc::new(tokio::sync::Notify::new()), Arc::new(watch::Sender::new(false)));
         let run = {
             let (calls, live, most, entered, gate, manifest) = (calls.clone(), live.clone(), most.clone(), entered.clone(), gate.clone(), manifest.clone());
-            move |key: LeaveKey, owner: LeaveOwner| {
+            move |key: MeshDeleteKey, owner: MeshDeleteOwner| {
                 let (calls, live, most, entered, gate, manifest) = (calls.clone(), live.clone(), most.clone(), entered.clone(), gate.clone(), manifest.clone());
                 async move {
                     let now = live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -1745,20 +1750,20 @@ mod tests {
             tokio::spawn(async move { run_admitted(&runs, &mesh_id, run).await })
         };
         entered.notified().await;
-        assert_eq!(runs.admit(&later, &owner2), LeaveAdmission::Running, "attempt 2's leave-mesh joins the run under way");
+        assert_eq!(runs.admit(&later, &owner2), MeshDeleteAdmission::Running, "attempt 2's delete-mesh joins the run under way");
         gate.send_replace(true);
         let end = driver.await.unwrap();
-        assert_eq!(end, LeaveRunEnd::Exited { key: later.clone(), owner: owner2.clone(), manifest: manifest.clone() }, "the run ends naming attempt 2 and its sender");
+        assert_eq!(end, MeshDeleteRunEnd::Exited { key: later.clone(), owner: owner2.clone(), manifest: manifest.clone() }, "the run ends naming attempt 2 and its sender");
         assert_eq!(*calls.lock().unwrap(), vec![(1, owner1), (2, owner2.clone())], "the run is called once more under attempt 2's key once attempt 1's call ended");
         assert_eq!(most.load(std::sync::atomic::Ordering::SeqCst), 1, "never two runs at once");
-        assert_eq!(runs.admit(&later, &owner2), LeaveAdmission::Resend(manifest), "a repeat of attempt 2's leave-mesh resends its handoff");
+        assert_eq!(runs.admit(&later, &owner2), MeshDeleteAdmission::Resend { manifest, recorded: 2 }, "a repeat of attempt 2's delete-mesh resends its handoff");
 
         capture.flush(std::time::Duration::from_secs(10)).unwrap_or_else(|e| panic!("the cell's spans did not all reach its exporter: {e}"));
-        let joined: Vec<_> = exporter.get_finished_spans().unwrap().into_iter().filter(|s| s.name == "rdm.node_admin.mesh.resolve.via-later-leave-mesh").collect();
-        assert_eq!(joined.len(), 1, "one later leave-mesh joined the run");
+        let joined: Vec<_> = exporter.get_finished_spans().unwrap().into_iter().filter(|s| s.name == "rdm.node_admin.mesh.resolve.via-later-delete-mesh").collect();
+        assert_eq!(joined.len(), 1, "one later delete-mesh joined the run");
         let attrs: std::collections::BTreeMap<String, String> = joined[0].attributes.iter().map(|kv| (kv.key.to_string(), kv.value.to_string())).collect();
         assert_eq!((attrs.get("attempt").map(String::as_str), attrs.get("ran_attempt").map(String::as_str)), (Some("2"), Some("1")), "{attrs:?}");
-        eprintln!("span rdm.node_admin.mesh.resolve.via-later-leave-mesh trace_id={} {attrs:?}", joined[0].span_context.trace_id());
+        eprintln!("span rdm.node_admin.mesh.resolve.via-later-delete-mesh trace_id={} {attrs:?}", joined[0].span_context.trace_id());
     }
 
     /// CONTRACT: an open leave the leaving primary reports incomplete ends at once with the named
@@ -1766,8 +1771,8 @@ mod tests {
     /// leave does not overwrite that outcome.
     #[test]
     fn an_incomplete_report_ends_the_open_leave_at_once_with_its_reason() {
-        let book = LeaveBook::default();
-        let key = LeaveKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let book = MeshDeleteBook::default();
+        let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
         let last = birth("mesh2.admin.1", "i3");
         let runtime = receipt(&last).runtime.unwrap();
         let rx = book.open(key.clone(), Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime, amendments: Vec::new() });

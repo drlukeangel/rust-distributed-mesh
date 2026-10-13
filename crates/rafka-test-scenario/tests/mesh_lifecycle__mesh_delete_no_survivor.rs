@@ -1,10 +1,10 @@
 //! i143.e12.s39 (#3066) process E2E, form (b) of the mesh leave resumed after the leaving mesh's
-//! primary is lost mid-leave (R11; mesh-leave.md, "Resume after the primary's loss", step 2: "or,
+//! primary is lost mid-leave (R11; mesh-delete.md, "Resume after the primary's loss", step 2: "or,
 //! when none survives, the one node-admin the fabric-primary created for it"): mesh2's only admin is
 //! lost mid-tier, and the fabric-primary creates the one node-admin the leaving mesh may gain. The
-//! run and the shared assertions are `mesh_lifecycle__mesh_leave_resume`'s (form (a)).
+//! run and the shared assertions are `mesh_lifecycle__mesh_delete_resume`'s (form (a)).
 
-use crate::mesh_lifecycle__mesh_leave_resume::{assert_resumed, attr_u, primary_lost_mid_leave, s, start_ns, Rpc1};
+use crate::mesh_lifecycle__mesh_delete_resume::{assert_resumed, attr_u, primary_lost_mid_leave, s, start_ns, Rpc1};
 use rafka_test_scenario::estate::named;
 use serde_json::Value;
 
@@ -23,7 +23,7 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
     let created: Vec<&Value> = named(&run.spans, "rdm.node_admin.node.create.via-leaving-mesh").into_iter().filter(|sp| sp["attributes"]["outcome"] == "created").collect();
     assert_eq!(created.len(), 1, "the fabric-primary created one admin for mesh2: {created:?}");
     assert_eq!(s(&created[0]["attributes"]["node"]), "mesh2.admin.2", "{}", created[0]);
-    // mesh2's primary committed its own mesh row Leaving when it admitted leave-mesh and declared
+    // mesh2's primary committed its own mesh row Leaving when it admitted delete-mesh and declared
     // it up to the fabric-primary (DeclareMeshState, "report committed state upward"), which
     // applied it before the primary was lost and before it created the admin.
     let declared: Vec<&Value> = named(&run.spans, "rdm.node_admin.status.update.via-declaration")

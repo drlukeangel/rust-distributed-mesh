@@ -43,9 +43,9 @@ fn requests_match_the_frozen_twenty_eight_variant_wire_schema() {
         (NodeDrained { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31"),
         (StopNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() }, "080c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31"),
         (NodeLeft { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() }, "090c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31"),
-        (LeaveMesh { mesh_id: mesh(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "shutdown-mesh:1123456789ab".into() }, "0a0c3131323334353637383961620c796e6835673262717a663472011a73687574646f776e2d6d6573683a313132333435363738396162"),
+        (DeleteMesh { mesh_id: mesh(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "shutdown-mesh:1123456789ab".into() }, "0a0c3131323334353637383961620c796e6835673262717a663472011a73687574646f776e2d6d6573683a313132333435363738396162"),
         (
-            MeshLeave {
+            MeshDeleted {
                 mesh_id: mesh(),
                 build_id: "ynh5g2bqzf4r".into(),
                 attempt: 1,
@@ -210,12 +210,12 @@ fn a_stopped_reply_carries_its_connections_receipt_in_frozen_bytes() {
     }
 }
 
-/// CONTRACT: the largest `MeshLeave` (a container's 64-character id and a manifest reference at its
+/// CONTRACT: the largest `MeshDeleted` (a container's 64-character id and a manifest reference at its
 /// 128-byte bound) fits the Status request ceiling with room for every other field; a manifest
 /// reference over its bound is the caller's to refuse before it sends.
 #[test]
-fn the_largest_mesh_leave_fits_the_request_ceiling() {
-    let request = StatusRequest::MeshLeave {
+fn the_largest_mesh_deleted_fits_the_request_ceiling() {
+    let request = StatusRequest::MeshDeleted {
         mesh_id: mesh(),
         build_id: "ynh5g2bqzf4r".into(),
         attempt: u32::MAX,

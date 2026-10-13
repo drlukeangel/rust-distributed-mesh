@@ -947,11 +947,11 @@ fn a_successor_that_answered_the_holders_call_says_primary_updated_only_once_the
 /// cut-off.
 #[test]
 fn the_holder_cuts_off_its_seat_writes_before_it_writes_the_seat_row() {
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let op = "stop-node:mesh1.admin.1";
     let trace_id = cap.run(async {
         let root = tracing::info_span!("rdm.test.seat.update.via-primary-update-cut-off");
-        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
         tracing::Instrument::instrument(the_holder_cuts_off(op), root).await;
         trace_id
     });
@@ -1539,7 +1539,7 @@ fn a_moving_mesh_seat_cuts_off_the_mesh_status_rows() {
 /// transfer, while the holder, still its mesh's primary, writes its mesh's status row (the Leaving row
 /// mesh.delete's leave writes next); after the row commits it still writes its mesh's status and Mesh
 /// rows. What must NOT happen: the holder's mesh rows cut off by a move of the fabric seat alone, so the
-/// mesh.delete it precedes refuses leave-mesh on its own Leaving row.
+/// mesh.delete it precedes refuses delete-mesh on its own Leaving row.
 #[test]
 fn a_fabric_seat_moved_alone_cuts_off_no_store_of_the_holders_mesh() {
     use rafka_node_admin_core::fabric_handover::SeatStores;
@@ -1625,7 +1625,7 @@ fn a_committed_seat_transfer_drops_every_row_its_holder_still_held() {
 }
 
 /// CONTRACT (R14 items 2 and 4; R13: the fabric-primary writes another mesh's rows only as acting
-/// primary of a mesh with no primary, an authority its fabric seat gives it; mesh-leave.md step 7):
+/// primary of a mesh with no primary, an authority its fabric seat gives it; mesh-delete.md step 7):
 /// a holder that opened its stores before the fabric's first state-commit holds the rows it wrote as
 /// acting primary of mesh2 (mesh2's Node row and its Mesh status row) in its scratchpad. Once a seat
 /// transfer moving the fabric seat commits, every one of them is dropped: never read again, and a
@@ -1708,11 +1708,11 @@ async fn failing_seats() -> (Seats, Arc<FailingStorage>) {
 /// Each refusal is the holder's reject span `source-failed` with the three fields.
 #[test]
 fn a_seat_row_write_that_fails_after_the_cut_off_fails_the_step_by_name_and_the_holder_writes_again_under_the_unchanged_epoch() {
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let seats_op = "stop-node:mesh1.admin.1";
     let (replies, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.seat.reject.via-source-failed");
-        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let replies = tracing::Instrument::instrument(
             async {
                 let mut replies = Vec::new();
@@ -2021,11 +2021,11 @@ fn a_primary_update_command_from_an_endpoint_no_view_holds_is_decided_on_the_sea
 /// no row, no cut-off, the seat where it was.
 #[test]
 fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let seats_op = "stop-node:mesh1.admin.1";
     let (reply, trace_id) = cap.run(async {
         let root = tracing::info_span!("rdm.test.seat.reject.via-epoch-overflow");
-        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let reply = tracing::Instrument::instrument(
             async {
                 let s = commanded_fabric().await;

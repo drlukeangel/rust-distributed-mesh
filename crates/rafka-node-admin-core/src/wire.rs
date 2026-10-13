@@ -18,7 +18,7 @@ use crate::build::{BuildId, FabricDesired, MeshDesired};
 use crate::build_state::{AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, AttemptOpened, StepOutcome};
 use crate::deployment::pipeline::Bound;
 use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Identity, RetireStep, StorageDisposition, TerminalReceipt};
-use crate::mesh_leave::{ExitManifest, RosterAmended};
+use crate::mesh_delete::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
 use crate::fabric_storage::{FabricIdentity, FabricShutdown};
@@ -481,10 +481,10 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::Storage
     } else if ret(RetireStep::TerminateRuntime) {
         Produces::Terminal
-    } else if [crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED, crate::mesh_leave::STEP_MESH_DELETED, crate::mesh_leave::STEP_MESH_LEFT, crate::mesh_leave::STEP_ACCEPTED_ROSTER, crate::mesh_leave::STEP_LEAVING_ROSTER].contains(&step) {
+    } else if [crate::mesh_delete::STEP_OTHER_MEMBERS_EXITED, crate::mesh_delete::STEP_MESH_DELETED, crate::mesh_delete::STEP_MESH_LEFT, crate::mesh_delete::STEP_ACCEPTED_ROSTER, crate::mesh_delete::STEP_LEAVING_ROSTER].contains(&step) {
         // The accepted roster rides the exit-manifest shape: an exit manifest with no receipts yet.
         Produces::ExitManifest
-    } else if step == crate::mesh_leave::STEP_ROSTER_AMENDED {
+    } else if step == crate::mesh_delete::STEP_ROSTER_AMENDED {
         Produces::RosterAmended
     } else {
         return None;

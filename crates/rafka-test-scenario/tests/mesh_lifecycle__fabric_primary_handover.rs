@@ -253,9 +253,9 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         let contact = shared.join("contacts").join(format!("{id}.json"));
         assert!(!contact.exists(), "mesh-left dropped the contact of departed {name} ({id}): {} remains", contact.display());
     }
-    // states.md: the mesh's `deleting` is entered by the leave-mesh down op, and "one commit stores
+    // states.md: the mesh's `deleting` is entered by the delete-mesh down op, and "one commit stores
     // the row, applies it, gossips it and answers the op": mesh1's primary stored its own mesh row
-    // Leaving when it admitted leave-mesh, in mesh1's status store on the fabric's store root (R14).
+    // Leaving when it admitted delete-mesh, in mesh1's status store on the fabric's store root (R14).
     let mesh1_statuses = estate.fabric_store_root().join("status").join("mesh1").join("meshes");
     let leaving_row = mesh1_statuses.join(format!("{mesh1_bare}-Leaving.json"));
     let row: Value = std::fs::read(&leaving_row).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| panic!("mesh1's primary stored no Leaving row for its mesh at {}: {:?}", leaving_row.display(), std::fs::read_dir(&mesh1_statuses).map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name()).collect::<Vec<_>>())));
@@ -348,7 +348,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         assert!(stop_start(n, false) > tier1_last, "{n} (a node-admin) stopped only after every ordinary node's exit was proven");
     }
     let handoff = named(&spans, "rdm.node_admin.mesh.update.via-handoff-validated").into_iter().find(|sp| sp["attributes"]["operation"].as_str().is_some_and(|o| o.starts_with("shutdown-mesh:"))).cloned().expect("the handoff was validated");
-    assert_eq!(handoff["attributes"]["outcome"], "applied", "the owner validated the mesh-leave handoff: {handoff}");
+    assert_eq!(handoff["attributes"]["outcome"], "applied", "the owner validated the mesh-deleted handoff: {handoff}");
     // The completion follows the validated handoff, at the fabric-primary that owns the mesh.delete.
     let completion = named(&spans, "rdm.node_admin.mesh.update.via-mesh-deleted-receipt").into_iter().find(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).cloned().unwrap_or_else(|| panic!("the fabric-primary recorded mesh.deleted's completion receipt for mesh1"));
     assert!(start_ns(&completion) >= end_ns(&handoff), "the completion receipt follows the validated handoff: {completion}");
@@ -356,8 +356,8 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!(s(&completion["attributes"]["node"]), owner_name, "the mesh.delete's owner records its completion: {completion}");
     eprintln!("bullet 1: mesh.deleted completion trace {} by {owner_name}, handoff trace {}", s(&completion["trace_id"]), s(&handoff["trace_id"]));
 
-    // The gossip hooks: mesh-leaving by the owner, mesh-leave (mesh.deleted) by the still-running primary.
-    for hook in ["via-mesh-leaving", "via-mesh-leave", "via-mesh-left"] {
+    // The gossip hooks: mesh-leaving by the owner, mesh-deleted (mesh.deleted) by the still-running primary.
+    for hook in ["via-mesh-leaving", "via-mesh-deleted", "via-mesh-left"] {
         assert!(!named(&spans, &format!("rdm.node_admin.mesh.update.{hook}")).is_empty(), "the {hook} hook ran");
     }
     let recorded = named(&spans, "rdm.node_admin.mesh.update.via-exit-manifest-recorded");
@@ -380,19 +380,19 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     let at_mesh = |sp: &Value, m: &str, kind: &str| s(&sp["attributes"]["node"]).starts_with(&format!("{m}.{kind}."));
     let installed = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed");
 
-    // 1. While it lives: after mesh.deleted (its mesh-leave hook) the last admin keeps publishing
+    // 1. While it lives: after mesh.deleted (its mesh-deleted hook) the last admin keeps publishing
     // mesh1's aggregate with itself the only member and MeshStatus Dead. Every peer held mesh1 dead
     // with that one member while it lived (read above, on each surviving admin's own view); which
     // frame brought it there is best-effort dissemination (R-NS2), so no particular one is expected.
-    let deleted_at = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["publisher"]) == final_name).map(|sp| start_ns(sp)).min().expect("the last admin reported mesh.deleted (its mesh-leave hook)");
+    let deleted_at = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leave").into_iter().filter(|sp| s(&sp["attributes"]["publisher"]) == final_name).map(|sp| start_ns(sp)).min().expect("the last admin reported mesh.deleted (its mesh-deleted hook)");
     let final_exit = terminal_end(&final_name, true);
     // The version its aggregate took with itself the only member: the bump is at the last member's
-    // departure, before or after the mesh-leave hook as rounds fall, and every round from then on
+    // departure, before or after the mesh-deleted hook as rounds fall, and every round from then on
     // republishes it (passive anti-entropy carries no span of its own).
     let lone: Vec<&Value> = named(&spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|sp| sp["attributes"]["mesh"] == "mesh1" && s(&sp["attributes"]["node"]) == final_name && attr_u(sp, "members") == 1 && start_ns(sp) < final_exit).collect();
-    assert!(!lone.is_empty(), "the last admin {final_name} published mesh1's aggregate with itself the only member while it lived (mesh-leave hook at {deleted_at})");
+    assert!(!lone.is_empty(), "the last admin {final_name} published mesh1's aggregate with itself the only member while it lived (mesh-deleted hook at {deleted_at})");
     let dead_row: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-dead-row").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
-    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= deleted_at), "the last admin {final_name} committed mesh1's row Dead at mesh.deleted, before its mesh-leave hook: {dead_row:?}");
+    assert!(dead_row.iter().any(|sp| s(&sp["attributes"]["outcome"]) == "applied" && start_ns(sp) <= deleted_at), "the last admin {final_name} committed mesh1's row Dead at mesh.deleted, before its mesh-deleted hook: {dead_row:?}");
     let dead_sent: Vec<&Value> = named(&spans, "rdm.mesh.fabric.update.via-status-send").into_iter().filter(|sp| s(&sp["attributes"]["node"]) == final_name && sp["attributes"]["scope"] == "mesh:mesh1" && sp["attributes"]["status"] == "dead").collect();
     assert!(dead_sent.iter().any(|sp| start_ns(sp) < final_exit), "the last admin {final_name} sent MeshStatus Dead for mesh1 while it lived: {dead_sent:?}");
     eprintln!("bullet 1: {final_name} lone aggregate trace {}, MeshStatus Dead trace {}", s(&lone[0]["trace_id"]), dead_sent.first().map(|sp| s(&sp["trace_id"])).unwrap_or_default());
@@ -577,10 +577,10 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
         let after: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state").into_iter().filter(|sp| s(&sp["attributes"]["member"]) == *m && start_ns(sp) > at).collect();
         assert!(after.iter().all(|sp| !routable(sp)), "no node holds {m} routable after its NodeStopped: {after:?}");
     }
-    // The Leaving row is the leave-mesh admission's commit, before the first member stops; the
+    // The Leaving row is the delete-mesh admission's commit, before the first member stops; the
     // order the spec fixes is mesh-leaving's publication before the first stop.
     let leaving_commit: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-leaving-row").into_iter().filter(|sp| s(&sp["attributes"]["mesh_id"]) == mesh1_bare).collect();
-    assert!(leaving_commit.iter().any(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["outcome"]) == "applied"), "mesh1's primary {final_name} applied its mesh row Leaving at leave-mesh: {leaving_commit:?}");
+    assert!(leaving_commit.iter().any(|sp| s(&sp["attributes"]["node"]) == final_name && s(&sp["attributes"]["outcome"]) == "applied"), "mesh1's primary {final_name} applied its mesh row Leaving at delete-mesh: {leaving_commit:?}");
     let first_member_stop = ["mesh1.rpc.1", "mesh1.rpc.2"].iter().map(|n| stop_start(n, false)).min().unwrap();
     assert!(leaving_commit.iter().all(|sp| end_ns(sp) < first_member_stop), "the Leaving row was committed before any member stopped: {leaving_commit:?}");
     let published_leaving = named(&spans, "rdm.node_admin.mesh.update.via-mesh-leaving").into_iter().map(|sp| start_ns(sp)).min().expect("mesh-leaving was published");
@@ -594,7 +594,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // mesh1's primary, the holder and its mesh's row writer: "primary updating", the cut-off, the ONE row
     // under mesh1 moving the fabric seat alone; the outside successor installs from it and answers
     // node.primary.updated under the holder's call; the holder says "primary updated"; the leave's owner
-    // installs the row (`via-fabric-seat-updated`) before mesh-leaving, LeaveMesh and every stop.
+    // installs the row (`via-fabric-seat-updated`) before mesh-leaving, DeleteMesh and every stop.
     let attr_s = |sp: &Value, k: &str| s(&sp["attributes"][k]);
     let operation = format!("node.fabric-primary.update:{b}:shutdown-mesh:{mesh1_bare}");
     let one = |name: &str| -> Value {
@@ -623,7 +623,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!((attr_s(&seat_updated, "departing"), attr_s(&seat_updated, "fabric_epoch")), ("mesh1".to_string(), attr_s(&row, "fabric_epoch")), "the leave's owner installed the fabric seat's row: {seat_updated}");
     assert!(start_ns(&said_updating) <= start_ns(&cut_off) && end_ns(&cut_off) <= start_ns(&row), "primary updating, the cut-off, then the row");
     assert!(end_ns(&row) <= start_ns(&installed) && end_ns(&installed) <= start_ns(&said_updated), "the row, the successor's install, then primary updated");
-    assert!(end_ns(&row) <= start_ns(&seat_updated) && end_ns(&seat_updated) < published_leaving, "the row is installed by the leave's owner before mesh-leaving, LeaveMesh and every stop");
+    assert!(end_ns(&row) <= start_ns(&seat_updated) && end_ns(&seat_updated) < published_leaving, "the row is installed by the leave's owner before mesh-leaving, DeleteMesh and every stop");
     assert!(named(&spans, "rdm.node_admin.seat.reject.via-primary-update").is_empty(), "no node.primary.update was refused");
     // Commands go down: every 0x21 call is the holder's node.primary.update on its successor.
     let calls: Vec<&Value> = named(&spans, "rdm.node_rpc.request.update.via-call").into_iter().filter(|sp| attr_u(sp, "op") == 0x21).collect();

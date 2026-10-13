@@ -4,12 +4,12 @@
 //! publishes the deleted mesh's aggregate"; gossip.md "Mesh delete": "From the stop on the
 //! fabric-primary is that mesh's publisher of record ... the stopped admin in `in_flight` as
 //! NodeStopped"). The fabric-primary takes the mesh as deleted at its own mesh.deleted receipt
-//! (`admin::leave::record_mesh_deleted`: `Records::hold_mesh_deleted`, then the view installed
+//! (`admin::mesh_delete::record_mesh_deleted`: `Records::hold_mesh_deleted`, then the view installed
 //! again), and its backbone holds the meshes that view names (`Records::set_backbone`), which is
 //! what `Backbone::publishes_deleted_mesh_of` reads when the stop's status event is published.
 // @feature: node-lifecycle
 
-use crate::mesh_leave_resume::{capture, trace_id};
+use crate::mesh_delete_resume::{capture, trace_id};
 use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{Backbone, Membership};
@@ -101,7 +101,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
         records.install_read(&me, &view, &book, &fabric, rebuild).await;
         let live_before = status_of(&*view.read().await);
         records.set_backbone(backbone.clone(), &*view.read().await);
-        let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: me.clone(), leaver: Arc::new(std::sync::OnceLock::new()) };
+        let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: me.clone(), mesh_deleter: Arc::new(std::sync::OnceLock::new()) };
 
         let root = tracing::info_span!("cell.mesh-delete-view", cell);
         let trace_id = trace_id(&root);

@@ -323,9 +323,9 @@ pub struct StatusAuthority {
     /// This admin as the subject of `node.connections.delete` / `stop-node` from its own mesh-admin; filled once
     /// its digest and server exist.
     pub own: Arc<OnceLock<Arc<crate::node_self::NodeSelf>>>,
-    /// What serves `LeaveMesh` (as a leaving mesh's primary) and `MeshLeave` (as the
+    /// What serves `DeleteMesh` (as a leaving mesh's primary) and `MeshDeleted` (as the
     /// fabric-primary); filled once the runner exists.
-    pub leaver: crate::mesh_leave::LeaverSlot,
+    pub mesh_deleter: crate::mesh_delete::MeshDeleterSlot,
     /// Testkit knob: hold the next reply past the caller's bound after applying (acceptance 2:
     /// apply + reply loss is `Indeterminate`, and the retry is `AlreadyApplied`).
     pub hold_next_reply: Arc<std::sync::atomic::AtomicBool>,
@@ -432,7 +432,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             (StatusReply::NotReady { reason: format!("{} holds no view of itself yet: {} is answered by the birth it reaches once its view holds it", auth.me, req.op()) }, None)
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`).
-        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
+        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
             (StatusReply::NotReady { reason: format!("{} reached the declaration decision, which does not decide {}", auth.me, req.op()) }, None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -561,13 +561,13 @@ impl StatusAuthority {
             StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } => return self.serve_command(&view, sender.as_ref(), peer, req).await,
             StatusRequest::DeleteConnections { node_id, .. } if *node_id == self.node_id => return self.serve_command(&view, sender.as_ref(), peer, req).await,
             StatusRequest::DeleteConnections { .. } => return self.carry_delete_connections(&view, sender.as_ref(), req).await,
-            StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } => {
-                let Some(leaver) = self.leaver.get().cloned() else {
+            StatusRequest::DeleteMesh { .. } | StatusRequest::MeshDeleted { .. } => {
+                let Some(mesh_deleter) = self.mesh_deleter.get().cloned() else {
                     return StatusReply::NotReady { reason: format!("{} is still starting: it cannot serve {} yet", self.me, req.op()) };
                 };
-                let reply = if matches!(req, StatusRequest::LeaveMesh { .. }) { leaver.leave_mesh(peer, sender.as_ref(), req).await } else { leaver.mesh_leave(sender.as_ref(), req).await };
+                let reply = if matches!(req, StatusRequest::DeleteMesh { .. }) { mesh_deleter.delete_mesh(peer, sender.as_ref(), req).await } else { mesh_deleter.mesh_deleted(sender.as_ref(), req).await };
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %self.me, op = req.op(), sender = %sender.as_ref().map(|n| n.name.to_string()).unwrap_or_default(), outcome = reply.name(), "otel.kind" = "internal")
-                    .in_scope(|| tracing::info!("a mesh-leave call naming this admin was decided"));
+                    .in_scope(|| tracing::info!("a mesh-deleted call naming this admin was decided"));
                 return reply;
             }
             StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } => {
@@ -1168,7 +1168,7 @@ mod tests {
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
-            leaver: Arc::new(OnceLock::new()),
+            mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             rounds: Default::default(),
@@ -1289,7 +1289,7 @@ mod tests {
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
-            leaver: Arc::new(OnceLock::new()),
+            mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             rounds: Default::default(),
@@ -1351,7 +1351,7 @@ mod tests {
             republish: Default::default(),
             commands: Default::default(),
             own: Default::default(),
-            leaver: Default::default(),
+            mesh_deleter: Default::default(),
             hold_next_reply: Default::default(),
             wake: Default::default(),
             rounds: Default::default(),
@@ -1643,7 +1643,7 @@ mod tests {
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
-            leaver: Arc::new(OnceLock::new()),
+            mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             rounds: Default::default(),
@@ -1735,7 +1735,7 @@ mod tests {
             republish: Arc::new(OnceLock::new()),
             commands: Arc::new(crate::node_commands::CommandBook::default()),
             own: Arc::new(OnceLock::new()),
-            leaver: Arc::new(OnceLock::new()),
+            mesh_deleter: Arc::new(OnceLock::new()),
             hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: Default::default(),
             rounds: Default::default(),

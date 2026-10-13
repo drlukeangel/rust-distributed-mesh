@@ -198,7 +198,7 @@ pub trait StatusStorage: Send + Sync {
     /// store's own mesh or another's) hold the Mesh status fact `row`: a point read of its key.
     async fn mesh_status_held_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<bool, StorageError>;
     /// A blind put of the Mesh status fact `row` among the status rows of the mesh named `mesh`: the
-    /// fabric-primary as acting primary of a leaving mesh with none left (mesh-leave.md step 7, R-MD1).
+    /// fabric-primary as acting primary of a leaving mesh with none left (mesh-delete.md step 7, R-MD1).
     async fn put_mesh_status_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError>;
     /// The exit-proof row of the birth `(node_id, incarnation_id)` among the status rows of the mesh
     /// named `mesh` (this store's own or another's): a point read of its key.

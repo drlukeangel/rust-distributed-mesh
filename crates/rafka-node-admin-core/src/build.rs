@@ -172,7 +172,7 @@ pub enum BuildOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exited: Option<ExitedBirth>,
     },
-    /// Shut a whole mesh down (mesh-leave.md): the fabric-primary owns the workflow, the mesh's
+    /// Shut a whole mesh down (mesh-delete.md): the fabric-primary owns the workflow, the mesh's
     /// primary drains and stops every other member, and the fabric-primary stops the final primary
     /// and records the departure. The operation key names the mesh by its minted id.
     ShutdownMesh {
@@ -372,7 +372,7 @@ impl BuildReject {
             Self::MeshIdUnknown { .. } => "mesh-id-unknown",
             Self::UnknownNode { .. } => "unknown-node",
             Self::NodeNotLive { .. } => "node-not-live",
-            Self::WouldLeaveMeshWithoutAdmin { .. } => "would-leave-mesh-without-admin",
+            Self::WouldLeaveMeshWithoutAdmin { .. } => "would-delete-mesh-without-admin",
             Self::MeshAlreadyExists { .. } => "mesh-already-exists",
             Self::FabricMismatch { .. } => "fabric-mismatch",
             Self::EmptyFabric => "empty-fabric",

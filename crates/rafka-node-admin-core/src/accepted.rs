@@ -533,8 +533,8 @@ fn open_mesh_deletes(build: &crate::build_state::BuildProjection, observed: &Top
         .meshes
         .iter()
         .filter_map(|m| {
-            let op = crate::mesh_leave::operation(m.id.as_ref()?);
-            let open = crate::mesh_leave::admitted_of(&build.steps, &op).is_some() && matches!(crate::mesh_leave::owner_resume(&build.steps, &op), Ok(crate::mesh_leave::OwnerResume::Lead));
+            let op = crate::mesh_delete::operation(m.id.as_ref()?);
+            let open = crate::mesh_delete::admitted_of(&build.steps, &op).is_some() && matches!(crate::mesh_delete::owner_resume(&build.steps, &op), Ok(crate::mesh_delete::OwnerResume::Lead));
             open.then(|| m.name.clone())
         })
         .collect()

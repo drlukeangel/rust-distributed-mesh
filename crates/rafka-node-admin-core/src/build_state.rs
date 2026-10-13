@@ -1014,7 +1014,7 @@ pub trait BuildStateAdapter: Send + Sync {
     /// reading the fact log.
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError>;
     /// The Build, attempt and operation of the mesh.delete whose completion receipt
-    /// (`mesh_leave::STEP_MESH_DELETED`) names the exact birth `(node_id, incarnation)` its final
+    /// (`mesh_delete::STEP_MESH_DELETED`) names the exact birth `(node_id, incarnation)` its final
     /// primary: the mesh.delete that ended with that birth alive, whose mesh-left follows that birth's
     /// exit proof. The first such attempt. A point read by the birth: every adapter answers it from
     /// its index (or delegates to the adapter it decorates), never by reading the fact log.
@@ -1087,7 +1087,7 @@ fn recovery_completed(s: &BuildStepReceipt) -> bool {
 /// The final primary a mesh.delete's completion receipt (`MeshDeleted`) names: its manifest's
 /// `final_primary`, `(node_id, incarnation)`.
 fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, crate::model::IncarnationId)> {
-    if s.step != crate::mesh_leave::STEP_MESH_DELETED || s.outcome != StepOutcome::Complete {
+    if s.step != crate::mesh_delete::STEP_MESH_DELETED || s.outcome != StepOutcome::Complete {
         return None;
     }
     let last = s.output.as_ref()?.get("final_primary")?;

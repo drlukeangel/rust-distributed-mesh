@@ -1054,14 +1054,14 @@ async fn removing_mesh2(ends: Option<rafka_node_admin_core::executor::RunEnd>) -
     let held: Arc<Mutex<Option<Arc<LostLeaver>>>> = Arc::default();
     let slot = held.clone();
     let r = rig_for(t, TopologyChange::RemoveMesh { mesh: "mesh2".into() }, move |ran, topology| {
-        let leaver = Arc::new(LostLeaver { ran: std::sync::OnceLock::new(), topology, ends: Mutex::new(ends), progress: AtomicBool::new(false), once: AtomicBool::new(false) });
-        let _ = leaver.ran.set(ran);
-        *slot.lock().unwrap() = Some(leaver.clone());
-        leaver
+        let mesh_deleter = Arc::new(LostLeaver { ran: std::sync::OnceLock::new(), topology, ends: Mutex::new(ends), progress: AtomicBool::new(false), once: AtomicBool::new(false) });
+        let _ = mesh_deleter.ran.set(ran);
+        *slot.lock().unwrap() = Some(mesh_deleter.clone());
+        mesh_deleter
     })
     .await;
-    let leaver = held.lock().unwrap().clone().expect("the rig built the runner");
-    (r, leaver)
+    let mesh_deleter = held.lock().unwrap().clone().expect("the rig built the runner");
+    (r, mesh_deleter)
 }
 
 /// The Build the rig seeded before the one under test (the older one).
@@ -1074,7 +1074,7 @@ async fn seeded_before(r: &Rig) -> rafka_node_admin_core::build_state::CurrentBu
     CurrentBuild::Completed(older.expect("the rig seeded a Build before the one under test"))
 }
 
-const LEAVE_INCOMPLETE: &str = "shutdown-mesh: mesh2.admin.1 sent no valid mesh-leave; the workflow is incomplete and its receipts stand";
+const LEAVE_INCOMPLETE: &str = "shutdown-mesh: mesh2.admin.1 sent no valid mesh-deleted; the workflow is incomplete and its receipts stand";
 
 /// CONTRACT (R-BI4; mesh-delete.md, "Failure and receipts": "The next attempt resumes from the
 /// receipts"; "Resume after the primary's loss"): a mesh.delete whose leaving mesh's primary is lost
@@ -1088,12 +1088,12 @@ const LEAVE_INCOMPLETE: &str = "shutdown-mesh: mesh2.admin.1 sent no valid mesh-
 #[test]
 fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_and_resumes_when_the_loss_is_proven() {
     use rafka_node_admin_core::build_state::{AttemptOutcome, BuildFact, BuildState, CurrentBuild};
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let (trace_id, first, second, third, facts, ran, dispatched, after) = cap.run(async {
         let root = tracing::info_span!("cell.leave-incomplete-stays-in-progress");
-        let trace_id = crate::mesh_leave_resume::trace_id(&root);
+        let trace_id = crate::mesh_delete_resume::trace_id(&root);
         let _in_root = root.enter();
-        let (r, leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
+        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete(LEAVE_INCOMPLETE.into()))).await;
         // Attempt 1: the shutdown ends incomplete. One drive across the passes, as the fabric-primary keeps it.
         let drive = Drive::detached(r.build.clone());
         let first = r.env.run(&drive).await;
@@ -1102,7 +1102,7 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_a
         let second = r.env.run(&drive).await;
         let second = (second, r.builds.read_build(&r.build).await.unwrap().attempt, r.dispatch.dispatched.lock().unwrap().len());
         // The leaving mesh's primary is proven gone: it is no longer live in the view, and the shutdown can run.
-        *leaver.ends.lock().unwrap() = None;
+        *mesh_deleter.ends.lock().unwrap() = None;
         for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
             n.status = NodeStatus::Dead;
             n.is_primary = false;
@@ -1152,7 +1152,7 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_a
 #[test]
 fn a_leave_that_ends_with_a_named_failure_fails_the_build_and_the_read_skips_it() {
     use rafka_node_admin_core::build_state::BuildState;
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let (end, p, current, seeded, dispatched) = cap.run(async {
         let root = tracing::info_span!("cell.leave-named-failure-fails-the-build");
         let _in_root = root.enter();
@@ -1188,11 +1188,11 @@ async fn mesh2_primary_becomes(r: &Rig, status: NodeStatus) {
 #[test]
 fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unproven_and_resumes_when_it_is_proven() {
     use rafka_node_admin_core::build_state::{BuildState, CurrentBuild};
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let (first, second, third, current, dispatched, ran) = cap.run(async {
         let root = tracing::info_span!("cell.leave-unheard-unproven-primary");
         let _in_root = root.enter();
-        let (r, leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: the final primary mesh2.admin.1 is silent but not proven exited, so no admin is created for it".into()))).await;
+        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: the final primary mesh2.admin.1 is silent but not proven exited, so no admin is created for it".into()))).await;
         mesh2_primary_becomes(&r, NodeStatus::PendingReconnect).await;
         for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2") {
             n.status = NodeStatus::PendingReconnect;
@@ -1206,7 +1206,7 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
         let dispatches = r.dispatch.dispatched.lock().unwrap().len();
         let second = (second, r.builds.read_build(&r.build).await.unwrap().attempt, dispatches);
         // The provider proves the primary's exit: it is gone from the view, and the shutdown can run.
-        *leaver.ends.lock().unwrap() = None;
+        *mesh_deleter.ends.lock().unwrap() = None;
         mesh2_primary_becomes(&r, NodeStatus::Dead).await;
         let third = r.env.run(&drive).await;
         let current = r.builds.current_build().await.unwrap();
@@ -1240,18 +1240,18 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
 #[test]
 fn a_leave_that_ends_incomplete_with_nothing_changed_claims_one_attempt_per_change_never_one_per_pass() {
     use rafka_node_admin_core::build_state::BuildState;
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let (passes, state, dispatched) = cap.run(async {
         let root = tracing::info_span!("cell.leave-one-attempt-per-change");
         let _in_root = root.enter();
-        let (r, leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: mesh2 holds no node-admin primary to hand the workflow to".into()))).await;
+        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: mesh2 holds no node-admin primary to hand the workflow to".into()))).await;
         let drive = Drive::detached(r.build.clone());
         let mut passes = Vec::new();
         for pass in 0..6 {
             match pass {
                 2 => mesh2_primary_becomes(&r, NodeStatus::PendingReconnect).await,
                 4 => {
-                    *leaver.ends.lock().unwrap() = None;
+                    *mesh_deleter.ends.lock().unwrap() = None;
                     mesh2_primary_becomes(&r, NodeStatus::Dead).await;
                 }
                 _ => {}
@@ -1279,13 +1279,13 @@ fn a_leave_that_ends_incomplete_with_nothing_changed_claims_one_attempt_per_chan
 #[test]
 fn a_leave_that_recorded_the_exit_and_the_amendment_before_it_ended_incomplete_is_resumed_by_the_next_attempt_at_once() {
     use rafka_node_admin_core::build_state::{BuildFact, BuildState};
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let (end, state, attempt, dispatched, steps) = cap.run(async {
         let root = tracing::info_span!("cell.leave-recorded-then-incomplete");
         let _in_root = root.enter();
-        let (r, leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: mesh2.admin.3 was created for mesh2 and holds no mesh-primary seat yet; the next attempt amends the roster for it".into()))).await;
-        leaver.progress.store(true, Ordering::SeqCst);
-        leaver.once.store(true, Ordering::SeqCst);
+        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: mesh2.admin.3 was created for mesh2 and holds no mesh-primary seat yet; the next attempt amends the roster for it".into()))).await;
+        mesh_deleter.progress.store(true, Ordering::SeqCst);
+        mesh_deleter.once.store(true, Ordering::SeqCst);
         let end = r.env.run(&Drive::detached(r.build.clone())).await;
         let p = r.builds.read_build(&r.build).await.unwrap();
         let steps: Vec<_> = r.builds.facts().await.unwrap().into_iter().filter_map(|f| if let BuildFact::Step(s) = f { Some((s.attempt, s.step)) } else { None }).collect();

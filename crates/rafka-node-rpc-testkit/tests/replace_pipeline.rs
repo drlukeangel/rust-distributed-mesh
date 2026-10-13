@@ -114,7 +114,7 @@ impl LifecycleEvents for Recorder<'_> {
             m.book.joined(op);
         }
     }
-    // The replace's order is asserted from its steps; the connections-deleting and leaving hooks and the mesh-leave
+    // The replace's order is asserted from its steps; the connections-deleting and leaving hooks and the mesh-deleted
     // events are not part of what this recorder hears.
     async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}

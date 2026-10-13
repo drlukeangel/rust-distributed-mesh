@@ -733,7 +733,7 @@ pub struct CommandContext {
     pub operation: String,
 }
 
-/// The identity a mesh-leave gossip hook carries: the mesh, the Build, the attempt and the outer
+/// The identity a mesh-deleted gossip hook carries: the mesh, the Build, the attempt and the outer
 /// operation `shutdown-mesh:<mesh_id>`, with the receipt manifest reference and the final primary
 /// where the event has them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -782,10 +782,10 @@ pub trait LifecycleEvents: Send + Sync {
     /// The accepted `stop-node` command's hook: `node-leaving`, on the executor's own mesh channel
     /// and the backbone.
     async fn leaving(&self, op: &LifecycleOp);
-    /// The accepted `leave-mesh` command's hook: `mesh-leaving`, authored by the fabric-primary on
+    /// The accepted `delete-mesh` command's hook: `mesh-leaving`, authored by the fabric-primary on
     /// the backbone and its own mesh channel.
     async fn mesh_leaving(&self, event: &MeshLeaveEvent);
-    /// The `mesh-leave` handoff call's hook: authored by the still-running mesh-primary on the
+    /// The `mesh-deleted` handoff call's hook: authored by the still-running mesh-primary on the
     /// backbone and its own mesh channel.
     async fn mesh_leave(&self, event: &MeshLeaveEvent);
     /// The completed workflow's hook: `mesh-left`, authored by the fabric-primary after every exact

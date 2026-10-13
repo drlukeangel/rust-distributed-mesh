@@ -37,7 +37,7 @@ pub mod control_plane;
 pub mod investigate;
 pub mod lifecycle;
 pub mod mesh_claims;
-pub mod mesh_leave;
+pub mod mesh_delete;
 pub mod model;
 pub mod node_commands;
 pub mod node_config;
