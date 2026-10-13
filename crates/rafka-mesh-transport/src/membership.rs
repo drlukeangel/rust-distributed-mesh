@@ -5087,9 +5087,10 @@ impl DigestBook {
         let latest = mark.latest;
         self.end_stop(d.node.node_id.as_str());
         let held_again = match latest {
+            // Its status is the projection's: the caller takes it next ([`Self::take_projected_status`]),
+            // into the one copy, and names the move there.
             Some((again, at, heard)) if self.own_mesh_member(d) => {
                 let seq = again.digest_seq;
-                self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
                 self.inner.lock().unwrap().insert(d.node.node_id.to_string(), (again, at, heard));
                 self.heard.send_modify(|v| *v += 1);
                 self.births.send_modify(|v| *v += 1);
