@@ -1328,6 +1328,83 @@ fn a_node_update_before_the_fabric_first_reaches_ready_for_traffic_is_refused_by
     eprintln!("trace {trace_id}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.update mesh1.rpc.1 status=state-sync; update outcome=rejected-fabric-not-ready");
 }
 
+fn create_tags(b: &Birth, l: &[&str]) -> StatusRequest {
+    StatusRequest::CreateTags { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), labels: labels(l) }
+}
+
+fn delete_tags(b: &Birth, scope: rafka_node_rpc_contract::status::TagScope) -> StatusRequest {
+    StatusRequest::DeleteTags { node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap(), scope }
+}
+
+/// CONTRACT (proposal node-properties-own-commands.md §1: "Each command goes to the node's
+/// mesh-primary as the row writer ..., is refused `fabric-not-ready` until the initial fabric has first
+/// reached ready-for-traffic"; §3: tags and config have no precondition beyond the fabric being ready,
+/// and neither touches the name; node-rpc-envelope.md node.tags: "Create is a blind put of that key, so
+/// creating a label the node already carries is ignored and writes no duplicate; delete tombstones the
+/// named keys ... a node carries at most 32; a label ... past the 32, is refused by name and nothing is
+/// written"): while the initial fabric is in state-sync, a caller's `node.tags.create`,
+/// `node.tags.delete` and `node.config.update` of `mesh1.rpc.1` at its mesh-primary are each refused
+/// `RejectedFabricNotReady` naming the workflow with its node and the fabric's status, and nothing is
+/// written or told. Once the fabric has first reached ready-for-traffic: create {rabbit} ends
+/// `TagsCreated` and the tags index answers rabbit; create {rabbit, red} names rabbit already carried;
+/// delete {rabbit, blue} names blue not carried and rabbit leaves the index; a create that would carry
+/// the node past 32 labels is refused `RejectedTags` naming the count and writes nothing; delete
+/// `All` leaves the row with no label and the index with none of its labels. The node is told
+/// nothing by any tags command. One `rdm.node_admin.node.reject.via-fabric-not-ready` span per refusal;
+/// each tags command's `via-writer` span ends with the reply's name. What must NOT happen: a row
+/// written before the fabric first reached ready-for-traffic, a duplicate label row, a label past the
+/// cap, or a tags command that calls the node.
+#[test]
+fn node_tags_and_config_commands_before_the_fabric_first_reaches_ready_for_traffic_are_refused_by_name_and_after_it_write_the_row_and_its_tags_index() {
+    use rafka_node_rpc_contract::status::TagScope;
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        let rpc1 = &b["rpc1"];
+        let node = serve_node(rpc1).await;
+        configs_door(&rig, &node).await;
+        rig.topology.write().await.fabric.status = ScopeStatus::StateSync;
+        let not_ready = |workflow: &str| StatusReply::RejectedFabricNotReady { workflow: format!("{workflow} mesh1.rpc.1"), status: "state-sync".into() };
+        assert_eq!(reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit"])).await), not_ready("node.tags.create"));
+        assert_eq!(reply(&call(&rig, &b["admin2"], &delete_tags(rpc1, TagScope::All)).await), not_ready("node.tags.delete"));
+        let config = StatusRequest::UpdateNodeConfig { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap(), config: [("zone".to_string(), "a".to_string())].into() };
+        assert_eq!(reply(&call(&rig, &b["admin2"], &config).await), not_ready("node.config.update"));
+        assert_eq!(rig.nodes.node_row_at(&rpc1.node.name).await.unwrap(), None, "no row is written");
+        assert!(rig.nodes.tagged("rabbit").await.unwrap().is_empty(), "no tags index entry is written");
+        assert!(node.seen.lock().unwrap().is_empty(), "the birth is told nothing");
+
+        rig.authority.first_ready.reach("the test fabric reached ready-for-traffic");
+        let (id, birth) = (rpc1.node.node_id.clone(), rpc1.node.incarnation_id.clone().unwrap());
+        let created = |already: &[&str]| StatusReply::TagsCreated { node_id: id.clone(), incarnation: birth.clone(), already_carried: labels(already) };
+        let deleted = |not: &[&str]| StatusReply::TagsDeleted { node_id: id.clone(), incarnation: birth.clone(), not_carried: labels(not) };
+        let row_tags = || async { rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().map(|r| r.tags).unwrap_or_default() };
+        assert_eq!(reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit"])).await), created(&[]));
+        assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [id.clone()].into());
+        assert_eq!(reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &["rabbit", "red"])).await), created(&["rabbit"]));
+        assert_eq!(row_tags().await, labels(&["rabbit", "red"]));
+        assert_eq!(reply(&call(&rig, &b["admin2"], &delete_tags(rpc1, TagScope::Labels(labels(&["rabbit", "blue"])))).await), deleted(&["blue"]));
+        assert!(rig.nodes.tagged("rabbit").await.unwrap().is_empty(), "rabbit's key is tombstoned");
+        assert_eq!(row_tags().await, labels(&["red"]));
+        let thirty_two: Vec<String> = (0..32).map(|i| format!("t{i}")).collect();
+        let over = reply(&call(&rig, &b["admin2"], &create_tags(rpc1, &thirty_two.iter().map(String::as_str).collect::<Vec<_>>())).await);
+        assert!(matches!(&over, StatusReply::RejectedTags { reason } if reason.contains("33 tag labels, over the 32")), "a create past the cap is refused naming the count: {over:?}");
+        assert_eq!(row_tags().await, labels(&["red"]), "a refused create writes nothing");
+        assert!(rig.nodes.tagged("t0").await.unwrap().is_empty(), "no label of a refused create is in the index");
+        assert_eq!(reply(&call(&rig, &b["admin2"], &delete_tags(rpc1, TagScope::All)).await), deleted(&[]));
+        assert!(row_tags().await.is_empty(), "the row carries no label");
+        assert!(rig.nodes.tagged("red").await.unwrap().is_empty(), "red's key is tombstoned");
+        assert!(node.seen.lock().unwrap().is_empty(), "no tags command tells the node anything");
+    });
+    let rejects = cap.spans("rdm.node_admin.node.reject.via-fabric-not-ready");
+    let workflows: Vec<_> = rejects.iter().map(|(_, a)| a.get("workflow").cloned().unwrap_or_default()).collect();
+    assert_eq!(workflows, vec!["node.tags.create mesh1.rpc.1".to_string(), "node.tags.delete mesh1.rpc.1".into(), "node.config.update mesh1.rpc.1".into()], "{rejects:?}");
+    let outcomes = |name: &str| cap.spans(name).iter().map(|(_, a)| a.get("outcome").cloned().unwrap_or_default()).collect::<Vec<_>>();
+    assert_eq!(outcomes("rdm.node_admin.node.tags.create.via-writer"), vec!["rejected-fabric-not-ready", "tags-created", "tags-created", "rejected-tags"]);
+    assert_eq!(outcomes("rdm.node_admin.node.tags.delete.via-writer"), vec!["rejected-fabric-not-ready", "tags-deleted", "tags-deleted"]);
+    let created = cap.spans("rdm.node_admin.node.tags.create.via-writer");
+    eprintln!("trace {}: rdm.node_admin.node.reject.via-fabric-not-ready workflow=node.tags.create mesh1.rpc.1 status=state-sync; trace {}: rdm.node_admin.node.tags.create.via-writer outcome=tags-created arrived=rabbit", rejects[0].0, created[1].0);
+}
+
 /// CONTRACT (R-PC1, states.md "The initial fabric before ready-for-traffic": the ready-for-traffic row
 /// among the mesh's status rows is the durable fact that the initial fabric first reached
 /// ready-for-traffic; proposal Part C1 step 2's R-PB1 pre-check is decided on the same fact): mesh1's

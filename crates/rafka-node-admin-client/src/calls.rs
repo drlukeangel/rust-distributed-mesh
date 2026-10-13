@@ -313,6 +313,36 @@ impl<'a> NodeRpc<'a> {
         self.status(NodeOp::ConfigUpdate, birth, req, opts).await
     }
 
+    /// `node.tags.create` of `labels` on the exact birth, the caller's single call to the node's
+    /// mesh-primary `mesh_primary` (R-TG1; node-rpc-envelope.md node.tags): it writes the node's row
+    /// carrying them and puts each label's key of the tags index, and answers `TagsCreated` naming
+    /// any label the node already carried. `route` as [`Self::node_update`].
+    pub async fn tags_create(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, labels: &std::collections::BTreeSet<String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::CreateTags { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), labels: labels.clone() };
+        self.row_writer_call(NodeOp::TagsCreate, mesh_primary, route, &req, opts).await
+    }
+
+    /// `node.tags.delete` of `scope` on the exact birth, as [`Self::tags_create`]: the row written
+    /// without the labels and each removed label's key of the tags index tombstoned; answered
+    /// `TagsDeleted` naming any named label the node did not carry.
+    pub async fn tags_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rafka_node_rpc_contract::status::TagScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::DeleteTags { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
+        self.row_writer_call(NodeOp::TagsDelete, mesh_primary, route, &req, opts).await
+    }
+
+    /// One call of `op` to the row writer `mesh_primary` over `route`, its span saying how it ended.
+    async fn row_writer_call(&self, op: NodeOp, mesh_primary: &NodeId, route: &RouteChoice, req: &StatusRequest, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let span = op.span();
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, req, opts), span.clone()).await;
+        let r = ended(out);
+        span.record("outcome", match &r {
+            Ok(reply) => reply.name(),
+            Err(e) => e.outcome(),
+        });
+        span.in_scope(|| tracing::info!(op = op.name(), route = route.token(), "an object call ended"));
+        r
+    }
+
     /// `node.update` of the exact birth's name and tags, the caller's single call to the node's
     /// mesh-primary `mesh_primary` (R13, R-TG1; node-rpc-envelope.md "Meta and config"): it validates
     /// from its held record, claims a changed name in its store adapter, puts each label's row of the

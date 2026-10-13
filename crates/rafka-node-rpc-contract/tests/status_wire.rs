@@ -3,14 +3,15 @@
 //! `node.connections.delete`'s request (21) and its two replies (31, 32), the reads' four
 //! requests (22..=25) and six replies (33..=38) with the views they carry, the mesh.delete round
 //! and manifest refusals (39, 40, 41), the tags `node.update` (20) puts, the tag filter `node.get`
-//! (22) selects by, the tags its answer (33) carries, and the tag refusal (43).
+//! (22) selects by, the tags its answer (33) carries, the tag refusal (43), and the tags commands
+//! `node.tags.create` (26) and `node.tags.delete` (27) with their replies (45, 46).
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
 use rafka_mesh_entity::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter};
+use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope};
 use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -28,7 +29,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
+fn requests_match_the_frozen_twenty_eight_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c3031323334353637383961620c39776370726667777674687903"),
@@ -70,6 +71,10 @@ fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
         (GetMeshes { mesh: Some("mesh1".into()) }, "1701056d65736831"),
         (GetFabric, "18"),
         (GetConnections { node_id: node(), incarnation: birth() }, "190c3031323334353637383961620c397763707266677776746879"),
+        // node_id | incarnation | labels (len 1: "red")
+        (CreateTags { node_id: node(), incarnation: birth(), labels: ["red".to_string()].into() }, "1a0c3031323334353637383961620c3977637072666777767468790103726564"),
+        // node_id | incarnation | scope Labels (1) (len 1: "red")
+        (DeleteTags { node_id: node(), incarnation: birth(), scope: TagScope::Labels(["red".to_string()].into()) }, "1b0c3031323334353637383961620c397763707266677776746879010103726564"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -80,7 +85,7 @@ fn requests_match_the_frozen_twenty_six_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_forty_five_variant_wire_schema() {
+fn replies_match_the_frozen_forty_seven_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -154,6 +159,10 @@ fn replies_match_the_frozen_forty_five_variant_wire_schema() {
         (RejectedTags { reason: "r".into() }, "2b0172"),
         // workflow "w" | status "s"
         (RejectedFabricNotReady { workflow: "w".into(), status: "s".into() }, "2c01770173"),
+        // node_id | incarnation | already_carried (len 1: "red")
+        (TagsCreated { node_id: node(), incarnation: birth(), already_carried: ["red".to_string()].into() }, "2d0c3031323334353637383961620c3977637072666777767468790103726564"),
+        // node_id | incarnation | not_carried (len 1: "blue")
+        (TagsDeleted { node_id: node(), incarnation: birth(), not_carried: ["blue".to_string()].into() }, "2e0c3031323334353637383961620c3977637072666777767468790104626c7565"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
@@ -279,6 +288,9 @@ fn nested_enum_discriminants_and_fields_are_frozen_too() {
     golden(NodeSelect::Mesh("m".into()), "01016d");
     // Tags | Any | len 1 | "red"
     golden(NodeSelect::Tags(TagFilter::Any(["red".to_string()].into())), "02010103726564");
+    golden(TagScope::All, "00");
+    // Labels | len 1 | "red"
+    golden(TagScope::Labels(["red".to_string()].into()), "010103726564");
     // All | len 2 | "a" | "b"
     golden(TagFilter::All(["a".to_string(), "b".to_string()].into()), "000201610162");
     for (status, expected) in [

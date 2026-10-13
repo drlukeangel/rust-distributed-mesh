@@ -411,6 +411,35 @@ pub enum StatusRequest {
         /// The incarnation of that birth.
         incarnation: IncarnationId,
     },
+    /// `node.tags.create` (node-rpc-envelope.md node.tags; R-TG1): a caller asks the exact birth's
+    /// mesh-primary, the only writer of its mesh's rows, through a carrier (Forward `0x1A`) when it
+    /// cannot reach it directly, to add `labels` to the node's tags. Each label is its own key of the
+    /// node store's tags index, a blind put: a label the node already carries is ignored and named in
+    /// the reply. Answered [`StatusReply::TagsCreated`] (`node.tags.created`) once the row and its
+    /// index entries are written; a non-label, an empty list, or labels that would carry the node past
+    /// [`MAX_NODE_TAGS`] are [`StatusReply::RejectedTags`] with nothing written. No precondition but
+    /// the fabric having first reached ready-for-traffic; the node is told nothing. A single call,
+    /// never a Build.
+    CreateTags {
+        /// The birth whose tags grow.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The labels added: one or a list, at most [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
+        labels: BTreeSet<String>,
+    },
+    /// `node.tags.delete` (node-rpc-envelope.md node.tags; R-TG1): as [`StatusRequest::CreateTags`],
+    /// removing every label (`All`) or the named ones; each removed label's index key is tombstoned.
+    /// Answered [`StatusReply::TagsDeleted`] (`node.tags.deleted`) naming any named label the node
+    /// did not carry.
+    DeleteTags {
+        /// The birth whose tags shrink.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// Which labels.
+        scope: TagScope,
+    },
 }
 
 /// Which nodes `node.get` selects. Positional order is part of the wire schema.
@@ -545,6 +574,47 @@ impl ConnectionScope {
     }
 }
 
+/// Which of a node's tag labels `node.tags.delete` removes (node-rpc-envelope.md, node.tags: "the
+/// same scope shape as `node.connections.delete`"). Positional order is part of the wire schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TagScope {
+    /// Every label the node carries. A tag of its own, never a value in the list.
+    All,
+    /// The named labels: at least one, at most [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
+    Labels(BTreeSet<String>),
+}
+
+impl TagScope {
+    /// The scope's name in spans and evidence.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Labels(_) => "labels",
+        }
+    }
+
+    /// Why the scope is refused, by name, or `None` when it names labels a node can carry: an empty
+    /// list names nothing to remove (`All` is its own scope); a list past [`MAX_NODE_TAGS`] or naming
+    /// a non-label is refused as [`tags_refusal`] refuses it.
+    pub fn refusal(&self) -> Option<String> {
+        match self {
+            Self::All => None,
+            Self::Labels(labels) if labels.is_empty() => Some("node.tags.delete names no label: Labels needs at least one label (All is its own scope)".into()),
+            Self::Labels(labels) => tags_refusal(labels),
+        }
+    }
+}
+
+/// Why a `node.tags.create`'s labels are refused, by name, or `None`: at least one label, at most
+/// [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]). Whether the node may carry them all is the
+/// writer's decision, from the labels its row already carries.
+pub fn create_tags_refusal(labels: &BTreeSet<String>) -> Option<String> {
+    if labels.is_empty() {
+        return Some("node.tags.create names no label: it needs at least one".into());
+    }
+    tags_refusal(labels)
+}
+
 /// The longest `receipt_manifest` reference a `MeshLeave` carries.
 pub const MAX_RECEIPT_MANIFEST_BYTES: usize = 128;
 
@@ -592,6 +662,8 @@ impl StatusRequest {
             Self::GetMeshes { .. } => "mesh.get",
             Self::GetFabric => "fabric.get",
             Self::GetConnections { .. } => "node.connections.get",
+            Self::CreateTags { .. } => "node.tags.create",
+            Self::DeleteTags { .. } => "node.tags.delete",
         }
     }
 }
@@ -1005,6 +1077,27 @@ pub enum StatusReply {
         /// `state-commit`); within [`MAX_REFUSAL_NODE_BYTES`].
         status: String,
     },
+    /// The reply of a `CreateTags` (`node.tags.created`): the mesh-primary wrote the node's row
+    /// carrying the labels and their tags index entries.
+    TagsCreated {
+        /// The birth whose tags grew.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The labels the node already carried: ignored, nothing written for them
+        /// (`AlreadyApplied` for those).
+        already_carried: BTreeSet<String>,
+    },
+    /// The reply of a `DeleteTags` (`node.tags.deleted`): the mesh-primary wrote the node's row
+    /// without the labels and tombstoned their tags index entries.
+    TagsDeleted {
+        /// The birth whose tags shrank.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The named labels the node did not carry: nothing was removed for them.
+        not_carried: BTreeSet<String>,
+    },
 }
 
 /// The event a Blocked `hydrate_before_ready` hook runs again on (fabric-node-hooks.md, "Outcomes
@@ -1210,6 +1303,8 @@ impl StatusReply {
             Self::RejectedSourceFailed { .. } => "rejected-source-failed",
             Self::RejectedTags { .. } => "rejected-tags",
             Self::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
+            Self::TagsCreated { .. } => "tags-created",
+            Self::TagsDeleted { .. } => "tags-deleted",
         }
     }
 }
@@ -1227,8 +1322,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 26;
-    const REPLY_VARIANTS: u32 = 45;
+    const REQUEST_VARIANTS: u32 = 28;
+    const REPLY_VARIANTS: u32 = 47;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1249,6 +1344,8 @@ impl NodeProtocol for Status {
             | StatusReply::Meshes { .. }
             | StatusReply::Fabric { .. }
             | StatusReply::Connections { .. }
+            | StatusReply::TagsCreated { .. }
+            | StatusReply::TagsDeleted { .. }
             | StatusReply::Started => ReplyKind::Success,
             StatusReply::RejectedStaleIncarnation { .. }
             | StatusReply::RejectedStaleMesh { .. }
@@ -1379,6 +1476,8 @@ mod tests {
             (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts 66h8qrqvaajk", "unreached: no path"), ReplyKind::ProtocolRefusal),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::ProtocolRefusal),
             (StatusReply::rejected_fabric_not_ready("node.update mesh1.rpc.1", "state-sync"), ReplyKind::ProtocolRefusal),
+            (StatusReply::TagsCreated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), already_carried: ["red".to_string()].into() }, ReplyKind::Success),
+            (StatusReply::TagsDeleted { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), not_carried: ["blue".to_string()].into() }, ReplyKind::Success),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -1422,6 +1521,8 @@ mod tests {
             StatusRequest::GetMeshes { mesh: None },
             StatusRequest::GetFabric,
             StatusRequest::GetConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: ["rabbit".to_string()].into() },
+            StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
@@ -1450,12 +1551,12 @@ mod tests {
         }
     }
 
-    /// CONTRACT (R-TG1; node-rpc-envelope.md node.get: a tag filter names labels): an `UpdateNode`
-    /// carrying the most labels one node carries, each at its longest, with the longest `path.name`,
-    /// encodes within the Status request bound, as does a `GetNodes` filter naming as many. A label is
-    /// lowercase letters, digits and `-` starting with a letter or a digit, 1 to `MAX_TAG_BYTES`
-    /// bytes; anything else, a set past `MAX_NODE_TAGS` and an empty filter are refused by name, the
-    /// label named.
+    /// CONTRACT (R-TG1; node-rpc-envelope.md node.tags: "A label is 1-64 characters of a-z 0-9 - _ .
+    /// ~, with no leading '.', and a node carries at most 32"): an `UpdateNode`, a `CreateTags` and a
+    /// `DeleteTags` carrying the most labels one node carries, each at its longest, with the longest
+    /// `path.name`, encode within the Status request bound, as does a `GetNodes` filter naming as many.
+    /// Anything outside the grammar, a set past `MAX_NODE_TAGS`, an empty filter, an empty create and
+    /// an empty `Labels` delete are refused by name, the label named.
     #[test]
     fn a_tag_set_at_its_cap_encodes_within_the_status_request_bound_and_a_non_label_is_refused_by_name() {
         let at_cap: BTreeSet<String> = (0..MAX_NODE_TAGS).map(|i| format!("{i:0>width$}", width = MAX_TAG_BYTES)).collect();
@@ -1463,15 +1564,17 @@ mod tests {
         let longest_name = format!("{}.broker.4294967295.old", "m".repeat(64));
         for q in [
             StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: longest_name.clone(), tags: at_cap.clone() },
+            StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: at_cap.clone() },
+            StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(at_cap.clone()) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::Any(at_cap.clone())) },
         ] {
             let len = Status::encode_request(&q).unwrap().len();
             assert!(len <= Status::MAX_REQUEST_FRAME_BYTES, "{} encodes to {len}, over {}", q.op(), Status::MAX_REQUEST_FRAME_BYTES);
         }
-        for ok in ["rabbit", "red", "zone-a", "7", "a-1-b"] {
+        for ok in ["rabbit", "red", "zone-a", "7", "a-1-b", "zone_a", "a.b", "v1.2~rc", "-red", "~x", "_x"] {
             assert_eq!(tag_refusal(ok), None, "{ok}");
         }
-        for (bad, says) in [("", "empty"), ("Rabbit", "\"Rabbit\""), ("-red", "\"-red\""), ("zone_a", "\"zone_a\""), ("a.b", "\"a.b\""), ("a/b", "\"a/b\"")] {
+        for (bad, says) in [("", "empty"), ("Rabbit", "\"Rabbit\""), (".red", "\".red\""), ("a/b", "\"a/b\""), ("a b", "\"a b\""), ("zone\ta", "\"zone\\ta\"")] {
             assert!(tag_refusal(bad).is_some_and(|r| r.contains(says)), "{bad:?}: {:?}", tag_refusal(bad));
         }
         assert!(tag_refusal(&"x".repeat(MAX_TAG_BYTES + 1)).is_some_and(|r| r.contains("over the 64-byte cap")));
@@ -1479,6 +1582,11 @@ mod tests {
         assert!(tags_refusal(&over).is_some_and(|r| r.contains("33 tag labels, over the 32")));
         assert!(TagFilter::All(BTreeSet::new()).refusal().is_some_and(|r| r.contains("names no label")));
         assert!(TagFilter::Any(["Red".to_string()].into()).refusal().is_some_and(|r| r.contains("\"Red\"")));
+        assert!(create_tags_refusal(&BTreeSet::new()).is_some_and(|r| r.contains("node.tags.create names no label")));
+        assert!(create_tags_refusal(&["Red".to_string()].into()).is_some_and(|r| r.contains("\"Red\"")));
+        assert_eq!(TagScope::All.refusal(), None);
+        assert!(TagScope::Labels(BTreeSet::new()).refusal().is_some_and(|r| r.contains("node.tags.delete names no label")));
+        assert!(TagScope::Labels(over.clone()).refusal().is_some_and(|r| r.contains("33 tag labels, over the 32")));
         let long = "x".repeat(4 * Status::MAX_REPLY_FRAME_BYTES);
         let len = Status::encode_reply(&StatusReply::rejected_tags(&long)).unwrap().len();
         assert!(len <= 1024, "rejected-tags encodes to {len}, over 1024");
