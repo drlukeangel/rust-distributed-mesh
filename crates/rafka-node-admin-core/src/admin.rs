@@ -3677,14 +3677,12 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         let f = rafka_mesh_transport::membership::Frame::NodeDeleted { op: op.clone(), forwarded_by: None };
         let span = tracing::info_span!("rdm.node_admin.node.delete.via-node-deleted", node = %op.name, node_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), build_id = %op.build_id, attempt = op.attempt, operation = %op.operation);
         async {
-            // Read before the departure is taken: the delete of a deleted mesh's birth moves that
-            // birth to `deleted` in the aggregate this fabric-primary publishes for the mesh
-            // (mesh-delete.md step 7, gossip.md "Mesh delete").
-            let of_deleted_mesh = self.backbone.publishes_deleted_mesh_of(op);
+            // The departure the publication takes into this admin's own book: a deleted mesh's
+            // aggregate, which the fabric-primary publishes from what its book holds, moves the birth
+            // to `deleted` (mesh-delete.md step 7, gossip.md "Mesh delete").
             if let Err(e) = self.membership.publish_lifecycle(&f).await {
                 tracing::info!(error = %e, "NodeDeleted not sent on the mesh channel");
             }
-            self.backbone.executed_delete(op, of_deleted_mesh);
             tracing::info!("the exact birth is proven terminal: it has left");
         }
         .instrument(span)
