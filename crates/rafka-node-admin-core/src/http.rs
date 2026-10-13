@@ -608,8 +608,9 @@ impl ActionKind {
 /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The no-successor cases": "refused by name,
 /// `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, until a secondary is available
 /// ... the workflow that commanded it ... fails by name with that reason. The one exception is
-/// R-MT1's: the delete of a mesh's only node skips the update"): the same search the holder's pre-check
-/// runs (`election::commanded_successor`), so nothing is admitted and no attempt opens.
+/// R-MT1's: the delete of a mesh's only node skips the update"), or, for that delete, when the fabric
+/// seat it holds has no other mesh-primary to go to (C2 step 3): the same search the holder's
+/// pre-check runs (`election::commanded_successor`), so nothing is admitted and no attempt opens.
 fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject> {
     let target = t.node(node)?;
     let fabric_seat = t.fabric_primary().is_some_and(|fp| fp.node_id == target.node_id);
@@ -620,10 +621,17 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
         _ => return None,
     };
     // The delete of a mesh's only node, by a desired-state retire or by the node.delete route (the
-    // final primary a mesh.delete left alive, mesh-delete.md step 7), skips the update.
-    if matches!(action, "retire" | "delete") && t.only_node(&node.mesh, &target.node_id) {
-        return None;
-    }
+    // final primary a mesh.delete left alive, mesh-delete.md step 7), skips the update; a fabric seat on
+    // it still moves, out of its mesh (C2 search step 2), and is refused with C2 step 3's text when no
+    // other mesh-primary can take it.
+    let moving = if matches!(action, "retire" | "delete") && t.only_node(&node.mesh, &target.node_id) {
+        if !fabric_seat {
+            return None;
+        }
+        crate::election::Moving::FabricSeatOutside
+    } else {
+        moving
+    };
     let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
     let refusal = crate::election::commanded_successor(&nodes, &crate::election::Incumbency::default(), target, moving).err()?;
     Some(BuildReject::LastAdmin { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), refusal })

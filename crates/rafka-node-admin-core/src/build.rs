@@ -407,7 +407,7 @@ impl fmt::Display for BuildReject {
             Self::MeshIdUnknown { mesh } => write!(f, "mesh `{mesh}` is held, but no member has stated its id: its shutdown cannot be keyed"),
             Self::UnknownNode { node } => write!(f, "node `{node}` is not in the fabric"),
             Self::NodeNotLive { node } => write!(f, "node `{node}` is not live"),
-            Self::WouldLeaveMeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` would be left without a live node-admin"),
+            Self::WouldLeaveMeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` would be left without a node-admin in the accepted topology"),
             Self::MeshAlreadyExists { mesh } => write!(f, "mesh `{mesh}` already exists"),
             Self::FabricMismatch { requested, fabric } => write!(f, "Build names fabric `{requested}`, this is `{fabric}`"),
             Self::EmptyFabric => write!(f, "a fabric needs at least one desired mesh"),

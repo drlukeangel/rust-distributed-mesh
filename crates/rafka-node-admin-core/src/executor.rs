@@ -92,8 +92,8 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // issue commands to a MP"). The fabric-primary's drive moves the seat first by
         // node.primary.update ([`seat_move`]): until it has, no admin executes the operation. Once the
         // seat moved the target is a member like any other, executed by its mesh's primary. The delete
-        // of a mesh's only node moves no seat: the fabric primary, which owns what happens to a mesh
-        // that has no other admin.
+        // of a mesh's only node moves no mesh seat (a fabric seat on it moves out of its mesh first):
+        // the fabric primary, which owns what happens to a mesh that has no other admin, executes it.
         BuildOperation::RetireNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DeleteConnections { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. } => {
             if seat_move(op, t).is_some() {
                 None
@@ -190,10 +190,13 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 /// the fabric seat alone (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part
 /// C1 "The last node-admin of a mesh": "mesh.delete never updates the mesh primary ... If the mesh
 /// holds the fabric seat, that seat moves first by `node.fabric-primary.update` with the departing mesh
-/// excluded (mesh-delete.md step 1); nothing else moves"). `None` for any other operation, a target
-/// that holds no seat, and the delete of a mesh's only node. A holder with no other node-admin in its
-/// mesh is still named: node.primary.update refuses it by name (the Build door refuses it first,
-/// `http::last_admin`).
+/// excluded (mesh-delete.md step 1); nothing else moves"). The delete of a mesh's only node moves no
+/// mesh seat; when that node holds the fabric seat, the fabric seat alone moves out of its mesh (C2
+/// "Successor search for the commanded transfer", step 2: "only when that mesh has none ... the lowest
+/// NodeId among the other ReadyForTraffic mesh-primaries"). `None` for any other operation, a target
+/// that holds no seat, and the delete of a mesh's only node that holds no fabric seat. A holder with no
+/// other node-admin in its mesh is still named: node.primary.update refuses it by name (the Build door
+/// refuses it first, `http::last_admin`).
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
         let holder = t.fabric_primary().filter(|fp| fp.mesh == *mesh)?.clone();
@@ -213,8 +216,10 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     if !mesh_seat && !fabric_seat {
         return None;
     }
+    // The delete of a mesh's only node skips node.primary.update; a fabric seat on it still moves, out
+    // of its mesh, which has no other node-admin to take it (C2 search step 2).
     if delete && t.only_node(&node.mesh, &holder.node_id) {
-        return None;
+        return fabric_seat.then_some(SeatMove { holder, mesh_seat: false, fabric_seat: true });
     }
     Some(SeatMove { holder, mesh_seat, fabric_seat })
 }
