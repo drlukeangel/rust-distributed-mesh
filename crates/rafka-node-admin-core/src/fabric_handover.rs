@@ -38,7 +38,7 @@ use crate::model::{IncarnationId, NodeId, PathName};
 use crate::topology::Topology;
 use rafka_mesh_entity::{LifecycleOp, Seat};
 use rafka_mesh_transport::membership::{Backbone, DigestBook, Membership, SeatBook, SeatTaken};
-use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
+use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, PeerContext, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatEpoch, SeatUpdate};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
@@ -57,6 +57,15 @@ pub fn update_operation(seat: Seat, build_id: &str, op_key: &str) -> String {
         Seat::FabricPrimary => format!("node.fabric-primary.update:{build_id}:{op_key}"),
     }
 }
+
+/// The fabric-primary's bound on reaching the holder and sending it the command (`UpdatePrimary`).
+/// The command's reply is the holder's whole update, its own call to the successor included, which
+/// runs under that call's own budget; so nothing but the holder's liveness bounds the reply: the
+/// transport's idle timeout and keepalive, as for the Build carrier (node-rpc.md §34). A reply bound
+/// of its own would end the command before the holder can answer it whenever the successor's call
+/// runs to its bound, recording an uncertainty about the holder, which is alive, in place of the
+/// holder's answer naming the successor.
+const COMMAND_SEND: std::time::Duration = std::time::Duration::from_secs(10);
 
 
 /// What a receiver had to read or write to decide or commit a call, and why it failed: the fields a
@@ -359,12 +368,12 @@ impl HandoverDoor {
         })
     }
 
-    /// One call to `target`, its outcome as node-rpc-envelope.md "Caller execution and certainty"
+    /// One call to `target` under `opts`, its outcome as node-rpc-envelope.md "Caller execution and certainty"
     /// reads it: a reply; proof that the request never reached the receiver's dispatch (NotSent, an
     /// unserved op, a stale target); or Indeterminate, committed with no stronger proof. Never sent
     /// again here.
-    async fn call_once(&self, target: &NodeId, req: &Request) -> Called {
-        let (out, _) = self.client.call::<NodePrimaryUpdate>(&NodeTarget::ExactNode(target.clone()), req, &CallOptions::default()).await;
+    async fn call_once(&self, target: &NodeId, req: &Request, opts: &CallOptions) -> Called {
+        let (out, _) = self.client.call::<NodePrimaryUpdate>(&NodeTarget::ExactNode(target.clone()), req, opts).await;
         let why = |o: &RpcOutcome<_>| format!("the {} call to {target} ended {} ({o:?})", req.op(), o.name());
         match out {
             RpcOutcome::Reply(r) => Called::Reply(r.value().clone()),
@@ -706,7 +715,7 @@ impl HandoverDoor {
     /// successor's from the row and no row is rewritten.
     async fn call_successor(&self, row: &SeatTransferRow, side: &'static str) -> Result<Vec<CommittedSeat>, Reply> {
         let of = Refusing { operation: &row.operation, build_id: &row.build_id, attempt: row.attempt, holder: Some(&row.holder), successor: Some(&row.successor) };
-        let (reason, why) = match self.call_once(&row.successor.node_id, &call_of(row)).await {
+        let (reason, why) = match self.call_once(&row.successor.node_id, &call_of(row), &CallOptions::default()).await {
             Called::Reply(Reply::PrimaryUpdated { epochs }) if !epochs.is_empty() => return Ok(epochs),
             Called::Reply(other) => ("refused", format!("answered {}: {}", other.name(), refusal_reason(&other).1)),
             Called::NotDispatched(why) => ("not-dispatched", why),
@@ -763,7 +772,7 @@ impl HandoverDoor {
             return Err(("refused", format!("{}'s seat records name no mesh-primary seat of {} held by {}", self.me, holder.mesh, births(&hb))));
         };
         let req = Request::UpdatePrimary { fabric: self.fabric.clone(), holder: hb.clone(), seats: vec![SeatEpoch { seat: WireSeat::of(Seat::MeshPrimary, &holder.mesh), expected_epoch: held.epoch }], build_id: build_id.to_string(), attempt, operation: operation.to_string() };
-        match self.call_once(&hb.node_id, &req).await {
+        match self.call_once(&hb.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
             Called::Reply(Reply::PrimaryUpdated { epochs }) if !epochs.is_empty() => Ok(self.install_committed(holder, &hb, epochs, build_id, attempt, operation, "primary-updated").await),
             Called::Reply(Reply::Incomplete { reason }) => Err(("incomplete", format!("{}: node.primary.update {operation} of {} is incomplete: {reason}", self.me, holder.name))),
             Called::Reply(refusal) => {
