@@ -116,15 +116,20 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     // The frame's version is taken by the publish itself, under the version lock (membership.rs `publish_status_event`), which
     // emits no `via-topology-version` span; that span belongs to the round path. So the proof that the frame's version is
     // the aggregate's is the other primary installing and forwarding the aggregate at exactly that version, below.
-    // The other mesh's primary installs that aggregate from the backbone and forwards it onto its own mesh.
+    // The other mesh's primary installs that aggregate from the backbone and forwards it onto its own mesh: at the
+    // frame's version, or at a later version that still carries the restart in `in_flight`. Gossip delivers the
+    // latest aggregate, not every one: a version superseded before it reaches a peer is dropped there by the receive
+    // order (gossip.md §3.1), as when the stop's own change follows NodeRestarting within milliseconds.
+    let at_or_after = |x: &Value| x["attributes"]["topology_version"].as_str().and_then(|v| v.parse::<u64>().ok()).zip(version.parse::<u64>().ok()).is_some_and(|(v, at)| v >= at);
+    let carries = |x: &Value| x["attributes"]["in_flight"].as_str().is_some_and(|n| n != "0");
     let home_spans = spans_of(&estate, pids[&home_primary]);
     let installed: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-snapshot-installed")
         .into_iter()
-        .filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["channel"] == "backbone" && x["attributes"]["topology_version"] == version.as_str())
+        .filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["channel"] == "backbone" && at_or_after(x) && carries(x))
         .collect();
-    assert!(!installed.is_empty(), "{home_primary} installs {away}'s aggregate at version {version} from the backbone");
-    let forwarded: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["topology_version"] == version.as_str()).collect();
-    assert!(!forwarded.is_empty(), "{home_primary} forwards {away}'s delta at version {version} onto {home}'s channel");
+    assert!(!installed.is_empty(), "{home_primary} installs {away}'s aggregate from the backbone at version {version} or later, with the restart in flight");
+    let forwarded: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-forwarded-delta").into_iter().filter(|x| x["attributes"]["mesh"] == away && at_or_after(x) && carries(x)).collect();
+    assert!(!forwarded.is_empty(), "{home_primary} forwards {away}'s delta at version {version} or later, with the restart in flight, onto {home}'s channel");
     // Its members hear the same operation, after the forward.
     for n in names.iter().filter(|n| n.starts_with(home) && n.contains(".rpc.")) {
         let heard = of_op(&spans_of(&estate, pids[n]), "rdm.mesh.membership.update.via-node-restarting");
