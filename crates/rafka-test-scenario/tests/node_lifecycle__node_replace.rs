@@ -1304,12 +1304,18 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     estate.shutdown().await;
 }
 
-/// CONTRACT (node-rpc-envelope.md "TakeSeats: Build-driven seat transfer", Boundary; R-EL1a point 7):
-/// in a fabric whose fabric-primary is its mesh's only node-admin, a replace, restart, node.connections.delete or stop
-/// of the fabric-primary is refused by name, 422 `last-admin` with
-/// `rdm.node_admin.build.reject.via-last-admin` naming the route: TakeSeats moves seats inside the
-/// holder's mesh only, and the fabric seat leaves that mesh only through TakeFabricPrimary inside a
-/// mesh-leave. No attempt opens, no executor of the peer mesh is picked, and every node stays as it was.
+/// CONTRACT (the approved proposal docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md
+/// Part C1 "The no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update` commanded for a
+/// cohort with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary
+/// of type <node_type> in mesh <mesh>`, until a secondary is available. The holder stays primary, nothing
+/// is cut off, no row is written, and the workflow that commanded it ... fails by name with that
+/// reason"): in a fabric whose fabric-primary is its mesh's only node-admin, each of the routes `replace`,
+/// `restart`, `connections/delete` and `stop` on the fabric-primary is refused by name, 422 `last-admin`
+/// with exactly `cannot transfer: no secondary of type node-admin in mesh <its mesh>`, one
+/// `rdm.node_admin.build.reject.via-last-admin` per route with the same text. The mesh seat has no
+/// secondary, so the peer mesh's Ready primary is no successor of both seats (C2's outside search is
+/// mesh.delete's only). No attempt opens, no seat move is commanded, no row is written, and every node
+/// stays as it was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name() {
     let (estate, birth_build) = two_mesh_estate("a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name").await;
@@ -1320,10 +1326,10 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     assert_eq!(before.iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh.as_str()).count(), 1, "the fabric-primary is its mesh's only admin: {before:#?}");
     let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
     let attempt = b["attempt"].clone();
+    let q7 = format!("cannot transfer: no secondary of type node-admin in mesh {mesh}");
     for action in ["replace", "restart", "connections/delete", "stop"] {
         let (status, r) = estate.post(&format!("/api/nodes/{fp}/{action}"), &json!({})).await;
-        assert_eq!((status, r["error"].as_str()), (422, Some("last-admin")), "{action}: {r}");
-        assert!(s(&r["detail"]).contains(&fp) && s(&r["detail"]).contains("mesh-leave"), "{action}: the refusal names the node and the one way its seat leaves the mesh: {r}");
+        assert_eq!((status, r["error"].as_str(), r["detail"].as_str()), (422, Some("last-admin"), Some(q7.as_str())), "{action}: refused with Q7's exact text: {r}");
     }
     let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
     assert_eq!(b["attempt"], attempt, "no attempt opened: {b}");
@@ -1335,7 +1341,9 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     let refused = named(&spans, "rdm.node_admin.build.reject.via-last-admin");
     let routes: std::collections::BTreeSet<String> = refused.iter().map(|sp| s(&sp["attributes"]["route"])).collect();
     assert_eq!(routes.len(), 4, "one refusal per route: {routes:?}");
-    assert!(refused.iter().all(|sp| s(&sp["attributes"]["detail"]).contains(&fp)), "{refused:?}");
+    assert!(refused.iter().all(|sp| s(&sp["attributes"]["detail"]) == q7), "every refusal span carries Q7's exact text: {refused:?}");
+    assert!(named(&spans, "rdm.node_admin.seat.update.via-primary-updating").is_empty(), "no node.primary.update ran");
+    assert!(named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").is_empty(), "no row was written");
     assert!(
         named(&spans, "rdm.node_admin.build.update.via-rest").into_iter().all(|sp| s(&sp["attributes"]["attempt"]).is_empty()),
         "no attempt number was recorded by any refused request"
