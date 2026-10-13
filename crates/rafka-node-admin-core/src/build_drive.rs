@@ -195,6 +195,12 @@ pub trait Dispatcher: Send + Sync {
     /// Build's intent (`intent`: postcard frames of the Build topic's message) and the run the
     /// fabric-primary planned (`plan`): the operations the executor runs and nothing else.
     async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched;
+    /// Hold the run of `attempt` of `build_id` on the admin `me` (the drive's own) while a step of the
+    /// Build runs in the drive itself (the holder's own node.primary.update): a dispatch of the attempt
+    /// to `me` reattaches to it ([`crate::build_run::HeldRun`]). `None` when it holds no run here.
+    fn hold(&self, _me: &PathName, _build_id: &BuildId, _attempt: u32) -> Option<crate::build_run::HeldRun> {
+        None
+    }
 }
 
 /// Why a drive ended without the seat: what the old seat says, and the admin the committed fabric
@@ -1039,27 +1045,96 @@ impl DriveEnv {
         Some(self.stalled(drive, why))
     }
 
-    /// The seats the first operation left moves before it is claimed (R-MT1, [`crate::executor::seat_move`]):
-    /// node.primary.update through the gate, commanded from here. `Ok(true)` once a seat moved (the
-    /// loop passes the gates again: a moved fabric seat ends this drive there), `Ok(false)` when no seat
-    /// is owed, and the end, named, when the seat did not move.
+    /// The seats the first operation left moves before it runs (R-MT1, [`crate::executor::seat_move`]):
+    /// node.primary.update through the gate. A mesh-primary's seat is commanded from here, and the
+    /// fabric-primary keeps its own. `Ok(true)` once a seat moved (the loop passes the gates again: a
+    /// moved fabric seat ends this drive there), `Ok(false)` when no seat is owed, and the end, named,
+    /// when the seat did not move.
     async fn seats_first(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Result<bool, DriveEnd> {
         let t = self.topology.read().await.clone();
         let Some(op) = left(drive, p, &t).into_iter().next() else { return Ok(false) };
         let Some(m) = crate::executor::seat_move(&op, &t) else { return Ok(false) };
         let attempt = p.attempt + 1;
+        if m.holder.node_id == self.door.node_id {
+            return self.own_seats_first(drive, &op, &m, attempt).await;
+        }
         if let Err(why) = self.gate.move_seats(&m, &drive.build_id, attempt, &op.key()).await {
             let why = format!("{}: the seat of {} did not move before {}: {why}", self.me, m.holder.name, op.key());
             self.blocked(drive, attempt, &op.key(), "primary-update", &why);
             return Err(self.stalled(drive, why));
         }
-        let after = self.topology.read().await.clone();
-        if crate::executor::seat_move(&op, &after).is_some_and(|still| still.holder.node_id == m.holder.node_id && still.mesh_seat == m.mesh_seat && still.fabric_seat == m.fabric_seat) {
+        if still_holds(&op, &m, &self.topology.read().await.clone()) {
             let why = format!("{}: node.primary.update of {} answered, and this view still names it the holder of the seat {} moves", self.me, m.holder.name, op.key());
             self.blocked(drive, attempt, &op.key(), "primary-update", &why);
             return Err(self.stalled(drive, why));
         }
         Ok(true)
+    }
+
+    /// This admin's own seats move before `op`, as a step of the Build (the approved proposal
+    /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 1: "The holder is commanded from
+    /// above, as a step of the Build"): attempt `attempt` is claimed for this admin first and its run is
+    /// held here while node.primary.update runs, so a successor that holds the seats from the row
+    /// reattaches to this attempt and goes on only once it ends, after this holder said "primary
+    /// updated" (step 8: "Only then does the commanding Build continue"; build.md: "A live run is
+    /// reattached, never re-claimed"). The attempt ends `HandedOff` to the fabric-primary of the view the
+    /// update ends with: the successor once the row moved the seats, this admin when nothing moved, and
+    /// then the drive waits for what its next attempt decides on to move ([`world`], R-BI4).
+    async fn own_seats_first(&self, drive: &Arc<Drive>, op: &BuildOperation, m: &crate::executor::SeatMove, attempt: u32) -> Result<bool, DriveEnd> {
+        let id = &drive.build_id;
+        let context = match self.door.claim(&self.me.to_string(), id, attempt).await {
+            BuildClaimReply::Won { context } => context,
+            other => {
+                let why = format!("{}: its seats move before {} as a step of attempt {attempt} of Build {id}, and that attempt was not claimed for it: {}", self.me, op.key(), claim_refusal(&other));
+                self.blocked(drive, attempt, &op.key(), "primary-update", &why);
+                return Err(self.stalled(drive, why));
+            }
+        };
+        let held = self.dispatcher.hold(&self.me, id, attempt);
+        let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %self.me, node = %self.me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        if let Some(tp) = &context.traceparent {
+            rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
+        }
+        let moved = self.gate.move_seats(m, id, attempt, &op.key()).instrument(dspan.clone()).await;
+        let after = self.topology.read().await.clone();
+        let still = still_holds(op, m, &after);
+        let to = match after.fabric_primary() {
+            Some(fp) if !still => fp.name.clone(),
+            _ => self.me.clone(),
+        };
+        let terminal = BuildReply::HandedOff { build_id: id.to_string(), attempt, to: to.to_string() };
+        match held {
+            Some(held) => held.finish(terminal).await,
+            None => {
+                if let Err(e) = self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.to_string() }, mesh: None }).await {
+                    dspan.record("reason", format!("the verdict of attempt {attempt} could not be recorded: {e}").as_str());
+                }
+            }
+        }
+        dspan.record("outcome", "handed-off");
+        match (moved, still) {
+            (Ok(()), false) => Ok(true),
+            (Err(why), false) => {
+                // After the row the seats are the successor's whatever the call returned (C1 failure
+                // contract): the drive goes on to the gates, which end it at the moved seat.
+                let why = format!("{}: its seats moved to {to} by the committed row before {}, and node.primary.update did not complete: {why}", self.me, op.key());
+                dspan.record("reason", why.as_str());
+                self.blocked(drive, attempt, &op.key(), "primary-update", &why);
+                Ok(true)
+            }
+            (moved, true) => {
+                let why = match moved {
+                    Err(why) => format!("{}: the seat of {} did not move before {}: {why}", self.me, m.holder.name, op.key()),
+                    Ok(()) => format!("{}: node.primary.update of {} answered, and this view still names it the holder of the seat {} moves", self.me, m.holder.name, op.key()),
+                };
+                dspan.record("reason", why.as_str());
+                self.blocked(drive, attempt, &op.key(), "primary-update", &why);
+                if let Ok(ended) = self.builds.read_build(id).await {
+                    drive.set_idle(Some(Idle { attempt, world: world(drive, &ended, &after), why: why.clone() }));
+                }
+                Err(self.stalled(drive, why))
+            }
+        }
     }
 
     /// The drive waits, named, while the attempt it handed back to itself with nothing moved has not
@@ -1249,6 +1324,23 @@ impl DriveEnv {
                 InnerItem::Broke(why) => return Inner::Broke(why),
             }
         }
+    }
+}
+
+/// Whether view `t` still names `m`'s holder the holder of the seats `m` moves before `op`.
+fn still_holds(op: &BuildOperation, m: &crate::executor::SeatMove, t: &Topology) -> bool {
+    crate::executor::seat_move(op, t).is_some_and(|still| still.holder.node_id == m.holder.node_id && still.mesh_seat == m.mesh_seat && still.fabric_seat == m.fabric_seat)
+}
+
+/// A claim not won, in words that name what the claim door said.
+fn claim_refusal(r: &BuildClaimReply) -> String {
+    match r {
+        BuildClaimReply::Lost { holder } => format!("lost (the attempt is held by {holder})"),
+        BuildClaimReply::NotOpen { next } => format!("not-open (the open attempt is {next:?})"),
+        BuildClaimReply::NotClaimant { mesh, fabric_primary, mesh_primary } => format!("not-claimant (mesh {mesh:?}; its view shows fabric-primary {fabric_primary:?}, mesh-primary {mesh_primary:?})"),
+        BuildClaimReply::BuildInProgress { current_build_id, mesh, held_by } => format!("build-in-progress (mesh {mesh} is held by Build {current_build_id}, claimed by {held_by:?})"),
+        BuildClaimReply::NotReady { reason } => format!("not-ready ({reason})"),
+        other => other.name().to_string(),
     }
 }
 

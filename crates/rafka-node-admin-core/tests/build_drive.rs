@@ -821,15 +821,16 @@ impl Gate for SeatMoves {
 
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The last
 /// node-admin of a mesh": "If the mesh holds the fabric seat, that seat moves first by
-/// `node.fabric-primary.update` with the departing mesh excluded (mesh-delete.md step 1)"; C1 step 8:
-/// "Only then does the commanding Build continue, and only once the successor's installation is
-/// acknowledged"): a mesh retire whose fabric-primary sits inside the leaving mesh moves the fabric
-/// seat alone (the mesh seat stays, mesh.delete never updates it) from the drive, before any attempt
-/// is claimed, and the drive ends `SeatLost` naming the new holder only once that move answered.
-/// Must NOT happen: an attempt claimed or dispatched at the leaving mesh's admin, the retire run there,
-/// or the seat moved inside a dispatched run, where the row ends the drive before the successor installed.
+/// `node.fabric-primary.update` with the departing mesh excluded (mesh-delete.md step 1)"; C1 step 1:
+/// "The holder is commanded from above, as a step of the Build"; step 8: "Only then does the commanding
+/// Build continue"): a mesh retire whose fabric-primary sits inside the leaving mesh moves the fabric
+/// seat alone (the mesh seat stays, mesh.delete never updates it) from the drive, as a step of the
+/// attempt the holder claims for itself; that attempt ends `HandedOff` to the new seat once the move
+/// answered, and the drive ends `SeatLost` naming the new holder.
+/// Must NOT happen: an operation dispatched at the leaving mesh's admin, the retire run there, or the
+/// attempt ending with no verdict or handed to any admin but the new seat.
 #[tokio::test]
-async fn a_mesh_retire_whose_fabric_primary_sits_inside_moves_the_fabric_seat_alone_before_any_claim() {
+async fn a_mesh_retire_whose_fabric_primary_sits_inside_moves_the_fabric_seat_alone_in_its_own_attempt_handed_to_the_new_seat() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     t.nodes.push(node("mesh2.admin.1", true, false));
@@ -858,10 +859,15 @@ async fn a_mesh_retire_whose_fabric_primary_sits_inside_moves_the_fabric_seat_al
     let (holder, mesh_seat, fabric_seat, operation) = &moved[0];
     assert_eq!((holder.as_str(), *mesh_seat, *fabric_seat), ("mesh1.admin.1", false, true), "the fabric seat alone moves from the fabric-primary: {moved:?}");
     assert!(operation.starts_with("shutdown-mesh:"), "the update names the mesh retire it precedes: {operation}");
-    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no attempt was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no operation was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran at the leaving mesh's admin: {:?}", r.ran.0.lock().unwrap());
     let p = r.builds.read_build(&r.build).await.unwrap();
-    assert_eq!((p.state, p.attempt), (rafka_node_admin_core::build_state::BuildState::Pending, 0), "no attempt was claimed: the Build waits for the new seat's claim");
+    assert_eq!((p.attempt, p.attempt_executors.get(&1).map(String::as_str)), (1, Some("mesh1.admin.1")), "the move is a step of the attempt the holder claimed for itself: {:?}", p.attempt_executors);
+    let verdicts: Vec<_> = r.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
+        rafka_node_admin_core::build_state::BuildFact::Attempt(a) if a.build_id == r.build => Some((a.attempt, a.outcome)),
+        _ => None,
+    }).collect();
+    assert_eq!(verdicts, vec![(1, rafka_node_admin_core::build_state::AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() })], "the holder's attempt ends handed to the new seat, which claims the next");
     assert!(matches!(next_within(&mut reader).await, Some(Read::SeatLost(loss)) if loss.to.as_deref() == Some("mesh2.admin.1")), "the callers' streams end naming the new seat");
 }
 
@@ -1562,7 +1568,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
         me: n_name.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory()) }),
         dispatcher: e.dispatcher.clone(),
         gate: n_switch,
         departure: e.departure.clone(),
@@ -1594,7 +1600,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
     assert_eq!(p.attempt_executors.get(&1).map(String::as_str), Some("mesh1.admin.1"), "attempt 1 is the holder's: {:?}", p.attempt_executors);
     assert_eq!(p.attempt_executors.get(&2).map(String::as_str), Some("mesh1.admin.2"), "the successor claimed the next attempt after the holder's ended: {:?}", p.attempt_executors);
     let handed: Vec<_> = r.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
-        rafka_node_admin_core::build_state::BuildFact::Attempt(a) if a.attempt == 1 => Some(a.outcome),
+        rafka_node_admin_core::build_state::BuildFact::Attempt(a) if a.build_id == r.build && a.attempt == 1 => Some(a.outcome),
         _ => None,
     }).collect();
     assert_eq!(handed, vec![rafka_node_admin_core::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }], "the holder's attempt ended handed off to the successor");
