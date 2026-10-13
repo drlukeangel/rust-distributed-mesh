@@ -82,13 +82,33 @@ pub enum Accepted {
     },
 }
 
-/// The commands this admin has sent and not forgotten.
-#[derive(Default)]
+/// The commands this admin has sent and not forgotten, and the bound of the
+/// `node.connections.delete { All }` a commanded birth runs (this admin's own,
+/// `AdminConfig::connections_delete_deadline`, which every birth it launches carries).
 pub struct CommandBook {
     open: Mutex<HashMap<CommandKey, watch::Sender<bool>>>,
+    connections_delete_deadline: Duration,
+}
+
+/// A book whose commanded births run their `node.connections.delete { All }` under the launch default.
+impl Default for CommandBook {
+    fn default() -> Self {
+        Self::new(rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE)
+    }
 }
 
 impl CommandBook {
+    /// A book whose commanded births run their `node.connections.delete { All }` under `connections_delete_deadline`.
+    pub fn new(connections_delete_deadline: Duration) -> Self {
+        Self { open: Mutex::new(HashMap::new()), connections_delete_deadline }
+    }
+
+    /// How long a command whose birth runs a `node.connections.delete { All }` (the command itself,
+    /// or a stop) waits for its reply: the bound the birth runs it under, and 10 s for the rest of the step.
+    pub fn connections_delete_reply(&self) -> Duration {
+        self.connections_delete_deadline + Duration::from_secs(10)
+    }
+
     /// Open `key` before the command is sent (so a completion that races the reply finds it) and
     /// return what resolves when the completion is accepted. Opening again is the same command.
     pub fn open(&self, key: CommandKey) -> watch::Receiver<bool> {
@@ -155,13 +175,13 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
         // see `AdminObserver::send_command`; a client alone has no mesh-primary to set the status.
         NodeCommand::DeleteConnections => {
             let req = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
-            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: crate::node_self::connections_delete_deadline_from_env() + Duration::from_secs(10) }, ..Default::default() };
+            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
             crate::deployment::pipeline::command_admission(&client.call::<rafka_node_rpc_contract::status::Status>(target, &req, &opts).await.0)
         }
         NodeCommand::Stop => {
             let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
             let stop = rafka_node_admin_client::StopContext::new(build_id, attempt, node.name.clone());
-            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: crate::node_self::connections_delete_deadline_from_env() + Duration::from_secs(10) }, ..Default::default() };
+            let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
             admission_of(rafka_node_admin_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await)
         }
         NodeCommand::Start => {

@@ -766,7 +766,7 @@ impl StatusAuthority {
                 }
             }
             let target = rafka_node_rpc::NodeTarget::ExactNode(node_id.clone());
-            let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Split { send: std::time::Duration::from_secs(5), reply: crate::node_self::connections_delete_deadline_from_env() + std::time::Duration::from_secs(10) }, ..Default::default() };
+            let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Split { send: std::time::Duration::from_secs(5), reply: self.commands.connections_delete_reply() }, ..Default::default() };
             let reply = match configs.client().call::<rafka_node_rpc_contract::status::Status>(&target, req, &opts).await.0 {
                 rafka_node_rpc_contract::outcome::RpcOutcome::Reply(r) => r.into_value(),
                 other => {

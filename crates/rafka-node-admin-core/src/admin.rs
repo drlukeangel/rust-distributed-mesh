@@ -5533,7 +5533,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             let configure: crate::status_rpc::Configure = Arc::new(std::sync::OnceLock::new());
                             // This admin taking the name its row gives it (`ApplyNodeName`): filled with the republish, below.
                             let rename: crate::status_rpc::Rename = Arc::new(std::sync::OnceLock::new());
-                            let commands = Arc::new(crate::node_commands::CommandBook::default());
+                            let commands = Arc::new(crate::node_commands::CommandBook::new(cfg.connections_delete_deadline));
                             let own_commands: Arc<std::sync::OnceLock<Arc<crate::node_self::NodeSelf>>> = Arc::new(std::sync::OnceLock::new());
                             let leaver: crate::mesh_leave::LeaverSlot = Arc::new(std::sync::OnceLock::new());
                             let rounds_slot: Arc<std::sync::OnceLock<Arc<crate::fabric_rounds::FabricRounds>>> = Arc::new(std::sync::OnceLock::new());
@@ -10316,6 +10316,38 @@ mod tests {
         let e = AdminConfig::from_env(|k| env.get(k).cloned()).err().expect("a start with no store_dir was accepted");
         assert!(e.contains("RDM_STORE_DIR") && e.contains("required"), "{e}");
         assert_eq!(cfg(&[]).store_dir, std::path::PathBuf::from(STORE_DIR));
+    }
+
+    /// CONTRACT (node-connections-delete.md step 5): a person-started admin reads its
+    /// connections-delete bound once, from `RDM_CONNECTIONS_DELETE_DEADLINE_MS` in its config, 5000 ms
+    /// when it names none; a launched admin takes its launch's. A value that is no whole number of
+    /// milliseconds is refused by name at boot, never read as the default.
+    #[test]
+    fn an_admin_takes_its_connections_delete_bound_from_its_config_once() {
+        assert_eq!(cfg(&[]).connections_delete_deadline, rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE);
+        assert_eq!(cfg(&[("RDM_CONNECTIONS_DELETE_DEADLINE_MS", "750")]).connections_delete_deadline, Duration::from_millis(750));
+        let env: std::collections::HashMap<String, String> = [("RDM_STORE_DIR", STORE_DIR), ("RDM_CONNECTIONS_DELETE_DEADLINE_MS", "soon")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let e = AdminConfig::from_env(|k| env.get(k).cloned()).err().expect("a bound that is no number was accepted");
+        assert!(e.starts_with("RDM_CONNECTIONS_DELETE_DEADLINE_MS `soon`"), "{e}");
+        let launch = rafka_mesh_entity::launch::Launch {
+            fabric: "fabric1".into(),
+            fabric_id: FabricId::mint(),
+            name: "mesh1.admin.2".parse().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+            launcher: None,
+            seeds: vec![],
+            data_dir: "/tmp/rdm-launched/mesh1.admin.2".into(),
+            store_dir: STORE_DIR.into(),
+            mesh_id: None,
+            mesh_issuer: None,
+            connections_delete_deadline: Duration::from_millis(1250),
+        };
+        let launched = launch.to_env();
+        assert_eq!(AdminConfig::from_env(|k| launched.get(k).cloned()).unwrap().connections_delete_deadline, Duration::from_millis(1250));
     }
 
     const MESH_ID: &str = "4f14h1k7m3p9";

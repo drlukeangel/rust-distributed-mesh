@@ -1047,8 +1047,8 @@ pub struct Timeouts {
     pub ready: Duration,
     /// How long `AwaitNodeLeft` waits for the stop's reply.
     pub completion: Duration,
-    /// Stop-ladder grace before a forced kill; longer than the node's own
-    /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` (node-rpc §35).
+    /// Stop-ladder grace before a forced kill; longer than the node's own connections-delete bound
+    /// (its launch's `connections_delete_deadline`, node-rpc §35).
     pub stop_grace: Duration,
 }
 

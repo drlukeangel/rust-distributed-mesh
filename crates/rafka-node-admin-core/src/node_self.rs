@@ -5,7 +5,8 @@
 //! [`Session`]).
 //!
 //! - `DeleteConnections`: `All` blocks admission of new application work, lets the eligible work in
-//!   flight finish under `RDM_CONNECTIONS_DELETE_DEADLINE_MS`, closes every open Direct or Proxy entry
+//!   flight finish under the birth's bound ([`NodeSelf::connections_delete_deadline`], from its launch or
+//!   its admin config), closes every open Direct or Proxy entry
 //!   of the connections log and answers `ConnectionsDeleted` with its `ConnectionsReceipt`
 //!   (`Established`, or `Deadline` at the bound). `Connections` closes exactly the named entries.
 //!   Gossip neighbours and the Node RPC pool are not connections: neither scope touches them.
@@ -55,12 +56,6 @@ impl Parking {
     pub fn is_parked(&self) -> bool {
         self.parked.load(std::sync::atomic::Ordering::SeqCst)
     }
-}
-
-/// The bound of a `node.connections.delete { All }`, standalone or inside a stop:
-/// `RDM_CONNECTIONS_DELETE_DEADLINE_MS`, 5000 ms when unset. Strictly shorter than the stop ladder's grace.
-pub fn connections_delete_deadline_from_env() -> Duration {
-    Duration::from_millis(std::env::var("RDM_CONNECTIONS_DELETE_DEADLINE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(5000))
 }
 
 /// What a hard cut closed.
@@ -243,7 +238,8 @@ pub struct NodeSelf {
     pub backbone: Option<rafka_mesh_transport::membership::Backbone>,
     /// The bound of this birth's `node.connections.delete { All }`, standalone or inside a stop
     /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, read once where the process reads its launch or its
-    /// admin config): the eligible work in flight is let finish until it passes.
+    /// admin config): the eligible work in flight is let finish until it passes. Strictly shorter
+    /// than the stop ladder's grace.
     pub connections_delete_deadline: Duration,
     /// Where this birth stands between a stop and a start.
     cycle: Mutex<Cycle>,
@@ -353,7 +349,7 @@ impl NodeSelf {
         };
         // `All` is graceful node-wide closure (node-connections-delete.md step 3): admission of new
         // application work is blocked, and the eligible work in flight (every dispatched handler but
-        // this call's own) is let finish, bounded by `RDM_CONNECTIONS_DELETE_DEADLINE_MS`.
+        // this call's own) is let finish, bounded by the birth's `connections_delete_deadline`.
         // The birth is retired at the admission of `All`: its `hydrate_before_ready` hook and any pull
         // it has in flight end; it returns to service only through a stop and a start.
         let in_flight = match scope {
@@ -421,7 +417,7 @@ impl NodeSelf {
     }
 
     /// Block admission of new application work and wait for the eligible work in flight to reach
-    /// zero, bounded by `RDM_CONNECTIONS_DELETE_DEADLINE_MS`. The call that asked is in flight while
+    /// zero, bounded by the birth's `connections_delete_deadline`. The call that asked is in flight while
     /// it waits and is not eligible work. The node refuses new non-status calls with typed `Draining`
     /// from here on (Node RPC §35); control streams stay usable.
     async fn await_in_flight(&self) -> InFlight {
@@ -429,7 +425,7 @@ impl NodeSelf {
         let stats = self.server.stats();
         let eligible = || rafka_node_rpc::ServerStats::get(&stats.in_flight).saturating_sub(1);
         let began = eligible();
-        let until = tokio::time::Instant::now() + connections_delete_deadline_from_env();
+        let until = tokio::time::Instant::now() + self.connections_delete_deadline;
         loop {
             let n = eligible();
             if n == 0 {
@@ -450,7 +446,7 @@ impl NodeSelf {
         let span = tracing::info_span!(
             "rdm.node_admin.node.connections.delete.via-delete-connections",
             node = %self.held_name(), commander = %named(commander), scope = scope.name(), named = match scope { ConnectionScope::All => 0, ConnectionScope::Connections(ids) => ids.len() },
-            closed = tracing::field::Empty, not_open = tracing::field::Empty, held = tracing::field::Empty, receipt = tracing::field::Empty,
+            deadline_ms = tracing::field::Empty, closed = tracing::field::Empty, not_open = tracing::field::Empty, held = tracing::field::Empty, receipt = tracing::field::Empty,
             outcome = tracing::field::Empty, reason = tracing::field::Empty, "otel.kind" = "internal"
         );
         let reply = async {
@@ -460,6 +456,9 @@ impl NodeSelf {
             if let Some(reason) = scope.refusal() {
                 tracing::Span::current().record("reason", reason.as_str());
                 return StatusReply::RejectedConnectionScope { reason: format!("{}: {reason}", self.held_name()) };
+            }
+            if matches!(scope, ConnectionScope::All) {
+                tracing::Span::current().record("deadline_ms", self.connections_delete_deadline.as_millis() as u64);
             }
             let d = self.delete_connections(scope).await;
             let current = tracing::Span::current();
