@@ -11,12 +11,11 @@
 use crate::build_stream::{BuildCarrier, BuildReceipts, BuildStream};
 use crate::names::{BuildOp, FabricOp, MeshOp, NodeOp};
 use crate::workflow::{WorkflowKind, WorkflowStream};
-use crate::{Accepted, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricDesired, FabricView, MeshDesired, MeshView, NodeStatus, NodeView};
-use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
+use crate::{Accepted, BuildId, CallEnd, ConnectionsView, ExactBirth, FabricDesired, FabricView, MeshDesired, MeshView, NodeView};
+use rafka_mesh_entity::{NodeId, NodeKind, PathName};
 use rafka_node_rpc::{CallOptions, NodeTarget};
 use rafka_node_rpc_contract::build::{BuildChange, MeshCounts};
 use rafka_node_rpc_contract::status::{NodeSelect, Status, StatusReply, StatusRequest};
-use std::collections::BTreeSet;
 
 fn counts(m: &MeshDesired) -> MeshCounts {
     MeshCounts { name: m.name.clone(), node_admin: m.node_admin, rpc_node: m.rpc_node, broker: m.broker, gateway: m.gateway, compute: m.compute }
