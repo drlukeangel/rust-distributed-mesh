@@ -345,6 +345,9 @@ impl BuildExecutor {
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-reconcile",
             build_id = %build_id,
+            // The attempt's lane: "" the fabric lane, else the mesh whose drift lane numbers it (R-BI7:
+            // an attempt is `(build_id, lane, attempt)`, so the number alone names two attempts).
+            lane = lane.unwrap_or(""),
             attempt,
             executor = %self.executor,
             // The admin that held the attempt before this one. The fabric-primary's claim of this
