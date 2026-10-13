@@ -80,6 +80,11 @@ pub struct ControlPlane {
     /// moves a seat or writes a caller's row is refused `fabric-not-ready` (states.md, "The initial
     /// fabric before ready-for-traffic").
     pub first_ready: crate::fabric_state::FirstReady,
+    /// The status rows of this admin's mesh on the fabric's store root: the ready-for-traffic row of the
+    /// fabric among them is the durable fact that it first reached ready-for-traffic (states.md, "The
+    /// initial fabric before ready-for-traffic"). Held in memory, empty, until the admin hands its own
+    /// ([`ControlPlane::with_first_ready`]).
+    pub ready_rows: Arc<dyn crate::status_storage::StatusStorage>,
 }
 
 /// What `/api/shutdown` and `/api/fabric` need of this admin's fabric shutdown state.
@@ -116,13 +121,16 @@ impl ControlPlane {
             time,
             admission: Arc::new(tokio::sync::Mutex::new(())),
             first_ready: crate::fabric_state::FirstReady::new(),
+            ready_rows: Arc::new(crate::status_storage::MemoryStatusStorage::default()),
         }
     }
 
     /// This control plane reading whether the initial fabric first reached ready-for-traffic from
-    /// `first_ready`, the handle its admin's fabric state sets.
-    pub fn with_first_ready(mut self, first_ready: crate::fabric_state::FirstReady) -> Self {
+    /// `first_ready`, the handle its admin's fabric state sets, and `ready_rows`, the status rows of
+    /// its admin's mesh on the fabric's store root, where the durable fact is.
+    pub fn with_first_ready(mut self, first_ready: crate::fabric_state::FirstReady, ready_rows: Arc<dyn crate::status_storage::StatusStorage>) -> Self {
         self.first_ready = first_ready;
+        self.ready_rows = ready_rows;
         self
     }
 

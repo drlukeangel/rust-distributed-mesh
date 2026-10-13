@@ -64,6 +64,15 @@ async fn rig(status: ScopeStatus) -> Rig {
     Rig { cp, builds }
 }
 
+/// [`rig`], the control plane reading the status rows `rows` of its mesh on the store root.
+async fn rig_over(status: ScopeStatus, rows: Arc<rafka_node_admin_core::status_storage::MemoryStatusStorage>) -> Rig {
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let t = view(status);
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), t, crate::adopted_time()).with_first_ready(rafka_node_admin_core::fabric_state::FirstReady::new(), rows));
+    Rig { cp, builds }
+}
+
 impl Rig {
     async fn facts(&self) -> usize {
         self.builds.facts().await.unwrap().len()
@@ -230,6 +239,32 @@ async fn an_admin_booting_on_a_root_in_state_commit_refuses_and_one_booting_afte
     booted.cp.first_ready.read_from(&status, &fabric).await.unwrap();
     let opened = booted.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await.expect("admitted: the row says the fabric first reached ready-for-traffic");
     assert_eq!(opened.attempt, 2);
+}
+
+/// CONTRACT (states.md "The initial fabric before ready-for-traffic": the ready-for-traffic event's row
+/// among the mesh's status rows is the durable fact that the fabric first reached it; R-PB1, R-PC1): the
+/// fabric-primary's control plane hears the initial fabric in state-sync and never knew it ready (an
+/// outside successor of the fabric seat, whose fabric state gossip has not brought ready yet). Over a
+/// root whose status rows hold no ready-for-traffic row of its fabric, a caller's node.stop is refused
+/// `fabric-not-ready`. Once its mesh's status rows on the store root hold the row, the same node.stop is
+/// admitted, decided on the row: `rdm.node_admin.fabric.update.via-first-ready` with reason
+/// `ready-for-traffic-row-on-store-root`, and the attempt opens. What must NOT happen: a refusal
+/// `fabric-not-ready` while the root holds the fabric's ready-for-traffic row.
+#[tokio::test]
+async fn a_workflow_is_admitted_on_the_ready_for_traffic_row_on_the_store_root_while_the_fabric_heard_is_not_ready() {
+    use rafka_node_admin_core::status_storage::{FabricEventRow, MemoryStatusStorage, StatusStorage};
+    let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s23-admission-on-root");
+    let rows = Arc::new(MemoryStatusStorage::default());
+    let r = rig_over(ScopeStatus::StateSync, rows.clone()).await;
+    let (workflow, at) = refused(r.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await);
+    assert_eq!((workflow.as_str(), at.as_str()), ("node.stop mesh1.rpc.1", "state-sync"), "no ready-for-traffic row on the root: refused");
+    let fabric = r.cp.topology.read().await.fabric.id.clone();
+    rows.put_fabric_event(&FabricEventRow { fabric_id: fabric, event: "ready-for-traffic".into() }).await.unwrap();
+    let opened = r.attempt(AttemptReason::Stop, "mesh1.rpc.1", ActionKind::Stop).await.expect("admitted: the root's row says the fabric first reached ready-for-traffic");
+    assert_eq!(opened.attempt, 2);
+    let ready = capture.spans("rdm.node_admin.fabric.update.via-first-ready");
+    assert_eq!(ready.iter().map(|(_, a)| a.get("reason").cloned()).collect::<Vec<_>>(), vec![Some("ready-for-traffic-row-on-store-root".to_string())], "decided on the root's row: {ready:?}");
+    eprintln!("trace {}: rdm.node_admin.fabric.update.via-first-ready reason=ready-for-traffic-row-on-store-root", ready[0].0);
 }
 
 /// CONTRACT (node-rpc-envelope.md, "Build refusals": "the existing `Rejected { reason, detail }` reply with
