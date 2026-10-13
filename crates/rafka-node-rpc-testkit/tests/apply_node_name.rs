@@ -2,7 +2,8 @@
 //! "Meta and config", R12/R13, R-CR1).
 //!
 //! CONTRACT: a node born `mesh1.rpc.1.new` that originated a data-plane connection to its admin
-//! answers `ApplyNodeName { name: mesh1.rpc.1 }` with `Busy` naming that route, and holds nothing:
+//! answers `ApplyNodeName { name: mesh1.rpc.1 }` with `BusyHoldingConnections` naming that connection
+//! by the minted id of its open entry (proposal node-properties-own-commands.md §2.2 step 6), and holds nothing:
 //! its digest still says `.new`. The cell runs node-update.md's order ("Rename precondition": the
 //! node's `node.connections.delete { All }` has completed): `All`, held open by one call in flight
 //! at the node until the cell releases it, answers `ConnectionsDeleted` with an `Established`
@@ -106,9 +107,11 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
             other => panic!("the node's data-plane ping did not end in a reply: {other:?}"),
         }
         seams.connections.drain().await;
-        // Holding that route: the name is refused Busy, naming it, and nothing is held.
+        // Holding that route: the name is refused, naming the connection by its entry's id, and nothing is held.
+        let held_ids: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
+        assert_eq!(held_ids.len(), 1, "the node holds the one route it dialled: {held_ids:?}");
         match call(apply.clone()).await {
-            StatusReply::Busy { reason } => assert!(reason.contains("mesh1.admin.1 (direct, entry "), "Busy names the route the node holds: {reason}"),
+            StatusReply::BusyHoldingConnections { connections } => assert_eq!(connections, held_ids, "the refusal names each connection the node holds"),
             other => panic!("a node holding a connection answered {other:?}"),
         }
         let seq = book.get(launch.node_id.as_str()).unwrap().0.digest_seq;

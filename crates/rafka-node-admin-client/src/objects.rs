@@ -102,67 +102,6 @@ pub enum NodeSelector {
     Tags(TagFilter),
 }
 
-/// A field of a node's meta that RDM owns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MetaField {
-    /// `node.id`: never copied, never put.
-    NodeId,
-    /// `incarnation`: never copied, never put.
-    Incarnation,
-    /// `endpoint`: never copied, never put.
-    Endpoint,
-    /// `transport_addr`: never copied, never put.
-    TransportAddr,
-    /// `exe`: never copied, never put.
-    Exe,
-    /// The runtime handle: never copied, never put.
-    Runtime,
-    /// `status`: moves only through the actions and workflows.
-    Status,
-    /// `path` (`<mesh>.<kind>`): copied on replace, never put.
-    Path,
-    /// `name`: changes only while the node is stopped.
-    Name,
-    /// `mesh`: copied on replace, never put.
-    Mesh,
-    /// `kind`: copied on replace, never put.
-    Kind,
-}
-
-impl MetaField {
-    /// The field's name.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::NodeId => "node.id",
-            Self::Incarnation => "incarnation",
-            Self::Endpoint => "endpoint",
-            Self::TransportAddr => "transport_addr",
-            Self::Exe => "exe",
-            Self::Runtime => "runtime handle",
-            Self::Status => "status",
-            Self::Path => "path",
-            Self::Name => "name",
-            Self::Mesh => "mesh",
-            Self::Kind => "kind",
-        }
-    }
-}
-
-/// A `node.update` body differs from what RDM holds in a field RDM owns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MetaFieldIsRdmOwned {
-    /// The field.
-    pub field: MetaField,
-}
-
-impl std::fmt::Display for MetaFieldIsRdmOwned {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "node.update: {} is owned by RDM and differs from what RDM holds", self.field.name())
-    }
-}
-
-impl std::error::Error for MetaFieldIsRdmOwned {}
-
 /// A create or a rename into a `path.name` another node holds, parked or live: a name is held by
 /// exactly one node until that node is renamed or deleted (ops-naming "Identity";
 /// node-rpc-envelope.md "Meta and config"). The claim is insert-and-fail on the name's key.
@@ -182,101 +121,8 @@ impl std::fmt::Display for NameHeld {
 
 impl std::error::Error for NameHeld {}
 
-/// Everything RDM stores about a node: the whole entity `node.update` takes and sends back.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NodeMeta {
-    /// RDM-owned, never copied and never put.
-    pub node_id: NodeId,
-    /// RDM-owned, never copied and never put.
-    pub incarnation: Option<IncarnationId>,
-    /// RDM-owned, never copied and never put.
-    pub endpoint: Option<String>,
-    /// RDM-owned, never copied and never put.
-    pub transport_addr: Option<std::net::SocketAddr>,
-    /// RDM-owned, never copied and never put: the executable's identity.
-    pub exe: Option<String>,
-    /// RDM-owned, never copied and never put: the runtime handle, the deployment that runs the birth.
-    pub runtime: Option<String>,
-    /// RDM-owned, never copied and never put.
-    pub status: NodeStatus,
-    /// RDM-owned, copied on replace: the node's `path.name`.
-    pub name: PathName,
-    /// RDM-owned, copied on replace.
-    pub mesh: String,
-    /// RDM-owned, copied on replace.
-    pub kind: NodeKind,
-    /// Caller-owned, copied on replace and settable by put: the node's OpenTelemetry debug level.
-    pub otel_debug: bool,
-    /// Caller-owned, copied on recover and replace and settable by put: the node's tag labels
-    /// (R-TG1), a set a put replaces whole.
-    pub tags: BTreeSet<String>,
-}
-
-impl NodeMeta {
-    /// The successor `self` with the caller-owned group of `predecessor` copied onto it: the copy
-    /// step of recover and replace. Nothing RDM owns is copied, the name least of all: the
-    /// successor's `path.name` and identity come from its own create spec.
-    pub fn with_caller_owned_of(&self, predecessor: &NodeMeta) -> NodeMeta {
-        NodeMeta { otel_debug: predecessor.otel_debug, tags: predecessor.tags.clone(), ..self.clone() }
-    }
-
-    /// `node.update`'s validation from the held record, in the documented order
-    /// (node-rpc-envelope.md "Meta and config"; R13 step 2 and the first half of step 3): every
-    /// RDM-owned field equals the held value, else `MetaFieldIsRdmOwned { field }`; a changed name
-    /// requires the node quiet, that is stopped, or its `node.connections.delete { All }` completed;
-    /// a node that can carry traffic keeps its name whatever its name. The only renames are a node to or
-    /// from its `.old` form and to or from its `.new` form (node-replace.md); `.old` to `.new` and a
-    /// new ordinal are refused naming the name.
-    pub fn check_update(&self, held: &NodeMeta, traffic: Traffic) -> Result<(), MetaFieldIsRdmOwned> {
-        let refuse = |field| Err(MetaFieldIsRdmOwned { field });
-        if self.node_id != held.node_id {
-            return refuse(MetaField::NodeId);
-        }
-        if self.incarnation != held.incarnation {
-            return refuse(MetaField::Incarnation);
-        }
-        if self.endpoint != held.endpoint {
-            return refuse(MetaField::Endpoint);
-        }
-        if self.transport_addr != held.transport_addr {
-            return refuse(MetaField::TransportAddr);
-        }
-        if self.exe != held.exe {
-            return refuse(MetaField::Exe);
-        }
-        if self.runtime != held.runtime {
-            return refuse(MetaField::Runtime);
-        }
-        if self.status != held.status {
-            return refuse(MetaField::Status);
-        }
-        if self.mesh != held.mesh {
-            return refuse(MetaField::Mesh);
-        }
-        if self.kind != held.kind {
-            return refuse(MetaField::Kind);
-        }
-        if (self.name.mesh.as_str(), self.name.kind) != (held.name.mesh.as_str(), held.name.kind) {
-            return refuse(MetaField::Path);
-        }
-        if self.name != held.name {
-            // One side is the bare name and the other its `.old` or `.new` form.
-            let suffixed = |n: &PathName| n.old || n.new;
-            let one_suffix_toggles = self.name.base() == held.name.base() && suffixed(&self.name) != suffixed(&held.name);
-            let quiet = match traffic {
-                Traffic::Stopped | Traffic::ConnectionsDeleted => true,
-                Traffic::Routed => false,
-            };
-            if !(one_suffix_toggles && quiet) {
-                return refuse(MetaField::Name);
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Whether the node a `node.update` names can carry traffic, as its mesh-primary holds it: a name
-/// changes only when it is not ready-for-traffic and holds no connection (R-CR1a, R-CR2).
+/// Whether the node a `node.name.update` names admits connections, as its mesh-primary holds it: a
+/// name changes only when it is not ready-for-traffic and holds no connection (R-CR1a, R-CR2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Traffic {
     /// The held status is stopped.
@@ -396,33 +242,19 @@ impl Nodes {
         }
     }
 
-    /// `node.update`: put the full meta entity `body` over what RDM `held`, a single call to the
-    /// node's mesh-primary `mesh_primary` over `route` (R13; [`crate::NodeRpc::node_update`]). The
-    /// mesh-primary decides from its own held record whether the node carries traffic; the request
-    /// carries the exact birth, the name and the tags, so a body that differs from `held` in a field
-    /// RDM owns is refused here, `RejectedMetaFieldIsRdmOwned { field }`, as are tags that are not a
-    /// node's tag set, `RejectedTags`, and nothing is sent. A body that changes `otel_debug` ends
-    /// `NotBackedToday`: the node row has no field that carries it.
-    pub async fn update(&self, held: &NodeMeta, body: &NodeMeta, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice) -> Result<rafka_node_rpc_contract::status::StatusReply, CallEnd> {
-        // The name's traffic rule is the mesh-primary's: only the fields the request cannot carry are checked here.
-        if let Err(e) = body.check_update(held, crate::Traffic::Stopped) {
-            let span = NodeOp::Update.span();
-            span.record("outcome", "meta-field-is-rdm-owned");
-            span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), field = e.field.name(), "the put changes a field RDM owns; nothing is sent"));
-            return Ok(rafka_node_rpc_contract::status::StatusReply::RejectedMetaFieldIsRdmOwned { field: e.field.name().into() });
+    /// `node.name.update`: rename the exact birth `birth` to `name`, the name only (never its path), a
+    /// single call to the node's mesh-primary `mesh_primary` over `route` (proposal
+    /// node-properties-own-commands.md §2; [`crate::NodeRpc::name_update`]). The mesh-primary decides
+    /// everything from its own held record; a name outside the name grammar is refused here,
+    /// `RejectedName`, as the mesh-primary would refuse it, and nothing is sent.
+    pub async fn name_update(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, name: &str) -> Result<StatusReply, CallEnd> {
+        if let Some(reason) = rafka_node_rpc_contract::status::name_refusal(name) {
+            let span = NodeOp::NameUpdate.span();
+            span.record("outcome", "rejected-name");
+            span.in_scope(|| tracing::info!(op = NodeOp::NameUpdate.name(), reason = %reason, "the name is outside the name grammar; nothing is sent"));
+            return Ok(StatusReply::rejected_name(&reason));
         }
-        if let Some(reason) = rafka_node_rpc_contract::status::tags_refusal(&body.tags) {
-            let span = NodeOp::Update.span();
-            span.record("outcome", "rejected-tags");
-            span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), reason = %reason, "the put's tags are not a node's tag set; nothing is sent"));
-            return Ok(rafka_node_rpc_contract::status::StatusReply::rejected_tags(&reason));
-        }
-        if body.otel_debug != held.otel_debug {
-            return Err(CallEnd::NotBackedToday { op: NodeOp::Update, why: "otel_debug: the node row has no field that carries it" });
-        }
-        let incarnation = held.incarnation.clone().ok_or_else(|| CallEnd::Indeterminate { reason: format!("{} ({}) has no known birth; node.update names an exact birth", held.name, held.node_id) })?;
-        let birth = crate::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation };
-        crate::NodeRpc::new(self.carrier.client()).node_update(mesh_primary, route, &birth, &body.name, &body.tags, &rafka_node_rpc::CallOptions::default()).await
+        crate::NodeRpc::new(self.carrier.client()).name_update(mesh_primary, route, birth, name, &rafka_node_rpc::CallOptions::default()).await
     }
 
     /// `node.tags.create`: add `labels` to the tags of the exact birth `birth`, a single call to the
@@ -462,21 +294,19 @@ impl Nodes {
         r
     }
 
-    /// `node.connections.delete`: the hard cut of the connections of the exact birth `held` names,
+    /// `node.connections.delete`: the hard cut of the connections of the exact birth `birth`,
     /// `scope` `All` (the stop's cut) or `Connections` naming open entries by id, a single call to the
     /// node's mesh-primary `mesh_primary` over `route` (R-CR2, R-CR3; [`crate::NodeRpc::connections_delete`]).
     /// A scope that names nothing to cut is refused here by name, `RejectedConnectionScope`, and
     /// nothing is sent.
-    pub async fn connections_delete(&self, held: &NodeMeta, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rafka_node_rpc_contract::status::ConnectionScope) -> Result<rafka_node_rpc_contract::status::StatusReply, CallEnd> {
+    pub async fn connections_delete(&self, birth: &ExactBirth, mesh_primary: &NodeId, route: &rafka_node_rpc::RouteChoice, scope: &rafka_node_rpc_contract::status::ConnectionScope) -> Result<rafka_node_rpc_contract::status::StatusReply, CallEnd> {
         if let Some(reason) = scope.refusal() {
             let span = NodeOp::ConnectionsDelete.span();
             span.record("outcome", "rejected-connection-scope");
             span.in_scope(|| tracing::info!(op = NodeOp::ConnectionsDelete.name(), reason = %reason, "the scope names nothing to cut; nothing is sent"));
-            return Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason: format!("{}: {reason}", held.name) });
+            return Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason: format!("node {} ({}): {reason}", birth.node_id, birth.incarnation.as_str()) });
         }
-        let incarnation = held.incarnation.clone().ok_or_else(|| CallEnd::Indeterminate { reason: format!("{} ({}) has no known birth; node.connections.delete names an exact birth", held.name, held.node_id) })?;
-        let birth = crate::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation };
-        crate::NodeRpc::new(self.carrier.client()).connections_delete(mesh_primary, route, &birth, scope, &rafka_node_rpc::CallOptions::default()).await
+        crate::NodeRpc::new(self.carrier.client()).connections_delete(mesh_primary, route, birth, scope, &rafka_node_rpc::CallOptions::default()).await
     }
 
     /// `node.config.get`: no request of its own (node-rpc-envelope.md: its dedicated request mapping is
@@ -650,90 +480,6 @@ impl Builds {
 mod tests {
     use super::*;
 
-    fn held() -> NodeMeta {
-        NodeMeta {
-            node_id: NodeId::mint(),
-            incarnation: Some(IncarnationId::mint()),
-            endpoint: Some("ep-1".into()),
-            transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
-            exe: Some("rpc-node@abc123".into()),
-            runtime: Some("dep-1".into()),
-            status: NodeStatus::ReadyForTraffic,
-            name: "mesh1.rpc.1".parse().unwrap(),
-            mesh: "mesh1".into(),
-            kind: NodeKind::RpcNode,
-            otel_debug: false,
-            tags: BTreeSet::new(),
-        }
-    }
-
-    /// CONTRACT: a put may change only the caller-owned group. Flipping `otel_debug` is accepted; a
-    /// body that differs from what RDM holds in any RDM-owned field is refused naming that field.
-    #[test]
-    fn a_put_changing_a_field_rdm_owns_is_refused_naming_the_field() {
-        let held = held();
-        assert_eq!(NodeMeta { otel_debug: true, ..held.clone() }.check_update(&held, Traffic::Routed), Ok(()));
-        assert_eq!(NodeMeta { tags: ["rabbit".to_string()].into(), ..held.clone() }.check_update(&held, Traffic::Routed), Ok(()), "tags are caller-owned: a put may change them whatever the traffic");
-        let cases: Vec<(NodeMeta, MetaField)> = vec![
-            (NodeMeta { node_id: NodeId::mint(), ..held.clone() }, MetaField::NodeId),
-            (NodeMeta { incarnation: Some(IncarnationId::mint()), ..held.clone() }, MetaField::Incarnation),
-            (NodeMeta { endpoint: Some("ep-2".into()), ..held.clone() }, MetaField::Endpoint),
-            (NodeMeta { transport_addr: Some("127.0.0.1:4001".parse().unwrap()), ..held.clone() }, MetaField::TransportAddr),
-            (NodeMeta { exe: Some("rpc-node@def456".into()), ..held.clone() }, MetaField::Exe),
-            (NodeMeta { runtime: Some("dep-2".into()), ..held.clone() }, MetaField::Runtime),
-            (NodeMeta { status: NodeStatus::Leaving, ..held.clone() }, MetaField::Status),
-            (NodeMeta { mesh: "mesh2".into(), ..held.clone() }, MetaField::Mesh),
-            (NodeMeta { kind: NodeKind::Broker, ..held.clone() }, MetaField::Kind),
-            (NodeMeta { name: "mesh2.rpc.1".parse().unwrap(), ..held.clone() }, MetaField::Path),
-        ];
-        for (body, field) in cases {
-            assert_eq!(body.check_update(&held, Traffic::Stopped), Err(MetaFieldIsRdmOwned { field }), "{}", field.name());
-        }
-    }
-
-    /// CONTRACT: a node's name changes only while the node is stopped, and only to or from its
-    /// `.old` form: a live node's rename is refused, and so is a new ordinal on a stopped node.
-    #[test]
-    fn a_name_changes_only_while_stopped_and_only_to_or_from_old() {
-        let held = held();
-        let old = NodeMeta { name: held.name.renamed(), ..held.clone() };
-        assert_eq!(old.check_update(&held, Traffic::Routed), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "a live node keeps its name");
-        assert_eq!(old.check_update(&held, Traffic::Stopped), Ok(()), "a stopped node gives up its name to <name>.old");
-        assert_eq!(held.check_update(&old, Traffic::Stopped), Ok(()), "and takes it back");
-        let renumbered = NodeMeta { name: PathName { ordinal: 9, ..held.name.clone() }, ..held.clone() };
-        assert_eq!(renumbered.check_update(&held, Traffic::Stopped), Err(MetaFieldIsRdmOwned { field: MetaField::Name }), "no rename but .old exists");
-    }
-
-    /// CONTRACT (R13 step 3, R-CR1a; node-replace.md rollback 1): a node takes another name only
-    /// when quiet, stopped or its `node.connections.delete { All }` completed, and then only between the bare
-    /// name and one suffix; a node that can carry traffic keeps its name, `.new` included; `.old` and
-    /// `.new` never swap.
-    #[test]
-    fn a_name_changes_only_when_quiet_and_only_between_the_bare_name_and_one_suffix() {
-        let base = held();
-        let new = NodeMeta { name: base.name.successor(), ..base.clone() };
-        let old = NodeMeta { name: base.name.renamed(), ..base.clone() };
-        let name = |r| r == Err(MetaFieldIsRdmOwned { field: MetaField::Name });
-        assert_eq!(base.check_update(&new, Traffic::Stopped), Ok(()), "the stopped successor takes the name");
-        assert_eq!(base.check_update(&new, Traffic::ConnectionsDeleted), Ok(()), "the successor whose connections were deleted takes the name");
-        assert!(name(base.check_update(&new, Traffic::Routed)), "a successor that can carry traffic keeps .new");
-        assert_eq!(new.check_update(&base, Traffic::Stopped), Ok(()), "rollback: the stopped successor gives the name back");
-        assert!(name(old.check_update(&base, Traffic::Routed)), "the predecessor gives up its name only when quiet");
-        assert!(name(new.check_update(&old, Traffic::Stopped)), ".old never becomes .new");
-        assert!(name(old.check_update(&new, Traffic::Stopped)), ".new never becomes .old");
-    }
-
-    /// CONTRACT: the copy step of recover and replace copies only the caller-owned group: the
-    /// successor takes the predecessor's `otel_debug` and keeps every field RDM owns as its own,
-    /// its name included (ops-naming "Identity"; node-rpc-envelope.md "Meta and config").
-    #[test]
-    fn the_copy_step_copies_only_caller_owned_fields_never_the_name() {
-        let predecessor = NodeMeta { otel_debug: true, name: held().name.renamed(), ..held() };
-        let successor = NodeMeta { node_id: NodeId::mint(), incarnation: Some(IncarnationId::mint()), endpoint: Some("ep-9".into()), runtime: Some("dep-9".into()), status: NodeStatus::Pending, ..held() };
-        let copied = successor.with_caller_owned_of(&predecessor);
-        assert_eq!(copied, NodeMeta { otel_debug: true, ..successor.clone() }, "only otel_debug moves; the name stays the successor's own");
-    }
-
     /// CONTRACT: each op has one canonical name, rendered the same way everywhere: the name is
     /// `node.<verb>`, the span of a single call is `rdm.node_admin.<name>.via-call` and of a
     /// workflow `…via-workflow`, and an event's frame span is `…<event>.via-reply-frame`.
@@ -741,7 +487,7 @@ mod tests {
     fn one_name_per_op_renders_the_same_in_the_name_and_the_span() {
         use crate::names::NodeEvent;
         let (_g, spans) = capture_spans();
-        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
             drop(op.span());
         }
         for e in [NodeEvent::Created, NodeEvent::Joined, NodeEvent::Started, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Deleted, NodeEvent::Restarting, NodeEvent::Restarted] {
@@ -753,7 +499,7 @@ mod tests {
         drop(MeshOp::Get.span());
         drop(FabricOp::Get.span());
         let names = spans.lock().unwrap().clone();
-        for op in [NodeOp::Get, NodeOp::Update, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
+        for op in [NodeOp::Get, NodeOp::NameUpdate, NodeOp::TopologyGet, NodeOp::ConnectionsGet, NodeOp::ConnectionsDelete, NodeOp::ConfigGet, NodeOp::ConfigUpdate, NodeOp::TagsCreate, NodeOp::TagsDelete, NodeOp::Create, NodeOp::Stop, NodeOp::Start, NodeOp::Restart, NodeOp::Delete] {
             let via = if op.is_workflow() { "via-workflow" } else { "via-call" };
             let want = format!("rdm.node_admin.{}.{via}", op.name());
             assert!(names.contains(&want), "{want} missing from {names:?}");

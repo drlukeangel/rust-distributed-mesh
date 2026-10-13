@@ -21,7 +21,7 @@ use crate::model::{Node, PathName};
 use crate::node_rows::RenameRefused;
 use crate::storage::{NodeRow, NodesStorage};
 use crate::topology::Topology;
-use rafka_node_admin_client::{ExactBirth, MetaField, NodeMeta, NodeRpc, Traffic};
+use rafka_node_admin_client::{ExactBirth, NodeRpc, Traffic};
 use rafka_node_rpc::{CallOptions, NodeTarget, RouteChoice};
 use rafka_node_rpc_contract::status::{NotAuthority, StatusReply, StatusRequest};
 use std::collections::BTreeSet;
@@ -44,18 +44,17 @@ pub use crate::node_properties::FirstReadyOnRoot;
 /// Serve an `UpdateNode` at the admin `me` (born `me_id`): one span holds the whole put.
 #[allow(clippy::too_many_arguments)]
 pub async fn update(me: &PathName, me_id: &rafka_mesh_entity::NodeId, view: &RwLock<Topology>, storage: &dyn NodesStorage, doors: UpdateDoors<'_>, deleted: Option<&crate::status_rpc::ConnectionsDeletedReceipt>, first_ready: FirstReadyOnRoot<'_>, req: &StatusRequest) -> StatusReply {
-    let StatusRequest::UpdateNode { node_id, incarnation, name, tags } = req else { unreachable!("update is called for UpdateNode only") };
+    let StatusRequest::UpdateName { node_id, incarnation, name } = req else { unreachable!("update is called for UpdateName only") };
     let span = tracing::info_span!(
         "rdm.node_admin.node.update.via-update-node",
-        node = %me, node_id = %node_id, incarnation_id = %incarnation.as_str(), from = tracing::field::Empty, to = %name, tags = %crate::node_rows::labels(tags),
-        tags_arrived = tracing::field::Empty, tags_left = tracing::field::Empty, traffic = tracing::field::Empty, connections = tracing::field::Empty, apply = tracing::field::Empty,
+        node = %me, node_id = %node_id, incarnation_id = %incarnation.as_str(), from = tracing::field::Empty, to = %name, traffic = tracing::field::Empty, connections = tracing::field::Empty, apply = tracing::field::Empty,
         outcome = tracing::field::Empty, answered = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal",
     );
     let reply = tracing::Instrument::instrument(
         async {
             match crate::node_properties::refused_before_first_ready(me, view, first_ready, "node.update", node_id, &span).await {
                 Some(refused) => refused,
-                None => put(me, me_id, view, storage, doors, deleted, node_id, incarnation, name, tags, &span).await,
+                None => put(me, me_id, view, storage, doors, deleted, node_id, incarnation, name, &span).await,
             }
         },
         span.clone(),
@@ -85,15 +84,6 @@ fn traffic_of(held: &Node, deleted: Option<&crate::status_rpc::ConnectionsDelete
     }
 }
 
-/// The meta entity this admin holds of `n`, at its own name.
-pub(crate) fn meta_of(n: &Node) -> NodeMeta {
-    meta(n, n.name.clone())
-}
-
-fn meta(n: &Node, name: PathName) -> NodeMeta {
-    NodeMeta { node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone(), endpoint: None, transport_addr: n.transport_addr, exe: None, runtime: None, status: rafka_node_admin_client::NodeStatus::Pending, name, mesh: n.mesh.clone(), kind: n.kind, otel_debug: false, tags: Default::default() }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn put(
     me: &PathName,
@@ -105,7 +95,6 @@ async fn put(
     node_id: &rafka_mesh_entity::NodeId,
     incarnation: &rafka_mesh_entity::IncarnationId,
     name: &str,
-    tags: &BTreeSet<String>,
     span: &tracing::Span,
 ) -> StatusReply {
     let now = view.read().await.clone();
@@ -128,17 +117,14 @@ async fn put(
             }
         };
     }
-    let Ok(to) = name.parse::<PathName>() else {
-        return StatusReply::RejectedMetaFieldIsRdmOwned { field: MetaField::Name.name().into() };
+    let to = match held.name.with_name(name) {
+        Ok(to) => to,
+        Err(e) => return StatusReply::rejected_name(&format!("{me}: {name:?} at {}: {e}", held.name.path())),
     };
     // The shape first: only a node to or from its `.old` or `.new` form is a rename at all.
-    if let Err(e) = meta(&held, to.clone()).check_update(&meta(&held, held.name.clone()), Traffic::Stopped) {
-        return StatusReply::RejectedMetaFieldIsRdmOwned { field: e.field.name().into() };
-    }
-    if let Some(reason) = rafka_node_rpc_contract::status::tags_refusal(tags) {
-        let why = format!("{me}: the tags put on {} are refused and nothing is written: {reason}", held.name);
-        span.record("detail", why.as_str());
-        return StatusReply::rejected_tags(&why);
+    let toggle = to == held.name || (to.base() == held.name.base() && (to.base() == held.name || to.base() == to));
+    if !toggle {
+        return StatusReply::rejected_name(&format!("{me}: {to} is not a replace transition of {}", held.name));
     }
     let (traffic, quiet) = traffic_of(&held, deleted);
     span.record("traffic", traffic.0.as_str()).record("connections", traffic.1);
@@ -157,24 +143,22 @@ async fn put(
         Ok(row) => row,
         Err(why) => return StatusReply::node_row_refused(&held.name.to_string(), &format!("{me}: {why}: the put of {} is refused and nothing is written", held.name)),
     };
-    let was: BTreeSet<String> = known.as_ref().map(|r| r.tags.clone()).unwrap_or_default();
+    let tags: BTreeSet<String> = known.as_ref().map(|r| r.tags.clone()).unwrap_or_default();
     let config = known.map(|r| r.config).unwrap_or_else(|| held.config.clone());
-    span.record("tags_arrived", crate::node_rows::labels(&tags.difference(&was).cloned().collect()).as_str());
-    span.record("tags_left", crate::node_rows::labels(&was.difference(tags).cloned().collect()).as_str());
     if to == held.name {
-        let row = NodeRow { name: held.name.clone(), node_id: node_id.clone(), status: held.status, config, tags: tags.clone(), allocated: None };
+        let row = NodeRow { name: held.name.clone(), node_id: node_id.clone(), status: held.status, config, tags: tags.clone(), allocated: None, renamed_from: None };
         match storage.put_node_row(&row).await {
             Ok(Ok(())) => door.written().hold(&row),
             Ok(Err(h)) => return StatusReply::NameHeld { name: h.name.to_string(), by: h.by },
             Err(e) => return StatusReply::node_row_refused(&held.name.to_string(), &format!("{me}: nodes.storage refused the row of {} ({node_id}): {e}", held.name)),
         }
         // A change that touches no name completes once the row is written (node-update.md step 7).
-        return StatusReply::NodeUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        return StatusReply::NameUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
     }
     let Some(moved) = doors.moved.get() else {
         return StatusReply::NotReady { reason: format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name) };
     };
-    match crate::node_rows::move_row(storage, me, &held, config, tags.clone(), &held.name, &to).await {
+    match crate::node_rows::move_row(storage, me, &held, config, tags, &held.name, &to).await {
         Ok((_, written)) => {
             if let Some(row) = written {
                 door.written().hold(&row);
@@ -186,7 +170,7 @@ async fn put(
     // The view reads the moved row: a stopped birth is listed at the row's name from now on.
     moved(held.name.clone(), node_id.clone(), incarnation.clone(), to.clone()).await;
     if held.parked {
-        return StatusReply::NodeUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        return StatusReply::NameUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
     }
     // The live birth takes the row's name. This admin itself takes it through its own name
     // decision in-process, as its config door applies its own config: it never calls itself.
@@ -207,7 +191,7 @@ async fn put(
     let (answered, detail) = match applied {
         Ok(r @ (StatusReply::Applied | StatusReply::AlreadyApplied)) => {
             span.record("answered", r.name());
-            return StatusReply::NodeUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
+            return StatusReply::NameUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
         }
         Ok(refused) => (refused.name(), format!("{me} wrote the row; the birth answered {refused:?}")),
         Err(end) => (end.outcome(), format!("{me} wrote the row; apply-node-name ended {end:?}")),

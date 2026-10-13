@@ -140,13 +140,12 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
                 }
             }
         };
-        // Told its name while it holds both routes: Busy naming them, nothing held.
+        // Told its name while it holds both routes: refused naming each by its entry's id, nothing held.
         let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.to_string() };
+        let holding: Vec<_> = renamed_seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
+        assert_eq!(holding.len(), 2, "the node holds its two routes: {holding:?}");
         let busy = call(apply.clone()).await;
-        assert!(
-            matches!(&busy, StatusReply::Busy { reason } if reason.contains("mesh1.admin.1") && reason.contains("mesh1.rpc.2")),
-            "a node holding its routes keeps its name, Busy naming each route: {busy:?}"
-        );
+        assert_eq!(busy, StatusReply::BusyHoldingConnections { connections: holding }, "a node holding its routes keeps its name, naming each connection");
         assert_eq!(renamed_seams.connections.own().name, born, "the node holds the name it had");
 
         // node.connections.delete { All }: every route closed, each drop under the name it holds.
