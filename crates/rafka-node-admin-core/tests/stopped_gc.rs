@@ -446,7 +446,7 @@ impl rafka_node_admin_core::build_state::BuildStateAdapter for UnreadableCurrent
     async fn facts(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildFact>, rafka_node_admin_core::build_state::BuildStateError> {
         self.0.facts().await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
         self.0.recovery_of(path, node_id, incarnation).await
     }
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {

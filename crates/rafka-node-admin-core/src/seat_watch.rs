@@ -102,10 +102,20 @@ pub fn seat_yield(record: Option<&SeatHolder>, me: &Birth, held: &mut bool, view
 /// naming none or a birth proven gone names no holder. Read from the record alone: no history, no
 /// write.
 pub fn fabric_seat_record(record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
+    seat_record("the fabric seat record", record, me, lost, name_of)
+}
+
+/// [`fabric_seat_record`] of `mesh`'s primary seat record: what it says of `me`'s hold on its
+/// own mesh's drift attempts (R-BI7), judged by the same rule.
+pub fn mesh_seat_record(mesh: &str, record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
+    seat_record(&format!("mesh {mesh}'s primary seat record"), record, me, lost, name_of)
+}
+
+fn seat_record(which: &str, record: Option<&SeatHolder>, me: &Birth, lost: &HashSet<IncarnationId>, name_of: impl Fn(&NodeId) -> Option<String>) -> crate::fabric_builds::SeatRecord {
     match record {
         Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {
             let to = name_of(&h.node_id);
-            let by = format!("the fabric seat record names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.as_str(), h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
+            let by = format!("{which} names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.as_str(), h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
             crate::fabric_builds::SeatRecord::Moved { by, to }
         }
         Some(h) if h.is_birth(&me.0, &me.1) => crate::fabric_builds::SeatRecord::Open { holder: name_of(&h.node_id) },

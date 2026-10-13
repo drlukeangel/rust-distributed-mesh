@@ -1,11 +1,12 @@
-//! R-A1 / R-T4 / R-X1 functional: a Build attempt's claim is decided on the fabric-primary's
-//! Build log by the claim door, and `BuildClaim` (op `0x1C`) is that door on the wire.
+//! R-A1 / R-T4 / R-X1 / R-BI7 functional: a Build attempt's claim is decided by its claimant's
+//! claim door (the fabric-primary for a topology attempt, a mesh's mesh-primary for that mesh's
+//! drift attempt), and `BuildClaim` (op `0x1C`) is that door on the wire.
 //!
 //! Each admin is a real Node RPC server on loopback with its own Build log and its own view. An
 //! executor never claims (the fabric-primary claims for it and calls it with `build.attempt.run`),
 //! so these cells put claims to the door the way the fabric-primary does: a claim past the log the
-//! door holds is refused by name (`Lost`, `NotOpen`), a non-primary decides nothing and names the
-//! one it sees, and the context of an attempt rides `Won`.
+//! door holds is refused by name (`Lost`, `NotOpen`), an admin that is not the claimant decides
+//! nothing and names who may claim, and the context of an attempt rides `Won`.
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
@@ -13,6 +14,7 @@ use rafka_mesh_entity::{EndpointId, IncarnationId, NodeId, NodeKind};
 use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_claim::{self, AttemptContexts, ClaimDoor};
+use rafka_node_admin_core::mesh_claims::InFlight;
 use rafka_node_admin_core::build_state::{
     AttemptOpened, AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter,
 };
@@ -63,7 +65,7 @@ struct Seat {
 }
 
 async fn seat(b: &Birth, topology: Arc<RwLock<Topology>>, builds: Arc<dyn BuildStateAdapter>, contexts: Arc<AttemptContexts>) -> Seat {
-    let door = Arc::new(ClaimDoor { me: b.node.name.clone(), node_id: b.node.node_id.clone(), topology, builds, contexts });
+    let door = Arc::new(ClaimDoor { me: b.node.name.clone(), node_id: b.node.node_id.clone(), topology, builds, contexts, claims: Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory()) });
     let slot: build_claim::ClaimSlot = Arc::new(OnceLock::new());
     let _ = slot.set(door.clone());
     let server = build_claim::serve(ServerBuilder::new(), slot)
@@ -154,6 +156,9 @@ async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
     assert_eq!(p_seat.door.claim("mesh1.admin.2", &id, 4).await, BuildClaimReply::Won { context: rest.clone() });
     // The next attempt (a hand-off) has no record of its own.
     p_builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt: 4, outcome: AttemptOutcome::HandedOff { to: "mesh2.admin.1".into() } }).await.unwrap();
+    // The verdict releases mesh1's in-flight row attempt 4 held, as the drive does at a hand-off
+    // (R-BI7 caveat 3: one attempt in flight per mesh).
+    p_seat.door.claims.release("mesh1", &InFlight { build_id: id.clone(), lane: None, attempt: 4, claimant: "mesh1.admin.1".into() }).await.unwrap();
     assert_eq!(contexts.get(&id, 5).await.unwrap(), None);
     assert_eq!(p_seat.door.claim("mesh2.admin.1", &id, 5).await, BuildClaimReply::Won { context: rest.clone() }, "the hand-off continues the trace");
     assert_eq!(contexts.get(&id, 5).await.unwrap(), Some(rest), "and keeps it under its own attempt");
@@ -167,18 +172,41 @@ async fn a_won_claim_returns_the_attempts_context_and_a_hand_off_inherits_it() {
     }
 }
 
-/// CONTRACT: an admin that is not the fabric-primary decides nothing and names the one its view
-/// shows.
+/// CONTRACT (R-BI7 caveat 2: a topology Build's attempt is claimed by the fabric-primary, a mesh's
+/// drift attempt by that mesh's mesh-primary, decided from the receiver's own view of the seats): an
+/// admin that holds neither seat decides nothing, for the fabric lane or its mesh's drift lane, and
+/// names both claimants its view shows (`NotClaimant`). mesh2's mesh-primary, which is not the
+/// fabric-primary, is refused a fabric-lane claim the same way and wins its own mesh's drift-lane
+/// claim at its own door, recorded with itself as the claimant. Must NOT happen: a claim decided by
+/// an admin that is not its claimant, or a refusal that does not name who may claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_claim_put_to_a_non_primary_is_redirected_to_the_fabric_primary_it_sees() {
+async fn a_claim_put_to_an_admin_that_is_not_its_claimant_names_who_may_claim_and_a_mesh_primary_claims_its_own_drift_lane() {
     let id = BuildId::mint();
     let executor = birth("mesh1.admin.2", false);
     let (p, _p_seat, _p_builds) = primary(&id, 2, Arc::new(AttemptContexts::in_memory()), &executor).await;
     let q = birth("mesh1.admin.3", false);
     let q_view = view(vec![p.node.clone(), q.node.clone(), executor.node.clone()]);
     let q_seat = seat(&q, q_view, Arc::new(MemoryBuildStateAdapter::new()), Arc::new(AttemptContexts::in_memory())).await;
-    let reply = BuildClaimReply::NotFabricPrimary { fabric_primary: Some("mesh1.admin.1".into()) };
-    assert_eq!(q_seat.door.claim("mesh1.admin.2", &id, 1).await, reply, "a non-primary decides nothing and names the one it sees");
+    let names_both = BuildClaimReply::NotClaimant { mesh: Some("mesh1".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh1.admin.1".into()) };
+    assert_eq!(q_seat.door.claim("mesh1.admin.2", &id, 1).await, names_both, "an admin holding neither seat decides no fabric-lane claim and names both claimants");
+    assert_eq!(q_seat.door.claim_in("mesh1.admin.3", &id, Some("mesh1"), 1).await, names_both, "nor a claim of its mesh's drift lane");
+
+    // mesh2's mesh-primary, not the fabric-primary: its own drift lane's attempt 1 is open.
+    let mut m = birth("mesh2.admin.1", false);
+    m.node.mesh = "mesh2".into();
+    m.node.is_primary = true;
+    let m_builds = Arc::new(MemoryBuildStateAdapter::new());
+    settled(&m_builds, &id, "mesh1.admin.1", 2).await;
+    m_builds.open_attempt(&AttemptOpened { mesh: Some("mesh2".into()), build_id: id.clone(), attempt: 1, reason: AttemptReason::Recovery, action: None, opened_by: "mesh2.admin.1".into(), opened_at_ms: 0 }).await.unwrap();
+    let m_seat = seat(&m, view(vec![p.node.clone(), m.node.clone()]), m_builds.clone(), Arc::new(AttemptContexts::in_memory())).await;
+    let fabric_lane = m_seat.door.claim("mesh2.admin.1", &id, 3).await;
+    assert_eq!(fabric_lane, BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh2.admin.1".into()) }, "a mesh-primary decides no fabric-lane claim");
+    let own = m_seat.door.claim_in("mesh2.admin.1", &id, Some("mesh2"), 1).await;
+    assert!(matches!(own, BuildClaimReply::Won { .. }), "mesh2's mesh-primary wins its own drift lane's claim: {own:?}");
+    let p = m_builds.read_build(&id).await.unwrap();
+    let lane = &p.lanes["mesh2"];
+    assert_eq!((lane.attempt, lane.executor.as_deref(), lane.claimant.as_deref()), (1, Some("mesh2.admin.1"), Some("mesh2.admin.1")), "the drift lane's claim records its claimant: {lane:?}");
+    assert_eq!((p.attempt, p.executor.as_deref()), (2, Some("mesh1.admin.1")), "the fabric lane is untouched");
 }
 
 /// CONTRACT: the claim is decided for the executor the request names, at its exact birth as the
@@ -195,7 +223,7 @@ async fn a_claim_naming_a_birth_the_view_does_not_hold_is_refused_by_name() {
     resolver.insert(p_seat.resolved.clone());
     let ep = rafka_node_rpc::endpoint::bind(reborn_birth.key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let client = NodeRpcClient::new(ep, resolver);
-    let req = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: reborn_birth.node.node_id.clone(), executor_incarnation: IncarnationId::mint() };
+    let req = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: reborn_birth.node.node_id.clone(), executor_incarnation: IncarnationId::mint(), mesh: None };
     let (out, _) = client.call::<BuildClaim>(&rafka_node_rpc::NodeTarget::ExactNode(p.node.node_id.clone()), &req, &rafka_node_rpc::CallOptions::default()).await;
     match out {
         rafka_node_rpc_contract::outcome::RpcOutcome::Reply(reply) => match reply.value() {
@@ -236,14 +264,14 @@ async fn a_claim_from_an_endpoint_the_fabric_primary_never_heard_of_is_decided_f
         }
     };
     // A birth of the executor the view does not hold: refused about the subject, nothing claimed.
-    let other_birth = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: IncarnationId::mint() };
+    let other_birth = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: IncarnationId::mint(), mesh: None };
     match call(other_birth).await {
         BuildClaimReply::PeerUnresolved { reason } => assert!(reason.contains("names birth") && reason.contains("mesh1.admin.2"), "{reason}"),
         other => panic!("a birth the view does not hold is refused about the subject: {other:?}"),
     }
     assert_eq!(p_builds.read_build(&id).await.unwrap().attempt, 1, "nothing was claimed");
     // The executor's exact birth: Won, the attempt claimed for that executor.
-    let exact = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: executor.node.incarnation_id.clone().unwrap() };
+    let exact = BuildClaimRequest::ClaimAttempt { build_id: id.to_string(), attempt: 2, executor_node_id: executor.node.node_id.clone(), executor_incarnation: executor.node.incarnation_id.clone().unwrap(), mesh: None };
     assert!(matches!(call(exact).await, BuildClaimReply::Won { .. }), "the claim is decided for the executor the request names");
     let build = p_builds.read_build(&id).await.unwrap();
     assert_eq!((build.attempt, build.executor.as_deref()), (2, Some("mesh1.admin.2")), "attempt 2 is claimed for the executor the request names");

@@ -84,7 +84,7 @@ async fn an_accepted_build_is_current_from_the_build_store_alone() {
     let b1 = BuildId::mint();
     builds.publish_accepted(&BuildAccepted { build_id: b1.clone(), topology, submitted_change: None, submitted_at_ms: 5 }).await.unwrap();
     match cp.submit("POST /api/meshes", TopologyChange::CreateMesh { desired: mesh("mesh2") }).await {
-        Err(Refusal::BuildInProgress(id)) => assert_eq!(id, b1, "the refusal names the Build in progress"),
+        Err(Refusal::BuildInProgress(held)) => assert_eq!(held.current_build_id, b1, "the refusal names the Build in progress"),
         Err(other) => panic!("refused, but not as the Build in progress {b1}: {other:?}"),
         Ok(o) => panic!("a change was accepted as {} while B1 ({b1}), newer than B0 ({b0}), is in progress", o.build_id),
     }

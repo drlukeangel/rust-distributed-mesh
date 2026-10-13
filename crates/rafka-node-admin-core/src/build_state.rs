@@ -957,8 +957,9 @@ pub trait BuildStateAdapter: Send + Sync {
     /// attached to the run, never a fact, never durable. A state with no call attached to its runs
     /// has nobody to tell.
     async fn note_blocked(&self, _build_id: &BuildId, _attempt: u32, _operation: &str, _step: &str, _reason: &str) {}
-    /// The Build, attempt and operation of the node workflow at `path` that deleted the exited
-    /// birth `(node_id, incarnation)` and completed: a recovery of that birth (its `retire-node:<path>`
+    /// The Build, lane (`None` the fabric lane, `Some(mesh)` that mesh's drift lane), attempt and
+    /// operation of the node workflow at `path` that deleted the exited birth `(node_id, incarnation)`
+    /// and completed: a recovery of that birth (its `retire-node:<path>`
     /// in an attempt the recovery opened, answered at the attempt its last operation,
     /// `update-node:<path>`, completed), or a `replace-node:<path>` or `retire-node:<path>` (the birth
     /// exited inside that workflow, node-recovery.md "Failure and receipts", so it is no drift to
@@ -967,7 +968,7 @@ pub trait BuildStateAdapter: Send + Sync {
     /// the views, never the receipts). The first such attempt. A point read by the exited birth:
     /// every adapter answers it from its index (or delegates to the adapter it decorates), never by
     /// reading the fact log.
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError>;
     /// The Build, attempt and operation of the mesh.delete whose completion receipt
     /// (`mesh_leave::STEP_MESH_DELETED`) names the exact birth `(node_id, incarnation)` its final
     /// primary: the mesh.delete that ended with that birth alive, whose mesh-left follows that birth's
@@ -1185,7 +1186,7 @@ impl FactLog {
     /// ends its workflow: a recovery's `update-node:<path>` when a recovery of the birth was opened in
     /// that Build at or before the deletion's attempt, else the deleting operation itself. The first
     /// such attempt, with the deleting operation.
-    fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, u32, String)> {
+    fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, Option<String>, u32, String)> {
         let birth = (node_id.clone(), incarnation.clone());
         let opened = self.recoveries_opened.get(&birth);
         self.recovery_deletes
@@ -1197,9 +1198,9 @@ impl FactLog {
                 let recovering = opened.is_some_and(|o| o.iter().any(|(l, at)| l == lane && at <= deleted));
                 let ends = if recovering { format!("{RECOVERY_LAST}{path}") } else { operation.clone() };
                 let completed = self.recovery_completes.get(&(lane.clone(), ends))?.range(*deleted..).next()?;
-                Some((lane.0.clone(), *completed, operation.clone()))
+                Some((lane.0.clone(), lane.1.clone(), *completed, operation.clone()))
             })
-            .min_by_key(|(_, a, _)| *a)
+            .min_by_key(|(_, _, a, _)| *a)
     }
 
     /// The point read of [`BuildStateAdapter::mesh_deleted_of`]: the first attempt's.
@@ -1546,7 +1547,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         Ok(snapshot(&self.log).as_ref().clone())
     }
 
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
         Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
     }
 
@@ -1713,7 +1714,7 @@ impl BuildStateAdapter for FileJournal {
         Ok(snapshot(&self.log).as_ref().clone())
     }
 
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
         Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
     }
 
@@ -2266,17 +2267,17 @@ mod tests {
             assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "created, the update owed: not recovered");
             j.append_step_receipt(&receipt("b1", 3, "update-node", "Complete")).await.unwrap();
             j.append_step_receipt(&receipt("b1", 4, "update-node", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), 3, deleted.clone())), "own append: the first attempt that completed the recovery");
+            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "own append: the first attempt that completed the recovery");
         }
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), 3, deleted.clone())), "journal replay");
+        assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "journal replay");
         assert_eq!(j.recovery_of(&"mesh1.rpc.2".parse().unwrap(), &node_id, &incarnation).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
         // Gossip delivers in any order: the update's Complete heard first, the attempt's opening last.
         m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "update-node", "Complete"))]).await;
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "a Complete alone names no birth");
         m.absorb(&[BuildFact::Step(receipt("b1", 2, "retire-node", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "retire-node", "Complete")), BuildFact::Step(receipt("b1", 2, "create-node", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
-        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), 2, deleted.clone())), "absorbed, in any order");
+        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "absorbed, in any order");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2416,17 +2417,17 @@ mod tests {
             j.append_step_receipt(&receipt("replace-node", 2, "Complete", &replaced.0, &replaced.1)).await.unwrap();
             j.append_step_receipt(&receipt("retire-node", 3, "NodeDeleted", &retired.0, &retired.1)).await.unwrap();
             j.append_step_receipt(&receipt("retire-node", 3, "Complete", &retired.0, &retired.1)).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), 2, format!("replace-node:{path}"))), "own append: the replace that deleted the birth");
-            assert_eq!(j.recovery_of(&path, &retired.0, &retired.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), 3, format!("retire-node:{path}"))), "own append: the retire that deleted the birth");
+            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, format!("replace-node:{path}"))), "own append: the replace that deleted the birth");
+            assert_eq!(j.recovery_of(&path, &retired.0, &retired.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, format!("retire-node:{path}"))), "own append: the retire that deleted the birth");
         }
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), 2, format!("replace-node:{path}"))), "journal replay");
+        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, format!("replace-node:{path}"))), "journal replay");
         assert_eq!(j.recovery_of(&"mesh2.rpc.1".parse().unwrap(), &replaced.0, &replaced.1).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
         m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("replace-node", 2, "Complete", &replaced.0, &replaced.1))]).await;
         assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "a Complete alone names no birth");
         m.absorb(&[BuildFact::Step(receipt("replace-node", 2, "NodeDeleted", &replaced.0, &replaced.1))]).await;
-        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), 2, format!("replace-node:{path}"))), "absorbed, in either order");
+        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, format!("replace-node:{path}"))), "absorbed, in either order");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

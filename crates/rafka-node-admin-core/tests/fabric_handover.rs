@@ -510,7 +510,7 @@ async fn build_door(a: &Admin, builds: Arc<rafka_node_admin_core::build_state::M
         me: me.clone(),
         topology: control.topology.clone(),
         builds: dyn_builds.clone(),
-        door: Arc::new(rafka_node_admin_core::build_claim::ClaimDoor { me: me.clone(), node_id: a.resolved.node_id.clone(), topology: control.topology.clone(), builds: dyn_builds.clone(), contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()) }),
+        door: Arc::new(rafka_node_admin_core::build_claim::ClaimDoor { me: me.clone(), node_id: a.resolved.node_id.clone(), topology: control.topology.clone(), builds: dyn_builds.clone(), contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()), claims: control.claims.clone() }),
         dispatcher: Arc::new(Held),
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),

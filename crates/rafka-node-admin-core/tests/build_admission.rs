@@ -109,7 +109,7 @@ impl BuildStateAdapter for Held {
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
-    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
     async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
@@ -168,7 +168,7 @@ async fn two_concurrent_topology_submissions_admit_one_build_and_refuse_the_othe
     assert_eq!(ok.len(), 1, "exactly one submission is admitted: refused={refused:?}");
     let admitted = ok.into_iter().next().unwrap().unwrap().build_id;
     match refused.into_iter().next() {
-        Some(Err(Refusal::BuildInProgress(running))) => assert_eq!(running, admitted, "the refusal names the running Build"),
+        Some(Err(Refusal::BuildInProgress(running))) => assert_eq!(running.current_build_id, admitted, "the refusal names the running Build"),
         other => panic!("the second submission is refused BuildInProgress naming the first: {other:?}"),
     }
     let active = held.list_active().await.unwrap();

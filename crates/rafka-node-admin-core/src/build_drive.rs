@@ -668,6 +668,18 @@ impl DriveEnv {
         DriveEnd::Stalled(why)
     }
 
+    /// The end of the fabric lane's `attempt` (its terminal, or its take-over from a proven-departed
+    /// executor) releases its executor's mesh's in-flight row (R-BI7 caveat 3), while the row still
+    /// names that attempt. A release that cannot be written is named: the mesh stays held, and the
+    /// next claim on it is refused naming this attempt.
+    async fn release_mesh(&self, id: &BuildId, attempt: u32, executor: &PathName) {
+        let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: self.me.to_string() };
+        if let Err(e) = self.door.claims.release(&executor.mesh, &row).await {
+            tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id, attempt, mesh = %executor.mesh, node = %self.me, error = %e)
+                .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
+        }
+    }
+
     /// A blocker the drive itself holds: framed once for a new reason.
     fn blocked(&self, drive: &Arc<Drive>, attempt: u32, operation: &str, step: &str, reason: &str) {
         drive.push(BuildReply::Blocked { build_id: drive.build_id.to_string(), attempt, operation: operation.into(), step: step.into(), reason: crate::build_run::bounded_reason(reason.into()) });
@@ -785,6 +797,12 @@ impl DriveEnv {
                         return end;
                     }
                 }
+                // The attempt that completed the Build holds its executor's mesh no longer (a
+                // fabric-primary that took the seat after the verdict releases what its predecessor
+                // could not).
+                if let Some(executor) = p.executor.as_deref().and_then(parse_path) {
+                    self.release_mesh(&id, p.attempt, &executor).await;
+                }
                 drive.finish(BuildReply::Complete { build_id: id.to_string(), attempt: p.attempt });
                 return DriveEnd::Terminal;
             }
@@ -818,6 +836,13 @@ impl DriveEnv {
                     Ok(true) => continue,
                     Ok(false) => {}
                     Err(end) => return end,
+                }
+                // A taken-over attempt ends with its proven-departed executor: its hold on that
+                // executor's mesh goes before the next attempt takes the mesh.
+                if take_over {
+                    if let Some(lost) = p.executor.as_deref().and_then(parse_path) {
+                        self.release_mesh(&id, p.attempt, &lost).await;
+                    }
                 }
                 match self.claim_next(drive, &p, handed_to.take()).await {
                     Ok(c) => c,
@@ -861,6 +886,7 @@ impl DriveEnv {
                 Inner::Terminal(t @ BuildReply::Complete { .. }) => {
                     dspan.record("outcome", "complete");
                     self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await;
+                    self.release_mesh(&id, attempt, &executor).await;
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }
@@ -871,12 +897,14 @@ impl DriveEnv {
                             self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Failed { reason: reason.clone() } }).await;
                         }
                     }
+                    self.release_mesh(&id, attempt, &executor).await;
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }
                 Inner::Terminal(BuildReply::HandedOff { to, .. }) => {
                     dspan.record("outcome", "handed-off");
                     self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } }).await;
+                    self.release_mesh(&id, attempt, &executor).await;
                     let Some(next) = parse_path(&to) else {
                         return self.stalled(drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
                     };
@@ -1041,6 +1069,13 @@ impl DriveEnv {
                 None => Err(self.stalled(drive, format!("attempt {attempt} of Build {id} is held by {holder:?}, which is not a path.name"))),
             },
             BuildClaimReply::NotOpen { next } => Err(self.stalled(drive, format!("{}: attempt {attempt} of Build {id} is not open (the open attempt is {next:?})", self.me))),
+            // Another attempt holds the mesh this one acts in (R-BI7 caveat 3): nothing is claimed or
+            // dispatched; the next pass claims once its verdict releases the mesh.
+            BuildClaimReply::BuildInProgress { current_build_id, mesh, held_by } => {
+                let why = format!("{}: attempt {attempt} of Build {id} acts in mesh {mesh}, which an attempt of Build {current_build_id} holds (claimed by {}): one attempt in flight per mesh", self.me, held_by.as_deref().unwrap_or("no recorded claimant"));
+                self.blocked(drive, attempt, "", "mesh-in-flight", &why);
+                Err(self.stalled(drive, why))
+            }
             other => Err(self.stalled(drive, format!("{}: the claim of attempt {attempt} of Build {id} was not decided: {}", self.me, other.name()))),
         }
     }

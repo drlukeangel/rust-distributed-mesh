@@ -190,6 +190,10 @@ pub struct FabricBuildStateAdapter {
     joined: std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>,
     /// The authority gate every fabric-primary mutation passes (ruling R-A2).
     authority: Authority,
+    /// The gate of this admin's drift-lane opens and claims (R-BI7): the committed seat record of its
+    /// own mesh's primary seat, never the fabric seat's, so an admin that yielded the fabric seat
+    /// still opens and claims its own mesh's drift attempts while it holds its mesh's seat.
+    mesh_seat_gate: Authority,
 }
 
 /// What the committed fabric seat record says of this birth's Build authority.
@@ -283,6 +287,14 @@ impl Authority {
 }
 
 impl FabricBuildStateAdapter {
+    /// This log's drift-lane opens and claims gated by `seat`, the committed record of this admin's
+    /// own mesh's primary seat (R-BI7).
+    pub fn with_mesh_seat(mut self, seat: SeatSource) -> Self {
+        let node = self.authority.node.clone();
+        self.mesh_seat_gate = Authority::new(node, seat);
+        self
+    }
+
     /// Join `fabric`'s Build topic through `peers` (the other node-admins), as
     /// bootstrap hints: it returns at once, connected or not.
     ///
@@ -440,7 +452,7 @@ impl FabricBuildStateAdapter {
                 receiver = r;
             }
         });
-        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name, seat) })
+        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name.clone(), seat), mesh_seat_gate: Authority::new(node_name, SeatSource::unrecorded()) })
     }
 
     /// Join the Build topic to every live node-admin `admins` names, as the
@@ -556,7 +568,10 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        let _gate = self.authority.enter().await?;
+        let _gate = match opened.mesh {
+            None => self.authority.enter().await?,
+            Some(_) => self.mesh_seat_gate.enter().await?,
+        };
         let fact = BuildFact::Opened(opened.clone());
         let bytes = encode(vec![fact.clone()])?;
         self.local.open_attempt(opened).await?;
@@ -582,7 +597,10 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
 
     /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let _gate = self.authority.enter().await?;
+        let _gate = match claim.mesh {
+            None => self.authority.enter().await?,
+            Some(_) => self.mesh_seat_gate.enter().await?,
+        };
         let fact = BuildFact::Claim(claim.clone());
         let bytes = encode(vec![fact.clone()])?;
         let outcome = self.local.claim_attempt(claim).await?;
@@ -618,7 +636,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.local.facts().await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.local.recovery_of(path, node_id, incarnation).await
     }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {

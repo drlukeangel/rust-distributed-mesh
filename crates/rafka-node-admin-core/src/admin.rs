@@ -911,6 +911,20 @@ pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: 
     crate::fabric_builds::SeatSource { read, changed }
 }
 
+/// Where this birth's drift-lane opens and claims read their seat (R-BI7): the committed record
+/// of its own mesh's primary seat held in `book`, judged as [`fabric_seat_record`] judges the fabric
+/// seat's.
+pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (NodeId, IncarnationId), me_name: &PathName, mesh: &str) -> crate::fabric_builds::SeatSource {
+    let changed = Some(book.seats.subscribe());
+    let (book, records, me_name, mesh) = (book.clone(), records.clone(), me_name.to_string(), mesh.to_string());
+    let read = Arc::new(move || {
+        let incumbency = incumbency_of(&book, &records);
+        let name_of = |id: &NodeId| if *id == me.0 { Some(me_name.clone()) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
+        crate::seat_watch::mesh_seat_record(&mesh, incumbency.meshes.get(&mesh), &me, &incumbency.lost, name_of)
+    });
+    crate::fabric_builds::SeatSource { read, changed }
+}
+
 /// The seats this admin announces from one decision of its hierarchy loop: each seat the projection
 /// `t` gives it (`live`: a cut-off view authorizes nothing) whose record names another birth, at the
 /// next epoch over that record. The record is the one `t` was decided against (`decided`): a seat
@@ -5054,6 +5068,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     let nodes_storage: Arc<dyn crate::storage::NodesStorage> = nodes_files.clone();
     let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).await.map_err(|e| e.to_string())?);
     let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir, &incarnation).await.map_err(storage_err)?);
+    // Each mesh's in-flight row on the fabric's store root (R-BI7 caveat 3): the one set of rows the
+    // claim door, the drive's release and the recovery door all take and release.
+    let mesh_claims = Arc::new(crate::mesh_claims::MeshClaims::on_root(store_root.clone(), incarnation.clone()));
     let restart = match (&cfg.launch, own_row) {
         (None, Some(own)) => {
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {
@@ -5472,7 +5489,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let builds = Arc::new(
                     FabricBuildStateAdapter::join(&gossip, &membership.location_book(), &cfg.fabric_id, seed_addrs.clone(), journal.clone(), accepted.clone(), shutdown_control.clone(), name.to_string(), fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name), wiring.catch_up_seam.take())
                         .await
-                        .map_err(|e| e.to_string())?,
+                        .map_err(|e| e.to_string())?
+                        .with_mesh_seat(mesh_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name, &own_mesh)),
                 );
                 // The Build state every consumer after hydration shares: the control routes, the executor, the
                 // pipelines and the drift check.
@@ -5594,10 +5612,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             let book = membership.book.clone();
                             let node_rpc_feed = node_rpc.feed(&book, &name.to_string());
                             let control = Arc::new(
-                                ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records), rafka_time.clone()).with_contexts(attempt_contexts.clone()).with_first_ready(records.first_ready.clone(), status_storage.clone()),
+                                ControlPlane::new(builds_dyn.clone(), accepted.clone(), name.clone(), project(&cfg.fabric, &cfg.fabric_id, policy.provider, &book, &records), rafka_time.clone()).with_contexts(attempt_contexts.clone()).with_first_ready(records.first_ready.clone(), status_storage.clone()).with_claims(mesh_claims.clone()),
                             );
-                            // The claim door: this admin decides a claim only while it holds the fabric-primary seat.
-                            let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), node_id: node_id.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone() });
+                            // The claim door: this admin decides a fabric-lane claim only while it holds the fabric-primary
+                            // seat, and its own mesh's drift-lane claim only while it holds its mesh's primary seat (R-BI7).
+                            let claim_door = Arc::new(crate::build_claim::ClaimDoor { me: name.clone(), node_id: node_id.clone(), topology: control.topology.clone(), builds: builds_dyn.clone(), contexts: attempt_contexts.clone(), claims: mesh_claims.clone() });
                             let _ = claim_slot.set(claim_door.clone());
                             {
                                 let (book, records) = (book.clone(), records.clone());
@@ -7715,7 +7734,7 @@ mod tests {
         async fn forget(&self, id: &crate::build::BuildId) -> Result<(), crate::build_state::BuildStateError> {
             self.0.forget(id).await
         }
-        async fn recovery_of(&self, p: &crate::model::PathName, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {
+        async fn recovery_of(&self, p: &crate::model::PathName, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, crate::build_state::BuildStateError> {
             self.0.recovery_of(p, n, i).await
         }
         async fn mesh_deleted_of(&self, n: &NodeId, i: &IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, crate::build_state::BuildStateError> {

@@ -128,7 +128,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         me: me.clone(),
         topology: topology.clone(),
         builds: builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: fp_id.clone(), me, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { node_id: fp_id.clone(), me, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory()) }),
         dispatcher: dispatch.clone(),
         gate: switch.clone(),
         departure: proofs.clone(),

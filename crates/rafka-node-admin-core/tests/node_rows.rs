@@ -171,7 +171,7 @@ async fn rig(change: TopologyChange, acts: Vec<Act>, storage: Arc<MemoryNodesSto
         me: me.clone(),
         topology: topology.clone(),
         builds: builds.clone(),
-        door: Arc::new(ClaimDoor { me, node_id: me_id, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { me, node_id: me_id, topology: topology.clone(), builds: builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory()) }),
         dispatcher: Arc::new(Script { acts: Mutex::new(Some(acts)), view: topology, records: records.clone() }),
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
@@ -1054,7 +1054,7 @@ mod writer {
         async fn facts(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildFact>, rafka_node_admin_core::build_state::BuildStateError> {
             self.inner.facts().await
         }
-        async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
+        async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
             self.inner.recovery_of(path, node_id, incarnation).await
         }
         async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {

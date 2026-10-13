@@ -335,7 +335,7 @@ impl crate::http::ControlPlane {
         let Some(c) = first else { return Swept::Nothing };
         match self.collect_stopped(&c, ttl).await {
             Ok(o) => Swept::Submitted { node: c.node, build_id: o.build_id },
-            Err(Refusal::BuildInProgress(current_build_id)) => Swept::BuildInProgress { node: c.node, current_build_id },
+            Err(Refusal::BuildInProgress(held)) => Swept::BuildInProgress { node: c.node, current_build_id: held.current_build_id },
             Err(Refusal::Reject(r)) => Swept::Refused { node: c.node, reason: r.to_string() },
             Err(other) => Swept::Refused { node: c.node, reason: format!("{other:?}") },
         }

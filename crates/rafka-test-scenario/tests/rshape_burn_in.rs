@@ -1498,7 +1498,7 @@ async fn ask(e: &Estate, admin: &str, change: BuildChange) -> Value {
     match first {
         Ok(BuildReply::Started { build_id, attempt, .. }) => json!({"reply": "started", "build_id": build_id, "attempt": attempt}),
         Ok(BuildReply::NotFabricPrimary { fabric_primary }) => json!({"reply": "not-fabric-primary", "fabric_primary": fabric_primary}),
-        Ok(BuildReply::BuildInProgress { current_build_id }) => json!({"reply": "build-in-progress", "current_build_id": current_build_id}),
+        Ok(BuildReply::BuildInProgress { current_build_id, mesh, held_by }) => json!({"reply": "build-in-progress", "current_build_id": current_build_id, "mesh": mesh, "held_by": held_by}),
         Ok(BuildReply::Rejected { reason, detail }) => json!({"reply": reason, "detail": detail}),
         Ok(other) => json!({"reply": other.name(), "detail": format!("{other:?}")}),
         Err(ended) => json!({"reply": "ended", "detail": ended}),

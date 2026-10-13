@@ -19,27 +19,40 @@ fn the_request_matches_the_frozen_one_variant_wire_schema() {
         attempt: 3,
         executor_node_id: NodeId::parse("0123456789ab").unwrap(),
         executor_incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(),
+        mesh: None,
     };
-    let expected = bytes("00") .into_iter().chain(bytes("0c6237737767336a6a3739307a")).chain(bytes("03")).chain(bytes("0c303132333435363738396162")).chain(bytes("0c397763707266677776746879")).collect::<Vec<u8>>();
+    let expected = bytes("00") .into_iter().chain(bytes("0c6237737767336a6a3739307a")).chain(bytes("03")).chain(bytes("0c303132333435363738396162")).chain(bytes("0c397763707266677776746879")).chain(bytes("00")).collect::<Vec<u8>>();
     assert_eq!(BuildClaim::encode_request(&q).unwrap(), expected);
     assert_eq!(BuildClaim::decode_request(&expected).unwrap(), q);
+    let drift = BuildClaimRequest::ClaimAttempt {
+        build_id: "b7swg3jj790z".into(),
+        attempt: 1,
+        executor_node_id: NodeId::parse("0123456789ab").unwrap(),
+        executor_incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(),
+        mesh: Some("m".into()),
+    };
+    let expected = bytes("00") .into_iter().chain(bytes("0c6237737767336a6a3739307a")).chain(bytes("01")).chain(bytes("0c303132333435363738396162")).chain(bytes("0c397763707266677776746879")).chain(bytes("01016d")).collect::<Vec<u8>>();
+    assert_eq!(BuildClaim::encode_request(&drift).unwrap(), expected);
+    assert_eq!(BuildClaim::decode_request(&expected).unwrap(), drift);
 }
 
 #[test]
-fn replies_match_the_frozen_ten_variant_wire_schema() {
+fn replies_match_the_frozen_eleven_variant_wire_schema() {
     use BuildClaimReply::*;
     let fixtures = [
         (Won { context: CallContext::default() }, "0000000000"),
         (Lost { holder: "a".into() }, "010161"),
         (NotOpen { next: Some(7) }, "020107"),
         (NotOpen { next: None }, "0200"),
-        (NotFabricPrimary { fabric_primary: Some("m".into()) }, "0301016d"),
+        (NotClaimant { mesh: Some("x".into()), fabric_primary: Some("m".into()), mesh_primary: None }, "0301017801016d00"),
         (PeerUnresolved { reason: "p".into() }, "040170"),
         (NotReady { reason: "n".into() }, "05016e"),
         (Busy { reason: "b".into() }, "060162"),
         (Draining { reason: "d".into() }, "070164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0802"),
         (Unauthorized { reason: "u".into() }, "090175"),
+        (BuildInProgress { current_build_id: "c".into(), mesh: "x".into(), held_by: Some("h".into()) }, "0a01630178010168"),
+        (BuildInProgress { current_build_id: "c".into(), mesh: "x".into(), held_by: None }, "0a0163017800"),
     ];
     for (reply, hex) in fixtures {
         let expected = bytes(hex);

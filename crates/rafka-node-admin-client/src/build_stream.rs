@@ -197,7 +197,7 @@ impl BuildStream {
 
 /// The refusal `reply` is, as the call ends.
 fn refusal(reply: BuildReply) -> CallEnd {
-    if let BuildReply::BuildInProgress { current_build_id } = &reply {
+    if let BuildReply::BuildInProgress { current_build_id, .. } = &reply {
         return match BuildId::parse(current_build_id) {
             Ok(current) => CallEnd::BuildInProgress { current },
             Err(e) => CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("the fabric-primary answered BuildInProgress naming a Build id that is not a Crockford id: {e}") },
@@ -209,7 +209,16 @@ fn refusal(reply: BuildReply) -> CallEnd {
         BuildReply::StaleClaim { held_attempt, held_executor, carried_attempt } => format!("the recipient holds attempt {held_attempt} for {}, the call carried {carried_attempt}", held_executor.as_deref().unwrap_or("no executor")),
         BuildReply::UnknownBuild { build_id } => format!("the fabric-primary holds no fact of Build {build_id}"),
         BuildReply::Rejected { reason, detail } => format!("{reason}: {detail}"),
-        BuildReply::BuildInProgress { current_build_id } => format!("Build {current_build_id} is still reconciling; one Build at a time"),
+        BuildReply::BuildInProgress { current_build_id, mesh, held_by } => match mesh {
+            Some(mesh) => format!("an attempt of Build {current_build_id} holds mesh {mesh} (claimed by {}); one attempt in flight per mesh", held_by.as_deref().unwrap_or("no recorded claimant")),
+            None => format!("Build {current_build_id} is still reconciling; one Build at a time"),
+        },
+        BuildReply::NotClaimant { mesh, fabric_primary, mesh_primary } => format!(
+            "the receiver may not claim on mesh {}: a topology attempt is the fabric-primary's ({}), a drift attempt the mesh-primary's ({})",
+            mesh.as_deref().unwrap_or("unknown"),
+            fabric_primary.as_deref().unwrap_or("none seen"),
+            mesh_primary.as_deref().unwrap_or("none seen")
+        ),
         BuildReply::AttemptTaken { detail } => detail.clone(),
         BuildReply::Fenced { node, by } => format!("{node} no longer holds the fabric-primary seat: the committed seat row moved it ({by})"),
         BuildReply::CannotDelete { build_id, reason } => format!("Build {build_id} stays in history: {reason}"),
