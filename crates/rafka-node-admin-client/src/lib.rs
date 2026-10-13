@@ -21,7 +21,7 @@ pub use build_stream::{BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Cha
 pub use calls::{CallEnd, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
 pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
-    await_fact, BuildPreset, BuildSpec, Builds, Fabrics, MeshSelector, Meshes, MetaField, MetaFieldIsRdmOwned, NameHeld, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
+    await_fact, BuildPreset, BuildSpec, Builds, Fabrics, MeshSelector, Meshes, NameHeld, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
 };
 pub use peers::{birth_of_line, Peers, BIRTH_LINE};
 /// A node's birth, as a node-admin prints it at start ([`BIRTH_LINE`]).

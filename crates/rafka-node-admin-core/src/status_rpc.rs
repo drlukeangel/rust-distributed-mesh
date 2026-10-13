@@ -432,7 +432,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             (StatusReply::NotReady { reason: format!("{} holds no view of itself yet: {} is answered by the birth it reaches once its view holds it", auth.me, req.op()) }, None)
         }
         // Commands, completions and reads are answered before the decision (`StatusAuthority::apply`).
-        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateNode { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
+        StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::NodeDrained { .. } | StatusRequest::NodeLeft { .. } | StatusRequest::LeaveMesh { .. } | StatusRequest::MeshLeave { .. } | StatusRequest::CommitState { .. } | StatusRequest::StateCommitted { .. } | StatusRequest::OpenTraffic { .. } | StatusRequest::TrafficOpened { .. } | StatusRequest::UpdateNodeConfig { .. } | StatusRequest::UpdateName { .. } | StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::GetNodes { .. } | StatusRequest::GetMeshes { .. } | StatusRequest::GetFabric | StatusRequest::GetConnections { .. } => {
             (StatusReply::NotReady { reason: format!("{} reached the declaration decision, which does not decide {}", auth.me, req.op()) }, None)
         }
         StatusRequest::ApplyMeshState { mesh_id, mesh_name, state } => {
@@ -576,7 +576,7 @@ impl StatusAuthority {
                     None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
                 };
             }
-            StatusRequest::UpdateNode { node_id, incarnation, .. } => {
+            StatusRequest::UpdateName { node_id, incarnation, .. } => {
                 // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
                 let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
                 let doors = crate::node_update::UpdateDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
@@ -1057,7 +1057,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             };
             let (held, decision) = rename(asked.clone()).await;
             let routes = match &decision {
-                crate::node_name::NameApply::Busy { routes } => routes.join(", "),
+                crate::node_name::NameApply::Busy { routes, .. } => routes.join(", "),
                 _ => String::new(),
             };
             tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, routes = %routes, outcome = decision.name(), "otel.kind" = "internal")

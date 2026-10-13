@@ -848,44 +848,28 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
     assert_eq!(again[1..], first[1..], "every event again, replayed by the executor of the last attempt: {again:?}");
 }
 
-/// CONTRACT: a put that changes a field RDM owns is refused before anything is sent, and one that
-/// changes otel_debug, which no row field carries, ends `NotBackedToday`. A put whose tags are not a
-/// node's tag set, and a `node.get` tag filter naming no label or a label that is not one, are
-/// refused by name before anything is sent (R-TG1). A `node.connections.delete` naming no connection
-/// is refused by name before anything is sent (R-CR3). Calls whose request no op carries say so by
-/// name.
+/// CONTRACT: a `node.name.update` whose name is outside the name grammar (proposal
+/// node-properties-own-commands.md §9 A) is refused `RejectedName` by name before anything is sent,
+/// as are tags that are not a node's tag set and a `node.get` tag filter naming no label or a label
+/// that is not one (R-TG1). A `node.connections.delete` naming no connection is refused by name before
+/// anything is sent (R-CR3). Calls whose request no op carries say so by name.
 #[test]
 fn calls_no_op_carries_today_say_so_by_name() {
-    use rafka_node_admin_client::{MetaField, NodeMeta};
     let cap = capture();
     cap.run(async {
         let rig = Arc::new(Rig::new());
         let served = serve(door(&rig, Duration::from_secs(1)).await).await;
         let nodes = nodes_over(&served.carrier);
-        let held = NodeMeta {
-            node_id: NodeId::mint(),
-            incarnation: Some(IncarnationId::mint()),
-            endpoint: Some("ep-1".into()),
-            transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
-            exe: Some("rpc-node@abc123".into()),
-            runtime: Some("dep-1".into()),
-            status: rafka_node_admin_client::NodeStatus::ReadyForTraffic,
-            name: "mesh1.rpc.1".parse().unwrap(),
-            mesh: "mesh1".into(),
-            kind: NodeKind::RpcNode,
-            otel_debug: false,
-            tags: Default::default(),
-        };
-        // The put reaches the node's mesh-primary only with what its request carries: a body that
-        // changes a field RDM owns is refused here, and one that changes otel_debug has no row field.
+        let node_id = NodeId::mint();
+        let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: IncarnationId::mint() };
+        // The rename reaches the node's mesh-primary only with a name within the grammar.
         let (mp, route) = (NodeId::mint(), rafka_node_rpc::RouteChoice::Direct);
-        assert_eq!(
-            nodes.update(&NodeMeta { status: rafka_node_admin_client::NodeStatus::Dead, ..held.clone() }, &held, &mp, &route).await.expect("a typed refusal"),
-            rafka_node_rpc_contract::status::StatusReply::RejectedMetaFieldIsRdmOwned { field: MetaField::Status.name().into() }
-        );
-        assert!(matches!(nodes.update(&held, &NodeMeta { otel_debug: true, ..held.clone() }, &mp, &route).await, Err(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
-        // Tags that are not a node's tag set, and a tag filter no node can match, are refused here.
-        let not_a_label = nodes.update(&held, &NodeMeta { tags: ["Rabbit".to_string()].into(), ..held.clone() }, &mp, &route).await.expect("a typed refusal");
+        for (bad, says) in [("Rpc", "\"Rpc\""), (".old", "starts with '.'"), ("", "empty")] {
+            let refused = nodes.name_update(&birth, &mp, &route, bad).await.expect("a typed refusal");
+            assert!(matches!(&refused, rafka_node_rpc_contract::status::StatusReply::RejectedName { reason } if reason.contains(says)), "{bad:?}: {refused:?}");
+        }
+        // Labels that are not a node's tag set, and a tag filter no node can match, are refused here.
+        let not_a_label = nodes.tags_create(&birth, &mp, &route, &["Rabbit".to_string()].into()).await.expect("a typed refusal");
         assert!(matches!(&not_a_label, rafka_node_rpc_contract::status::StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "{not_a_label:?}");
         for (filter, says) in [(rafka_node_admin_client::TagFilter::All(Default::default()), "names no label"), (rafka_node_admin_client::TagFilter::Any(["a/b".to_string()].into()), "a/b")] {
             match nodes.get(&rafka_node_admin_client::NodeSelector::Tags(filter.clone())).await {
@@ -895,7 +879,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         }
         // node.connections.delete naming no connection is refused by name, and nothing is sent.
         assert!(
-            matches!(nodes.connections_delete(&held, &mp, &route, &rafka_node_rpc_contract::status::ConnectionScope::Connections(vec![])).await, Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason }) if reason.contains("at least one")),
+            matches!(nodes.connections_delete(&birth, &mp, &route, &rafka_node_rpc_contract::status::ConnectionScope::Connections(vec![])).await, Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason }) if reason.contains("at least one")),
             "an empty Connections list is refused by name"
         );
         let end = nodes.config_get();

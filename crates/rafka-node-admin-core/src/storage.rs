@@ -276,8 +276,8 @@ pub struct NodeRow {
     pub status: crate::model::NodeStatus,
     /// The application's own key/values on the node (capped: [`rafka_mesh_entity::check_config`]).
     pub config: BTreeMap<String, String>,
-    /// The node's tag labels (R-TG1): caller-owned meta set through `node.update`, each one a row
-    /// of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
+    /// The node's tag labels (R-TG1), set through `node.tags.create` / `node.tags.delete`, each one a
+    /// row of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
     /// a row written before tags existed carries none.
     #[serde(default)]
     pub tags: BTreeSet<String>,
@@ -291,6 +291,13 @@ pub struct NodeRow {
     /// launch and carries none; a row written before allocations existed carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allocated: Option<Allocation>,
+    /// The `path.name` a rename moved this row from (proposal node-properties-own-commands.md §2.1
+    /// "Claim and move"), written by the put at the new key. While the key it names still holds this
+    /// row's node, the release of that key is pending and the writer that meets the row releases it
+    /// (`crate::node_rows::finish_release`); once that key no longer holds the node it says nothing,
+    /// so it is never cleared. A row no rename wrote carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_from: Option<PathName>,
 }
 
 /// The identity a create's `AllocateIdentity` decided for the birth its claim names (beside the
@@ -1177,7 +1184,7 @@ mod tests {
     }
 
     fn row(name: &str) -> NodeRow {
-        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None }
+        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None }
     }
 
     /// CONTRACT (CLAUDE.md read rule: a lookup by id that cannot read the store's own key reads the
@@ -1475,7 +1482,7 @@ mod tests {
     /// thread keeps running meanwhile, and the read answers the row.
     #[test]
     fn a_node_row_read_waits_on_the_disk_off_the_runtime_thread() {
-        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None };
+        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None };
         let name = row.name.clone();
         let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
         assert!(ran, "the runtime thread ran while the row read waited on the disk");
@@ -1523,7 +1530,7 @@ mod tests {
     async fn a_second_nodes_row_at_a_held_name_is_refused_by_the_adapter_and_nothing_is_written() {
         let d = crate::record_store::tempdir("storage-claim");
         let name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None };
+        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None, renamed_from: None };
         let check = async |n: &dyn NodesStorage, store: &str| {
             let (first, second) = (NodeId::mint(), NodeId::mint());
             let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");

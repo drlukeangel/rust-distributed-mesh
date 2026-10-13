@@ -2,9 +2,10 @@
 //! variants (6..=9) are appended after it, their bytes derived from the postcard rules by hand, as are
 //! `node.connections.delete`'s request (21) and its two replies (31, 32), the reads' four
 //! requests (22..=25) and six replies (33..=38) with the views they carry, the mesh.delete round
-//! and manifest refusals (39, 40, 41), the tags `node.update` (20) puts, the tag filter `node.get`
-//! (22) selects by, the tags its answer (33) carries, the tag refusal (43), and the tags commands
-//! `node.tags.create` (26) and `node.tags.delete` (27) with their replies (45, 46).
+//! and manifest refusals (39, 40, 41), the tag filter `node.get` (22) selects by, the tags its
+//! answer (33) carries, the tag refusal (43), the tags commands `node.tags.create` (26) and
+//! `node.tags.delete` (27) with their replies (45, 46), and `node.name.update` (20) with its
+//! completion (26), its refusals (27, 47) and the apply's answer naming held connections (48).
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
@@ -64,8 +65,8 @@ fn requests_match_the_frozen_twenty_eight_variant_wire_schema() {
         (UpdateNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "110c3031323334353637383961620c39776370726667777674687901016b0176"),
         (ApplyNodeConfig { node_id: node(), incarnation: birth(), config: [("k".to_string(), "v".to_string())].into() }, "120c3031323334353637383961620c39776370726667777674687901016b0176"),
         (ApplyNodeName { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into() }, "130c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31"),
-        // node_id | incarnation | name | tags (len 1: "red")
-        (UpdateNode { node_id: node(), incarnation: birth(), name: "mesh1.rpc.1".into(), tags: ["red".to_string()].into() }, "140c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e310103726564"),
+        // node_id | incarnation | name "1.old" (the name only, never its path)
+        (UpdateName { node_id: node(), incarnation: birth(), name: "1.old".into() }, "140c3031323334353637383961620c39776370726667777674687905312e6f6c64"),
         (DeleteConnections { node_id: node(), incarnation: birth(), scope: ConnectionScope::Connections(vec![connection()]) }, "150c3031323334353637383961620c39776370726667777674687901010c333132333435363738396162"),
         (GetNodes { select: NodeSelect::Mesh("mesh1".into()) }, "1601056d65736831"),
         (GetMeshes { mesh: Some("mesh1".into()) }, "1701056d65736831"),
@@ -85,7 +86,7 @@ fn requests_match_the_frozen_twenty_eight_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_forty_seven_variant_wire_schema() {
+fn replies_match_the_frozen_forty_nine_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
@@ -114,8 +115,9 @@ fn replies_match_the_frozen_forty_seven_variant_wire_schema() {
         (ConfigRowRefused { node: "n".into(), reason: "r".into() }, "17016e0172"),
         (ConfigNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "18016e01610172"),
         (Blocked { node_id: node(), incarnation: birth(), reason: "r".into(), retry_on: RetryOn::TargetReachable { node_id: node() } }, "190c3031323334353637383961620c3977637072666777767468790172010c303132333435363738396162"),
-        (NodeUpdated { node_id: node(), incarnation: birth() }, "1a0c3031323334353637383961620c397763707266677776746879"),
-        (RejectedMetaFieldIsRdmOwned { field: "name".into() }, "1b046e616d65"),
+        (NameUpdated { node_id: node(), incarnation: birth() }, "1a0c3031323334353637383961620c397763707266677776746879"),
+        // status ReadyForTraffic (1) | held_connections (len 1)
+        (RejectedAdmittingConnections { status: NodeStatus::ReadyForTraffic, held_connections: vec![connection()] }, "1b01010c333132333435363738396162"),
         (NameHeld { name: "n".into(), by: node() }, "1c016e0c303132333435363738396162"),
         (NodeRowRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
         (NameNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "1e016e01610172"),
@@ -163,6 +165,10 @@ fn replies_match_the_frozen_forty_seven_variant_wire_schema() {
         (TagsCreated { node_id: node(), incarnation: birth(), already_carried: ["red".to_string()].into() }, "2d0c3031323334353637383961620c3977637072666777767468790103726564"),
         // node_id | incarnation | not_carried (len 1: "blue")
         (TagsDeleted { node_id: node(), incarnation: birth(), not_carried: ["blue".to_string()].into() }, "2e0c3031323334353637383961620c3977637072666777767468790104626c7565"),
+        // reason "r"
+        (RejectedName { reason: "r".into() }, "2f0172"),
+        // connections (len 1)
+        (BusyHoldingConnections { connections: vec![connection()] }, "30010c333132333435363738396162"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {

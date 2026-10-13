@@ -127,7 +127,7 @@ impl NodeConfigs {
             }
         };
         span.record("tags", crate::node_rows::labels(&tags).as_str());
-        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None };
+        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None, renamed_from: None };
         let refused = match storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);

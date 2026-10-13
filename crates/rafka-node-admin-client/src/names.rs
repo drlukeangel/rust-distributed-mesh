@@ -9,8 +9,8 @@
 pub enum NodeOp {
     /// `node.get`: by id, by mesh, or by tags.
     Get,
-    /// `node.update`: the full meta entity, a blind put.
-    Update,
+    /// `node.name.update`: the node's rename, the name only (proposal node-properties-own-commands.md §2).
+    NameUpdate,
     /// `node.topology.get`: the node's held topology.
     TopologyGet,
     /// `node.connections.get`.
@@ -42,7 +42,7 @@ impl NodeOp {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Get => "node.get",
-            Self::Update => "node.update",
+            Self::NameUpdate => "node.name.update",
             Self::TopologyGet => "node.topology.get",
             Self::ConnectionsGet => "node.connections.get",
             Self::ConnectionsDelete => "node.connections.delete",
@@ -68,7 +68,7 @@ impl NodeOp {
     pub fn span(self) -> tracing::Span {
         match self {
             Self::Get => tracing::info_span!("rdm.node_admin.node.get.via-call", op = "node.get", outcome = tracing::field::Empty),
-            Self::Update => tracing::info_span!("rdm.node_admin.node.update.via-call", op = "node.update", outcome = tracing::field::Empty),
+            Self::NameUpdate => tracing::info_span!("rdm.node_admin.node.name.update.via-call", op = "node.name.update", outcome = tracing::field::Empty),
             Self::TopologyGet => tracing::info_span!("rdm.node_admin.node.topology.get.via-call", op = "node.topology.get", outcome = tracing::field::Empty),
             Self::ConnectionsGet => tracing::info_span!("rdm.node_admin.node.connections.get.via-call", op = "node.connections.get", outcome = tracing::field::Empty),
             Self::ConnectionsDelete => tracing::info_span!("rdm.node_admin.node.connections.delete.via-call", op = "node.connections.delete", outcome = tracing::field::Empty),

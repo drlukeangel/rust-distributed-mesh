@@ -269,7 +269,7 @@ pub const COMMAND_ARMS: [&str; 9] = ["Admitted", "AlreadyAdmitted", "Stopped", "
 
 /// The frozen 0x1B counts.
 pub const STATUS_REQUESTS: u32 = 28;
-pub const STATUS_REPLIES: u32 = 47;
+pub const STATUS_REPLIES: u32 = 49;
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -620,7 +620,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 STATUS_WIRE,
                 &[
                     "fn requests_match_the_frozen_twenty_eight_variant_wire_schema",
-                    "fn replies_match_the_frozen_forty_seven_variant_wire_schema",
+                    "fn replies_match_the_frozen_forty_nine_variant_wire_schema",
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",
                     "Status::REPLY_VARIANTS",

@@ -7,7 +7,7 @@
 
 use rafka_mesh_entity::PathName;
 use crate::build_log;
-use rafka_node_admin_client::{Frame, LaunchKind as NodeKind, NodeEvent, NodeMeta, NodeSelector, NodeStatus, NodeView, Nodes};
+use rafka_node_admin_client::{Frame, LaunchKind as NodeKind, NodeEvent, NodeSelector, NodeStatus, NodeView, Nodes};
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::Value;
@@ -148,10 +148,10 @@ async fn stop_then_start(test: &str, node: &str) {
     estate.record_trace_url(sent["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (R13; node-replace.md Rollback 2-3; ops-naming "A rename is the same write"): the
-/// caller's `node.update` of the parked `mesh1.rpc.1` to `mesh1.rpc.1.old` reaches its mesh-primary
-/// directly and ends `NodeUpdated`, the stopped node told nothing; `node.get` lists the parked birth
-/// at `mesh1.rpc.1.old` and nothing at `mesh1.rpc.1`. The rename back ends `NodeUpdated` the same
+/// CONTRACT (R13; node-replace.md Rollback 2-3; proposal node-properties-own-commands.md §2.3
+/// "Stopped node"): the caller's `node.name.update` of the parked `mesh1.rpc.1` to the name `1.old`
+/// reaches its mesh-primary directly and ends `NameUpdated`, the stopped node told nothing; `node.get`
+/// lists the parked birth at `mesh1.rpc.1.old` and nothing at `mesh1.rpc.1`. The rename back to `1` ends `NameUpdated` the same
 /// way, and `node.start` of `mesh1.rpc.1` makes the same process rejoin: `node.joined`,
 /// `node.started`, `Complete`; `node.get` lists the same birth `ready-for-traffic` at `mesh1.rpc.1`
 /// and nothing at `.old`; every other node holds the birth publishing the row's name.
@@ -181,23 +181,9 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
     assert!(parked.parked && parked.status == NodeStatus::Leaving, "{parked:?}");
 
     // The rename: one call to the node's mesh-primary, the row moved, the stopped node told nothing.
-    let held = NodeMeta {
-        node_id: parked.node_id.clone(),
-        incarnation: parked.incarnation_id.clone(),
-        endpoint: parked.endpoint_id.clone(),
-        transport_addr: parked.transport_addr,
-        exe: None,
-        runtime: parked.deployment_id.clone(),
-        status: parked.status,
-        name: parked.name.clone(),
-        mesh: parked.mesh.clone(),
-        kind: parked.kind,
-        otel_debug: false,
-        tags: parked.tags.clone(),
-    };
-    let body = NodeMeta { name: renamed.clone(), ..held.clone() };
-    let reply = nodes.update(&held, &body, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct).await.expect("node.update answered");
-    assert_eq!(reply, StatusReply::NodeUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
+    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
+    let reply = nodes.name_update(&birth, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
+    assert_eq!(reply, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
     let listed = view_of(&nodes, &renamed).await;
     assert!(listed.parked && listed.node_id == before.node_id && listed.incarnation_id == before.incarnation_id, "node.get lists the parked birth at {renamed}: {listed:?}");
 
@@ -205,8 +191,8 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
 
     // The rollback (node-replace.md Rollback 2-3): the row's name goes back while the node is
     // stopped, and the start by that name rejoins the same process.
-    let back = nodes.update(&NodeMeta { name: renamed.clone(), ..held.clone() }, &held, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct).await.expect("node.update answered");
-    assert_eq!(back, StatusReply::NodeUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
+    let back = nodes.name_update(&birth, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &path.name()).await.expect("node.name.update answered");
+    assert_eq!(back, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
     let started = frames(nodes.start(&path).await.expect("the start by the row's name was accepted")).await;
     assert_eq!(events(&started), vec![NodeEvent::Joined, NodeEvent::Started], "{started:?}");
     assert_eq!(started.last(), Some(&Frame::Complete), "{started:?}");
@@ -225,10 +211,10 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
 
     estate.stop().await;
     let spans = estate.spans();
-    let update = named(&spans, "rdm.node_admin.node.update.via-update-node").into_iter().find(|sp| s(&sp["attributes"]["to"]) == renamed.to_string()).expect("the mesh-primary served the node.update");
-    assert_eq!((s(&update["attributes"]["outcome"]), s(&update["attributes"]["traffic"]), s(&update["attributes"]["from"])), ("node-updated".into(), "Stopped".into(), path.to_string()), "{update:#?}");
-    let back = named(&spans, "rdm.node_admin.node.update.via-update-node").into_iter().find(|sp| s(&sp["attributes"]["to"]) == path.to_string()).expect("the mesh-primary served the rename back");
-    assert_eq!((s(&back["attributes"]["outcome"]), s(&back["attributes"]["from"])), ("node-updated".into(), renamed.to_string()), "{back:#?}");
+    let update = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().find(|sp| s(&sp["attributes"]["to"]) == renamed.to_string()).expect("the mesh-primary served the node.name.update");
+    assert_eq!((s(&update["attributes"]["outcome"]), s(&update["attributes"]["traffic"]), s(&update["attributes"]["from"])), ("name-updated".into(), "Stopped".into(), path.to_string()), "{update:#?}");
+    let back = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().find(|sp| s(&sp["attributes"]["to"]) == path.to_string()).expect("the mesh-primary served the rename back");
+    assert_eq!((s(&back["attributes"]["outcome"]), s(&back["attributes"]["from"])), ("name-updated".into(), renamed.to_string()), "{back:#?}");
     let sent = named(&spans, "rdm.node_admin.node.update.via-command-sent").into_iter().find(|sp| sp["attributes"]["command"] == "start-node" && sp["attributes"]["node"] == path.to_string()).expect("the start command was sent");
     let join = named(&spans, "rdm.node_admin.node.update.via-join").into_iter().find(|sp| sp["trace_id"] == sent["trace_id"] && s(&sp["attributes"]["node_id"]) == before.node_id.to_string() && s(&sp["attributes"]["outcome"]) == "installed").expect("the start's rejoin was installed");
     assert_eq!(s(&join["attributes"]["admitted_as"]), path.to_string(), "{join:#?}");
@@ -238,7 +224,7 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
 
 /// CONTRACT (R-JN1; node-start.md step 2, node-create.md step 4; R12/R13; CLAUDE.md read rule): in a
 /// mesh of three node-admins, the non-primary `mesh1.admin.3` is stopped and its mesh-primary renames
-/// its row to `mesh1.admin.3.old` (`node.update`, the stopped node told nothing). Every admin lists
+/// its row to `mesh1.admin.3.old` (`node.name.update` of the name `3.old`, the stopped node told nothing). Every admin lists
 /// the parked birth at the row's name, `mesh1.admin.2`, which performed no rename, included: its view
 /// reads the name from the row on the shared store root. `node.start` of `mesh1.admin.3.old` makes the
 /// same process rejoin: its join presents `mesh1.admin.3`, the name its authority last accepted for
@@ -278,22 +264,9 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
     assert!(parked.parked && parked.status == NodeStatus::Leaving, "{parked:?}");
 
     // The rename: one call to the node's mesh-primary, the row moved, the stopped node told nothing.
-    let held = NodeMeta {
-        node_id: parked.node_id.clone(),
-        incarnation: parked.incarnation_id.clone(),
-        endpoint: parked.endpoint_id.clone(),
-        transport_addr: parked.transport_addr,
-        exe: None,
-        runtime: parked.deployment_id.clone(),
-        status: parked.status,
-        name: parked.name.clone(),
-        mesh: parked.mesh.clone(),
-        kind: parked.kind,
-        otel_debug: false,
-        tags: parked.tags.clone(),
-    };
-    let reply = nodes.update(&held, &NodeMeta { name: renamed.clone(), ..held.clone() }, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct).await.expect("node.update answered");
-    assert_eq!(reply, StatusReply::NodeUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
+    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
+    let reply = nodes.name_update(&birth, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
+    assert_eq!(reply, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
     // Every admin's view names the parked birth by its row, the one that performed no rename included.
     for admin in &admins {
         let listed = estate
