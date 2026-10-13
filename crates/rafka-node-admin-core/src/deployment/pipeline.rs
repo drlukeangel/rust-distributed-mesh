@@ -2208,9 +2208,15 @@ impl DeploymentPipeline<'_> {
                     }
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
-                let c = tokio::select! {
-                    c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.completion) => c,
-                    () = self.until_exited(handle) => Completion::RuntimeExited,
+                // The stop's reply is its completion (node-stop.md: stop-node answers `Stopped` on its own
+                // call): a `StopNode` receipt that recorded `Stopped` is the left reply, whichever executor
+                // made the call. Only an admission without it waits for the reply.
+                let c = match &admission {
+                    CommandAdmission::Stopped { .. } => Completion::Received,
+                    _ => tokio::select! {
+                        c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.completion) => c,
+                        () = self.until_exited(handle) => Completion::RuntimeExited,
+                    },
                 };
                 // The mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.
                 if publish_stopped && c == Completion::Received {
