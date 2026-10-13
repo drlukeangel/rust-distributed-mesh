@@ -1610,6 +1610,84 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
 }
 
+/// The holder's own node.primary.update refused before its row, as the door refuses it with no
+/// successor (`fabric_handover::update_primary` step 2: nothing said, cut off or written): the view is
+/// left as it is and the refusal is named as the admin's gate names a refused reply.
+struct RefusedUpdate {
+    inner: Arc<Switch>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+/// The Q7 text the refused update names.
+const NO_SECONDARY: &str = "cannot transfer: no secondary of type node-admin in mesh mesh1";
+
+#[async_trait::async_trait]
+impl Gate for RefusedUpdate {
+    fn authorizes(&self) -> bool {
+        self.inner.authorizes()
+    }
+    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+        self.inner.fence().await
+    }
+    async fn fence_set(&self) {
+        self.inner.fence_set().await
+    }
+    async fn move_seats(&self, _: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, _: u32, _: &str) -> Result<(), String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(format!("rejected-no-successor: RejectedNoSuccessor {{ reason: {NO_SECONDARY:?} }}"))
+    }
+}
+
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 failure
+/// contract: "Refused before the row (step 2, or the writer's own pre-check of the call's revision):
+/// refused by name, nothing changed, the Build's step fails by name. Nothing was cut off, so nothing
+/// is restored"; R-BI4: "Only an attempt that ended with a named terminal failure (Failed { step,
+/// reason }) makes the Build failed"): the fabric-primary `mesh1.admin.1` holds both seats and its
+/// Build retires it, so it claims attempt 1 for itself and runs its own node.primary.update first,
+/// which is refused before the row with Q7's text. Attempt 1 ends `Failed`, its reason naming the
+/// refusal, and the drive ends at that terminal: nothing is dispatched or run and the view still names
+/// `mesh1.admin.1` the holder of both seats. No cut-off and no row is the refusing gate's own record
+/// here (it wrote nothing); the door's refusal writing neither is
+/// `fabric_handover::a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_moves`.
+/// Must NOT happen: the attempt handed back to the holder and the drive idle on a refusal (an
+/// incomplete attempt's arm), the update asked again, or the retire dispatched.
+#[tokio::test(start_paused = true)]
+async fn a_holders_own_update_refused_before_the_row_fails_its_attempt_by_name_and_nothing_moves() {
+    let r = rig_for(view_holder_of_both(), TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
+    let gate = Arc::new(RefusedUpdate { inner: r.switch.clone(), calls: Default::default() });
+    let e = &r.env;
+    let holder = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        rows: e.rows.clone(),
+        turns: e.turns.clone(),
+    });
+    let drive = Drive::detached(r.build.clone());
+    let end = tokio::time::timeout(Duration::from_secs(60), holder.run(&drive)).await.expect("the drive ends");
+    let p = r.builds.read_build(&r.build).await.unwrap();
+    let verdict: Vec<_> = r.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
+        rafka_node_admin_core::build_state::BuildFact::Attempt(a) if a.build_id == r.build && a.attempt == 1 => Some(a.outcome),
+        _ => None,
+    }).collect();
+    assert_eq!(end, DriveEnd::Terminal, "the refusal ends the drive at a terminal: verdicts {verdict:?}");
+    assert!(matches!(verdict.as_slice(), [rafka_node_admin_core::build_state::AttemptOutcome::Failed { reason }] if reason.contains(NO_SECONDARY)), "attempt 1 failed naming the refusal: {verdict:?}");
+    assert_eq!((p.attempt, p.attempt_executors.get(&1).map(String::as_str)), (1, Some("mesh1.admin.1")), "the holder claimed attempt 1 for itself and no other attempt was claimed");
+    match terminal_of(&drive).await {
+        BuildReply::Failed { attempt, reason, .. } => assert!(attempt == 1 && reason.contains(NO_SECONDARY), "{reason}"),
+        other => panic!("the drive's terminal is the failed step: {other:?}"),
+    }
+    assert_eq!(gate.calls.load(std::sync::atomic::Ordering::SeqCst), 1, "the update was asked once");
+    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing ran or was dispatched: ran {:?}, dispatched {:?}", r.ran.0.lock().unwrap(), r.dispatch.dispatched.lock().unwrap());
+    let holder_node = r.env.topology.read().await.nodes.iter().find(|n| n.name.to_string() == "mesh1.admin.1").map(|n| (n.is_primary, n.is_fabric_primary));
+    assert_eq!(holder_node, Some((true, true)), "the view still names the holder of both seats");
+}
+
 /// CONTRACT (build.md: "The next attempt is claimed after the running attempt's terminal receipt
 /// (Complete, Failed or HandedOff)"; R-BI7 caveat 3, mesh_claims.rs: a mesh's in-flight row "is
 /// released at that attempt's verdict", by "the admin that durably recorded the verdict"): the
