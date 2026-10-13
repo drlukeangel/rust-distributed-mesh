@@ -58,7 +58,7 @@ pub struct MeshCounts {
 
 /// What a caller submits. The fabric-primary compiles it once against the accepted topology (a
 /// topology change opens a new Build) or opens the next attempt of the accepted Build (a restart,
-/// replacement, drain or stop fenced to one birth).
+/// replacement, connections delete or stop targeted at one birth).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildChange {
     /// The whole fabric's meshes and counts.

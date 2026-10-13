@@ -96,7 +96,7 @@ mod node_lifecycle__node_replace;
 mod node_lifecycle__node_restart;
 mod node_lifecycle__node_stop;
 mod node_rpc__apply_cuts;
-mod node_rpc__restart_fence;
+mod node_rpc__restart_target;
 mod node_rpc__role_context;
 mod node_rpc__role_routing;
 mod node_rpc__routing;

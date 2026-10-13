@@ -64,7 +64,7 @@ const SCRUBBED: &[&str] = &[
 /// Scenario stems the fast gate runs (`SCENARIOS` of `rdm-gate-at.sh`).
 const GATE_SCENARIOS: &[&str] = &[
     "node_lifecycle__node_delete", "node_lifecycle__node_connections_delete", "node_lifecycle__node_stop", "node_lifecycle__node_replace", "node_lifecycle__node_restart", "node_rpc__routing", "node_rpc__status",
-    "mesh_shapes__shape_reconcile", "mesh_shapes__live_resize", "mesh_shapes__role_build", "mesh_elections__role_cohort", "node_rpc__restart_fence",
+    "mesh_shapes__shape_reconcile", "mesh_shapes__live_resize", "mesh_shapes__role_build", "mesh_elections__role_cohort", "node_rpc__restart_target",
     "node_rpc__role_routing", "node_rpc__role_context", "mesh_runtime__role_wedge", "mesh_elections__late_authority", "mesh_elections__sticky_seat",
     "mesh_lifecycle__mesh_create", "mesh_lifecycle__fabric_primary_handover", "mesh_identity__canonical_ids", "mesh_elections__cohort_election", "mesh_elections__fabric_primary", "mesh_rpc__proof_store",
     "fabric_build__accepted_topology", "fabric_build__build_op", "i143_acceptance_2803", "node_rpc__rpc_certainty", "i143_acceptance_2803_detect", "i143_acceptance_rg6", "mesh_runtime__rafka_time_discipline", "fabric_certs__issuance", "fabric_states__rounds",
@@ -84,7 +84,7 @@ const GATE_CRATES: &[&str] = &[
 const CONTAINER_STEMS: &[&str] = &["container_proof", "mesh_runtime__container_kill"];
 /// The e11 cells (PRD §13.1): (crate, stem).
 const E11: &[(&str, &str)] = &[
-    ("rafka-test-scenario", "node_rpc__restart_fence"),
+    ("rafka-test-scenario", "node_rpc__restart_target"),
     ("rafka-test-scenario", "node_rpc__role_routing"),
     ("rafka-test-scenario", "node_rpc__role_context"),
     ("rafka-test-scenario", "mesh_runtime__role_wedge"),
