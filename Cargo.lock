@@ -3332,7 +3332,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "axum",
  "ctor",
  "hex",
  "iroh",
@@ -3374,7 +3373,6 @@ dependencies = [
  "rafka-node-rpc",
  "rafka-node-rpc-contract",
  "rafka-node-rpc-testkit",
- "reqwest",
  "serde",
  "serde_json",
  "tokio",

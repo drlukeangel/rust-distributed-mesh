@@ -11,7 +11,6 @@ doctest = false
 
 [dependencies]
 async-trait = "0.1"
-axum = "0.8.9"
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }

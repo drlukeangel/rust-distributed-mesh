@@ -42,8 +42,7 @@ async fn joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_comp
     let mut estate = Estate::bootstrap_external(owner("joiners_whose_build_catch_up_is_lost_fetch_the_facts_and_the_build_completes"), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"])
         .await
         .expect("the faulted-admin binding set is accepted");
-    let day0 = estate.node_view("mesh1.admin.1").await;
-    Door::open(&estate.root, "mesh1.admin.1", day0.admin_api_base.as_deref().expect("the Day-0 admin advertises its door")).await.arm("catch-up-withheld", json!({"kind": "catch-up"})).await;
+    Door::at(&estate, "mesh1.admin.1").await.arm("catch-up-withheld", json!({"kind": "catch-up"})).await;
     for joiner in ["mesh1.admin.2", "mesh1.admin.3"] {
         arm_at_birth(&estate, joiner, "catch-up-withheld", json!({"kind": "catch-up"}));
     }

@@ -319,7 +319,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     // The executor, mesh2's primary, is held in the middle of the restart: the start of the stopped node
     // answered, its receipt not durable.
     const EXECUTOR: &str = "mesh2.admin.1";
-    let door = Door::open(&estate.root, EXECUTOR, &caller.base_of(EXECUTOR)).await;
+    let door = Door::at(&estate, EXECUTOR).await;
     door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "restart-node", "node": NODE})).await;
     let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
@@ -365,7 +365,7 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     let fp = carrier.fabric_primary().to_string();
 
     // The cut: the fabric-primary's claim is durable and broadcast, and the drive has not dispatched.
-    let door = Door::open(&estate.root, &fp, &estate.admin).await;
+    let door = Door::at(&estate, &fp).await;
     door.arm("claimed", json!({"kind": "claimed-attempt", "attempt": null})).await;
     let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
@@ -484,12 +484,6 @@ impl Caller {
     /// The carrier that starts at node-admin `at`: its reads answer from that admin's own view.
     fn carrier_at(&self, at: &str) -> BuildCarrier {
         BuildCarrier::new(self.client.clone(), path(at))
-    }
-
-    /// The control API of node-admin `at`, which the estate stops through once the admin that served
-    /// it is gone.
-    fn base_of(&self, at: &str) -> String {
-        self.bases.lock().unwrap().get(at).cloned().unwrap_or_else(|| panic!("the control API of {at} is not known"))
     }
 
     /// The first node-admin that survives `dead`.
@@ -623,7 +617,7 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
         .await
         .unwrap_or_else(|end| panic!("{end}"));
 
-    let door = Door::open(&estate.root, &fp, &estate.admin).await;
+    let door = Door::at(&estate, &fp).await;
     door.arm("cut", cut).await;
     let grown = FabricDesired {
         fabric: FABRIC.into(),

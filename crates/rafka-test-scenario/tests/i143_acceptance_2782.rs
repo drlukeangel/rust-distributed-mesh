@@ -435,8 +435,7 @@ impl Run {
         if let Some(d) = self.doors.lock().unwrap().get(name) {
             return d.clone();
         }
-        let api = self.estate.node_view(name).await.admin_api_base.unwrap_or_else(|| panic!("{name} advertises its control API"));
-        let d = Door::open(&self.root, name, &api).await;
+        let d = Door::at(&self.estate, name).await;
         self.doors.lock().unwrap().insert(name.to_string(), d.clone());
         d
     }
@@ -704,7 +703,6 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
     let faults = run.root.join("faults");
     std::fs::create_dir_all(&faults).unwrap();
-    let _ = std::fs::remove_file(faults.join(format!("{admin}.door")));
     let mut spec = boot.clone();
     spec["id"] = json!(id);
     std::fs::write(faults.join(format!("{admin}.boot.json")), serde_json::to_vec(&json!([spec])).unwrap()).unwrap();
@@ -717,7 +715,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     ev.primitive = Some(Primitive { armed: true, ack: ack.clone() });
     let mut stream = run.spawn(NodeKind::NodeAdmin).await;
     let build_id = Run::id_of(&stream);
-    let door = Door::open(&run.root, admin, "").await;
+    let door = Door::at(&run.estate, admin).await;
     let held = door.wait_held(id).await;
     let op = format!("create-node:{admin}");
     let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();

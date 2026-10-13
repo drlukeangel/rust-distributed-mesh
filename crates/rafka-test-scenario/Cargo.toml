@@ -11,10 +11,11 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
-reqwest = { version = "0.13.3", features = ["json"] }
 yaml_serde = "0.10"
 rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
+# The fault door (op 0x75): the cells arm, read and release a faulted admin's cuts through its typed calls.
+rafka-node-rpc-testkit = { path = "../rafka-node-rpc-testkit" }
 libc = "0.2"
 rafka-chaos = { path = "../rafka-chaos" }
 
@@ -31,7 +32,6 @@ opentelemetry_sdk = { workspace = true, features = ["testing"] }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
 # i143_acceptance_2780 derives its cut list from the product's own documented step orders.
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
-rafka-node-rpc-testkit = { path = "../rafka-node-rpc-testkit" }
 iroh-gossip = { workspace = true }
 futures-lite = "2"
 bytes = "1"
