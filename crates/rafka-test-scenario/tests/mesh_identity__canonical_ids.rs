@@ -115,6 +115,21 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         .await;
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
+    // What mesh1.admin.1, a node-admin of the peer mesh, holds of the restarted birth: its own view,
+    // from the newest version of mesh2's projection it installed (gossip.md §3.1, `Members`:
+    // "Receivers install the complete snapshot atomically"). The Digest it holds names the node and
+    // the incarnation the views show, as Crockford ids.
+    let held = estate
+        .until_view_at(&"mesh1.admin.1".parse().unwrap(), "mesh1.admin.1 holds the restarted mesh2.rpc.2 ready, same node and incarnation", Duration::from_secs(30), |views| {
+            views
+                .iter()
+                .find(|n| n.name.to_string() == "mesh2.rpc.2" && n.status == NodeStatus::ReadyForTraffic)
+                .map(json_of)
+                .filter(|n| n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"])
+        })
+        .await;
+    canonical("heard Digest incarnation_id", &held["incarnation_id"]);
+    canonical("heard Digest node_id", &held["node_id"]);
     let restart_build = again.build_id.to_string();
 
     // Replacement of a node: removed, then created again at the same path.
@@ -177,23 +192,38 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         assert_eq!(s(&a["mesh_id"]), mesh_ids[&s(&n["mesh"])]);
     }
 
-    // The Digest a peer mesh's admin heard when the restarted birth came back (membership.rs
-    // `note_member_state`: `via-member-state`, one span per state change of a peer mesh's member).
-    // mesh1.admin.1 hears mesh2.rpc.2 become ready from Pending once at its join and once at each of
-    // its two restarts (Pending follows the restart's Leaving); the last is the second restart's
-    // return. Its Digest names the incarnation and the node as Crockford ids, the ones the views show.
-    let mut returned: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state")
+    // The second restart's return reached the peer mesh's admin. mesh2's primary authored the
+    // birth's ReadyForTraffic (`from-node-started`), and its next publication round bumped mesh2's
+    // topology_version (gossip.md §3.1, `Members`: "at once on a material change"). mesh1.admin.1
+    // installed that version of mesh2's projection or a later one: a receiver holds the newest
+    // version it installed, and a snapshot overtaken by a later one is ignored in the gossip receive
+    // path (gossip.md receiver rules: `Members` order by `published_at_rafka_ms`, then
+    // `topology_version`). So the peer is owed the restart's return, never each state between.
+    // The publisher is matched too: the recreated mesh2's primary starts its versions again.
+    let returned_at = named(&spans, "rdm.mesh.membership.update.from-node-started")
         .into_iter()
         .filter(|sp| {
             let a = &sp["attributes"];
-            a["node"] == "mesh1.admin.1" && a["member"] == "mesh2.rpc.2" && a["incarnation_id"] == after["incarnation_id"] && a["prior"] == "Pending" && a["status"] == "ReadyForTraffic"
+            a["member"] == "mesh2.rpc.2" && a["incarnation_id"] == after["incarnation_id"] && a["status"] == "ReadyForTraffic"
         })
+        .max_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0))
+        .unwrap_or_else(|| panic!("mesh2's primary authored the restarted mesh2.rpc.2's ReadyForTraffic at incarnation {}", after["incarnation_id"]));
+    let returned_ns = returned_at["start_unix_nano"].as_u64().unwrap_or(0);
+    let bumped = named(&spans, "rdm.mesh.backbone.update.via-topology-version")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == returned_at["attributes"]["node"] && sp["attributes"]["mesh"] == "mesh2" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= returned_ns)
+        .min_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0))
+        .unwrap_or_else(|| panic!("{} bumped mesh2's topology_version after the second restart's return", returned_at["attributes"]["node"]));
+    let (publisher, version) = (s(&bumped["attributes"]["publisher"]), s(&bumped["attributes"]["topology_version"]).parse::<u64>().expect("a topology_version is a number"));
+    let installed: Vec<String> = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["publisher"]) == publisher)
+        .map(|sp| s(&sp["attributes"]["topology_version"]))
         .collect();
-    returned.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
-    assert!(returned.len() >= 3, "mesh1.admin.1 heard mesh2.rpc.2's incarnation {} ready from Pending at its join and at each restart: {returned:?}", after["incarnation_id"]);
-    let heard = returned.last().unwrap();
-    canonical("heard Digest incarnation_id", &heard["attributes"]["incarnation_id"]);
-    assert_eq!(canonical("heard Digest member_id", &heard["attributes"]["member_id"]), s(&before["node_id"]), "the Digest names the node the views show");
+    assert!(
+        installed.iter().any(|v| v.parse::<u64>().is_ok_and(|v| v >= version)),
+        "mesh1.admin.1 installed mesh2's projection by {publisher} at topology_version {version} (the second restart's return) or later: it installed {installed:?}"
+    );
 
     // The removed mesh2's last admin published MeshStatus Dead while it lived, and it left with MeshLeft;
     // after that nothing publishes mesh2 Dead: the recreated mesh2's primary authors its new mesh's own
