@@ -355,6 +355,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let successor = claims.iter().find(|sp| s(&sp["attributes"]["executor"]) == "mesh2.admin.2").expect("the next attempt was claimed for the successor");
     assert!(successor["start_unix_nano"].as_u64() > proofs[0]["start_unix_nano"].as_u64(), "the claim for the successor came after the proof");
     let lost = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == *build && s(&sp["attributes"]["outcome"]) == "executor-lost").expect("the inner call to the lost executor ended");
+    assert!(!s(&lost["attributes"]["reason"]).is_empty(), "the executor-lost dispatch names why the inner call ended: {lost}");
     estate.record_trace_url(lost["trace_id"].as_str().unwrap_or(""));
 }
 
