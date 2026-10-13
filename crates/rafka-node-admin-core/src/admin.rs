@@ -2343,13 +2343,16 @@ impl crate::build_drive::Gate for SeatGate {
             }
             return Ok(());
         }
-        let moving = match (m.mesh_seat, m.fabric_seat) {
-            (true, true) => Moving::BothSeats,
-            (true, false) => Moving::MeshSeat,
-            (false, true) => return Err(format!("{}: the view names this admin the fabric-primary without its mesh's primary seat: a fabric-primary is one of the mesh-primaries (elections §4.3), so no node.primary.update moves the seat from here", door.me)),
+        // The fabric seat alone moves out of this admin's mesh (C2 search step 2: a mesh retire of its
+        // mesh, mesh-delete.md step 1), by node.fabric-primary.update; with the mesh seat, both move in
+        // node.primary.update's one row (Q1).
+        let (moving, seat) = match (m.mesh_seat, m.fabric_seat) {
+            (true, true) => (Moving::BothSeats, Seat::MeshPrimary),
+            (true, false) => (Moving::MeshSeat, Seat::MeshPrimary),
+            (false, true) => (Moving::FabricSeatOutside, Seat::FabricPrimary),
             (false, false) => return Ok(()),
         };
-        door.update_primary(moving, None, &build_id.0, attempt, &update_operation(Seat::MeshPrimary, &build_id.0, operation)).await.map_err(refused)?;
+        door.update_primary(moving, None, &build_id.0, attempt, &update_operation(seat, &build_id.0, operation)).await.map_err(refused)?;
         Ok(())
     }
 }
@@ -4410,25 +4413,6 @@ impl OperationRunner for AdminRunner {
         self.refresh_view().await;
         r
     }
-
-    /// A mesh.delete whose fabric-primary (this admin) sits inside the departing mesh moves the
-    /// fabric seat first by node.fabric-primary.update with that mesh excluded from the successor
-    /// search (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 2:
-    /// "If the mesh holds the fabric-primary seat, node.fabric-primary.update runs first with this mesh
-    /// excluded from the successor search"); the mesh seat does not move. The executor of the delete is
-    /// then the new fabric-primary, by the Build's ordinary hand-off.
-    async fn prepare(&self, build_id: &crate::build::BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
-        let BuildOperation::ShutdownMesh { mesh, .. } = op else { return Ok(()) };
-        let holds_seat_inside = self.topology.read().await.fabric_primary().is_some_and(|fp| fp.node_id == self.node_id && fp.mesh == *mesh);
-        if !holds_seat_inside {
-            return Ok(());
-        }
-        let operation = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, &build_id.0, &op.key());
-        let r = self.handover.update_primary(crate::election::Moving::FabricSeatOutside, None, &build_id.0, attempt, &operation).await;
-        self.refresh_view().await;
-        r.map(|_| ()).map_err(|e| format!("{mesh} holds the fabric seat and node.fabric-primary.update did not move it: {}: {e:?}", e.name()))
-    }
-
 }
 
 impl AdminRunner {

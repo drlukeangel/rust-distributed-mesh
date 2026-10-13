@@ -847,7 +847,7 @@ async fn a_mesh_retire_whose_fabric_primary_sits_inside_moves_the_fabric_seat_al
     let drive = Drive::detached(r.build.clone());
     let mut reader = drive.reader(1);
     match env.run(&drive).await {
-        DriveEnd::SeatLost(why) => assert!(why.contains("mesh2.admin.1"), "the drive names the seat's new holder: {why}"),
+        DriveEnd::SeatLost(why) => assert!(why.contains("the committed seat row moved it"), "the drive ends at the committed seat record: {why}"),
         other => panic!("the old seat holder's drive ends SeatLost once the seat moved: {other:?}"),
     }
     let moved = gate.moved.lock().unwrap().clone();

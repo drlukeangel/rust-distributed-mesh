@@ -55,14 +55,6 @@ pub trait OperationRunner: Send + Sync {
     /// Realise `op` of `attempt` of `build_id`; `Err` names how it ended short of complete
     /// ([`RunEnd`]).
     async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), RunEnd>;
-
-    /// What `op` owes before its executor is decided, once its turn comes: a mesh retire whose
-    /// fabric-primary sits inside the leaving mesh hands the fabric seat to an outside
-    /// mesh-primary first, so the executor is the new fabric-primary. `Err` ends the attempt by
-    /// name and nothing of `op` has run.
-    async fn prepare(&self, _build_id: &BuildId, _attempt: u32, _op: &BuildOperation) -> Result<(), String> {
-        Ok(())
-    }
 }
 
 /// The admin that executes `op` in view `t`; `None` while no admin can.
@@ -111,6 +103,9 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
                 mesh_executor(&node.mesh, Some(node), t)
             }
         }
+        // A mesh retire whose mesh holds the fabric seat waits for node.fabric-primary.update ([`seat_move`]):
+        // the new fabric-primary, outside the leaving mesh, drives the rest (mesh-delete.md step 1).
+        BuildOperation::ShutdownMesh { .. } if seat_move(op, t).is_some() => None,
         BuildOperation::CreateNode { .. } | BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } => fabric(),
     }
 }
@@ -191,10 +186,19 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 /// The seats `op` moves before it runs (R-MT1: node.primary.update "should be called on MP stop or
 /// delete. Caveat: delete is skipped if it's the only node on the mesh"): the node-admin it stops,
 /// deletes, restarts, replaces or deletes the connections of, when that node holds its mesh's primary
-/// seat or the fabric seat in view `t`. `None` for any other operation, a target that holds no seat,
-/// and the delete of a mesh's only node. A holder with no other node-admin in its mesh is still named:
-/// node.primary.update refuses it by name (the Build door refuses it first, `http::last_admin`).
+/// seat or the fabric seat in view `t`; and for a mesh retire of the mesh that holds the fabric seat,
+/// the fabric seat alone (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part
+/// C1 "The last node-admin of a mesh": "mesh.delete never updates the mesh primary ... If the mesh
+/// holds the fabric seat, that seat moves first by `node.fabric-primary.update` with the departing mesh
+/// excluded (mesh-delete.md step 1); nothing else moves"). `None` for any other operation, a target
+/// that holds no seat, and the delete of a mesh's only node. A holder with no other node-admin in its
+/// mesh is still named: node.primary.update refuses it by name (the Build door refuses it first,
+/// `http::last_admin`).
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
+    if let BuildOperation::ShutdownMesh { mesh, .. } = op {
+        let holder = t.fabric_primary().filter(|fp| fp.mesh == *mesh)?.clone();
+        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true });
+    }
     let (node, delete) = match op {
         BuildOperation::RetireNode { node, exited: None } => (node, true),
         BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DeleteConnections { node, .. } | BuildOperation::StopNode { node, .. } => (node, false),
@@ -223,7 +227,8 @@ pub struct SeatMove {
     pub holder: crate::model::Node,
     /// It holds its mesh's primary seat: node.primary.update moves it.
     pub mesh_seat: bool,
-    /// It holds the fabric seat: node.fabric-primary.update moves it, after its mesh seat.
+    /// It holds the fabric seat: node.fabric-primary.update moves it, in the mesh seat's one row when
+    /// both move; alone (the mesh seat stays) it moves out of the holder's mesh (C2 search step 2).
     pub fabric_seat: bool,
 }
 
@@ -370,20 +375,13 @@ impl BuildExecutor {
         let operations = &plan.operations;
         span.record("operations", operations.iter().map(BuildOperation::key).collect::<Vec<_>>().join(",").as_str());
         for (i, op) in operations.iter().enumerate() {
-            // An operation's executor can move while the run goes: at prepare (the seat handover
-            // of a mesh retire) or once an earlier operation of the run has seated a mesh's first
-            // admin. The operation then belongs to the admin the view now names, and it is passed
-            // to it unrun. The operations themselves are always the fabric-primary's plan.
-            let named = executor_for(op, &*self.topology.read().await);
-            if let Err(e) = self.runner.prepare(&build.build_id, attempt, op).await {
-                return self.finish(&build, attempt, Err((op.key(), e))).await;
-            }
-            let to = executor_for(op, &*self.topology.read().await);
             // After the first operation the view can name another executor for the rest: the run
-            // seated a mesh's first admin, which executes that mesh's members from then on. An
-            // operation a view does not place stays with this admin.
-            if to != named || i > 0 {
-                if let Some(to) = to.filter(|to| to.to_string() != self.executor) {
+            // seated a mesh's first admin, which executes that mesh's members from then on. The
+            // operation then belongs to the admin the view now names, and it is passed to it unrun;
+            // an operation a view does not place stays with this admin. The operations themselves are
+            // always the fabric-primary's plan.
+            if i > 0 {
+                if let Some(to) = executor_for(op, &*self.topology.read().await).filter(|to| to.to_string() != self.executor) {
                     return self.hand_off(&build, attempt, operations[..i].to_vec(), to.to_string()).await;
                 }
             }
@@ -622,19 +620,29 @@ mod tests {
         BuildOperation::ShutdownMesh { mesh: mesh.into(), mesh_id: rafka_mesh_entity::MeshId::mint() }
     }
 
-    /// CONTRACT (R-ST2): `shutdown-mesh:<mesh_id>` is the fabric primary's, whatever mesh holds the
-    /// seat. When the fabric primary is inside the leaving mesh it hands the seat over first
-    /// (`OperationRunner::prepare`), and the executor of the operation is then the new fabric
-    /// primary.
+    /// CONTRACT (R-ST2; the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1
+    /// "The last node-admin of a mesh": "If the mesh holds the fabric seat, that seat moves first by
+    /// `node.fabric-primary.update` with the departing mesh excluded (mesh-delete.md step 1); nothing
+    /// else moves"): `shutdown-mesh:<mesh_id>` is the fabric primary's. When the fabric primary is
+    /// inside the leaving mesh, its fabric seat alone moves first ([`seat_move`]: the mesh seat stays),
+    /// no admin executes the retire until it has, and the executor is then the new fabric primary.
+    /// Must NOT happen: the leaving mesh's admin named the executor of its own mesh's retire.
     #[test]
     fn a_mesh_retire_is_the_fabric_primarys() {
         let t = mm(true);
         assert_eq!(who(&shutdown("mesh2"), &t), "mesh1.admin.1", "the fabric primary, outside mesh2");
-        assert_eq!(who(&shutdown("mesh1"), &t), "mesh1.admin.1", "the fabric primary, inside mesh1: it hands the seat over before it runs");
+        assert_eq!(seat_move(&shutdown("mesh2"), &t), None, "a retire of a mesh the fabric seat is not in moves no seat");
+        assert_eq!(who(&shutdown("mesh1"), &t), "", "the fabric primary, inside mesh1: no admin executes the retire until its seat moved");
+        assert!(
+            seat_move(&shutdown("mesh1"), &t).is_some_and(|m| m.holder.name.to_string() == "mesh1.admin.1" && !m.mesh_seat && m.fabric_seat),
+            "the fabric seat alone moves first: {:?}",
+            seat_move(&shutdown("mesh1"), &t)
+        );
         let mut moved = mm(true);
         for n in moved.nodes.iter_mut() {
             n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
         }
+        assert_eq!(seat_move(&shutdown("mesh1"), &moved), None, "once the seat moved, nothing is owed");
         assert_eq!(who(&shutdown("mesh1"), &moved), "mesh2.admin.1", "once the seat moved, the new fabric primary is the executor");
     }
 
