@@ -341,7 +341,7 @@ pub struct Lane {
     pub claimant: Option<String>,
     /// Why the current attempt exists.
     pub reason: AttemptReason,
-    /// The fenced action the current attempt carries.
+    /// The action the current attempt carries, targeted at one exact birth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<AttemptAction>,
     /// The attempt the latest open opened: the first attempt of the lane's current run.
@@ -355,7 +355,7 @@ pub struct Lane {
     /// The attempts whose executor reported its run's end (`HandedOff` or `Converged`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub reported: std::collections::BTreeSet<u32>,
-    /// The fenced action each claimed attempt carried, by attempt.
+    /// The action each claimed attempt carried, by attempt.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attempt_actions: BTreeMap<u32, AttemptAction>,
 }
