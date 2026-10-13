@@ -57,8 +57,9 @@ pub struct NodeRows {
     storage: Arc<dyn NodesStorage>,
     /// The config door a seeded birth is told its config through (`crate::node_config`).
     configs: Option<crate::node_config::NodeConfigsSlot>,
-    /// The record held when each removal was announced (`NodeDeleting`), by operation, until the
-    /// replace's rename or the removal's `NodeDeleted` (the fabric-primary's drive).
+    /// The record of each replace's predecessor as its first step announced it, by operation, until
+    /// the replace's rename or the removal's `NodeDeleted` (the fabric-primary's drive): stopped when
+    /// that step is the replace's stop (`StopNode`), as held when it is a removal (`NodeDeleting`).
     announced: Mutex<HashMap<String, Node>>,
     /// Per mesh whose rows this admin writes, the births its views have held in that tenure: each
     /// row is written once, when a view first holds it, and a later view install that holds it
@@ -362,10 +363,10 @@ impl NodeRows {
         let r: Result<Moved, RowRefused> = tracing::Instrument::instrument(
             async {
                 self.writer_check(&name.mesh, &name).await?;
-                let parked = parked_record(record, &to);
-                let (config, _) = self.known_config(&parked);
-                let tags = self.known_tags(&parked).await?;
-                let (moved, written) = move_row(&*self.storage, &self.me, &parked, config, tags, &name, &to).await.map_err(|e| match e {
+                let at_old = record_at_old(record, &to);
+                let (config, _) = self.known_config(&at_old);
+                let tags = self.known_tags(&at_old).await?;
+                let (moved, written) = move_row(&*self.storage, &self.me, &at_old, config, tags, &name, &to).await.map_err(|e| match e {
                     RenameRefused::NameHeld(h) => RowRefused::NameHeld(h),
                     RenameRefused::Unwritten(why) => RowRefused::Unwritten(why),
                 })?;
@@ -520,6 +521,12 @@ impl NodeRows {
                     None => held_at(view, &name).await,
                 };
                 if let Some(n) = held {
+                    // The predecessor a replace stops is stopped at its rename, which follows only
+                    // the complete stop (`AwaitNodeLeft` received its `stopped`), whatever status the
+                    // view held at the frame (the stop marks it Leaving as it sends stop-node). A
+                    // removal's predecessor keeps the status it was held with: its exit is what the
+                    // removal proves.
+                    let n = if step == "StopNode" { stopped(n) } else { n };
                     self.announced.lock().unwrap().entry(operation.to_string()).or_insert(n);
                 }
             }
@@ -537,7 +544,7 @@ impl NodeRows {
                     },
                 };
                 if let Some(n) = record {
-                    self.parked_old.lock().unwrap().entry(to.clone()).or_insert_with(|| parked_record(&n, &to));
+                    self.parked_old.lock().unwrap().entry(to.clone()).or_insert_with(|| record_at_old(&n, &to));
                 }
             }
             ("delete-node", "NodeDeleted") => {
@@ -690,17 +697,21 @@ pub(crate) enum Moved {
     AlreadyMoved,
 }
 
-/// The record of a replace's predecessor at its rename to `to`: parked there. A live branch's
-/// predecessor was held live at its `StopNode` call, and its stop (`StopNode`, `AwaitNodeLeft`) precedes
-/// the rename, so it is `Leaving` and parked now; a recovery's predecessor keeps the status it was held
-/// with (its exit is what the recovery proves).
-fn parked_record(record: &Node, to: &PathName) -> Node {
-    let mut n = record.clone();
+/// `record` as a stopped node: `Leaving` with its process live (`parked`), waiting for a start or a
+/// delete (node-stop.md step 5).
+fn stopped(mut record: Node) -> Node {
+    record.status = NodeStatus::Leaving;
+    record.parked = true;
+    record
+}
+
+/// The record of a replace's predecessor at its rename to `to`. The rename follows only the
+/// predecessor's complete stop or the provider's exit proof: a record still held live is the
+/// stopped one, and any other keeps its status (a predecessor the replace stopped is announced
+/// stopped already, a removal's keeps the status its exit proof found).
+fn record_at_old(record: &Node, to: &PathName) -> Node {
+    let mut n = if record.status.is_live() { stopped(record.clone()) } else { record.clone() };
     n.name = to.clone();
-    if n.status.is_live() {
-        n.status = NodeStatus::Leaving;
-        n.parked = true;
-    }
     n
 }
 
