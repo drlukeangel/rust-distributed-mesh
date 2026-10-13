@@ -31,7 +31,8 @@
 //! (C1 step 7; R-MT1: "NA1 gossips that the primary updated to NA2"). The holder lost after the row,
 //! before "updated": the next writer to read the row publishes it (C1 failure contract). That is the
 //! successor, from the row's epoch the cohort's row writer, when it installs from the row of a holder
-//! whose exit-proof row it reads.
+//! whose exit-proof row it reads; and the holder itself when it restarts over the store root and
+//! reads its own committed row as it enters ([`enter_seats`]).
 
 pub use crate::election::Moving;
 use crate::fabric_storage::{FabricStorage, SeatTransferRow};
@@ -910,21 +911,53 @@ impl HandoverDoor {
 /// between its cut-off and its rename reads here whether its row committed (C1 failure contract). A
 /// record older than one already held changes nothing. Returns how many rows it read.
 pub async fn hydrate_seats(storage: &dyn FabricStorage, seats: &SeatBook) -> Result<usize, String> {
+    Ok(hydrated(storage, seats).await?.len())
+}
+
+/// [`hydrate_seats`], returning the rows it read.
+async fn hydrated(storage: &dyn FabricStorage, seats: &SeatBook) -> Result<Vec<SeatTransferRow>, String> {
     let rows = storage.seat_transfers().await.map_err(|e| format!("fabric.storage, the seat-transfer rows could not be read: {e}"))?;
     for row in &rows {
         for c in &row.seats {
             seats.take(c.seat.kind(), &c.record());
         }
     }
-    Ok(rows.len())
+    Ok(rows)
 }
 
 /// The read of the store root's seat-transfer rows an admin makes as it enters the fabric, its
 /// restart included ([`hydrate_seats`] into its mesh channel's seat book), once it is on the backbone.
-/// Returns how many rows it read.
+/// A holder lost after its row, before "primary updated", that restarts here reads its own committed
+/// row (proposal Part C1 failure contract: "the next writer to read the row publishes 'updated'.
+/// Completion needs neither gossip delivery nor the holder's survival"): for each row naming this node
+/// (`node_id`, whichever birth it is now) the holder, whose every committed record is the one the
+/// book holds after the read, it says "primary updated" once. A row a later update superseded is
+/// history and is said by no one again. Returns how many rows it read.
 pub async fn enter_seats(storage: &dyn FabricStorage, membership: &Membership, backbone: &Backbone, me: &PathName, node_id: &NodeId) -> Result<usize, String> {
-    let _ = (backbone, me, node_id);
-    hydrate_seats(storage, membership.seats()).await
+    let book = membership.seats();
+    let rows = hydrated(storage, book).await?;
+    for row in rows.iter().filter(|r| r.holder.node_id == *node_id && !r.seats.is_empty()) {
+        let current = row.seats.iter().all(|c| c.mesh_key().map_or_else(|| book.fabric(), |m| book.mesh(m)) == Some(c.record()));
+        if !current {
+            continue;
+        }
+        let op = LifecycleOp { build_id: row.build_id.clone(), attempt: row.attempt, operation: row.operation.clone(), node_id: row.holder.node_id.clone(), incarnation: row.holder.incarnation.clone(), name: me.clone(), event_at_rafka_ms: membership.clock().now_rafka_ms() };
+        let span = tracing::info_span!(
+            "rdm.node_admin.seat.update.via-entered-own-row",
+            node = %me,
+            fabric = %row.fabric,
+            operation = %row.operation,
+            build_id = %row.build_id,
+            attempt = row.attempt,
+            holder = %births(&row.holder),
+            successor = %births(&row.successor),
+            mesh_epoch = %epoch_of(&row.seats, Seat::MeshPrimary),
+            fabric_epoch = %epoch_of(&row.seats, Seat::FabricPrimary),
+        );
+        span.in_scope(|| tracing::info!("the holder entering the fabric read its own committed row, current in its book: it says \"primary updated\""));
+        backbone.announce_primary_updated(op, row.seats.clone()).instrument(span).await;
+    }
+    Ok(rows.len())
 }
 
 /// How one call ended ([`HandoverDoor::call_once`]).
