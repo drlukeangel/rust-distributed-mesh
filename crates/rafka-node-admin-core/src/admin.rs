@@ -8478,6 +8478,77 @@ mod tests {
         eprintln!("span rdm.node_admin.build.update.via-node-recovery trace_id={} {:?}", submits[0].trace_id, submits[0].attributes);
     }
 
+    /// CONTRACT (node-recovery.md "Failure and receipts": "An exit during a workflow belongs to that
+    /// workflow: its Build ends Failed, and the mesh-primary's next tick finds the member still proven
+    /// exited and submits the recovery"; R-BI7 caveat 2: a mesh's drift attempts are numbered in its
+    /// own lane, so an attempt number names one attempt per lane): a recovery's `NodeDeleting` hold,
+    /// opened from attempt 1 of mesh2's lane, closes when that attempt's verdict in mesh2's lane is
+    /// `Failed` (one `rdm.mesh.membership.update.via-deleting-closed-by-facts` span, by
+    /// `attempt-failed`). In another Build, the fabric lane's attempt 1 failing closes nothing of
+    /// mesh2's attempt 1, which still runs: its hold stays open. Must NOT happen: a drift attempt's
+    /// hold held after its attempt failed (the tick then refuses the member
+    /// `via-exit-inside-workflow` for good), or one lane's verdict closing another lane's hold.
+    // @feature: node-lifecycle
+    #[tokio::test]
+    async fn a_drift_lanes_removal_hold_closes_on_its_own_attempts_verdict_and_on_no_other_lanes() {
+        use crate::build_state::{AttemptOutcome, AttemptReason, AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, StepOutcome};
+        let member = digest("mesh2.rpc.1", MemberStatus::ReadyForTraffic);
+        let book = DigestBook::default();
+        for d in [digest("mesh2.admin.1", MemberStatus::ReadyForTraffic), member.clone()] {
+            book.record(d);
+        }
+        let mesh = || Some("mesh2".to_string());
+        let recovery = |build: &str| rafka_mesh_entity::LifecycleOp {
+            build_id: build.into(),
+            attempt: 1,
+            operation: "retire-node:mesh2.rpc.1".into(),
+            node_id: member.node.node_id.clone(),
+            incarnation: member.node.incarnation.clone(),
+            name: member.node.name.clone(),
+            event_at_rafka_ms: 1,
+        };
+        // mesh2's lane runs attempt 1, the member's recovery; its node.delete published NodeDeleting.
+        let lane_attempt = |build: &crate::build::BuildId, op: &rafka_mesh_entity::LifecycleOp| {
+            vec![
+                BuildFact::Accepted(BuildAccepted { build_id: build.clone(), topology: crate::accepted::FabricTopology::root("fabric1", "mesh2", crate::model::MeshId::parse("meshd0000002").unwrap()), submitted_change: None, submitted_at_ms: 1 }),
+                BuildFact::Opened(AttemptOpened { mesh: mesh(), build_id: build.clone(), attempt: 1, reason: AttemptReason::Recovery, action: None, opened_by: "mesh2.admin.1".into(), opened_at_ms: 1 }),
+                BuildFact::Claim(BuildAttemptClaim { mesh: mesh(), build_id: build.clone(), attempt: 1, executor: "mesh2.admin.1".into(), claimant: Some("mesh2.admin.1".into()) }),
+                BuildFact::Step(BuildStepReceipt { mesh: mesh(), build_id: build.clone(), attempt: 1, operation: op.operation.clone(), step: "NodeDeleting".into(), outcome: StepOutcome::Complete, output: Some(serde_json::to_value(op).unwrap()), executor: None }),
+            ]
+        };
+        let capture = crate::span_capture::Capture::new("i143-s78-drift-lane-hold");
+        let mut named = NamedSteps::new();
+        let derive = |facts: &[BuildFact], named: &mut NamedSteps| {
+            let _g = tracing::dispatcher::set_default(&capture.dispatch);
+            overlays_from_facts(facts, &book, named);
+        };
+
+        let op = recovery("9r7cpewghdkk");
+        let build = crate::build::BuildId::parse(&op.build_id).unwrap();
+        let mut facts = lane_attempt(&build, &op);
+        derive(&facts, &mut named);
+        assert_eq!(book.in_flight(), vec![op.clone()], "mesh2's attempt 1 holds the member");
+        // The attempt's verdict in mesh2's lane: Failed (its claimant departed with it unfinished).
+        facts.push(BuildFact::Attempt(BuildAttemptReceipt { mesh: mesh(), build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "mesh2.admin.1 departed with attempt 1 of mesh2's lane unfinished".into() } }));
+        derive(&facts, &mut named);
+        assert_eq!(book.in_flight(), Vec::<rafka_mesh_entity::LifecycleOp>::new(), "the failed drift attempt's hold closes: the member's exit belongs to no workflow now");
+        let closed = capture.named("rdm.mesh.membership.update.via-deleting-closed-by-facts");
+        assert_eq!(closed.len(), 1, "the close is spanned once: {closed:?}");
+        let a = &closed[0].attributes;
+        let attr = |k: &str| a.get(k).cloned().unwrap_or_default();
+        assert_eq!((attr("operation"), attr("attempt"), attr("by")), ("retire-node:mesh2.rpc.1".to_string(), "1".to_string(), "attempt-failed".to_string()), "{a:?}");
+        eprintln!("span rdm.mesh.membership.update.via-deleting-closed-by-facts trace_id={} {a:?}", closed[0].trace_id);
+
+        // Another Build: the fabric lane's attempt 1 failed; mesh2's attempt 1 still runs.
+        let op = recovery("7k2qm4xw9bdc");
+        let build = crate::build::BuildId::parse(&op.build_id).unwrap();
+        let mut facts = lane_attempt(&build, &op);
+        facts.insert(1, BuildFact::Attempt(BuildAttemptReceipt { mesh: None, build_id: build.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: "a topology operation failed".into() } }));
+        derive(&facts, &mut named);
+        assert_eq!(book.in_flight(), vec![op], "the fabric lane's verdict closes nothing of mesh2's running attempt");
+        assert_eq!(capture.named("rdm.mesh.membership.update.via-deleting-closed-by-facts").len(), 1, "no second close");
+    }
+
     /// CONTRACT (node-recovery.md "Detection and proof": the mesh primary watches its own mesh's
     /// births, those known only by a durable runtime row included; CLAUDE.md: an error state names
     /// what failed and where): when the tick's read of the durable runtime rows is refused, the
