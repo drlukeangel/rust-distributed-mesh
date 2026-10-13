@@ -100,8 +100,9 @@ pub struct Served<'a> {
 pub fn verdict(puller: Puller, seat: Option<Seat>) -> Result<(), Refusal> {
     match (puller, seat) {
         (Puller::Member, _) | (Puller::MeshPrimary, Some(Seat::FabricPrimary)) => Ok(()),
-        (Puller::MeshPrimary, Some(Seat::MeshPrimary)) => Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary),
-        (Puller::MeshPrimary, None) => Err(Refusal::ServedByAReplica),
+        (Puller::MeshPrimary, Some(Seat::MeshPrimary | Seat::Cohort(rafka_mesh_entity::NodeKind::NodeAdmin))) => Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary),
+        // Another cohort's primary holds no time authority: it answers as a replica does.
+        (Puller::MeshPrimary, None | Some(Seat::Cohort(_))) => Err(Refusal::ServedByAReplica),
     }
 }
 

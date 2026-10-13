@@ -1,13 +1,17 @@
 //! Seat holders: who holds a primary seat, as a node announces it and a joiner is told it.
 //!
-//! A seat is a mesh's node-admin primary ([`Seat::MeshPrimary`]) or the fabric primary
-//! ([`Seat::FabricPrimary`]). The holder of a seat is an EXACT birth, `(node_id, incarnation)`, in
+//! A seat is a mesh's node-admin primary ([`Seat::MeshPrimary`]), the fabric primary
+//! ([`Seat::FabricPrimary`]), or the primary of one other (mesh, node type) cohort ([`Seat::Cohort`]:
+//! an rpc, broker, gateway or compute cohort; the approved proposal
+//! node-primary-update-fabric-mesh-and-node-type.md Part B1, "Every (mesh, node_type) cohort elects
+//! its primary by the one rule ... a living holder keeps its seat"). The holder of a seat is an EXACT birth, `(node_id, incarnation)`, in
 //! a mesh, with an `epoch`: the number of times the seat changed hands as the announcer saw it.
 //! A seat does not change hands while its holder lives, so the record a node holds is an input to
 //! every election (`rafka-node-admin-core` `election.rs`), never a result recomputed from
 //! statuses alone.
 
 use crate::ids::{IncarnationId, NodeId};
+use crate::path::NodeKind;
 use serde::{Deserialize, Serialize};
 
 /// A primary seat. The discriminants are the wire positions.
@@ -17,14 +21,31 @@ pub enum Seat {
     MeshPrimary,
     /// The fabric primary: a mesh primary that also holds the fabric's control.
     FabricPrimary,
+    /// The primary of the holder's mesh's cohort of this node type, every type but `node_admin`
+    /// (whose seat is [`Seat::MeshPrimary`]): its mesh's primary writes and announces its record
+    /// (R-MT1 Q3: the mesh-primary is the mesh's one row writer and sole author of member status).
+    Cohort(NodeKind),
 }
 
 impl Seat {
     /// The seat's name as it appears in spans and evidence.
     pub fn name(self) -> &'static str {
         match self {
-            Self::MeshPrimary => "mesh-primary",
+            Self::MeshPrimary | Self::Cohort(NodeKind::NodeAdmin) => "mesh-primary",
             Self::FabricPrimary => "fabric-primary",
+            Self::Cohort(NodeKind::RpcNode) => "rpc_node-primary",
+            Self::Cohort(NodeKind::Broker) => "broker-primary",
+            Self::Cohort(NodeKind::Gateway) => "gateway-primary",
+            Self::Cohort(NodeKind::Compute) => "compute-primary",
+        }
+    }
+
+    /// The primary seat of the `kind` cohort of a mesh: the mesh-primary seat for `node_admin`, the
+    /// cohort's own seat for every other type.
+    pub fn of_cohort(kind: NodeKind) -> Self {
+        match kind {
+            NodeKind::NodeAdmin => Self::MeshPrimary,
+            other => Self::Cohort(other),
         }
     }
 }
@@ -97,6 +118,13 @@ pub mod transfer {
             /// The mesh whose primary seat it is.
             mesh: String,
         },
+        /// The primary of `mesh`'s cohort of node type `kind` (every type but `node_admin`).
+        Cohort {
+            /// The mesh whose cohort it is.
+            mesh: String,
+            /// The cohort's node type.
+            kind: crate::path::NodeKind,
+        },
     }
 
     impl Seat {
@@ -104,7 +132,8 @@ pub mod transfer {
         pub fn of(seat: super::Seat, mesh: &str) -> Self {
             match seat {
                 super::Seat::FabricPrimary => Self::FabricPrimary,
-                super::Seat::MeshPrimary => Self::MeshPrimary { mesh: mesh.to_string() },
+                super::Seat::MeshPrimary | super::Seat::Cohort(crate::path::NodeKind::NodeAdmin) => Self::MeshPrimary { mesh: mesh.to_string() },
+                super::Seat::Cohort(kind) => Self::Cohort { mesh: mesh.to_string(), kind },
             }
         }
         /// The record seat it names.
@@ -112,6 +141,7 @@ pub mod transfer {
             match self {
                 Self::FabricPrimary => super::Seat::FabricPrimary,
                 Self::MeshPrimary { .. } => super::Seat::MeshPrimary,
+                Self::Cohort { kind, .. } => super::Seat::of_cohort(*kind),
             }
         }
         /// The seat's name as it appears in spans and evidence.
@@ -140,10 +170,11 @@ pub mod transfer {
         pub fn record(&self) -> SeatHolder {
             SeatHolder { mesh: self.holder.mesh.clone(), node_id: self.holder.node_id.clone(), incarnation: self.holder.incarnation.clone(), epoch: self.epoch }
         }
-        /// The mesh the record is keyed by: the seat's mesh for a mesh primary, none for the fabric's.
+        /// The mesh the record is keyed by: the seat's mesh for a mesh primary or a cohort's, none for
+        /// the fabric's.
         pub fn mesh_key(&self) -> Option<&str> {
             match &self.seat {
-                Seat::MeshPrimary { mesh } => Some(mesh),
+                Seat::MeshPrimary { mesh } | Seat::Cohort { mesh, .. } => Some(mesh),
                 Seat::FabricPrimary => None,
             }
         }

@@ -894,7 +894,7 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
     lost.extend(book.departed().into_iter().map(|op| op.incarnation));
     lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
     lost.extend(book.seats.gone());
-    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: Default::default(), lost }
+    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: book.seats.cohorts(), lost }
 }
 
 /// Where this birth's Build log reads its authority: the committed fabric seat record held in
@@ -939,10 +939,7 @@ pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&Nod
         if !holds {
             continue;
         }
-        let held = match seat {
-            rafka_mesh_entity::Seat::MeshPrimary => decided.meshes.get(mesh).cloned(),
-            rafka_mesh_entity::Seat::FabricPrimary => decided.fabric.clone(),
-        };
+        let held = if seat == rafka_mesh_entity::Seat::FabricPrimary { decided.fabric.clone() } else { decided.meshes.get(mesh).cloned() };
         if held.as_ref().is_some_and(|h| h.is_birth(me.0, me.1)) {
             continue;
         }

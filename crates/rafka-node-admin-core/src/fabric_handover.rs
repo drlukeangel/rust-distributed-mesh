@@ -58,7 +58,7 @@ use tracing::Instrument as _;
 /// same seat before the same node operation is a new update, never the replay of an earlier Build's row.
 pub fn update_operation(seat: Seat, build_id: &str, op_key: &str) -> String {
     match seat {
-        Seat::MeshPrimary => format!("node.primary.update:{build_id}:{op_key}"),
+        Seat::MeshPrimary | Seat::Cohort(_) => format!("node.primary.update:{build_id}:{op_key}"),
         Seat::FabricPrimary => format!("node.fabric-primary.update:{build_id}:{op_key}"),
     }
 }
@@ -343,7 +343,7 @@ fn epoch_of(seats: &[CommittedSeat], seat: Seat) -> String {
 /// The detail of a refused epoch overflow: who refused, the seat and the epoch that cannot advance.
 fn overflow_detail(me: &PathName, seat: &WireSeat, epoch: u64) -> String {
     let mesh = match seat {
-        WireSeat::MeshPrimary { mesh } => format!(" of {mesh}"),
+        WireSeat::MeshPrimary { mesh } | WireSeat::Cohort { mesh, .. } => format!(" of {mesh}"),
         WireSeat::FabricPrimary => String::new(),
     };
     format!("{me}: the {} seat{mesh} is at epoch {epoch}, the largest a seat epoch holds; it cannot advance, so no row commits", seat.name())
@@ -620,6 +620,11 @@ impl HandoverDoor {
                 }
                 WireSeat::MeshPrimary { mesh } => {
                     let reason = format!("{}: the command names the mesh-primary seat of {mesh}; this admin is of mesh {}", self.me, self.me.mesh);
+                    refused("holder", "not-authority", &reason, &of, None);
+                    return Reply::not_authority(&reason);
+                }
+                WireSeat::Cohort { mesh, kind } => {
+                    let reason = format!("{}: the command names the {} cohort's primary seat of {mesh}; a node-admin holds the node-admin cohort's and the fabric's seats only", self.me, kind.name());
                     refused("holder", "not-authority", &reason, &of, None);
                     return Reply::not_authority(&reason);
                 }

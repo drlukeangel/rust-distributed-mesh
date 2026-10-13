@@ -1059,11 +1059,42 @@ struct HeldSeats {
     /// The contacts a new-fabric-primary announcement gave for the fabric holder's exact birth.
     fabric_contacts: Option<(SeatHolder, FabricContacts)>,
     meshes: HashMap<String, SeatHolder>,
+    /// Every other (mesh, node type) cohort's primary record, by (mesh, kind).
+    cohorts: HashMap<(String, rafka_mesh_entity::NodeKind), SeatHolder>,
     /// Seat holders' exact births a peer told this node are proven gone (an entry read): the proof
     /// the peer holds, which this node never heard itself.
     gone: std::collections::HashSet<IncarnationId>,
     /// The last update held together: replayed as one `PrimaryUpdated` while its seats are the records held.
     together: Option<(LifecycleOp, Vec<CommittedSeat>)>,
+}
+
+impl HeldSeats {
+    /// The record held for `seat` of `mesh` (the mesh is ignored for the fabric seat).
+    fn get(&self, seat: Seat, mesh: &str) -> Option<SeatHolder> {
+        match seat {
+            Seat::FabricPrimary => self.fabric.clone(),
+            Seat::MeshPrimary | Seat::Cohort(rafka_mesh_entity::NodeKind::NodeAdmin) => self.meshes.get(mesh).cloned(),
+            Seat::Cohort(kind) => self.cohorts.get(&(mesh.to_string(), kind)).cloned(),
+        }
+    }
+
+    /// Hold `record` for `seat` of `mesh`.
+    fn put(&mut self, seat: Seat, mesh: &str, record: SeatHolder) {
+        match seat {
+            Seat::FabricPrimary => self.fabric = Some(record),
+            Seat::MeshPrimary | Seat::Cohort(rafka_mesh_entity::NodeKind::NodeAdmin) => {
+                self.meshes.insert(mesh.to_string(), record);
+            }
+            Seat::Cohort(kind) => {
+                self.cohorts.insert((mesh.to_string(), kind), record);
+            }
+        }
+    }
+}
+
+/// The seat and the mesh a committed seat's record is held under.
+fn committed_key(c: &CommittedSeat) -> (Seat, String) {
+    (c.seat.kind(), c.mesh_key().unwrap_or(c.holder.mesh.as_str()).to_string())
 }
 
 /// A fabric-primary's contact addresses as its new-fabric-primary announcement states them: the
@@ -1099,26 +1130,11 @@ impl SeatBook {
     /// Hold `holder` for `seat` if it supersedes what is held.
     pub fn take(&self, seat: Seat, holder: &SeatHolder) -> SeatTaken {
         let mut held = self.inner.lock().unwrap();
-        let slot: &mut Option<SeatHolder> = match seat {
-            Seat::FabricPrimary => &mut held.fabric,
-            Seat::MeshPrimary => {
-                let current = held.meshes.get(&holder.mesh).cloned();
-                return match current {
-                    Some(c) if &c == holder => SeatTaken::Same,
-                    Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
-                    previous => {
-                        held.meshes.insert(holder.mesh.clone(), holder.clone());
-                        self.changed.send_modify(|v| *v += 1);
-                        SeatTaken::Held { previous }
-                    }
-                };
-            }
-        };
-        match slot.clone() {
+        match held.get(seat, &holder.mesh) {
             Some(c) if &c == holder => SeatTaken::Same,
             Some(c) if !holder.supersedes(&c) => SeatTaken::Refused { held: c },
             previous => {
-                *slot = Some(holder.clone());
+                held.put(seat, &holder.mesh, holder.clone());
                 self.changed.send_modify(|v| *v += 1);
                 SeatTaken::Held { previous }
             }
@@ -1130,9 +1146,9 @@ impl SeatBook {
     /// they are). Returns what happened per seat.
     pub fn take_together(&self, op: &LifecycleOp, seats: &[CommittedSeat]) -> Vec<SeatTaken> {
         let mut held = self.inner.lock().unwrap();
-        let current = |held: &HeldSeats, c: &CommittedSeat| match c.mesh_key() {
-            None => held.fabric.clone(),
-            Some(mesh) => held.meshes.get(mesh).cloned(),
+        let current = |held: &HeldSeats, c: &CommittedSeat| {
+            let (seat, mesh) = committed_key(c);
+            held.get(seat, &mesh)
         };
         let decided: Vec<SeatTaken> = seats
             .iter()
@@ -1146,13 +1162,8 @@ impl SeatBook {
             return seats.iter().map(|c| SeatTaken::Refused { held: current(&held, c).unwrap_or_else(|| c.record()) }).collect();
         }
         for c in seats {
-            let record = c.record();
-            match c.mesh_key() {
-                None => held.fabric = Some(record),
-                Some(mesh) => {
-                    held.meshes.insert(mesh.to_string(), record);
-                }
-            }
+            let (seat, mesh) = committed_key(c);
+            held.put(seat, &mesh, c.record());
         }
         held.together = Some((op.clone(), seats.to_vec()));
         if decided.iter().any(|t| matches!(t, SeatTaken::Held { .. })) {
@@ -1227,20 +1238,33 @@ impl SeatBook {
             .cloned()
     }
 
+    /// The held record of `mesh`'s `kind` cohort primary seat (`node_admin`: its mesh-primary seat).
+    pub fn cohort(&self, mesh: &str, kind: rafka_mesh_entity::NodeKind) -> Option<SeatHolder> {
+        self.inner.lock().unwrap().get(Seat::of_cohort(kind), mesh)
+    }
+
+    /// Every other cohort's primary record held, by (mesh, kind).
+    pub fn cohorts(&self) -> std::collections::BTreeMap<(String, rafka_mesh_entity::NodeKind), SeatHolder> {
+        self.inner.lock().unwrap().cohorts.iter().map(|(k, h)| (k.clone(), h.clone())).collect()
+    }
+
     /// Every record held, as the frames a primary replays to a neighbour that came up.
     pub fn held_frames(&self) -> Vec<Frame> {
         let held = self.inner.lock().unwrap();
         // The last update, while every seat it moved is still the record held, replays as the one
         // frame: two `Seated` frames would re-open the window between two installs.
         let together = held.together.as_ref().filter(|(_, seats)| {
-            seats.iter().all(|c| match c.mesh_key() {
-                None => held.fabric.as_ref() == Some(&c.record()),
-                Some(mesh) => held.meshes.get(mesh) == Some(&c.record()),
+            seats.iter().all(|c| {
+                let (seat, mesh) = committed_key(c);
+                held.get(seat, &mesh) == Some(c.record())
             })
         });
         let in_together = |seat: Seat, h: &SeatHolder| together.is_some_and(|(_, seats)| seats.iter().any(|c| c.seat.kind() == seat && &c.record() == h));
         let mut out: Vec<Frame> = held.meshes.values().filter(|h| !in_together(Seat::MeshPrimary, h)).map(|h| Frame::Seated { seat: Seat::MeshPrimary, holder: h.clone() }).collect();
         out.sort_by_key(|f| if let Frame::Seated { holder, .. } = f { holder.mesh.clone() } else { String::new() });
+        let mut cohorts: Vec<(&(String, rafka_mesh_entity::NodeKind), &SeatHolder)> = held.cohorts.iter().filter(|((_, kind), h)| !in_together(Seat::Cohort(*kind), h)).collect();
+        cohorts.sort_by(|a, b| a.0.cmp(b.0));
+        out.extend(cohorts.into_iter().map(|((_, kind), h)| Frame::Seated { seat: Seat::Cohort(*kind), holder: h.clone() }));
         if let Some(h) = held.fabric.as_ref().filter(|h| !in_together(Seat::FabricPrimary, h)) {
             out.push(Frame::Seated { seat: Seat::FabricPrimary, holder: h.clone() });
         }
@@ -4062,15 +4086,16 @@ impl Backbone {
         let _ = self.channel.broadcast(&carried).await;
     }
 
-    /// This admin took `seat`: it holds the record and says it once. A mesh primary's record goes
-    /// onto its mesh channel and the backbone; the fabric primary's onto the backbone. Nothing
-    /// repeats it: a neighbour that comes up is replayed it by the primary, like a status.
+    /// This admin took `seat`, or, as its mesh's primary, seated another cohort's holder (R-MT1 Q3): it
+    /// holds the record and says it once. A mesh primary's record and a cohort's go onto its mesh
+    /// channel and the backbone; the fabric primary's onto the backbone. Nothing repeats it: a
+    /// neighbour that comes up is replayed it by the primary, like a status.
     pub async fn announce_seat(&self, seat: Seat, holder: SeatHolder) {
         let frame = Frame::Seated { seat, holder: holder.clone() };
         self.membership.view.note_seat(seat, &holder, "own");
         tracing::info_span!("rdm.mesh.seat.update.via-announce", node = %self.node, seat = seat.name(), holder = %holder).in_scope(|| tracing::info!("seat taken, announced"));
         let _ = self.channel.broadcast(&frame).await;
-        if seat == Seat::MeshPrimary {
+        if seat != Seat::FabricPrimary {
             let _ = self.membership.forward(&frame).await;
         }
     }
@@ -7600,6 +7625,37 @@ mod tests {
 
     fn seat_of(d: &MeshDigest, epoch: u64) -> SeatHolder {
         SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), epoch }
+    }
+
+    /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1: "Every
+    /// (mesh, node_type) cohort elects its primary by the one rule ... a living holder keeps its seat"):
+    /// a non-admin cohort's seat record is held under its own (mesh, kind), apart from the mesh-primary
+    /// seat of the same mesh, by the same supersede rule, and a primary replays it as its own `Seated`
+    /// frame; a committed update of a cohort seat is held under the cohort too. Must NOT happen: an rpc
+    /// cohort's record overwriting the mesh-primary record of its mesh.
+    #[test]
+    fn a_cohort_seat_record_is_held_apart_from_its_meshs_primary_seat() {
+        use rafka_mesh_entity::NodeKind;
+        let seats = SeatBook::default();
+        let admin = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 4 };
+        let rpc = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 1 };
+        assert!(matches!(seats.take(Seat::MeshPrimary, &admin), SeatTaken::Held { .. }));
+        assert!(matches!(seats.take(Seat::Cohort(NodeKind::RpcNode), &rpc), SeatTaken::Held { previous: None }));
+        assert_eq!(seats.mesh("mesh1"), Some(admin.clone()), "the mesh-primary record stays its own");
+        assert_eq!(seats.cohort("mesh1", NodeKind::RpcNode), Some(rpc.clone()));
+        assert_eq!(seats.cohort("mesh1", NodeKind::NodeAdmin), Some(admin.clone()), "the node-admin cohort's seat is the mesh-primary seat");
+        assert_eq!(seats.cohort("mesh1", NodeKind::Broker), None);
+        let older = SeatHolder { epoch: 0, ..rpc.clone() };
+        assert!(matches!(seats.take(Seat::Cohort(NodeKind::RpcNode), &older), SeatTaken::Refused { .. }), "an older record is refused by the one supersede rule");
+        let frames = seats.held_frames();
+        assert!(frames.iter().any(|f| matches!(f, Frame::Seated { seat: Seat::Cohort(NodeKind::RpcNode), holder } if *holder == rpc)), "replayed as its own Seated frame: {frames:?}");
+        // A committed update of the cohort seat is held under the cohort.
+        let next = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 2 };
+        let op = LifecycleOp { name: "mesh1.rpc.1".parse().unwrap(), node_id: rpc.node_id.clone(), incarnation: rpc.incarnation.clone(), operation: "node.primary.update:b:stop".into(), build_id: "b".into(), attempt: 1, event_at_rafka_ms: 0 };
+        let taken = seats.take_together(&op, &[CommittedSeat::of(Seat::Cohort(NodeKind::RpcNode), &next)]);
+        assert!(matches!(taken.as_slice(), [SeatTaken::Held { .. }]), "{taken:?}");
+        assert_eq!(seats.cohort("mesh1", NodeKind::RpcNode), Some(next));
+        assert_eq!(seats.mesh("mesh1"), Some(admin), "and the mesh-primary record is untouched");
     }
 
     /// CONTRACT (gossip.md §3.3, R-A2): a member tops up from its own mesh's current primary, the

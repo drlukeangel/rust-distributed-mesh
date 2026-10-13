@@ -24,8 +24,8 @@
 //! - A seat with no record (a fabric's first election) is filled by the lowest Ready NodeId.
 //!
 //! Ready time, ordinal, path, mesh name, MeshId, FabricId, incarnation order and transport identity
-//! are not election inputs. The other cohorts (rpc, gateway, ...) are elected by the lowest Ready
-//! NodeId alone.
+//! are not election inputs. Every other cohort (rpc, gateway, ...) is elected by the same rules over
+//! its own holder record (`Incumbency::cohorts`), which its mesh's primary writes (R-MT1 Q3).
 //!
 //! The hierarchy:
 //! - node-type (cohort) election: a cohort is the members of one kind in one mesh; node-admin owns
@@ -143,21 +143,19 @@ pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     for (i, n) in nodes.iter().enumerate() {
         cohorts.entry((n.mesh.clone(), n.kind)).or_default().push(i);
     }
-    // Mesh primary of each mesh: the node-admin cohort's seat. Every other cohort: lowest Ready.
+    // Every cohort by the one rule: its recorded holder while it lives, vacant while the view has not
+    // heard the recorded birth, else the lowest Ready. The node-admin cohort's seat is the mesh primary.
     let mut winners = Vec::new();
     let mut mesh_primary: BTreeMap<String, usize> = BTreeMap::new();
     for ((mesh, kind), members) in &cohorts {
-        let winner = if *kind == NodeKind::NodeAdmin {
-            match inc.meshes.get(mesh) {
-                Some(h) => match holding(nodes, h, inc) {
-                    Holding::Living(i) if nodes[i].mesh == *mesh && nodes[i].kind == NodeKind::NodeAdmin => Some(i),
-                    Holding::Unseen => None,
-                    _ => lowest_ready(nodes, members, inc),
-                },
-                None => lowest_ready(nodes, members, inc),
-            }
-        } else {
-            lowest_ready(nodes, members, inc)
+        let record = if *kind == NodeKind::NodeAdmin { inc.meshes.get(mesh) } else { inc.cohorts.get(&(mesh.clone(), *kind)) };
+        let winner = match record {
+            Some(h) => match holding(nodes, h, inc) {
+                Holding::Living(i) if nodes[i].mesh == *mesh && nodes[i].kind == *kind => Some(i),
+                Holding::Unseen => None,
+                _ => lowest_ready(nodes, members, inc),
+            },
+            None => lowest_ready(nodes, members, inc),
         };
         if let Some(i) = winner {
             winners.push(i);
