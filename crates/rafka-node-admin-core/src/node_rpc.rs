@@ -31,31 +31,17 @@ impl ProcessNodeRpc {
     /// The same, on a resolver made earlier (a server handler may hold it
     /// before the endpoint is bound).
     pub fn start_with(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
-        Self::start_observed(resolver, endpoint, book, node, None)
-    }
-
-    /// The same, with this process's source-owned connections writer hearing every Direct fact
-    /// the client observes about its own pooled connections.
-    pub(crate) fn start_observed(
-        resolver: Arc<LiveNodeResolver>,
-        endpoint: iroh::Endpoint,
-        book: &DigestBook,
-        node: &str,
-        observer: Option<Arc<dyn rafka_node_rpc::ConnectionObserver>>,
-    ) -> (Self, tokio::task::JoinHandle<()>) {
-        let me = Self::new(resolver, endpoint, observer);
+        let me = Self::new(resolver, endpoint);
         let feed = me.feed(book, node);
         (me, feed)
     }
 
     /// The process's one client on `endpoint`, dialling through `resolver`, before any membership
     /// exists: a node's first call (its `JoinNode`) goes through it, and [`Self::feed`] starts the
-    /// resolver's membership feed once the process holds a book.
-    pub fn new(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint, observer: Option<Arc<dyn rafka_node_rpc::ConnectionObserver>>) -> Self {
-        let mut client = NodeRpcClient::new(endpoint, resolver.clone()).with_caller_system("rdm");
-        if let Some(o) = observer {
-            client = client.with_connection_observer(o);
-        }
+    /// resolver's membership feed once the process holds a book. The client writes nothing to the
+    /// connections log: Node RPC is control plane, no connection (R-CR5).
+    pub fn new(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint) -> Self {
+        let client = NodeRpcClient::new(endpoint, resolver.clone()).with_caller_system("rdm");
         Self { resolver, client: Arc::new(client) }
     }
 

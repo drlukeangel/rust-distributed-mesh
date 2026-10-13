@@ -85,7 +85,7 @@ async fn rig() -> Rig {
     ));
     connections.held().lock().unwrap().set_membership(live.clone());
     connections.hydrate().await.unwrap();
-    let node_rpc = rafka_node_admin_core::node_rpc::ProcessNodeRpc::new(live.clone(), admin_ep.clone(), Some(connections.clone()));
+    let node_rpc = rafka_node_admin_core::node_rpc::ProcessNodeRpc::new(live.clone(), admin_ep.clone());
     let admin_server = rafka_node_admin_core::admin::rpc_server(live.clone(), connections.clone(), node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
         .seal(served(&admin_birth))
         .unwrap();
