@@ -289,7 +289,7 @@ async fn recovery_admin_receives_pending_under_the_existing_mesh_id() {
     let mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let admin_before = before.iter().find(|n| n.name.to_string() == lost_admin).cloned().unwrap();
     let attempt_before = u64::from(estate.builds_obj().await.get(&built.build_id).await.expect("build.get of the accepted Build").attempt);
-    estate.admin = before.iter().find(|n| n.name.to_string() == fabric_holder).and_then(|n| n.admin_api_base.clone()).filter(|b| !b.is_empty()).expect("the fabric primary names its application contact");
+    estate.enter(&Estate::path(&fabric_holder)).await;
 
     // The fault: mesh2's only admin runtime, exactly.
     let mut killed = 0;

@@ -105,8 +105,8 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     let m1 = serde_json::to_value(estate.mesh_view("mesh1").await).expect("a view serializes");
     let mesh2_id = s(&mesh2_view["id"]);
     assert!(!mesh2_id.is_empty() && mesh2_id != s(&m1["id"]), "mesh2 is a new identity: {mesh2_view}");
-    let fabric_base = estate.admin.clone();
-    estate.admin = mesh2_base.clone();
+    let fabric_admin = estate.admin.clone();
+    estate.enter(&Estate::path(&mesh2_primary)).await;
 
     // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
@@ -123,7 +123,7 @@ async fn creating_a_mesh_hands_its_members_to_its_own_primary() {
     estate.until_node("mesh2.rpc.4", "mesh2.rpc.4 retired", Duration::from_secs(30), |n| n.is_none().then_some(())).await;
 
     estate.artifact("nodes.json", &json!(estate.node_values().await));
-    estate.admin = fabric_base;
+    estate.enter(&fabric_admin).await;
     estate.stop().await;
     let spans = estate.spans();
     // The first admin of a mesh that has none is created by whoever held the fabric seat when the

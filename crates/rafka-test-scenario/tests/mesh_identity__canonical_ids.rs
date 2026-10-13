@@ -172,7 +172,7 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     assert_ne!(canonical("mesh id", &m2["id"]), mesh_ids["mesh2"], "a mesh created again is a new mesh");
     assert_eq!(s(&m1["id"]), mesh_ids["mesh1"], "an untouched mesh keeps its id");
 
-    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
+    estate.enter_fabric_primary().await;
     estate.stop().await;
 
     // The span evidence is read only now: every process flushes its spans on exit (`Estate::stop`),

@@ -49,7 +49,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let node = format!("exact:{}", rpc1["node_id"].as_str().unwrap());
     let to = format!("exact:{}", primary["node_id"].as_str().unwrap());
     // What the authority applied is the authority's view: read it there.
-    estate.admin = primary["admin_api_base"].as_str().expect("the primary names its application contact").to_string();
+    estate.enter(&Estate::path(primary["name"].as_str().expect("the primary is named"))).await;
 
     // 0. Born ready, the nodes and the other admin declared by themselves.
     let declared_by_birth = Estate::values(

@@ -445,12 +445,10 @@ async fn traffic(shared: Arc<Shared>, probe: ProbeHandle, seed: u64) {
     }
 }
 
-/// A live node-admin as the entry admin's view names it: its `path.name`, and the control base it advertises (the
-/// handover key of the typed objects, `Estate::admin`).
+/// A live node-admin as the entry admin's view names it: its `path.name`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Admin {
     name: String,
-    base: String,
 }
 
 impl Admin {
@@ -459,9 +457,9 @@ impl Admin {
     }
 }
 
-/// The node-admin a node of a view is, with the control base it advertises.
+/// The node-admin a node of a view is.
 fn admin_of(n: &Value) -> Option<Admin> {
-    Some(Admin { name: n["name"].as_str()?.to_string(), base: n["admin_api_base"].as_str()?.to_string() })
+    Some(Admin { name: n["name"].as_str()?.to_string() })
 }
 
 /// Every live admin, from the entry admin's view.
@@ -483,17 +481,18 @@ async fn fabric_at(estate: &Estate, admin: &Admin) -> Option<FabricView> {
 /// Control follows whoever answers for this Fabric: the fabric's advertised holder if it answers, else the first
 /// live admin from `known` that does. The admin control now starts at; `None` when nobody answers.
 async fn relocate_control(estate: &mut Estate, known: &[Admin]) -> Option<Admin> {
-    let mut candidates: Vec<&Admin> = known.iter().filter(|a| a.base == estate.admin).collect();
-    candidates.extend(known.iter().filter(|a| a.base != estate.admin));
+    let entry = estate.admin.clone();
+    let mut candidates: Vec<&Admin> = known.iter().filter(|a| a.path() == entry).collect();
+    candidates.extend(known.iter().filter(|a| a.path() != entry));
     for c in candidates {
         if let Some(f) = fabric_at(estate, c).await {
-            if let (Some(holder), Some(base)) = (f.fabric_primary.as_ref(), f.admin_api_base.as_deref().filter(|b| !b.is_empty())) {
+            if let Some(holder) = f.fabric_primary.as_ref() {
                 if estate.fabric_view_at(holder).await.is_some() {
-                    estate.admin = base.to_string();
-                    return Some(Admin { name: holder.to_string(), base: base.to_string() });
+                    estate.enter(holder).await;
+                    return Some(Admin { name: holder.to_string() });
                 }
             }
-            estate.admin = c.base.clone();
+            estate.enter(&c.path()).await;
             return Some(c.clone());
         }
     }
@@ -1311,11 +1310,11 @@ impl Driver {
         let coin = self.rng.next() % 2 == 0;
         let true_offline = coin && !container;
         // Control never waits on the held node's own control API: a held admin answers nothing.
-        let held_base = n["admin_api_base"].as_str().map(String::from);
-        self.known.retain(|a| Some(&a.base) != held_base.as_ref());
-        if held_base.as_deref() == Some(self.estate.admin.as_str()) {
-            if let Some(other) = self.known.first() {
-                self.estate.admin = other.base.clone();
+        let held_name = n["name"].as_str().map(String::from);
+        self.known.retain(|a| Some(&a.name) != held_name.as_ref());
+        if held_name.as_deref() == Some(self.estate.admin.to_string().as_str()) {
+            if let Some(other) = self.known.first().map(Admin::path) {
+                self.estate.enter(&other).await;
             }
         }
         entry["held_until"] = json!(if true_offline { "dead" } else { "pending-reconnect" });
@@ -1434,7 +1433,7 @@ impl Driver {
         let partition = Partition::start(&pa, &pb).map_err(|why| broken("fault-applies", format!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between {mesh} and the other meshes: {why}")))?;
         let cut_at_ns = now_ns();
         self.silenced.insert(mesh.to_string(), Cut::Udp { partition, members: members.clone() });
-        let admins: Vec<(String, String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["mesh"]), s(&n["admin_api_base"]))).collect();
+        let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();
         let window = self.cfg.floor;
         let until = Instant::now() + window * 6 + Duration::from_secs(40);
         let held_at = loop {
@@ -1443,7 +1442,7 @@ impl Driver {
                 .iter()
                 .filter(|sp| sp["name"] == "rdm.mesh.connection.update.via-refeed" && sp["attributes"]["reason"] == "stale-held-member" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_at_ns)
                 .collect();
-            let all = admins.iter().all(|(obs, om, _)| admins.iter().filter(|(_, pm, _)| pm != om).all(|(peer, _, _)| att.iter().filter(|sp| sp["attributes"]["node"] == obs.as_str() && sp["attributes"]["peer_node"] == peer.as_str()).count() >= 2));
+            let all = admins.iter().all(|(obs, om)| admins.iter().filter(|(_, pm)| pm != om).all(|(peer, _)| att.iter().filter(|sp| sp["attributes"]["node"] == obs.as_str() && sp["attributes"]["peer_node"] == peer.as_str()).count() >= 2));
             if all {
                 break now_ns();
             }
@@ -1452,9 +1451,9 @@ impl Driver {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         };
-        for (name, node_mesh, base) in &admins {
+        for (name, node_mesh) in &admins {
             let own: Vec<&str> = nodes.iter().filter(|n| s(&n["mesh"]) == *node_mesh && n["status"] == "ready-for-traffic").filter_map(|n| n["name"].as_str()).collect();
-            let Some(theirs) = views_at(&self.estate, &Admin { name: name.clone(), base: base.clone() }).await else {
+            let Some(theirs) = views_at(&self.estate, &Admin { name: name.clone() }).await else {
                 return Err(broken("cut-leaves-own-mesh-ready", format!("{name} does not answer node.get during the cut")));
             };
             let missing: Vec<&&str> = own.iter().filter(|p| !theirs.iter().any(|n| n["name"] == **p && n["status"] == "ready-for-traffic")).collect();

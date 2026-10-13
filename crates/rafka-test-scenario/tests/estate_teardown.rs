@@ -46,8 +46,8 @@ async fn a_dropped_estate_leaves_no_process_of_its_root() {
     let data_dir = estate.bootstrap_data_dir("mesh1");
     wait_for("the bootstrap admin's fabric seat row is durable", Duration::from_secs(30), || async { holds_fabric_seat_row(&estate.fabric_store_root()).then_some(()) }).await;
     estate.kill_bootstrap();
-    let base = estate.restart_admin_with(&data_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
-    estate.admin = base;
+    let restarted = estate.restart_admin_with(&data_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.enter(&restarted).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(!processes_of(&root).is_empty(), "the restarted node-admin runs under the estate's root");
     drop(estate);

@@ -1592,9 +1592,9 @@ struct Run {
     probes: Vec<Value>,
     events: Vec<Value>,
     actions: Vec<Value>,
-    /// Every node-admin seen, by path.name, with the control base it advertises: the entry (the admin the
-    /// estate asks) is the one whose base the estate holds.
-    known: BTreeMap<String, String>,
+    /// Every node-admin seen, by path.name: the entry (the admin the estate asks) is the one `Estate::admin`
+    /// names.
+    known: BTreeSet<String>,
     probe_round: u64,
     /// The Build projection as the fabric folds it, each time it changed: attempt, executor, state, reason.
     build_obs: Vec<Value>,
@@ -1672,25 +1672,25 @@ fn progress(msg: &str) {
 
 impl Run {
     fn new(seed: u64, nodes: &[Value]) -> Self {
-        let known = nodes.iter().filter(|n| n["kind"] == "node_admin").filter_map(|n| n["admin_api_base"].as_str().map(|b| (s(&n["name"]), b.to_string()))).collect();
+        let known = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
         Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known, probe_round: 0, build_obs: Vec::new(), roles: None, refused_writes: Vec::new(), attempts: BTreeMap::new() }
     }
 
-    /// The admins a read is asked of, each by path.name with its control base: the entry first, then every
-    /// other admin ever seen. Each is asked over Node RPC at its own path.name, so a dead entry is passed
-    /// over, never handed over to.
-    fn candidates(&self, f: &Formed) -> Vec<(String, String)> {
-        let entry = self.known.iter().filter(|(_, b)| **b == f.estate.admin);
-        let others = self.known.iter().filter(|(_, b)| **b != f.estate.admin);
-        entry.chain(others).map(|(n, b)| (n.clone(), b.clone())).collect()
+    /// The admins a read is asked of, each by path.name: the entry first, then every other admin ever seen.
+    /// Each is asked over Node RPC at its own path.name, so a dead entry is passed over, never handed over to.
+    fn candidates(&self, f: &Formed) -> Vec<String> {
+        let entry = f.estate.admin.to_string();
+        let first = self.known.iter().filter(|n| **n == entry);
+        let others = self.known.iter().filter(|n| **n != entry);
+        first.chain(others).cloned().collect()
     }
 
     /// `fabric.get` at the first live admin of this run that answers for this Fabric, the entry first. The
     /// entry follows the admin that answered.
     async fn fabric(&mut self, f: &mut Formed) -> Option<Value> {
-        for (name, base) in self.candidates(f) {
+        for name in self.candidates(f) {
             if let Some(v) = fabric_at(&f.estate, &name).await {
-                f.estate.admin = base;
+                follow(f, &name).await;
                 return Some(v);
             }
         }
@@ -1700,10 +1700,10 @@ impl Run {
     /// Build `id` as the Build log of the first live admin of this run that answers for this Fabric folds it,
     /// the entry first. The entry follows the admin that answered.
     async fn build(&mut self, f: &mut Formed, id: &str) -> Option<Value> {
-        for (name, base) in self.candidates(f) {
+        for name in self.candidates(f) {
             if fabric_at(&f.estate, &name).await.is_some() {
                 if let Some(v) = build_at(&f.estate, &name, id).await {
-                    f.estate.admin = base;
+                    follow(f, &name).await;
                     return Some(v);
                 }
             }
@@ -1725,7 +1725,7 @@ impl Run {
     /// `node.get` of every node at the first live admin of this run that answers, the entry first; the entry
     /// stays where it is.
     async fn nodes_now(&mut self, f: &Formed) -> Vec<Value> {
-        for (name, _) in self.candidates(f) {
+        for name in self.candidates(f) {
             if let Some(v) = nodes_at(&f.estate, &name).await {
                 return v;
             }
@@ -1736,9 +1736,9 @@ impl Run {
     /// `node.get` of every node at the first live admin of this run that answers for this Fabric, the entry
     /// first. The entry follows the admin that answered.
     async fn nodes(&mut self, f: &mut Formed) -> Option<Vec<Value>> {
-        for (name, base) in self.candidates(f) {
+        for name in self.candidates(f) {
             if let Some(v) = nodes_at(&f.estate, &name).await {
-                f.estate.admin = base;
+                follow(f, &name).await;
                 return Some(v);
             }
         }
@@ -1776,7 +1776,7 @@ impl Run {
         let entry_key = key(&nodes);
         for a in &admins {
             let name = s(&a["name"]);
-            self.known.insert(name.clone(), s(&a["admin_api_base"]));
+            self.known.insert(name.clone());
             let Some(own_fabric) = fabric_at(&f.estate, &name).await else { return Err(format!("{name} does not answer fabric.get for this Fabric")) };
             let Some(own_nodes) = nodes_at(&f.estate, &name).await else { return Err(format!("{name} does not answer node.get")) };
             if let Err(e) = seats_as_expected(&own_nodes) {
@@ -1934,9 +1934,17 @@ impl Run {
 /// Point the estate's entry (the admin the controller and its probes ask) at an admin that is not
 /// about to stop: the node a Build restarts or retires, or a process about to be killed, is never the
 /// entry while it does.
-fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &str) {
+async fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &str) {
     let keep = st.admins.iter().find(|n| n["name"] != avoid && n["is_fabric_primary"] == true).or_else(|| st.admins.iter().find(|n| n["name"] != avoid)).expect("a second admin to ask");
-    f.estate.admin = s(&keep["admin_api_base"]);
+    follow(f, &s(&keep["name"])).await;
+}
+
+/// Point the estate's entry at the admin `name` when it is not the entry already.
+async fn follow(f: &mut Formed, name: &str) {
+    let admin = Estate::path(name);
+    if f.estate.admin != admin {
+        f.estate.enter(&admin).await;
+    }
 }
 
 /// SIGKILL a non-fabric-primary node-admin (a death the story names), recording the host's view of
@@ -1944,7 +1952,7 @@ fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &str) {
 async fn kill_admin(f: &mut Formed, a: &mut Run, st: &Stable, node: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a Build");
     let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
-    point_entry_away(f, st, node);
+    point_entry_away(f, st, node).await;
     let pid = node_pid(f, node).await;
     let t = now_ns();
     f.estate.kill_pid(pid as u32);
@@ -2019,7 +2027,7 @@ async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str,
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a retiring Build");
     let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
-    point_entry_away(f, st, node);
+    point_entry_away(f, st, node).await;
     let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), Write::Restart(node.to_string())).await;
@@ -2089,7 +2097,7 @@ async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv:
     let old = st.fp.clone();
     let old_name = st.fp_name();
     let mesh = st.mesh_of_fp();
-    point_entry_away(f, st, &old_name);
+    point_entry_away(f, st, &old_name).await;
     let old_pid = node_pid(f, &old_name).await;
     let watcher = tokio::spawn(async move {
         loop {
@@ -2652,7 +2660,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let broker = format!("{om}.broker.1");
     let broker_before = f.estate.node_value(&broker).await;
     let fabric_build = s(&st.fabric["build_id"]);
-    point_entry_away(&mut f, &st, &executor_name);
+    point_entry_away(&mut f, &st, &executor_name).await;
     let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap()).unwrap();
     a.traffic.aim = Some(broker.clone());
     let req_ns = now_ns();
@@ -3021,7 +3029,7 @@ async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
     if n["kind"] == "node_admin" {
-        point_entry_away(f, st, node);
+        point_entry_away(f, st, node).await;
     }
     let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
@@ -3400,7 +3408,7 @@ async fn mock_role_restarts_preserve_identity_and_birth() {
 /// Every live admin's view of `name`: whether it lists the path, and under which NodeId.
 async fn admin_views_of(a: &mut Run, f: &Formed, name: &str) -> Vec<Value> {
     let mut out = Vec::new();
-    for (admin, _) in a.candidates(f) {
+    for admin in a.candidates(f) {
         if let Some(ns) = nodes_at(&f.estate, &admin).await {
             let n = ns.iter().find(|n| n["name"] == name);
             out.push(json!({"admin": admin, "lists_path": n.is_some(), "node_id": n.map(|n| n["node_id"].clone()), "status": n.map(|n| n["status"].clone()), "nodes_listed": ns.len()}));
@@ -3934,7 +3942,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{victim2}: the canary was stored before the kill");
     let rt2 = exact_runtime(&f, &victim2).await;
     let attempt_before = build_at(&f.estate, &st_new.fp_name(), &drift_build).await.map(|b| b["attempt"].as_u64().unwrap()).unwrap();
-    point_entry_away(&mut f, &st_new, &victim2);
+    point_entry_away(&mut f, &st_new, &victim2).await;
     let kill = kill_exact_runtime(&victim2, &rt2);
     let kill_ns = now_ns();
     progress(&format!("{victim2} exact runtime killed: {kill}"));
@@ -6585,7 +6593,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
         })
     };
     let t_restart = now_ns();
-    point_entry_away(&mut f, &st, &car);
+    point_entry_away(&mut f, &st, &car).await;
     let build = a.write(&mut f, &st, "C12 cutback owed: restart of the carrier", Write::Restart(car.to_string())).await;
     assert_eq!(build, formation, "a restart opens the next attempt of the formation's Build");
     let attempt_c = a.attempts[&build];
