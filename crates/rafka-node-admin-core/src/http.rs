@@ -85,8 +85,10 @@ pub struct ControlPlane {
     pub first_ready: crate::fabric_state::FirstReady,
     /// The status rows of this admin's mesh on the fabric's store root: the ready-for-traffic row of the
     /// fabric among them is the durable fact that it first reached ready-for-traffic (states.md, "The
-    /// initial fabric before ready-for-traffic"). Held in memory, empty, until the admin hands its own
-    /// ([`ControlPlane::with_first_ready`]).
+    /// initial fabric before ready-for-traffic"), and each exited birth's exit-proof row is the durable
+    /// proof of its departure (node-recovery.md: "Exited is the proof, recorded durably"), which a drift
+    /// lane's take-over from a departed claimant reads. Held in memory, empty, until the admin hands its
+    /// own ([`ControlPlane::with_first_ready`]).
     pub ready_rows: Arc<dyn crate::status_storage::StatusStorage>,
 }
 
@@ -221,15 +223,83 @@ impl ControlPlane {
     /// admission is taken first and returned with the Build.
     async fn mesh_settled(&self, mesh: &str) -> Result<(tokio::sync::OwnedMutexGuard<()>, crate::build_state::BuildProjection), Refusal> {
         let admission = self.admission.clone().lock_owned().await;
-        let current = self.builds.current().await.map_err(Refusal::State)?.ok_or_else(|| {
-            Refusal::Unavailable("this admin holds no current Build yet (no Build in its builds store is in progress or completed); submit through a Ready node-admin".into())
-        })?;
+        let read = || async {
+            self.builds.current().await.map_err(Refusal::State)?.ok_or_else(|| {
+                Refusal::Unavailable("this admin holds no current Build yet (no Build in its builds store is in progress or completed); submit through a Ready node-admin".into())
+            })
+        };
+        let mut current = read().await?;
+        // The mesh's own drift attempt whose claimant departed with it unfinished ends on that
+        // departure's exact proof, and the mesh is free for this attempt (`end_departed_attempt`).
+        if holding(&current, Some(mesh)).is_some() && self.end_departed_attempt(&current, mesh).await? {
+            current = read().await?;
+        }
         if let Some(held) = holding(&current, Some(mesh)) {
             tracing::info_span!("rdm.node_admin.build.reject.via-build-in-progress", build_id = %held.current_build_id, mesh, held_by = %held.held_by.as_deref().unwrap_or(""))
                 .in_scope(|| tracing::info!("an attempt holds the mesh: one attempt in flight per mesh"));
             return Err(Refusal::BuildInProgress(held));
         }
         Ok((admission, current))
+    }
+
+    /// The exit-proof row of the exact birth this admin's view names at `claimant` in `mesh`, a point
+    /// read: `None` while no exit of that birth is recorded (silence is never departure: build.md
+    /// §5.2, R-BI4), or while the view names no birth there. A row that cannot be read is refused by
+    /// name, never taken as no proof.
+    async fn departure_of(&self, claimant: &PathName, mesh: &str) -> Result<Option<(crate::model::Node, crate::status_storage::NodeExitRow)>, Refusal> {
+        let Some(n) = self.topology.read().await.node(claimant).cloned() else { return Ok(None) };
+        let Some(incarnation) = n.incarnation_id.clone() else { return Ok(None) };
+        match self.ready_rows.node_exit_of(mesh, &n.node_id, &incarnation).await {
+            Ok(row) => Ok(row.map(|row| (n, row))),
+            Err(e) => Err(Refusal::Unavailable(format!("{}: the exit-proof row of {claimant} ({}) at {} among mesh {mesh}'s status rows could not be read to prove its departure: {e}", self.me, n.node_id, incarnation.as_str()))),
+        }
+    }
+
+    /// End `mesh`'s drift attempt of `current` whose claimant departed with it unfinished, when its
+    /// departure is proven (R-BI7 caveat 2: each mesh-primary claims its mesh's drift attempts on its
+    /// mesh's rows; build.md §5.2 as the approved proposal A4 words it: "The next attempt is claimed
+    /// after the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the
+    /// executor is lost with the attempt unfinished, after exact departure proof. A live run is
+    /// reattached, never re-claimed"). The lane's running attempt, claimed by another admin than this
+    /// one, whose exact birth in this admin's view has its exit recorded, ends `Failed` naming that
+    /// departure (on this admin's Build log and the Build topic, so every fold holds the lane free and
+    /// the exits the attempt was recovering are owed a submit again: node-recovery.md "Failure and
+    /// receipts"), and its in-flight row of the mesh is released. Answers whether it ended one. An
+    /// attempt this admin claimed, an attempt whose claimant is not proven departed, and the fabric
+    /// lane's attempt (its drive takes it over) are left holding the mesh.
+    async fn end_departed_attempt(&self, current: &crate::build_state::BuildProjection, mesh: &str) -> Result<bool, Refusal> {
+        let fabric_holds = current.state == BuildState::Running && current.executor.as_deref().and_then(|e| e.parse::<PathName>().ok()).is_some_and(|e| e.mesh == mesh);
+        let Some(lane) = current.lanes.get(mesh).filter(|l| !fabric_holds && l.state == BuildState::Running) else { return Ok(false) };
+        let Some(claimant) = lane.claimant.as_deref().and_then(|c| c.parse::<PathName>().ok()) else { return Ok(false) };
+        if claimant == self.me {
+            return Ok(false);
+        }
+        let Some((n, row)) = self.departure_of(&claimant, mesh).await? else { return Ok(false) };
+        let attempt = lane.attempt;
+        let incarnation = row.incarnation_id.as_str().to_string();
+        let reason = format!(
+            "{claimant} ({} at {incarnation}) departed with attempt {attempt} of mesh {mesh}'s lane unfinished: its exit is proven ({}{}) and recorded; {} takes the lane over",
+            n.node_id,
+            row.proof,
+            row.exit_code.map(|c| format!(", exit code {c}")).unwrap_or_default(),
+            self.me
+        );
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %current.build_id, lane = mesh, attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %incarnation, exit_proof = %row.proof, node = %self.me, outcome = tracing::field::Empty);
+        let verdict = crate::build_state::BuildAttemptReceipt { mesh: Some(mesh.to_string()), build_id: current.build_id.clone(), attempt, outcome: crate::build_state::AttemptOutcome::Failed { reason } };
+        if let Err(e) = self.builds.append_attempt_receipt(&verdict).await {
+            span.record("outcome", "verdict-unwritten");
+            span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt could not be ended: the mesh stays held by it"));
+            return Err(Refusal::State(e));
+        }
+        let held = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: Some(mesh.to_string()), attempt, claimant: claimant.to_string() };
+        if let Err(e) = self.claims.release(mesh, &held).await {
+            span.record("outcome", "in-flight-unreleased");
+            span.in_scope(|| tracing::info!(error = %e, "the departed claimant's attempt is ended and mesh's in-flight row could not be released: the mesh stays held by it"));
+            return Err(Refusal::Unavailable(format!("{}: attempt {attempt} of mesh {mesh}'s lane of {} is ended on {claimant}'s departure and mesh {mesh}'s in-flight row could not be released: {e}", self.me, current.build_id)));
+        }
+        span.record("outcome", "ended");
+        span.in_scope(|| tracing::info!("the mesh's drift attempt ends with its departed claimant, and its in-flight row is released"));
+        Ok(true)
     }
 
     /// Compile `change` once against the current Build's topology into the next complete Build and
