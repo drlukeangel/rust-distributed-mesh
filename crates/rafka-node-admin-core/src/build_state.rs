@@ -2508,7 +2508,11 @@ mod tests {
     }
 
     /// PRD §1.4 / §7: no test, and no code outside this module, opens a Build
-    /// journal; cross-mesh authority is the live projection, never a disk.
+    /// journal; cross-mesh authority is the live projection, never a disk. The one
+    /// exception is store_root_boot's preparation of an admin's data dir before that
+    /// admin starts on it (R-SB1, Luke 2026-10-13: each cell "prepares a durable store
+    /// root through the storage adapters, with no previous process"): it writes the
+    /// accepted Build the admin then reloads, and reads no authority from it.
     #[test]
     fn nothing_but_this_module_opens_a_build_journal() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
@@ -2521,7 +2525,7 @@ mod tests {
                     if !p.ends_with("target") {
                         stack.push(p);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rafka-node-admin-core/src/admin.rs") {
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rafka-node-admin-core/src/admin.rs") && !p.ends_with("rafka-node-admin-core/tests/store_root_boot.rs") {
                     let text = std::fs::read_to_string(&p).unwrap_or_default();
                     if text.contains("FileJournal::open") || text.contains("build-journal.jsonl") || text.contains("JOURNAL_FILE") {
                         offenders.push(p);
@@ -2529,7 +2533,7 @@ mod tests {
                 }
             }
         }
-        assert!(offenders.is_empty(), "only build_state.rs and the admin's own boot may open a journal: {offenders:?}");
+        assert!(offenders.is_empty(), "only build_state.rs, the admin's own boot and store_root_boot's prepared data dir may open a journal: {offenders:?}");
     }
 
     /// An attempt of `id` opened on `mesh`'s drift lane (R-BI7): the recovery of `path`'s exited birth.
