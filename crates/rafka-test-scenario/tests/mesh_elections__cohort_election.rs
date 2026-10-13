@@ -171,13 +171,12 @@ async fn successor(estate: &Estate, admin: &PathName, before: &[Value], c: &Coho
         .map(|n| (s(&n["name"]), s(&n["node_id"])))
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap_or_else(|| panic!("no other ready member of {c:?} to succeed {gone_id}: {before:#?}"));
-    // Silence is local receipt age, and gossip may still hand on the gone birth's last cached
-    // digests for one cache window after it died: the successor is announced within the staleness
-    // floor after that. The announcement names the winner it elected and the birth it replaced; the
-    // election's span is the only place that fact lives (a view may already show a reborn birth in the
-    // seat), so the span is awaited.
-    let silence_bound = rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(10);
-    wait_for(&format!("{name} ({id}) announced as the successor to {gone_id}"), silence_bound, || async {
+    // The seat vacates only on the provider's exit proof, which node recovery takes at the gone
+    // birth's TRUE OFFLINE mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
+    // winner it elected and the birth it replaced; the election's span is the only place that fact
+    // lives (a view may already show the birth drift recovery brings back in the seat's cohort), so the
+    // span is awaited.
+    wait_for(&format!("{name} ({id}) announced as the successor to {gone_id}"), crate::node_recovery_due(), || async {
         announced(&estate.spans(), c, &id, gone_id).then_some(())
     })
     .await;

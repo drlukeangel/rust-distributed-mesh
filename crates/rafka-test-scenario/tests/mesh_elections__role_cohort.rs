@@ -63,10 +63,11 @@ async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap();
     estate.kill_node(&killed).await;
-    let silence_bound = rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(10);
-    // The announcement names the winner it elected and the birth it replaced: the election's span is the only
-    // place that fact lives (the view may already show a reborn birth in the seat), so the span is awaited.
-    wait_for(&format!("{succ} ({succ_id}) announced as the broker successor to {killed_id}"), silence_bound, || async {
+    // The seat vacates only on the provider's exit proof, which node recovery takes at the killed
+    // birth's TRUE OFFLINE mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
+    // winner it elected and the birth it replaced: the election's span is the only place that fact lives,
+    // so the span is awaited.
+    wait_for(&format!("{succ} ({succ_id}) announced as the broker successor to {killed_id}"), crate::node_recovery_due(), || async {
         named(&estate.spans(), "rdm.mesh.election.resolve.via-recompute")
             .iter()
             .any(|sp| {

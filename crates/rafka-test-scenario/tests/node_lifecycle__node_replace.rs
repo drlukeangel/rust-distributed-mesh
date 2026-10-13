@@ -135,7 +135,7 @@ async fn recovery_span(estate: &Estate, node: &str, node_id: &Value) -> Value {
     .await
 }
 
-/// The member under test in a two-mesh estate: `<mesh>.rpc.1` of the mesh that does NOT hold the
+/// The member under test in a two-mesh estate: an rpc node holding no seat, of the mesh that does NOT hold the
 /// fabric-primary, so its mesh-primary is not the fabric-primary; that mesh-primary's path.name; and
 /// the fabric-primary's view row.
 fn placement(nodes: &[Value]) -> (String, String, Value) {
@@ -143,7 +143,11 @@ fn placement(nodes: &[Value]) -> (String, String, Value) {
     let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
     let mesh_primary = s(&nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the node's mesh-primary")["name"]);
     assert_ne!(mesh_primary, s(&primary["name"]), "the member's mesh-primary is not the fabric-primary");
-    (format!("{mesh}.rpc.1"), mesh_primary, primary)
+    // The member is an rpc node holding no seat: a cohort's primary runs node.primary.update before its
+    // own node.connections.delete, stop or delete (lifecycles/node-connections-delete.md step 0), which
+    // is not the member workflow these cells follow.
+    let member = nodes.iter().filter(|n| n["mesh"] == mesh && n["kind"] == "rpc_node" && n["is_primary"] != true).map(|n| s(&n["name"])).min().expect("an rpc member of the mesh that holds no seat");
+    (member, mesh_primary, primary)
 }
 
 /// The exact runtime `node`'s birth published in its data dir: the fault door acts on it alone.
