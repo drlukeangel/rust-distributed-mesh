@@ -363,6 +363,11 @@ async fn ready_under(estate: &Estate, build: &str) {
 /// fabric-primary accepts the next Build after state-commit, the Build is written once to the builds
 /// store and nothing is written under `fabric/` for it, and the other mesh's primary reads it as the
 /// current Build.
+///
+/// The second Build adds a node, a resize, and a resize puts the fabric back to pending (states.md,
+/// Resize and roll): the fabric-primary that accepts it holds the fabric pending before its
+/// build.create door answers, so no `fabric.get` after the answer pairs the second Build with the
+/// ready-for-traffic the first Build's climb reached, and the second Build climbs its own rounds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node_holds() {
     let test = "the_store_root_holds_no_row_until_state_commit_publishes_what_each_node_holds";
@@ -434,6 +439,15 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     assert_eq!(other_fabric.build_id.as_deref(), Some(second.as_str()), "the other mesh's primary reads the second Build as the current Build: {other_fabric:?}");
     estate.stop().await;
     let spans = estate.spans();
+
+    // The resize put the fabric back to pending inside the acceptance: the fabric-primary's reset for the
+    // second Build starts before its build.create door answers it (the door's span ends at the answer).
+    let door_span = named(&spans, "rdm.node_admin.build.create.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the second Build's build.create door is spanned"));
+    let resets = named(&spans, "rdm.node_admin.fabric.update.via-state-reset");
+    let reset = resets.iter().find(|sp| sp["attributes"]["build_id"] == second.as_str()).unwrap_or_else(|| panic!("the fabric-primary put the fabric back to pending for the second Build {second}: resets {:?}", resets.iter().map(|sp| &sp["attributes"]).collect::<Vec<_>>()));
+    assert_eq!((s(&reset["attributes"]["node"]), s(&reset["attributes"]["from"])), ("mesh1.admin.1".to_string(), "ready-for-traffic".to_string()), "the fabric-primary put the ready-for-traffic fabric back to pending: {reset}");
+    let answered = door_span["end_unix_nano"].as_u64().unwrap();
+    assert!(start(reset) <= answered, "the fabric is pending before the door answers the second Build: reset at {}, door answered at {answered} ({} us later than the answer): {reset}", start(reset), start(reset).saturating_sub(answered) / 1000);
 
     // The first round: each node's commit-state action published what it held, before its check-in.
     let (first_root, first_climb) = climb_of(&spans, &first);
