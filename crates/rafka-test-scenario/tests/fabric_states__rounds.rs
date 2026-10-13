@@ -174,6 +174,8 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
     let app = at("rdm.testkit.app.update.via-sync-state", &|_| true);
     let synced = at("rdm.node_admin.fabric.update.via-state-synced", &|_| true);
     let notice = at("rdm.node_admin.fabric.update.via-traffic-opened-hook", &|_| true);
+    let ready_row = at("rdm.node_admin.fabric.update.via-ready-row-put", &|sp| sp["attributes"]["outcome"] == "applied" && s(&sp["attributes"]["node"]) == fp);
+    assert!(ready_row["end_unix_nano"].as_u64().unwrap() <= start(entered("ready-for-traffic")), "the row is durable before the fabric-primary enters ready-for-traffic: {ready_row}");
     let order = [
         ("state-sync", start(entered("state-sync"))),
         ("sync_state hook", start(hook)),
@@ -184,6 +186,9 @@ async fn two_mesh_climb(mut estate: Estate, shape: &[(NodeKind, u32)], members: 
         ("commit-state complete", start(complete("commit-state"))),
         ("open-traffic opened", start(opened("open-traffic"))),
         ("open-traffic complete", start(complete("open-traffic"))),
+        // The fact is durable before anything acts on it: the fabric-primary puts its own mesh's
+        // ready-for-traffic row on the store root, then enters ready-for-traffic and admits workflows.
+        ("ready-for-traffic row put", start(ready_row)),
         ("ready-for-traffic", start(entered("ready-for-traffic"))),
         ("traffic_opened notice", start(notice)),
     ];

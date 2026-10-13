@@ -228,6 +228,22 @@ pub struct MemoryStatusStorage {
     meshes_named: Mutex<std::collections::BTreeMap<String, Vec<MeshStatusRow>>>,
     /// The exit-proof rows of each mesh named through the `_of` reads and puts, by row key.
     exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
+    /// The Fabric event rows of each mesh named through [`MemoryStatusStorage::put_fabric_event_of`]:
+    /// another mesh's rows on the store root, which this store's own `fabric_events` never lists.
+    events_named: Mutex<std::collections::BTreeMap<String, Vec<FabricEventRow>>>,
+}
+
+impl MemoryStatusStorage {
+    /// Keep `row` among the status rows of the mesh named `mesh`, as that mesh's writer puts its own
+    /// (the fabric-primary's ready-for-traffic row among its mesh's rows): another mesh's rows on the
+    /// store root, read by name, never listed as this store's own.
+    pub fn put_fabric_event_of(&self, mesh: &str, row: &FabricEventRow) {
+        let mut named = self.events_named.lock().unwrap();
+        let rows = named.entry(mesh.to_string()).or_default();
+        if !rows.contains(row) {
+            rows.push(row.clone());
+        }
+    }
 }
 
 #[async_trait]

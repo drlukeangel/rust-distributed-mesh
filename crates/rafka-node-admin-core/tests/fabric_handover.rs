@@ -1688,6 +1688,46 @@ async fn the_successor_decides_ready_for_traffic_on_the_root_row_not_on_the_stat
     let _ = &f.m;
 }
 
+/// CONTRACT (states.md "Who sets each state": "The fabric-primary declares fabric state through the
+/// completed rounds"; "The initial fabric before ready-for-traffic": the initial fabric first reaching
+/// ready-for-traffic is the fabric-primary's one fact, and its ready-for-traffic row on the store root
+/// is that fact made durable; proposal Part C1: "Before the initial fabric first reaches
+/// ready-for-traffic, every call is refused `fabric-not-ready` (R-PB1)"): the fabric-primary X (mesh2)
+/// put its own mesh's ready-for-traffic row as it entered ready-for-traffic and admitted the stop. mesh1's
+/// own status rows hold no ready row yet (the fabric-primary's ApplyFabricEvent reaches mesh1's primary
+/// later), and neither P nor N has heard the fabric ready by gossip (their views hold state-commit). X's
+/// command to P is answered node.primary.updated: P and N each decide R-PB1 on the fabric-primary's row,
+/// read from mesh2's status rows on the root (`rdm.node_admin.fabric.update.via-first-ready`, reason
+/// `ready-for-traffic-row-of-the-fabric-primary-on-store-root`). What must NOT happen: a holder refusing
+/// `fabric-not-ready` a command the fabric-primary admitted once the fabric was ready (the gate's red on
+/// 3355f190, node_stop, trace c67704501b343b341e584fb214d64089: mesh2.admin.1 refused at 13391 ms, its
+/// own mesh's row put at 13848 ms, and the drive stalled and was driven again).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_holder_and_successor_decide_ready_for_traffic_on_the_fabric_primarys_row_before_their_own_meshs_row_is_put() {
+    if crate::own_process::delegated(module_path!(), "the_holder_and_successor_decide_ready_for_traffic_on_the_fabric_primarys_row_before_their_own_meshs_row_is_put") {
+        return;
+    }
+    use rafka_node_admin_core::status_storage::{FabricEventRow, StatusStorage};
+    let spans = capture();
+    let f = commanded_fabric().await;
+    for a in [&f.p, &f.n] {
+        a.door.topology.write().await.fabric.status = ScopeStatus::StateCommit;
+    }
+    let rows = status_rows_of(&f.p, false).await;
+    let fabric_id = f.x.door.topology.read().await.fabric.id.clone();
+    rows.put_fabric_event_of("mesh2", &FabricEventRow { fabric_id, event: "ready-for-traffic".into() });
+    assert!(rows.fabric_events().await.unwrap().is_empty(), "mesh1's own status rows hold no ready-for-traffic row");
+    assert_eq!(f.p.door.membership.seats().fabric().map(|h| h.mesh), Some("mesh2".to_string()), "P's seat book names the fabric-primary in mesh2");
+    let op = "node.primary.update:b1:stop-node:mesh1.admin.1";
+    let r = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await;
+    assert_eq!(r, updated(committed_mesh(&f.n, 4)), "the command the fabric-primary admitted once the fabric was ready is answered node.primary.updated");
+    assert!(refusals(&spans).is_empty(), "nothing is refused fabric-not-ready: {:?}", refusals(&spans));
+    assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "N holds mesh1's seat from the row");
+    let ready: Vec<String> = spans.named("rdm.node_admin.fabric.update.via-first-ready").iter().map(|f| f["reason"].clone()).collect();
+    assert_eq!(ready, vec!["ready-for-traffic-row-of-the-fabric-primary-on-store-root".to_string(); 2], "P and N decided on the fabric-primary's row");
+    let _ = &f.m;
+}
+
 // ---- No caller check inside the mesh (node-rpc.md §14) ----
 
 /// An admin endpoint no view of the fabric holds a birth for, reaching `to`: the caller a receiver
