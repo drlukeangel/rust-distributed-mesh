@@ -92,6 +92,11 @@ pub enum NotSentReason {
     },
     /// Connections chose no route to the exact target: no leg was started.
     NoActiveRoute,
+    /// The source admits no new connection: its `node.connections.delete { All }` closed its
+    /// connections and it has not started since (proposal node-properties-own-commands.md §2.1,
+    /// §2.4, the admission block). No connection opened, or the one a dial already had was closed
+    /// before it was pooled; the string names the source and why it admits none.
+    AdmissionBlocked(String),
 }
 
 /// Why a resolver gave no node.

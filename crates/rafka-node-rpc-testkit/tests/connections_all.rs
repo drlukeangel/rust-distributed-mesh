@@ -5,15 +5,18 @@
 //!
 //! Its own process: the cells hold process-wide state (the parking flag).
 
-use crate::common::{admin_side_serving, Spans};
+use crate::common::{admin_side_serving, serve_ping, Spans};
 use rafka_node_rpc_testkit::rig::AdminSide;
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
-use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{ConnectionScope, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::outcome::{NotSentReason, RpcOutcome};
+use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, PullRequest, PullServer};
 use rafka_node_rpc_testkit::node;
+use rafka_node_rpc_testkit::originate::Seams;
 use std::time::Duration;
 
 async fn call_on(admin: &AdminSide, target: &NodeTarget, req: &StatusRequest, scope: Option<&str>) -> StatusReply {
@@ -26,6 +29,13 @@ async fn call_on(admin: &AdminSide, target: &NodeTarget, req: &StatusRequest, sc
 
 /// A live `mesh1.rpc.1.new` the admin side has heard ReadyForTraffic and resolves.
 async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) -> (Launch, node::RunningNode) {
+    let (launch, running, _) = live_node_with(admin, dir, fabric, |b| b).await;
+    (launch, running)
+}
+
+/// [`live_node`], serving what `register` adds, with its seams: the data-plane client it originates
+/// its connections on and the connections writer that logs them.
+async fn live_node_with(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId, register: impl FnOnce(rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder) -> (Launch, node::RunningNode, Seams) {
     RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     let key = node::load_or_mint_key(dir).unwrap();
     let launch = Launch {
@@ -46,7 +56,15 @@ async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) 
         connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     admin.deployed(&launch, &key);
-    let running = node::start(&launch, |b, _| b).await.expect("the node comes up");
+    let seams: std::sync::Arc<std::sync::OnceLock<Seams>> = Default::default();
+    let slot = seams.clone();
+    let running = node::start_with_seams(&launch, move |b, s| {
+        let _ = slot.set(s);
+        register(b)
+    })
+    .await
+    .expect("the node comes up");
+    let seams = seams.get().cloned().expect("the node handed its seams");
     let book = &admin.observer.membership.book;
     let mut digests = book.digest_changes();
     while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
@@ -54,7 +72,27 @@ async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) 
     }
     let (d, _) = book.get(launch.node_id.as_str()).unwrap();
     admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
-    (launch, running)
+    (launch, running, seams)
+}
+
+/// The node's data-plane Ping to its admin: a connection it originates, a Direct entry of its log once it opens.
+async fn ping_admin(seams: &Seams, admin: &AdminSide, opts: &CallOptions) -> RpcOutcome<PingReply> {
+    seams.client.call::<Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, opts).await.0
+}
+
+fn fields_of(spans: &Spans, name: &str) -> Vec<std::collections::BTreeMap<String, String>> {
+    spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect()
+}
+
+/// The refusal a call ended in when the node admits no new connection, or a panic naming what it ended in.
+fn admission_blocked(out: &RpcOutcome<PingReply>) -> String {
+    match out {
+        RpcOutcome::NotSent(n) => match n.reason() {
+            NotSentReason::AdmissionBlocked(why) => why.clone(),
+            other => panic!("the call was not sent, for another reason than the admission block: {other:?}"),
+        },
+        other => panic!("a node whose connections were deleted opened a connection: the call ended {other:?}"),
+    }
 }
 
 fn named(spans: &Spans, name: &str) -> usize {
@@ -162,6 +200,162 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
         let all = StatusRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };
         assert!(matches!(call_on(&admin, &target, &all, None).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "the node deletes its connections afterwards");
         assert_eq!(named(&spans, "rdm.node_admin.status.update.via-drain-node"), 0, "nothing ran for the reserved position");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// CONTRACT: once `node.connections.delete { All }` has closed a live node's connections, the node opens
+/// no new connection until it starts again (proposal node-properties-own-commands.md §2.1 Precondition:
+/// "No new connection is admitted from the row write through `ApplyNodeName`, retries after an
+/// interruption included"; §2.4: "The admission block stays in force on the node until the apply
+/// resolves, so no connection is opened under the old name while the row carries the new one"). After
+/// `All` answers holding nothing, the node's data-plane call to its admin ends `NotSent`
+/// `AdmissionBlocked` naming the node, before any dial: one
+/// `rdm.node_rpc.connection.reject.via-admission-block` span, `at = dial`, names the destination. The log
+/// holds nothing, and `ApplyNodeName` answers `Applied`. The node is still connections-deleted after the
+/// apply, so a further data-plane call is refused the same way. What must NOT happen: the call answered
+/// on a new connection, a Direct entry written after `All`, `BusyHoldingConnections`, or the block
+/// cutting the Node RPC pool (`rdm.node_rpc.connection.delete.via-hard-cut`).
+#[test]
+fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
+    let cap = crate::common::capture("a_connections_deleted_node_opens_no_new_connection_and_takes_its_name");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), "a_connections_deleted_node_opens_no_new_connection_and_takes_its_name") {
+            return;
+        }
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, serve_ping).await;
+        let dir = std::env::temp_dir().join(format!("connections-all-admission-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (launch, running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
+        let target = NodeTarget::ExactNode(launch.node_id.clone());
+        let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
+        let all = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
+        assert!(matches!(call_on(&admin, &target, &all, None).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All closes every open entry");
+
+        // Between the row's write and the apply the node opens nothing.
+        let why = admission_blocked(&ping_admin(&seams, &admin, &CallOptions::default()).await);
+        assert!(why.contains(launch.node_id.as_str()), "the refusal names the node: {why}");
+        assert!(seams.connections.held_routes().await.is_empty(), "the log holds no connection after All");
+        let refusals = fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block");
+        assert_eq!(refusals.len(), 1, "one refusal, on its own span: {refusals:#?}");
+        assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination").map(String::as_str)), (Some("dial"), Some("mesh1.admin.1")), "{refusals:#?}");
+
+        let taken: PathName = "mesh1.rpc.1".parse().unwrap();
+        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: taken.to_string() };
+        assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a node that opened nothing takes its name");
+        assert_eq!(running.membership.held_name(&launch.name), taken, "the node holds the applied name");
+
+        // Still connections-deleted after the apply: refused the same way until a start.
+        admission_blocked(&ping_admin(&seams, &admin, &CallOptions::default()).await);
+        assert_eq!(fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block").len(), 2, "the further call is refused on its own span");
+        assert!(fields_of(&spans, "rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "the block cuts no Node RPC pool");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// CONTRACT: a dial the node's data plane began before `All`, and whose connection opens only after
+/// `All` closed the node's connections, enters no pool and writes no entry (proposal
+/// node-properties-own-commands.md §2.4: "Connection opened between the precondition check and the
+/// apply: impossible by the admission block; a node that reports `Busy` is a defect in that block").
+/// The dial stops once connected (the client's after-connect failpoint); `All` answers holding nothing;
+/// released, the dial's connection is closed and the call ends `NotSent` `AdmissionBlocked`, its
+/// `rdm.node_rpc.connection.reject.via-admission-block` span naming the pool (`at = pool`). The log
+/// holds nothing and `ApplyNodeName` answers `Applied`. What must NOT happen: the late connection
+/// pooled and answered, its Direct entry written, or `BusyHoldingConnections` naming it.
+#[test]
+fn a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied() {
+    let cap = crate::common::capture("a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), "a_dial_that_connects_after_all_enters_no_pool_and_the_name_is_applied") {
+            return;
+        }
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, serve_ping).await;
+        let dir = std::env::temp_dir().join(format!("connections-all-late-dial-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
+        let target = NodeTarget::ExactNode(launch.node_id.clone());
+        let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
+        let all = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
+        let stop = std::sync::Arc::new(rafka_node_rpc::Failpoint::default());
+        let opts = CallOptions { after_connect: Some(stop.clone()), ..CallOptions::default() };
+        let dial = ping_admin(&seams, &admin, &opts);
+        let steps = async {
+            stop.reached.notified().await;
+            let deleted = call_on(&admin, &target, &all, None).await;
+            stop.release.notify_one();
+            deleted
+        };
+        let (out, deleted) = tokio::join!(dial, steps);
+        assert!(matches!(&deleted, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()), "All holds nothing while the dial waits unpooled: {deleted:?}");
+        admission_blocked(&out);
+        assert!(seams.connections.held_routes().await.is_empty(), "the late connection writes no entry");
+        let refusals = fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block");
+        assert_eq!(refusals.len(), 1, "one refusal, on its own span: {refusals:#?}");
+        assert_eq!((refusals[0].get("at").map(String::as_str), refusals[0].get("destination").map(String::as_str)), (Some("pool"), Some("mesh1.admin.1")), "{refusals:#?}");
+        let apply = StatusRequest::ApplyNodeName { node_id, incarnation, name: "mesh1.rpc.1".into() };
+        assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "no late connection makes the node Busy");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
+/// CONTRACT: `All` closes every connection open when its wait for admitted work ends, those opened
+/// while it waited included (node-connections-delete.md step 3: "Let admitted work finish, including
+/// its downstream connections: they belong to the same closure", then "Close every open connection,
+/// each open Direct or Proxy entry of the connections log"). A call held in flight at the node keeps
+/// `All` waiting; meanwhile the node's data plane opens a connection to its admin, a Direct entry of its
+/// log. Released, `All` answers `ConnectionsDeleted` with an `Established` receipt counting the held
+/// call and closing that entry, holding nothing. What must NOT happen: `All` answered with the entry
+/// still open (an open set read before the wait), so connections-deleted published over an open
+/// connection.
+#[test]
+fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
+    let cap = crate::common::capture("all_closes_the_connections_opened_while_it_waited_for_admitted_work");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), "all_closes_the_connections_opened_while_it_waited_for_admitted_work") {
+            return;
+        }
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, serve_ping).await;
+        let dir = std::env::temp_dir().join(format!("connections-all-wait-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The node serves one op the cell can hold: a call into it stays in flight until released.
+        let pull = PullServer::new(vec![]);
+        pull.gate.open();
+        let (launch, _running, seams) = live_node_with(&admin, &dir, &fabric, {
+            let pull = pull.clone();
+            move |b| pull.serve(b)
+        })
+        .await;
+        let target = NodeTarget::ExactNode(launch.node_id.clone());
+        let all = StatusRequest::DeleteConnections { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), scope: ConnectionScope::All };
+        let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        pull.hold();
+        let held_call = async { admin.observer.client.call::<HydratePull>(&target, &PullRequest::Pull, &opts).await.0 };
+        let steps = async {
+            pull.entered(1).await;
+            let deleting = call_on(&admin, &target, &all, None);
+            tokio::pin!(deleting);
+            assert!(tokio::time::timeout(Duration::from_millis(300), &mut deleting).await.is_err(), "All is not answered while the call it admitted is in flight");
+            let out = ping_admin(&seams, &admin, &CallOptions::default()).await;
+            assert!(matches!(out, RpcOutcome::Reply(_)), "a connection opened while All waits belongs to its closure: {out:?}");
+            let opened: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
+            assert_eq!(opened.len(), 1, "the node holds the one connection it opened while All waited: {opened:?}");
+            pull.release();
+            (opened, deleting.await)
+        };
+        let (held_out, (opened, deleted)) = tokio::join!(held_call, steps);
+        assert!(matches!(held_out, RpcOutcome::Reply(_)), "the held call answers once released: {held_out:?}");
+        match &deleted {
+            StatusReply::ConnectionsDeleted { held, receipt: Some(ConnectionsReceipt::Established { in_flight: 1, closed }), .. } => {
+                assert_eq!(closed, &opened, "All closes the connection opened while it waited: {deleted:?}");
+                assert!(held.is_empty(), "All holds nothing once it answers: {deleted:?}");
+            }
+            other => panic!("All did not end Established counting the held call: {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
