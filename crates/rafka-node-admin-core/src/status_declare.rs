@@ -198,10 +198,13 @@ impl Declarer {
 
     /// Whether the initial fabric of `view` has first reached ready-for-traffic, read before
     /// [`owed_from_view`] derives what the fabric-primary owes (states.md, "The initial fabric before
-    /// ready-for-traffic"), `rows` being the status rows of this admin's mesh on the store root.
+    /// ready-for-traffic"), `rows` being the status rows of this admin's mesh on the store root: decided
+    /// on the durable fact ([`crate::fabric_state::FirstReady::reached_on_root`]), what this admin already
+    /// knows, else a point read of the fabric's ready-for-traffic row among `rows`, which the fabric state
+    /// it hears by gossip can lag (an outside successor of the fabric seat). A row found latches the
+    /// handle the derivation reads. A read that fails is the caller's to name.
     pub(crate) async fn read_first_ready(&self, rows: &dyn crate::status_storage::StatusStorage, view: &Topology) -> Result<bool, crate::record_store::StorageError> {
-        let _ = rows;
-        Ok(self.first_ready.reached(view.fabric.status))
+        self.first_ready.reached_on_root(rows, &view.fabric.id, view.fabric.status).await
     }
 
     /// Owe `request` to `to` under `key`; a key already owed or answered is left as it is.
@@ -956,10 +959,10 @@ mod tests {
     /// pending"): a fabric-primary whose latch was never set and whose view holds the fabric at pending
     /// (an outside successor of the fabric seat that has not heard ready) reads its mesh's status rows on
     /// the store root before it derives what it owes. Over rows with no ready-for-traffic row of its fabric
-    /// nothing is owed. Once the rows hold it, the fabric-primary owes the event to every mesh primary its
-    /// view names, decided on the row (`rdm.node_admin.fabric.update.via-first-ready`, reason
-    /// `ready-for-traffic-row-on-store-root`). Must NOT happen: a fabric-primary owing nothing while the
-    /// root holds the fabric's ready-for-traffic row.
+    /// nothing is owed. Once the rows hold it, the read answers that the fabric first reached
+    /// ready-for-traffic and the fabric-primary owes the event to every mesh primary its view names,
+    /// though it still hears pending. Must NOT happen: a fabric-primary owing nothing while the root holds
+    /// the fabric's ready-for-traffic row.
     #[tokio::test]
     async fn a_fabric_primary_that_never_heard_ready_owes_the_event_on_the_ready_row_on_the_store_root() {
         use crate::status_storage::{FabricEventRow, MemoryStatusStorage, StatusStorage};
