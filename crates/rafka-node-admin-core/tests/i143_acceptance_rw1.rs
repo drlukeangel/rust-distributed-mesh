@@ -10,7 +10,7 @@
 //! JSON frame included; a step output that has no wire shape is refused naming its Build,
 //! attempt and step while the facts around it still travel.
 
-use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, StorageMeta};
+use rafka_mesh_entity::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId, NodeKind, PathName, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_mesh_transport::chunking::MAX_MESSAGE_BYTES;
 use rafka_mesh_transport::membership::Frame;
@@ -171,8 +171,8 @@ fn topology() -> FabricTopology {
     let mut m2 = MeshTopology::of(&MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1), (NodeKind::RpcNode, 2), (NodeKind::Broker, 1)]));
     let broker: PathName = "mesh2.broker.1".parse().unwrap();
     let rpc: PathName = "mesh2.rpc.1".parse().unwrap();
-    m2.set_meta(&broker, NodeMeta { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default() }).unwrap();
-    m2.set_meta(&rpc, NodeMeta { storage: StorageMeta::Ephemeral, placement: Default::default() }).unwrap();
+    m2.set_path_config(&broker, PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: Default::default() }).unwrap();
+    m2.set_path_config(&rpc, PathConfig { storage: StorageMeta::Ephemeral, placement: Default::default() }).unwrap();
     t.meshes.insert("mesh2".into(), m2);
     t
 }

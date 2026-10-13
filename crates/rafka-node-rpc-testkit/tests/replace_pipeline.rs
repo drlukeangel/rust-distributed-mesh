@@ -14,7 +14,7 @@
 use crate::common;
 
 use common::{add_node, admin_side, publish_build, template, LiveMesh, Published};
-use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, StorageMeta};
+use rafka_mesh_entity::meta::{PathConfig, PersistentRetireDisposition, StorageMeta};
 use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
@@ -187,8 +187,8 @@ const RECOVERY_ORDER: [&str; 18] = [
 fn persistent(preserve: bool) -> rafka_node_admin_core::accepted::FabricTopology {
     let mut t = add_node();
     let disposition = if preserve { PersistentRetireDisposition::Preserve } else { PersistentRetireDisposition::Release };
-    let meta = NodeMeta { storage: StorageMeta::Persistent { on_retire: disposition }, placement: Default::default() };
-    t.meshes.get_mut("mesh1").unwrap().set_meta(&"mesh1.rpc.1".parse().unwrap(), meta).unwrap();
+    let meta = PathConfig { storage: StorageMeta::Persistent { on_retire: disposition }, placement: Default::default() };
+    t.meshes.get_mut("mesh1").unwrap().set_path_config(&"mesh1.rpc.1".parse().unwrap(), meta).unwrap();
     t
 }
 

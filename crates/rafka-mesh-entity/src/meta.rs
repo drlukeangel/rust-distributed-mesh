@@ -1,14 +1,15 @@
-//! The typed desired-state properties of a logical node: what the accepted Build says a path.name
-//! should do. Intrinsic, explicit on every materialized path after ingress normalization; never
-//! a tag, never inferred later from a flag, a map or a provider's behaviour.
+//! The typed desired-state config of a path: what the accepted Build says a path.name should do.
+//! Intrinsic, explicit on every materialized path after ingress normalization; never a tag, never
+//! inferred later from a flag, a map or a provider's behaviour.
 
 use crate::path::NodeKind;
 use serde::{Deserialize, Serialize};
 
-/// The intrinsic typed properties of one logical node path.
+/// The defaults set at a path that every node created there inherits (here storage and
+/// placement): the accepted Build's per-path policy, as distinct from a node's own config bag.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeMeta {
+pub struct PathConfig {
     /// What survives a restart or a retirement.
     pub storage: StorageMeta,
     /// Placement constraints.
@@ -85,11 +86,11 @@ pub enum PersistentRetireDisposition {
 #[serde(deny_unknown_fields)]
 pub struct PlacementMeta {}
 
-impl NodeMeta {
+impl PathConfig {
     /// The migration default for a kind: what ingress normalization gives a materialized path that
-    /// declared no storage meta (brokers and node-admins keep their storage across a restart and a
+    /// declared no path config (brokers and node-admins keep their storage across a restart and a
     /// retirement; gateways, compute and proof rpc nodes are ephemeral). Ingress-only: once a Build
-    /// is accepted its meta is explicit and nothing re-derives it.
+    /// is accepted its path config is explicit and nothing re-derives it.
     pub fn default_for(kind: NodeKind) -> Self {
         let storage = match kind {
             NodeKind::NodeAdmin | NodeKind::Broker => StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve },
@@ -102,25 +103,25 @@ impl NodeMeta {
 /// What a legacy input (a shape build, a spawn request) may say about one path's storage before
 /// normalization.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LegacyNodeMetaInput {
-    /// The path's explicit typed meta, when the input carries one.
-    pub explicit: Option<NodeMeta>,
+pub struct LegacyPathConfigInput {
+    /// The path's explicit typed config, when the input carries one.
+    pub explicit: Option<PathConfig>,
     /// A legacy semantic `stateful` choice the caller made (never a hardcoded field the old API
     /// could not express: that is `None`).
     pub stateful: Option<bool>,
 }
 
-/// Ingress normalization, the one place a default is applied: explicit meta first, then an
+/// Ingress normalization, the one place a default is applied: explicit path config first, then an
 /// explicit legacy `stateful` intent, then the versioned per-kind default. After this the Build
 /// is explicit.
-pub fn normalize_node_meta(kind: NodeKind, legacy: LegacyNodeMetaInput) -> NodeMeta {
+pub fn normalize_path_config(kind: NodeKind, legacy: LegacyPathConfigInput) -> PathConfig {
     if let Some(explicit) = legacy.explicit {
         return explicit;
     }
     match legacy.stateful {
-        Some(true) => NodeMeta { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, placement: PlacementMeta::default() },
-        Some(false) => NodeMeta { storage: StorageMeta::Ephemeral, placement: PlacementMeta::default() },
-        None => NodeMeta::default_for(kind),
+        Some(true) => PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve }, placement: PlacementMeta::default() },
+        Some(false) => PathConfig { storage: StorageMeta::Ephemeral, placement: PlacementMeta::default() },
+        None => PathConfig::default_for(kind),
     }
 }
 
@@ -129,23 +130,23 @@ mod tests {
     use super::*;
 
     /// CONTRACT: the storage state space is exactly three states; the per-kind defaults are the
-    /// versioned migration defaults; normalization takes explicit meta over legacy intent over the
+    /// versioned migration defaults; normalization takes an explicit path config over legacy intent over the
     /// default, and a hardcoded legacy false (represented as `None`) never overrides the default.
     #[test]
     fn normalization_takes_explicit_over_legacy_intent_over_the_kind_default() {
         let preserve = StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Preserve };
-        assert_eq!(NodeMeta::default_for(NodeKind::Broker).storage, preserve);
-        assert_eq!(NodeMeta::default_for(NodeKind::NodeAdmin).storage, preserve);
-        assert_eq!(NodeMeta::default_for(NodeKind::Gateway).storage, StorageMeta::Ephemeral);
-        assert_eq!(NodeMeta::default_for(NodeKind::Compute).storage, StorageMeta::Ephemeral);
-        assert_eq!(NodeMeta::default_for(NodeKind::RpcNode).storage, StorageMeta::Ephemeral);
-        let release = NodeMeta { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: PlacementMeta::default() };
-        assert_eq!(normalize_node_meta(NodeKind::Gateway, LegacyNodeMetaInput { explicit: Some(release.clone()), stateful: Some(false) }), release);
-        assert_eq!(normalize_node_meta(NodeKind::Gateway, LegacyNodeMetaInput { explicit: None, stateful: Some(true) }).storage, preserve);
-        assert_eq!(normalize_node_meta(NodeKind::Broker, LegacyNodeMetaInput { explicit: None, stateful: Some(false) }).storage, StorageMeta::Ephemeral);
-        assert_eq!(normalize_node_meta(NodeKind::Broker, LegacyNodeMetaInput::default()).storage, preserve, "an unexpressed legacy field is not intent");
+        assert_eq!(PathConfig::default_for(NodeKind::Broker).storage, preserve);
+        assert_eq!(PathConfig::default_for(NodeKind::NodeAdmin).storage, preserve);
+        assert_eq!(PathConfig::default_for(NodeKind::Gateway).storage, StorageMeta::Ephemeral);
+        assert_eq!(PathConfig::default_for(NodeKind::Compute).storage, StorageMeta::Ephemeral);
+        assert_eq!(PathConfig::default_for(NodeKind::RpcNode).storage, StorageMeta::Ephemeral);
+        let release = PathConfig { storage: StorageMeta::Persistent { on_retire: PersistentRetireDisposition::Release }, placement: PlacementMeta::default() };
+        assert_eq!(normalize_path_config(NodeKind::Gateway, LegacyPathConfigInput { explicit: Some(release.clone()), stateful: Some(false) }), release);
+        assert_eq!(normalize_path_config(NodeKind::Gateway, LegacyPathConfigInput { explicit: None, stateful: Some(true) }).storage, preserve);
+        assert_eq!(normalize_path_config(NodeKind::Broker, LegacyPathConfigInput { explicit: None, stateful: Some(false) }).storage, StorageMeta::Ephemeral);
+        assert_eq!(normalize_path_config(NodeKind::Broker, LegacyPathConfigInput::default()).storage, preserve, "an unexpressed legacy field is not intent");
         let json = serde_json::to_string(&release).unwrap();
-        assert_eq!(serde_json::from_str::<NodeMeta>(&json).unwrap(), release);
+        assert_eq!(serde_json::from_str::<PathConfig>(&json).unwrap(), release);
         assert!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"ephemeral","on_retire":"preserve"}"#).unwrap_err().to_string().contains("carries no `on_retire`"), "ephemeral carries no retire disposition");
         assert!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"persistent"}"#).unwrap_err().to_string().contains("requires `on_retire`"), "persistent names its retire disposition");
         assert_eq!(serde_json::from_str::<StorageMeta>(r#"{"persistence":"ephemeral"}"#).unwrap(), StorageMeta::Ephemeral);

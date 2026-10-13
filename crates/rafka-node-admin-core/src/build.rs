@@ -290,14 +290,14 @@ pub enum BuildReject {
         /// The fabric's provider.
         fabric_provider: crate::model::ProviderKind,
     },
-    /// A mesh's paths and its per-path meta disagree: a materialized path with no meta, or meta
-    /// for a path the mesh does not hold.
-    NodeMetaMismatch {
+    /// A mesh's paths and its per-path config disagree: a materialized path with no path config, or a path
+    /// config for a path the mesh does not hold.
+    PathConfigMismatch {
         /// The mesh.
         mesh: String,
-        /// The paths with no meta.
+        /// The paths with no path config.
         missing: Vec<String>,
-        /// The meta for paths the mesh does not hold.
+        /// The path config for paths the mesh does not hold.
         extra: Vec<String>,
     },
     /// The node belongs to a peer mesh this fabric-primary holds unheard: loss of that mesh's
@@ -377,7 +377,7 @@ impl BuildReject {
             Self::FabricMismatch { .. } => "fabric-mismatch",
             Self::EmptyFabric => "empty-fabric",
             Self::ProviderInBuild { .. } => "provider-mismatch",
-            Self::NodeMetaMismatch { .. } => "node-meta-mismatch",
+            Self::PathConfigMismatch { .. } => "path-config-mismatch",
             Self::UnheardMesh { .. } => "unheard-mesh",
             Self::NodeAdminNotNodeRecovered { .. } => "node-admin-not-node-recovered",
             Self::LastAdmin { .. } => "last-admin",
@@ -418,9 +418,9 @@ impl fmt::Display for BuildReject {
                 "{workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit its rows live only in their holders' scratchpads, so nothing that moves a seat or writes caller state runs"
             ),
             Self::LastAdmin { refusal, .. } => f.write_str(refusal),
-            Self::NodeMetaMismatch { mesh, missing, extra } => write!(
+            Self::PathConfigMismatch { mesh, missing, extra } => write!(
                 f,
-                "mesh `{mesh}`: every materialized path carries exactly one NodeMeta; missing [{}], without a node [{}]",
+                "mesh `{mesh}`: every materialized path carries exactly one PathConfig; missing [{}], without a node [{}]",
                 missing.join(", "),
                 extra.join(", ")
             ),

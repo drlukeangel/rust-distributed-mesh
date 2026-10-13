@@ -581,7 +581,7 @@ pub enum StorageDisposition {
     },
     /// `Persistent { on_retire: Preserve }`: left where it is.
     Preserved {},
-    /// The Build holds no meta for this path: left where it is, never destroyed on missing evidence.
+    /// The Build holds no path config for this path: left where it is, never destroyed on missing evidence.
     PreservedNoMeta {},
 }
 
@@ -2553,7 +2553,7 @@ impl DeploymentPipeline<'_> {
         let predecessor = exited_predecessor.predecessor;
         let name = &predecessor.name;
         let build = self.builds.read_build(exited_predecessor.build_id).await.ok();
-        let storage = build.as_ref().and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.meta(name).map(|meta| meta.storage)));
+        let storage = build.as_ref().and_then(|b| b.topology.meshes.get(&name.mesh).and_then(|m| m.path_config(name).map(|meta| meta.storage)));
         let withheld = match storage {
             _ if name.kind == NodeKind::NodeAdmin => Some("a node-admin's records are seeded from its maker when it joins, never inherited from its predecessor"),
             Some(StorageMeta::Persistent { .. }) => None,
