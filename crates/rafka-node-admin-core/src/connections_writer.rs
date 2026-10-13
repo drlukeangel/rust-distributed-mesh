@@ -30,6 +30,22 @@ use std::time::Duration;
 /// How often an owed Proxy retirement whose write was refused is attempted again.
 pub const RETIREMENT_RETRY: Duration = Duration::from_millis(500);
 
+/// One direct dial of this node's own data plane toward an exact destination birth
+/// (connections.md §9.5 step 3), answering the call outcome's name for the attempt's span. The
+/// fact reaches the writer through the data-plane client's observer (Direct Connected or Failed,
+/// `origin=dial`), never through the reconciler.
+pub type RecoveryDial = Arc<dyn Fn(ConnectionEnd) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>> + Send + Sync>;
+
+/// One pending direct-recovery attempt (connections.md §9.4): toward an exact destination birth,
+/// due at `due_ms` on the local clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryAttempt {
+    /// The destination birth the attempt dials.
+    pub destination: ConnectionEnd,
+    /// When the attempt is due.
+    pub due_ms: u64,
+}
+
 /// Writes the connection facts of one source node and holds the projection they build.
 #[derive(Clone)]
 pub struct ConnectionsWriter {
@@ -417,6 +433,17 @@ impl ConnectionsWriter {
         })
     }
 
+    /// RED scaffold: the retirement reconciler; `dial` is not used yet.
+    pub fn spawn_reconciler(&self, every: Duration, dial: Option<RecoveryDial>) -> tokio::task::JoinHandle<()> {
+        let _ = dial;
+        self.spawn_retirement_reconciler(every)
+    }
+
+    /// RED scaffold: no attempt is ever pending.
+    pub fn recovery_pending(&self) -> Vec<RecoveryAttempt> {
+        Vec::new()
+    }
+
     /// A strictly increasing stamp for this writer's rows.
     fn stamp(&self) -> u64 {
         let mut last = self.inner.last_stamp.lock().unwrap();
@@ -542,6 +569,12 @@ impl ConnectionObserver for ConnectionsWriter {
         let destination = end_of(node);
         let reason = reason.to_string();
         self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Disconnected, Some(reason)), "dial", node);
+    }
+}
+
+impl rafka_node_rpc::AcceptTrigger for ConnectionsWriter {
+    fn accepted(&self, node: &ResolvedNode) {
+        ConnectionObserver::direct_accepted(self, node)
     }
 }
 

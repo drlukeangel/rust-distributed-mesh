@@ -120,6 +120,14 @@ pub trait ConnectionObserver: Send + Sync {
     }
 }
 
+/// A connection this process's server accepted from a live node (connections.md section 10,
+/// R-CN1): a recovery trigger for this node's own direct dial toward that exact birth, never
+/// Direct evidence. The acceptor writes nothing to its connections log.
+pub trait AcceptTrigger: Send + Sync {
+    /// The server accepted a connection from `node`, the live birth the resolver names.
+    fn accepted(&self, node: &ResolvedNode);
+}
+
 /// A Node RPC client: dials the exact target a resolver names, pools one connection per peer, scope
 /// and incarnation, and returns a typed outcome per call.
 pub struct NodeRpcClient {
