@@ -245,26 +245,28 @@ pub fn exit_receipts(steps: &[BuildStepReceipt], operation: &str, roster: &[Rost
 
 /// The `NodeDeleted` op of `b`'s node.delete when that delete has every step's receipt: its
 /// `NodeDeleted` names the exact birth and its `Complete` is receipted at that attempt or later
-/// ([`BuildStateAdapter::recovery_of`], a point read of the Build log's index), and the op is the one
-/// that `NodeDeleted` receipt among `steps` holds. `None` for a delete cut anywhere after its exit
-/// proof (before `NodeDeleted`'s receipt, before its publication, before `Complete`). A finished
-/// delete whose `NodeDeleted` receipt `steps` do not hold for the exact birth is refused by name.
+/// ([`BuildStateAdapter::recovery_of`], a point read of the Build log's index, which names the
+/// delete's Build, lane and operation), and the op is the one that `NodeDeleted` receipt among
+/// `steps` holds in that lane (an attempt number names one attempt per lane). `None` for a delete
+/// cut anywhere after its exit proof (before `NodeDeleted`'s receipt, before its publication, before
+/// `Complete`). A finished delete whose `NodeDeleted` receipt `steps` do not hold for the exact
+/// birth is refused by name.
 async fn finished_delete(builds: &dyn BuildStateAdapter, steps: &[BuildStepReceipt], executor: &str, b: &RosterBirth) -> Result<Option<LifecycleOp>, String> {
     let named = format!("{} {}", b.node, b.incarnation_id);
     let path: crate::model::PathName = b.node.parse().map_err(|e| format!("{executor}: the roster birth {named} names no path.name: {e:?}"))?;
     let node_id = NodeId::parse(&b.node_id).map_err(|e| format!("{executor}: the roster birth {named}'s node id {} does not parse: {e}", b.node_id))?;
     let birth = b.birth().map_err(|e| format!("{executor}: the roster birth {named}: {e}"))?;
-    let Some((build, completed, operation)) = builds.recovery_of(&path, &node_id, &birth).await.map_err(|e| format!("{executor}: the Build log could not say whether the node.delete of {named} is complete: {e}"))? else {
+    let Some((build, lane, completed, operation)) = builds.recovery_of(&path, &node_id, &birth).await.map_err(|e| format!("{executor}: the Build log could not say whether the node.delete of {named} is complete: {e}"))? else {
         return Ok(None);
     };
     let deleted = crate::deployment::pipeline::RetireStep::NodeDeleted.name();
     steps
         .iter()
-        .filter(|r| r.build_id == build && r.operation == operation && r.step == deleted && r.outcome == StepOutcome::Complete)
+        .filter(|r| r.build_id == build && r.mesh == lane && r.operation == operation && r.step == deleted && r.outcome == StepOutcome::Complete)
         .filter_map(|r| r.output.clone().and_then(|v| serde_json::from_value::<LifecycleOp>(v).ok()))
         .find(|op| op.node_id == node_id && op.incarnation == birth)
         .map(Some)
-        .ok_or_else(|| format!("{executor}: the node.delete of {named} is complete in Build {build} (its Complete at attempt {completed}, {operation}), and the receipts read hold no {deleted} op of that birth to publish"))
+        .ok_or_else(|| format!("{executor}: the node.delete of {named} is complete in Build {build} (lane {}, its Complete at attempt {completed}, {operation}), and the receipts read hold no {deleted} op of that birth to publish", lane.as_deref().unwrap_or("fabric")))
 }
 
 /// Where the fabric-primary's outer workflow `operation` resumes, read from its own Build facts
