@@ -1,8 +1,11 @@
 //! The one ordering check of the gossip receive path (rafka-v2
 //! docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md, R-RX3, Luke 2026-10-12): "a message
-//! received out of order with a previous, earlier version is ignored". Every frame a channel decodes
-//! passes here before any handler reads it; a frame whose order key is earlier than the newest the
-//! channel holds for the frame's source is ignored, and nothing else is decided here.
+//! received out of order with a previous, earlier version is ignored". A node holds one version per
+//! source (Luke 2026-10-13: "a frame whose order key is earlier than the newest the receiver holds for
+//! the same source is ignored, once, in the gossip receive path", with no channel qualifier): every
+//! frame any of its channels decodes, and every chunk its topology-read install takes, passes here
+//! before any handler reads it; a frame whose order key is earlier than the newest the node holds for
+//! the frame's source is ignored, and nothing else is decided here.
 //!
 //! The order keys are the ones already on the wire:
 //! - `Members` and `MembersDelta`: `published_at_rafka_ms` then `topology_version`, per mesh;
@@ -24,11 +27,18 @@
 //! key already applied).
 //!
 //! A frame whose key equals the held one is taken: the chunks of one publication share its key, and
-//! a copy is the handler's to absorb (a chunk already held, a delta already applied). Each channel
-//! holds its own keys: a forwarded frame is stamped by its forwarder, never comparable with the
-//! source's own stamp on the backbone.
+//! a copy is the handler's to absorb (a chunk already held, a delta already applied).
+//!
+//! A mesh's version moves when its snapshot state does (gossip.md §3.1: "A mesh-channel delta, a
+//! snapshot install and a topology read install move the held source version"): a `Members` key is
+//! held once every chunk of its snapshot arrived and it installed, a `MembersDelta` key once it
+//! applied, and a topology read, which carries a publisher and a `topology_version` and no stamp,
+//! holds that source version ([`ReceiveOrder::installed`]). The publisher's exact identity is the
+//! revision of the versions it publishes (`PublisherId`), so a frame or read chunk of the held
+//! publisher at a `topology_version` below the one installed is earlier, whatever it is stamped.
 
 use crate::membership::Frame;
+use crate::snapshot::PublisherId;
 use std::collections::HashMap;
 
 /// The source a frame's order key orders within.
@@ -122,15 +132,28 @@ pub(crate) struct Earlier {
     pub offered: String,
 }
 
-/// The newest order key one channel holds for each source.
+/// The newest order key one node holds for each source, and the source version it installed of
+/// each mesh: one for the node, shared by every channel it hears and by its topology-read install.
 #[derive(Debug, Default)]
 pub(crate) struct ReceiveOrder {
     newest: HashMap<Source, Key>,
+    /// The source version each mesh's last install moved to: its publisher and `topology_version`.
+    installed: HashMap<String, (PublisherId, u64)>,
+}
+
+/// The publisher a `Members` or `MembersDelta` names and its `topology_version`.
+fn publication_of(f: &Frame) -> Option<(&str, &PublisherId, u64)> {
+    match f {
+        Frame::Members { mesh, publisher, topology_version, .. } => Some((mesh, publisher, *topology_version)),
+        Frame::MembersDelta { mesh, source_publisher, topology_version, .. } => Some((mesh, source_publisher, *topology_version)),
+        _ => None,
+    }
 }
 
 impl ReceiveOrder {
     /// Whether `f` is taken: `Err` names the frame ignored, its source and both keys. A taken frame's
-    /// key is held when it is newer than the held one.
+    /// key is held when it is newer than the held one, except a `Members` or `MembersDelta` key, held
+    /// when its snapshot installs or its delta applies ([`Self::installed`]).
     pub(crate) fn admit(&mut self, f: &Frame) -> Result<(), Earlier> {
         let (frame, keys) = orders_of(f);
         // Every key is judged before any is held: a frame ignored for one of its sources moves none.
@@ -139,12 +162,51 @@ impl ReceiveOrder {
                 return Err(Earlier { frame, source: source.to_string(), held: held.to_string(), offered: key.to_string() });
             }
         }
+        if let Some((mesh, publisher, topology_version)) = publication_of(f) {
+            self.below_installed(frame, mesh, publisher, topology_version, || keys.first().map(|(_, k)| k.to_string()).unwrap_or_default())?;
+            return Ok(());
+        }
         for (source, key) in keys {
             if self.newest.get(&source).is_none_or(|held| key > *held) {
                 self.newest.insert(source, key);
             }
         }
         Ok(())
+    }
+
+    /// Whether a chunk of a topology read of `mesh`, `publisher`'s `topology_version`, is taken: a read
+    /// carries no stamp, so only the source version installed orders it.
+    pub(crate) fn admit_read(&self, mesh: &str, publisher: &PublisherId, topology_version: u64) -> Result<(), Earlier> {
+        self.below_installed("topology-read", mesh, publisher, topology_version, || format!("topology_version={topology_version}"))
+    }
+
+    /// `Err` when the source version installed of `mesh` is `publisher`'s, above `topology_version`.
+    fn below_installed(&self, frame: &'static str, mesh: &str, publisher: &PublisherId, topology_version: u64, offered: impl FnOnce() -> String) -> Result<(), Earlier> {
+        match self.installed.get(mesh) {
+            Some((held, version)) if held == publisher && topology_version < *version => {
+                Err(Earlier { frame, source: mesh.to_string(), held: format!("publisher={held} topology_version={version}"), offered: offered() })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// The `topology_version` of the source version installed of `mesh`.
+    pub(crate) fn installed_version(&self, mesh: &str) -> Option<u64> {
+        self.installed.get(mesh).map(|(_, v)| *v)
+    }
+
+    /// `mesh`'s snapshot state moved to `publisher`'s `topology_version`: a snapshot installed or a
+    /// delta applied, stamped `published_at_rafka_ms`, or a topology read installed (`None`, a read
+    /// carries no stamp). The source version is held, and the stamped key when newer.
+    pub(crate) fn installed(&mut self, mesh: &str, publisher: &PublisherId, topology_version: u64, published_at_rafka_ms: Option<u64>) {
+        if let Some(published_at_rafka_ms) = published_at_rafka_ms {
+            let key = Key::Publication { published_at_rafka_ms, topology_version };
+            let source = Source::Mesh(mesh.to_string());
+            if self.newest.get(&source).is_none_or(|held| key > *held) {
+                self.newest.insert(source, key);
+            }
+        }
+        self.installed.insert(mesh.to_string(), (publisher.clone(), topology_version));
     }
 }
 
@@ -190,26 +252,60 @@ mod tests {
     }
 
     /// CONTRACT (R-RX3: Members and MembersDelta order by `published_at_rafka_ms` then
-    /// `topology_version`, per mesh; R-RX2: no cross-publisher rule): on one channel, both chunks of
-    /// one publication are taken (they share its key); a full of another publisher stamped later is
-    /// taken whatever its version; a delta stamped later is taken; then a full and a delta stamped
-    /// before what is held are ignored, each naming the mesh, the key held and the key offered, while
-    /// another mesh's publication of any stamp is taken. Must NOT happen: a later chunk of a held
-    /// publication ignored; a publication ordered against another mesh's.
+    /// `topology_version`, per mesh; R-RX2: no cross-publisher rule; gossip.md §3.1: a snapshot install
+    /// and a delta move the held source version): both chunks of one publication are taken (they share
+    /// its key), and its key is held once it installed; a chunk of the installed publication is taken
+    /// again (the handler absorbs it); a full of another publisher stamped later is taken whatever its
+    /// version; a delta stamped later is taken; then a full and a delta stamped before what is held are
+    /// ignored, each naming the mesh, the key held and the key offered, while another mesh's publication
+    /// of any stamp is taken. Must NOT happen: a later chunk of a held publication ignored; a
+    /// publication ordered against another mesh's.
     #[test]
     fn a_publication_stamped_before_the_newest_held_of_its_mesh_is_ignored_and_one_publications_chunks_are_all_taken() {
         let mut order = ReceiveOrder::default();
         let (p1, p2) = (publisher("mesh1.admin.1"), publisher("mesh1.admin.2"));
         assert_eq!(order.admit(&members("mesh1", &p1, 100, 7, 0)), Ok(()));
         assert_eq!(order.admit(&members("mesh1", &p1, 100, 7, 1)), Ok(()), "the second chunk of the same publication is taken");
+        order.installed("mesh1", &p1, 7, Some(100));
+        assert_eq!(order.admit(&members("mesh1", &p1, 100, 7, 0)), Ok(()), "a chunk of the installed publication is taken: the handler absorbs it");
         assert_eq!(order.admit(&members("mesh1", &p2, 150, 1, 0)), Ok(()), "a later publication is taken whatever its version and publisher");
+        order.installed("mesh1", &p2, 1, Some(150));
         assert_eq!(order.admit(&delta("mesh1", &p2, 160, 1, 2)), Ok(()));
+        order.installed("mesh1", &p2, 2, Some(160));
         let ignored_full = order.admit(&members("mesh1", &p1, 120, 9, 0)).unwrap_err();
         assert_eq!(ignored_full, Earlier { frame: "members", source: "mesh1".into(), held: "published_at_rafka_ms=160 topology_version=2".into(), offered: "published_at_rafka_ms=120 topology_version=9".into() });
         let ignored_delta = order.admit(&delta("mesh1", &p1, 110, 7, 8)).unwrap_err();
         assert_eq!((ignored_delta.frame, ignored_delta.offered.as_str()), ("members-delta", "published_at_rafka_ms=110 topology_version=8"));
         assert_eq!(order.admit(&delta("mesh1", &p2, 160, 1, 3)), Ok(()), "the same stamp at a later version is newer");
         assert_eq!(order.admit(&members("mesh2", &p1, 1, 1, 0)), Ok(()), "another mesh is another source");
+    }
+
+    /// CONTRACT (Luke 2026-10-13: "Snapshot state advances atomically once every chunk has arrived";
+    /// gossip.md §3.1: "a topology read install move[s] the held source version"): a mesh's version
+    /// moves only when a snapshot installs, so a chunk of a newer publication that never completed
+    /// holds nothing and an older publication's chunks are still taken. A topology read carries no
+    /// stamp: the source version it installed (publisher, `topology_version`) orders what follows by
+    /// the publisher's revision, so that publisher's full, delta or read chunk at a lower version is
+    /// ignored, naming the version held, and its full at the installed version is taken; another
+    /// publisher's publication is not ordered against that revision. Must NOT happen: a partial
+    /// snapshot's stamp ignoring the publication still installing; a version below the one a read
+    /// installed reaching a handler.
+    #[test]
+    fn a_mesh_version_moves_when_its_snapshot_installs_and_a_read_installed_version_orders_its_publishers_lower_versions() {
+        let mut order = ReceiveOrder::default();
+        let (p, other) = (publisher("mesh1.admin.1"), publisher("mesh1.admin.2"));
+        assert_eq!(order.admit(&members("mesh1", &p, 200, 8, 0)), Ok(()), "chunk 0 of v8: its snapshot never completes");
+        assert_eq!(order.admit(&members("mesh1", &p, 150, 7, 1)), Ok(()), "v7's chunk is taken: nothing installed is newer");
+        order.installed("mesh1", &p, 7, Some(150));
+        order.installed("mesh1", &p, 9, None);
+        let held = format!("publisher={p} topology_version=9");
+        assert_eq!(order.admit(&members("mesh1", &p, 240, 8, 0)), Err(Earlier { frame: "members", source: "mesh1".into(), held: held.clone(), offered: "published_at_rafka_ms=240 topology_version=8".into() }));
+        assert_eq!(order.admit(&delta("mesh1", &p, 245, 7, 8)).map_err(|e| (e.frame, e.held)), Err(("members-delta", held.clone())));
+        assert_eq!(order.admit_read("mesh1", &p, 8), Err(Earlier { frame: "topology-read", source: "mesh1".into(), held, offered: "topology_version=8".into() }));
+        assert_eq!(order.admit_read("mesh1", &p, 9), Ok(()), "a read of the installed version is taken");
+        assert_eq!(order.admit(&members("mesh1", &p, 250, 9, 0)), Ok(()), "the publisher's full at the installed version is taken");
+        assert_eq!(order.admit(&members("mesh1", &other, 260, 1, 0)), Ok(()), "another publisher is not ordered against that revision");
+        assert_eq!(order.admit_read("mesh2", &p, 1), Ok(()), "another mesh is another source");
     }
 
     /// CONTRACT (R-RX3: Digest orders by `digest_seq`, per birth; gossip.md §3.1: a new incarnation's
