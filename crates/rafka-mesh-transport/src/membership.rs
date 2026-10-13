@@ -7794,6 +7794,77 @@ mod tests {
         true
     }
 
+    /// CONTRACT (R-RX3, Luke 2026-10-13: "a frame whose order key is earlier than the newest the
+    /// receiver holds for the same source is ignored, once, in the gossip receive path", with no
+    /// channel qualifier; gossip.md §3.1: "a topology read install move[s] the held source version"):
+    /// a node-admin holds one version per source, consulted by the backbone, its mesh channel and
+    /// its topology-read install. For its own mesh (mesh2) and a peer mesh (mesh1), mesh2.admin.2
+    /// read-installs the publisher's v5, listing the member Ready; the backbone then delivers the
+    /// same publisher's v4, listing it Pending: nothing changes, and the ignore span names the
+    /// backbone, the source, the version held and the one offered; the backbone then delivers v5,
+    /// and nothing changes. Must NOT happen: the member leaving Ready (the bf44123e build_op run on
+    /// mesh2.admin.2: read install 5bcc7547cc444f97, v4 install 2854055386b9a057, revert
+    /// 7a563158be93f335, v5 3dd8d04dfcf8c2b9); a version a read installed left unconsulted by the
+    /// backbone.
+    #[test]
+    fn a_frame_older_than_the_version_a_topology_read_installed_is_ignored_on_the_backbone_and_the_member_never_leaves_ready() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let view = View::new("mesh2", "mesh2.admin.2");
+        // The node's receive path as it runs: the backbone's held versions, and the topology-read install.
+        let mut backbone = crate::receive_order::ReceiveOrder::default();
+        let hears = |backbone: &mut crate::receive_order::ReceiveOrder, f: &Frame| hear(backbone, &view, f, &fabric, Side::Backbone);
+        let reads = |chunk: crate::snapshot::Chunk| {
+            let prior = Prior::of(&view.mesh_rx.lock().unwrap(), &chunk.mesh);
+            let taken = view.mesh_rx.lock().unwrap().take_read_chunk(chunk);
+            if let Taken::Installed(i) = &taken {
+                view.installed(i, &fabric, Side::Read, 0, prior);
+            }
+            taken
+        };
+        let status_of = |d: &MeshDigest| {
+            if d.node.name.mesh == view.mesh {
+                view.book.member_status(&d.node.node_id, &d.node.incarnation)
+            } else {
+                view.book.get(d.node.node_id.as_str()).map(|(h, _)| h.status)
+            }
+        };
+        for mesh in ["mesh2", "mesh1"] {
+            let publisher = birth_at(&format!("{mesh}.admin.1"), 1);
+            let ready = birth_at(&format!("{mesh}.rpc.1"), 3);
+            let pending = MeshDigest { status: MemberStatus::Pending, ..ready.clone() };
+            let read = crate::snapshot::Chunk {
+                mesh: mesh.into(),
+                publisher: publisher_of(&publisher),
+                forwarded_by: None,
+                topology_version: 5,
+                snapshot_id: 1,
+                chunk_index: 0,
+                chunk_count: 1,
+                digests: vec![publisher.clone(), ready.clone()],
+                in_flight: vec![],
+                departed: vec![],
+            };
+            assert!(matches!(reads(read), Taken::Installed(_)), "{mesh}: the read installs v5");
+            assert_eq!(status_of(&ready), Some(MemberStatus::ReadyForTraffic), "{mesh}: the read holds the member Ready");
+            let v4 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 4, 4, vec![publisher.clone(), pending.clone()], vec![], vec![]), 40);
+            assert!(!hears(&mut backbone, &v4), "{mesh}: the backbone's v4 is older than the v5 the read installed: ignored");
+            assert_eq!(status_of(&ready), Some(MemberStatus::ReadyForTraffic), "{mesh}: the member never leaves Ready");
+            let ignored = spans.named("rdm.mesh.membership.reject.via-earlier-version");
+            assert!(
+                ignored.iter().any(|f| f["channel"] == "backbone" && f["frame"] == "members" && f["source"] == mesh && f["held"].ends_with("topology_version=5") && f["offered"] == "published_at_rafka_ms=40 topology_version=4"),
+                "{mesh}: the ignore span names the backbone, the source, the version held and the one offered: {ignored:#?}"
+            );
+            let v5 = stamped(snapshot_of(mesh, &publisher_of(&publisher), None, 5, 5, vec![publisher.clone(), ready.clone()], vec![], vec![]), 50);
+            assert!(hears(&mut backbone, &v5), "{mesh}: the backbone's v5 is not older than what is held");
+            assert_eq!(status_of(&ready), Some(MemberStatus::ReadyForTraffic), "{mesh}: the member never leaves Ready");
+        }
+        let left_ready: Vec<_> = spans.named("rdm.mesh.membership.update.via-projected-status").into_iter().chain(spans.named("rdm.mesh.membership.update.via-member-state")).filter(|f| f.get("status").is_some_and(|s| s != "ReadyForTraffic")).collect();
+        assert!(left_ready.is_empty(), "no member status moves off Ready: {left_ready:#?}");
+    }
+
     /// CONTRACT (R-RX3, Luke 2026-10-12: "a message received out of order with a previous, earlier
     /// version is ignored", per mesh by `published_at_rafka_ms` then `topology_version`; R-RX2: one
     /// publisher per mesh, no cross-publisher rule; R-RX1: no refusal by who published): once a
