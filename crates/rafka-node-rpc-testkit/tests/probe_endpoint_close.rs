@@ -5,7 +5,7 @@
 //! ungracefully, and the probe's span file (`rdm.node_rpc.proof_store.resolve.via-probe` and all)
 //! is lost with it, so a scenario that reads the call's trace id from that file finds none.
 
-use rafka_mesh_entity::NodeId;
+use rafka_mesh_entity::{IncarnationId, NodeId};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
@@ -33,7 +33,7 @@ fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
     let carrier = NodeId::mint().to_string();
     let key = iroh::SecretKey::generate().public().to_string();
     let view = serde_json::json!({"nodes": [{
-        "node_id": carrier, "name": "mesh1.gateway.1", "endpoint_id": key, "transport_addr": "127.0.0.1:9", "incarnation_id": "c0ffee00c0ffee00c0ffee00c0ffee00",
+        "node_id": carrier, "name": "mesh1.gateway.1", "endpoint_id": key, "transport_addr": "127.0.0.1:9", "incarnation_id": IncarnationId::mint().to_string(),
     }]})
     .to_string();
     let admin = serve_view(view);
@@ -70,7 +70,7 @@ fn probe_with_unresolved_carrier_sends_nothing_and_leaves_its_span() {
     let present = NodeId::mint().to_string();
     let key = iroh::SecretKey::generate().public().to_string();
     let view = serde_json::json!({"nodes": [{
-        "node_id": present, "name": "mesh1.broker.1", "endpoint_id": key, "transport_addr": "127.0.0.1:9", "incarnation_id": "c0ffee00c0ffee00c0ffee00c0ffee00",
+        "node_id": present, "name": "mesh1.broker.1", "endpoint_id": key, "transport_addr": "127.0.0.1:9", "incarnation_id": IncarnationId::mint().to_string(),
     }]})
     .to_string();
     let admin = serve_view(view);

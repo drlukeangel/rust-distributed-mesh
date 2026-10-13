@@ -72,12 +72,12 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
         let maker_addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let target = NodeId::mint().to_string();
         let view = serde_json::json!({"nodes": [{
-            "node_id": target, "name": "mesh1.admin.1", "endpoint_id": expected.to_string(), "transport_addr": maker_addr.to_string(), "incarnation_id": "c0ffee00c0ffee00c0ffee00c0ffee00",
+            "node_id": target, "name": "mesh1.admin.1", "endpoint_id": expected.to_string(), "transport_addr": maker_addr.to_string(), "incarnation_id": IncarnationId::mint().to_string(),
         }]})
         .to_string();
         let admin = serve_view(view);
         let (run, dialler_dir) = (run.clone(), dialler_dir.clone());
-        let dialler = tokio::task::spawn_blocking(move || {
+        let mut dialler = tokio::task::spawn_blocking(move || {
             std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
                 .args(["--admin", &admin, "get", "--target", &format!("exact:{target}"), "--key", "k"])
                 .env("RDM_EVIDENCE_DIR", &run)
@@ -87,7 +87,13 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
                 .unwrap()
         });
         // As the router accepts: the Initial, the ALPN, then the protocol's own accepting.
-        let incoming = ep.accept().await.expect("the dialler's Initial reached the maker");
+        let incoming = tokio::select! {
+            incoming = ep.accept() => incoming.expect("the dialler's Initial reached the maker"),
+            out = &mut dialler => {
+                let out = out.unwrap();
+                panic!("the dialler ended without sending an Initial to the maker: {} / {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            }
+        };
         let mut accepting = incoming.accept().expect("the maker accepts the incoming connection");
         let accepted = match accepting.alpn().await {
             Ok(_) => server.on_accepting(accepting).await.map(|_| ()).map_err(|e| format!("{e:#}")),

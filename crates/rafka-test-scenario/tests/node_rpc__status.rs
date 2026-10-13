@@ -85,7 +85,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-authority", "{r}");
     assert!(detail.contains("SubjectUnknown"), "{r}");
-    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-incarnation", "00000000000000000000000000000000"]);
+    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-incarnation", rafka_mesh_entity::IncarnationId::mint().as_str()]);
     assert_eq!(declared(&r).0, "rejected-stale-incarnation", "{r}");
 
     // 4. The non-primary admin is not the authority.
