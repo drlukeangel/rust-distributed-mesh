@@ -59,6 +59,9 @@ impl DeploymentProvider for Running {
 struct StopsThenStarts {
     sent: Mutex<Vec<String>>,
     refuses_stop: bool,
+    /// The birth answers the stop `Stopped` on its call (node-stop.md: the reply is the stop's
+    /// completion), and nothing else ever signals it: a wait for a separate completion never ends.
+    answers_stopped: bool,
 }
 
 #[async_trait::async_trait]
@@ -68,11 +71,15 @@ impl NodeObserver for StopsThenStarts {
         match cmd {
             NodeCommand::Start => CommandAdmission::Started,
             NodeCommand::Stop if self.refuses_stop => CommandAdmission::Refused { reply: "RejectedStaleIncarnation".into() },
+            NodeCommand::Stop if self.answers_stopped => CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } },
             _ => CommandAdmission::Admitted,
         }
     }
     async fn await_completion(&self, node: &Node, cmd: NodeCommand, ctx: &CommandContext, _: Duration) -> Completion {
         self.sent.lock().unwrap().push(format!("await {cmd:?} {} from {}", ctx.operation, node.name));
+        if self.answers_stopped {
+            return Completion::Deadline;
+        }
         Completion::Received
     }
     async fn transfer_seats(&self, node: &Node, _: &CommandContext) -> Result<rafka_node_admin_core::fabric_handover::SeatTransferOutcome, String> {
@@ -250,6 +257,77 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
     eprintln!("span {} trace_id={} span_id={}", pipelines[0].name, pipelines[0].span_context.trace_id(), pipelines[0].span_context.span_id());
     assert!(steps.iter().all(|s| s.parent_span_id == pipelines[0].span_context.span_id()), "every step is a child of the one restart pipeline span");
     assert_eq!(steps.iter().map(|s| attr(s, "step")).collect::<Vec<_>>(), order, "the step spans are the receipts, in order");
+}
+
+/// CONTRACT (node-stop.md: stop-node answers `Stopped` on its own call, and that reply is the stop's
+/// completion; node-rpc-envelope.md: "Reissuing a naturally idempotent uncertain step can settle it"):
+/// a restart whose stop the birth answered `Stopped` takes that reply as its left reply: `AwaitNodeLeft`
+/// completes from the `StopNode` step's own recorded answer and the start follows. Must NOT happen: the
+/// wait looking for a second, process-local completion signal, which a successor executor reusing a
+/// lost predecessor's `StopNode` receipt never holds (the restart then failing at `AwaitNodeLeft` with
+/// `Deadline` on a birth that is stopped).
+#[tokio::test]
+async fn a_restart_takes_its_stops_stopped_reply_as_the_left_reply() {
+    let builds = MemoryBuildStateAdapter::new();
+    let build_id = BuildId::mint();
+    builds
+        .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
+        .await
+        .unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    let name: PathName = NODE.parse().unwrap();
+    let incarnation = IncarnationId::mint();
+    let mut node = Node::allocated(name.clone());
+    node.node_id = NodeId::mint();
+    node.incarnation_id = Some(incarnation.clone());
+    node.provider = Some(ProviderKind::Process);
+    node.status = NodeStatus::ReadyForTraffic;
+    node.endpoint_id = Some(EndpointId("i143-3093-endpoint".into()));
+    node.data_dir = Some("/nonexistent/i143-3093/mesh1.rpc.1".into());
+    let template = LaunchTemplate {
+        fabric: "fabric1".into(),
+        fabric_id: rafka_mesh_entity::FabricId::mint(),
+        executable: "/nonexistent/restart-one-op".into(),
+        seeds: vec![],
+        launcher: rafka_mesh_entity::launch::Launcher { name: "mesh1.admin.1".parse().unwrap(), node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+        env: Default::default(),
+        data_root: std::env::temp_dir().join(format!("i143-3093-restart-{}", NodeId::mint())),
+        store_dir: std::env::temp_dir().join(format!("i143-3093-restart-store-{}", NodeId::mint())),
+        mesh_issuer: None,
+    };
+    let (provider, observer, events, joins) = (Running::default(), StopsThenStarts { answers_stopped: true, ..StopsThenStarts::default() }, Events::default(), rafka_node_admin_core::join::Joins::default());
+    let pipeline = DeploymentPipeline {
+        provider: &provider,
+        joins: &joins,
+        observer: &observer,
+        sink: &Discard,
+        lifecycle: &events,
+        builds: &builds,
+        template: &template,
+        timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ready: Duration::from_millis(300), ..Timeouts::default() },
+    };
+    let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(4242), start: Some(1), container: None, domain: Some("i143-3093-restart".into()) };
+    let deployed = rafka_node_admin_core::join::Deployed {
+        name: name.clone(),
+        node_id: node.node_id.clone(),
+        incarnation: incarnation.clone(),
+        supersedes: None,
+        endpoint_id: node.endpoint_id.clone().unwrap(),
+        runtime: handle.fact().expect("the handle names its exact runtime"),
+        data_dir: node.data_dir.clone().unwrap(),
+        last_accepted_name: Some(name.clone()),
+        held: true,
+    };
+    let out = pipeline.restart(&StartRequest { build_id: build_id.clone(), attempt: 1, node, handle, deployed }).await;
+    assert!(out.is_ok(), "the stop answered Stopped, so it is complete and the start follows: {out:?}");
+    let view = builds.read_build(&build_id).await.unwrap();
+    let order: Vec<String> = view.steps.iter().map(|s| s.step.clone()).collect();
+    assert_eq!(order, ["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"], "{out:?}");
+    assert_eq!(
+        *observer.sent.lock().unwrap(),
+        [format!("Stop stop-node:{NODE} to {NODE}"), format!("Start start-node:{NODE} to {NODE}")],
+        "the Stopped reply is the completion: nothing waits for another"
+    );
 }
 
 /// CONTRACT (node-restart.md: the restart composes "the entire node.stop"; node-stop.md "Completion:
