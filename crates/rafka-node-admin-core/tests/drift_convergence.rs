@@ -568,7 +568,7 @@ impl Estate {
 /// runs it itself, as three operations in order: node.delete of the exited instance
 /// (`retire-node:<path>`), node.create at the same path.name (`create-node:<path>`), node.update
 /// (`update-node:<path>`). The fabric-primary dispatches nothing and the fabric lane is untouched.
-/// Exactly the lost path has a new node (new node.id), nothing is fenced by probe and nothing else is
+/// Exactly the lost path has a new node (new node.id), `fence::fence` probes nothing and nothing else is
 /// created.
 #[tokio::test]
 async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_else_is_created() {
