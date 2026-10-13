@@ -4694,6 +4694,19 @@ pub struct Running {
 }
 
 impl Running {
+    /// The birth this admin runs under: its digest's node, the birth its Node RPC door opens for.
+    pub fn birth(&self) -> MeshNode {
+        self.digest.lock().unwrap().node.clone()
+    }
+
+    /// Print what the process that started this admin reads on its stdout: the birth it runs under
+    /// (`rafka_node_admin_client::BIRTH_LINE`), by which that process reaches it over Node RPC holding
+    /// nothing else, then its control base.
+    pub fn announce(&self) {
+        println!("{}{}", rafka_node_admin_client::BIRTH_LINE, serde_json::to_string(&self.birth()).expect("a birth serializes"));
+        println!("RDM_NODE_ADMIN_API_BASE={}", self.api_base);
+    }
+
     /// The gate a stop parks and a start opens: every task this admin runs is held at its own wait
     /// while it is parked.
     pub fn gate(&self) -> &crate::park_gate::ParkGate {

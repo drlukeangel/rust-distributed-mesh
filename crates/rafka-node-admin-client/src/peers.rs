@@ -5,11 +5,24 @@
 //! fact is named, with the fact and the last thing it reported.
 
 use crate::{HeldView, NodeRpc, NodeStatus, NodeView};
-use rafka_mesh_entity::{NodeId, PathName};
+use rafka_mesh_entity::{MeshNode, NodeId, PathName};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// The line a node-admin prints on its stdout once it has started: `RDM_NODE_BIRTH=` and, as JSON, the
+/// birth its Node RPC door serves under (node id, `path.name`, endpoint, address, incarnation). The
+/// process that started the admin reaches it by this line alone ([`Peers::learn_birth`]); the door
+/// answers NotReady until it opens.
+pub const BIRTH_LINE: &str = "RDM_NODE_BIRTH=";
+
+/// The birth a line a node-admin printed names: `None` for any other line, the decode refusal named for
+/// a birth line that does not decode.
+pub fn birth_of_line(line: &str) -> Option<Result<MeshNode, String>> {
+    let json = line.strip_prefix(BIRTH_LINE)?;
+    Some(serde_json::from_str(json).map_err(|e| format!("{line}: not a birth: {e}")))
+}
 
 /// A client over a table of the mesh's nodes, taken from `node.get`.
 pub struct Peers {
@@ -44,17 +57,6 @@ impl Peers {
         }
     }
 
-    /// The node objects over this client: Build calls and view reads start at the fabric-primary
-    /// `admin` names. The control API is the handover that names it and its birth: the fabric-primary
-    /// becomes reachable here, and everything after goes over Node RPC.
-    pub async fn nodes(&self, admin: crate::NodeAdminClient) -> Result<crate::Nodes, crate::CallEnd> {
-        let fp = admin.fabric().await.map_err(crate::CallEnd::from)?.fabric_primary.ok_or_else(|| crate::CallEnd::Indeterminate { reason: "the admin's fabric names no fabric-primary".into() })?;
-        let held = admin.nodes().await.map_err(crate::CallEnd::from)?;
-        let birth = held.iter().find(|n| n.name == fp).ok_or_else(|| crate::CallEnd::Indeterminate { reason: format!("the admin's fabric names {fp} its fabric-primary and its node list holds no {fp}") })?;
-        self.learn(std::slice::from_ref(birth));
-        Ok(crate::Nodes::new(crate::BuildCarrier::new(self.rpc.clone(), fp)))
-    }
-
     /// Make reachable every node of `views` that carries its whole birth (endpoint, incarnation and
     /// address) and is not deleted, retiring the node id a `path.name` held before: a view read
     /// while a node is pending names a node that cannot be dialled yet, and it is learned by the
@@ -65,13 +67,27 @@ impl Peers {
                 continue;
             }
             let (Some(endpoint), Some(incarnation), Some(addr)) = (n.endpoint_id.as_deref().and_then(|e| e.parse().ok()), n.incarnation_id.clone(), n.transport_addr) else { continue };
-            if let Some(before) = self.held.lock().unwrap().insert(n.name.clone(), n.node_id.clone()) {
-                if before != n.node_id {
-                    self.resolver.remove_gone(&before);
-                }
-            }
-            self.resolver.insert(ResolvedNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: endpoint, incarnation, transport_addr: addr });
+            self.hold(ResolvedNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: endpoint, incarnation, transport_addr: addr });
         }
+    }
+
+    /// Make reachable the birth a node-admin printed at start ([`BIRTH_LINE`]), retiring the node id
+    /// its `path.name` held before; a birth whose endpoint is no Iroh key is refused by name.
+    pub fn learn_birth(&self, birth: &MeshNode) -> Result<(), String> {
+        let endpoint_id = birth.endpoint_id.0.parse().map_err(|e| format!("the birth of {} ({}) names the endpoint {:?}, no Iroh key: {e}", birth.name, birth.node_id, birth.endpoint_id.0))?;
+        self.hold(ResolvedNode { node_id: birth.node_id.clone(), name: birth.name.clone(), endpoint_id, incarnation: birth.incarnation.clone(), transport_addr: birth.transport_addr });
+        Ok(())
+    }
+
+    /// Resolve `node` by its id and its `path.name`; a name that moves to another node id retires
+    /// the id it held.
+    fn hold(&self, node: ResolvedNode) {
+        if let Some(before) = self.held.lock().unwrap().insert(node.name.clone(), node.node_id.clone()) {
+            if before != node.node_id {
+                self.resolver.remove_gone(&before);
+            }
+        }
+        self.resolver.insert(node);
     }
 
     /// A carrier whose calls start at the node-admin `admin`: its reads answer from that admin's

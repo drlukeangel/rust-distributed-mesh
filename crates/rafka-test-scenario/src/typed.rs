@@ -4,13 +4,14 @@
 //!
 //! The handles start at the node-admin the estate asks (`Estate::admin`): reads answer from that
 //! admin's view, and a Build call it does not own follows the redirect to the fabric-primary. The
-//! control API is the handover that names that admin and its birth, once per control base; every
-//! call after it goes over Node RPC (ops-naming step 0; the handover itself is finding 15).
+//! handover finds that admin and its birth once per control base, with no listing read: an admin the
+//! estate started printed its own birth beside its base (`rafka_node_admin_client::BIRTH_LINE`), and
+//! any other admin is the one a view the estate read over Node RPC lists at the base.
 
 use crate::estate::Estate;
 use rafka_node_admin_client::{LaunchKind as NodeKind, PathName};
 use rafka_node_admin_client::{
-    Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshSelector, MeshView, Meshes, NodeAdminClient, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
+    Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
 use std::sync::Arc;
 
@@ -39,31 +40,77 @@ impl Estate {
     pub async fn carrier(&self) -> BuildCarrier {
         let mut wire = self.wire.lock().await;
         if wire.as_ref().is_none_or(|w| w.base != self.admin) {
-            let peers = match wire.take() {
-                Some(w) => w.peers,
-                None => Arc::new(Peers::of(&[]).await),
+            // A handover after a read ended (`rehandover`) reads the views first: the admin at the base
+            // may hold a new birth.
+            let (peers, after_an_ending) = match wire.take() {
+                Some(w) => (w.peers, w.base.is_empty()),
+                None => (Arc::new(Peers::of(&[]).await), false),
             };
-            // The control base names the admin; the admin answers over Node RPC once its row carries the
-            // birth that is running (an admin a test just started on a former seat's data dir lists its
-            // old birth until it has rejoined), so the handover reads the listing until the admin it names
-            // answers `fabric.get` under the birth the listing gives.
-            let admin = NodeAdminClient::new(self.admin.clone());
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-            let entry = loop {
-                let views = admin.nodes().await.unwrap_or_else(|e| panic!("the handover: the admin at {} lists no nodes: {e}", self.admin));
-                peers.learn_known(&views);
-                let entry = views.iter().find(|n| n.admin_api_base.as_deref() == Some(self.admin.as_str())).map(|n| n.name.clone()).unwrap_or_else(|| panic!("the handover: no node-admin of {} advertises the control base {}", self.fabric_id, self.admin));
-                let answers = tokio::time::timeout(std::time::Duration::from_secs(2), Fabrics::new(peers.carrier_at(entry.clone())).get()).await;
-                if matches!(answers, Ok(Ok(_))) {
-                    break entry;
-                }
-                assert!(tokio::time::Instant::now() < deadline, "the handover: {entry} (the admin at {}) does not answer fabric.get over Node RPC within 120 s; last: {answers:?}", self.admin);
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            };
+            let entry = self.entry_at(&peers, after_an_ending).await;
             *wire = Some(Wire { base: self.admin.clone(), peers, entry });
         }
         let w = wire.as_ref().expect("the handover was made");
         w.peers.carrier_at(w.entry.clone())
+    }
+
+    /// The node-admin the control base `Estate::admin` names, reachable on `peers`. A birth an admin
+    /// this estate started printed is learned once, as printed: it is that process's own birth, which
+    /// its door opens for (node-rpc-envelope.md, "Node RPC readiness gate": the router answers NotReady
+    /// until then), so the handover waits until it answers `fabric.get`. Any other base names the
+    /// node-admin a view the estate read lists at it; a base no view read so far lists is looked for
+    /// in the views of every node-admin the estate knows, read now. `relearn` reads those first.
+    async fn entry_at(&self, peers: &Peers, relearn: bool) -> PathName {
+        let printed = std::mem::take(&mut *self.printed.lock().unwrap());
+        for (base, birth) in &printed {
+            peers.learn_birth(birth).unwrap_or_else(|e| panic!("the handover: the admin at {base} printed a birth that cannot be dialled: {e}"));
+            self.advertised.lock().unwrap().insert(base.clone(), birth.name.clone());
+        }
+        if relearn {
+            self.relearn(peers).await;
+        }
+        let named = || self.advertised.lock().unwrap().get(&self.admin).cloned();
+        let entry = match named() {
+            Some(entry) => entry,
+            None => {
+                self.relearn(peers).await;
+                named().unwrap_or_else(|| panic!("the handover: no admin this estate started printed the control base {} and no view of {} the estate reads lists a node-admin at it; bases held: {:?}", self.admin, self.fabric_id, self.advertised.lock().unwrap()))
+            }
+        };
+        if let Some((_, birth)) = printed.iter().find(|(base, _)| *base == self.admin) {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+            loop {
+                let answer = tokio::time::timeout(std::time::Duration::from_secs(2), Fabrics::new(peers.carrier_at(entry.clone())).get()).await;
+                if matches!(answer, Ok(Ok(_))) {
+                    break;
+                }
+                assert!(tokio::time::Instant::now() < deadline, "the handover: {entry} (node {}, incarnation {}, the birth the admin at {} printed) does not answer fabric.get over Node RPC within 120 s; last: {answer:?}", birth.node_id, birth.incarnation.as_str(), self.admin);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        entry
+    }
+
+    /// Read `node.get` at every node-admin the estate knows of, each answering for this Fabric within
+    /// its bound, and learn what each lists.
+    async fn relearn(&self, peers: &Peers) {
+        let admins: std::collections::BTreeSet<PathName> = self.advertised.lock().unwrap().values().cloned().collect();
+        for admin in admins {
+            if let Some(views) = node_views_of(peers, &admin, &self.fabric_id).await {
+                self.note(peers, &views);
+            }
+        }
+    }
+
+    /// Make the nodes of `views` reachable on `peers` and hold the control base each live node-admin of
+    /// them advertises.
+    fn note(&self, peers: &Peers, views: &[NodeView]) {
+        peers.learn_known(views);
+        let mut advertised = self.advertised.lock().unwrap();
+        for n in views.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, NodeStatus::Dead | NodeStatus::Deleted)) {
+            if let Some(base) = n.admin_api_base.as_deref().filter(|b| !b.is_empty()) {
+                advertised.insert(base.to_string(), n.name.clone());
+            }
+        }
     }
 
     /// A carrier whose calls start at the node-admin `admin`: its reads answer from that admin's view.
@@ -80,20 +127,13 @@ impl Estate {
     /// `node.get` of every node of every mesh `admin` holds, as that admin's view holds them, `None`
     /// when it does not answer for this Fabric within 2 s.
     pub async fn node_views_at(&self, admin: &PathName) -> Option<Vec<NodeView>> {
-        let carrier = self.carrier_at(admin).await;
-        let f = self.fabric_view_at(admin).await?;
-        let nodes = Nodes::new(carrier);
-        let mut all = Vec::new();
-        for mesh in f.meshes.iter().filter(|m| !m.nodes.is_empty()) {
-            all.extend(tokio::time::timeout(std::time::Duration::from_secs(2), nodes.get(&NodeSelector::Mesh(mesh.name.clone()))).await.ok()?.ok()?);
-        }
-        Some(all)
+        node_views_of(self.peers().await.as_ref(), admin, &self.fabric_id).await
     }
 
-    /// Forget the handover of the control base: the next call reads the admin's listing again. A wait on the
-    /// view does this when a read ends, because the admin the estate asks may have been reborn under the
-    /// base it advertises (a restarted node-admin takes its seat back with a new birth), and the listing
-    /// the control API gives is the only place the estate learns the new one.
+    /// Forget the handover of the control base: the next call makes it again, reading the views of every
+    /// node-admin the estate knows first. A wait on the view does this when a read ends, because the admin
+    /// the estate asks may hold a new birth at the base it advertises (a restarted node-admin takes its
+    /// seat back with a new birth), which a view of a live admin lists.
     async fn rehandover(&self) {
         if let Some(w) = self.wire.lock().await.as_mut() {
             w.base.clear();
@@ -109,7 +149,7 @@ impl Estate {
     /// Make the nodes of `views` reachable by the typed objects.
     async fn learn(&self, views: &[NodeView]) {
         if let Some(w) = self.wire.lock().await.as_ref() {
-            w.peers.learn_known(views);
+            self.note(&w.peers, views);
         }
     }
 
@@ -597,4 +637,16 @@ pub async fn fabric_view_of(peers: &Peers, admin: &PathName, fabric_id: &str) ->
     let fabrics = Fabrics::new(peers.carrier_at(admin.clone()));
     let f = tokio::time::timeout(std::time::Duration::from_secs(2), fabrics.get()).await.ok()?.ok()?;
     (f.id.to_string() == fabric_id).then_some(f)
+}
+
+/// `node.get` of every node of every mesh `admin` holds, over `peers`, as that admin's view holds them:
+/// `None` when it does not answer for the Fabric `fabric_id` within 2 s a call.
+pub async fn node_views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Option<Vec<NodeView>> {
+    let f = fabric_view_of(peers, admin, fabric_id).await?;
+    let nodes = Nodes::new(peers.carrier_at(admin.clone()));
+    let mut all = Vec::new();
+    for mesh in f.meshes.iter().filter(|m| !m.nodes.is_empty()) {
+        all.extend(tokio::time::timeout(std::time::Duration::from_secs(2), nodes.get(&NodeSelector::Mesh(mesh.name.clone()))).await.ok()?.ok()?);
+    }
+    Some(all)
 }

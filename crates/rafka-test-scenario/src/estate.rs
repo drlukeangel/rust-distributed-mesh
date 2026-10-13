@@ -6,6 +6,7 @@
 
 use rafka_node_admin_client::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated, ENV_EXECUTABLE_BINDINGS, ENV_EXECUTABLE_CANDIDATE};
 use rafka_node_admin_client::LaunchKind as NodeKind;
+use rafka_node_admin_client::{birth_of_line, MeshNode, BIRTH_LINE};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -57,30 +58,49 @@ pub fn bin_dir() -> PathBuf {
     }
 }
 
-/// Start a `rafka-node-admin` with `env` and wait for the control API base it advertises.
-fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, String) {
+/// What a started node-admin prints before it serves: the birth its Node RPC door serves under
+/// (`rafka_node_admin_client::BIRTH_LINE`), then its control base. The receiver gets the base and the
+/// birth once the base line is read, or the refusal of an admin that printed its base and no birth
+/// (or a birth that does not decode). The reader goes on reading the pipe after it.
+fn read_announcement(stdout: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<Result<(String, MeshNode), String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut birth: Option<Result<MeshNode, String>> = None;
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(b) = birth_of_line(&line) {
+                birth = Some(b);
+            } else if let Some(base) = line.strip_prefix("RDM_NODE_ADMIN_API_BASE=") {
+                let base = base.trim().to_string();
+                let _ = tx.send(match birth.take() {
+                    Some(Ok(b)) => Ok((base, b)),
+                    Some(Err(e)) => Err(e),
+                    None => Err(format!("printed its control base {base} and no birth ({BIRTH_LINE}) before it")),
+                });
+            }
+        }
+    });
+    rx
+}
+
+/// Start a `rafka-node-admin` with `env` and wait for what it prints before it serves: its control
+/// API base and the birth it runs under.
+fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, String, MeshNode) {
     let mut cmd = Command::new(exe);
     for (k, v) in env {
         cmd.env(k, v);
     }
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap_or_else(|e| panic!("spawn {what}: {e}"));
-    let stdout = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(base) = line.strip_prefix("RDM_NODE_ADMIN_API_BASE=") {
-                let _ = tx.send(base.trim().to_string());
-            }
-        }
-    });
-    let Ok(base) = rx.recv_timeout(Duration::from_secs(30)) else {
-        // No Estate exists yet to stop it: the process is stopped here, before the refusal.
-        let status = child.try_wait().ok().flatten().map(|s| s.to_string()).unwrap_or_else(|| "still running; killed".into());
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("{what} never advertised RDM_NODE_ADMIN_API_BASE within 30 s (pid {}, {status})", child.id());
+    let rx = read_announcement(child.stdout.take().unwrap());
+    let refusal = match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(Ok((base, birth))) => return (child, base, birth),
+        Ok(Err(e)) => format!("{what} {e}"),
+        Err(_) => format!("{what} never advertised RDM_NODE_ADMIN_API_BASE within 30 s"),
     };
-    (child, base)
+    // No Estate exists yet to stop it: the process is stopped here, before the refusal.
+    let status = child.try_wait().ok().flatten().map(|s| s.to_string()).unwrap_or_else(|| "still running; killed".into());
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("{refusal} (pid {}, {status})", child.id());
 }
 
 fn docker(args: &[&str]) -> Result<String, String> {
@@ -122,7 +142,7 @@ pub const RUNTIME_IMAGE: &str = rafka_chaos::container_faults::RUNTIME_IMAGE;
 /// is given an address on it, and it drives the host's Docker daemon through its socket. The
 /// returned child is the attached `docker run`; the container is labelled like every container of
 /// the fabric, so the estate stops and removes it with them.
-fn spawn_admin_in_container(env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf]) -> (Child, String, String) {
+fn spawn_admin_in_container(env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf]) -> (Child, String, MeshNode, String) {
     spawn_admin_in_container_within(env, root, evidence, node, exe, read_dirs, ADVERTISE_WITHIN, "docker").unwrap_or_else(|e| panic!("{}", e.message))
 }
 
@@ -189,7 +209,7 @@ pub fn remove_fabric(fabric_id: &str, artifacts: Option<&Path>) -> Vec<String> {
 /// give-up: `docker create` is awaited to completion (never abandoned in flight), then the
 /// container is started attached. `program` is the Docker client for those two calls. When `within` passes before the API base is advertised, the
 /// start is killed and everything labelled with the fabric, plus its network, is removed.
-pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf], within: Duration, program: &str) -> Result<(Child, String, String), GiveUp> {
+pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf], within: Duration, program: &str) -> Result<(Child, String, MeshNode, String), GiveUp> {
     let begun = Instant::now();
     let fabric_id = mint_fabric_id();
     let network = format!("rafka-{fabric_id}");
@@ -276,20 +296,14 @@ pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path
     }
     let started = Instant::now();
     let mut child = Command::new(program).args(["start", "-a", &name]).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().expect("docker start the Day-0 node-admin");
-    let stdout = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(base) = line.strip_prefix("RDM_NODE_ADMIN_API_BASE=") {
-                let _ = tx.send(base.trim().to_string());
-            }
-        }
-    });
-    let Ok(base) = rx.recv_timeout(within.saturating_sub(begun.elapsed())) else {
-        return Err(give_up(format!("never advertised RDM_NODE_ADMIN_API_BASE within {within:?}"), Some(child)));
+    let rx = read_announcement(child.stdout.take().unwrap());
+    let (base, birth) = match rx.recv_timeout(within.saturating_sub(begun.elapsed())) {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Err(give_up(e, Some(child))),
+        Err(_) => return Err(give_up(format!("never advertised RDM_NODE_ADMIN_API_BASE within {within:?}"), Some(child))),
     };
     eprintln!("[container] {name} advertised {base} {:?} after docker start", started.elapsed());
-    Ok((child, base, fabric_id))
+    Ok((child, base, birth, fabric_id))
 }
 
 pub fn binary(name: &str) -> PathBuf {
@@ -566,6 +580,12 @@ pub struct Estate {
     http: reqwest::Client,
     /// The handover of the typed objects (`crate::typed`): made once per control base.
     pub(crate) wire: tokio::sync::Mutex<Option<crate::typed::Wire>>,
+    /// The births the admins this estate started printed, with the control base each printed beside
+    /// it, not yet learned by the typed objects (`crate::typed`, the handover learns each once).
+    pub(crate) printed: std::sync::Mutex<Vec<(String, MeshNode)>>,
+    /// The node-admin each control base names, as a birth an admin printed or a view the estate read
+    /// lists it: how the handover finds the admin `admin` names.
+    pub(crate) advertised: std::sync::Mutex<std::collections::BTreeMap<String, rafka_node_admin_client::PathName>>,
     /// Dropped last: stops the reaper and removes the root.
     _scope: EstateScope,
 }
@@ -641,16 +661,16 @@ impl Estate {
         };
         // A container fabric's Day-0 admin runs in a container of that fabric, so every admin of
         // the fabric is a container a successor can control in the same Docker domain.
-        let (child, admin, container_fabric) = if owner.provider == "container" {
+        let (child, admin, birth, container_fabric) = if owner.provider == "container" {
             let read_dirs = external.as_ref().map(ExternalLaunch::read_dirs).unwrap_or_default();
             spawn_admin_in_container(env, &root, &evidence, &format!("{mesh}.admin.1"), &admin_exe, &read_dirs)
         } else {
-            let (c, a) = spawn_admin(&admin_exe, &env, "bootstrap node-admin");
-            (c, a, String::new())
+            let (c, a, b) = spawn_admin(&admin_exe, &env, "bootstrap node-admin");
+            (c, a, b, String::new())
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), wire: tokio::sync::Mutex::new(None), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin: admin.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(vec![(admin, birth)]), advertised: Default::default(), _scope: scope };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when it first answers. `fabric.get` at it names the seat and the Fabric.
@@ -1141,8 +1161,9 @@ impl Estate {
                 binary("rafka-node-admin")
             }
         };
-        let (child, base) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
+        let (child, base, birth) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
         self.restarted.push(child);
+        self.printed.lock().unwrap().push((base.clone(), birth));
         base
     }
 
