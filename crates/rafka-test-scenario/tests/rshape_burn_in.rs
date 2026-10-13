@@ -1937,8 +1937,8 @@ async fn kill_and_recover(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     ev
 }
 
-/// The fabric-primary leaves through a retiring Build it executes itself: the drain makes its birth
-/// Draining (not an election candidate), the seat moves to another admin, then it stops. The seat's
+/// The fabric-primary leaves through a retiring Build it executes itself: its seats move to another
+/// admin (SeatTransfer), then it stops, its stop declaring it Leaving (not an election candidate). The seat's
 /// move is read from the election spans afterwards; here the host's observation of the process
 /// exit is taken so the order has a clock that does not depend on the dying process's own spans.
 async fn hand_off(f: &mut Formed, a: &mut Authority, st: &Stable, scenario: &str, inv: &mut Invariants) -> (Stable, Value) {
@@ -2164,7 +2164,7 @@ fn check_election_history(a: &Authority, spans: &[Value], inv: &mut Invariants) 
             assert!(heard, "{}: {observer} moved the seat with the old fabric-primary still a ready candidate and no announcement from the new holder: {inputs}", ev["scenario"]);
         }
         let terminate: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
-        let mark: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "DrainNode" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
+        let mark: Vec<&&Value> = steps.iter().filter(|sp| sp["attributes"]["step"] == "StopNode" && sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["build_id"] == ev["build_id"]).collect();
         // The retiring admin executes its own retirement: its TerminateRuntime step signals its own
         // process, so the step's span closes at the shutdown flush and never records an outcome. The
         // terminal observation is the host's: the process is gone. The step's start is recorded
@@ -2174,7 +2174,7 @@ fn check_election_history(a: &Authority, spans: &[Value], inv: &mut Invariants) 
         assert!(after.is_empty(), "{}: the retired fabric-primary won again after the hand-off: {after:?}", ev["scenario"]);
         out.push(json!({
             "scenario": ev["scenario"], "old": old_name, "new": ev["new_fabric_primary"], "request_ns": req, "election_span": first["span_id"], "election_observer": first["attributes"]["observer"], "election_start_ns": e, "election_inputs": inputs,
-            "mark_draining_steps": mark.iter().map(|sp| json!({"outcome": sp["attributes"]["outcome"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
+            "stop_node_steps": mark.iter().map(|sp| json!({"outcome": sp["attributes"]["outcome"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
             "terminate_step_exported": !terminate.is_empty(), "terminate_step_start_ns": terminate_start, "terminate_step_outcomes": terminate.iter().map(|sp| sp["attributes"]["outcome"].clone()).collect::<Vec<_>>(),
             "old_process_gone_ns": gone, "election_before_process_gone_ms": (gone - e) / 1_000_000,
             "election_after_terminate_step_began_ms": terminate_start.map(|t| (e as i128 - t as i128) / 1_000_000),
@@ -2398,7 +2398,7 @@ async fn authority_run(cell: &str, shape: Shape) {
 /// a mesh without the fabric-primary loses its current primary to a SIGKILL and the surviving admin
 /// takes the seat (C1); the other admin of a mesh restarts through a Build as the same NodeId in a new
 /// birth (C3); the fabric-primary is never killed, it is retired by a Build it executes itself,
-/// its draining birth is not an election candidate, and the new fabric-primary's election is
+/// its stopping birth is not an election candidate, and the new fabric-primary's election is
 /// announced, with the old birth not a ready candidate, before the host sees the old process gone (C2); a
 /// restarted primary keeps its NodeId and holds no seat while the admin that filled it lives, a late admin takes no seat from a living
 /// holder, a retired path cannot be restarted and a retired NodeId never returns,
@@ -3044,7 +3044,9 @@ fn check_restart_chain(spans: &[Value], rec: &Value) -> Value {
     steps.sort_by_key(|st| start_ns(st));
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let pos = |n: &str| names.iter().position(|x| x == n).unwrap_or_else(|| panic!("{node}: restart pipeline has no `{n}` step: {names:?}"));
-    assert!(pos("NodeRestarting") < pos("DrainNode") && pos("DrainNode") < pos("AwaitNodeDrained") && pos("AwaitNodeDrained") < pos("StopNode") && pos("StopNode") < pos("AwaitNodeLeft") && pos("AwaitNodeLeft") < pos("TerminateRuntime"), "{node}: restart steps run NodeRestarting -> DrainNode -> AwaitNodeDrained -> StopNode -> AwaitNodeLeft -> TerminateRuntime: {names:?}");
+    assert!(pos("NodeRestarting") < pos("StopNode") && pos("StopNode") < pos("AwaitNodeLeft") && pos("AwaitNodeLeft") < pos("StartNode") && pos("StartNode") < pos("WaitForNodeReady"), "{node}: restart steps run NodeRestarting -> StopNode -> AwaitNodeLeft -> StartNode -> WaitForNodeReady: {names:?}");
+    // The stop leaves the live process stopped and the same process starts again: a restart deploys nothing and terminates nothing.
+    assert!(!names.iter().any(|n| n == "DeployRuntime" || n == "TerminateRuntime"), "{node}: a restart deploys nothing and terminates nothing: {names:?}");
     let restarting = named(spans, "rdm.node_admin.node.update.via-node-restarting").into_iter().filter(|sp| sp["attributes"]["node_id"] == id.as_str() && sp["attributes"]["build_id"] == bid.as_str()).collect::<Vec<_>>();
     assert!(!restarting.is_empty(), "{node}: the executor published no NodeRestarting for {id}");
     assert!(restarting.iter().all(|sp| sp["attributes"]["incarnation_id"] == old.as_str()), "{node}: NodeRestarting names the old birth {old}: {restarting:?}");
@@ -3127,7 +3129,7 @@ async fn restart_run(cell: &str, shape: Shape) {
     let elections = check_election_history(&a, &spans, &mut inv);
     let imported = check_imported_mechanism(&f, &spans, &mut inv);
     let chains: Vec<Value> = records.iter().map(|r| check_restart_chain(&spans, r)).collect();
-    inv.holds("each restart was a Build the rectifier executed: REST -> reconcile (restart-node) -> node.update.via-build -> pipeline -> NodeRestarting, DrainNode, AwaitNodeDrained, StopNode, AwaitNodeLeft, TerminateRuntime in order; NodeRestarting named the old birth; the new birth announced ready; no NodeDeleted for the node", true, json!({"restarts": chains.len()}));
+    inv.holds("each restart was a Build the rectifier executed: REST -> reconcile (restart-node) -> node.update.via-build -> pipeline -> NodeRestarting, StopNode, AwaitNodeLeft, StartNode, WaitForNodeReady in order, no DeployRuntime or TerminateRuntime; NodeRestarting named the old birth; the new birth announced ready; no NodeDeleted for the node", true, json!({"restarts": chains.len()}));
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([f.build_id.clone()]), "the only Build ever accepted is the formation Build: four restarts are four attempts of it");
     let services = check_services(&spans, &mut inv);
@@ -3324,7 +3326,7 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     let node = s(&rec["node"]);
     let (bid, id, old) = (s(&rec["build_id"]), s(&rec["node_id"]), s(&rec["old_incarnation_id"]));
     // A removal is `retire-node:<path>`; a replace is ONE `replace-node:<path>` operation (the predecessor
-    // drains, stops parked and is renamed `<path>.old`, the successor is created at the path), and the
+    // stops, its process alive, and is renamed `<path>.old`, the successor is created at the path), and the
     // old identity's NodeDeleted is the recipe's later `delete-node:<path>.old`, an attempt its own
     // request opened, after the successor's Ready: the chain below follows that delete; the replace
     // operation's own order is checked after (`replace_steps_of`).
@@ -3352,10 +3354,10 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let mut last = 0usize;
     let wanted: &[&str] = if replace {
-        // node.delete of the parked birth: its stop steps are done, nothing is released but its id and name.
+        // node.delete of the stopped birth: its stop steps are done, nothing is released but its id and name.
         &["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]
     } else {
-        &["NodeDeleting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
+        &["NodeDeleting", "StopNode", "AwaitNodeLeft", "TerminateRuntime", "NodeDeleted", "RemoveTopologyMembership", "Complete"]
     };
     for want in wanted.iter().copied() {
         let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the retire pipeline has no `{want}` step: {names:?}"));
@@ -3370,8 +3372,8 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], old.as_str(), "{node}: NodeDeleted names the exact old birth");
     assert!(deleting.iter().all(|sp| sp["attributes"]["incarnation_id"].as_str().is_none_or(|i| i == old)), "{node}: NodeDeleting names the exact old birth");
     if replace {
-        for never in ["DrainNode", "StopNode", "ReleaseStorage"] {
-            assert!(!names.iter().any(|x| x == never), "{node}: the delete of the parked {target} runs no `{never}` step: {names:?}");
+        for never in ["SeatTransfer", "StopNode", "AwaitNodeLeft", "ReleaseStorage"] {
+            assert!(!names.iter().any(|x| x == never), "{node}: the delete of the stopped {target} runs no `{never}` step: {names:?}");
         }
     }
     let replace_steps = replace.then(|| replace_steps_of(spans, &node, &bid));
@@ -3384,7 +3386,7 @@ fn check_retire_chain(spans: &[Value], rec: &Value) -> Value {
 }
 
 /// The replace operation `replace-node:<node>` of `build_id` ran Rafka's recipe (node-replace.md 1-3):
-/// the predecessor drains and stops (parked), is renamed `<node>.old`, and node.create starts the
+/// the predecessor stops (its process alive), is renamed `<node>.old`, and node.create starts the
 /// successor at the freed name; it deletes nothing (no NodeDeleting, terminal proof, storage hand-over,
 /// NodeDeleted or ReleaseStorage), the delete being the recipe's later step.
 fn replace_steps_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> {
@@ -3400,39 +3402,41 @@ fn replace_steps_of(spans: &[Value], node: &str, build_id: &str) -> Vec<String> 
     steps.sort_by_key(|st| start_ns(st));
     let names: Vec<String> = steps.iter().map(|st| s(&st["attributes"]["step"])).collect();
     let mut last = 0usize;
-    for want in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "RenamePredecessor", "AllocateIdentity", "DeployRuntime", "WaitForNodeReady", "Complete"] {
+    for want in ["StopNode", "AwaitNodeLeft", "RenamePredecessor", "AllocateIdentity", "DeployRuntime", "WaitForNodeReady", "Complete"] {
         let at = names.iter().position(|x| x == want).unwrap_or_else(|| panic!("{node}: the replace pipeline has no `{want}` step: {names:?}"));
         assert!(at >= last, "{node}: replace steps out of order at `{want}`: {names:?}");
         last = at;
     }
     for never in ["NodeDeleting", "TerminateRuntime", "HandoffStorage", "NodeDeleted", "ReleaseStorage"] {
-        assert!(!names.iter().any(|x| x == never), "{node}: a replace runs no `{never}` step, the predecessor stays parked until the recipe's delete: {names:?}");
+        assert!(!names.iter().any(|x| x == never), "{node}: a replace runs no `{never}` step, the predecessor stays stopped until the recipe's delete: {names:?}");
     }
     names
 }
 
-/// The drain the retiring node obeyed, read from its own span and the pipeline's: the `drain-node`
-/// the executor sent, the node's own `via-drain-node` handling, the `node-drained` completion the
-/// commanding admin accepted, the status declarations the authority decided from the node, and the
-/// work the node refused or finished.
-fn drain_evidence(spans: &[Value], rec: &Value) -> Value {
+/// The stop the retiring node ran, read from its own spans and the executor's (node-stop.md steps 2-3):
+/// the node's `via-stop-node` handling and its receipt (`established`: the eligible work in flight
+/// reached zero; `deadline`: the bound ended it), the node's own `node.connections.delete { All }` inside
+/// it, the stop's own transport cut, the `stop-node` the executor sent and its `stopped` reply (the
+/// reply is the stop's completion: no upward call follows), the status declarations its receiver
+/// decided from the node, and the probes it served.
+fn stop_evidence(spans: &[Value], rec: &Value) -> Value {
     let node = s(&rec["node"]);
     let id = s(&rec["node_id"]);
-    let applied: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-drain-node").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
+    let served: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-stop-node").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
+    let all: Vec<&Value> = named(spans, "rdm.node_admin.node.connections.delete.via-stop").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
+    let cut: Vec<&Value> = named(spans, "rdm.node_admin.node.update.via-stop-transport-cut").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect();
     let probes = named(spans, "rdm.node_admin.status.update.via-probe").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).count();
     let mut decls: Vec<&Value> = named(spans, "rdm.node_admin.status.update.via-declaration").into_iter().filter(|sp| sp["attributes"]["sender"] == node.as_str()).collect();
     decls.sort_by_key(|sp| start_ns(sp));
-    let drain = named(spans, "rdm.mesh.node.update.via-drain").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str()).collect::<Vec<_>>();
-    let sent = named(spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str() && sp["attributes"]["command"] == "drain-node").collect::<Vec<_>>();
-    let accepted = named(spans, "rdm.node_admin.status.update.via-completion-accepted").into_iter().filter(|sp| sp["attributes"]["subject"] == id.as_str() && sp["attributes"]["op"] == "node-drained").collect::<Vec<_>>();
+    let sent = named(spans, "rdm.node_admin.node.update.via-command-sent").into_iter().filter(|sp| sp["attributes"]["node"] == node.as_str() && sp["attributes"]["command"] == "stop-node").collect::<Vec<_>>();
     json!({
         "node": node, "node_id": id,
-        "drain_node": applied.iter().map(|sp| json!({"span": sp["span_id"], "commander": sp["attributes"]["commander"], "in_flight_at_zero": sp["attributes"]["in_flight_at_zero"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
-        "drain_command_sent": sent.iter().map(|sp| json!({"span": sp["span_id"], "admission": sp["attributes"]["admission"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
-        "node_drained_accepted": accepted.iter().map(|sp| json!({"span": sp["span_id"], "outcome": sp["attributes"]["outcome"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
+        "stop_node": served.iter().map(|sp| json!({"span": sp["span_id"], "trace": sp["trace_id"], "commander": sp["attributes"]["commander"], "receipt": sp["attributes"]["receipt"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
+        "connections_delete_all": all.iter().map(|sp| json!({"span": sp["span_id"], "parent": sp["parent_span_id"], "start_ns": start_ns(sp), "end_ns": sp["end_unix_nano"]})).collect::<Vec<_>>(),
+        "transport_cut": cut.iter().map(|sp| json!({"span": sp["span_id"], "neighbours": sp["attributes"]["neighbours"], "pooled": sp["attributes"]["pooled"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
+        "stop_command_sent": sent.iter().map(|sp| json!({"span": sp["span_id"], "admission": sp["attributes"]["admission"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
         "probes_served": probes,
-        "declarations_from_the_node": decls.iter().map(|sp| json!({"span": sp["span_id"], "op": sp["attributes"]["op"], "outcome": sp["attributes"]["outcome"], "detail": sp["attributes"]["detail"], "receiver_is_primary": sp["attributes"]["receiver_is_primary"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
-        "process_drain": drain.iter().map(|sp| json!({"span": sp["span_id"], "deadline_ms": sp["attributes"]["deadline_ms"], "in_flight_at_deadline": sp["attributes"]["in_flight_at_deadline"]})).collect::<Vec<_>>(),
+        "declarations_from_the_node": decls.iter().map(|sp| json!({"span": sp["span_id"], "op": sp["attributes"]["op"], "state": sp["attributes"]["state"], "outcome": sp["attributes"]["outcome"], "detail": sp["attributes"]["detail"], "receiver_is_primary": sp["attributes"]["receiver_is_primary"], "start_ns": start_ns(sp)})).collect::<Vec<_>>(),
     })
 }
 
@@ -3870,9 +3874,9 @@ fn exact_rt_from_record(r: &Value, retired: &Value) -> Rt {
 }
 
 /// The provider's action meets a held runtime: with the node's exact runtime held (acknowledged by the
-/// provider) the fabric-primary is asked to restart it. The Build's attempt cannot drain a runtime that
+/// provider) the fabric-primary is asked to restart it. The Build's attempt cannot stop a runtime that
 /// does not answer; what it does is observed from the Build's own projection and the node's view, every
-/// 500 ms, for as long as the hold lasts (the drain call's 10 s budget plus two staleness windows). Silence is never death: the node
+/// 500 ms, for as long as the hold lasts (10 s plus two staleness windows). Silence is never death: the node
 /// stays listed under its NodeId and no replacement is started. The hold is then released
 /// (acknowledged) and the Build must complete with the node ready under a new incarnation, within the
 /// 60 s a restart is given, as the same logical node.
@@ -3886,9 +3890,10 @@ async fn hold_restart(f: &mut Formed, a: &mut Authority, st: &Stable, node: &str
     let attempt_before = try_json(&st.fp_base(), &format!("/api/builds?id={fabric_build}")).await.map(|b| b["attempt"].as_u64().unwrap());
     let build_id = a.write(f, st, "C17: node.restart of a node whose runtime is held", "POST", &format!("/api/nodes/{node}/restart"), &Value::Null).await;
     assert_eq!(build_id, fabric_build, "{node}: the restart is an attempt of the accepted Build");
-    // The drain call the restart sends is a Node RPC with its default overall budget (10 s,
-    // `CallOptions::default`); the observation outlasts it by two staleness windows, so what the attempt
-    // does with a drain call that met a held runtime is seen, whichever way it goes.
+    // The stop-node the restart sends meets a runtime that reads nothing: its send budget is 5 s
+    // (node_commands.rs `send_command`, `NodeCommand::Stop`); the observation outlasts it by two
+    // staleness windows, so what the attempt does with a stop that met a held runtime is seen,
+    // whichever way it goes.
     let window = 10_000 + 2 * std::env::var("RDM_STALENESS_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(30_000);
     let until = Instant::now() + Duration::from_millis(window);
     let mut seen: Vec<Value> = Vec::new();
@@ -3959,7 +3964,7 @@ fn draining_refusal(out: &Value) -> Option<String> {
     }
 }
 
-async fn drain_run(cell: &str, shape: Shape) {
+async fn retire_run(cell: &str, shape: Shape) {
     let mut f = form(cell, shape).await;
     let mut inv = Invariants::default();
     let nodes = settle(&f).await;
@@ -3973,7 +3978,7 @@ async fn drain_run(cell: &str, shape: Shape) {
     inv.holds("steady traffic before any change: every operation replied", steady == a.traffic.ops.len(), json!({"issued": a.traffic.ops.len(), "replied": steady}));
 
     // C15 + C16 on a broker, then on a gateway: the two routable work shapes. Traffic aimed at the node
-    // runs through its drain; the retirement is the fabric-primary's Build.
+    // runs through its stop; the retirement is the fabric-primary's Build.
     let broker = format!("mesh1.broker.{}", f.shape.broker);
     let (rb, st1) = retire_via_build(&mut f, &mut a, &st, &broker, "C15/C16 broker", Removal::Delete, &mut inv).await;
     a.traffic.burst(&f, 4, "steady-between").await;
@@ -4017,21 +4022,27 @@ async fn drain_run(cell: &str, shape: Shape) {
     let fence = check_writes_and_fence(&f, &a, &spans, &mut inv);
     let elections = check_election_history(&a, &spans, &mut inv);
     let imported = check_imported_mechanism(&f, &spans, &mut inv);
-    let mut drains = Vec::new();
+    let mut stops = Vec::new();
     for r in [&rb, &rg] {
         let chain = check_retire_chain(&spans, r);
-        let drain = drain_evidence(&spans, r);
+        let stop = stop_evidence(&spans, r);
         let node = s(&r["node"]);
-        // The drain the admin commanded, the node's handling of it, and the completion call it made back.
-        let applied = drain["drain_node"].as_array().unwrap();
-        assert!(!applied.is_empty(), "{node}: no drain-node served by the retiring node: {drain}");
-        assert!(applied.iter().all(|x| x["in_flight_at_zero"] == "true" || x["in_flight_at_zero"] == true), "{node}: the node called node-drained before its in-flight work reached zero: {drain}");
-        assert!(drain["node_drained_accepted"].as_array().unwrap().iter().any(|x| x["outcome"] == "applied"), "{node}: the commanding admin accepted no node-drained: {drain}");
-        // Ordinary work that reaches a draining routable node is refused by name before its body is read:
-        // a broker answers the typed `Draining` reply, a gateway refuses to carry (`node is draining`).
+        // The stop the executor commanded and the node's handling of it: its whole node.connections.delete
+        // { All } let the eligible work in flight reach zero (an `established` receipt, never a deadline).
+        let served = stop["stop_node"].as_array().unwrap();
+        assert!(!served.is_empty(), "{node}: no stop-node served by the retiring node: {stop}");
+        assert!(served.iter().all(|x| x["receipt"] == "established"), "{node}: the node's stop ended its in-flight work at the deadline, not at zero: {stop}");
+        let all = stop["connections_delete_all"].as_array().unwrap();
+        assert_eq!(all.len(), 1, "{node}: the stop ran its node.connections.delete {{ All }} once: {stop}");
+        assert!(served.iter().any(|x| x["span"] == all[0]["parent"]), "{node}: the All is the stop's own step, inside its via-stop-node: {stop}");
+        let cuts = stop["transport_cut"].as_array().unwrap();
+        assert_eq!(cuts.len(), 1, "{node}: the stop cut its own transport once: {stop}");
+        assert!(cuts[0]["start_ns"].as_u64().unwrap() >= all[0]["end_ns"].as_u64().unwrap_or(u64::MAX), "{node}: the transport cut follows the whole All: {stop}");
+        // Ordinary work that reaches a routable node whose connections are being deleted is refused by name
+        // before its body is read: a broker answers the typed `Draining` reply, a gateway refuses to carry.
         // No handler ran for any of it and none of its values were stored (account() checked the trace
-        // and the final state). None was refused before the drain began.
-        let t_apply = applied.iter().map(|x| x["start_ns"].as_u64().unwrap()).min().unwrap();
+        // and the final state). None was refused before the All began.
+        let t_apply = all[0]["start_ns"].as_u64().unwrap();
         let hits: Vec<Value> = a
             .traffic
             .ops
@@ -4039,21 +4050,21 @@ async fn drain_run(cell: &str, shape: Shape) {
             .filter(|(o, _)| o.target == node || o.via.as_deref() == Some(node.as_str()))
             .filter_map(|(o, c)| draining_refusal(&c.out).map(|why| json!({"seq": o.seq, "key": o.key, "target": o.target, "via": o.via, "started_ms": c.started_ms, "finished_ms": c.finished_ms, "refusal": why})))
             .collect();
-        assert!(!hits.is_empty(), "{node}: no ordinary work was refused as draining while it retired: the window held no refusal ({drain})");
-        assert!(hits.iter().all(|h| h["finished_ms"].as_u64().unwrap() >= t_apply / 1_000_000), "{node}: a draining refusal answered before the node applied Draining ({t_apply}): {hits:?}");
-        // The status family stays admissible while Draining: the node's own declarations (its Draining and
-        // its Leaving) made after the apply are decided by the authority, `applied`.
-        let decided: Vec<&Value> = drain["declarations_from_the_node"].as_array().unwrap().iter().filter(|d| d["start_ns"].as_u64().unwrap() >= t_apply && d["outcome"] == "applied").collect();
-        assert!(decided.len() >= 2, "{node}: the authority decided fewer than two (Draining, Leaving) declarations from the draining node after the apply: {drain}");
-        // The caller's certainty: the admin's drain command was admitted.
-        let receipts = drain["drain_command_sent"].as_array().unwrap();
-        assert!(receipts.iter().any(|r| r["admission"] == "admitted"), "{node}: the drain command was not admitted: {drain}");
-        drains.push(json!({"node": node, "chain": chain, "drain": drain, "ordinary_work_refused_while_draining": hits.len(), "refusals": hits, "declarations_decided_after_apply": decided.len(), "apply_started_ns": t_apply}));
+        assert!(!hits.is_empty(), "{node}: no ordinary work was refused while its connections were deleted: the window held no refusal ({stop})");
+        assert!(hits.iter().all(|h| h["finished_ms"].as_u64().unwrap() >= t_apply / 1_000_000), "{node}: a refusal answered before the node's All began ({t_apply}): {hits:?}");
+        // The status family stays admissible through the All: the node's own Leaving declaration (node-stop.md
+        // step 3: the only one its stop makes), after the All began, is decided by its receiver, `applied`.
+        let decided: Vec<&Value> = stop["declarations_from_the_node"].as_array().unwrap().iter().filter(|d| d["start_ns"].as_u64().unwrap() >= t_apply && d["outcome"] == "applied" && d["state"] == "Leaving").collect();
+        assert!(!decided.is_empty(), "{node}: no receiver decided a Leaving declaration from the node after its All began: {stop}");
+        // The caller's certainty: the stop's reply is `stopped`, its completion.
+        let receipts = stop["stop_command_sent"].as_array().unwrap();
+        assert!(receipts.iter().any(|r| r["admission"] == "stopped"), "{node}: the stop-node was not answered stopped: {stop}");
+        stops.push(json!({"node": node, "chain": chain, "stop": stop, "ordinary_work_refused_during_the_all": hits.len(), "refusals": hits, "leaving_decided_after_apply": decided.len(), "apply_started_ns": t_apply}));
     }
     inv.holds(
-        "C15/C16: each retiring node obeyed drain-node and called node-drained once its in-flight work reached zero; the retire steps ran DrainNode, AwaitNodeDrained, StopNode, AwaitNodeLeft, TerminateRuntime, NodeDeleted in order; the exact old birth is terminal in the provider and its NodeDeleted names it",
+        "C15/C16: each retiring node ran its stop: its whole node.connections.delete { All } reached zero in-flight work, then its Leaving, then its own transport cut, and the executor received `stopped`; the retire steps ran NodeDeleting, StopNode, AwaitNodeLeft, TerminateRuntime, NodeDeleted in order; the exact old birth is terminal in the provider and its NodeDeleted names it",
         true,
-        json!({"drains": drains}),
+        json!({"stops": stops}),
     );
     let all_creates: BTreeSet<String> = named(&spans, "rdm.node_admin.build.create.via-rest").into_iter().filter(|sp| !s(&sp["attributes"]["build_id"]).is_empty()).map(|sp| s(&sp["attributes"]["build_id"])).collect();
     assert_eq!(all_creates, BTreeSet::from([f.build_id.clone(), s(&rb["build_id"]), s(&rg["build_id"])]), "the Builds accepted are the formation and the two retirements; holding a runtime accepted none");
@@ -4097,7 +4108,7 @@ async fn drain_run(cell: &str, shape: Shape) {
             inv,
             extra: json!({
                 "authorities_at_formation": authorities, "connections_at_formation": connections, "provider_after_stop": left, "services": services, "formation_chains": formation,
-                "retirements": [rb, rg], "drains": drains, "hold": hold, "hold_restart": hold_restart, "scenario_events": a.events, "topology_writes": a.writes, "fence": fence, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
+                "retirements": [rb, rg], "stops": stops, "hold": hold, "hold_restart": hold_restart, "scenario_events": a.events, "topology_writes": a.writes, "fence": fence, "attempts": attempts, "elections": elections, "imported_mechanism": imported,
                 "final_launches": retired_runtimes, "scenarios": ["C15", "C16", "C17"],
                 "ledger": {"issued": a.traffic.ops.len(), "buckets": accounted.buckets.iter().map(|(k, v)| (format!("{k:?}"), *v)).collect::<BTreeMap<_, _>>(), "class_detail": accounted.summary, "indeterminate": accounted.indeterminate, "protocol_refusals": accounted.refusals, "verification_reads": verification.len()},
                 "schedule": {"seed": f.seed, "generator": "rafka_test_scenario::model::Rng (SplitMix64)", "retired": [broker, gateway], "held": compute},
@@ -4108,12 +4119,13 @@ async fn drain_run(cell: &str, shape: Shape) {
     );
 }
 
-/// CONTRACT: drain, retire and a held runtime are proven against the exact runtime the provider holds.
+/// CONTRACT: the stop, retire and a held runtime are proven against the exact runtime the provider holds.
 /// A broker and a gateway (the routable work shapes) are retired by the fabric-primary's Build under
-/// seeded traffic aimed at them: each retiring node obeys drain-node and calls node-drained once its
-/// in-flight work reaches zero, and the retire steps run in their documented order (DrainNode,
-/// AwaitNodeDrained, StopNode, AwaitNodeLeft, TerminateRuntime, NodeDeleted); ordinary work that reaches a
-/// draining node is refused with the typed `Draining` reply before its body is read, with no handler run and no
+/// seeded traffic aimed at them: each retiring node runs its stop (its whole node.connections.delete
+/// { All } until its in-flight work reaches zero, its Leaving, its own transport cut) and answers
+/// `stopped`, and the retire steps run in their documented order (NodeDeleting, StopNode, AwaitNodeLeft,
+/// TerminateRuntime, NodeDeleted); ordinary work that reaches a node whose connections are being deleted
+/// is refused with the typed `Draining` reply before its body is read, with no handler run and no
 /// value stored; every operation ends in exactly one typed bucket, an Indeterminate put is reported
 /// applied or not and never re-sent; the old birth's runtime is terminal in the provider, its NodeDeleted
 /// names the exact birth, and the NodeId stays out of every admin's view for a staleness window. A
@@ -4124,7 +4136,7 @@ async fn drain_run(cell: &str, shape: Shape) {
 /// Indeterminate put re-sent, a retired NodeId back in a view.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mock_drain_and_retire_preserve_status_and_terminal_proof() {
-    drain_run("mock_drain_and_retire_preserve_status_and_terminal_proof", any_tier()).await;
+    retire_run("mock_drain_and_retire_preserve_status_and_terminal_proof", any_tier()).await;
 }
 
 
@@ -6762,7 +6774,7 @@ async fn mock_soak_partition_preserves_continuous_invariants() {
 }
 
 /// CONTRACT (S4, lifecycle, #2949): the same estate, traffic and ledger, with the seeded draw
-/// limited to the life of role nodes: restart, retire (delete: drain then terminate), replacement
+/// limited to the life of role nodes: restart, retire (delete: stop then terminate), replacement
 /// at the same path.name as a new NodeId, and legal capacity re-add (grow to the lowest free
 /// ordinal), each as a Build the rectifier executes. After every action the view holds exactly the
 /// model's counts, the retired NodeId names no node (a call to it is refused, never dispatched)
