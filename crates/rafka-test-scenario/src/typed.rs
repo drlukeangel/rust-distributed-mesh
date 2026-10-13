@@ -288,6 +288,20 @@ impl Estate {
         .await
     }
 
+    /// The view once every `(mesh, kind)` cohort of the fabric holds exactly its count of nodes in `want`, every
+    /// one ready-for-traffic: the view of the whole fabric, every mesh and kind named, as `node.get` reads it at
+    /// the admin the estate asks. `within` bounds the wait and a view that does not settle is named.
+    pub async fn settles_to_counts(&self, want: std::collections::BTreeMap<(String, NodeKind), usize>, within: std::time::Duration) -> Vec<NodeView> {
+        self.until_view(&format!("the view settles on {want:?}, every node ready-for-traffic"), within, |views| {
+            let mut have: std::collections::BTreeMap<(String, NodeKind), usize> = std::collections::BTreeMap::new();
+            for n in views {
+                *have.entry((n.mesh.clone(), n.kind)).or_default() += 1;
+            }
+            (have == want && views.iter().all(|n| n.status == NodeStatus::ReadyForTraffic)).then(|| views.to_vec())
+        })
+        .await
+    }
+
     /// Wait until the node `witness` holds the exact birth the admin's view lists for `node` (same node id,
     /// same incarnation): a node learns a peer's birth by gossip, not from the admin's settled view, so
     /// a call through a witness is made only once the witness's own held view of the mesh holds the birth

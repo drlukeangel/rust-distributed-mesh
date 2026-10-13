@@ -106,7 +106,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     assert_eq!(estate.owner.provider, provider, "the cell runs on its provider");
     let root = estate.root.clone();
     let cfg = Config::mm(seed, secs, rafka_mesh_transport::membership::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval(), tickle_round());
-    let driver = Driver::new(estate, cfg).await;
+    let driver = Driver::new(estate, cfg, crate::build_log::build_read).await;
     let progress = driver.progress();
     // The run is its own task: a panic inside it still leaves the seed and the executed sequence.
     let joined = tokio::spawn(driver.run()).await;
