@@ -177,13 +177,21 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         assert_eq!(s(&a["mesh_id"]), mesh_ids[&s(&n["mesh"])]);
     }
 
-    // The Digest a peer mesh's admin heard from the restarted birth (membership.rs `note_member_state`:
-    // `via-member-state`, one span per state change of a peer mesh's member) names its incarnation
-    // and its node as Crockford ids, and they are the ids the views show.
-    let heard = named(&spans, "rdm.mesh.membership.update.via-member-state")
+    // The Digest a peer mesh's admin heard when the restarted birth came back (membership.rs
+    // `note_member_state`: `via-member-state`, one span per state change of a peer mesh's member).
+    // mesh1.admin.1 hears mesh2.rpc.2 become ready from Pending once at its join and once at each of
+    // its two restarts (Pending follows the restart's Leaving); the last is the second restart's
+    // return. Its Digest names the incarnation and the node as Crockford ids, the ones the views show.
+    let mut returned: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-member-state")
         .into_iter()
-        .find(|sp| sp["attributes"]["member"] == "mesh2.rpc.2" && sp["attributes"]["incarnation_id"] == after["incarnation_id"] && s(&sp["attributes"]["node"]).starts_with("mesh1."))
-        .unwrap_or_else(|| panic!("no mesh1 admin heard the Digest of the restarted birth {}", after["incarnation_id"]));
+        .filter(|sp| {
+            let a = &sp["attributes"];
+            a["node"] == "mesh1.admin.1" && a["member"] == "mesh2.rpc.2" && a["incarnation_id"] == after["incarnation_id"] && a["prior"] == "Pending" && a["status"] == "ReadyForTraffic"
+        })
+        .collect();
+    returned.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
+    assert!(returned.len() >= 3, "mesh1.admin.1 heard mesh2.rpc.2's incarnation {} ready from Pending at its join and at each restart: {returned:?}", after["incarnation_id"]);
+    let heard = returned.last().unwrap();
     canonical("heard Digest incarnation_id", &heard["attributes"]["incarnation_id"]);
     assert_eq!(canonical("heard Digest member_id", &heard["attributes"]["member_id"]), s(&before["node_id"]), "the Digest names the node the views show");
 
