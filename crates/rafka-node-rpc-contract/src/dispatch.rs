@@ -2,7 +2,7 @@
 //! node-rpc.md §16, §26, §40).
 //!
 //! [`RequestAssembly`] is the server's request-direction state machine. A
-//! request reaches its protocol handler only after the fence was read and its
+//! request reaches its protocol handler only after the target was read and its
 //! op checked against what this process serves (no receiver refuses a call for
 //! the node id it names, R-UC1a),
 //! the length decoded, the complete payload read within the protocol ceiling, the
@@ -36,7 +36,7 @@ pub enum ServerAction {
     },
     /// Reset with `424 PROTOCOL_VIOLATION`; the handler never runs.
     ResetViolation {
-        /// The op, when the fence could be read.
+        /// The op, when the target could be read.
         op: Option<u8>,
         /// Which rule the request broke.
         reason: &'static str,
@@ -51,7 +51,7 @@ pub enum ServerAction {
     Dispatch {
         /// The op.
         op: u8,
-        /// The fence and context.
+        /// The target and context.
         header: RequestHeader,
         /// The request body.
         payload: Vec<u8>,
@@ -95,7 +95,7 @@ impl<'c> RequestAssembly<'c> {
             let read = match parse_request_target(&self.buf, |t| self.catalog.request_ceiling(t)) {
                 Ok(read) => read,
                 Err(RequestHead::Unserved { op }) => return self.end(ServerAction::ResetUnserved { op }),
-                Err(RequestHead::BadTarget { op }) => return self.end(ServerAction::ResetViolation { op, reason: "bad request fence" }),
+                Err(RequestHead::BadTarget { op }) => return self.end(ServerAction::ResetViolation { op, reason: "bad request target" }),
                 Err(_) => return ServerAction::Continue,
             };
             if self.header.is_none() {
@@ -165,7 +165,7 @@ pub enum ReplayVerdict {
     /// Provably never dispatched: a new attempt cannot double-apply.
     SafeToRetry,
     /// May have executed. A mutation must be reconciled by the domain
-    /// (read back, fence, idempotency key) — never silently re-sent.
+    /// (read back, target, idempotency key) — never silently re-sent.
     MustNotReplay,
     /// A read may be repeated.
     ReadMayRepeat,
@@ -186,7 +186,7 @@ mod tests {
     use super::*;
     use crate::catalog::{CatalogBuilder, CatalogEntry, Shape, OpOwner};
     use crate::ping::{Ping, PingReply, PingRequest};
-    use crate::framing::{encode_request, encode_varint, Fence};
+    use crate::framing::{encode_request, encode_varint, Target};
     use crate::outcome::{IndeterminateReason, NotSentReason, PreCommit, ReplyKind, RequestFinished};
     use crate::protocol::{DecodeFailure, NodeProtocol};
 
@@ -194,8 +194,8 @@ mod tests {
         CatalogBuilder::new().serve(CatalogEntry::canonical::<Ping>(OpOwner::Core, Shape::Unary)).seal().unwrap()
     }
 
-    fn target() -> RequestHeader {
-        RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x01 })
+    fn a_request() -> RequestHeader {
+        RequestHeader::target(Target { node_id: "n1".into(), op: 0x01 })
     }
 
     fn assembly(c: &SealedCatalog) -> RequestAssembly<'_> {
@@ -204,7 +204,7 @@ mod tests {
 
     fn echo_frame(payload: &[u8]) -> Vec<u8> {
         let req = PingRequest::Ping { payload: payload.to_vec() };
-        encode_request(&target(), &Ping::encode_request(&req).unwrap())
+        encode_request(&a_request(), &Ping::encode_request(&req).unwrap())
     }
 
     // ---- PRD §13 dispatch table ----
@@ -219,7 +219,7 @@ mod tests {
         match a.finish() {
             ServerAction::Dispatch { op, header: t, payload } => {
                 assert_eq!(op, 0x01);
-                assert_eq!(t, target(), "the dispatched request carries the target it named");
+                assert_eq!(t, a_request(), "the dispatched request carries the target it named");
                 assert!(matches!(Ping::decode_request(&payload), Ok(PingRequest::Ping { .. })));
             }
             other => panic!("expected dispatch, got {other:?}"),
@@ -230,7 +230,7 @@ mod tests {
     fn known_tag_with_unknown_opcode_is_malformed_unknown_variant() {
         let mut body = Vec::new();
         encode_varint(7, &mut body); // op variant 7 does not exist
-        let f = encode_request(&target(), &body);
+        let f = encode_request(&a_request(), &body);
         let c = catalog();
         let mut a = assembly(&c);
         a.push(&f);
@@ -245,45 +245,45 @@ mod tests {
     fn unknown_tag_is_421_before_any_body() {
         let c = catalog();
         let mut a = assembly(&c);
-        let f = encode_request(&RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x42 }), b"body");
-        let fence_end = f.len() - 1 - 1 - 4; // before the context, the length and the body
-        assert_eq!(a.push(&f[..fence_end]), ServerAction::ResetUnserved { op: 0x42 }, "decided on the fence alone");
-        assert_eq!(a.push(&f[fence_end..]), ServerAction::Continue, "nothing after the decision");
+        let f = encode_request(&RequestHeader::target(Target { node_id: "n1".into(), op: 0x42 }), b"body");
+        let target_end = f.len() - 1 - 1 - 4; // before the context, the length and the body
+        assert_eq!(a.push(&f[..target_end]), ServerAction::ResetUnserved { op: 0x42 }, "decided on the target alone");
+        assert_eq!(a.push(&f[target_end..]), ServerAction::Continue, "nothing after the decision");
     }
 
     #[test]
     fn known_oversize_is_typed_too_large_after_the_tag_read() {
         let c = catalog();
         let mut a = assembly(&c);
-        let mut head = encode_request(&target(), b"");
+        let mut head = encode_request(&a_request(), b"");
         head.pop();
         encode_varint(Ping::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut head);
         assert_eq!(a.push(&head), ServerAction::RefuseMalformed { op: 0x01, kind: MalformedKind::TooLarge });
     }
 
     /// CONTRACT (R-UC1a, Luke 2026-10-12: "no receiver refuses a Node RPC call for the node id it
-    /// names"): a request whose fence names another node, or no node (a call to the endpoint of a
+    /// names"): a request whose target names another node, or no node (a call to the endpoint of a
     /// call that reached the caller), is read, length-checked and dispatched to its served op like
-    /// any other, the fence carried as it came. Must NOT happen: a `425` reset, or any decision on the
-    /// fence's node id.
+    /// any other, the target carried as it came. Must NOT happen: a `425` reset, or any decision on the
+    /// target's node id.
     #[test]
-    fn a_fence_naming_another_node_or_none_is_dispatched_never_refused() {
+    fn a_target_naming_another_node_or_none_is_dispatched_never_refused() {
         let c = catalog();
         let req = Ping::encode_request(&PingRequest::Ping { payload: b"x".to_vec() }).unwrap();
-        for named in [Fence { target_node_id: "n2".into(), op: 0x01 }, Fence { target_node_id: "".into(), op: 0x01 }] {
+        for named in [Target { node_id: "n2".into(), op: 0x01 }, Target { node_id: "".into(), op: 0x01 }] {
             let mut a = assembly(&c);
-            assert_eq!(a.push(&encode_request(&RequestHeader::fence(named.clone()), &req)), ServerAction::Continue, "{named:?}");
+            assert_eq!(a.push(&encode_request(&RequestHeader::target(named.clone()), &req)), ServerAction::Continue, "{named:?}");
             match a.finish() {
                 ServerAction::Dispatch { op, header, .. } => {
                     assert_eq!(op, 0x01);
-                    assert_eq!(header.fence, named, "the dispatched request carries the fence as it came");
+                    assert_eq!(header.target, named, "the dispatched request carries the target as it came");
                 }
-                other => panic!("a fence naming {:?} is dispatched, never refused: {other:?}", named.target_node_id),
+                other => panic!("a target naming {:?} is dispatched, never refused: {other:?}", named.node_id),
             }
         }
-        // An oversize declaration is refused on its size alone, whatever node the fence names.
+        // An oversize declaration is refused on its size alone, whatever node the target names.
         let mut a = assembly(&c);
-        let mut f = encode_request(&RequestHeader::fence(Fence { target_node_id: "n2".into(), op: 0x01 }), b"");
+        let mut f = encode_request(&RequestHeader::target(Target { node_id: "n2".into(), op: 0x01 }), b"");
         f.pop();
         encode_varint(Ping::MAX_REQUEST_FRAME_BYTES as u64 + 1, &mut f);
         assert_eq!(a.push(&f), ServerAction::RefuseMalformed { op: 0x01, kind: MalformedKind::TooLarge });
@@ -346,7 +346,7 @@ mod tests {
     /// commit proves nothing (no receiver sends it) and is `Indeterminate`.
     #[test]
     fn a_stale_target_is_the_callers_verdict_before_the_request_and_a_425_after_commit_proves_nothing() {
-        let early: RpcOutcome<PingReply> = PreCommit::begin(0x01).stale_before_finish(&target().fence);
+        let early: RpcOutcome<PingReply> = PreCommit::begin(0x01).stale_before_finish(&a_request().target);
         assert!(matches!(&early, RpcOutcome::RejectedStale(s) if s.target_node_id() == "n1"), "{early:?}");
         assert!(early.proves_not_dispatched());
         assert_eq!(replay_verdict(&early, true), ReplayVerdict::SafeToRetry);

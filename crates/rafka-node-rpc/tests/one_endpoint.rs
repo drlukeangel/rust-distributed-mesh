@@ -1,11 +1,11 @@
 //! i143.e6.s8 functional: one Iroh endpoint and one socket per process.
 //!
 //! A process binds one UDP socket; Node RPC and gossip share it by ALPN. Every request carries its
-//! fence `(target_node_id, op)` first in its framing. No receiver refuses a call for the node id it
+//! target `(node_id, op)` first in its framing. No receiver refuses a call for the node id it
 //! names (R-UC1a, Luke 2026-10-12: the receiver-side target check is a receiver deciding whether a
 //! call was meant for it, and it goes with no replacement): the node id is the caller's record of
 //! whom it called, and a call to the endpoint of a call that reached the caller names no node at
-//! all. The fence says nothing about the process birth: that is the resolver's and the pool's
+//! all. The target says nothing about the process birth: that is the resolver's and the pool's
 //! knowledge.
 
 use iroh::protocol::Router;
@@ -121,7 +121,7 @@ async fn a_call_naming_another_node_id_at_this_process_is_served_never_refused()
 /// whose resolver holds no record of the process calls it as `NodeTarget::Endpoint`, by its key at
 /// the address it is reached on. The call is dialled as named and served; its evidence names no
 /// node, and its pooled connection holds no birth. Must NOT happen: a `NotSent` resolve failure (no
-/// resolver answers an endpoint), or the call refused for the empty node id its fence carries.
+/// resolver answers an endpoint), or the call refused for the empty node id its target carries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_call_to_an_endpoint_no_record_names_is_dialled_as_named_and_served() {
     let key = SecretKey::generate();
@@ -141,16 +141,16 @@ async fn a_call_to_an_endpoint_no_record_names_is_dialled_as_named_and_served() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_callers_stale_birth_is_not_the_fences_business() {
+async fn a_callers_stale_birth_is_not_the_targets_business() {
     let key = SecretKey::generate();
     let p = process(&key).await;
-    // The caller's view holds another incarnation for the node: the fence carries no birth, so the
+    // The caller's view holds another incarnation for the node: the target carries no birth, so the
     // same node answers; the pool, not the wire, is where a birth matters.
     let mut other_birth = p.resolved.clone();
     other_birth.incarnation = IncarnationId::mint();
     let c = caller(&[&other_birth]).await;
     let (out, _) = c.on(&other_birth).await;
-    assert!(matches!(&out, RpcOutcome::Reply(_)), "the fence carries no birth: {out:?}");
+    assert!(matches!(&out, RpcOutcome::Reply(_)), "the target carries no birth: {out:?}");
     assert_eq!(p.dispatched.load(Ordering::SeqCst), 1);
     // The resolver moving the birth under the pool evicts the old connection and the next call
     // rides a new one to the same process.

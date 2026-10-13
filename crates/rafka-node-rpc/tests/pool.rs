@@ -1,7 +1,7 @@
 //! i143.e6.s2 functional: the scoped pool, keyed by process birth (PRD §1.19–20, §14;
 //! node-rpc-rdm-ownership.md §8–§9).
 //!
-//! Pool identity is `(scope, peer, incarnation)`: a connection is to a process birth. The fence in
+//! Pool identity is `(scope, peer, incarnation)`: a connection is to a process birth. The target in
 //! the framing names the node: every call to a birth shares the connection, and a new incarnation
 //! evicts it. Every cell runs over real
 //! Iroh endpoints on 127.0.0.1. A dial that must stay in flight targets a "blackhole": a UDP
@@ -272,7 +272,7 @@ async fn a_new_incarnation_evicts_its_predecessors_connection_without_a_failed_c
     let mut r = rig(n.resolved.clone()).await;
     let (_, before) = r.ping().await;
     // Same key, same address: only the process birth changed in the caller's view.
-    // The fence says nothing about the birth, so the same process answers; what matters here is
+    // The target says nothing about the birth, so the same process answers; what matters here is
     // the pool: the predecessor's connection is gone and the call rode a new one.
     r.record.incarnation = IncarnationId::mint();
     r.resolver.insert(r.record.clone());

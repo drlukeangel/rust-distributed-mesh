@@ -1,9 +1,9 @@
 //! i143.e6.s9 functional: caller identity and W3C context ride the request envelope, end to end.
 //!
-//! `caller_system`, `traceparent`, `tracestate` and `baggage` travel beside the target fence,
+//! `caller_system`, `traceparent`, `tracestate` and `baggage` travel beside the target,
 //! never inside a protocol codec. A direct call continues the caller's trace at the target; a
 //! carried call keeps the origin's causal parent and `caller_system` through the hop. Nothing
-//! here reaches target selection, authority, the fence or the result: a missing context is
+//! here reaches target selection, authority, the target or the result: a missing context is
 //! valid, and a malformed or over-bound part is dropped, named as `context_dropped` on the
 //! local span, while the call proceeds unchanged. Baggage propagates whole and only allowlisted
 //! keys (`test_case`, `scenario`, `operation`) become span attributes.
@@ -369,14 +369,14 @@ async fn malformed_or_over_bound_context_is_dropped_by_name_and_never_changes_th
     assert!(serve.iter().any(|s| attr(s, "caller_system").as_deref() == Some("rdm") && s.parent_span_id.to_string() == PARENT), "the valid parts still apply: {serve:?}");
 }
 
-/// CONTRACT (node-rpc-envelope.md Section 0: the receiver reads the fence first and alone; R-UC1a:
-/// the fence's node id is never a reason to refuse): a call of an op this process does not serve,
-/// carrying a full context, is refused `421` on the fence alone, so the refusal is not in the
-/// caller's trace and carries no `caller_system`; a call whose fence names another node id at this
+/// CONTRACT (node-rpc-envelope.md Section 0: the receiver reads the target first and alone; R-UC1a:
+/// the target's node id is never a reason to refuse): a call of an op this process does not serve,
+/// carrying a full context, is refused `421` on the target alone, so the refusal is not in the
+/// caller's trace and carries no `caller_system`; a call whose target names another node id at this
 /// process is served with the context it carried. Must NOT happen: the context read before the
 /// unserved refusal, or the other node id refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn context_never_reaches_the_fence_decision() {
+async fn context_never_reaches_the_target_decision() {
     spans();
     let p = process("mesh1.rpc.1").await;
     let mut other = p.resolved.clone();
@@ -390,14 +390,14 @@ async fn context_never_reaches_the_fence_decision() {
             rafka_node_rpc::Decode::Early(e, b) => e.reply::<Ping>(b),
         })
         .await;
-    assert!(matches!(out, RpcOutcome::Unserved(_)), "the fence's op decides, the context cannot: {out:?}");
+    assert!(matches!(out, RpcOutcome::Unserved(_)), "the target's op decides, the context cannot: {out:?}");
     assert!(p.seen.lock().unwrap().is_empty(), "nothing was dispatched");
     assert!(finished("rdm.node_rpc.request.reject.via-unserved-op", Some(&t.id)).is_empty(), "a 421 owes nothing to section 1");
     let refused = finished("rdm.node_rpc.request.reject.via-unserved-op", None);
     assert!(!refused.is_empty() && refused.iter().all(|s| attr(s, "caller_system").is_none()), "{refused:?}");
-    // The fence naming another node id at this process is served, with the context it carried.
+    // The target naming another node id at this process is served, with the context it carried.
     let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(other.node_id.clone()), &echo(b"other"), &with(full(&t))).await;
-    assert!(matches!(out, RpcOutcome::Reply(_)), "a fence naming another node id is served: {out:?}");
+    assert!(matches!(out, RpcOutcome::Reply(_)), "a target naming another node id is served: {out:?}");
     assert_eq!(p.seen.lock().unwrap().len(), 1, "it was dispatched");
 }
 

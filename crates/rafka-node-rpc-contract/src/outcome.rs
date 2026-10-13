@@ -317,10 +317,10 @@ impl PreCommit {
         RpcOutcome::Unserved(Unserved { op: self.op })
     }
 
-    /// The fence is stale: the caller found its target superseded before or during the dial.
+    /// The call's target is stale: the caller found the node it addressed superseded before or during the dial.
     /// Definitive no-dispatch, never `NotSent`.
-    pub fn stale_before_finish<R>(self, fence: &crate::framing::Fence) -> RpcOutcome<R> {
-        RpcOutcome::RejectedStale(RejectedStale { target_node_id: fence.target_node_id.clone() })
+    pub fn stale_before_finish<R>(self, target: &crate::framing::Target) -> RpcOutcome<R> {
+        RpcOutcome::RejectedStale(RejectedStale { target_node_id: target.node_id.clone() })
     }
 }
 

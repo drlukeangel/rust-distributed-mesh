@@ -6,7 +6,7 @@
 //! Every outcome is built through the contract's own proving-condition API (`PreCommit`,
 //! `RequestFinished`, `Committed`), so no variant is invented here.
 
-use rafka_node_rpc_contract::framing::Fence;
+use rafka_node_rpc_contract::framing::Target;
 use rafka_node_rpc_contract::outcome::{Committed, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, ResolveFailure, RpcOutcome};
 use rafka_node_rpc_contract::ping::{Ping, PingReply};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
@@ -47,8 +47,8 @@ fn committed() -> Committed {
     PreCommit::begin(Ping::OP).commit(RequestFinished::after_clean_finish(8, 8, true).unwrap())
 }
 
-fn fence() -> Fence {
-    Fence { target_node_id: "node-target".into(), op: Ping::OP }
+fn target() -> Target {
+    Target { node_id: "node-target".into(), op: Ping::OP }
 }
 
 /// One outcome of each shape, chosen by `pick`; `success` is whether a Reply is a success.
@@ -61,7 +61,7 @@ fn outcome(pick: u64) -> RpcOutcome<PingReply> {
         3 => pre().not_sent(NotSentReason::Resolve(ResolveFailure::Gone)),
         4 => pre().cut_before_finish().1,
         5 => pre().unserved_before_finish(),
-        6 => pre().stale_before_finish(&fence()),
+        6 => pre().stale_before_finish(&target()),
         7 => committed().reset(421),
         8 => committed().indeterminate(IndeterminateReason::ReplyDeadline),
         9 => committed().indeterminate(IndeterminateReason::ReplyLost("stream lost".into())),

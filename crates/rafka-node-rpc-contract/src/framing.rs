@@ -1,12 +1,12 @@
 //! Canonical length-first framing (node-rpc.md §10; ownership amendment §7).
 //!
 //! ```text
-//! request direction:   fence_len: varint | fence | context_len: varint | context | request_len: varint | payload | FIN
+//! request direction:   target_len: varint | target | context_len: varint | context | request_len: varint | payload | FIN
 //! unary reply:         reply_len: varint | payload | FIN
 //! server streaming:    (frame_len: varint | frame)* | FIN
 //! ```
 //!
-//! The receiver reads the [`Fence`] first and alone: the op (which names the
+//! The receiver reads the [`Target`] first and alone: the op (which names the
 //! protocol and therefore the request ceiling) is checked against what this
 //! process serves before the context, the length or the body exist to it; the
 //! node id the caller resolved is never a reason to refuse (R-UC1a). Then the
@@ -16,40 +16,40 @@
 use crate::context::CallContext;
 use serde::{Deserialize, Serialize};
 
-/// The fence: what the receiver reads first, alone. It is core, the same for every protocol: the
+/// The target: what the receiver reads first, alone. It is core, the same for every protocol: the
 /// op is checked against what this process serves (`op`, the protocol's ledger code; unserved is
-/// `421`), and `target_node_id` names the node the caller resolved (empty for a call to an endpoint
+/// `421`), and `node_id` names the node the caller resolved (empty for a call to an endpoint
 /// the caller holds no record of). No receiver refuses a call for the node id it names (R-UC1a):
 /// the node id is the caller's record of whom it called. It says nothing about the process birth:
 /// which birth a caller is talking to is the resolver's and the pool's knowledge, never the wire's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Fence {
+pub struct Target {
     /// The node id the request is for.
-    pub target_node_id: String,
+    pub node_id: String,
     /// The op the request is for.
     pub op: u8,
 }
 
-/// The request envelope as the receiver holds it after the head: the fence it
+/// The request envelope as the receiver holds it after the head: the target it
 /// passed, then the observability context that never participates in protocol
 /// semantics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestHeader {
-    /// The fence naming the node and op.
-    pub fence: Fence,
+    /// The target naming the node and op.
+    pub target: Target,
     /// The observability context the request carries.
     pub context: CallContext,
 }
 
 impl RequestHeader {
-    /// A header with the fence and an empty context.
-    pub fn fence(fence: Fence) -> Self {
-        Self { fence, context: CallContext::default() }
+    /// A header with the target and an empty context.
+    pub fn target(target: Target) -> Self {
+        Self { target, context: CallContext::default() }
     }
 }
 
-/// The largest encoded [`Fence`] a receiver reads before deciding.
-pub(crate) const MAX_FENCE_BYTES: usize = 256;
+/// The largest encoded [`Target`] a receiver reads before deciding.
+pub(crate) const MAX_TARGET_BYTES: usize = 256;
 
 /// The largest encoded [`CallContext`] a receiver reads: a context at its bounds
 /// (`MAX_TRACESTATE_BYTES` + `MAX_BAGGAGE_BYTES` + the short parts) fits.
@@ -107,13 +107,13 @@ pub fn decode_varint(b: &[u8]) -> Varint {
     }
 }
 
-/// `varint(fence_len) | fence | varint(context_len) | context | varint(len) | payload`.
+/// `varint(target_len) | target | varint(context_len) | context | varint(len) | payload`.
 pub fn encode_request(header: &RequestHeader, payload: &[u8]) -> Vec<u8> {
-    let fence = postcard::to_allocvec(&header.fence).expect("a Fence always encodes");
+    let target = postcard::to_allocvec(&header.target).expect("a Target always encodes");
     let context = postcard::to_allocvec(&header.context).expect("a CallContext always encodes");
-    let mut out = Vec::with_capacity(3 * MAX_VARINT_LEN + fence.len() + context.len() + payload.len());
-    encode_varint(fence.len() as u64, &mut out);
-    out.extend_from_slice(&fence);
+    let mut out = Vec::with_capacity(3 * MAX_VARINT_LEN + target.len() + context.len() + payload.len());
+    encode_varint(target.len() as u64, &mut out);
+    out.extend_from_slice(&target);
     encode_varint(context.len() as u64, &mut out);
     out.extend_from_slice(&context);
     encode_varint(payload.len() as u64, &mut out);
@@ -134,8 +134,8 @@ pub fn encode_frame(payload: &[u8]) -> Vec<u8> {
 pub enum RequestHead {
     /// Not enough bytes yet.
     NeedMore,
-    /// The fence's op has no catalog entry: reset `421 UNSERVED_OP`, no dispatch.
-    /// Decided on the fence alone, before the context or the length is read.
+    /// The target's op has no catalog entry: reset `421 UNSERVED_OP`, no dispatch.
+    /// Decided on the target alone, before the context or the length is read.
     Unserved {
         /// The op that is not served.
         op: u8,
@@ -155,24 +155,24 @@ pub enum RequestHead {
         /// The op.
         op: u8,
     },
-    /// The fence or the context is over its bound or does not decode: `424 PROTOCOL_VIOLATION`.
-    /// `op` is `None` when the fence itself could not be read.
+    /// The target or the context is over its bound or does not decode: `424 PROTOCOL_VIOLATION`.
+    /// `op` is `None` when the target itself could not be read.
     BadTarget {
-        /// The op, when the fence could be read.
+        /// The op, when the target could be read.
         op: Option<u8>,
     },
-    /// The fence and context are read and the length is not yet.
+    /// The target and context are read and the length is not yet.
     Targeted {
         /// The op.
         op: u8,
-        /// The fence and context read.
+        /// The target and context read.
         header: RequestHeader,
     },
     /// A served op within its ceiling; the body is `payload_len` bytes after `head_len`.
     Ready {
         /// The op.
         op: u8,
-        /// The fence and context.
+        /// The target and context.
         header: RequestHeader,
         /// The body length in bytes.
         payload_len: usize,
@@ -190,7 +190,7 @@ pub(crate) fn parse_request_head(buf: &[u8], ceiling: impl Fn(u8) -> Option<usiz
     }
 }
 
-/// The fence and context of a request, read; the length is next.
+/// The target and context of a request, read; the length is next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TargetRead {
     pub op: u8,
@@ -201,35 +201,35 @@ pub(crate) struct TargetRead {
     pub max: usize,
 }
 
-/// Stage one of the head: the fence, then the context. `Err` is `NeedMore`, `Unserved` or
-/// `BadTarget`. The fence is decoded and its op looked up before a byte of the context is read: a
+/// Stage one of the head: the target, then the context. `Err` is `NeedMore`, `Unserved` or
+/// `BadTarget`. The target is decoded and its op looked up before a byte of the context is read: a
 /// `421` owes nothing to section 1, so it can carry nothing from it.
 pub(crate) fn parse_request_target(buf: &[u8], ceiling: impl Fn(u8) -> Option<usize>) -> Result<TargetRead, RequestHead> {
-    let (fence, at): (Fence, usize) = match decode_section(buf, 0, MAX_FENCE_BYTES) {
+    let (target, at): (Target, usize) = match decode_section(buf, 0, MAX_TARGET_BYTES) {
         Section::NeedMore => return Err(RequestHead::NeedMore),
         Section::Bad => return Err(RequestHead::BadTarget { op: None }),
-        Section::Read(bytes, at) => match postcard::from_bytes::<Fence>(bytes) {
+        Section::Read(bytes, at) => match postcard::from_bytes::<Target>(bytes) {
             Ok(f) => (f, at),
             Err(_) => return Err(RequestHead::BadTarget { op: None }),
         },
     };
-    let op = fence.op;
+    let op = target.op;
     let Some(max) = ceiling(op) else { return Err(RequestHead::Unserved { op }) };
     match decode_section(buf, at, MAX_CONTEXT_BYTES) {
         Section::NeedMore => Err(RequestHead::NeedMore),
         Section::Bad => Err(RequestHead::BadTarget { op: Some(op) }),
         Section::Read(bytes, at) => match postcard::from_bytes::<CallContext>(bytes) {
-            Ok(context) => Ok(TargetRead { op, header: RequestHeader { fence, context }, at, max }),
+            Ok(context) => Ok(TargetRead { op, header: RequestHeader { target, context }, at, max }),
             Err(_) => Err(RequestHead::BadTarget { op: Some(op) }),
         },
     }
 }
 
-/// The fence alone, when that is all a reader needs (a carrier naming the inner
-/// target, a test): `None` until the fence is complete or when it does not decode.
+/// The target alone, when that is all a reader needs (a carrier naming the inner
+/// target, a test): `None` until the target is complete or when it does not decode.
 #[cfg(test)]
-pub(crate) fn peek_fence(buf: &[u8]) -> Option<Fence> {
-    match decode_section(buf, 0, MAX_FENCE_BYTES) {
+pub(crate) fn peek_target(buf: &[u8]) -> Option<Target> {
+    match decode_section(buf, 0, MAX_TARGET_BYTES) {
         Section::Read(bytes, _) => postcard::from_bytes(bytes).ok(),
         _ => None,
     }
@@ -344,24 +344,24 @@ mod tests {
     }
 
     fn t() -> RequestHeader {
-        RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x01 })
+        RequestHeader::target(Target { node_id: "n1".into(), op: 0x01 })
     }
 
     #[test]
     fn request_round_trips() {
         let frame = encode_request(&t(), b"hello");
         assert_eq!(decode_request(&frame, |_| Some(64)), Ok((0x01, t(), &b"hello"[..])));
-        assert_eq!(peek_fence(&frame), Some(t().fence), "the fence is the first section");
+        assert_eq!(peek_target(&frame), Some(t().target), "the target is the first section");
     }
 
     #[test]
     fn the_header_is_read_before_the_length_and_bounded() {
         let frame = encode_request(&t(), b"hello");
-        let fence_end = 1 + frame[0] as usize;
-        let context_end = fence_end + 1 + frame[fence_end] as usize;
+        let target_end = 1 + frame[0] as usize;
+        let context_end = target_end + 1 + frame[target_end] as usize;
         assert_eq!(parse_request_head(&frame[..context_end], |_| Some(64)), RequestHead::Targeted { op: 0x01, header: t() });
         assert_eq!(parse_request_head(&frame[..context_end - 1], |_| Some(64)), RequestHead::NeedMore);
-        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t != 0x01).then_some(64)), RequestHead::Unserved { op: 0x01 }, "an unserved op is decided on the fence, before the context");
+        assert_eq!(parse_request_head(&frame[..target_end], |t| (t != 0x01).then_some(64)), RequestHead::Unserved { op: 0x01 }, "an unserved op is decided on the target, before the context");
         // A context at its bounds fits the header ceiling; one byte past the ceiling is a violation.
         let full = RequestHeader {
             context: CallContext {
@@ -374,26 +374,26 @@ mod tests {
         };
         let frame = encode_request(&full, b"hello");
         assert!(matches!(decode_request(&frame, |_| Some(64)), Ok((0x01, h, _)) if h == full), "a context at its bounds rides the header");
-        // An oversize fence is refused before its op is known.
+        // An oversize target is refused before its op is known.
         let mut big = Vec::new();
-        encode_varint(MAX_FENCE_BYTES as u64 + 1, &mut big);
+        encode_varint(MAX_TARGET_BYTES as u64 + 1, &mut big);
         assert_eq!(parse_request_head(&big, |_| Some(64)), RequestHead::BadTarget { op: None });
         let garbage = [0x02, 0xff, 0xff];
         assert_eq!(parse_request_head(&garbage, |_| Some(64)), RequestHead::BadTarget { op: None });
-        // An oversize context is refused with the op the fence named.
+        // An oversize context is refused with the op the target named.
         let mut frame = encode_request(&t(), b"");
-        let fence_end = frame.len() - 2; // `0x00` context, `0x00` payload
-        frame.truncate(fence_end);
+        let target_end = frame.len() - 2; // `0x00` context, `0x00` payload
+        frame.truncate(target_end);
         encode_varint(MAX_CONTEXT_BYTES as u64 + 1, &mut frame);
         assert_eq!(parse_request_head(&frame, |_| Some(64)), RequestHead::BadTarget { op: Some(0x01) });
     }
 
     #[test]
-    fn unserved_is_decided_on_the_fence_alone() {
-        let unserved = RequestHeader::fence(Fence { target_node_id: "n1".into(), op: 0x42 });
+    fn unserved_is_decided_on_the_target_alone() {
+        let unserved = RequestHeader::target(Target { node_id: "n1".into(), op: 0x42 });
         let frame = encode_request(&unserved, b"");
-        let fence_end = frame.len() - 2;
-        assert_eq!(parse_request_head(&frame[..fence_end], |t| (t == 0x01).then_some(64)), RequestHead::Unserved { op: 0x42 }, "decided before a byte of context arrives");
+        let target_end = frame.len() - 2;
+        assert_eq!(parse_request_head(&frame[..target_end], |t| (t == 0x01).then_some(64)), RequestHead::Unserved { op: 0x42 }, "decided before a byte of context arrives");
     }
 
     #[test]

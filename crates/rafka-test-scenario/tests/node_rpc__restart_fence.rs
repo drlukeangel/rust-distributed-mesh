@@ -1,4 +1,4 @@
-//! i143.e11.s5 process E2E: exact target + fence on the role shape (PRD §13.1).
+//! i143.e11.s5 process E2E: the exact target on the role shape (PRD §13.1).
 //!
 //! `{node_admin: 1, broker: 1, gateway: 1}`. The gateway is the long-lived caller: the probe
 //! invokes the broker through it (`--via path:mesh1.gateway.1`), so the gateway's one

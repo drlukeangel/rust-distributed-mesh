@@ -248,7 +248,7 @@ pub enum SealError {
         /// The ledger row's owner.
         owner: OpOwner,
     },
-    /// Op `0` is reserved as invalid: a zeroed fence is never served.
+    /// Op `0` is reserved as invalid: a zeroed target is never served.
     /// An entry serves op 0.
     ReservedZero {
         /// The entry's name.
@@ -275,7 +275,7 @@ impl fmt::Display for SealError {
                 TESTKIT_OPS.start(),
                 TESTKIT_OPS.end()
             ),
-            Self::ReservedZero { name } => write!(f, "op 0 ({name}) is reserved as invalid: a zeroed fence is never served"),
+            Self::ReservedZero { name } => write!(f, "op 0 ({name}) is reserved as invalid: a zeroed target is never served"),
         }
     }
 }
@@ -464,9 +464,9 @@ mod tests {
         assert!(matches!(c.lookup(0x12).unwrap().kind, EntryKind::Transitional { .. }));
         // 0x17 is reserved for rafka forward-write in the ledger but not registered:
         // the sealed catalog is the only table, so it is unserved — no legacy fallthrough.
-        let unserved = crate::framing::encode_request(&crate::framing::RequestHeader::fence(crate::framing::Fence { target_node_id: "n1".into(), op: 0x17 }), &[]);
+        let unserved = crate::framing::encode_request(&crate::framing::RequestHeader::target(crate::framing::Target { node_id: "n1".into(), op: 0x17 }), &[]);
         assert_eq!(parse_request_head(&unserved, |t| c.request_ceiling(t)), RequestHead::Unserved { op: 0x17 });
-        let header = crate::framing::RequestHeader::fence(crate::framing::Fence { target_node_id: "n1".into(), op: 0x12 });
+        let header = crate::framing::RequestHeader::target(crate::framing::Target { node_id: "n1".into(), op: 0x12 });
         let head = crate::framing::encode_request(&header, &[0]);
         assert_eq!(
             parse_request_head(&head, |t| c.request_ceiling(t)),

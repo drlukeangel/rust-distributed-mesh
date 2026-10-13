@@ -4,7 +4,7 @@
 //! join answer"; the stopped node is reached by a fresh Node RPC dial to its still-bound endpoint,
 //! states.md "stopped nodes"). The commander reached the stopped node, so its key is the call's own,
 //! proved by the transport (node-rpc.md §14), and the path the call came in on is a path back: the
-//! join is a call to that endpoint at that path, whose fence names no node (R-UC1a: no receiver
+//! join is a call to that endpoint at that path, whose target names no node (R-UC1a: no receiver
 //! refuses a call for the node id it names). No projection, heartbeat book or resolver record of
 //! the commander is read.
 //!

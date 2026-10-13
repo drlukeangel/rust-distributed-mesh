@@ -1,6 +1,6 @@
 //! The Node RPC server (node-rpc.md §12–§19, §26–§32; ownership §6.3).
 //!
-//! Per bi-stream: read the fence (an unserved op → `421`; the node id it names is
+//! Per bi-stream: read the target (an unserved op → `421`; the node id it names is
 //! never a reason to refuse, R-UC1a), the context, the declared length
 //! (oversize → typed `Malformed(TooLarge)`), take admission (full → typed
 //! `Busy`), read the body, and dispatch only after the request direction
@@ -343,7 +343,7 @@ impl ServerBuilder {
 
     /// Seal the catalog before the first stream is accepted, as `birth`: the
     /// exact node and incarnation this process is. A request is dispatched only
-    /// when its fence names this node and a served op.
+    /// when its target names this node and a served op.
     pub fn seal(self, birth: ServedBirth) -> Result<NodeRpcServer, Vec<SealError>> {
         let catalog = self.catalog.seal()?;
         if let Some(table) = &self.carried_table {
@@ -453,7 +453,7 @@ struct Inner {
 }
 
 /// One sealed server for the process's one endpoint. The socket a request
-/// arrives on names nothing: the request's fence does.
+/// arrives on names nothing: the request's target does.
 #[derive(Clone)]
 pub struct NodeRpcServer {
     inner: Arc<Inner>,

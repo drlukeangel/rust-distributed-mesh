@@ -18,7 +18,7 @@ pub enum ResetCode {
 }
 
 /// Historical codes: reserved forever, never emitted, never reassigned. `425` was the receiver's
-/// refusal of a fence naming another node; no receiver refuses a call for the node id it names
+/// refusal of a target naming another node; no receiver refuses a call for the node id it names
 /// (R-UC1a), so a `425` a caller reads proves nothing.
 #[cfg(test)]
 pub(crate) const RETIRED_CODES: [u32; 4] = [413, 425, 501, 503];

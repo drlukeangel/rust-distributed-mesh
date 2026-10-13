@@ -824,7 +824,7 @@ impl StatusAuthority {
         reply
     }
 
-    /// A command naming this admin, served on the fence and the exact birth it names (node-rpc.md
+    /// A command naming this admin, served on the target and the exact birth it names (node-rpc.md
     /// §14): the commander is the caller as the view holds it, where its completion goes; the
     /// connection spared is the call's own (`peer`).
     async fn serve_command(&self, view: &Topology, sender: Option<&crate::model::Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest) -> StatusReply {
@@ -1493,8 +1493,8 @@ mod tests {
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node naming this admin's node id reaches the subject's own door: {reply:?}");
     }
 
-    /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who is calling; the fence is target
-    /// node id + op"): a call naming this admin from an endpoint its view holds no birth for is decided
+    /// CONTRACT (node-rpc.md §14: "Nothing inside the mesh checks who sent a frame or call: a Node RPC
+    /// handler is addressed by target node id + op"): a call naming this admin from an endpoint its view holds no birth for is decided
     /// for the subject it names, as one from an admin it holds is. A drain-node naming this admin's
     /// exact birth reaches the subject's own door (`NodeSelf::serve`, here not yet filled, so
     /// `NotReady` by name), and a probe naming it is answered by the subject. The direction refusals

@@ -190,7 +190,7 @@ async fn a_resolution_failure_is_not_sent_and_a_wrong_node_id_is_served_by_the_t
     other.node_id = NodeId::mint();
     r.resolver.insert(other.clone());
     let (out, ev) = r.client.call::<Ping>(&NodeTarget::ExactNode(other.node_id.clone()), &echo(b"x"), &CallOptions::default()).await;
-    assert!(matches!(&out, RpcOutcome::Reply(_)), "the target serves a fence naming another node id: {out:?}");
+    assert!(matches!(&out, RpcOutcome::Reply(_)), "the called process serves a target naming another node id: {out:?}");
     assert!(ev.is_some_and(|e| e.committed), "the request was sent and answered");
     assert_eq!(ServerStats::get(&r.stats.dispatched), 1);
 }

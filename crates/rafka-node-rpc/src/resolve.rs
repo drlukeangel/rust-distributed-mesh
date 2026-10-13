@@ -19,7 +19,7 @@ pub enum NodeTarget {
     /// The process at this endpoint key, reached at this address: the endpoint and path of a call
     /// that reached this node, the way a stopped node told to start joins back to the admin that
     /// commanded it (node-start.md step 2). The caller holds no record of that process: no resolver
-    /// answers for it and nothing supersedes it, and the request's fence names no node (no receiver
+    /// answers for it and nothing supersedes it, and the request's target names no node (no receiver
     /// refuses a call for the node id it names, R-UC1a).
     Endpoint {
         /// The process's Iroh public key, as the transport proved it for the call.

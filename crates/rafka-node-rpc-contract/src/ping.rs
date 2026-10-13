@@ -1,6 +1,6 @@
 //! The core ping on op `1`: the transport's liveness and sanity surface, and the
 //! mesh primary's 45 s offline tickle (fabric-node-lifecycle.md §7.3). Op `0` is
-//! reserved as invalid, so a zeroed fence is never served.
+//! reserved as invalid, so a zeroed target is never served.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn request_codec_round_trips_through_the_frame() {
         let req = PingRequest::Ping { payload: b"ping".to_vec() };
-        let header = crate::framing::RequestHeader::fence(crate::framing::Fence { target_node_id: "n1".into(), op: 0x01 });
+        let header = crate::framing::RequestHeader::target(crate::framing::Target { node_id: "n1".into(), op: 0x01 });
         let frame = encode_request(&header, &Ping::encode_request(&req).unwrap());
         let (op, at, body) = decode_request(&frame, |t| (t == Ping::OP).then_some(Ping::MAX_REQUEST_FRAME_BYTES)).unwrap();
         assert_eq!((op, at), (0x01, header));

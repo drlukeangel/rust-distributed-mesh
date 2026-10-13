@@ -4,7 +4,7 @@
 //!
 //! CONTRACT: a stopped node is commanded by an admin it never heard of (the admin created after its
 //! predecessor's loss, whose digest a parked node cannot hear). Its `stop-node` naming the exact birth
-//! is answered `Stopped` with the receipt that parked it, and its probe `CurrentParked`: the fence is
+//! is answered `Stopped` with the receipt that parked it, and its probe `CurrentParked`: the target is
 //! the op and the exact birth the request names, never the caller. A command naming another birth
 //! of the node is `RejectedStaleIncarnation`; one naming another node id with this birth's
 //! incarnation is answered by the birth it reached (R-UC1a, R-RX5: no receiver refuses a call for

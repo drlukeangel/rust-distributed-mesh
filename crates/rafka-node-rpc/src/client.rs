@@ -15,7 +15,7 @@ use iroh::Endpoint;
 use rafka_mesh_entity::NodeId;
 use rafka_node_rpc_contract::codes::ResetCode;
 use rafka_node_rpc_contract::context::{dropped_as_str, CallContext};
-use rafka_node_rpc_contract::framing::{decode_single_frame, encode_request, Fence, RequestHeader, MAX_VARINT_LEN};
+use rafka_node_rpc_contract::framing::{decode_single_frame, encode_request, Target, RequestHeader, MAX_VARINT_LEN};
 use rafka_node_rpc_contract::outcome::{EarlyRefusal, IndeterminateReason, NotSentReason, PreCommit, RequestFinished, RpcOutcome};
 use rafka_node_rpc_contract::protocol::NodeProtocol;
 use std::net::SocketAddr;
@@ -320,7 +320,7 @@ impl NodeRpcClient {
         };
         let pre = PreCommit::begin(op);
         let node = match target {
-            // The process at an endpoint the caller holds no record of: dialled as named, its fence
+            // The process at an endpoint the caller holds no record of: dialled as named, its target
             // naming no node.
             NodeTarget::Endpoint { endpoint_id, addr } => {
                 tracing::info!(step = "endpoint", peer = %endpoint_id.fmt_short(), addr = %addr, "the target is the process at an endpoint, dialled as named");
@@ -336,9 +336,9 @@ impl NodeRpcClient {
                 Err(f) => return Phase::Done(pre.not_sent(NotSentReason::Resolve(f)), None),
             },
         };
-        // The fence: the node the caller resolved and the op, never a dial target. A call to an
+        // The request's target: the node the caller resolved and the op, never a dial target. A call to an
         // endpoint names no node; no receiver reads the node id to refuse the call (R-UC1a).
-        let request_target = Fence { target_node_id: node.node.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), op };
+        let request_target = Target { node_id: node.node.as_ref().map(|n| n.node_id.to_string()).unwrap_or_default(), op };
         let mut evidence = CallEvidence {
             node_id: node.node.as_ref().map(|n| n.node_id.clone()),
             addr: node.addr,
@@ -447,7 +447,7 @@ impl NodeRpcClient {
                 }
             }
         };
-        let header = RequestHeader { fence: request_target.clone(), context: self.context_for(opts) };
+        let header = RequestHeader { target: request_target.clone(), context: self.context_for(opts) };
         let frame = encode_request(&header, &payload);
         let frame_not_sent = VarInt::from_u32(ResetCode::FrameNotSent.code());
         if opts.cut_before_finish {
@@ -615,13 +615,13 @@ impl NodeRpcClient {
 /// The caller's stale-target refusal: its resolver no longer names the birth the call was dialled
 /// to. Only a caller decides it; no receiver refuses a call for the node id it names (R-UC1a).
 /// `current` is what the resolver holds instead, in its own words.
-fn stale_span(asked: &Fence, current: &str) {
+fn stale_span(asked: &Target, current: &str) {
     tracing::info_span!(
         "rdm.node_rpc.connection.reject.via-stale-target",
         decided_by = "caller",
-        node_id = %asked.target_node_id,
+        node_id = %asked.node_id,
         op = asked.op,
         current,
     )
-    .in_scope(|| tracing::info!("the fence is stale: RejectedStale, never dispatched"));
+    .in_scope(|| tracing::info!("the target is stale: RejectedStale, never dispatched"));
 }

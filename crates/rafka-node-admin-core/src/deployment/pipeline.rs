@@ -596,7 +596,7 @@ pub enum CommandAdmission {
         /// Why the outcome is unknown.
         reason: String,
     },
-    /// The birth, or the op fence, refused the call by name (a stale incarnation, an unserved op).
+    /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).
     Refused {
         /// The refusal's name.
         reply: String,
