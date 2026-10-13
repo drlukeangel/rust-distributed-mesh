@@ -1,9 +1,8 @@
 //! The source-owned connections writer (connections.md sections 3, 4.2, 9 and 10; i143.e6.s11):
 //! every node writes its own Direct and Proxy facts, and holds its own projection of them.
 //!
-//! The Node RPC client reports what it observes of this node's pooled connections through
-//! [`ConnectionObserver`], and the server reports every accepted connection the same way; this
-//! writer turns each observation into one row, applies it to the held projection the route
+//! The node's data-plane Node RPC client reports what it observes of the connections it opens
+//! through [`ConnectionObserver`]; this writer turns each observation into one row, applies it to the held projection the route
 //! resolver reads, appends it to the raw log and keeps it as the latest of its pair in the index.
 //! At birth the held projection is hydrated from the index, so a restart keeps its latest Proxy
 //! and the backoff of its latest Direct failure. The writer decides no route and chooses no
@@ -16,19 +15,32 @@
 //! (`Disconnected(direct-restored)`) is owed. It is written durably first and applied to the held
 //! projection only once the write lands, so new calls keep the proven Proxy until then. A refused
 //! write leaves the obligation standing: it is derived again from the two latest rows at the next
-//! observation, at the next settlement a caller asks for, and every [`RETIREMENT_RETRY`] while
+//! observation, at the next settlement a caller asks for, and every [`RECONCILER_TICK`] while
 //! owed. Nothing is queued; a restart reconstructs the same obligation from the same rows.
+//!
+//! A connection this node accepts is never a row (R-CN1): an accept from the exact destination
+//! birth this node reaches through its own Proxy is a recovery trigger
+//! ([`rafka_node_rpc::AcceptTrigger`]). It arms one pending attempt for that birth (connections.md
+//! §9.4: at most one per destination birth; repeated accepts coalesce) and wakes the same
+//! reconciler, which dials this node's own data-plane connection once the series' reconnect
+//! backoff from its latest Failed row has ended (§9.3), never earlier. Only that dial's Direct
+//! Connected owes the Proxy's retirement; a failed dial is the series' next Failed row and the
+//! attempt waits for its backoff; an attempt toward a birth membership no longer holds is dropped
+//! undialled (§9.5 step 1).
 
 use crate::storage::ConnectionsStorage;
 use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
-use rafka_mesh_entity::reconnect::{first_failure, owed_retirements};
-use rafka_mesh_entity::PathName;
+use rafka_mesh_entity::reconnect::{first_failure, next_due, owed_retirements};
+use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
+use std::collections::HashMap;
 use rafka_node_rpc::{ConnectionObserver, ResolvedNode};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// How often an owed Proxy retirement whose write was refused is attempted again.
-pub const RETIREMENT_RETRY: Duration = Duration::from_millis(500);
+/// How often the reconciler looks at what is owed without a wake: an owed Proxy retirement whose
+/// write was refused is attempted again, and a pending recovery attempt whose backoff has ended is
+/// dialled.
+pub const RECONCILER_TICK: Duration = Duration::from_millis(500);
 
 /// One direct dial of this node's own data plane toward an exact destination birth
 /// (connections.md §9.5 step 3), answering the call outcome's name for the attempt's span. The
@@ -68,7 +80,7 @@ impl std::fmt::Debug for RowsHeld {
 /// it is at that moment (the source end the held projection's own source was just set to).
 type Build = Box<dyn FnOnce(&ConnectionsWriter, ConnectionEnd) -> NodeConnection + Send>;
 
-/// One queued observation: how its row is built, where it was observed (`dial`, `accept`) and the
+/// One queued observation: how its row is built, where it was observed (`dial`) and the
 /// peer endpoint it was observed with.
 type Observation = (Build, &'static str, String);
 
@@ -87,7 +99,7 @@ struct Inner {
     /// The last stamp this writer gave a row: every row it writes carries a later one, so two
     /// facts in one millisecond never tie (the held projection keeps one stamp per key).
     last_stamp: Mutex<u64>,
-    /// Observation writes spawned and not yet landed or refused; [`ConnectionsWriter::drain`]
+    /// Observation writes spawned and not yet landed or refused; [`ConnectionsWriter::observations_landed`]
     /// waits for this to reach zero, `idle` wakes it when a write finishes.
     in_flight: std::sync::atomic::AtomicUsize,
     idle: tokio::sync::Notify,
@@ -98,6 +110,11 @@ struct Inner {
     /// observation, a [`ConnectionsWriter::record`] or a retirement settlement; and by a start
     /// until it holds the name its join answer handed ([`ConnectionsWriter::hold_rows`]).
     write_gate: Arc<tokio::sync::Mutex<()>>,
+    /// The pending direct-recovery attempts (connections.md §9.4): at most one per destination
+    /// birth, armed by an accept from that birth while this node reaches it through its Proxy.
+    recovery: Mutex<HashMap<(NodeId, IncarnationId), Pending>>,
+    /// Wakes the reconciler once an accept armed an attempt: one stored wake however many accepts.
+    wake: tokio::sync::Notify,
 }
 
 /// The local OS clock: a writer orders its own rows by it and ages its owed retirements by it. No
@@ -126,6 +143,35 @@ pub struct HeldConnections {
 
 fn open_routes(held: &ConnectionsHeld) -> Vec<NodeConnection> {
     held.own_latest_directs().into_iter().filter(|e| e.state == ConnectionState::Connected).chain(held.own_active_proxies()).cloned().collect()
+}
+
+/// One pending recovery attempt: the destination birth, and the trace of the accept that armed it
+/// (its dial's span is a child of that accept's wake).
+#[derive(Clone)]
+struct Pending {
+    destination: ConnectionEnd,
+    traceparent: Option<String>,
+}
+
+/// What one reconciler pass does with a pending recovery attempt.
+enum Step {
+    /// Its backoff has not ended.
+    Wait,
+    /// Spent undialled, for the named reason.
+    Spent(&'static str),
+    /// Dial it: due at the instant, scheduled from the latest Direct row named (if any).
+    Dial(u64, Option<rafka_mesh_entity::ConnectionId>),
+}
+
+/// When an attempt toward `destination` is due, and the latest Direct row it is scheduled from: the
+/// series' backoff from this node's latest Direct Failed row toward that birth (connections.md
+/// §9.3), else at once.
+fn recovery_due(held: &ConnectionsHeld, destination: &ConnectionEnd) -> (u64, Option<rafka_mesh_entity::ConnectionId>) {
+    match held.own_latest_directs().into_iter().find(|d| d.destination.name == destination.name) {
+        Some(row) if (&row.destination.node_id, &row.destination.incarnation) == (&destination.node_id, &destination.incarnation) => (next_due(row).unwrap_or(0), Some(row.id.clone())),
+        Some(row) => (0, Some(row.id.clone())),
+        None => (0, None),
+    }
 }
 
 fn kind_name(k: ConnectionKind) -> &'static str {
@@ -159,6 +205,8 @@ impl ConnectionsWriter {
             idle: tokio::sync::Notify::new(),
             queue,
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
+            recovery: Mutex::new(HashMap::new()),
+            wake: tokio::sync::Notify::new(),
         });
         let weak = Arc::downgrade(&inner);
         runtime.spawn(async move {
@@ -228,7 +276,7 @@ impl ConnectionsWriter {
 
     /// Resolves once every observation write spawned before the call has completed: the moment
     /// after which the index and the evidence hold every fact this writer was handed.
-    pub async fn drain(&self) {
+    pub async fn observations_landed(&self) {
         loop {
             let mut notified = std::pin::pin!(self.inner.idle.notified());
             notified.as_mut().enable();
@@ -282,7 +330,7 @@ impl ConnectionsWriter {
     /// [`Self::held_routes`] with the name the node holds them under and whether its held set is
     /// complete: what `node.connections.get` answers.
     pub async fn held_connections(&self) -> HeldConnections {
-        self.drain().await;
+        self.observations_landed().await;
         let _gate = self.inner.write_gate.lock().await;
         let own = self.own_now();
         let held = self.inner.held.lock().unwrap();
@@ -418,30 +466,106 @@ impl ConnectionsWriter {
         self.settle_owed().await
     }
 
-    /// Attempt every owed retirement again each `every` while one is owed: the bounded retry
-    /// connections.md §10 asks for, derived from the rows each time. The task ends with the
-    /// runtime.
-    pub fn spawn_retirement_reconciler(&self, every: Duration) -> tokio::task::JoinHandle<()> {
+    /// The node's one connections reconciler (connections.md §9.4, §10): each `every`, or at once
+    /// when an accept armed an attempt, it attempts every owed retirement again and dials every
+    /// pending recovery attempt whose backoff has ended through `dial`, this node's own data plane
+    /// (none on a node with no data plane). Derived from the rows each time; the task ends with
+    /// the runtime.
+    pub fn spawn_reconciler(&self, every: Duration, dial: Option<RecoveryDial>) -> tokio::task::JoinHandle<()> {
         let w = self.clone();
         self.inner.runtime.spawn(async move {
             loop {
-                tokio::time::sleep(every).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(every) => {}
+                    _ = w.inner.wake.notified() => {}
+                }
                 if !w.owed().is_empty() {
                     let _ = w.settle_owed().await;
+                }
+                if let Some(dial) = &dial {
+                    w.recover(dial).await;
                 }
             }
         })
     }
 
-    /// RED scaffold: the retirement reconciler; `dial` is not used yet.
-    pub fn spawn_reconciler(&self, every: Duration, dial: Option<RecoveryDial>) -> tokio::task::JoinHandle<()> {
-        let _ = dial;
-        self.spawn_retirement_reconciler(every)
+    /// The pending recovery attempts, each with when it is due.
+    pub fn recovery_pending(&self) -> Vec<RecoveryAttempt> {
+        let pending: Vec<ConnectionEnd> = self.inner.recovery.lock().unwrap().values().map(|p| p.destination.clone()).collect();
+        let held = self.inner.held.lock().unwrap();
+        pending.into_iter().map(|destination| RecoveryAttempt { due_ms: recovery_due(&held, &destination).0, destination }).collect()
     }
 
-    /// RED scaffold: no attempt is ever pending.
-    pub fn recovery_pending(&self) -> Vec<RecoveryAttempt> {
-        Vec::new()
+    /// One pass over the pending recovery attempts (connections.md §9.5): an attempt whose birth
+    /// is gone, or toward which a Direct is Connected, is spent undialled; one whose backoff has
+    /// not ended waits; the rest are dialled once each. A dial's fact is the data-plane client's
+    /// observation; once it has landed, a Failed row reschedules the attempt from its own backoff,
+    /// a Connected one spends it, and a dial that produced no fact spends it by name.
+    async fn recover(&self, dial: &RecoveryDial) {
+        let pending: Vec<((NodeId, IncarnationId), Pending)> = self.inner.recovery.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        for (key, Pending { destination, traceparent }) in pending {
+            let source = self.own().name;
+            let step = {
+                let held = self.inner.held.lock().unwrap();
+                if held.end_superseded(&destination) == Some(true) {
+                    Step::Spent("destination-superseded")
+                } else if matches!(held.active_direct(&source, &destination.name), Some(Some(edge)) if edge.destination.incarnation == destination.incarnation) {
+                    Step::Spent("direct-connected")
+                } else {
+                    let (due_ms, basis) = recovery_due(&held, &destination);
+                    if local_now_ms() < due_ms { Step::Wait } else { Step::Dial(due_ms, basis) }
+                }
+            };
+            match step {
+                Step::Wait => {}
+                Step::Spent(reason) => self.spend(&key, &source, &destination, reason),
+                Step::Dial(due_ms, basis) => {
+                    let span = tracing::info_span!(
+                        "rdm.node_admin.connection.create.via-recovery-dial",
+                        source = %source,
+                        destination = %destination.name,
+                        destination_node_id = %destination.node_id,
+                        destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
+                        due_ms,
+                        outcome = tracing::field::Empty,
+                        fact = tracing::field::Empty,
+                        entry = tracing::field::Empty,
+                    );
+                    if let Some(tp) = &traceparent {
+                        rafka_mesh_telemetry::set_parent(&span, tp);
+                    }
+                    let outcome = tracing::Instrument::instrument(dial(destination.clone()), span.clone()).await;
+                    self.observations_landed().await;
+                    let latest = self.latest_direct(&destination);
+                    span.record("outcome", outcome.as_str());
+                    let fact = latest.as_ref().filter(|r| Some(&r.id) != basis.as_ref());
+                    span.record("fact", fact.map_or("none", |r| state_name(r.state)));
+                    if let Some(r) = fact {
+                        span.record("entry", r.id.to_string().as_str());
+                    }
+                    span.in_scope(|| tracing::info!("this node dialled its own connection toward the destination birth an accept named"));
+                    match latest {
+                        Some(r) if Some(&r.id) != basis.as_ref() && r.state == ConnectionState::Connected => self.spend(&key, &source, &destination, "direct-connected"),
+                        Some(r) if Some(&r.id) != basis.as_ref() => {}
+                        _ => self.spend(&key, &source, &destination, "no-fact"),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Spend the pending attempt `key` undialled, naming why.
+    fn spend(&self, key: &(NodeId, IncarnationId), source: &PathName, destination: &ConnectionEnd, reason: &'static str) {
+        self.inner.recovery.lock().unwrap().remove(key);
+        tracing::info_span!(
+            "rdm.node_admin.connection.remove.via-recovery-attempt",
+            source = %source,
+            destination = %destination.name,
+            destination_node_id = %destination.node_id,
+            destination_incarnation = %destination.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
+            reason,
+        )
+        .in_scope(|| tracing::info!("the pending recovery attempt is spent"));
     }
 
     /// A strictly increasing stamp for this writer's rows.
@@ -512,7 +636,7 @@ impl ConnectionsWriter {
             span.in_scope(|| tracing::info!("one connection fact this node observed"));
             drop(gate);
             if settles && landed {
-                let _ = w.settle_owed().await;
+                let _ = tracing::Instrument::instrument(w.settle_owed(), span.clone()).await;
             }
             drop(span);
             w.inner.in_flight.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
@@ -525,11 +649,6 @@ impl ConnectionObserver for ConnectionsWriter {
     fn direct_connected(&self, node: &ResolvedNode) {
         let destination = end_of(node);
         self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Connected, None), "dial", node);
-    }
-
-    fn direct_accepted(&self, node: &ResolvedNode) {
-        let destination = end_of(node);
-        self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Connected, None), "accept", node);
     }
 
     fn direct_failed(&self, node: &ResolvedNode, reason: &str) {
@@ -573,8 +692,49 @@ impl ConnectionObserver for ConnectionsWriter {
 }
 
 impl rafka_node_rpc::AcceptTrigger for ConnectionsWriter {
+    /// An accept writes nothing (R-CN1). From the exact birth this node's own active Proxy names,
+    /// with no Direct to it Connected, it arms one recovery attempt (or finds it armed) and wakes
+    /// the reconciler; from another birth at that path it arms nothing, by name; from a node this
+    /// node reaches by no Proxy it is an accept like any other.
     fn accepted(&self, node: &ResolvedNode) {
-        ConnectionObserver::direct_accepted(self, node)
+        let destination = end_of(node);
+        let (source, proxied) = {
+            let held = self.inner.held.lock().unwrap();
+            let Some(proxy) = held.own_active_proxies().into_iter().find(|p| p.destination.name == destination.name) else { return };
+            let direct = matches!(held.active_direct(&proxy.source.name, &destination.name), Some(Some(_)));
+            (proxy.source.name.clone(), (proxy.destination.clone(), direct))
+        };
+        let (named, direct) = proxied;
+        let key = (destination.node_id.clone(), node.incarnation.clone());
+        let span = tracing::info_span!(
+            "rdm.node_admin.connection.update.via-accept-trigger",
+            source = %source,
+            destination = %destination.name,
+            destination_node_id = %destination.node_id,
+            destination_incarnation = %node.incarnation,
+            proxy_destination_node_id = %named.node_id,
+            proxy_destination_incarnation = %named.incarnation.as_ref().map(ToString::to_string).unwrap_or_default(),
+            peer = %node.endpoint_id.fmt_short(),
+            outcome = tracing::field::Empty,
+        );
+        let outcome = if (&named.node_id, &named.incarnation) != (&destination.node_id, &destination.incarnation) {
+            "another-birth"
+        } else if direct {
+            "direct-connected"
+        } else {
+            match self.inner.recovery.lock().unwrap().entry(key) {
+                std::collections::hash_map::Entry::Occupied(_) => "coalesced",
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    v.insert(Pending { destination: destination.clone(), traceparent: rafka_mesh_telemetry::traceparent_of(&span) });
+                    "pending"
+                }
+            }
+        };
+        span.record("outcome", outcome);
+        span.in_scope(|| tracing::info!("an accept from the destination: a recovery trigger for this node's own dial, never a Direct entry"));
+        if matches!(outcome, "pending" | "coalesced") {
+            self.inner.wake.notify_one();
+        }
     }
 }
 
@@ -589,7 +749,7 @@ impl rafka_node_rpc::CarrierEdges for ConnectionsWriter {
     async fn edge_not_active(&self, target: &rafka_mesh_entity::NodeId) -> Option<String> {
         // The dial that just failed handed its Failed fact to this writer; it is held once its write
         // has landed. The carrier answers from the facts, so it waits for them.
-        self.drain().await;
+        self.observations_landed().await;
         let held = self.inner.held.lock().unwrap();
         let latest = held.own_latest_directs().into_iter().find(|d| &d.destination.node_id == target)?;
         (latest.state != ConnectionState::Connected).then(|| {

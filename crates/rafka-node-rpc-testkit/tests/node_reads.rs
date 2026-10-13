@@ -345,7 +345,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
             rafka_node_rpc_contract::outcome::RpcOutcome::Reply(_) => {}
             other => panic!("the node's data-plane ping did not end in a reply: {other:?}"),
         }
-        seams.connections.drain().await;
+        seams.connections.observations_landed().await;
 
         let (d, _) = book.get(launch.node_id.as_str()).unwrap();
         let rpc = ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr };

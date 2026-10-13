@@ -276,7 +276,7 @@ impl ConnectionsHeld {
     /// Whether `end` names a process membership does not hold now: its node departed, another
     /// node holds its path, or the node is here under another birth. An end naming no process is
     /// judged only on departure; a node membership does not hold is not judged.
-    fn end_superseded(&self, end: &ConnectionEnd) -> Option<bool> {
+    pub fn end_superseded(&self, end: &ConnectionEnd) -> Option<bool> {
         let m = self.membership.as_ref()?;
         match m.birth(&end.node_id, &end.name) {
             Birth::Current(now) => Some(end.incarnation.as_ref().is_some_and(|named| *named != now)),

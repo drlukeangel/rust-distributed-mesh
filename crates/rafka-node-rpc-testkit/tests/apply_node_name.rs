@@ -106,7 +106,7 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
             RpcOutcome::Reply(_) => {}
             other => panic!("the node's data-plane ping did not end in a reply: {other:?}"),
         }
-        seams.connections.drain().await;
+        seams.connections.observations_landed().await;
         // Holding that route: the name is refused, naming the connection by its entry's id, and nothing is held.
         let held_ids: Vec<_> = seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
         assert_eq!(held_ids.len(), 1, "the node holds the one route it dialled: {held_ids:?}");

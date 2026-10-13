@@ -80,7 +80,7 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
     let target = resolved(&dest);
     for i in 0..7 {
         writer.direct_failed(&target, &format!("refused {i}"));
-        writer.drain().await;
+        writer.observations_landed().await;
     }
     let history = storage.history().await.unwrap();
     assert_eq!(history.len(), 7, "every failure joins the raw log");
@@ -90,7 +90,7 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
     assert_eq!(held.lock().unwrap().own_latest_directs().len(), 1);
     // A Direct Connected ends the series and is the pair's one Direct member now.
     writer.direct_connected(&target);
-    writer.drain().await;
+    writer.observations_landed().await;
     let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1);
     assert_eq!(index[0].state, ConnectionState::Connected);
@@ -113,7 +113,7 @@ async fn a_direct_connected_beside_a_proxy_is_retired_durably_and_the_route_cuts
     writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 12)).await.unwrap();
     writer.direct_connected(&resolved(&dest));
     // The observation's own write has landed and settled the retirement it owed.
-    writer.drain().await;
+    writer.observations_landed().await;
     let retired = storage.history().await.unwrap().into_iter().last().unwrap();
     assert_eq!((retired.kind, retired.state, retired.reason.as_deref()), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored")));
     assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
@@ -208,7 +208,7 @@ async fn an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_sourc
     let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(50), Some(dial.dial()));
     let rows_before = storage.history().await.unwrap().len();
     writer.accepted(&resolved(&dest));
-    writer.drain().await;
+    writer.observations_landed().await;
     assert_eq!(storage.history().await.unwrap().len(), rows_before, "the accept wrote nothing");
     until("the source dials its own connection", || dial.calls().len() == 1).await;
     assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays the route while the dial is out");
@@ -222,7 +222,8 @@ async fn an_accept_from_the_proxy_destination_writes_nothing_and_wakes_the_sourc
         vec![(ConnectionKind::Direct, ConnectionState::Connected, None), (ConnectionKind::Proxy, ConnectionState::Disconnected, Some("direct-restored".to_string()))],
         "the source's own Direct Connected, then the retirement it owed"
     );
-    assert!(writer.recovery_pending().is_empty(), "the attempt is spent once Direct is Connected");
+    until("the attempt is spent once Direct is Connected", || writer.recovery_pending().is_empty()).await;
+    assert_eq!(dial.calls().len(), 1, "one dial");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -356,7 +357,7 @@ async fn a_refused_retirement_write_keeps_the_proxy_effective_until_it_lands() {
     assert_eq!(writer.owed().len(), 1);
     assert!(!storage.connections().await.unwrap().iter().any(|r| r.kind == ConnectionKind::Proxy && r.state == ConnectionState::Disconnected), "nothing durable says the Proxy retired");
     // The bounded reconciler attempts it again until it lands; then Direct is effective.
-    let _task = writer.spawn_retirement_reconciler(std::time::Duration::from_millis(50));
+    let _task = writer.spawn_reconciler(std::time::Duration::from_millis(50), None);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }) {
         assert!(std::time::Instant::now() < deadline, "the retirement never landed");
@@ -452,7 +453,7 @@ async fn a_refused_observation_write_leaves_no_held_fact_and_the_next_observatio
     writer.hydrate().await.unwrap();
     storage.refuse.store(1, std::sync::atomic::Ordering::SeqCst);
     writer.direct_connected(&resolved(&dest));
-    writer.drain().await;
+    writer.observations_landed().await;
     {
         let h = held.lock().unwrap();
         assert!(!h.holds_direct_fact(&me.name, &dest.name), "a refused fact is not held");
@@ -465,7 +466,7 @@ async fn a_refused_observation_write_leaves_no_held_fact_and_the_next_observatio
     assert!(!held.lock().unwrap().holds_direct_fact(&me.name, &dest.name));
     // The next observation of the connection lands it.
     writer.direct_connected(&resolved(&dest));
-    writer.drain().await;
+    writer.observations_landed().await;
     assert_eq!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true });
     let index = storage.connections().await.unwrap();
     assert_eq!((index.len(), index[0].state), (1, ConnectionState::Connected));
@@ -494,7 +495,7 @@ async fn a_dial_to_a_dead_peer_with_no_prior_fact_is_not_sent_and_records_direct
     let call = client.call_resolved::<Ping>(resolution, &me.name, &dest.name, &dest.node_id, &PingRequest::Ping { payload: vec![1] }, &opts).await;
     assert_eq!(call.route, EffectiveRoute::Direct { known: false });
     assert!(matches!(call.outcome, RpcOutcome::NotSent(_)), "{:?}", call.outcome);
-    writer.drain().await;
+    writer.observations_landed().await;
     let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1, "{index:?}");
     assert_eq!((index[0].kind, index[0].state), (ConnectionKind::Direct, ConnectionState::Failed));
@@ -530,7 +531,7 @@ impl ConnectionsStorage for SlowFirstPut {
 }
 
 /// CONTRACT: observations of one pair reach the index in the order they were observed, so after
-/// the writer drains, the index member of the pair is the latest ordinal even when the first
+/// every observation has landed, the index member of the pair is the latest ordinal even when the first
 /// observation's index write is the slowest.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
@@ -543,7 +544,7 @@ async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
     for i in 0..3 {
         writer.direct_failed(&target, &format!("refused {i}"));
     }
-    writer.drain().await;
+    writer.observations_landed().await;
     let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1);
     assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((1, 3)), "the index holds the latest observation: {index:?}");
@@ -572,7 +573,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     writer.hydrate().await.unwrap();
     let target = resolved(&peer);
     writer.direct_connected(&target);
-    writer.drain().await;
+    writer.observations_landed().await;
     let before = storage.history().await.unwrap();
     assert_eq!(before.len(), 1);
     assert_eq!((&before[0].source.name, &before[0].source.node_id), (&me.name, &me.node_id), "the row before the rename names the birth's name: {:?}", before[0]);
@@ -580,7 +581,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     *told.lock().unwrap() = Some(taken.clone());
     assert_eq!(writer.own(), ConnectionEnd { name: taken.clone(), ..me.clone() }, "the source end is the name the node holds, with its node id and birth");
     writer.direct_broken(&target, "the pooled connection closed");
-    writer.drain().await;
+    writer.observations_landed().await;
     let after = storage.history().await.unwrap();
     assert_eq!(after.len(), 2);
     assert_eq!(after[0], before[0], "the row written before the rename stays exactly as written");
@@ -612,7 +613,7 @@ async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), Arc::new(Mutex::new(ConnectionsHeld::new())));
     assert_eq!(writer.hydrate().await.unwrap(), 1);
     writer.direct_failed(&resolved(&dest), "refused after the restart");
-    writer.drain().await;
+    writer.observations_landed().await;
     let history = storage.history().await.unwrap();
     let next = history.last().unwrap();
     assert_eq!(next.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((4, 3)), "the series continues: {next:?}");
@@ -636,10 +637,10 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
     writer.hydrate().await.unwrap();
     for i in 0..2 {
         writer.direct_failed(&resolved(&gone), &format!("refused {i}"));
-        writer.drain().await;
+        writer.observations_landed().await;
     }
     writer.direct_failed(&resolved(&next), "refused by the next birth");
-    writer.drain().await;
+    writer.observations_landed().await;
     let history = storage.history().await.unwrap();
     assert_eq!(history.iter().map(|r| r.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal))).collect::<Vec<_>>(), vec![Some((1, 1)), Some((1, 2)), Some((2, 1))], "the next birth's failure is a new incident: {history:#?}");
     assert_eq!(history[2].destination, next, "the row names the birth that was dialled: {:?}", history[2]);

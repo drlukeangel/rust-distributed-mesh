@@ -99,7 +99,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
 
         // The current index: one Direct and one Proxy for the pair; the held projection the same
         // (a fact is held once its write has landed, so the last attempt's write completes first).
-        writer.drain().await;
+        writer.observations_landed().await;
         let index = storage.connections().await.unwrap();
         let pair: Vec<&NodeConnection> = index.iter().filter(|r| r.source.name == me.name && r.destination.name == dest.name).collect();
         assert_eq!(pair.iter().filter(|r| r.kind == ConnectionKind::Direct).count(), 1, "{pair:?}");
@@ -125,7 +125,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
 
         // The evidence: direct observations, then every span the cell's own threads emitted. Every
         // observation write has landed (and closed its span) before the capture is read.
-        writer.drain().await;
+        writer.observations_landed().await;
         assert_eq!(writer.in_flight(), 0);
         let spans = capture.spans().expect("the cell's spans can be read");
         let observed: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.connection.update.via-observed").collect();

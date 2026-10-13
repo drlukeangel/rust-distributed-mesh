@@ -62,23 +62,20 @@ async fn a_source_observes_its_own_direct_connections_opening_and_failing_once_e
     assert!(!failed[0].2.is_empty(), "the failure carries its reason");
 }
 
-/// connections.md §10: a connection accepted from a peer is Direct Connected from the acceptor
-/// to that peer, reported to the acceptor's observer once per accepted connection (never per
-/// stream), and only when the acceptor's live resolver names the peer; an unknown key (a
-/// probe's) is reported to nothing.
+/// R-CN1: a connection accepted from a peer is handed to the acceptor's accept trigger (a
+/// recovery trigger for its own dial, never Direct evidence) once per accepted connection (never
+/// per stream), and only when the acceptor's live resolver names the peer; an unknown key (a
+/// probe's) is handed to nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_accepted_connection_is_direct_connected_on_the_acceptor_once() {
+async fn an_accepted_connection_is_handed_to_the_accept_trigger_once() {
     use iroh::protocol::Router;
     use rafka_node_rpc::{HandlerFault, LiveNodeResolver, PeerContext, ServedBirth, ServerBuilder};
     use rafka_node_rpc_contract::catalog::OpOwner;
 
     #[derive(Default)]
     struct Accepts(Mutex<Vec<String>>);
-    impl ConnectionObserver for Accepts {
-        fn direct_connected(&self, _: &ResolvedNode) {}
-        fn direct_failed(&self, _: &ResolvedNode, _: &str) {}
-        fn direct_broken(&self, _: &ResolvedNode, _: &str) {}
-        fn direct_accepted(&self, node: &ResolvedNode) {
+    impl rafka_node_rpc::AcceptTrigger for Accepts {
+        fn accepted(&self, node: &ResolvedNode) {
             self.0.lock().unwrap().push(node.name.to_string());
         }
     }
@@ -92,14 +89,14 @@ async fn an_accepted_connection_is_direct_connected_on_the_acceptor_once() {
         transport_addr: de.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(),
         incarnation: IncarnationId::mint(),
     };
-    // The acceptor's live resolver holds the dialer's birth; the acceptor's observer hears accepts.
+    // The acceptor's live resolver holds the dialer's birth; the acceptor's trigger hears accepts.
     let resolver = Arc::new(LiveNodeResolver::default());
     resolver.apply(dialer.clone(), None);
     let accepts = Arc::new(Accepts::default());
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let server = ServerBuilder::new()
         .ledger(test_ledger())
-        .with_connection_observer(resolver, accepts.clone())
+        .with_accept_trigger(resolver, accepts.clone())
         .serve::<Probe, _, _>(OpOwner::Product("test".into()), |_peer: PeerContext, req: ProbeRequest| async move {
             let ProbeRequest::Probe { payload } = req;
             Ok::<_, HandlerFault>(ProbeReply::Probed { payload, served_by: "mesh1.rpc.1".into(), caller: String::new() })
@@ -119,11 +116,11 @@ async fn an_accepted_connection_is_direct_connected_on_the_acceptor_once() {
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(accepts.0.lock().unwrap().clone(), vec!["mesh1.rpc.2"], "one accepted connection, reported once for its two streams");
-    // A peer the acceptor does not hold: its connection is accepted, reported to nothing.
+    // A peer the acceptor does not hold: its connection is accepted, handed to nothing.
     let (_, ue) = bind().await;
     let unknown = NodeRpcClient::new(ue, sr);
     let (out, _) = unknown.call::<Probe>(&NodeTarget::ExactNode(acceptor.node_id.clone()), &probe(b"anon"), &opts).await;
     assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
     tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(accepts.0.lock().unwrap().len(), 1, "an unresolved peer writes no row");
+    assert_eq!(accepts.0.lock().unwrap().len(), 1, "an unresolved peer is handed to nothing");
 }
