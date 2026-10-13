@@ -1559,6 +1559,60 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     estate.shutdown().await;
 }
 
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part C1 "The
+/// no-successor cases", Q7 ruled Luke 2026-10-12: "`node.primary.update` commanded for a cohort with no
+/// other node of that type in the mesh is refused by name, `cannot transfer: no secondary of type
+/// <node_type> in mesh <mesh>` ... The holder stays primary, nothing is cut off, no row is written, and
+/// the workflow that commanded it ... fails by name with that reason"; node-replace.md: the replace
+/// recipe never leaves a mesh with no live node-admin): in a fabric whose mesh2 has one node-admin, its
+/// mesh-primary and not the fabric-primary, `build.create` of a Replace of mesh2's primary is refused
+/// `last-admin` with exactly `cannot transfer: no secondary of type node-admin in mesh mesh2`, under one
+/// `rdm.node_admin.build.reject.via-last-admin` with the same text, before any step: no attempt opens,
+/// no successor is created at `<name>.new`, no seat move is commanded, no row is written, and every node
+/// keeps its birth.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name_before_any_step() {
+    let (estate, birth_build) = two_mesh_estate("a_replace_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_by_name_before_any_step").await;
+    let before = estate.node_values().await;
+    let admins: Vec<&Value> = before.iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == "mesh2").collect();
+    assert_eq!(admins.len(), 1, "mesh2 has one node-admin: {before:#?}");
+    let primary = admins[0];
+    assert_eq!((primary["is_primary"].clone(), primary["is_fabric_primary"].clone()), (json!(true), json!(false)), "mesh2's only admin is its mesh-primary, not the fabric-primary: {primary}");
+    let mp = s(&primary["name"]);
+    let attempt = build_log::build_value(&estate.carrier().await, &birth_build).await["attempt"].clone();
+    let q7 = "cannot transfer: no secondary of type node-admin in mesh mesh2";
+    match estate.carrier().await.create(Change::Replace { node: Estate::path(&mp), incarnation: None }).await {
+        // The call ends naming the reason, then the refusal's text: `<reason>: <text>`.
+        Err(CallEnd::Rejected { reason, detail }) => assert_eq!((reason.as_str(), detail.as_str()), ("last-admin", format!("last-admin: {q7}").as_str()), "the replace of {mp} is refused with Q7's exact text"),
+        Ok(_) => panic!("the replace of {mp}, mesh2's only node-admin, was accepted"),
+        Err(other) => panic!("the replace of {mp}, mesh2's only node-admin, is refused last-admin, not {other:?}"),
+    }
+    assert_eq!(build_log::build_value(&estate.carrier().await, &birth_build).await["attempt"], attempt, "no attempt opened");
+    let spans = wait_for("the refusal is exported", Duration::from_secs(30), || async {
+        let spans = estate.spans();
+        (!named(&spans, "rdm.node_admin.build.reject.via-last-admin").is_empty()).then_some(spans)
+    })
+    .await;
+    let refused = named(&spans, "rdm.node_admin.build.reject.via-last-admin");
+    assert_eq!(refused.len(), 1, "one refusal: {refused:?}");
+    assert_eq!(s(&refused[0]["attributes"]["detail"]), q7, "the refusal span carries Q7's exact text: {refused:?}");
+    let new_name = format!("{mp}.new");
+    assert!(
+        named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().all(|sp| s(&sp["attributes"]["subject"]) != new_name),
+        "no successor was claimed at {new_name}"
+    );
+    assert!(named(&spans, "rdm.node_admin.seat.update.via-primary-updating").is_empty(), "no node.primary.update ran");
+    assert!(named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").is_empty(), "no seat row was written");
+    estate.record_trace_url(refused[0]["trace_id"].as_str().unwrap_or(""));
+    for n in &before {
+        let now = estate.node_value(&s(&n["name"])).await;
+        assert_eq!((&now["node_id"], &now["incarnation_id"], &now["is_primary"]), (&n["node_id"], &n["incarnation_id"], &n["is_primary"]), "{} is untouched", s(&n["name"]));
+    }
+    assert!(estate.node_values().await.iter().all(|n| n["name"] != new_name.as_str()), "no node holds {new_name}");
+    eprintln!("trace {}: rdm.node_admin.build.reject.via-last-admin detail={q7:?} (replace of {mp})", s(&refused[0]["trace_id"]));
+    estate.shutdown().await;
+}
+
 /// A caller outside the fabric that reaches the node-admin `admin` by its exact birth: its own
 /// endpoint, and a resolver holding that birth as the answering admin's view names it.
 async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClient>, rafka_mesh_entity::NodeId) {
