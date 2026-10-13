@@ -1304,6 +1304,11 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         }
         nodes.entry(name).or_insert(r);
     }
+    // Each birth whose exit-proof row was read carries the proof, beside the `Dead` it shows: a
+    // decision that needs the proof never reads it from the status, which the true-offline mark sets too.
+    for n in nodes.values_mut() {
+        n.exit_proven = n.incarnation_id.as_ref().is_some_and(|i| records.is_exited(&n.node_id, i));
+    }
     let mut topology = Topology {
         fabric: Fabric { id: fabric_id.clone(), name: fabric.into(), status: ScopeStatus::Pending, provider },
         meshes: Vec::new(),

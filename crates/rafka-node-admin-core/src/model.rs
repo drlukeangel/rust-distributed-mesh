@@ -141,6 +141,12 @@ pub struct Node {
     /// Stopped and parked: `Leaving` with a live process, waiting for a start or a delete.
     #[serde(default)]
     pub parked: bool,
+    /// The provider's proof that this exact birth exited is recorded: its exit-proof row was read
+    /// (`Records::read_exits`), so the birth is `Dead` and gone from every seat. `false` for a
+    /// `Dead` the observer inferred (true offline), which proves nothing (elections §4.1: only the
+    /// provider's exit proof vacates a seat).
+    #[serde(default)]
+    pub exit_proven: bool,
     /// The node's config as its digest carries it: the application's own key/values, opaque to RDM.
     #[serde(default)]
     pub config: std::collections::BTreeMap<String, String>,
@@ -175,6 +181,7 @@ impl Node {
             routable: false,
             declared: None,
             parked: false,
+            exit_proven: false,
             config: Default::default(),
         }
     }
