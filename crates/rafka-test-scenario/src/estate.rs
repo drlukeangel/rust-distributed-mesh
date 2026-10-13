@@ -651,11 +651,11 @@ impl Estate {
         let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), wire: tokio::sync::Mutex::new(None), _scope: scope };
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
-        // Ready and elected, not when its API first answers.
+        // Ready and elected, not when it first answers. `fabric.get` at it names the seat and the Fabric.
         estate.fabric_id = wait_for("the bootstrap admin holds the fabric", Duration::from_secs(30), || async {
-            let f = estate.get("/api/fabric").await.1;
-            f["fabric_primary"].as_str()?;
-            f["id"].as_str().filter(|i| !i.is_empty()).map(String::from)
+            let f = estate.try_fabric_view().await.ok()?;
+            f.fabric_primary.as_ref()?;
+            Some(f.id.to_string()).filter(|i| !i.is_empty())
         })
         .await;
         estate
@@ -1013,66 +1013,52 @@ impl Estate {
         std::fs::write(self.artifacts.join("trace-url.txt"), format!("{base}/trace/{trace_id}\n")).unwrap();
     }
 
-    /// Stop the whole estate through the runtime-administration route of the
-    /// admin that holds the fabric now (as `self.admin` sees it: drift
-    /// recovery can move the fabric back to a recovered mesh) and wait until
-    /// every runtime of the estate has exited. Every process flushes its
-    /// evidence on exit, so read `spans()` after this.
+    /// Stop the whole estate through the runtime-administration route of the admin that holds the
+    /// fabric now (drift recovery can move the fabric back to a recovered mesh) and wait until every
+    /// runtime of the estate has exited. Every process flushes its evidence on exit, so read `spans()`
+    /// after this.
+    ///
+    /// Who holds the fabric is read over Node RPC: `fabric.get` at the admin the estate asks, then at
+    /// every node-admin its view lists, names the fabric-primary, and that admin's own `fabric.get`
+    /// (reached by its exact birth, so a control port another estate reused is never taken for it)
+    /// gives the control base it advertises. The fabric shutdown itself is that base's route: no op on
+    /// the wire begins one.
     pub async fn stop(&mut self) {
-        let entry = self.admin.clone();
-        let (_, fabric) = self.get("/api/fabric").await;
-        if let Some(holder) = fabric["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
-            if self.fabric_at(holder).await.is_some() {
-                self.admin = holder.to_string();
-            }
-        }
+        let peers = self.peers().await;
+        let entry = self.entry().await;
         // Only the fabric-primary accepts the shutdown, and the seat can still be moving when the
-        // test asks: follow the advertised fabric control endpoint until one accepts, and name the
-        // last refusal rather than waiting on a shutdown nobody began.
+        // test asks: follow the seat until one accepts, and name the last refusal rather than
+        // waiting on a shutdown nobody began.
         let until = Instant::now() + Duration::from_secs(30);
         let mut last: (u16, Value);
-        loop {
-            // The shutdown goes only to an admin of this estate's Fabric: a dead admin's port can
-            // already belong to another estate's admin.
-            let r = match self.fabric_at(&self.admin).await {
-                Some(_) => self.http.post(format!("{}/api/shutdown", self.admin)).json(&json!({})).send().await.map_err(|e| e.to_string()),
-                None => Err(format!("{} does not answer for Fabric {}", self.admin, self.fabric_id)),
-            };
-            let refused_or_gone = match r {
-                Ok(r) => {
-                    let status = r.status().as_u16();
-                    let body = r.json().await.unwrap_or(Value::Null);
-                    if status == 202 {
-                        break;
-                    }
-                    last = (status, body);
-                    true
-                }
-                Err(e) => {
-                    last = (0, Value::String(e));
-                    true
-                }
-            };
-            // The advertised holder refused or is gone: ask the entry admin, then every admin it
-            // lists, who holds the fabric now.
-            if refused_or_gone {
-                let mut candidates = vec![entry.clone()];
-                let entry_is_ours = self.fabric_at(&entry).await.is_some();
-                if let Some(r) = if entry_is_ours { self.http.get(format!("{entry}/api/nodes")).timeout(Duration::from_secs(2)).send().await.ok() } else { None } {
-                    let v: Value = r.json().await.unwrap_or(Value::Null);
-                    candidates.extend(v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(|n| n["admin_api_base"].as_str().map(String::from)));
-                }
-                for c in candidates {
-                    let Some(f) = self.fabric_at(&c).await else { continue };
-                    if let Some(base) = f["admin_api_base"].as_str().filter(|b| !b.is_empty() && *b != self.admin) {
-                        self.admin = base.to_string();
+        let holder = loop {
+            let mut asked = vec![entry.clone()];
+            if let Ok(views) = self.try_node_views().await {
+                asked.extend(views.into_iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, rafka_node_admin_client::NodeStatus::Dead | rafka_node_admin_client::NodeStatus::PendingReconnect) && n.name != entry).map(|n| n.name));
+            }
+            let mut seat = None;
+            for admin in &asked {
+                let Some(fp) = crate::typed::fabric_view_of(&peers, admin, &self.fabric_id).await.and_then(|f| f.fabric_primary) else { continue };
+                // The holder's own view names it the fabric-primary and gives its own control base.
+                if let Some(own) = crate::typed::fabric_view_of(&peers, &fp, &self.fabric_id).await.filter(|f| f.fabric_primary.as_ref() == Some(&fp)) {
+                    if let Some(base) = own.admin_api_base.filter(|b| !b.is_empty()) {
+                        seat = Some((fp, base));
                         break;
                     }
                 }
             }
-            assert!(Instant::now() < until, "no admin accepted /api/shutdown within 30s; last answer from {}: {} {}", self.admin, last.0, last.1);
+            last = match &seat {
+                Some((fp, base)) => match self.http.post(format!("{base}/api/shutdown")).json(&json!({})).send().await {
+                    Ok(r) if r.status().as_u16() == 202 => break seat.clone().expect("the seat was read"),
+                    Ok(r) => (r.status().as_u16(), json!({"fabric_primary": fp.to_string(), "base": base, "answer": r.json::<Value>().await.unwrap_or(Value::Null)})),
+                    Err(e) => (0, json!({"fabric_primary": fp.to_string(), "base": base, "error": e.to_string()})),
+                },
+                None => (0, json!({"asked": asked.iter().map(|a| a.to_string()).collect::<Vec<_>>(), "error": format!("no admin of Fabric {} names a fabric-primary whose own view holds the seat", self.fabric_id)})),
+            };
+            assert!(Instant::now() < until, "no fabric-primary accepted the fabric shutdown within 30s; last: {} {}", last.0, last.1);
             tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+        };
+        self.admin = holder.1.clone();
         // The bootstrap admin is stopped by the shutdown like any other admin; one still running
         // when the bound passes is named and killed, so a stop never hangs on it. The bound covers
         // the drain bound a stopper waits on (`shutdown::drain_bound`) plus the grace of one stop.
@@ -1083,11 +1069,11 @@ impl Estate {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             if c.try_wait().ok().flatten().is_none() {
-                // Its control API may already be closed (it closes before the Leaving linger ends):
-                // the view is evidence when it answers, never a condition of the stop.
-                let fabric = match self.http.get(format!("{}/api/fabric", self.admin)).timeout(Duration::from_secs(2)).send().await {
-                    Ok(r) => r.json::<Value>().await.unwrap_or(Value::Null),
-                    Err(e) => Value::String(format!("control API closed: {e}")),
+                // The holder may already have closed its endpoint (it leaves before the Leaving linger
+                // ends): its view is evidence when it answers, never a condition of the stop.
+                let fabric = match crate::typed::fabric_view_of(&peers, &holder.0, &self.fabric_id).await {
+                    Some(f) => serde_json::to_value(f).unwrap_or(Value::Null),
+                    None => Value::String(format!("{} does not answer fabric.get for {}", holder.0, self.fabric_id)),
                 };
                 eprintln!("estate stop: bootstrap admin pid {} still ran when the shutdown bound passed; killed. Its fabric view: {fabric}", c.id());
                 let _ = c.kill();
