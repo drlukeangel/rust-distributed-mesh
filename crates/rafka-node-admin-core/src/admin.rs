@@ -9571,6 +9571,51 @@ mod tests {
         assert_eq!(epochs, vec![(MeshPrimary, me.node.node_id.clone(), 6), (FabricPrimary, me.node.node_id.clone(), 6)], "the successor of a proven-gone holder takes both seats at the next epoch (decided against {:?})", decided.fabric);
     }
 
+    /// CONTRACT (R-MT1 Q3: the mesh-primary "writes the cohort's seat row as the mesh's one row writer"
+    /// and is the sole author of member status; proposal Part B1, every cohort keeps its seat by the one
+    /// rule): a mesh-primary announces the seat of each other cohort of its mesh the election fills
+    /// with a birth its record does not name (a first election, a holder proven gone), at the next
+    /// epoch over that record, and nothing while the record names the living holder. No other admin
+    /// announces a cohort seat. Must NOT happen: an rpc cohort's seat that no record holds, so a
+    /// lower NodeId that later becomes Ready displaces the living holder.
+    #[tokio::test]
+    async fn a_mesh_primary_announces_its_meshs_cohort_seats_the_election_fills() {
+        use MemberStatus::*;
+        use rafka_mesh_entity::Seat::{Cohort, FabricPrimary, MeshPrimary};
+        let book = DigestBook::default();
+        let records = Records::default();
+        let me = with_id(digest("mesh1.admin.1", ReadyForTraffic), "500000000000");
+        let sibling = with_id(digest("mesh1.admin.2", ReadyForTraffic), "800000000000");
+        let rpc1 = with_id(digest("mesh1.rpc.1", ReadyForTraffic), "100000000000");
+        let rpc2 = with_id(digest("mesh1.rpc.2", ReadyForTraffic), "300000000000");
+        for d in [&me, &sibling, &rpc1, &rpc2] {
+            book.record((*d).clone());
+        }
+        book.seats.take(MeshPrimary, &holder_of(&me, 1));
+        book.seats.take(FabricPrimary, &holder_of(&me, 1));
+        let me_birth = (&me.node.node_id, &me.node.incarnation);
+        let cohort_said = |said: &[(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)]| said.iter().filter(|(s, _)| matches!(s, Cohort(_))).map(|(s, h)| (*s, h.node_id.to_string(), h.epoch)).collect::<Vec<_>>();
+        // A first election: no record of the rpc cohort, the lowest Ready fills it at epoch 1.
+        let decided = incumbency_of(&book, &records);
+        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
+        let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
+        assert_eq!(cohort_said(&said), vec![(Cohort(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 1)], "the mesh-primary seats mesh1.rpc.1: {said:?}");
+        let sib = seat_announcements(&t, true, "mesh1", (&sibling.node.node_id, &sibling.node.incarnation), &decided);
+        assert!(cohort_said(&sib).is_empty(), "an admin that is not the mesh-primary announces no cohort seat: {sib:?}");
+        // The record names the living mesh1.rpc.2: it keeps the seat over the lower Ready NodeId and nothing is said.
+        book.seats.take(Cohort(NodeKind::RpcNode), &holder_of(&rpc2, 3));
+        let decided = incumbency_of(&book, &records);
+        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
+        assert_eq!(t.cohort_primary("mesh1", NodeKind::RpcNode).map(|n| n.name.to_string()).as_deref(), Some("mesh1.rpc.2"));
+        assert!(cohort_said(&seat_announcements(&t, true, "mesh1", me_birth, &decided)).is_empty(), "a living recorded holder is not announced again");
+        // mesh1.rpc.2 proven exited: the seat goes to the lowest Ready, announced at the next epoch.
+        prove_exit(&book, &records, &rpc2).await;
+        let decided = incumbency_of(&book, &records);
+        let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
+        let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
+        assert_eq!(cohort_said(&said), vec![(Cohort(NodeKind::RpcNode), rpc1.node.node_id.to_string(), 4)], "{said:?}");
+    }
+
     #[test]
     fn the_projection_elects_the_lowest_ready_node_id_per_cohort_and_across_mesh_primaries() {
         use MemberStatus::*;
