@@ -686,7 +686,27 @@ impl ControlPlane {
             let lane = Some(path.mesh.as_str());
             let attempt = next_in_lane(&current, lane);
             let row = crate::mesh_claims::InFlight { build_id: current.build_id.clone(), lane: lane.map(str::to_string), attempt, claimant: self.me.to_string() };
-            match self.claims.take(&path.mesh, &row).await {
+            let mut taken = self.claims.take(&path.mesh, &row).await;
+            // A row a departed claimant took for a drift attempt that holds no lane in this admin's
+            // fold (its run ended and the row was never released, or nothing of it was written before
+            // the claimant was lost) is released on that departure's exact proof, and taken again.
+            if let Ok(crate::mesh_claims::Taken::Held(held)) = &taken {
+                let departed = match held.claimant.parse::<PathName>() {
+                    Ok(c) if held.lane.as_deref() == Some(path.mesh.as_str()) && c != self.me => self.departure_of(&c, &path.mesh).await?.map(|(n, row)| (c, n, row)),
+                    _ => None,
+                };
+                if let Some((claimant, n, exit)) = departed {
+                    let release = tracing::info_span!("rdm.node_admin.build.update.via-departed-claimant", build_id = %held.build_id, lane = %path.mesh, attempt = held.attempt, claimant = %claimant, node_id = %n.node_id, incarnation_id = %exit.incarnation_id.as_str(), exit_proof = %exit.proof, node = %self.me, outcome = tracing::field::Empty);
+                    if let Err(e) = self.claims.release(&path.mesh, held).await {
+                        release.record("outcome", "in-flight-unreleased");
+                        return Err(Refusal::Unavailable(format!("{}: mesh {}'s in-flight row names attempt {} of {} by {claimant}, which departed; the row could not be released: {e}", self.me, path.mesh, held.attempt, held.build_id)));
+                    }
+                    release.record("outcome", "row-released");
+                    release.in_scope(|| tracing::info!("the mesh's in-flight row of a departed claimant's attempt that holds no lane is released"));
+                    taken = self.claims.take(&path.mesh, &row).await;
+                }
+            }
+            match taken {
                 Ok(crate::mesh_claims::Taken::Won) => {}
                 Ok(crate::mesh_claims::Taken::Held(held)) => {
                     let held = InProgress { current_build_id: held.build_id, mesh: Some(path.mesh.clone()), held_by: Some(held.claimant) };
