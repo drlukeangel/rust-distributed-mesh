@@ -18,7 +18,7 @@ use rafka_node_admin_core::build_state::{BuildState, BuildStateAdapter};
 use rafka_node_admin_core::build_drive::{Drive, DriveEnv, DriveEnd, OpenGate};
 use rafka_node_admin_core::executor::OperationRunner;
 use rafka_node_admin_core::fabric_builds::FabricBuildStateAdapter;
-use rafka_node_admin_core::http::ControlPlane;
+use rafka_node_admin_core::control_plane::ControlPlane;
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
 use std::collections::{BTreeMap, HashMap};

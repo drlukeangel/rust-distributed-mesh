@@ -21,7 +21,7 @@ use rafka_node_rpc::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, St
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::http::ControlPlane;
+use rafka_node_admin_core::control_plane::ControlPlane;
 use rafka_node_admin_core::join::Joins;
 use rafka_node_admin_core::model::{Fabric, Mesh, Node, NodeKind, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
@@ -786,7 +786,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         };
         settle(1).await;
         let recovering = match cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await {
-            Ok(rafka_node_admin_core::http::Recovery::Opened(o)) => o,
+            Ok(rafka_node_admin_core::control_plane::Recovery::Opened(o)) => o,
             other => panic!("the first recovery is admitted: {other:?}"),
         };
         // The recovery's receipts as its two workflows write them, in the lane its door opened it in

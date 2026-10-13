@@ -580,30 +580,30 @@ pub enum Recovered {
     /// (`Complete`, or `Failed` naming the step).
     Ran {
         /// The attempt the recovery is.
-        opened: crate::http::Opened,
+        opened: crate::control_plane::Opened,
         /// The attempt's terminal frame.
         terminal: BuildReply,
     },
     /// The exited birth was recovered already, by this attempt: nothing was opened or run.
-    AlreadyApplied(crate::http::Opened),
+    AlreadyApplied(crate::control_plane::Opened),
 }
 
 /// Why a mesh-primary's own recovery did not run to a terminal.
 #[derive(Debug)]
 pub enum RecoveryNotRun {
     /// This admin's door refused the open, by name.
-    Refused(crate::http::Refusal),
+    Refused(crate::control_plane::Refusal),
     /// The attempt was opened and claimed, and its run was refused, by name.
     RunRefused {
         /// The attempt.
-        opened: crate::http::Opened,
+        opened: crate::control_plane::Opened,
         /// The refusal.
         reply: BuildReply,
     },
     /// The attempt's run ended without its terminal.
     Broke {
         /// The attempt.
-        opened: crate::http::Opened,
+        opened: crate::control_plane::Opened,
         /// Why.
         why: String,
     },
@@ -619,10 +619,10 @@ pub enum RecoveryNotRun {
 /// this admin, which took the mesh's in-flight row for the attempt, releases it (R-BI7 caveat 3:
 /// "one attempt in flight per mesh"). An attempt with no verdict (its run refused or broken) keeps
 /// the mesh held, named in the error.
-pub async fn run_recovery(control: &crate::http::ControlPlane, door: &RunDoor, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovered, RecoveryNotRun> {
+pub async fn run_recovery(control: &crate::control_plane::ControlPlane, door: &RunDoor, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovered, RecoveryNotRun> {
     match control.open_recovery(route, path, node_id, incarnation).await {
-        Ok(crate::http::Recovery::Opened(o)) => run_opened_recovery(control, door, o).await,
-        Ok(crate::http::Recovery::AlreadyApplied(o)) => Ok(Recovered::AlreadyApplied(o)),
+        Ok(crate::control_plane::Recovery::Opened(o)) => run_opened_recovery(control, door, o).await,
+        Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => Ok(Recovered::AlreadyApplied(o)),
         Err(r) => Err(RecoveryNotRun::Refused(r)),
     }
 }
@@ -630,7 +630,7 @@ pub async fn run_recovery(control: &crate::http::ControlPlane, door: &RunDoor, r
 /// The run of the recovery attempt `opened`, which `control` opened and claimed in its mesh's lane
 /// ([`run_recovery`] after the open): planned from the lane's receipts, run through `door`, followed
 /// to its terminal, and the mesh's in-flight row released at the verdict.
-pub async fn run_opened_recovery(control: &crate::http::ControlPlane, door: &RunDoor, opened: crate::http::Opened) -> Result<Recovered, RecoveryNotRun> {
+pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, door: &RunDoor, opened: crate::control_plane::Opened) -> Result<Recovered, RecoveryNotRun> {
     let lane = opened.mesh.as_deref();
     let Some(mesh) = opened.mesh.clone() else {
         return Err(RecoveryNotRun::Broke { why: format!("{}: attempt {} of {} is a fabric-lane attempt: a recovery runs in its mesh's drift lane", door.me, opened.attempt, opened.build_id), opened });

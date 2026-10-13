@@ -11,7 +11,7 @@ use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{
     AttemptOpened, AttemptOutcome, AttemptReason, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome,
 };
-use rafka_node_admin_core::http::{ControlPlane, Refusal};
+use rafka_node_admin_core::control_plane::{ControlPlane, Refusal};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::stopped_gc::{ttl_from_env, Swept, Verdict, SHIPPED_TTL};
 use rafka_node_admin_core::topology::Topology;

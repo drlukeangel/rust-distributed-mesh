@@ -33,7 +33,7 @@ pub mod fabric_builds;
 pub mod fabric_rounds;
 pub mod fabric_state;
 pub mod fabric_storage;
-pub mod http;
+pub mod control_plane;
 pub mod investigate;
 pub mod lifecycle;
 pub mod mesh_claims;

@@ -7,7 +7,7 @@
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::build_state::AttemptReason;
-use rafka_node_admin_core::http::{ActionKind, ControlPlane, Recovery, Refusal};
+use rafka_node_admin_core::control_plane::{ActionKind, ControlPlane, Recovery, Refusal};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
 use std::sync::Arc;
@@ -399,11 +399,12 @@ async fn fabric_of_two_meshes() -> (Arc<ControlPlane>, Arc<ControlPlane>, Arc<Me
     (fp, mp, builds, path, exited.node_id.clone(), exited.incarnation_id.clone().unwrap())
 }
 
-/// A refusal as the control route renders it.
+/// A build-in-progress refusal's fields, for the assertions: the Build, the mesh and the holder it names.
 async fn rendered(refusal: Refusal) -> serde_json::Value {
-    use axum::response::IntoResponse as _;
-    let body = axum::body::to_bytes(refusal.into_response().into_body(), usize::MAX).await.unwrap();
-    serde_json::from_slice(&body).unwrap()
+    match refusal {
+        Refusal::BuildInProgress(p) => serde_json::json!({ "error": "build-in-progress", "current_build_id": p.current_build_id, "mesh": p.mesh, "held_by": p.held_by }),
+        other => panic!("not a build-in-progress refusal: {other:?}"),
+    }
 }
 
 /// CONTRACT (R-BI7, proposal Part C caveats 2 and 3; node-recovery.md as R-BI7 moves it: "the

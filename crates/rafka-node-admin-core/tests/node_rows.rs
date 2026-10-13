@@ -13,7 +13,7 @@ use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
 use rafka_node_admin_core::build_drive::{Dispatched, Dispatcher, Drive, DriveEnd, DriveEnv, InnerItem, InnerStream, OpenGate};
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
-use rafka_node_admin_core::http::ControlPlane;
+use rafka_node_admin_core::control_plane::ControlPlane;
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::node_rows::NodeRows;
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
@@ -782,7 +782,7 @@ fn a_fabric_primary_whose_view_never_names_the_old_path_admits_the_stopped_prede
         cp.topology = r.env.topology.clone();
         let rows = r.env.rows.clone();
         let _ = cp.parked_old.set(Arc::new(move |p: &PathName| rows.parked_at(p)));
-        let opened = cp.open_attempt("DELETE /api/nodes/{name}", rafka_node_admin_core::build_state::AttemptReason::Delete, old.clone(), rafka_node_admin_core::http::ActionKind::Delete, None).await;
+        let opened = cp.open_attempt("DELETE /api/nodes/{name}", rafka_node_admin_core::build_state::AttemptReason::Delete, old.clone(), rafka_node_admin_core::control_plane::ActionKind::Delete, None).await;
         let opened = opened.map(|o| o.build_id).map_err(|e| format!("{e:?}"));
         let read = r.env.builds.read_build(&r.build).await.unwrap();
         let opened = opened.map(|_| serde_json::to_value(&read.action).unwrap());

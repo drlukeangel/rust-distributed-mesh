@@ -501,7 +501,7 @@ async fn build_door(a: &Admin, builds: Arc<rafka_node_admin_core::build_state::M
     use rafka_node_admin_core::build_drive::{DriveEnv, Drives, OpenGate};
     let me = a.resolved.name.clone();
     let dyn_builds: Arc<dyn rafka_node_admin_core::build_state::BuildStateAdapter> = builds.clone();
-    let mut control = rafka_node_admin_core::http::ControlPlane::new(dyn_builds.clone(), accepted.clone(), me.clone(), a.door.topology.read().await.clone(), crate::adopted_time());
+    let mut control = rafka_node_admin_core::control_plane::ControlPlane::new(dyn_builds.clone(), accepted.clone(), me.clone(), a.door.topology.read().await.clone(), crate::adopted_time());
     control.topology = a.door.topology.clone();
     let control = Arc::new(control);
     let exec = Arc::new(rafka_node_admin_core::executor::BuildExecutor { executor: me.to_string(), builds: dyn_builds.clone(), topology: control.topology.clone(), runner: Arc::new(NoRuns) });

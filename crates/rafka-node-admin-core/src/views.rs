@@ -7,7 +7,7 @@
 //! bound is refused naming its size ([`StatusReply::within_reply_bound`]).
 //!
 //! The control API's routes answer from the same view and the same held connections
-//! (`crate::http`): the fold of what a node holds is written once, here.
+//! (`crate::control_plane`): the fold of what a node holds is written once, here.
 
 use crate::connections_writer::HeldConnections;
 use crate::model::{Node, PathName};

@@ -197,7 +197,7 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 /// NodeId among the other ReadyForTraffic mesh-primaries"). `None` for any other operation, a target
 /// that holds no seat, and the delete of a mesh's only node that holds no fabric seat. A holder with no
 /// other node-admin in its mesh is still named: node.primary.update refuses it by name (the Build door
-/// refuses it first, `http::last_admin`).
+/// refuses it first, `control_plane::last_admin`).
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
         let holder = t.fabric_primary().filter(|fp| fp.mesh == *mesh)?.clone();

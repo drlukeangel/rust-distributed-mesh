@@ -15,7 +15,7 @@
 
 use iroh::SecretKey;
 use rafka_mesh_entity::{NodeKind, PathName};
-use rafka_node_admin_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeAdminClient, NodeEvent, Nodes, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
+use rafka_node_admin_client::{BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, Fabrics, Frame, MeshDesired, MeshSelector, Meshes, NodeEvent, Nodes, Peers, ScopeStatus, StartDisposition, WorkflowKind, WorkflowStream};
 use rafka_node_admin_core::build_state::{BuildFact, StepOutcome};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::build::{Build, BuildReply, BuildRequest, StepResult};
@@ -55,7 +55,10 @@ fn path(name: &str) -> PathName {
 
 /// A caller outside the fabric: its own endpoint, and the node-admins it reaches by path.
 pub(crate) struct Caller {
-    admin: NodeAdminClient,
+    /// The estate's peers, the node-admin the caller enters at, and the Fabric: every read is `fabric.get` / `node.get` there.
+    peers: Arc<Peers>,
+    entry: PathName,
+    fabric_id: String,
     client: Arc<NodeRpcClient>,
     resolver: Arc<StaticResolver>,
     /// The control API each node-admin advertises, by path.name, as the answering admin's view held it.
@@ -63,19 +66,19 @@ pub(crate) struct Caller {
 }
 
 impl Caller {
-    /// A caller that learns the fabric from the admin serving `base`.
-    pub(crate) async fn of(base: &str) -> Caller {
+    /// A caller that learns the fabric from the estate's entry node-admin, over Node RPC.
+    pub(crate) async fn of(estate: &Estate) -> Caller {
         let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.expect("the caller binds an endpoint");
         let resolver = Arc::new(StaticResolver::new());
         let client = Arc::new(NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm"));
-        let caller = Caller { admin: NodeAdminClient::new(base), client, resolver, bases: Default::default() };
+        let caller = Caller { peers: estate.peers().await, entry: estate.entry().await, fabric_id: estate.fabric_id.clone(), client, resolver, bases: Default::default() };
         caller.learn().await;
         caller
     }
 
     /// Every node-admin the answering admin's view holds becomes reachable by its path.
     async fn learn(&self) {
-        for n in self.admin.nodes().await.expect("the admin's view") {
+        for n in rafka_test_scenario::typed::node_views_of(&self.peers, &self.entry, &self.fabric_id).await.expect("the entry admin's view") {
             if n.kind != NodeKind::NodeAdmin {
                 continue;
             }
@@ -85,11 +88,6 @@ impl Caller {
             let (Some(ep), Some(addr), Some(inc)) = (n.endpoint_id.as_deref(), n.transport_addr, n.incarnation_id.clone()) else { continue };
             self.resolver.insert(ResolvedNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id: ep.parse().expect("an iroh key"), transport_addr: addr, incarnation: inc });
         }
-    }
-
-    pub(crate) async fn carrier(&self) -> BuildCarrier {
-        let fp = self.admin.fabric().await.expect("the answering admin's fabric").fabric_primary.expect("a fabric-primary");
-        BuildCarrier::new(self.client.clone(), fp)
     }
 
     fn nodes(&self, carrier: &BuildCarrier) -> Nodes {
@@ -121,7 +119,7 @@ async fn born(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> B
 /// [`born`], with every frame the Build that birthed the shape streamed. The estate's birth followed
 /// the Day-0 Build to its end, so the shape is accepted at once.
 async fn born_framed(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)]) -> (BuildCarrier, Vec<BuildFrame>) {
-    let carrier = caller.carrier().await;
+    let carrier = estate.carrier().await;
     let desired = FabricDesired { fabric: FABRIC.into(), meshes: shape.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
     let mut stream = Builds::new(carrier.clone()).create(&BuildSpec::Fabric(desired)).await.expect("the fabric-primary accepts the shape");
     let frames = until_complete(&mut stream).await;
@@ -163,7 +161,7 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
 async fn a_restart_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes() {
     let test = "a_restart_over_the_build_family_is_one_call_that_pushes_every_step_frame_and_completes";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
-    let caller = Caller::of(&estate.admin).await;
+    let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
 
     let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
@@ -209,7 +207,7 @@ async fn a_restart_over_the_build_family_is_one_call_that_pushes_every_step_fram
 async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_end_is_already_applied() {
     let test = "a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_end_is_already_applied";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
-    let caller = Caller::of(&estate.admin).await;
+    let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let nodes = caller.nodes(&carrier);
 
@@ -274,7 +272,7 @@ async fn attempt_run(caller: &Caller, to: &str, build: &BuildId, attempt: u32, e
 async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_is_refused_by_name() {
     let test = "an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_is_refused_by_name";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
-    let caller = Caller::of(&estate.admin).await;
+    let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
@@ -313,7 +311,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let caller = Caller::of(&estate.admin).await;
+    let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
 
     // The executor, mesh2's primary, is held in the middle of the restart: the start of the stopped node
@@ -360,7 +358,7 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let caller = Caller::of(&estate.admin).await;
+    let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let fp = carrier.fabric_primary().to_string();
 
@@ -430,7 +428,7 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
 async fn a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_seat_and_the_old_seat_dispatches_nothing() {
     let test = "a_planned_seat_handover_mid_build_ends_the_outer_stream_with_the_new_seat_and_the_old_seat_dispatches_nothing";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
-    let caller = Caller::of(&estate.admin).await;
+    let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
     let old_seat = carrier.fabric_primary().to_string();
     assert!(old_seat.starts_with("mesh1."), "mesh1 holds the fabric-primary seat: {old_seat}");
@@ -543,7 +541,7 @@ async fn a_blocked_birth_is_framed_once_per_reason_and_its_build_completes_when_
     const A: &str = "the rows of orders are not yet published";
     const B: &str = "the authority of orders is draining";
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
-    let caller = Caller::of(&estate.admin).await;
+    let caller = Caller::of(&estate).await;
     let (carrier, shape_frames) = born_framed(&estate, &caller, &SHAPE1).await;
     assert!(!shape_frames.iter().any(|f| matches!(f, BuildFrame::Blocked { .. })), "births with no hook are plain Pending until Ready and frame no Blocked: {shape_frames:?}");
 
@@ -707,7 +705,7 @@ async fn a_successor_fabric_primary_reads_the_create_mesh_receipt_and_does_not_c
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let caller = Caller::of(&estate.admin).await;
+    let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: mesh2's first admin has its identity allocated and that receipt is not durable; the
     // fabric-primary ran `create-mesh:mesh2` before it.
@@ -738,7 +736,7 @@ async fn a_successor_fabric_primary_settles_a_create_mesh_with_no_receipt_by_its
     let sha = candidate_sha();
     let set = binding_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let caller = Caller::of(&estate.admin).await;
+    let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: the claim of mesh2's name landed and `create-mesh:mesh2`'s own receipt is not durable.
     let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "Complete", "operation": "create-mesh", "node": "mesh2"}), None).await;

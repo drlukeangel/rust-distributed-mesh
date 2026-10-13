@@ -11,7 +11,7 @@
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build::{BuildId, MeshDesired};
 use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, MemoryBuildStateAdapter};
-use rafka_node_admin_core::http::{ControlPlane, Refusal};
+use rafka_node_admin_core::control_plane::{ControlPlane, Refusal};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
 use std::sync::Arc;

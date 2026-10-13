@@ -11,7 +11,7 @@
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build::{BuildReject, FabricDesired, MeshDesired};
 use rafka_node_admin_core::build_state::{AttemptReason, BuildStateAdapter, MemoryBuildStateAdapter};
-use rafka_node_admin_core::http::{ActionKind, ControlPlane, Refusal};
+use rafka_node_admin_core::control_plane::{ActionKind, ControlPlane, Refusal};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc_contract::build::BuildReply;
@@ -71,13 +71,13 @@ impl Rig {
     async fn facts(&self) -> usize {
         self.builds.facts().await.unwrap().len()
     }
-    async fn attempt(&self, reason: AttemptReason, path: &str, kind: ActionKind) -> Result<rafka_node_admin_core::http::Opened, Refusal> {
+    async fn attempt(&self, reason: AttemptReason, path: &str, kind: ActionKind) -> Result<rafka_node_admin_core::control_plane::Opened, Refusal> {
         self.cp.open_attempt("test", reason, path.parse().unwrap(), kind, None).await
     }
 }
 
 /// The refusal's workflow and status, or a panic naming what came back.
-fn refused(r: Result<rafka_node_admin_core::http::Opened, Refusal>) -> (String, String) {
+fn refused(r: Result<rafka_node_admin_core::control_plane::Opened, Refusal>) -> (String, String) {
     match r {
         Err(Refusal::Reject(BuildReject::FabricNotReady { workflow, status })) => (workflow, status),
         other => panic!("expected the fabric-not-ready refusal, got {other:?}"),

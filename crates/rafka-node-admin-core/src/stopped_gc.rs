@@ -10,7 +10,7 @@
 use crate::accepted::{AttemptAction, TopologyChange};
 use crate::build::{BuildId, BuildReject};
 use crate::build_state::{BuildFact, BuildState, StepOutcome};
-use crate::http::Refusal;
+use crate::control_plane::Refusal;
 use crate::model::{IncarnationId, NodeId, PathName};
 use rafka_mesh_entity::LifecycleOp;
 use std::collections::HashMap;
@@ -209,7 +209,7 @@ pub fn stop_age(facts: &[BuildFact], node_id: &NodeId, incarnation: &Incarnation
     current.unwrap_or_else(|| Age::NoCurrentReceipt(ended.unwrap_or_else(|| "no standalone stop receipt in the Build log names this birth".into()) + ": no stop receipt opens its current stopped period"))
 }
 
-impl crate::http::ControlPlane {
+impl crate::control_plane::ControlPlane {
     /// This admin's view as it is now.
     async fn view(&self) -> crate::topology::Topology {
         match self.view_now.get() {
@@ -344,7 +344,7 @@ impl crate::http::ControlPlane {
     /// The node.delete Build of `candidate`: the ordinary `RemoveNode` Build `DELETE /api/nodes/{name}`
     /// accepts, admitted only after the stopped and open-Build checks run again under the admission,
     /// serialized with the write (§6.9 Recheck).
-    pub async fn collect_stopped(&self, candidate: &Candidate, ttl: Duration) -> Result<crate::http::Opened, Refusal> {
+    pub async fn collect_stopped(&self, candidate: &Candidate, ttl: Duration) -> Result<crate::control_plane::Opened, Refusal> {
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-stopped-ttl",
             node = %candidate.node,

@@ -18,7 +18,7 @@ use crate::executor::RunPlan;
 use crate::build_drive::{Dispatched, Dispatcher, Drive, DriveEnv, Drives, InnerItem, InnerStream, Read, VerdictSink};
 use crate::build_run::{bounded_reason, Attached, RunDoor, RunReader};
 use crate::build_state::{AttemptReason, BuildFact, BuildState, BuildStateError, LocalBuildLog};
-use crate::http::{ActionKind, ControlPlane, Refusal};
+use crate::control_plane::{ActionKind, ControlPlane, Refusal};
 use crate::model::PathName;
 use crate::topology::Topology;
 use rafka_mesh_entity::IncarnationId;
@@ -122,9 +122,9 @@ pub fn refusal_reply(r: Refusal) -> BuildReply {
 /// What a submitted change was admitted as.
 enum Admitted {
     /// A new Build or the next attempt of the accepted one.
-    Opened(crate::http::Opened),
+    Opened(crate::control_plane::Opened),
     /// The fact the change is keyed on was already applied, by this attempt.
-    AlreadyApplied(crate::http::Opened),
+    AlreadyApplied(crate::control_plane::Opened),
 }
 
 impl BuildDoor {
@@ -172,8 +172,8 @@ impl BuildDoor {
             BuildChange::Start { node } => cp.open_attempt_in(node_span(node), "build.create", AttemptReason::Start, node.clone(), ActionKind::Start, None).await,
             BuildChange::Recover { node, node_id, incarnation } => {
                 return match cp.open_recovery("build.create", node.clone(), node_id.clone(), incarnation.clone()).await {
-                    Ok(crate::http::Recovery::Opened(o)) => Ok(Admitted::Opened(o)),
-                    Ok(crate::http::Recovery::AlreadyApplied(o)) => Ok(Admitted::AlreadyApplied(o)),
+                    Ok(crate::control_plane::Recovery::Opened(o)) => Ok(Admitted::Opened(o)),
+                    Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => Ok(Admitted::AlreadyApplied(o)),
                     Err(r) => Err(refusal_reply(r)),
                 }
             }

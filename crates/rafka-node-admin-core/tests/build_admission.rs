@@ -10,7 +10,7 @@ use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{
     BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, AttemptOpened, MemoryBuildStateAdapter,
 };
-use rafka_node_admin_core::http::{ControlPlane, Refusal};
+use rafka_node_admin_core::control_plane::{ControlPlane, Refusal};
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
 use std::sync::atomic::{AtomicBool, Ordering};

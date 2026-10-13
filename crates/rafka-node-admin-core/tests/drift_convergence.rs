@@ -475,8 +475,8 @@ impl Estate {
     }
 
     /// `me`'s Build door over the estate's Build log, view, accepted Build and in-flight rows.
-    async fn door_at(&self, me: &str) -> Arc<rafka_node_admin_core::http::ControlPlane> {
-        let mut cp = rafka_node_admin_core::http::ControlPlane::new(self.builds.clone(), self.accepted.clone(), me.parse().unwrap(), self.view.read().await.clone(), crate::adopted_time());
+    async fn door_at(&self, me: &str) -> Arc<rafka_node_admin_core::control_plane::ControlPlane> {
+        let mut cp = rafka_node_admin_core::control_plane::ControlPlane::new(self.builds.clone(), self.accepted.clone(), me.parse().unwrap(), self.view.read().await.clone(), crate::adopted_time());
         cp.topology = self.view.clone();
         cp.claims = self.claims.clone();
         Arc::new(cp)
@@ -493,14 +493,14 @@ impl Estate {
 
     /// The recoverer's own open of `path`'s proven-exited birth (node-recovery.md sequence step 1 as
     /// R-BI7 moves it): opened and claimed at its own door, not run.
-    async fn submit_recovery(&self, path: &str) -> Result<rafka_node_admin_core::http::Recovery, rafka_node_admin_core::http::Refusal> {
+    async fn submit_recovery(&self, path: &str) -> Result<rafka_node_admin_core::control_plane::Recovery, rafka_node_admin_core::control_plane::Refusal> {
         let n = self.view.read().await.node(&path.parse().unwrap()).cloned().expect("the exited birth is in the view");
         self.door_at(&self.recoverer_of(path).await).await.open_recovery("node-recovery", n.name.clone(), n.node_id.clone(), n.incarnation_id.clone().unwrap()).await
     }
 
     /// The recoverer runs the recovery attempt `opened` (opened at its door) through its own executor
     /// to its terminal (`build_run::run_opened_recovery`).
-    async fn run_opened(&self, recoverer: &str, opened: rafka_node_admin_core::http::Opened) -> rafka_node_rpc_contract::build::BuildReply {
+    async fn run_opened(&self, recoverer: &str, opened: rafka_node_admin_core::control_plane::Opened) -> rafka_node_rpc_contract::build::BuildReply {
         let door = self.dispatch.door(&recoverer.parse().unwrap());
         match rafka_node_admin_core::build_run::run_opened_recovery(&*self.door_at(recoverer).await, &door, opened).await {
             Ok(rafka_node_admin_core::build_run::Recovered::Ran { terminal, .. }) => terminal,
@@ -510,7 +510,7 @@ impl Estate {
 
     /// `path`'s recoverer opens and claims its recovery at its own door and runs it through its own
     /// executor to the terminal (`build_run::run_recovery`, R-BI7): no fabric-primary takes part.
-    async fn recover(&self, path: &str) -> rafka_node_admin_core::http::Opened {
+    async fn recover(&self, path: &str) -> rafka_node_admin_core::control_plane::Opened {
         let n = self.view.read().await.node(&path.parse().unwrap()).cloned().expect("the exited birth is in the view");
         let recoverer = self.recoverer_of(path).await;
         let door = self.dispatch.door(&recoverer.parse().unwrap());
@@ -580,7 +580,7 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
     // node-recovery.md sequence step 1: a repeat submit for the same exited birth answers
     // AlreadyApplied from the recovery's receipts, naming its attempt, and opens nothing.
     let repeat = e.door_at(&mp).await.open_recovery("node-recovery", exited.name.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await;
-    assert!(matches!(&repeat, Ok(rafka_node_admin_core::http::Recovery::AlreadyApplied(o)) if o.attempt == opened.attempt && o.mesh == opened.mesh), "{repeat:?}");
+    assert!(matches!(&repeat, Ok(rafka_node_admin_core::control_plane::Recovery::AlreadyApplied(o)) if o.attempt == opened.attempt && o.mesh == opened.mesh), "{repeat:?}");
     assert_eq!((opened.build_id.clone(), opened.mesh.as_deref(), opened.attempt), (before.build_id.clone(), Some("mesh1"), 1), "the same Build, attempt 1 of mesh1's lane");
     e.recovered_by("mesh1.rpc.2", &mp).await;
     assert_eq!(e.runner.recovering.lock().unwrap().clone(), ["retire-node:mesh1.rpc.2", "create-node:mesh1.rpc.2"].map(String::from).to_vec(), "node.delete, then node.create, once each, and nothing after");
@@ -617,7 +617,7 @@ async fn a_recovery_whose_create_failed_resumes_at_its_create_and_never_deletes_
     assert!(e.born().is_empty(), "nothing was created");
     let submit = || async { e.door_at(&mp).await.open_recovery("node-recovery", exited.name.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await };
     let resumed = match submit().await {
-        Ok(rafka_node_admin_core::http::Recovery::Opened(o)) => o,
+        Ok(rafka_node_admin_core::control_plane::Recovery::Opened(o)) => o,
         other => panic!("a recovery whose create failed is not recovered: the repeat submit opens its next attempt, got {other:?}"),
     };
     assert_eq!((resumed.build_id.clone(), resumed.mesh.clone(), resumed.attempt), (first.build_id.clone(), first.mesh.clone(), first.attempt + 1), "the same Build, its lane's next attempt");
@@ -631,7 +631,7 @@ async fn a_recovery_whose_create_failed_resumes_at_its_create_and_never_deletes_
     let build = e.builds.read_build(&before.build_id).await.unwrap();
     assert_eq!(build.lanes["mesh1"].steps.iter().filter(|s| s.operation == format!("retire-node:{path}") && s.step == "NodeDeleted").count(), 1, "one NodeDeleted of the exited birth");
     assert_eq!(e.born(), vec![path.to_string()], "exactly the lost path is recovered");
-    assert!(matches!(submit().await, Ok(rafka_node_admin_core::http::Recovery::AlreadyApplied(o)) if o.attempt == resumed.attempt), "recovered by the resumed attempt");
+    assert!(matches!(submit().await, Ok(rafka_node_admin_core::control_plane::Recovery::AlreadyApplied(o)) if o.attempt == resumed.attempt), "recovered by the resumed attempt");
     e.holds_the_shape().await;
     assert_eq!(e.lane("mesh1").await.state, BuildState::Complete);
     assert_eq!((build.attempt, build.state), (before.attempt, BuildState::Complete), "the fabric lane is untouched");
@@ -861,12 +861,12 @@ async fn every_exit_is_recovered_one_birth_per_attempt_and_a_submit_waits_for_th
     let paths = ["mesh1.rpc.1", "mesh1.rpc.2", "mesh1.rpc.3"];
     let mp = e.mesh_primary_of("mesh1.rpc.1").await;
     for (pass, path) in paths.into_iter().enumerate() {
-        let Ok(rafka_node_admin_core::http::Recovery::Opened(o)) = e.submit_recovery(path).await else { panic!("pass {pass}: {path}'s recovery was not opened") };
+        let Ok(rafka_node_admin_core::control_plane::Recovery::Opened(o)) = e.submit_recovery(path).await else { panic!("pass {pass}: {path}'s recovery was not opened") };
         assert_eq!((o.build_id.clone(), o.mesh.as_deref(), o.attempt), (before.build_id.clone(), Some("mesh1"), 1 + pass as u32));
         if let Some(next) = paths.get(pass + 1) {
             let waits = e.submit_recovery(next).await;
             assert!(
-                matches!(waits, Err(rafka_node_admin_core::http::Refusal::BuildInProgress(ref held)) if held.current_build_id == before.build_id && held.mesh.as_deref() == Some("mesh1") && held.held_by.as_deref() == Some(mp.as_str())),
+                matches!(waits, Err(rafka_node_admin_core::control_plane::Refusal::BuildInProgress(ref held)) if held.current_build_id == before.build_id && held.mesh.as_deref() == Some("mesh1") && held.held_by.as_deref() == Some(mp.as_str())),
                 "pass {pass}: {next} waits for the running recovery: {:?}",
                 waits.map(|_| ()).map_err(|r| format!("{r:?}"))
             );
@@ -1001,7 +1001,7 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
 
     // The mesh-primary opens and claims the recovery at its own door and runs it (R-BI7).
     let submitted = e.door_at(&mp.to_string()).await.open_recovery("node-recovery", row.name.clone(), row.node_id.clone(), row.incarnation_id.clone()).await;
-    let Ok(rafka_node_admin_core::http::Recovery::Opened(o)) = submitted else { panic!("{lost}'s recovery was not opened: {:?}", submitted.map(|_| ()).map_err(|r| format!("{r:?}"))) };
+    let Ok(rafka_node_admin_core::control_plane::Recovery::Opened(o)) = submitted else { panic!("{lost}'s recovery was not opened: {:?}", submitted.map(|_| ()).map_err(|r| format!("{r:?}"))) };
     assert_eq!((o.build_id.clone(), o.mesh.as_deref(), o.attempt), (before.build_id.clone(), Some(peer), 1), "the same Build, attempt 1 of the mesh's lane");
     e.run_opened(&mp.to_string(), o).await;
     e.recovered_by(&lost, &mp.to_string()).await;
@@ -1037,7 +1037,7 @@ async fn a_topology_build_claims_nothing_in_a_mesh_its_recovery_holds_and_runs_o
     let mp = e.mesh_primary_of(path).await;
     let fp = e.fabric_primary().await;
     let create = e.door_at(&fp).await.submit("build.create", rafka_node_admin_core::accepted::TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await.expect("the node.create is accepted: no attempt holds a mesh yet");
-    let Ok(rafka_node_admin_core::http::Recovery::Opened(recovery)) = e.submit_recovery(path).await else { panic!("mesh1's primary opens its member's recovery: the node.create's attempt is not claimed") };
+    let Ok(rafka_node_admin_core::control_plane::Recovery::Opened(recovery)) = e.submit_recovery(path).await else { panic!("mesh1's primary opens its member's recovery: the node.create's attempt is not claimed") };
     assert_eq!((recovery.build_id.clone(), recovery.mesh.as_deref()), (create.build_id.clone(), Some("mesh1")), "the recovery is an attempt of the current Build, in mesh1's lane");
     match e.drive_once().await {
         DriveEnd::Stalled(why) => assert!(why.contains("mesh mesh1") && why.contains(&mp) && why.contains("one attempt in flight per mesh"), "the stall names mesh1 and its holder: {why}"),
@@ -1059,9 +1059,9 @@ async fn a_topology_build_claims_nothing_in_a_mesh_its_recovery_holds_and_runs_o
 
 mod one_attempt_number {
     use super::*;
-    use axum::response::IntoResponse;
+    use rafka_node_admin_core::control_plane::Refusal;
     use rafka_node_admin_core::build_state::{AttemptOpened, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome};
-    use rafka_node_admin_core::http::ControlPlane;
+    use rafka_node_admin_core::control_plane::ControlPlane;
     use tokio::sync::Notify;
 
     /// The write a [`Gate`] stops at the log's door.
@@ -1204,7 +1204,7 @@ mod one_attempt_number {
             _ = g.arrived.notified() => {}
             ended = &mut drift => panic!("the drift pass ended without reaching the Build log's door to open attempt {}: it proved no loss ({ended:?})", k + 1),
         }
-        let rest = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None).await;
+        let rest = cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::control_plane::ActionKind::Restart, None).await;
         g.release.notify_one();
         let drift = drift.await;
         let rest = rest.expect("the restart took the free number");
@@ -1225,7 +1225,7 @@ mod one_attempt_number {
         let k = lose_a_node(&e).await;
         let g = gate(&e, Holds::Attempt(AttemptReason::Restart));
         let cp = door(&e, g.clone()).await;
-        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::http::ActionKind::Restart, None), async {
+        let (rest, drift) = tokio::join!(cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, "mesh2.rpc.1".parse().unwrap(), rafka_node_admin_core::control_plane::ActionKind::Restart, None), async {
             g.arrived.notified().await;
             let d = drift_pass(&e, &*e.builds).await;
             g.release.notify_one();
@@ -1236,11 +1236,10 @@ mod one_attempt_number {
         assert_eq!(held.len(), 1, "one Opened fact for attempt {}: {held:?}", k + 1);
         assert_eq!(held[0].reason, AttemptReason::ProvenDrift, "the number is the drift attempt's: {held:?}");
         let refusal = rest.expect_err("the restart lost the number and was told so");
-        let response = refusal.into_response();
-        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
-        let body: serde_json::Value = serde_json::from_slice(&http_body_util::BodyExt::collect(response.into_body()).await.unwrap().to_bytes()).unwrap();
-        assert_eq!(body["error"], "attempt-taken", "{body}");
-        assert!(body["detail"].as_str().unwrap().contains(&format!("{}", k + 1)), "the refusal names the attempt: {body}");
+        match refusal {
+            Refusal::AttemptTaken(detail) => assert!(detail.contains(&format!("{}", k + 1)), "the refusal names the attempt: {detail}"),
+            other => panic!("the restart was refused attempt-taken, not {other:?}"),
+        }
     }
 
     /// The cell's span directory: the gate's, else this cell's own under the workspace target.
@@ -1348,7 +1347,7 @@ mod one_attempt_number {
         let rebirth = |m: &str| decided(m).is_some_and(|p| p.rebirth_decided);
         let restart = tokio::spawn({
             let (cp, path): (_, PathName) = (cp.clone(), format!("{own}.rpc.1").parse().unwrap());
-            async move { cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, path, rafka_node_admin_core::http::ActionKind::Restart, None).await }
+            async move { cp.open_attempt("POST /api/nodes/{name}/restart", AttemptReason::Restart, path, rafka_node_admin_core::control_plane::ActionKind::Restart, None).await }
         });
         g.arrived.notified().await;
         let t = e.view.read().await.clone();

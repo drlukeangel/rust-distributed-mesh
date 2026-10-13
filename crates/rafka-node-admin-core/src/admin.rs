@@ -27,7 +27,7 @@ use crate::deployment::provider::{DeploymentHandle, DeploymentProvider, FabricPo
 use crate::executor::{BuildExecutor, OperationRunner};
 use crate::election::ElectionLog;
 use crate::fabric_builds::FabricBuildStateAdapter;
-use crate::http::{router, ControlPlane};
+use crate::control_plane::ControlPlane;
 use crate::lifecycle::{
     HookRegistry, LifecycleScope, LifecycleState, LifecycleTransitionPipeline, MemoryReceiptLog, ShapeFacts, Transition,
     TransitionKey, TransitionResult,
@@ -1214,11 +1214,6 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
         n.config = d.config.clone();
-        // A node-admin's control API is its one listener: the view carries it, so whichever admin
-        // restarts it keeps the address its launch was assigned.
-        if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
-            n.listeners = vec![("control".to_string(), addr)];
-        }
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
         // The birth's own published runtime fact names its deployment, whichever admin launched it.
@@ -1263,9 +1258,6 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
         n.config = d.config.clone();
-        if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
-            n.listeners = vec![("control".to_string(), addr)];
-        }
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
         n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());
@@ -1336,9 +1328,6 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         n.declared = n.incarnation_id.as_ref().and_then(|inc| records.declared.lock().unwrap().node(&n.node_id, inc)).map(|s| format!("{s:?}"));
         n.admin_api_base = d.admin_api_base.clone();
         n.config = d.config.clone();
-        if let Some(addr) = d.admin_api_base.as_deref().and_then(|b| b.trim_start_matches("http://").trim_end_matches('/').parse::<std::net::SocketAddr>().ok()) {
-            n.listeners = vec![("control".to_string(), addr)];
-        }
         n.transport_addr = Some(d.node.transport_addr);
         n.data_dir = d.data_dir.clone();
         n.deployment_id = d.node.runtime.as_ref().and_then(|f| f.deployment().ok());
@@ -2156,7 +2145,7 @@ impl RecoverySubmitter {
         use crate::build_run::{Recovered, RecoveryNotRun};
         use rafka_node_rpc_contract::build::BuildReply;
         let door = self.door.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary seat but its Build door is not built yet", self.me))?;
-        let opened = |o: &crate::http::Opened, disposition: &str| {
+        let opened = |o: &crate::control_plane::Opened, disposition: &str| {
             span.record("build_id", o.build_id.as_str());
             span.record("mesh", o.mesh.as_deref().unwrap_or(""));
             span.record("attempt", o.attempt);
@@ -5200,18 +5189,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         )
         .in_scope(|| tracing::info!("started to recover: Ready is held until the topology and the current Build are held"));
     }
-    // The control API listens now: the operating system assigns its port (a launched admin is
-    // handed `<ip>:0`), and the admin reports the address it really holds in its join digest.
-    let listener = match tokio::net::TcpListener::bind(control_addr).await {
-        Ok(l) => l,
-        // A restart's last control address may be held by another process now.
-        Err(e) if restart.is_some() => {
-            tracing::info!(addr = %control_addr, error = %e, "the control address this admin last held is taken; binding a fresh port");
-            tokio::net::TcpListener::bind(SocketAddr::new(control_addr.ip(), 0)).await.map_err(|e| format!("control address {control_addr}: {e}"))?
-        }
-        Err(e) => return Err(format!("control address {control_addr}: {e}")),
-    };
-    let api_base = format!("http://{}", listener.local_addr().map_err(|e| e.to_string())?);
+    // No crate of RDM serves a route or opens an HTTP listener (rdm-crate-and-test-layout.md §2): the
+    // admin's application contact (`admin_api_base`, config, never checked) names this admin's node id.
+    let _ = control_addr;
+    let api_base = format!("rdm://{node_id}");
     // A launched admin takes the runtime record its launcher's pipeline made available; it is
     // part of the digest it reports at its join.
     let launched_runtime = match &cfg.launch {
@@ -5852,7 +5833,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         incarnation_id: incarnation.clone(),
                                         endpoint_id: d.node.endpoint_id.clone(),
                                         transport_addr: d.node.transport_addr,
-                                        listeners: vec![("control".into(), listener.local_addr().map_err(|e| e.to_string())?)],
+                                        listeners: Vec::new(),
                                     })
                                     .await.map_err(storage_err)?;
                             }
@@ -7005,7 +6986,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         let (seen, drain_control) = (shutdown_control.subscribe(), shutdown_control.clone());
                                         let stopper: Arc<dyn crate::shutdown::Stopper> = Arc::new(AdminStopper { runner: runner.clone(), topology: control.topology.clone() });
                                         let done = control.shutdown.clone();
-                                        let _ = control.fabric_shutdown.set(Arc::new(crate::http::ShutdownSeat {
+                                        let _ = control.fabric_shutdown.set(Arc::new(crate::control_plane::ShutdownSeat {
                                             control: shutdown_control.clone(),
                                             me: name.clone(),
                                             node_id: node_id.clone(),
@@ -7042,12 +7023,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             }
                                         }));
                                     }
-                                    let app = router(control.clone(), axum::Router::new());
-                                    tasks.push(park_gate.spawn(async move {
-                                        if let Err(e) = axum::serve(listener, app).await {
-                                            tracing::info!(error = %e, "control API stopped");
-                                        }
-                                    }));
                                     *out.lock().unwrap() = Some(Running { rafka_time: rafka_time.clone(), api_base, control, runner, membership, digest, node_rpc, backbone: backbone.clone(), router: iroh_router, rpc_server: rpc_server.clone(), publisher, executor, hierarchy, anti_entropy, tasks, start_tasks, leave_seam: wiring.leave_seam.take(), builds: builds.clone(), hydrate_cancel, hydration: hydration_cell.clone(), member_cert, gate: park_gate.clone(), node_self: own_commands.get().cloned().expect("this admin's command surface is set before it runs") });
                                     Ok::<_, String>(())
                                 })
