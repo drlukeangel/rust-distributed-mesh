@@ -766,7 +766,7 @@ pub async fn roster_rows_read(rows: Option<&crate::node_rows::NodeRows>, executo
 /// "On that receipt the mesh-primary, the writer of its mesh's rows, writes the member's row
 /// Deleted"), a keyed write that is repeated for a retained receipt, never inferred done from it.
 #[allow(clippy::too_many_arguments)]
-pub async fn members_exited<F, Fut, G, GFut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], shutdown: F, delete_row: G) -> Result<ExitManifest, String>
+pub async fn members_exited<F, Fut, G, GFut>(builds: &dyn BuildStateAdapter, key: &LeaveKey, executor: &str, roster: &[RosterBirth], me: &RosterBirth, final_runtime: RuntimeProof, records: &[Node], known: &[BuildStepReceipt], _lifecycle: &dyn crate::deployment::pipeline::LifecycleEvents, shutdown: F, delete_row: G) -> Result<ExitManifest, String>
 where
     F: Fn(Node) -> Fut,
     Fut: std::future::Future<Output = Result<TerminalReceipt, String>>,

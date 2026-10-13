@@ -643,7 +643,7 @@ impl AdminRunner {
         let records = crate::mesh_leave::roster_records(&mesh, &roster, |b| self.held_record(b));
         crate::mesh_leave::roster_rows_read(self.records.node_rows().as_deref(), &self.me.to_string(), &key.operation, &roster, &records).await;
         let records = &records;
-        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, records, &known, |n| async move { self.shutdown_one(key, &n).await }, |b| async move { crate::mesh_leave::birth_row_deleted(self.records.node_rows().as_deref(), &self.me.to_string(), &key.operation, records, &b).await }).await
+        members_exited(&*self.builds, key, &self.me.to_string(), &roster, &me_birth, my_runtime, records, &known, &*self.lifecycle_events, |n| async move { self.shutdown_one(key, &n).await }, |b| async move { crate::mesh_leave::birth_row_deleted(self.records.node_rows().as_deref(), &self.me.to_string(), &key.operation, records, &b).await }).await
     }
 
     /// One member's end (mesh-delete.md step 3: "The mesh-primary runs the whole node.delete for
