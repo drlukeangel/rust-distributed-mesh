@@ -86,9 +86,9 @@ impl SpanLoss {
 
 /// The product span processor; see the module docs. `inner` is the processor it counts in front
 /// of: product's `BatchSpanProcessor` on the export runtime ([`span_processor`]).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CountingBatchProcessor {
-    inner: Arc<dyn SpanProcessor>,
+    inner: Box<dyn SpanProcessor>,
     loss: SpanLoss,
 }
 
@@ -130,7 +130,11 @@ impl SpanProcessor for CountingBatchProcessor {
         r
     }
 
-    fn set_resource(&mut self, _resource: &opentelemetry_sdk::Resource) {}
+    /// The provider hands its resource to each processor as it is built; the inner processor passes it
+    /// on to its exporter, which sends it with every request.
+    fn set_resource(&mut self, resource: &opentelemetry_sdk::Resource) {
+        self.inner.set_resource(resource);
+    }
 }
 
 /// The product processor around `exporter`; `name` labels the loss report.
@@ -139,7 +143,7 @@ pub fn span_processor<E: SpanExporter + 'static>(name: &str, exporter: E) -> Cou
     let rt = crate::export::ExportRuntime::get();
     let _export = rt.enter();
     let processor = BatchSpanProcessor::builder(CountedExporter { inner: exporter, tally: tally.clone() }, rt.clone()).with_batch_config(crate::batch_config()).build();
-    CountingBatchProcessor { inner: Arc::new(processor), loss: SpanLoss { name: name.to_string(), tally } }
+    CountingBatchProcessor { inner: Box::new(processor), loss: SpanLoss { name: name.to_string(), tally } }
 }
 
 /// The product `tracing` layer that feeds `provider`, behind product's span filter.
@@ -288,7 +292,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let held = HeldEnd { inner: batch, entered: Mutex::new(entered_tx), release: Mutex::new(release_rx) };
-        let processor = CountingBatchProcessor { inner: Arc::new(held), loss: SpanLoss { name: "held".into(), tally } };
+        let processor = CountingBatchProcessor { inner: Box::new(held), loss: SpanLoss { name: "held".into(), tally } };
         let loss = processor.loss();
         let provider = TracerProvider::builder().with_span_processor(processor).build();
         let capture = SpanCapture { provider: provider.clone(), loss: loss.clone() };
