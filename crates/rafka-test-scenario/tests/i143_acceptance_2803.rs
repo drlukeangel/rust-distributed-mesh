@@ -172,9 +172,11 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     assert_eq!(recovery.len(), 1, "the dead member is recovered once, keyed on its exited birth: {recovery:?}");
     assert!(attr(recovery[0], "submitter").starts_with(&format!("{lost}.admin.")), "by its own mesh's new primary: {recovery:?}");
     assert_eq!(attr(recovery[0], "build_id"), accepted, "under the same Build: {recovery:?}");
+    // The recovery's steps are the ones in its submit's own trace (R-BI7: the mesh-primary runs it in
+    // its mesh's drift lane, whose attempt number also names an attempt of the fabric lane).
     let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted && attr(sp, "attempt") == attr(recovery[0], "attempt") && attr(sp, "outcome") == "complete")
+        .filter(|sp| sp["trace_id"] == recovery[0]["trace_id"] && attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted && attr(sp, "attempt") == attr(recovery[0], "attempt") && attr(sp, "outcome") == "complete")
         .map(|sp| attr(sp, "step"))
         .collect();
     for step in ["NodeDeleting", "NodeDeleted", "DeployRuntime", "WaitForNodeReady", "Complete"] {
@@ -206,7 +208,9 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         .collect();
     assert!(!creates.is_empty(), "the second admin of {lost} was created after the first: {creates:?}");
     for c in &creates {
-        let executor = reconciles.iter().find(|r| attr(r, "attempt") == attr(c, "attempt")).map(|r| attr(r, "executor")).expect("the create ran inside a reconcile");
+        // The reconcile the create ran in is the one in its own trace: a drift lane's attempt number
+        // also names an attempt of the fabric lane (R-BI7).
+        let executor = reconciles.iter().find(|r| r["trace_id"] == c["trace_id"] && attr(r, "attempt") == attr(c, "attempt")).map(|r| attr(r, "executor")).expect("the create ran inside a reconcile");
         assert_eq!(executor, recovery_admin, "{} was created by the new mesh primary, not by {fabric_holder}", attr(c, "node"));
     }
 

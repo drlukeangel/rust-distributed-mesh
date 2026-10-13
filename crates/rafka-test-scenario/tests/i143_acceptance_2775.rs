@@ -166,7 +166,6 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let put = estate.probe(&["put", "--target", &path, "--key", "41", "--value", "old-birth"]);
     landed_on(&put, &first, "put");
     let build_id = build.to_string();
-    let attempt_before = u64::from(estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build").attempt);
 
     // The runtime dies (a fault); its mesh-primary answers it with node recovery.
     estate.kill_node(NODE).await;
@@ -196,20 +195,22 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     estate.stop().await;
 
     let spans = estate.spans();
-    // Node recovery: the next attempt of the accepted Build (reason recovery), deleting the exited
-    // birth and creating this path again, then updating it (node-recovery.md steps).
-    let attempt_of = |r: &Value| r["attributes"]["attempt"].as_u64().or_else(|| r["attributes"]["attempt"].as_str().and_then(|a| a.parse().ok())).unwrap_or(0);
-    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == build_id.as_str() && attempt_of(r) > attempt_before).collect();
-    let replace = reconciles
-        .iter()
-        .find(|r| r["attributes"]["reason"] == "recovery" && [format!("retire-node:{NODE}"), format!("create-node:{NODE}"), format!("update-node:{NODE}")].iter().all(|op| s(&r["attributes"]["operations"]).contains(op.as_str())))
-        .cloned()
-        .unwrap_or_else(|| panic!("a recovery attempt deleting, creating and updating {NODE}: {reconciles:?}"));
+    // Node recovery: an attempt of the accepted Build in the node's mesh's drift lane (reason
+    // recovery, R-BI7: the mesh-primary runs it in its own mesh's lane, numbered from 1 there),
+    // deleting the exited birth and creating this path again, then updating it (node-recovery.md
+    // steps). The reconcile is the one in the recovery submit's own trace: a lane's attempt number
+    // also names an attempt of the fabric lane.
     let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
         .into_iter()
         .find(|d| d["attributes"]["node"] == NODE && d["attributes"]["build_id"] == build_id.as_str() && s(&d["attributes"]["outcome"]).starts_with("complete"))
         .cloned()
         .unwrap_or_else(|| panic!("node recovery of {NODE} completed under the accepted Build"));
+    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == build_id.as_str() && r["trace_id"] == recovery["trace_id"] && r["attributes"]["lane"] == "mesh1").collect();
+    let replace = reconciles
+        .iter()
+        .find(|r| r["attributes"]["reason"] == "recovery" && [format!("retire-node:{NODE}"), format!("create-node:{NODE}"), format!("update-node:{NODE}")].iter().all(|op| s(&r["attributes"]["operations"]).contains(op.as_str())))
+        .cloned()
+        .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting, creating and updating {NODE} in the recovery's trace: {reconciles:?}"));
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
     // The old birth's own serve span of the put is not evidence here: the cell SIGKILLs that process,
     // and spans still queued in its batch exporter die with it (rafka-mesh-telemetry init_telemetry:

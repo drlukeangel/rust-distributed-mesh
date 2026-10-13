@@ -95,7 +95,9 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     //    node at the same path.name, with the same endpoint key, that keeps the store.
     let data_dir = estate.data_dir(NODE).await;
     let accepted = estate.accepted_build_id().await;
-    let attempt_before = estate.attempt_of_build(&accepted).await;
+    // The recovery is an attempt of mesh1's drift lane (R-BI7: the mesh-primary runs it in its own
+    // mesh's lane, numbered there; the Build's own attempt is the fabric lane's, the restart's above).
+    let lane_before = build_log::projection(&build_log::log_read(&estate.carrier().await, &accepted).await.unwrap_or_else(|end| panic!("{end}")), &accepted).and_then(|b| b.lanes.get("mesh1").map(|l| u64::from(l.attempt))).unwrap_or(0);
     estate.kill_node(NODE).await;
     let recovered = estate
         .until_node(NODE, "the recovered node holds the path", crate::node_recovery_due(), |n| {
@@ -112,9 +114,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
 
     // The recovery is an attempt of the accepted Build; the node holding the path is that attempt's work, not its end.
     // One Build at a time: the replace below is submitted once the recovery attempt has completed.
-    build_log::build_fact(&estate.carrier().await, &accepted, "the recovery attempt complete", Duration::from_secs(60), |b| u64::from(b.attempt) > attempt_before && b.state == rafka_node_admin_core::build_state::BuildState::Complete)
-        .await
-        .unwrap_or_else(|end| panic!("{end}"));
+    build_log::lane_attempt_complete(&estate.carrier().await, &accepted, "mesh1", lane_before + 1, Duration::from_secs(60)).await;
 
     // 4. A planned replacement does not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
