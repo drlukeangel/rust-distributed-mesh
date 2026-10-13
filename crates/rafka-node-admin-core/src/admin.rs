@@ -5039,7 +5039,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // which answering is enough.
     let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &restart) {
         (Some(l), _) => {
-            let control = l.listeners.iter().find(|(n, _)| n == "control").map(|(_, a)| *a).ok_or_else(|| "launch assigns no `control` listener".to_string())?;
+            let control = cfg.api_bind;
             (l.name.clone(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, control, l.seeds.clone())
         }
         (None, Some(own)) => {
@@ -9777,20 +9777,6 @@ mod tests {
         let empty = view(&[]);
         assert!(empty.fabric_primary().is_none());
         assert_eq!(empty.fabric.status, ScopeStatus::Pending);
-    }
-
-    /// Whichever admin restarts a node-admin keeps its control address: the view carries the
-    /// control listener from the admin's own digest (found by the 30-minute soak: a restart by an
-    /// admin that had not launched it came up with no `control` listener).
-    #[test]
-    fn the_view_carries_a_node_admins_control_listener() {
-        let book = DigestBook::default();
-        let mut admin = digest("mesh1.admin.2", MemberStatus::ReadyForTraffic);
-        admin.admin_api_base = Some("http://127.0.0.1:41777".into());
-        book.record(admin.clone());
-        let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
-        let n = t.node(&admin.node.name).expect("held");
-        assert_eq!(n.listeners, vec![("control".to_string(), "127.0.0.1:41777".parse().unwrap())]);
     }
 
     /// CONTRACT (CLAUDE.md read rule: a kind with no projection is a point read through its store

@@ -1033,15 +1033,8 @@ impl Bound {
         if transport.ip().is_unspecified() || transport.port() == 0 {
             return Err(format!("it reported the transport address {transport}, which is not an address a peer can dial"));
         }
-        let mut listeners = Vec::new();
-        if let Some(base) = &d.admin_api_base {
-            let addr = base
-                .strip_prefix("http://")
-                .and_then(|a| a.parse::<SocketAddr>().ok())
-                .ok_or_else(|| format!("it reported the control API base {base:?}, which is not http://<ip>:<port>"))?;
-            listeners.push(("control".to_string(), addr));
-        }
-        Ok(Self { transport, listeners })
+        // A node-admin opens no HTTP listener (rdm-crate-and-test-layout.md §2): its `admin_api_base` is config.
+        Ok(Self { transport, listeners: Vec::new() })
     }
 }
 
