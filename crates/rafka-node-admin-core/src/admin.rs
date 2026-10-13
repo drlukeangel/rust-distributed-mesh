@@ -1001,7 +1001,7 @@ impl ViewReads {
 /// that publishes names itself: its digest carries its row's name (R12: it publishes only the row's
 /// name, a live rename reaching it as `ApplyNodeName`). One that does not (stopped, silent past the
 /// staleness floor, proven exited, held true offline) may have had its row moved while it said
-/// nothing: a stopped node's `node.update` (R13: it is told nothing and reads the name at its next
+/// nothing: a stopped node's `node.name.update` (R13: it is told nothing and reads the name at its next
 /// join) or a replace's `RenamePredecessor`.
 #[derive(Default)]
 struct RowNames {

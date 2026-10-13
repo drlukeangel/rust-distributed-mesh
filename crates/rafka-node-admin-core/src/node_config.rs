@@ -38,21 +38,21 @@ impl NodeConfigs {
         Self { client, own, one_at_a_time: tokio::sync::Mutex::new(()), written }
     }
 
-    /// The client this door tells births through: the mesh-primary's node.update tells a birth its
+    /// The client this door tells births through: the mesh-primary's node.name.update tells a birth its
     /// name through it as well (`crate::node_name_update`).
     pub fn client(&self) -> &NodeRpcClient {
         &self.client
     }
 
-    /// The record this admin's writer of its mesh's rows holds: node.update puts its rows through it
+    /// The record this admin's writer of its mesh's rows holds: node.name.update puts its rows through it
     /// as this door does, so each row carries every field the writer knows.
     pub fn written(&self) -> &Arc<crate::node_rows::WrittenRows> {
         &self.written
     }
 
-    /// The turn of one change to a node record at this mesh-primary (node-update.md "Config update":
+    /// The turn of one change to a node record at this mesh-primary (node-config-update.md:
     /// "every change to a node record goes through its mesh-primary's one held record, one at a
-    /// time"): this door's puts and node.update's take it.
+    /// time"): this door's puts and node.name.update's take it.
     pub async fn one_at_a_time(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.one_at_a_time.lock().await
     }

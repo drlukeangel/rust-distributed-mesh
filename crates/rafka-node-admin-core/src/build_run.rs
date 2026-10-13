@@ -613,7 +613,7 @@ pub enum RecoveryNotRun {
 /// node-recovery.md as R-BI7 moves it: "the mesh-primary opens the recovery attempt of the current
 /// Build itself: claim on its mesh's rows, then run; no call to the fabric-primary"): opened and
 /// claimed at `control` (this admin's door) on the mesh's rows, planned from the lane's receipts
-/// (only what is left of node.delete, node.create, node.update), run through `door` (this admin's
+/// (only what is left of node.delete, then node.create), run through `door` (this admin's
 /// executor) in the mesh's lane and followed to its terminal. Its verdict is the executor's receipt,
 /// on this admin's Build log and the Build topic, where the fabric-primary learns it; at the verdict
 /// this admin, which took the mesh's in-flight row for the attempt, releases it (R-BI7 caveat 3:
