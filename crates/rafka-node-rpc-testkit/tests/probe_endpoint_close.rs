@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 
 /// A one-route admin: every request is answered with the same node view.
-fn serve_view(view: String) -> String {
+pub(crate) fn serve_view(view: String) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
