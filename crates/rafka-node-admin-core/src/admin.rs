@@ -592,8 +592,15 @@ impl Records {
     /// (`None`: no exit of that birth is recorded). `Err` names the birth, the mesh and the cause.
     pub async fn exit_row_of(&self, node: &Node) -> Result<Option<crate::status_storage::NodeExitRow>, String> {
         let Some(incarnation) = node.incarnation_id.as_ref() else { return Ok(None) };
-        let store = self.status.get().map(|f| f.storage().clone()).ok_or_else(|| format!("no status store is held to read the exit of {} ({}) at {}", node.name, node.node_id, incarnation.as_str()))?;
-        store.node_exit_of(&node.mesh, &node.node_id, incarnation).await.map_err(|e| format!("status.storage read of {} ({}) exit-proof row at {} among {}'s status rows: {e}", node.name, node.node_id, incarnation.as_str(), node.mesh))
+        self.exit_row_of_birth(&node.mesh, &node.node_id, incarnation, &node.name.to_string()).await
+    }
+
+    /// The exit-proof row of the exact birth `(node_id, incarnation)` of mesh `mesh` among that mesh's
+    /// status rows, a point read (`None`: no exit of that birth is recorded); `named` names the birth
+    /// in an error. `Err` names the birth, the mesh and the cause.
+    pub async fn exit_row_of_birth(&self, mesh: &str, node_id: &NodeId, incarnation: &IncarnationId, named: &str) -> Result<Option<crate::status_storage::NodeExitRow>, String> {
+        let store = self.status.get().map(|f| f.storage().clone()).ok_or_else(|| format!("no status store is held to read the exit of {named} ({node_id}) at {}", incarnation.as_str()))?;
+        store.node_exit_of(mesh, node_id, incarnation).await.map_err(|e| format!("status.storage read of {named} ({node_id}) exit-proof row at {} among {mesh}'s status rows: {e}", incarnation.as_str()))
     }
 
     /// [`Self::put_exit`] of the birth an exact Exited receipt names (a TerminateRuntime's, or the

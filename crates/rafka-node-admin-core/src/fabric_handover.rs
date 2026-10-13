@@ -27,10 +27,11 @@
 //! `Incomplete`, and a later attempt replays from the row (an identical call answers from it). A
 //! resuming executor that reads the row of a holder proven gone has discovered the commit, not
 //! installed it: it calls PrimaryUpdate on the successor and installs only on node.primary.updated.
-//! "primary updated" is published by the successor once it installed from the row: from the row's
-//! epoch it is the cohort's row writer and its mesh's primary, the writer that reads the row
-//! (proposal Part C1 step 7 and failure contract "the next writer to read the row publishes
-//! 'updated'").
+//! "primary updated" is published by the holder once the successor answered node.primary.updated
+//! (C1 step 7; R-MT1: "NA1 gossips that the primary updated to NA2"). The holder lost after the row,
+//! before "updated": the next writer to read the row publishes it (C1 failure contract). That is the
+//! successor, from the row's epoch the cohort's row writer, when it installs from the row of a holder
+//! whose exit-proof row it reads.
 
 pub use crate::election::Moving;
 use crate::fabric_storage::{FabricStorage, SeatTransferRow};
@@ -417,8 +418,10 @@ impl HandoverDoor {
     /// RejectedWrongBirth ... no RejectedStaleSeat and no RejectedNotEligible on the receiver").
     /// Whoever calls and whichever birth receives it, the call installs the committed view from the
     /// row the store root holds for its operation under the holder's mesh and answers from it; the
-    /// holder, not this receiver, says "primary updated" on the answer (R-MT1). A row never written
-    /// there, or a store that cannot be read, is a runtime fact named by its own reply, never an answer.
+    /// holder, not this receiver, says "primary updated" on the answer (R-MT1), unless the holder the
+    /// row names is proven exited: then this receiver, the next writer to read the row, says it (C1
+    /// failure contract). A row never written there, or a store that cannot be read, is a runtime fact
+    /// named by its own reply, never an answer.
     async fn serve_primary_update(self: &Arc<Self>, seats: Vec<SeatUpdate>, build_id: String, attempt: u32, operation: String) -> Reply {
         let _one_at_a_time = self.locks.serving.lock().await;
         let (named_holder, named_successor) = (seats.first().map(|u| u.holder.clone()), seats.first().map(|u| u.successor.clone()));
@@ -454,7 +457,7 @@ impl HandoverDoor {
             refused("successor", "record-absent", &format!("{} holds no {record}: the update's subject cannot be named", self.me), &of, None);
             return Reply::record_absent(&record, &self.me.to_string());
         };
-        let op = self.op_of(&row.holder, name, &row.build_id, row.attempt, &row.operation);
+        let op = self.op_of(&row.holder, name.clone(), &row.build_id, row.attempt, &row.operation);
         let taken = {
             let _decisions = self.decisions.clone().lock_owned().await;
             self.membership.seats().take_together(&op, &row.seats)
@@ -466,6 +469,18 @@ impl HandoverDoor {
             "same"
         } else {
             "held"
+        };
+        // The holder lost after the row, before "updated" (proposal Part C1 failure contract: "the next
+        // writer to read the row publishes 'updated'"): from the row's epoch this receiver is the
+        // cohort's row writer, and the holder the row names is proven gone only by the provider's exit
+        // proof (elections §4.1), its exit-proof row among its mesh's status rows. A row present: this
+        // reader says "primary updated". None: the holder is alive and says it on this answer. The read
+        // is of the birth the row names as holder, never of whoever calls (R-RX1).
+        let exit = self.records.exit_row_of_birth(&row.holder.mesh, &row.holder.node_id, &row.holder.incarnation, &name.to_string()).await;
+        let (holder_exit, holder_exit_detail) = match &exit {
+            Ok(Some(e)) => ("proven", format!("{} exited, proof {} observed at {} ms", births(&row.holder), e.proof, e.observed_at_ms)),
+            Ok(None) => ("none", String::new()),
+            Err(e) => ("unreadable", e.clone()),
         };
         tracing::info_span!(
             "rdm.node_admin.seat.update.via-primary-updated",
@@ -480,8 +495,13 @@ impl HandoverDoor {
             fabric_epoch = %epoch_of(&row.seats, Seat::FabricPrimary),
             replay = outcome != "held",
             outcome,
+            holder_exit,
+            holder_exit_detail = %holder_exit_detail,
         )
         .in_scope(|| tracing::info!("the receiver installed the committed row and answers node.primary.updated"));
+        if holder_exit == "proven" {
+            self.backbone.announce_primary_updated(op, row.seats.clone()).await;
+        }
         Reply::PrimaryUpdated { epochs: row.seats }
     }
 

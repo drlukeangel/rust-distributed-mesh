@@ -3972,7 +3972,8 @@ impl Backbone {
     }
 
     /// "primary updated", said by the holder of a node.primary.update once its successor installed the
-    /// holder's committed row and answered node.primary.updated (proposal Part C1 step 7, R-MT1): the
+    /// holder's committed row and answered node.primary.updated (proposal Part C1 step 7, R-MT1), or,
+    /// the holder lost after the row, by the next writer to read the row (C1 failure contract): the
     /// backbone, its own mesh channel and its own view.
     pub async fn announce_primary_updated(&self, op: LifecycleOp, seats: Vec<CommittedSeat>) {
         let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-primary-updated", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, seats = %seats_named(&seats), backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
