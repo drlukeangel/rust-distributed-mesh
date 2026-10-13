@@ -1696,7 +1696,7 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
         me: n_name.clone(),
         topology: e.topology.clone(),
         builds: e.builds.clone(),
-        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { node_id: n_id.clone(), me: n_name.clone(), topology: e.topology.clone(), builds: r.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory()) }),
         dispatcher: e.dispatcher.clone(),
         gate: n_gate.clone(),
         departure: e.departure.clone(),

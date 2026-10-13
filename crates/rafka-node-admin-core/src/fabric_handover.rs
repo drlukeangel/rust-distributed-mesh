@@ -516,20 +516,27 @@ impl HandoverDoor {
             return Reply::record_absent(&record, &self.me.to_string());
         };
         let op = self.op_of(&row.holder, name.clone(), &row.build_id, row.attempt, &row.operation);
-        // The update runs as a step of the holder's own attempt (C1 step 1, "as a step of the Build"):
-        // the row's attempt, claimed by the holder before its row. Taken into this admin's Build log
-        // before the seats, so the drive this admin may begin once it holds them reads that attempt
-        // held by the holder and reattaches to it ("A live run is reattached, never re-claimed").
-        // The successor installs whatever the adoption comes to (no successor-side refusal but a
-        // conflicting payload and fabric-not-ready); a claim not taken is named on the span.
+        // A row that moves the fabric seat is the fabric-primary's own update, run as a step of the
+        // attempt it claimed for itself before its row (C1 step 1, "as a step of the Build"; build_drive
+        // `own_seats_first`): that claim is taken into this admin's Build log before the seats, so the
+        // drive this admin may begin once it holds them reads that attempt held by the holder and
+        // reattaches to it ("A live run is reattached, never re-claimed"). A row that moves the mesh seat
+        // alone is a commanded mesh-primary's update: the holder claimed nothing, and the commander claims
+        // the row's attempt for this successor afterwards, so nothing is taken from it. The successor
+        // installs whatever the adoption comes to (no successor-side refusal but a conflicting payload and
+        // fabric-not-ready); a claim not taken is named on the span.
         let (taken, claim) = {
             let _decisions = self.decisions.clone().lock_owned().await;
-            let claim = match crate::build::BuildId::parse(&row.build_id) {
-                Ok(build_id) => match self.builds.adopt_claim(&crate::build_state::BuildAttemptClaim { build_id, attempt: row.attempt, executor: name.to_string(), claimant: Some(name.to_string()), mesh: None }).await {
-                    Ok(()) => "adopted".to_string(),
-                    Err(e) => format!("not taken: {e}"),
-                },
-                Err(e) => format!("not taken: the row names Build {:?}, which is not a Crockford id: {e}", row.build_id),
+            let claim = if !row.seats.iter().any(|c| c.seat.kind() == Seat::FabricPrimary) {
+                "none: the row moves the mesh seat alone, a commanded update the holder ran in no attempt of its own".to_string()
+            } else {
+                match crate::build::BuildId::parse(&row.build_id) {
+                    Ok(build_id) => match self.builds.adopt_claim(&crate::build_state::BuildAttemptClaim { build_id, attempt: row.attempt, executor: name.to_string(), claimant: Some(name.to_string()), mesh: None }).await {
+                        Ok(()) => "adopted".to_string(),
+                        Err(e) => format!("not taken: {e}"),
+                    },
+                    Err(e) => format!("not taken: the row names Build {:?}, which is not a Crockford id: {e}", row.build_id),
+                }
             };
             (self.membership.seats().take_together(&op, &row.seats), claim)
         };
