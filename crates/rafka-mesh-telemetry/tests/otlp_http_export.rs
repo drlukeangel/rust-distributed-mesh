@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 struct Seen {
     request_line: String,
     content_type: Option<String>,
-    body_len: usize,
+    body: Vec<u8>,
 }
 
 /// Read requests from `stream` until it closes, recording each and answering `200`.
@@ -43,24 +43,23 @@ fn serve(mut stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>) {
                 Ok(n) => buf.extend_from_slice(&chunk[..n]),
             }
         }
-        buf = buf.split_off(head_end + content_length);
-        seen.lock().unwrap().push(Seen { request_line, content_type, body_len: content_length });
+        let rest = buf.split_off(head_end + content_length);
+        let body = buf.split_off(head_end);
+        buf = rest;
+        seen.lock().unwrap().push(Seen { request_line, content_type, body });
         if stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: application/x-protobuf\r\ncontent-length: 0\r\n\r\n").is_err() {
             return;
         }
     }
 }
 
-/// CONTRACT: a process that emits a span and a WARN log line against a collector at
-/// `OTEL_EXPORTER_OTLP_ENDPOINT` sends exactly what OTLP/HTTP defines: one `POST /v1/traces` and
-/// one `POST /v1/logs`, each over HTTP/1.1 with a non-empty `application/x-protobuf` body. Any
-/// other first line (an HTTP/2 preface, a bare `POST /`) is the exporter on the wrong protocol or
-/// the wrong path.
-#[test]
-fn an_exporter_posts_protobuf_spans_and_log_records_to_the_http_signal_paths() {
-    if crate::own_process::delegated(module_path!(), "an_exporter_posts_protobuf_spans_and_log_records_to_the_http_signal_paths") {
-        return;
-    }
+/// The service name the process under test exports as.
+const SERVICE: &str = "rdm-otlp-http-export";
+
+/// Run this process's telemetry against a collector on a loopback port: one span carrying one WARN
+/// log line, flushed the way a node flushes before it exits. Returns every request the collector
+/// received. Sets process-wide state, so a cell calls it only after `own_process::delegated`.
+fn export_one_span_and_one_log_line() -> (String, Vec<Seen>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
@@ -74,19 +73,50 @@ fn an_exporter_posts_protobuf_spans_and_log_records_to_the_http_signal_paths() {
 
     std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &endpoint);
     std::env::remove_var("RDM_EVIDENCE_DIR");
-    let guard = rafka_mesh_telemetry::init_evidence_telemetry("rdm-otlp-http-export").expect("the OTLP exporter is configured by OTEL_EXPORTER_OTLP_ENDPOINT");
+    let guard = rafka_mesh_telemetry::init_evidence_telemetry(SERVICE).expect("the OTLP exporter is configured by OTEL_EXPORTER_OTLP_ENDPOINT");
     let span = tracing::info_span!("rdm.test.otlp_export.update.via-http-proto");
     span.in_scope(|| tracing::warn!("a warning the log exporter sends"));
     drop(span);
     rafka_mesh_telemetry::flush_before_exit();
     drop(guard);
-
     let seen = seen.lock().unwrap().clone();
+    (endpoint, seen)
+}
+
+/// CONTRACT: a process that emits a span and a WARN log line against a collector at
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` sends exactly what OTLP/HTTP defines: one `POST /v1/traces` and
+/// one `POST /v1/logs`, each over HTTP/1.1 with a non-empty `application/x-protobuf` body. Any
+/// other first line (an HTTP/2 preface, a bare `POST /`) is the exporter on the wrong protocol or
+/// the wrong path.
+#[test]
+fn an_exporter_posts_protobuf_spans_and_log_records_to_the_http_signal_paths() {
+    if crate::own_process::delegated(module_path!(), "an_exporter_posts_protobuf_spans_and_log_records_to_the_http_signal_paths") {
+        return;
+    }
+    let (endpoint, seen) = export_one_span_and_one_log_line();
     let lines: Vec<&str> = seen.iter().map(|s| s.request_line.as_str()).collect();
     for path in ["/v1/traces", "/v1/logs"] {
         let want = format!("POST {path} HTTP/1.1");
         let got = seen.iter().find(|s| s.request_line == want).unwrap_or_else(|| panic!("no `{want}` reached the collector at {endpoint}; its requests were {lines:?}"));
         assert_eq!(got.content_type.as_deref(), Some("application/x-protobuf"), "`{want}` is not protobuf");
-        assert!(got.body_len > 0, "`{want}` carried an empty body");
+        assert!(!got.body.is_empty(), "`{want}` carried an empty body");
+    }
+}
+
+/// CONTRACT: what the collector receives names its sender. The span request and the log request
+/// both carry the process's resource, `service.name` set to the name the process initialised
+/// telemetry with, so the trace store files the spans under that service. Protobuf strings travel
+/// as their UTF-8 bytes, so the key and the name are found in the body as they are.
+#[test]
+fn an_exporter_sends_the_process_resource_with_spans_and_log_records() {
+    if crate::own_process::delegated(module_path!(), "an_exporter_sends_the_process_resource_with_spans_and_log_records") {
+        return;
+    }
+    let (endpoint, seen) = export_one_span_and_one_log_line();
+    let has = |body: &[u8], needle: &str| body.windows(needle.len()).any(|w| w == needle.as_bytes());
+    for path in ["/v1/traces", "/v1/logs"] {
+        let want = format!("POST {path} HTTP/1.1");
+        let got = seen.iter().find(|s| s.request_line == want).unwrap_or_else(|| panic!("no `{want}` reached the collector at {endpoint}"));
+        assert!(has(&got.body, "service.name") && has(&got.body, SERVICE), "`{want}` carries no resource naming `{SERVICE}` as its service: {} body bytes", got.body.len());
     }
 }
