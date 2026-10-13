@@ -102,6 +102,26 @@ pub async fn attempt_complete(carrier: &BuildCarrier, id: &str, attempt: u64, wi
     .unwrap_or_else(|end| panic!("{end}"))
 }
 
+/// Await attempt `attempt`, or a later one, of `mesh`'s drift lane of Build `id` complete in the Build
+/// log of the node-admin `carrier` starts at (R-BI7: a mesh-primary's recovery is an attempt of its
+/// mesh's lane, numbered per mesh; the Build's own state and attempt are the fabric lane's). A lane that
+/// folds to `failed` at `attempt` or later fails the cell with the Build.
+pub async fn lane_attempt_complete(carrier: &BuildCarrier, id: &str, mesh: &str, attempt: u64, within: Duration) -> BuildProjection {
+    build_fact(carrier, id, &format!("attempt {attempt} of {mesh}'s lane complete"), within, |b| {
+        let Some(lane) = b.lanes.get(mesh) else { return false };
+        if u64::from(lane.attempt) < attempt {
+            return false;
+        }
+        match lane.state {
+            BuildState::Complete => true,
+            BuildState::Failed => panic!("attempt {} of {mesh}'s lane of Build {id} failed: {b:#?}", lane.attempt),
+            _ => false,
+        }
+    })
+    .await
+    .unwrap_or_else(|end| panic!("{end}"))
+}
+
 /// [`build_value`] as the soak driver reads a Build (`rafka_test_scenario::soak::BuildRead`): the Build as the
 /// Build log of the admin the estate asks holds it, as the JSON the projection serializes to.
 pub fn build_read<'a>(estate: &'a rafka_test_scenario::estate::Estate, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + 'a>> {
