@@ -781,9 +781,11 @@ async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_par
     assert_replace_followed_the_spec(&spans, &birth_build, &attempt, NODE, &before, &REPLACE_ORDER);
     assert_replace_deleted_nothing(&spans, &birth_build, &attempt, NODE, &before);
     assert_parked_before_the_successor(&spans, &birth_build, &attempt, NODE, &before, admins.len());
+    // Each admin's view names it once; the executor's, which moved the row, is the first.
     let held_old = named(&spans, "rdm.node_admin.topology.update.via-predecessor-held")
         .into_iter()
-        .find(|sp| sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["node_id"] == before["node_id"])
+        .filter(|sp| sp["attributes"]["node"] == old_name.as_str() && sp["attributes"]["node_id"] == before["node_id"])
+        .min_by_key(|sp| start(sp))
         .unwrap_or_else(|| panic!("the executor's view never named the predecessor {old_name}"));
     let complete = step_span(&spans, &birth_build, &attempt, NODE, "Complete").expect("Complete ran");
     assert!(start(held_old) < start(complete), "the view named the predecessor {old_name} before the replace completed: {held_old}");
@@ -791,9 +793,19 @@ async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_par
     // executor's RenamePredecessor the mesh's primary, which executes it, moves the predecessor's row
     // to `<path>.old`, where it stays the parked predecessor's row, and the successor's create claims
     // its row at the path.name, seeded from the .old row, before it is launched (R13).
-    let moved: Vec<&Value> = named(&spans, "rdm.node_admin.node.update.via-rename").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
-    assert_eq!(moved.len(), 1, "one move of the predecessor's row: {moved:?}");
-    assert_eq!((s(&moved[0]["attributes"]["from"]), s(&moved[0]["attributes"]["to"]), s(&moved[0]["attributes"]["outcome"])), (NODE.to_string(), old_name.clone(), "renamed".to_string()), "{}", moved[0]);
+    // node-replace.md step 3: "node[1].update(name=`<name>.old`) as node.name.update on the stopped
+    // predecessor": the RenamePredecessor step is the mesh-primary's node.name.update, decided by its
+    // validator in-process (exact birth, writer, the stopped precondition, the name) under the step.
+    let rename_step = step_span(&spans, &birth_build, &attempt, NODE, "RenamePredecessor").expect("RenamePredecessor ran");
+    let moved: Vec<&Value> = named(&spans, "rdm.node_admin.node.name.update.via-writer").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).collect();
+    assert_eq!(moved.len(), 1, "one node.name.update of the predecessor: {moved:?}");
+    assert_eq!(
+        (s(&moved[0]["attributes"]["from"]), s(&moved[0]["attributes"]["to"]), s(&moved[0]["attributes"]["traffic"]), s(&moved[0]["attributes"]["outcome"])),
+        (NODE.to_string(), old_name.clone(), "Stopped".to_string(), "name-updated".to_string()),
+        "{}",
+        moved[0]
+    );
+    assert_eq!(moved[0]["parent_span_id"], rename_step["span_id"], "the predecessor's node.name.update runs inside its RenamePredecessor step: {} vs {rename_step}", moved[0]);
     let old_deleted: Vec<&Value> = named(&spans, "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == old_name.as_str()).collect();
     assert!(old_deleted.is_empty(), "no Deleted row at {old_name}: the predecessor is parked, not deleted: {old_deleted:?}");
     let seeded: Vec<&Value> = named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|sp| sp["attributes"]["subject"] == NODE && sp["attributes"]["node_id"] == after["node_id"] && sp["attributes"]["moment"] == "claim").collect();
