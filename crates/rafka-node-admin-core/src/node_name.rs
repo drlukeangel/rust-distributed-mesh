@@ -1,4 +1,4 @@
-//! `ApplyNodeName` at its subject (node-rpc-envelope.md "Meta and config", R12/R13; R-CR1, R-CR1a):
+//! `ApplyNodeName` at its subject (proposal node-properties-own-commands.md §2.2 step 6; R12/R13; R-CR1, R-CR1a):
 //! the node owns its name and publishes only the name its mesh-primary's row holds. It takes a new
 //! name only while it holds no connection: every route it held was closed by
 //! `node.connections.delete`, its drop written under the old name, before the name changes. The
@@ -57,19 +57,13 @@ pub fn decide(held: &PathName, asked: &PathName, routes: &[NodeConnection]) -> N
     }
 }
 
-/// The reply the node `me` answers for `decision`.
-pub fn reply(me: &PathName, asked: &PathName, decision: &NameApply) -> StatusReply {
+/// The reply a node answers for its `decision`: a node holding connections names each by its entry's
+/// id (`BusyHoldingConnections`), the routes on the decision's span.
+pub fn reply(decision: &NameApply) -> StatusReply {
     match decision {
         NameApply::Applied => StatusReply::Applied,
         NameApply::AlreadyApplied => StatusReply::AlreadyApplied,
-        NameApply::Busy { routes, .. } => StatusReply::Busy {
-            reason: format!(
-                "{me} holds {} connection{}: {}; the name changes to {asked} only once node.connections.delete has closed every one",
-                routes.len(),
-                if routes.len() == 1 { "" } else { "s" },
-                routes.join(", ")
-            ),
-        },
+        NameApply::Busy { connections, .. } => StatusReply::busy_holding_connections(connections),
     }
 }
 
@@ -91,6 +85,6 @@ mod tests {
         let busy = decide(&new, &bare, std::slice::from_ref(&route));
         assert_eq!(busy, NameApply::Busy { connections: vec![route.id.clone()], routes: vec!["mesh1.admin.1 (direct, entry 3123456789ab)".into()] });
         assert_eq!(decide(&new, &bare, &[]), NameApply::Applied);
-        assert_eq!(reply(&new, &bare, &busy), StatusReply::BusyHoldingConnections { connections: vec![route.id.clone()] });
+        assert_eq!(reply(&busy), StatusReply::BusyHoldingConnections { connections: vec![route.id.clone()] });
     }
 }

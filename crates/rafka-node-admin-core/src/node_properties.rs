@@ -151,6 +151,8 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
         Err(why) => return StatusReply::node_row_refused(&subject.name.to_string(), &format!("{me}: {why}: the tags of {} are not written", subject.name)),
     };
     let was: BTreeSet<String> = known.as_ref().map(|r| r.tags.clone()).unwrap_or_default();
+    // The key a rename moved the row from stays the row's while it stands at the same key.
+    let renamed_from = known.as_ref().and_then(|r| r.renamed_from.clone().filter(|_| r.name == subject.name));
     let config = known.map(|r| r.config).unwrap_or_else(|| subject.config.clone());
     let (tags, done) = match change {
         Change::Create(labels) => {
@@ -177,7 +179,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // Nothing to change writes nothing: a label carried is a key already put, one not carried a key
     // with nothing to tombstone.
     let Some(tags) = tags else { return done };
-    let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from: None };
+    let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from };
     match storage.put_node_row(&row).await {
         Ok(Ok(())) => {
             door.written().hold(&row);

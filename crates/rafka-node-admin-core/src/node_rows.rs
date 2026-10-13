@@ -373,6 +373,10 @@ impl NodeRows {
                 if let Some(row) = &written {
                     self.written.hold(row);
                 }
+                // A release still pending fails the step: the attempt's resume meets the row and finishes it.
+                if let Moved::ReleasePending { why } = &moved {
+                    return Err(RowRefused::Unwritten(format!("{}: the predecessor {} holds {to} and the release of {name} is pending: {why}", self.me, record.node_id)));
+                }
                 Ok(moved)
             },
             span.clone(),
@@ -382,7 +386,7 @@ impl NodeRows {
             Ok(Moved::Renamed) => {
                 span.record("outcome", "renamed");
             }
-            Ok(Moved::AlreadyMoved) => {
+            Ok(Moved::AlreadyMoved | Moved::ReleasePending { .. }) => {
                 span.record("outcome", "already-moved").record("detail", format!("{}: the predecessor {} holds {to} and no longer holds {name}; nothing is written", self.me, record.node_id).as_str());
             }
             Err(e) => {
@@ -605,7 +609,7 @@ impl NodeRows {
                 detail = tracing::field::Empty,
                 "otel.kind" = "internal",
             );
-            let r = tracing::Instrument::instrument(self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, &span), span.clone()).await;
+            let r = tracing::Instrument::instrument(self.rebuilt_row(&birth, &span), span.clone()).await;
             record_claim(&span, &r);
             span.in_scope(|| tracing::info!("node.create: the birth's row decided"));
             match r {
@@ -613,6 +617,32 @@ impl NodeRows {
                 _ => {}
             }
         }
+    }
+
+    /// The row of `birth` as the writer meets it at its arrival: the row the node holds wherever it
+    /// stands (a rename may have moved it off the name the view holds, found through the id index), any
+    /// release its `renamed_from` names finished when still pending (proposal
+    /// node-properties-own-commands.md §2.1: "a mesh-primary's rebuild from its mesh's rows after a
+    /// seat change"); else the row seeded at the view's name ([`Self::put_seeded`]).
+    async fn rebuilt_row(&self, birth: &Node, span: &tracing::Span) -> Result<Claimed, RowRefused> {
+        let me = &self.me;
+        let holds = match self.storage.node_row_name(&birth.mesh, &birth.node_id).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the id index entry of {} in {} could not be read: {e}", birth.node_id, birth.mesh)))? {
+            Some(key) if key != birth.name => self.storage.node_row_at(&key).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the row of {} at {key} could not be read: {e}", birth.node_id)))?.filter(|r| r.node_id == birth.node_id),
+            _ => None,
+        };
+        let claimed = match holds {
+            Some(row) => {
+                self.written.hold(&row);
+                Claimed::HeldByNode(row)
+            }
+            None => self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, span).await?,
+        };
+        if let Claimed::HeldByNode(row) = &claimed {
+            if let Err(why) = finish_release(&*self.storage, me, row, "rebuild").await {
+                span.record("detail", format!("{me}: the release {} of {} is still pending: {why}", row.renamed_from.as_ref().map(|f| f.to_string()).unwrap_or_default(), row.node_id).as_str());
+            }
+        }
+        Ok(claimed)
     }
 
     /// Tell a birth the config its row carries (ops-naming "Node data": the node applies it and
@@ -664,37 +694,99 @@ pub enum RenameRefused {
     Unwritten(String),
 }
 
-/// The node's row moves from `from` to `to` in `storage`: written at `to` from its held `record`
-/// with `config` and `tags` (a put the store adapter refuses `NameHeld` when another node's live row holds
-/// `to`; a row the node holds there already is left as it is, its id index entry naming `to`,
-/// [`NodesStorage::hold_node_row`]), then the node lets go of `from`
-/// (only its own row there goes). The one writer of a rename (R13: `node.update` is one write
-/// path): `node.update` at the node's mesh-primary (`crate::node_update`) and a replace's
-/// `RenamePredecessor` ([`NodeRows::moved_to_old`]) both move here. Answers what it did and the
-/// row written, if it wrote one.
+/// The node's row moves from `from` to `to` in `storage` (proposal node-properties-own-commands.md
+/// §2.1 "Claim and move"): put at `to` from its held `record` with `config` and `tags`, carrying
+/// `renamed_from: from` (a put the store adapter refuses `NameHeld` when another node's live row holds
+/// `to`), then the node lets go of `from` (only its own row there goes). A row the node holds at `to`
+/// already is a move made before: it is left as it is, its id index entry naming `to`
+/// ([`NodesStorage::hold_node_row`]), and the release its `renamed_from` names is finished when still
+/// pending ([`finish_release`]). A release that fails after the put leaves both keys held and answers
+/// [`Moved::ReleasePending`]: nothing is rolled back and no second row is written. The one writer of a
+/// rename (R13): `node.name.update` at the node's mesh-primary (`crate::node_name_update`) and a
+/// replace's `RenamePredecessor` ([`NodeRows::moved_to_old`]) both move here. Answers what it did and
+/// the row written, if it wrote one.
 pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: &Node, config: BTreeMap<String, String>, tags: std::collections::BTreeSet<String>, from: &PathName, to: &PathName) -> Result<(Moved, Option<NodeRow>), RenameRefused> {
     if from == to {
         return Ok((Moved::Renamed, None));
     }
     let held_there = storage.hold_node_row(to, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row at {to} could not be read or named for the rename of {} from {from}: {e}", record.node_id)))?;
-    let mut written = None;
-    if !held_there {
-        let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: None };
-        storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
-        written = Some(row);
+    if held_there {
+        // A move made before: its destination row names the key it came from (a row written before
+        // `renamed_from` existed names none, and the key is this move's own `from`).
+        let source = storage.node_row_at(to).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row of {} at {to} could not be read for the rename from {from}: {e}", record.node_id)))?.and_then(|r| r.renamed_from).unwrap_or_else(|| from.clone());
+        return Ok(match release_source(storage, me, &record.node_id, to, &source, "retry").await {
+            Ok(true) => (Moved::Renamed, None),
+            Ok(false) => (Moved::AlreadyMoved, None),
+            Err(why) => (Moved::ReleasePending { why }, None),
+        });
     }
+    let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()) };
+    storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
     // The new name is the node's: it lets go of the old key.
-    let released = storage.release_node_row(from, &record.node_id).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: {} holds {to} and nodes.storage refused the release of {from}: {e}", record.node_id)))?;
-    Ok((if held_there && !released { Moved::AlreadyMoved } else { Moved::Renamed }, written))
+    match storage.release_node_row(from, &record.node_id).await {
+        Ok(_) => Ok((Moved::Renamed, Some(row))),
+        Err(e) => Ok((Moved::ReleasePending { why: format!("nodes.storage refused the release of {from}: {e}") }, Some(row))),
+    }
+}
+
+/// The release a row's `renamed_from` names, finished when still pending (proposal
+/// node-properties-own-commands.md §2.1: "a row whose `renamed_from` key still holds the same node id
+/// has a pending release, and the writer releases it"): run by the writer that meets the row, a
+/// retry of the command or the mesh-primary's rebuild after a seat change (`moment`). A row that names
+/// no source, or whose source no longer holds its node, has nothing pending and nothing is done.
+/// Answers whether it released a key, or why the release failed.
+pub(crate) async fn finish_release(storage: &dyn NodesStorage, me: &PathName, row: &NodeRow, moment: &'static str) -> Result<bool, String> {
+    match row.renamed_from.as_ref().filter(|from| **from != row.name) {
+        Some(from) => release_source(storage, me, &row.node_id, &row.name, from, moment).await,
+        None => Ok(false),
+    }
+}
+
+/// `node_id`, holding `to`, lets go of `from` when `from` still holds it: one
+/// `rdm.node_admin.node.name.update.via-pending-release` span when it did or could not.
+async fn release_source(storage: &dyn NodesStorage, me: &PathName, node_id: &NodeId, to: &PathName, from: &PathName, moment: &'static str) -> Result<bool, String> {
+    let still = match storage.node_row_at(from).await {
+        Ok(row) => row.is_some_and(|r| r.node_id == *node_id),
+        Err(e) => return Err(pending_release_span(me, node_id, to, from, moment, Err(format!("the row at {from} could not be read: {e}")))),
+    };
+    if !still {
+        return Ok(false);
+    }
+    match storage.release_node_row(from, node_id).await {
+        Ok(released) => {
+            let _ = pending_release_span(me, node_id, to, from, moment, Ok(released));
+            Ok(released)
+        }
+        Err(e) => Err(pending_release_span(me, node_id, to, from, moment, Err(format!("nodes.storage refused the release of {from}: {e}")))),
+    }
+}
+
+/// The span of one pending release, its outcome `released`, `not-held` or `release-refused`; answers
+/// the refusal's words.
+fn pending_release_span(me: &PathName, node_id: &NodeId, to: &PathName, from: &PathName, moment: &'static str, r: Result<bool, String>) -> String {
+    let (outcome, detail) = match &r {
+        Ok(true) => ("released", String::new()),
+        Ok(false) => ("not-held", format!("{node_id} no longer held {from} when its release was made")),
+        Err(why) => ("release-refused", why.clone()),
+    };
+    tracing::info_span!("rdm.node_admin.node.name.update.via-pending-release", node = %me, node_id = %node_id, to = %to, from = %from, moment, outcome, detail = %detail, "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("a rename's pending release was met by its writer"));
+    detail
 }
 
 /// What a move of a node's row did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Moved {
     /// The node holds the new name now and let go of the old one.
     Renamed,
     /// The node held the new name already and not the old one: the move was made before.
     AlreadyMoved,
+    /// The node holds the new name and still holds the old one: the release failed, and the next
+    /// writer that meets the row finishes it ([`finish_release`]).
+    ReleasePending {
+        /// Why the release failed.
+        why: String,
+    },
 }
 
 /// `record` as a stopped node: `Leaving` with its process live (`parked`), waiting for a start or a

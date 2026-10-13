@@ -346,7 +346,7 @@ pub struct StatusAuthority {
     /// This admin as the subject of `ApplyNodeName`: it takes the name holding no connection (R-CR1)
     /// and publishes its digest carrying it; filled once its digest exists.
     pub rename: Rename,
-    /// This admin's view taking a node's row its `node.update` moved (R13): the view is projected
+    /// This admin's view taking a node's row its `node.name.update` moved (R13): the view is projected
     /// again, reading the moved row. Filled with the view.
     pub row_moved: RowMoved,
     /// Each member's load and gossip stats, as its latest digest carries them: what `node.get`
@@ -358,7 +358,7 @@ pub struct StatusAuthority {
     /// otherwise). `None` only where no admin owns a digest book.
     pub book: Option<rafka_mesh_transport::membership::DigestBook>,
     /// Whether the initial fabric has first reached ready-for-traffic: until it has, a caller's
-    /// `UpdateNode` is refused `RejectedFabricNotReady` and nothing is written.
+    /// property command is refused `RejectedFabricNotReady` and nothing is written.
     pub first_ready: crate::fabric_state::FirstReady,
     /// This admin's builds store: `fabric.get` answers the current Build from it, read last in, first
     /// out (build.md §4; R-BI3: "Each accepted Build is its own entity in the builds store, written
@@ -579,9 +579,9 @@ impl StatusAuthority {
             StatusRequest::UpdateName { node_id, incarnation, .. } => {
                 // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
                 let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
-                let doors = crate::node_update::UpdateDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
+                let doors = crate::node_name_update::NameDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
                 let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
-                return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), first_ready, req).await;
+                return crate::node_name_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), first_ready, req).await;
             }
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
                 let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
@@ -952,7 +952,7 @@ pub type Configure = Arc<OnceLock<Arc<dyn Fn(BTreeMap<String, String>) -> std::p
 /// and the decision, the name taken and published only on `Applied`.
 pub type Rename = Arc<OnceLock<Arc<dyn Fn(rafka_mesh_entity::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = (rafka_mesh_entity::PathName, crate::node_name::NameApply)> + Send>> + Send + Sync>>>;
 
-/// This mesh-primary's view taking a row `node.update` moved: `(from, node_id, incarnation, to)`.
+/// This mesh-primary's view taking a row `node.name.update` moved: `(from, node_id, incarnation, to)`.
 pub type RowMoved = Arc<OnceLock<Arc<dyn Fn(rafka_mesh_entity::PathName, NodeId, rafka_mesh_entity::IncarnationId, rafka_mesh_entity::PathName) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>>;
 
 /// What a node is now, in the declaration vocabulary.
@@ -1062,7 +1062,7 @@ async fn self_subject(me: &crate::model::Node, sender: Option<&crate::model::Nod
             };
             tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, routes = %routes, outcome = decision.name(), "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the mesh-primary's name for this admin was decided"));
-            Some(crate::node_name::reply(&held, &asked, &decision))
+            Some(crate::node_name::reply(&decision))
         }
         _ => None,
     }

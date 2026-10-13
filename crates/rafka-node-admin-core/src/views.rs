@@ -25,7 +25,7 @@ use std::sync::Arc;
 /// beside the view, never inside it (it changes every digest and never moves the topology).
 pub type Loads = Arc<dyn Fn() -> BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)> + Send + Sync>;
 
-fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
+pub(crate) fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
     use crate::model::NodeStatus as S;
     match s {
         S::Pending => NodeStatus::Pending,

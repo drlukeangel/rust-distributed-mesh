@@ -39,7 +39,7 @@ impl NodeConfigs {
     }
 
     /// The client this door tells births through: the mesh-primary's node.update tells a birth its
-    /// name through it as well (`crate::node_update`).
+    /// name through it as well (`crate::node_name_update`).
     pub fn client(&self) -> &NodeRpcClient {
         &self.client
     }
@@ -117,9 +117,11 @@ impl NodeConfigs {
             Some(_) => {}
         }
         let _one = self.one_at_a_time.lock().await;
-        // The row carries the node's tags as this writer knows them: a config put changes the config.
-        let tags = match self.written.known_row(storage, &subject.mesh, node_id).await {
-            Ok(row) => row.map(|r| r.tags).unwrap_or_default(),
+        // The row carries the node's tags as this writer knows them, and the key a rename moved it from
+        // while it stands at the same key (its pending release stays the row's): a config put changes
+        // the config.
+        let (tags, renamed_from) = match self.written.known_row(storage, &subject.mesh, node_id).await {
+            Ok(row) => row.map(|r| (r.tags, r.renamed_from.filter(|_| r.name == subject.name))).unwrap_or_default(),
             Err(why) => {
                 let detail = format!("{me}: {why}: the row of {} is not written without the tags it carries", subject.name);
                 span.record("detail", detail.as_str());
@@ -127,7 +129,7 @@ impl NodeConfigs {
             }
         };
         span.record("tags", crate::node_rows::labels(&tags).as_str());
-        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None, renamed_from: None };
+        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None, renamed_from };
         let refused = match storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);
