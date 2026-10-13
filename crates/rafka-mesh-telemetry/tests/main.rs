@@ -6,6 +6,7 @@
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 mod collector_outage;
+mod evidence_capture;
 mod otlp_http_export;
 mod runtime_watchdog;
 mod span_end_nonblocking;

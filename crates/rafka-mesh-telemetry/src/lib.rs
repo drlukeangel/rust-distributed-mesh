@@ -24,6 +24,8 @@ mod transport_diag;
 pub use transport_diag::{TRANSPORT_DIAG_FILE, TRANSPORT_DIAG_TARGET};
 pub mod watchdog;
 mod pipeline;
+mod evidence_capture;
+pub use evidence_capture::EvidenceCapture;
 pub use pipeline::{enable_callsites, install_span_capture, span_capture, span_export_layer, span_processor, CountingBatchProcessor, SpanCapture, SpanLoss};
 
 use export::{ExportRuntime, WatchedLogs, WatchedSpans};
@@ -350,8 +352,15 @@ pub(crate) struct JsonlSpanExporter {
 
 impl JsonlSpanExporter {
     pub fn create(dir: &std::path::Path, service: &str) -> std::io::Result<Self> {
-        std::fs::create_dir_all(dir)?;
-        let path = dir.join(format!("{service}.{}.spans.jsonl", process_tag()));
+        Self::create_at(&dir.join(format!("{service}.{}.spans.jsonl", process_tag())), service)
+    }
+
+    /// The exporter appending to exactly `path` (its directory created): a writer that owns a file of
+    /// its own beside others of the same process ([`EvidenceCapture`]).
+    pub fn create_at(path: &std::path::Path, service: &str) -> std::io::Result<Self> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self { service: service.to_string(), file })
     }
