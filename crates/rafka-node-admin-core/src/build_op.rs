@@ -207,6 +207,19 @@ impl BuildDoor {
                 },
                 other => {
                     if let Some(refusal) = self.not_fabric_primary().await {
+                        // The refusal's own span, as every other Build refusal has one (one honest name per
+                        // reason, `reject_span`): the call, this admin and the fabric-primary it named.
+                        let route = match call {
+                            "create" => "build.create",
+                            "get" => "build.get",
+                            _ => "build.delete",
+                        };
+                        let named = match &refusal {
+                            BuildReply::NotFabricPrimary { fabric_primary } => fabric_primary.clone().unwrap_or_default(),
+                            _ => String::new(),
+                        };
+                        tracing::info_span!("rdm.node_admin.build.reject.via-not-authority", route, node = %self.me, fabric_primary = %named)
+                            .in_scope(|| tracing::info!("a Build call is answered only by the fabric-primary"));
                         return Ok(refusal);
                     }
                     match other {
