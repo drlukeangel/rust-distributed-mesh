@@ -15,7 +15,7 @@ use rafka_node_admin_core::build_drive::{Dispatched, Dispatcher, Drive, DriveEnd
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::http::ControlPlane;
 use rafka_node_admin_core::model::*;
-use rafka_node_admin_core::node_rows::NodeRows;
+use rafka_node_admin_core::node_rows::{ClaimFor, NodeRows};
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc_contract::build::BuildReply;
@@ -256,7 +256,7 @@ fn a_deleted_nodes_row_keeps_its_tags_and_a_plain_create_at_its_name_inherits_no
         let row = storage.node_row_at(&victim.name).await.unwrap();
         let (rabbit, red) = (storage.tagged("rabbit").await.unwrap(), storage.tagged("red").await.unwrap());
         let born = NodeId::mint();
-        mp.rows.claim(&victim.name, &born, "create-node:mesh1.rpc.1", None).await.expect("a node created at the Deleted row's path.name claims it");
+        mp.rows.claim(&victim.name, &born, "create-node:mesh1.rpc.1", None, ClaimFor::Create).await.expect("a node created at the Deleted row's path.name claims it");
         let after = (storage.tagged("rabbit").await.unwrap(), storage.tagged("red").await.unwrap());
         (row, storage.node_row_at(&victim.name).await.unwrap(), victim.node_id, rabbit, red, born, after)
     });
@@ -290,7 +290,7 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
         storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
-        mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "create-node:mesh1.rpc.2", None).await.expect("the name is free of live rows");
+        mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "create-node:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
         (storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
     assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None }), "the new birth holds the row and the Deleted row's config");
@@ -316,7 +316,7 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
         storage.put_node_row(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
-        mp.rows.claim(&name, &born, "create-node:mesh1.rpc.2", None).await.expect("the name is free of live rows");
+        mp.rows.claim(&name, &born, "create-node:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
         // The executor's record of the birth it created: no config on it.
         let mut record = Node::allocated(name.clone());
         record.node_id = born.clone();
@@ -324,7 +324,7 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
         mp.rows.deleted(&record, "retire-node:mesh1.rpc.2").await.expect("the Deleted row is written");
         let deleted = storage.node_row_at(&name).await.unwrap();
         let next = NodeId::mint();
-        mp.rows.claim(&name, &next, "create-node:mesh1.rpc.2", None).await.expect("the Deleted row holds no name");
+        mp.rows.claim(&name, &next, "create-node:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the Deleted row holds no name");
         (deleted, storage.node_row_at(&name).await.unwrap(), born)
     });
     assert_eq!(deleted.map(|r| (r.node_id, r.status, r.config)), Some((born.clone(), NodeStatus::Deleted, tier("silver"))), "the Deleted row keeps the config the writer holds for the birth");
@@ -597,7 +597,7 @@ fn a_replaced_nodes_row_moves_to_old_and_its_successor_is_seeded_from_it() {
         let op = "replace-node:mesh1.rpc.1";
         mp.rows.moved_to_old(&pred, op).await.expect("the predecessor's row moves");
         let succ = NodeId::mint();
-        mp.rows.claim(&pred.name, &succ, op, None).await.expect("the freed name is claimed");
+        mp.rows.claim(&pred.name, &succ, op, None, ClaimFor::Create).await.expect("the freed name is claimed");
         (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
     });
     assert_eq!(old_row, Some(NodeRow { name: "mesh1.rpc.1.old".parse().unwrap(), node_id: pred.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: Some("mesh1.rpc.1".parse().unwrap()) }), "the predecessor's row moved to .old naming the key it came from, parked, and stays its row, its config kept");
@@ -628,7 +628,7 @@ fn a_recovered_nodes_row_moves_to_old_ends_deleted_and_its_successor_is_seeded_f
         let op = "replace-node:mesh1.rpc.1";
         mp.rows.moved_to_old(&pred, op).await.expect("the predecessor's row moves");
         let succ = NodeId::mint();
-        mp.rows.claim(&pred.name, &succ, op, None).await.expect("the freed name is claimed");
+        mp.rows.claim(&pred.name, &succ, op, None, ClaimFor::Create).await.expect("the freed name is claimed");
         mp.rows.deleted(&Node { name: pred.name.renamed(), ..pred.clone() }, op).await.expect("the .old row says Deleted");
         (storage.node_row_at(&pred.name.renamed()).await.unwrap(), storage.node_row_at(&pred.name).await.unwrap(), pred.node_id, succ)
     });
@@ -1746,7 +1746,8 @@ mod writer {
 /// The recovery of `mesh1.rpc.1` (node-recovery.md steps 3-4) as its executor, `mesh1`'s primary
 /// `mesh1.admin.2`, writes it (R13): its node.delete of the exited birth (`retire-node:<path>`)
 /// writes the row `Deleted` inside its `NodeDeleted` step, and its node.create at the same
-/// `path.name` (`create-node:<path>`) claims it, `before` or after that `Deleted` row. Returns the
+/// `path.name` (`create-node:<path>`, over the exited birth: a recovery's claim) claims it, `before`
+/// or after that `Deleted` row. Returns the
 /// row at `mesh1.rpc.1`, the exited node, the new one, and the nodes the tags index names under the
 /// exited row's label `blue` once the claim is written (nothing runs after it).
 async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId, std::collections::BTreeSet<NodeId>) {
@@ -1758,10 +1759,10 @@ async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId,
     storage.put_node_row(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None }).await.unwrap().unwrap();
     let born = NodeId::mint();
     if new_claimed_first {
-        mp.rows.claim(&exited.name, &born, create, None).await.expect_err("the exited node's live row holds the name");
+        mp.rows.claim(&exited.name, &born, create, None, ClaimFor::Recovery).await.expect_err("the exited node's live row holds the name");
     }
     mp.rows.deleted(&exited, delete).await.expect("the executor writes the Deleted row inside NodeDeleted");
-    mp.rows.claim(&exited.name, &born, create, None).await.expect("the Deleted row holds no name");
+    mp.rows.claim(&exited.name, &born, create, None, ClaimFor::Recovery).await.expect("the Deleted row holds no name");
     (storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap(), exited.node_id, born, storage.tagged("blue").await.unwrap())
 }
 

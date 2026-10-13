@@ -1467,7 +1467,10 @@ impl DeploymentPipeline<'_> {
                 // claim is (`NodeRow::allocated`): a later run of this operation that never heard
                 // this one's receipts continues the same birth rather than being refused by it.
                 let allocated = crate::storage::Allocation { build_id: req.build_id.clone(), operation: run_operation.clone(), incarnation: id.incarnation.clone(), deployment_id: id.deployment_id.clone() };
-                rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated))
+                // A create over an exited birth's data dir is node recovery's (node-recovery.md step
+                // 4), whose claim inherits the Deleted row's tags with its config.
+                let of = if inherits { crate::node_rows::ClaimFor::Recovery } else { crate::node_rows::ClaimFor::Create };
+                rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated), of)
                     .await
                     .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
                 *claiming = Some(id.node_id.clone());
