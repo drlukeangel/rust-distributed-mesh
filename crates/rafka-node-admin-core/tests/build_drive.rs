@@ -809,7 +809,7 @@ impl Gate for SeatMoves {
     async fn fence_set(&self) {
         self.inner.fence_set().await
     }
-    async fn move_seats(&self, m: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, _: u32, operation: &str) -> Result<(), String> {
+    async fn move_seats(&self, m: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, _: u32, operation: &str) -> Result<(), rafka_node_admin_core::build_drive::SeatMoveEnd> {
         self.moved.lock().unwrap().push((m.holder.name.to_string(), m.mesh_seat, m.fabric_seat, operation.to_string()));
         for n in self.topology.write().await.nodes.iter_mut() {
             n.is_fabric_primary = n.name.to_string() == "mesh2.admin.1";
@@ -1515,7 +1515,7 @@ impl Gate for HolderUpdate {
     async fn fence_set(&self) {
         self.inner.fence_set().await
     }
-    async fn move_seats(&self, _: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, attempt: u32, _: &str) -> Result<(), String> {
+    async fn move_seats(&self, _: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, attempt: u32, _: &str) -> Result<(), rafka_node_admin_core::build_drive::SeatMoveEnd> {
         for n in self.topology.write().await.nodes.iter_mut() {
             let successor = n.name.to_string() == "mesh1.admin.2";
             (n.is_primary, n.is_fabric_primary) = (successor, successor);
@@ -1632,9 +1632,9 @@ impl Gate for RefusedUpdate {
     async fn fence_set(&self) {
         self.inner.fence_set().await
     }
-    async fn move_seats(&self, _: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, _: u32, _: &str) -> Result<(), String> {
+    async fn move_seats(&self, _: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, _: u32, _: &str) -> Result<(), rafka_node_admin_core::build_drive::SeatMoveEnd> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Err(format!("rejected-no-successor: RejectedNoSuccessor {{ reason: {NO_SECONDARY:?} }}"))
+        Err(rafka_node_admin_core::build_drive::SeatMoveEnd::Refused(format!("rejected-no-successor: RejectedNoSuccessor {{ reason: {NO_SECONDARY:?} }}")))
     }
 }
 

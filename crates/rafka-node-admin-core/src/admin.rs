@@ -2323,12 +2323,18 @@ impl crate::build_drive::Gate for SeatGate {
     /// mesh-primary); the fabric-primary's own seats it moves itself, having nothing above it, both in
     /// ONE row when it holds both (Q1: "the one row of C1 commits both seats to NA2 at their next
     /// epochs").
-    async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<(), String> {
+    async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<(), crate::build_drive::SeatMoveEnd> {
+        use crate::build_drive::SeatMoveEnd;
         use crate::election::Moving;
         use crate::fabric_handover::update_operation;
         use rafka_mesh_entity::Seat;
+        use rafka_node_rpc_contract::handover::NodePrimaryUpdateReply as Reply;
         let door = &self.handover;
-        let refused = |r: rafka_node_rpc_contract::handover::NodePrimaryUpdateReply| format!("{}: {r:?}", r.name());
+        // An update left incomplete after its row, or every refusal before it (C1 failure contract).
+        let ended = |r: Reply| match r {
+            Reply::Incomplete { .. } => SeatMoveEnd::Incomplete(format!("{}: {r:?}", r.name())),
+            other => SeatMoveEnd::Refused(format!("{}: {other:?}", other.name())),
+        };
         if m.holder.node_id != door.node_id {
             if m.mesh_seat {
                 let update = update_operation(Seat::MeshPrimary, build_id.as_str(), operation);
@@ -2346,7 +2352,7 @@ impl crate::build_drive::Gate for SeatGate {
             (false, false) => return Ok(()),
         };
         let update = update_operation(seat, build_id.as_str(), operation);
-        door.update_primary(moving, None, build_id.as_str(), attempt, &update).await.map_err(refused)?;
+        door.update_primary(moving, None, build_id.as_str(), attempt, &update).await.map_err(ended)?;
         Ok(())
     }
 
