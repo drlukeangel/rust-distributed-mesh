@@ -6549,7 +6549,7 @@ async fn soak_run(cell: &str, story: Story) {
     let cfg = SoakConfig::roles(seed, secs, per_mesh, story.profile, can_cut, rafka_mesh_transport::membership::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval(), tickle_round());
     let (floor, backbone) = (cfg.floor, cfg.backbone);
     eprintln!("SOAK {} cell={cell} seed={seed} secs={secs} profile={:?} provider={} network_faults={can_cut}", story.id, story.profile, provider());
-    let driver = SoakDriver::new(estate, cfg).await;
+    let driver = SoakDriver::new(estate, cfg, crate::build_log::build_read).await;
     let born_view = driver.estate.nodes().await;
     let born_at_s = t0.elapsed().as_secs();
     let progress = driver.progress();

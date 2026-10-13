@@ -101,3 +101,9 @@ pub async fn attempt_complete(carrier: &BuildCarrier, id: &str, attempt: u64, wi
     .await
     .unwrap_or_else(|end| panic!("{end}"))
 }
+
+/// [`build_value`] as the soak driver reads a Build (`rafka_test_scenario::soak::BuildRead`): the Build as the
+/// Build log of the admin the estate asks holds it, as the JSON the projection serializes to.
+pub fn build_read<'a>(estate: &'a rafka_test_scenario::estate::Estate, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + 'a>> {
+    Box::pin(async move { build_value(&estate.carrier().await, id).await })
+}
