@@ -5174,10 +5174,10 @@ async fn control_run(cell: &str, shape: Shape) {
     let healed_at = now_ns();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
     st = a.stable(&mut f, "C14: healed", &both(2), &mut inv).await;
-    let reborn = st.nodes.iter().find(|n| n["name"] == restart_target.as_str()).cloned().unwrap();
-    wait_for("the victim holds every member ready, the restarted broker under its new incarnation", Duration::from_secs(60), || async {
+    let restarted = st.nodes.iter().find(|n| n["name"] == restart_target.as_str()).cloned().unwrap();
+    wait_for("the victim holds every member ready, the restarted broker under the incarnation it kept", Duration::from_secs(60), || async {
         let v = f.estate.node_values_at(&vname).await;
-        (holds_all_ready(&v, &everyone) && v.iter().any(|n| n["name"] == restart_target.as_str() && n["incarnation_id"] == reborn["incarnation_id"])).then_some(())
+        (holds_all_ready(&v, &everyone) && v.iter().any(|n| n["name"] == restart_target.as_str() && n["incarnation_id"] == restarted["incarnation_id"])).then_some(())
     })
     .await;
     // And once converged a quiet fabric is quiet again.
@@ -5563,9 +5563,9 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
     );
 
     // The same door serves its own side: a near gateway is restarted (the next attempt of the formation's Build,
-    // which the near mesh's primary executes) and comes back under the same NodeId. The old runtime's exit is
-    // visible on the shared host to the far side's provider as well; the far side holds the unheard near mesh
-    // as a mesh (R-D1), so its Build, its view of the gateway and its node count stay as they were.
+    // which the near mesh's primary executes) and comes back as the same birth, its NodeId and incarnation kept
+    // (node-restart.md). The far side holds the unheard near mesh as a mesh (R-D1), so its Build, its view of
+    // the gateway and its node count stay as they were.
     let victim = format!("{near_mesh}.gateway.1");
     let before = at(&st, &victim).clone();
     let far_attempt0 = build_at(&f.estate, &s(&far_primary["name"]), &formation).await.map(|b| b["attempt"].as_u64().unwrap_or(0)).expect("the far side's writer answers for the formation Build");
@@ -5574,12 +5574,12 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
     let want = a.attempts[&restart];
     let born = wait_for(&format!("{victim} restarted on the near side under the cut"), Duration::from_secs(120), || async {
         let v = f.estate.node_values_at(&st.fp_name()).await;
-        let n = v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready-for-traffic" && n["incarnation_id"] != before["incarnation_id"]).cloned()?;
+        let n = v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"]).cloned()?;
         let b = build_attempt(&f.estate, &st, &restart).await;
         (b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= want).then_some(n)
     })
     .await;
-    assert_eq!(born["node_id"], before["node_id"], "{victim}: a restart keeps the logical node");
+    assert_eq!((&born["node_id"], &born["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{victim}: a restart keeps the logical node and its incarnation");
     let far_fp_name = s(&far_primary["name"]);
     let end = Instant::now() + window + Duration::from_secs(5);
     while Instant::now() < end {
@@ -5597,10 +5597,10 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
             assert_eq!((s(&held["node_id"]), s(&held["incarnation_id"])), incarnations_before[&victim], "{name}: the far side still holds the birth it last heard of {victim}");
         }
     }
-    events.push(json!({"event": "near-restart-under-cut", "node": victim, "node_id": before["node_id"], "old_incarnation_id": before["incarnation_id"], "new_incarnation_id": born["incarnation_id"], "build_id": restart, "attempt": want, "far_attempt": far_attempt0}));
+    events.push(json!({"event": "near-restart-under-cut", "node": victim, "node_id": before["node_id"], "incarnation_id": before["incarnation_id"], "build_id": restart, "attempt": want, "far_attempt": far_attempt0}));
 
-    // C10, the cut is dropped: every admin holds every member ready, the restarted gateway under its NodeId and
-    // its new incarnation, one fabric-primary, and the Build every admin names is the formation's.
+    // C10, the cut is dropped: every admin holds every member ready, the restarted gateway under the NodeId and
+    // incarnation it kept, one fabric-primary, and the Build every admin names is the formation's.
     drop(cut);
     let healed_at = now_ns();
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
@@ -5618,8 +5618,8 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
         .await;
         builds_after.push(seen);
     }
-    for n in st2.nodes.iter().filter(|n| s(&n["name"]) != victim) {
-        assert_eq!((s(&n["node_id"]), s(&n["incarnation_id"])), incarnations_before[&s(&n["name"])], "{}: the same birth after the heal (nothing else was restarted or replaced)", n["name"]);
+    for n in &st2.nodes {
+        assert_eq!((s(&n["node_id"]), s(&n["incarnation_id"])), incarnations_before[&s(&n["name"])], "{}: the same birth after the heal (the restart kept its birth; nothing was replaced)", n["name"]);
     }
     events.push(json!({"event": "healed", "healed_at_ns": healed_at, "builds_after": builds_after}));
     a.events.extend(events.iter().cloned());
@@ -5636,7 +5636,7 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
         let far_launched: Vec<String> = named(spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().filter(|sp| s(&sp["attributes"]["node"]).starts_with(&fence_prefix) && start_ns(sp) >= marks.0).map(|sp| format!("{} {}", sp["attributes"]["node"], sp["attributes"]["pipeline"])).collect();
         assert!(far_launched.is_empty(), "no far-side node was launched or retired through cut and heal: {far_launched:?}");
         let drift = named(spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| start_ns(sp) >= marks.0).count();
-        assert_eq!(drift, 0, "silence across the cut and the restart's exit proved nothing to act on: no proven-drift attempt");
+        assert_eq!(drift, 0, "silence across the cut and the restart proved nothing to act on: no proven-drift attempt");
         let deleted = named(spans, "rdm.node_admin.node.delete.via-node-deleted").into_iter().filter(|sp| start_ns(sp) >= marks.0).count();
         assert_eq!(deleted, 0, "no node was deleted through cut and heal");
         let created = named(spans, "rdm.node_admin.node.create.via-build").into_iter().filter(|sp| start_ns(sp) >= marks.0).count();
@@ -5920,12 +5920,12 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
             let want = a.attempts[&build];
             let born = wait_for(&format!("{victim} restarted under the cut"), Duration::from_secs(120), || async {
                 let v = f.estate.node_values_at(&st.fp_name()).await;
-                let n = v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready-for-traffic" && n["incarnation_id"] != victim_inc.as_str()).cloned()?;
+                let n = v.iter().find(|n| n["name"] == victim.as_str() && n["status"] == "ready-for-traffic" && n["node_id"] == victim_id.as_str() && n["incarnation_id"] == victim_inc.as_str()).cloned()?;
                 let b = build_attempt(&f.estate, &st, &build).await;
                 (b["state"] == "complete" && b["attempt"].as_u64().unwrap_or(0) >= want).then_some(n)
             })
             .await;
-            assert_eq!(born["node_id"], before["node_id"], "{victim}: a restart keeps the logical node");
+            assert_eq!((&born["node_id"], &born["incarnation_id"]), (&before["node_id"], &before["incarnation_id"]), "{victim}: a restart keeps the logical node and its incarnation (node-restart.md)");
             near_builds = want;
         }
         NearFault::HardKill => {
@@ -5964,7 +5964,7 @@ async fn cut_near_fault_run(cell: &str, shape: Shape, fault: NearFault) {
     let st2 = a.stable(&mut f, "healed", &both(2), &mut inv).await;
     let now = at(&st2, &victim).clone();
     match fault {
-        NearFault::Restart => assert_eq!((s(&now["node_id"]), now["status"].as_str().map(str::to_string)), (victim_id.clone(), Some("ready-for-traffic".into())), "{victim}: the restarted birth is the same NodeId and ready after the heal"),
+        NearFault::Restart => assert_eq!((s(&now["node_id"]), s(&now["incarnation_id"]), now["status"].as_str().map(str::to_string)), (victim_id.clone(), victim_inc.clone(), Some("ready-for-traffic".into())), "{victim}: the restarted birth is the same NodeId and incarnation, ready after the heal"),
         NearFault::HardKill => assert_ne!(s(&now["node_id"]), victim_id, "{victim}: the replacement stands after the heal"),
     }
     let mut after_heal = Vec::new();
@@ -6537,9 +6537,9 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     let build = a.write(&mut f, &st, "C12 cutback owed: restart of the carrier", Write::Restart(car.to_string())).await;
     assert_eq!(build, formation, "a restart opens the next attempt of the formation's Build");
     let attempt_c = a.attempts[&build];
-    let reborn = wait_for(&format!("{car} reborn and the restart complete"), Duration::from_secs(120), || async {
+    let back = wait_for(&format!("{car} ready again as its birth and the restart complete"), Duration::from_secs(120), || async {
         let v = f.estate.node_values_at(&st.fp_name()).await;
-        let n = v.iter().find(|n| n["name"] == car.as_str() && n["status"] == "ready-for-traffic" && n["incarnation_id"] != carrier_inc0.as_str()).cloned()?;
+        let n = v.iter().find(|n| n["name"] == car.as_str() && n["status"] == "ready-for-traffic" && n["incarnation_id"] == carrier_inc0.as_str()).cloned()?;
         let b = build_attempt(&f.estate, &st, &formation).await;
         (b["state"] == "complete" && b["attempt"].as_u64() == Some(attempt_c)).then_some(n)
     })
@@ -6547,7 +6547,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     let calls = stream.await.expect("the call stream ended");
     let t_restart_done = now_ns();
-    assert_eq!(reborn["node_id"], cn["node_id"], "a restart keeps the logical node");
+    assert_eq!((&back["node_id"], &back["incarnation_id"]), (&cn["node_id"], &cn["incarnation_id"]), "a restart keeps the logical node and its incarnation (node-restart.md)");
     let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
     for c in &calls {
         assert!(c["error"].is_null(), "a probe printed no JSON line: {c}");
@@ -6572,7 +6572,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
     assert_eq!(rows_c.len(), rows_c0 + 1, "the Proxy retired exactly once: {rows_c:?}");
     let reason = s(&rows_c.last().unwrap()["reason"]);
     assert!(matches!(reason.as_str(), "direct-restored" | "carrier-incarnation-superseded" | "carrier-edge-lost"), "a structural reason: {reason}");
-    let st2 = a.stable(&mut f, "C12: carrier reborn", &both(2), &mut inv).await;
+    let st2 = a.stable(&mut f, "C12: carrier restarted", &both(2), &mut inv).await;
     let dn2 = st2.nodes.iter().find(|n| n["name"] == dst.as_str()).cloned().unwrap();
     assert_eq!(dn2["incarnation_id"], dn["incarnation_id"], "the destination is the birth it was");
     let d = dial(&f, &dst, &src);
