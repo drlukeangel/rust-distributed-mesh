@@ -155,11 +155,26 @@ impl ControlPlane {
     /// fabric before ready-for-traffic"; R-PB1, R-PC1): `workflow` moves a seat or writes a caller's
     /// row, so it is refused `fabric-not-ready` until the fabric has first reached ready-for-traffic,
     /// naming the workflow and the fabric's status. It runs before anything is read, claimed or
-    /// written: a refused workflow opens no attempt and accepts no Build.
+    /// written: a refused workflow opens no attempt and accepts no Build. Decided on the durable fact
+    /// (states.md): what this admin already knows, else a point read of the fabric's ready-for-traffic
+    /// row among its mesh's status rows on the store root, which the fabric state it hears by gossip
+    /// can lag (an outside successor of the fabric seat). A read that fails is refused by name.
     async fn admit_once_ready(&self, route: &'static str, workflow: String, outer: &tracing::Span) -> Result<(), Refusal> {
-        let status = self.topology.read().await.fabric.status;
-        if self.first_ready.reached(status) {
-            return Ok(());
+        let (status, fabric_id) = {
+            let t = self.topology.read().await;
+            (t.fabric.status, t.fabric.id.clone())
+        };
+        match self.first_ready.reached_on_root(&*self.ready_rows, &fabric_id, status).await {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(e) => {
+                let detail = format!("{}: {workflow} cannot be admitted: whether fabric {fabric_id} first reached ready-for-traffic could not be read from the status rows of mesh {} on the store root (it is {}): {e}", self.me, self.me.mesh, status.name());
+                outer.in_scope(|| {
+                    tracing::info_span!("rdm.node_admin.build.reject.via-fabric-ready-unreadable", route, workflow = %workflow, status = status.name(), detail = %detail)
+                        .in_scope(|| tracing::info!("build refused: the ready-for-traffic row could not be read"))
+                });
+                return Err(Refusal::Unavailable(detail));
+            }
         }
         let reject = BuildReject::FabricNotReady { workflow: workflow.clone(), status: status.name().to_string() };
         outer.in_scope(|| {
