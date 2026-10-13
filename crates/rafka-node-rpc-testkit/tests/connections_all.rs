@@ -212,10 +212,11 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
 /// `All` answers holding nothing, the node's data-plane call to its admin ends `NotSent`
 /// `AdmissionBlocked` naming the node, before any dial: one
 /// `rdm.node_rpc.connection.reject.via-admission-block` span, `at = dial`, names the destination. The log
-/// holds nothing, and `ApplyNodeName` answers `Applied`. The node is still connections-deleted after the
-/// apply, so a further data-plane call is refused the same way. What must NOT happen: the call answered
-/// on a new connection, a Direct entry written after `All`, `BusyHoldingConnections`, or the block
-/// cutting the Node RPC pool (`rdm.node_rpc.connection.delete.via-hard-cut`).
+/// holds nothing, and `ApplyNodeName` answers `Applied`. The apply resolved, so the block lifts: the
+/// node's next data-plane call is answered, its entry naming the name it took as its source. What must
+/// NOT happen: the call before the apply answered on a new connection, a Direct entry written between
+/// `All` and the apply, `BusyHoldingConnections`, or the block cutting the Node RPC pool
+/// (`rdm.node_rpc.connection.delete.via-hard-cut`).
 #[test]
 fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
     let cap = crate::common::capture("a_connections_deleted_node_opens_no_new_connection_and_takes_its_name");
@@ -247,9 +248,12 @@ fn a_connections_deleted_node_opens_no_new_connection_and_takes_its_name() {
         assert_eq!(call_on(&admin, &target, &apply, None).await, StatusReply::Applied, "a node that opened nothing takes its name");
         assert_eq!(running.membership.held_name(&launch.name), taken, "the node holds the applied name");
 
-        // Still connections-deleted after the apply: refused the same way until a start.
-        admission_blocked(&ping_admin(&seams, &admin, &CallOptions::default()).await);
-        assert_eq!(fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block").len(), 2, "the further call is refused on its own span");
+        // The apply resolved: the block lifts, and the next connection is under the name taken.
+        let after = ping_admin(&seams, &admin, &CallOptions::default()).await;
+        assert!(matches!(after, RpcOutcome::Reply(_)), "once the apply resolved the node opens connections again: {after:?}");
+        let routes = seams.connections.held_routes().await;
+        assert_eq!(routes.iter().map(|r| (r.source.name.clone(), r.destination.name.to_string())).collect::<Vec<_>>(), vec![(taken.clone(), "mesh1.admin.1".to_string())], "the next connection names the name the node took: {routes:?}");
+        assert_eq!(fields_of(&spans, "rdm.node_rpc.connection.reject.via-admission-block").len(), 1, "nothing is refused after the apply");
         assert!(fields_of(&spans, "rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "the block cuts no Node RPC pool");
         let _ = std::fs::remove_dir_all(&dir);
     })

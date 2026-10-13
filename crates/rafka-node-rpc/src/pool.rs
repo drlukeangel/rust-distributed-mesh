@@ -101,6 +101,14 @@ impl std::fmt::Debug for Failpoint {
 pub(crate) enum DialError {
     /// The birth moved while the dial ran, or before it pooled.
     Superseded,
+    /// The source admits no new connection ([`Admission`]): refused before a dial (`at = "dial"`),
+    /// or the connection a dial opened was closed before it was pooled (`at = "pool"`).
+    Blocked {
+        /// Where the block refused it: `dial` or `pool`.
+        at: &'static str,
+        /// Why the source admits none.
+        why: String,
+    },
     /// This caller's own deadline passed first (the dial may run on for others).
     Deadline,
     Failed(String),
@@ -136,6 +144,29 @@ pub(crate) struct DialSpec {
     pub failpoint: Option<Arc<Failpoint>>,
     /// Told once, when the dial's connection enters the pool, whoever is or is not waiting for it.
     pub opened: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The client's admission block: read before a dial starts or is joined, and again before the
+    /// connection it opens is pooled.
+    pub admission: Admission,
+}
+
+/// Whether a client opens new connections: `None` admits, `Some(why)` refuses every new one,
+/// naming why (`NodeRpcClient::block_new_connections`). Shared by the client and its dials.
+#[derive(Clone, Default)]
+pub(crate) struct Admission(Arc<std::sync::RwLock<Option<String>>>);
+
+impl Admission {
+    pub(crate) fn block(&self, why: String) {
+        *self.0.write().unwrap() = Some(why);
+    }
+
+    pub(crate) fn lift(&self) {
+        *self.0.write().unwrap() = None;
+    }
+
+    /// Why no new connection opens now, if the block is set.
+    pub(crate) fn blocked(&self) -> Option<String> {
+        self.0.read().unwrap().clone()
+    }
 }
 
 fn evict_span(_reason: &'static str, key: &PoolKey, outcome: &str, elapsed_ms: u128) {
@@ -259,6 +290,11 @@ impl Pool {
         if let Some(c) = self.pooled(key) {
             return Ok((c, true));
         }
+        // No new connection while the source admits none: neither a dial of its own nor one
+        // already running for the key that this call would wait on.
+        if let Some(why) = spec.admission.blocked() {
+            return Err(DialError::Blocked { at: "dial", why });
+        }
         let mut rx = {
             let mut dials = self.inner.dials.lock().unwrap();
             match dials.get(key) {
@@ -364,6 +400,12 @@ impl Pool {
         if let Some(fp) = &spec.failpoint {
             fp.reached.notify_one();
             fp.release.notified().await;
+        }
+        // A dial that began before the source blocked admission opens no connection after it:
+        // the connection is closed, never pooled, and no Direct fact is written for it.
+        if let Some(why) = spec.admission.blocked() {
+            conn.close(0u32.into(), b"admission blocked");
+            return Err(DialError::Blocked { at: "pool", why });
         }
         // A connection to a target the resolver no longer names is evidence
         // about nothing current: it is never pooled.

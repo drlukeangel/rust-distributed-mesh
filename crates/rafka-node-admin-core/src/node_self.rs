@@ -343,10 +343,6 @@ impl NodeSelf {
     /// them, so a birth whose connections are deleted is still heard on gossip and still answers calls.
     pub async fn delete_connections(&self, scope: &ConnectionScope) -> Deleted {
         let writer = self.connections.lock().unwrap().clone();
-        let open = match &writer {
-            Some(w) => w.held_routes().await,
-            None => Vec::new(),
-        };
         // `All` is graceful node-wide closure (node-connections-delete.md step 3): admission of new
         // application work is blocked, and the eligible work in flight (every dispatched handler but
         // this call's own) is let finish, bounded by the birth's `connections_delete_deadline`.
@@ -357,9 +353,20 @@ impl NodeSelf {
                 if let Some(retire) = &self.retire {
                     retire.cancel();
                 }
-                Some(self.await_in_flight().await)
+                let waited = self.await_in_flight().await;
+                // Every connection open once admitted work has finished is closed, the ones that
+                // work opened while `All` waited included (step 3.2: "they belong to the same
+                // closure"). From here the birth opens no new connection until it starts (proposal
+                // node-properties-own-commands.md §2.1, §2.4): blocked before the open set is read,
+                // so none opens between the read and the close.
+                self.block_new_connections("node.connections.delete All closed this birth's connections");
+                Some(waited)
             }
             ConnectionScope::Connections(_) => None,
+        };
+        let open = match &writer {
+            Some(w) => w.held_routes().await,
+            None => Vec::new(),
         };
         let (routes, not_open) = match scope {
             ConnectionScope::All => (open, Vec::new()),
@@ -414,6 +421,37 @@ impl NodeSelf {
             InFlight::Deadline { last } => ConnectionsReceipt::Deadline { last_in_flight: last, closed: closed.clone(), held: held.clone() },
         });
         Deleted { closed, not_open, held, receipt }
+    }
+
+    /// The admission block (proposal node-properties-own-commands.md §2.1 Precondition: "No new
+    /// connection is admitted from the row write through `ApplyNodeName`, retries after an
+    /// interruption included"; §2.4: it "stays in force on the node until the apply resolves"):
+    /// the client this birth originates its logged connections on opens none from here until its
+    /// name apply resolves or it starts again. The Node RPC pool and gossip are not connections and
+    /// are untouched.
+    fn block_new_connections(&self, cause: &str) {
+        if let Some(data_plane) = self.data_plane.lock().unwrap().clone() {
+            data_plane.block_new_connections(format!("{} ({}): {cause}; it opens no new connection until its name apply resolves or it starts", self.held_name(), self.node_id));
+        }
+    }
+
+    /// The apply of its row's name resolved at this birth: `Applied`, or `AlreadyApplied` for the
+    /// name it holds (proposal node-properties-own-commands.md §2.4: the admission block "stays in
+    /// force on the node until the apply resolves"). The block lifts for a live birth; every
+    /// connection it opens from here is under the name it now holds. A stopped birth admits no
+    /// connection while stopped: its block lifts at its start.
+    pub fn name_apply_resolved(&self) {
+        if !self.is_parked() {
+            self.admit_new_connections();
+        }
+    }
+
+    /// Lift the admission block: a birth that starts, or whose name apply resolved, opens
+    /// connections again.
+    fn admit_new_connections(&self) {
+        if let Some(data_plane) = self.data_plane.lock().unwrap().clone() {
+            data_plane.admit_new_connections();
+        }
     }
 
     /// Block admission of new application work and wait for the eligible work in flight to reach
@@ -863,6 +901,7 @@ impl NodeSelf {
             };
             let _ = (self.set_status)(MemberStatus::Pending);
             self.server.resume();
+            self.admit_new_connections();
             // The admin that commanded the start answers its join, reached back over its own call:
             // the call's endpoint key and path (node-start.md step 2).
             let joined = match commanded {
@@ -884,6 +923,7 @@ impl NodeSelf {
                     // sparing every call commanding the start so each is answered.
                     let _ = (self.set_status)(MemberStatus::Leaving);
                     self.server.drain();
+                    self.block_new_connections("its start stopped at a step and it is stopped again");
                     let _ = session.park_tasks().await;
                     let calls = match &*self.cycle.lock().unwrap() {
                         Cycle::Starting { calls, .. } => calls.clone(),
