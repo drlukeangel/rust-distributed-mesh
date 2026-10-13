@@ -1298,23 +1298,26 @@ mod tests {
         assert_eq!(plan_for_build(&build(vec![step(5, "Complete", None), step(6, "StopNode", None)]), &o).operations, replace, "a Complete before the operation began is not its end");
     }
 
-    /// CONTRACT (node-recovery.md, Operation summary "Steps"; rdm-code-conformance.md §0.1 and §2
-    /// item 4): an admitted recovery is three operations of its exited birth, in the doc's order and
-    /// each by the delete and create workflows' own keys: node.delete of the exited instance
-    /// (`retire-node:<path>`), node.create at the same path.name (`create-node:<path>`), then
-    /// node.update copying the caller-owned meta (`update-node:<path>`). It is planned whatever the view
-    /// holds at the path (the exited birth unheard, nothing, or the new node live), never as a generic
-    /// create, and no other member is swept. Every operation is executed by the exited birth's
-    /// recoverer: a member's mesh-primary; a mesh-primary's own recovery by the admin its mesh seats in
-    /// its place, never the exited primary the view may still seat. What is left is read from the
-    /// Build's receipts: once the delete's `NodeDeleted` names the exited birth and its `Complete`
-    /// follows, the create and the update; once the create's `Complete` follows, the update; once the
-    /// update's, nothing. Another birth's `NodeDeleted`, a `NodeDeleted` with no `Complete`, and a
-    /// `Complete` from before the deletion (the path's original create) are no progress.
-    /// Must NOT happen: one fused `recover-node:<path>` operation, or the delete planned again once it
-    /// completed (a second `NodeDeleted` of the exited birth).
+    /// CONTRACT (node-recovery.md, Operation summary "Steps"; proposal node-properties-own-commands.md
+    /// §5 item 8, §8: "Replace's caller-meta copy step goes with recovery's"; rdm-code-conformance.md
+    /// §0.1 and §2 item 4): an admitted recovery is two operations of its exited birth, in the doc's
+    /// order and each by the delete and create workflows' own keys: node.delete of the exited instance
+    /// (`retire-node:<path>`), then node.create at the same path.name over the inherited data dir
+    /// (`create-node:<path>`), whose claim seeds config and tags from the Deleted row. There is no
+    /// third step: nothing is copied after the create. It is planned whatever the view holds at the
+    /// path (the exited birth unheard, nothing, or the new node live), never as a generic create, and
+    /// no other member is swept. Every operation is executed by the exited birth's recoverer: a
+    /// member's mesh-primary; a mesh-primary's own recovery by the admin its mesh seats in its place,
+    /// never the exited primary the view may still seat. What is left is read from the Build's
+    /// receipts: once the delete's `NodeDeleted` names the exited birth and its `Complete` follows,
+    /// the create; once the create's `Complete` follows, nothing. Another birth's `NodeDeleted`, a
+    /// `NodeDeleted` with no `Complete`, and a `Complete` from before the deletion (the path's original
+    /// create) are no progress.
+    /// Must NOT happen: one fused `recover-node:<path>` operation, a node.update (`update-node:<path>`)
+    /// planned after the create, or the delete planned again once it completed (a second
+    /// `NodeDeleted` of the exited birth).
     #[test]
-    fn a_recovery_plans_node_delete_then_node_create_then_node_update_of_its_exited_birth() {
+    fn a_recovery_plans_node_delete_then_node_create_of_its_exited_birth_and_nothing_after() {
         use crate::build_state::{AttemptReason, BuildProjection, BuildState, BuildStepReceipt, StepOutcome};
         let cur = t(&[("mesh1", 2, 3)]);
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
@@ -1355,9 +1358,9 @@ mod tests {
             lanes: Default::default(),
         };
         let keys = |steps: Vec<BuildStepReceipt>, o: &Topology| plan_for_build(&build(&path, &node_id, steps), o).operations.iter().map(|op| op.key()).collect::<Vec<_>>();
-        let all = vec![format!("retire-node:{path}"), format!("create-node:{path}"), format!("update-node:{path}")];
+        let all = vec![format!("retire-node:{path}"), format!("create-node:{path}")];
         // Whatever the view holds at the path, and with another member unheard and a third missing:
-        // the three operations, nothing else.
+        // the two operations, nothing else.
         for dead in [NodeStatus::PendingReconnect, NodeStatus::Dead] {
             let mut o = mn();
             o.nodes.iter_mut().find(|x| x.name == path).unwrap().status = dead;
@@ -1379,13 +1382,10 @@ mod tests {
         assert_eq!(keys(vec![deleted(4, &node_id, &from)], &gone), all, "NodeDeleted without the delete's Complete: the delete is owed");
         assert_eq!(keys(vec![complete(3, "retire-node"), deleted(4, &node_id, &from)], &gone), all, "an earlier attempt's Complete is not this deletion's");
         let created_left = all[1..].to_vec();
-        assert_eq!(keys(vec![original_create.clone(), deleted(4, &node_id, &from), complete(4, "retire-node")], &gone), created_left, "deleted: the create and the update are left, the path's original create is not this one");
+        assert_eq!(keys(vec![original_create.clone(), deleted(4, &node_id, &from), complete(4, "retire-node")], &gone), created_left, "deleted: the create is left, the path's original create is not this one");
         assert_eq!(keys(vec![deleted(4, &node_id, &from), complete(5, "retire-node")], &gone), created_left, "deleted on a rerun that reused the NodeDeleted");
-        let deleted_and_created = vec![original_create, deleted(4, &node_id, &from), complete(4, "retire-node"), complete(5, "create-node")];
-        assert_eq!(keys(deleted_and_created.clone(), &mn()), all[2..].to_vec(), "created: the update is left");
-        let mut recovered = deleted_and_created;
-        recovered.push(complete(5, "update-node"));
-        assert_eq!(keys(recovered.clone(), &mn()), Vec::<String>::new(), "recovered");
+        let recovered = vec![original_create, deleted(4, &node_id, &from), complete(4, "retire-node"), complete(5, "create-node")];
+        assert_eq!(keys(recovered.clone(), &mn()), Vec::<String>::new(), "created after the deletion: recovered, nothing is left");
         assert_eq!(keys(recovered, &gone), Vec::<String>::new(), "recovered, whatever the view holds");
         // A mesh-primary's own recovery: the view may still seat the exited primary; every operation
         // is executed by the admin its mesh seats in its place.
@@ -1393,7 +1393,7 @@ mod tests {
         let mut o = mn();
         o.nodes.iter_mut().find(|x| x.name == admin).unwrap().status = NodeStatus::PendingReconnect;
         let ops = plan_for_build(&build(&admin, &node_id, vec![]), &o).operations;
-        assert_eq!(ops.iter().map(|op| op.key()).collect::<Vec<_>>(), vec![format!("retire-node:{admin}"), format!("create-node:{admin}"), format!("update-node:{admin}")]);
+        assert_eq!(ops.iter().map(|op| op.key()).collect::<Vec<_>>(), vec![format!("retire-node:{admin}"), format!("create-node:{admin}")]);
         for op in &ops {
             assert_eq!(crate::executor::executor_for(op, &o).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.2"), "{} of the exited mesh-primary is executed by its mesh's next admin", op.key());
         }

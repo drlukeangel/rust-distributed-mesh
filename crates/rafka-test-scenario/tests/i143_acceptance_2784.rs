@@ -1077,7 +1077,7 @@ async fn container_fault_backend_pauses_and_kills_exact_container_recovers_curre
     let recovery_for = |path: &str| -> Value {
         reconciles
             .iter()
-            .find(|r| attr(r, "reason") == "recovery" && attr(r, "operations") == format!("retire-node:{path},create-node:{path},update-node:{path}"))
+            .find(|r| attr(r, "reason") == "recovery" && attr(r, "operations") == format!("retire-node:{path},create-node:{path}"))
             .cloned()
             .cloned()
             .unwrap_or_else(|| panic!("a recovery attempt of {build_id} recovering {path}: {reconciles:?}"))

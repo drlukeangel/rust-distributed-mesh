@@ -197,7 +197,7 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let spans = estate.spans();
     // Node recovery: an attempt of the accepted Build in the node's mesh's drift lane (reason
     // recovery, R-BI7: the mesh-primary runs it in its own mesh's lane, numbered from 1 there),
-    // deleting the exited birth and creating this path again, then updating it (node-recovery.md
+    // deleting the exited birth and creating this path again, and nothing after (node-recovery.md
     // steps). The reconcile is the one in the recovery submit's own trace: a lane's attempt number
     // also names an attempt of the fabric lane.
     let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
@@ -208,9 +208,9 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == build_id.as_str() && r["trace_id"] == recovery["trace_id"] && r["attributes"]["lane"] == "mesh1").collect();
     let replace = reconciles
         .iter()
-        .find(|r| r["attributes"]["reason"] == "recovery" && [format!("retire-node:{NODE}"), format!("create-node:{NODE}"), format!("update-node:{NODE}")].iter().all(|op| s(&r["attributes"]["operations"]).contains(op.as_str())))
+        .find(|r| r["attributes"]["reason"] == "recovery" && s(&r["attributes"]["operations"]) == format!("retire-node:{NODE},create-node:{NODE}"))
         .cloned()
-        .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting, creating and updating {NODE} in the recovery's trace: {reconciles:?}"));
+        .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting and creating {NODE}, and nothing else, in the recovery's trace: {reconciles:?}"));
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
     // The old birth's own serve span of the put is not evidence here: the cell SIGKILLs that process,
     // and spans still queued in its batch exporter die with it (rafka-mesh-telemetry init_telemetry:

@@ -565,9 +565,10 @@ impl Estate {
 /// CONTRACT (node-recovery.md, "Steps"; R-BI7): an exited ordinary member is its mesh-primary's to
 /// recover. The fabric-primary's drift opens nothing for it; the mesh-primary opens and claims the
 /// recovery at its own door as attempt 1 of its mesh's lane of the same Build (reason Recovery) and
-/// runs it itself, as three operations in order: node.delete of the exited instance
-/// (`retire-node:<path>`), node.create at the same path.name (`create-node:<path>`), node.update
-/// (`update-node:<path>`). The fabric-primary dispatches nothing and the fabric lane is untouched.
+/// runs it itself, as two operations in order: node.delete of the exited instance
+/// (`retire-node:<path>`), then node.create at the same path.name (`create-node:<path>`); no
+/// node.update follows (proposal node-properties-own-commands.md §5 item 8). The fabric-primary
+/// dispatches nothing and the fabric lane is untouched.
 /// Exactly the lost path has a new node (new node.id), `fence::fence` probes nothing and nothing else is
 /// created.
 #[tokio::test]
@@ -587,7 +588,7 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
     assert!(matches!(&repeat, Ok(rafka_node_admin_core::http::Recovery::AlreadyApplied(o)) if o.attempt == opened.attempt && o.mesh == opened.mesh), "{repeat:?}");
     assert_eq!((opened.build_id.clone(), opened.mesh.as_deref(), opened.attempt), (before.build_id.clone(), Some("mesh1"), 1), "the same Build, attempt 1 of mesh1's lane");
     e.recovered_by("mesh1.rpc.2", &mp).await;
-    assert_eq!(e.runner.recovering.lock().unwrap().clone(), ["retire-node:mesh1.rpc.2", "create-node:mesh1.rpc.2", "update-node:mesh1.rpc.2"].map(String::from).to_vec(), "node.delete, node.create, node.update, once each, in that order");
+    assert_eq!(e.runner.recovering.lock().unwrap().clone(), ["retire-node:mesh1.rpc.2", "create-node:mesh1.rpc.2"].map(String::from).to_vec(), "node.delete, then node.create, once each, and nothing after");
     assert_eq!(e.born(), vec!["mesh1.rpc.2".to_string()], "exactly the lost path is recovered");
     assert_eq!(e.fence_of("mesh1.rpc.2"), vec![], "the exit proof fences the old birth: no probe");
     assert_ne!(e.node_id("mesh1.rpc.2").await, old, "a new node, not the old one");
@@ -601,9 +602,9 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
 /// CONTRACT (node-recovery.md "Steps", "Failure and receipts"; rdm-code-conformance.md §2 item 4): a
 /// recovery whose node.create fails after its node.delete completed is not a recovery yet. A repeat
 /// submit for the exited birth is not answered AlreadyApplied (no node was created at the path): it
-/// opens the next attempt of the same Build, which runs only what is left, the create and then the
-/// update, never the delete again. Once the update completes, a repeat submit answers AlreadyApplied
-/// naming that attempt.
+/// opens the next attempt of the same Build, which runs only what is left, the create, never the
+/// delete again. Once the create completes, a repeat submit answers AlreadyApplied naming that
+/// attempt.
 /// Must NOT happen: a second node.delete of the exited birth (a second NodeDeleted), or the exited
 /// birth answered as recovered while nothing stands at its path.
 #[tokio::test]
@@ -628,7 +629,7 @@ async fn a_recovery_whose_create_failed_resumes_at_its_create_and_never_deletes_
     e.run_opened(&mp, resumed.clone()).await;
     assert_eq!(
         e.runner.recovering.lock().unwrap().clone(),
-        ["retire-node:mesh1.rpc.2", "create-node:mesh1.rpc.2", "create-node:mesh1.rpc.2", "update-node:mesh1.rpc.2"].map(String::from).to_vec(),
+        ["retire-node:mesh1.rpc.2", "create-node:mesh1.rpc.2", "create-node:mesh1.rpc.2"].map(String::from).to_vec(),
         "the delete once; the failed create, then only what was left"
     );
     use rafka_node_admin_core::build_state::BuildStateAdapter as _;

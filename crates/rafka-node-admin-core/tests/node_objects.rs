@@ -762,7 +762,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
 /// CONTRACT (node-recovery.md "Numbered end-to-end sequence" step 1: "A repeat submit answers
 /// AlreadyApplied or BuildInProgress, never a second recovery"): over op `0x20`, a recovery submit
 /// for an exited birth already recovered answers `Started { AlreadyApplied }` naming the Build and
-/// attempt whose recovery (its delete, create and update) recovered it, then the terminal `Complete` of that attempt
+/// attempt whose recovery (its delete, then its create) recovered it, then the terminal `Complete` of that attempt
 /// and nothing else. Must NOT happen: a drive made or started for the Build (a drive of an ended
 /// Build claims its next attempt), or an attempt opened.
 #[test]
@@ -789,16 +789,18 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
             Ok(rafka_node_admin_core::http::Recovery::Opened(o)) => o,
             other => panic!("the first recovery is admitted: {other:?}"),
         };
-        // The recovery's receipts as its three workflows write them: the delete's NodeDeleted names
-        // the exited birth, and each operation's Complete commits no output.
+        // The recovery's receipts as its two workflows write them, in the lane its door opened it in
+        // (R-BI7: the member's mesh's lane): the delete's NodeDeleted names the exited birth, and
+        // each operation's Complete commits no output; the create is the last.
         let deleted = rafka_mesh_entity::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("retire-node:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
-        for (operation, step, output) in [("retire-node", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("retire-node", "Complete", None), ("create-node", "Complete", None), ("update-node", "Complete", None)] {
+        for (operation, step, output) in [("retire-node", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("retire-node", "Complete", None), ("create-node", "Complete", None)] {
             rig.builds
-                .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
+                .append_step_receipt(&BuildStepReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
                 .await
                 .unwrap();
         }
-        settle(recovering.attempt).await;
+        // The recovery's verdict in its own lane: its door opened and claimed it there (R-BI7).
+        rig.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
         let opened = |facts: Vec<BuildFact>| facts.iter().filter(|f| matches!(f, BuildFact::Opened(_))).count();
         let opened_before = opened(rig.builds.facts().await.unwrap());
         let served = serve(door.clone()).await;

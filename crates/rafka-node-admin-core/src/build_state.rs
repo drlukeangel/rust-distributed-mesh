@@ -2261,19 +2261,22 @@ mod tests {
     }
 
     /// CONTRACT (node-recovery.md "A repeat submit answers AlreadyApplied ... never a second
-    /// recovery"; "Steps"): a recovery's exited birth is answered by the recovery index only once the
-    /// recovery's last operation (`update-node:<path>`) completed at or after the deletion's attempt:
-    /// its node.delete's `NodeDeleted` and `Complete` alone, or with the create's, are not a recovery.
-    /// The index is folded wherever a fact enters the log, so a restarted fabric-primary's journal
-    /// replay and absorbed facts, in any order, answer the point read as an own append does, and the
-    /// first recovering attempt stays the answer, naming the operation that deleted the birth.
-    /// Must NOT happen: a recovery answered before its create and update completed (a resubmit then
-    /// answers AlreadyApplied for a path no node was created at), or a restarted admin answering None
-    /// for a birth its journal holds recovered.
+    /// recovery"; "Steps"; proposal node-properties-own-commands.md §5 item 8: recovery is node.delete
+    /// then node.create, no step 6): a recovery's exited birth is answered by the recovery index once
+    /// the recovery's last operation, its node.create (`create-node:<path>`), completed at or after
+    /// the deletion's attempt: its node.delete's `NodeDeleted` and `Complete` alone are not a
+    /// recovery, nor is a create's `Complete` from before the deletion. The index is folded wherever a
+    /// fact enters the log, so a restarted fabric-primary's journal replay and absorbed facts, in any
+    /// order, answer the point read as an own append does, and the first recovering attempt stays the
+    /// answer, naming the operation that deleted the birth.
+    /// Must NOT happen: a recovery answered before its create completed (a resubmit then answers
+    /// AlreadyApplied for a path no node was created at), a recovery left unanswered after its create
+    /// completed (waiting on a node.update no plan runs), or a restarted admin answering None for a
+    /// birth its journal holds recovered.
     #[tokio::test]
     async fn the_recovery_index_is_folded_on_append_replay_and_absorb() {
         let (path, node_id, incarnation): (crate::model::PathName, _, _) = ("mesh1.rpc.1".parse().unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
-        // A recovery's receipts as its three operations write them: the delete's NodeDeleted names
+        // A recovery's receipts as its two operations write them: the delete's NodeDeleted names
         // the exited birth (its lifecycle operation), and each operation's Complete commits no output.
         let receipt = |build: &str, attempt: u32, operation: &str, step: &str| BuildStepReceipt {
             mesh: None,
@@ -2306,21 +2309,21 @@ mod tests {
             j.open_attempt(&opened("b1", 2)).await.unwrap();
             j.append_step_receipt(&receipt("b1", 2, "retire-node", "NodeDeleted")).await.unwrap();
             j.append_step_receipt(&receipt("b1", 2, "retire-node", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "deleted, the create and the update owed: not recovered");
-            j.append_step_receipt(&receipt("b1", 2, "create-node", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "created, the update owed: not recovered");
-            j.append_step_receipt(&receipt("b1", 3, "update-node", "Complete")).await.unwrap();
-            j.append_step_receipt(&receipt("b1", 4, "update-node", "Complete")).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "deleted, the create owed: not recovered");
+            j.append_step_receipt(&receipt("b1", 1, "create-node", "Complete")).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "the path's create from before the deletion: not recovered");
+            j.append_step_receipt(&receipt("b1", 3, "create-node", "Complete")).await.unwrap();
+            j.append_step_receipt(&receipt("b1", 4, "create-node", "Complete")).await.unwrap();
             assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "own append: the first attempt that completed the recovery");
         }
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
         assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "journal replay");
         assert_eq!(j.recovery_of(&"mesh1.rpc.2".parse().unwrap(), &node_id, &incarnation).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
-        // Gossip delivers in any order: the update's Complete heard first, the attempt's opening last.
-        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "update-node", "Complete"))]).await;
+        // Gossip delivers in any order: the create's Complete heard first, the attempt's opening last.
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "create-node", "Complete"))]).await;
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "a Complete alone names no birth");
-        m.absorb(&[BuildFact::Step(receipt("b1", 2, "retire-node", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "retire-node", "Complete")), BuildFact::Step(receipt("b1", 2, "create-node", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
+        m.absorb(&[BuildFact::Step(receipt("b1", 2, "retire-node", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "retire-node", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "absorbed, in any order");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2331,8 +2334,8 @@ mod tests {
     /// birth of `mesh` once the run its latest `Recover` open began ends with its last claimed attempt
     /// `Failed` and the birth is not done. A run in flight (opened and not claimed, or claimed with no
     /// verdict) is not owed; the next open of another birth bounds the run before it; a birth of
-    /// another mesh or another Build is not answered; once the birth's `update-node` completes it is
-    /// owed no longer. Folded wherever a fact enters the log, so a restarted admin's journal replay
+    /// another mesh or another Build is not answered; once the birth's `create-node`, the recovery's
+    /// last operation, completes it is owed no longer. Folded wherever a fact enters the log, so a restarted admin's journal replay
     /// and facts absorbed in reverse order answer as own appends do. Must NOT happen: an owed exit
     /// lost by a restart, a run in flight answered owed, or a done birth answered owed.
     #[tokio::test]
@@ -2407,7 +2410,6 @@ mod tests {
             BuildFact::Opened(open(&r, 5)),
             BuildFact::Claim(claim("b1", 5, "mesh2.admin.2")),
             BuildFact::Step(receipt(&r, 5, "create-node", "Complete")),
-            BuildFact::Step(receipt(&r, 5, "update-node", "Complete")),
             BuildFact::Attempt(attempt("b1", 5, AttemptOutcome::Converged)),
         ] {
             match &f {
@@ -2419,7 +2421,7 @@ mod tests {
             }
             facts.push(f);
         }
-        assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "created and updated: done, owed no longer");
+        assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "created: done, owed no longer");
         assert_eq!(j.exits_owed(&b1, "mesh1").await.unwrap(), vec![owed(&q, 3, "q's create")], "the other mesh's run is untouched");
         let m = MemoryBuildStateAdapter::new();
         facts.reverse();
