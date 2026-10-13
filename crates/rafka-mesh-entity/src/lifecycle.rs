@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 /// One lifecycle operation on one exact birth, as its events name it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LifecycleOp {
     /// The Build the operation belongs to.
     pub build_id: String,

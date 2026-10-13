@@ -215,10 +215,10 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
 fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> CommandAdmission {
     use rafka_node_admin_client::CallEnd;
     match r {
-        Ok(StatusReply::Applied) => CommandAdmission::Admitted,
-        Ok(StatusReply::AlreadyApplied) => CommandAdmission::AlreadyAdmitted,
+        Ok(StatusReply::Applied) => CommandAdmission::Admitted {},
+        Ok(StatusReply::AlreadyApplied) => CommandAdmission::AlreadyAdmitted {},
         Ok(StatusReply::Stopped { receipt }) => CommandAdmission::Stopped { receipt },
-        Ok(StatusReply::Started) => CommandAdmission::Started,
+        Ok(StatusReply::Started) => CommandAdmission::Started {},
         Ok(StatusReply::StartFailed { step, reason }) => CommandAdmission::StartFailed { step, reason },
         Ok(other) => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
         Err(CallEnd::NotSent { reason }) => CommandAdmission::NotSent { reason },
@@ -248,9 +248,9 @@ pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeComm
     let got = tokio::time::timeout(within, rx.wait_for(|done| *done)).await.is_ok_and(|r| r.is_ok());
     completion_span(node, cmd, ctx, got);
     if got {
-        Completion::Received
+        Completion::Received {}
     } else {
-        Completion::Deadline
+        Completion::Deadline {}
     }
 }
 

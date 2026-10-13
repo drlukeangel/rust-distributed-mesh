@@ -542,8 +542,11 @@ pub(crate) fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operati
 /// of this pipeline runs it: a delete retains the data dir and endpoint key (node-delete.md
 /// "Storage"). It stays the receipt's shape so the Build topic's positional layout
 /// ([`crate::wire`]) and a receipt an earlier build wrote still decode.
+///
+/// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
+/// even under `deny_unknown_fields`, and an empty field list refuses it. The JSON is the same.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "arm", rename_all = "kebab-case")]
+#[serde(tag = "arm", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum StorageDisposition {
     /// Released through the exact locator.
     Released {
@@ -551,20 +554,23 @@ pub enum StorageDisposition {
         locator: String,
     },
     /// `Persistent { on_retire: Preserve }`: left where it is.
-    Preserved,
+    Preserved {},
     /// The Build holds no meta for this path: left where it is, never destroyed on missing evidence.
-    PreservedNoMeta,
+    PreservedNoMeta {},
 }
 
 /// What one directed command (`node.connections.delete`, `stop-node`, `start-node`) established at
 /// the exact birth: its step's receipt. Admission is not completion.
+///
+/// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
+/// even under `deny_unknown_fields`, and an empty field list refuses it. The JSON is the same.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "arm", rename_all = "kebab-case")]
+#[serde(tag = "arm", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAdmission {
     /// The birth answered `Applied`.
-    Admitted,
+    Admitted {},
     /// The birth answered `AlreadyApplied`: the same operation was admitted before.
-    AlreadyAdmitted,
+    AlreadyAdmitted {},
     /// The birth answered `stop-node` with `Stopped`: its `node.connections.delete { All }`
     /// completed, it cut its transport and is stopped, and this is what that `All` established.
     Stopped {
@@ -577,7 +583,7 @@ pub enum CommandAdmission {
         receipt: rafka_node_rpc_contract::status::ConnectionsReceipt,
     },
     /// The birth answered `start-node` with `Started`: it rejoined as itself.
-    Started,
+    Started {},
     /// The birth answered `start-node` with `StartFailed`: it is parked still, and nothing after
     /// `step` ran.
     StartFailed {
@@ -606,16 +612,16 @@ pub enum CommandAdmission {
 impl CommandAdmission {
     /// Whether the birth holds the command.
     pub fn admitted(&self) -> bool {
-        matches!(self, Self::Admitted | Self::AlreadyAdmitted | Self::Stopped { .. } | Self::ConnectionsDeleted { .. } | Self::Started)
+        matches!(self, Self::Admitted {} | Self::AlreadyAdmitted {} | Self::Stopped { .. } | Self::ConnectionsDeleted { .. } | Self::Started {})
     }
     /// The arm's name.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::Admitted => "admitted",
-            Self::AlreadyAdmitted => "already-admitted",
+            Self::Admitted {} => "admitted",
+            Self::AlreadyAdmitted {} => "already-admitted",
             Self::Stopped { .. } => "stopped",
             Self::ConnectionsDeleted { .. } => "connections-deleted",
-            Self::Started => "started",
+            Self::Started {} => "started",
             Self::StartFailed { .. } => "start-failed",
             Self::NotSent { .. } => "not-sent",
             Self::Indeterminate { .. } => "indeterminate",
@@ -631,11 +637,11 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
     use rafka_node_rpc_contract::status::StatusReply;
     match out {
         RpcOutcome::Reply(r) => match r.value() {
-            StatusReply::Applied => CommandAdmission::Admitted,
-            StatusReply::AlreadyApplied => CommandAdmission::AlreadyAdmitted,
+            StatusReply::Applied => CommandAdmission::Admitted {},
+            StatusReply::AlreadyApplied => CommandAdmission::AlreadyAdmitted {},
             StatusReply::Stopped { receipt } => CommandAdmission::Stopped { receipt: receipt.clone() },
             StatusReply::ConnectionsDeleted { receipt: Some(receipt), .. } => CommandAdmission::ConnectionsDeleted { receipt: receipt.clone() },
-            StatusReply::Started => CommandAdmission::Started,
+            StatusReply::Started => CommandAdmission::Started {},
             StatusReply::StartFailed { step, reason } => CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone() },
             other => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
         },
@@ -650,15 +656,18 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
 /// of its `stop-node` call) reached this admin: the
 /// AwaitNodeDrained / AwaitNodeLeft step's receipt. A missing completion is indeterminate, never
 /// success; the provider's terminal proof is what ends a stop.
+///
+/// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
+/// even under `deny_unknown_fields`, and an empty field list refuses it. The JSON is the same.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "arm", rename_all = "kebab-case")]
+#[serde(tag = "arm", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Completion {
     /// The matching completion call was accepted.
-    Received,
+    Received {},
     /// The lifecycle drain deadline passed with no completion call.
-    Deadline,
+    Deadline {},
     /// This deployment's own runtime exited before any completion call came.
-    RuntimeExited,
+    RuntimeExited {},
     /// The command was not admitted, so no completion was awaited.
     NotAwaited {
         /// Why: the admission arm.
@@ -670,6 +679,7 @@ pub enum Completion {
 /// runtime exited. It binds the node, the birth and the immutable runtime (by fingerprint, never a
 /// pid or container id), so a recycled pid or a reusable container name cannot satisfy it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TerminalReceipt {
     /// The node's `path.name`.
     pub node: String,
@@ -685,6 +695,7 @@ pub struct TerminalReceipt {
 
 /// An exact runtime by fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeProof {
     /// The deployment that ran the birth.
     pub deployment_id: String,
@@ -1026,6 +1037,7 @@ impl Default for Timeouts {
 
 /// Where a birth reported it bound: the addresses its own digest names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Bound {
     /// The transport address the birth bound.
     pub transport: SocketAddr,
@@ -1075,6 +1087,7 @@ pub struct Created {
 
 /// What `AllocateIdentity` decides.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Identity {
     node_id: NodeId,
     incarnation: IncarnationId,
@@ -1906,7 +1919,7 @@ impl DeploymentPipeline<'_> {
                     }
                 };
                 match &admission {
-                    CommandAdmission::Started => {
+                    CommandAdmission::Started {} => {
                         // `start-node` answered `Started`: the birth rejoined. A start with no join to
                         // this executor admitted (its join door saw none) takes node.joined here.
                         if !joined || reported.borrow().is_none() {
@@ -1918,7 +1931,7 @@ impl DeploymentPipeline<'_> {
                     // of the same Build, after its executor was lost): its node.joined and node.started
                     // were taken when it ran; taking node.joined again would set the birth back to
                     // Pending with no node.started to follow. Readiness is read next, as for any start.
-                    CommandAdmission::AlreadyAdmitted => Ok(admission),
+                    CommandAdmission::AlreadyAdmitted {} => Ok(admission),
                     CommandAdmission::StartFailed { step, reason } => Err(format!("{}: node.start failed at {step}: {reason}", node.name)),
                     other => Err(format!("{}: start-node was not answered Started ({other:?}); the birth is not known to have rejoined", node.name)),
                 }
@@ -2169,16 +2182,16 @@ impl DeploymentPipeline<'_> {
                 let c = match &admission {
                     CommandAdmission::Stopped { .. } => {
                         crate::node_commands::completion_span(node, NodeCommand::Stop, &ctx, true);
-                        Completion::Received
+                        Completion::Received {}
                     }
                     _ => tokio::select! {
                         c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.completion) => c,
-                        () = self.until_exited(handle) => Completion::RuntimeExited,
+                        () = self.until_exited(handle) => Completion::RuntimeExited {},
                     },
                 };
                 // The stop's completion: a former seat holder's update is said first (R-NS2), then the
                 // mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.
-                if c == Completion::Received {
+                if matches!(c, Completion::Received {}) {
                     let op = self.command_op(&ctx, node)?;
                     self.lifecycle.stop_completed(&op).await;
                     if publish_stopped {
@@ -2186,7 +2199,7 @@ impl DeploymentPipeline<'_> {
                     }
                 }
                 match (proof != StopProof::Lenient, &c) {
-                    (true, c) if *c != Completion::Received => Err(format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name)),
+                    (true, c) if *c != Completion::Received {} => Err(format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name)),
                     _ => Ok(c),
                 }
             })

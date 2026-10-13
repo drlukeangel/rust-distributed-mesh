@@ -356,14 +356,14 @@ pub(crate) enum WireStorageDisposition {
 impl From<&CommandAdmission> for WireCommandAdmission {
     fn from(d: &CommandAdmission) -> Self {
         match d {
-            CommandAdmission::Admitted => Self::Admitted,
-            CommandAdmission::AlreadyAdmitted => Self::AlreadyAdmitted,
+            CommandAdmission::Admitted {} => Self::Admitted,
+            CommandAdmission::AlreadyAdmitted {} => Self::AlreadyAdmitted,
             CommandAdmission::NotSent { reason } => Self::NotSent { reason: reason.clone() },
             CommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason: reason.clone() },
             CommandAdmission::Refused { reply } => Self::Refused { reply: reply.clone() },
             CommandAdmission::Stopped { receipt } => Self::Stopped { receipt: receipt.clone() },
             CommandAdmission::ConnectionsDeleted { receipt } => Self::ConnectionsDeleted { receipt: receipt.clone() },
-            CommandAdmission::Started => Self::Started,
+            CommandAdmission::Started {} => Self::Started,
             CommandAdmission::StartFailed { step, reason } => Self::StartFailed { step: step.clone(), reason: reason.clone() },
         }
     }
@@ -371,14 +371,14 @@ impl From<&CommandAdmission> for WireCommandAdmission {
 impl From<WireCommandAdmission> for CommandAdmission {
     fn from(d: WireCommandAdmission) -> Self {
         match d {
-            WireCommandAdmission::Admitted => Self::Admitted,
-            WireCommandAdmission::AlreadyAdmitted => Self::AlreadyAdmitted,
+            WireCommandAdmission::Admitted => Self::Admitted {},
+            WireCommandAdmission::AlreadyAdmitted => Self::AlreadyAdmitted {},
             WireCommandAdmission::NotSent { reason } => Self::NotSent { reason },
             WireCommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason },
             WireCommandAdmission::Refused { reply } => Self::Refused { reply },
             WireCommandAdmission::Stopped { receipt } => Self::Stopped { receipt },
             WireCommandAdmission::ConnectionsDeleted { receipt } => Self::ConnectionsDeleted { receipt },
-            WireCommandAdmission::Started => Self::Started,
+            WireCommandAdmission::Started => Self::Started {},
             WireCommandAdmission::StartFailed { step, reason } => Self::StartFailed { step, reason },
         }
     }
@@ -386,9 +386,9 @@ impl From<WireCommandAdmission> for CommandAdmission {
 impl From<&Completion> for WireCompletion {
     fn from(a: &Completion) -> Self {
         match a {
-            Completion::Received => Self::Received,
-            Completion::Deadline => Self::Deadline,
-            Completion::RuntimeExited => Self::RuntimeExited,
+            Completion::Received {} => Self::Received,
+            Completion::Deadline {} => Self::Deadline,
+            Completion::RuntimeExited {} => Self::RuntimeExited,
             Completion::NotAwaited { admission } => Self::NotAwaited { admission: admission.clone() },
         }
     }
@@ -396,9 +396,9 @@ impl From<&Completion> for WireCompletion {
 impl From<WireCompletion> for Completion {
     fn from(a: WireCompletion) -> Self {
         match a {
-            WireCompletion::Received => Self::Received,
-            WireCompletion::Deadline => Self::Deadline,
-            WireCompletion::RuntimeExited => Self::RuntimeExited,
+            WireCompletion::Received => Self::Received {},
+            WireCompletion::Deadline => Self::Deadline {},
+            WireCompletion::RuntimeExited => Self::RuntimeExited {},
             WireCompletion::NotAwaited { admission } => Self::NotAwaited { admission },
         }
     }
@@ -407,8 +407,8 @@ impl From<&StorageDisposition> for WireStorageDisposition {
     fn from(s: &StorageDisposition) -> Self {
         match s {
             StorageDisposition::Released { locator } => Self::Released { locator: locator.clone() },
-            StorageDisposition::Preserved => Self::Preserved,
-            StorageDisposition::PreservedNoMeta => Self::PreservedNoMeta,
+            StorageDisposition::Preserved {} => Self::Preserved,
+            StorageDisposition::PreservedNoMeta {} => Self::PreservedNoMeta,
         }
     }
 }
@@ -416,8 +416,8 @@ impl From<WireStorageDisposition> for StorageDisposition {
     fn from(s: WireStorageDisposition) -> Self {
         match s {
             WireStorageDisposition::Released { locator } => Self::Released { locator },
-            WireStorageDisposition::Preserved => Self::Preserved,
-            WireStorageDisposition::PreservedNoMeta => Self::PreservedNoMeta,
+            WireStorageDisposition::Preserved => Self::Preserved {},
+            WireStorageDisposition::PreservedNoMeta => Self::PreservedNoMeta {},
         }
     }
 }

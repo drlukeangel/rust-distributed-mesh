@@ -172,8 +172,8 @@ fn retire_receipt_names_command_arm_fails_an_untagged_outcome() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rafka-node-admin-core/src/deployment/pipeline.rs",
-        "#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum CommandAdmission",
-        "#[serde(rename_all = \"kebab-case\")]\npub enum CommandAdmission",
+        "#[serde(tag = \"arm\", rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission",
+        "#[serde(rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission",
     );
     only(check(t.root()), Ratchet::RetireReceiptNamesCommandArm);
 }

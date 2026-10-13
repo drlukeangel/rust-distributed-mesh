@@ -55,11 +55,11 @@ impl NodeObserver for Answers {
     async fn send_command(&self, _: &Node, cmd: NodeCommand, _: &CommandContext) -> CommandAdmission {
         match cmd {
             NodeCommand::DeleteConnections => CommandAdmission::ConnectionsDeleted { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } },
-            _ => CommandAdmission::Admitted,
+            _ => CommandAdmission::Admitted {},
         }
     }
     async fn await_completion(&self, _: &Node, _: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
-        Completion::Received
+        Completion::Received {}
     }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
         None

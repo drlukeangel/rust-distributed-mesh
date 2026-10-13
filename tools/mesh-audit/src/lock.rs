@@ -544,7 +544,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, DRIFT_CELLS, &["fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced"], ratchet, &mut out);
         }
         Ratchet::RetireReceiptNamesCommandArm => {
-            require(root, PIPELINE, &["#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum CommandAdmission"], ratchet, &mut out);
+            require(root, PIPELINE, &["#[serde(tag = \"arm\", rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission"], ratchet, &mut out);
             require(root, RETIRE_CELLS, &["StopNode"], ratchet, &mut out);
         }
         Ratchet::ConnectionsDeletedIsNotRefusal => {

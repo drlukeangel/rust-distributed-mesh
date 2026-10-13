@@ -261,19 +261,19 @@ fn facts() -> Vec<BuildFact> {
     }
     for (command, completion) in [(RetireStep::StopNode, RetireStep::AwaitNodeLeft)] {
         for d in [
-            CommandAdmission::Admitted,
-            CommandAdmission::AlreadyAdmitted,
+            CommandAdmission::Admitted {},
+            CommandAdmission::AlreadyAdmitted {},
             CommandAdmission::NotSent { reason: "NoRoute".into() },
             CommandAdmission::Indeterminate { reason: "no reply".into() },
             CommandAdmission::Refused { reply: "StaleIncarnation".into() },
         ] {
             out.push(step(command.name(), Some(to_json(&d))));
         }
-        for c in [Completion::Received, Completion::Deadline, Completion::RuntimeExited, Completion::NotAwaited { admission: "NotSent".into() }] {
+        for c in [Completion::Received {}, Completion::Deadline {}, Completion::RuntimeExited {}, Completion::NotAwaited { admission: "NotSent".into() }] {
             out.push(step(completion.name(), Some(to_json(&c))));
         }
     }
-    for s in [StorageDisposition::Released { locator: "/data/x".into() }, StorageDisposition::Preserved, StorageDisposition::PreservedNoMeta] {
+    for s in [StorageDisposition::Released { locator: "/data/x".into() }, StorageDisposition::Preserved {}, StorageDisposition::PreservedNoMeta {}] {
         // A receipt an earlier build wrote: no step of this build runs it, and it still decodes.
         out.push(step(rafka_node_admin_core::wire::RELEASE_STORAGE_STEP, Some(to_json(&s))));
     }

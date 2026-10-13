@@ -63,6 +63,7 @@ pub fn manifest_reference(build_id: &str, attempt: u32, operation: &str, all_mem
 
 /// One accepted birth of the leaving mesh.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RosterBirth {
     /// The node's `path.name`.
     pub node: String,
@@ -103,6 +104,7 @@ impl RosterBirth {
 /// exited. `OtherMembersExited` and `MeshDeleted` cover every birth but the final primary (whose
 /// exact runtime is named, still running); `MeshLeft` covers every birth.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExitManifest {
     /// The mesh's minted id.
     pub mesh_id: String,
@@ -362,6 +364,7 @@ pub fn accepted_row(steps: &[BuildStepReceipt], operation: &str, step: &str) -> 
 /// amendment, what a later resume checks the final runtime against, as `AcceptedRoster` carries the
 /// admitted one's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RosterAmended {
     /// The final primary that was lost.
     pub predecessor: RosterBirth,

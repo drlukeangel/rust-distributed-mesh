@@ -77,7 +77,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         assert!(matches!(stopped, CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt::Established { .. } }), "StopNode: {stopped:?}");
         for step in [RetireStep::AwaitNodeLeft] {
             let completion: Completion = serde_json::from_value(output(step)).expect("a Completion");
-            assert_eq!(completion, Completion::Received, "{}", step.name());
+            assert_eq!(completion, Completion::Received {}, "{}", step.name());
         }
 
         // What each step did, from outside.

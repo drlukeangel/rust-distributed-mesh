@@ -719,6 +719,7 @@ impl NotAuthority {
 /// in-flight count it measured and the connections it closed. `Deadline` records the last observed
 /// count and the connections still open; it never claims zero.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ConnectionsReceipt {
     /// The eligible in-flight work reached zero and every open connection was closed.
     Established {

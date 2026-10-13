@@ -153,6 +153,7 @@ impl Found {
 /// A realised runtime, exactly: a pid only together with its start token, a
 /// container by its immutable id, each within its provider control domain.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeploymentHandle {
     /// The deployment the runtime belongs to.
     pub deployment_id: DeploymentId,

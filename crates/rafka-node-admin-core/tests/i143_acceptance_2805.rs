@@ -385,7 +385,7 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     assert!(matches!(indeterminate, CommandAdmission::Indeterminate { .. }), "{indeterminate:?}");
     // Deadline: the retire pipeline's AwaitNodeLeft over an admitted command that never completes.
     let deadline = deadline_arm().await;
-    assert_eq!(deadline, Completion::Deadline);
+    assert_eq!(deadline, Completion::Deadline {});
 
     let spans = capture.spans();
     let commands = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-command").count();
@@ -447,11 +447,11 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     #[async_trait::async_trait]
     impl NodeObserver for NeverDrained {
         async fn send_command(&self, _: &Node, _: rafka_node_admin_core::node_commands::NodeCommand, _: &rafka_node_admin_core::deployment::pipeline::CommandContext) -> rafka_node_admin_core::deployment::pipeline::CommandAdmission {
-            rafka_node_admin_core::deployment::pipeline::CommandAdmission::Admitted
+            rafka_node_admin_core::deployment::pipeline::CommandAdmission::Admitted {}
         }
         async fn await_completion(&self, _: &Node, _: rafka_node_admin_core::node_commands::NodeCommand, _: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> rafka_node_admin_core::deployment::pipeline::Completion {
             tokio::time::sleep(within).await;
-            rafka_node_admin_core::deployment::pipeline::Completion::Deadline
+            rafka_node_admin_core::deployment::pipeline::Completion::Deadline {}
         }
         async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
             None

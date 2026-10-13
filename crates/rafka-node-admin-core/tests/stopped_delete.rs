@@ -65,11 +65,11 @@ struct Recorded {
 impl NodeObserver for Recorded {
     async fn send_command(&self, node: &Node, cmd: NodeCommand, _: &CommandContext) -> CommandAdmission {
         self.sent.lock().unwrap().push(format!("{cmd:?} to {}", node.name));
-        CommandAdmission::Admitted
+        CommandAdmission::Admitted {}
     }
     async fn await_completion(&self, node: &Node, cmd: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
         self.sent.lock().unwrap().push(format!("await {cmd:?} from {}", node.name));
-        Completion::Received
+        Completion::Received {}
     }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
         None

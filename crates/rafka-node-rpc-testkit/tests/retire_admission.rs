@@ -238,7 +238,7 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
         assert!(matches!(admission, CommandAdmission::Stopped { .. }), "B answered StopNode left: {admission:?}");
         for step in ["AwaitNodeLeft"] {
             let completion: Completion = serde_json::from_value(output(step)).unwrap();
-            assert!(matches!(completion, Completion::Received), "B's {step} completion call reached the commanding side: {completion:?}");
+            assert!(matches!(completion, Completion::Received {}), "B's {step} completion call reached the commanding side: {completion:?}");
         }
     })
 }

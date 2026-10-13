@@ -73,19 +73,19 @@ impl NodeObserver for StopsThenStarts {
     async fn send_command(&self, node: &Node, cmd: NodeCommand, ctx: &CommandContext) -> CommandAdmission {
         self.sent.lock().unwrap().push(format!("{cmd:?} {} to {}", ctx.operation, node.name));
         match cmd {
-            NodeCommand::Start if self.start_already_applied => CommandAdmission::AlreadyAdmitted,
-            NodeCommand::Start => CommandAdmission::Started,
+            NodeCommand::Start if self.start_already_applied => CommandAdmission::AlreadyAdmitted {},
+            NodeCommand::Start => CommandAdmission::Started {},
             NodeCommand::Stop if self.refuses_stop => CommandAdmission::Refused { reply: "RejectedStaleIncarnation".into() },
             NodeCommand::Stop if self.answers_stopped => CommandAdmission::Stopped { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt::Established { in_flight: 0, closed: vec![] } },
-            _ => CommandAdmission::Admitted,
+            _ => CommandAdmission::Admitted {},
         }
     }
     async fn await_completion(&self, node: &Node, cmd: NodeCommand, ctx: &CommandContext, _: Duration) -> Completion {
         self.sent.lock().unwrap().push(format!("await {cmd:?} {} from {}", ctx.operation, node.name));
         if self.answers_stopped {
-            return Completion::Deadline;
+            return Completion::Deadline {};
         }
-        Completion::Received
+        Completion::Received {}
     }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
         None
@@ -498,13 +498,13 @@ impl NodeObserver for StartsWhole<'_> {
                 self.joins.report(&self.digest);
                 tokio::task::yield_now().await;
                 self.events.published.lock().unwrap().push(("node.started", ctx.operation.clone()));
-                CommandAdmission::Started
+                CommandAdmission::Started {}
             }
-            _ => CommandAdmission::Admitted,
+            _ => CommandAdmission::Admitted {},
         }
     }
     async fn await_completion(&self, _: &Node, _: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
-        Completion::Received
+        Completion::Received {}
     }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
         None

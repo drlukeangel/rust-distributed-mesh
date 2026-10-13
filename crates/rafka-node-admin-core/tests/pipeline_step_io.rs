@@ -47,10 +47,10 @@ struct NoBirth;
 #[async_trait::async_trait]
 impl NodeObserver for NoBirth {
     async fn send_command(&self, _: &Node, _: NodeCommand, _: &CommandContext) -> CommandAdmission {
-        CommandAdmission::Admitted
+        CommandAdmission::Admitted {}
     }
     async fn await_completion(&self, _: &Node, _: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
-        Completion::Received
+        Completion::Received {}
     }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
         None
