@@ -1815,4 +1815,68 @@ mod tests {
         complete.receipts.push(receipt(&last));
         assert_eq!(first_mismatch(&complete, &roster, &last, true), None);
     }
+    /// CONTRACT (mesh-delete.md "Failure and receipts"; node-rpc-envelope.md "Mesh delete command pair":
+    /// "A lost handoff or missing exact receipt leaves the workflow incomplete, never successful"): the
+    /// mesh-primary's MeshDeleted report for attempt 1 is lost. The owner's bounded wait ends attempt 1
+    /// incomplete, its receipts standing. The owner's next attempt re-admits the same mesh.delete, and the
+    /// mesh-primary replays the recorded report, naming the receipt recorded under attempt 1, with no
+    /// second run of the member workflows. The replay validates against attempt 2's open round from that
+    /// receipt and resolves it exactly once.
+    #[tokio::test]
+    async fn a_lost_mesh_deleted_report_is_replayed_to_the_next_attempt_and_resolves_it_exactly_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+        let runs = MeshDeleteRuns::default();
+        let first = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "mesh.delete:m".into() };
+        let next = MeshDeleteKey { attempt: 2, ..first.clone() };
+        let owner = owner();
+        let last = birth("mesh2.admin.1", "i3");
+        let proof = RuntimeProof { deployment_id: "d".into(), provider: "process".into(), control_domain_fingerprint: "f".into(), locator_kind: "process-pid-start".into(), locator_fingerprint: "l".into() };
+        let manifest = ExitManifest { mesh_id: first.mesh_id.to_string(), roster: vec![last.clone()], final_primary: last.clone(), final_runtime: Some(proof.clone()), receipts: vec![] };
+        let admitted = Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: proof, amendments: vec![] };
+
+        // The member workflows run once and record the manifest under attempt 1; the report the
+        // mesh-primary then calls up is lost: the cell delivers nothing to the owner.
+        assert_eq!(runs.admit(&first, &owner), MeshDeleteAdmission::Start);
+        let ran = AtomicUsize::new(0);
+        let end = run_admitted(&runs, &first.mesh_id, |_, _| {
+            ran.fetch_add(1, SeqCst);
+            let m = manifest.clone();
+            async move { Ok(m) }
+        })
+        .await;
+        assert!(matches!(end, MeshDeleteRunEnd::Exited { .. }), "the run records its manifest under attempt 1");
+
+        // The owner's wait for attempt 1's report is bounded: it ends the attempt incomplete.
+        let book = MeshDeleteBook::default();
+        let (_view, view_rx) = watch::channel(0u64);
+        let wait = book.open(first.clone(), admitted.clone());
+        let lost = await_mesh_deleted(&first, &last.node, wait, view_rx.clone(), || std::future::ready(None), std::time::Duration::from_millis(50)).await;
+        assert!(matches!(&lost, Err(crate::executor::RunEnd::Incomplete(r)) if r.contains("sent no valid mesh-deleted")), "a lost report ends attempt 1 incomplete: {lost:?}");
+
+        // The owner's next attempt re-admits the same mesh.delete: the recorded report is replayed,
+        // naming where its manifest was recorded, and the member workflows do not run again.
+        assert_eq!(runs.admit(&next, &owner), MeshDeleteAdmission::Resend { manifest: manifest.clone(), recorded: 1 }, "attempt 2's DeleteMesh replays the recorded report");
+        assert_eq!(ran.load(SeqCst), 1, "the member workflows ran once");
+
+        // The replay validates against attempt 2's open round from the receipt recorded under attempt 1 ...
+        let facts = vec![BuildFact::Step(BuildStepReceipt {
+            build_id: first.build_id.clone(),
+            attempt: 1,
+            operation: first.operation.clone(),
+            step: STEP_OTHER_MEMBERS_EXITED.into(),
+            outcome: StepOutcome::Complete,
+            output: Some(serde_json::to_value(&manifest).unwrap()),
+            executor: None,
+            mesh: None,
+        })];
+        let reference = manifest_reference(first.build_id.as_str(), 1, &first.operation, false);
+        assert!(matches!(handoff_verdict(&facts, &next, &admitted, &reference), HandoffVerdict::Accept(m) if m == manifest), "attempt 2's report is accepted from the manifest recorded under attempt 1");
+
+        // ... and resolves it exactly once.
+        let wait = book.open(next.clone(), admitted.clone());
+        assert!(book.resolve(&next, manifest.clone()), "the first replay resolves attempt 2");
+        assert!(!book.resolve(&next, manifest.clone()), "a second replay is AlreadyApplied");
+        let got = await_mesh_deleted(&next, &last.node, wait, view_rx, || std::future::ready(None), std::time::Duration::from_millis(50)).await;
+        assert_eq!(got.ok(), Some(manifest), "attempt 2 continues with the replayed manifest");
+    }
 }
