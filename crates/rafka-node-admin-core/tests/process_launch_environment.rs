@@ -13,18 +13,21 @@ use std::time::Duration;
 /// not set is absent; what the process needs from the host (`PATH`) is kept.
 #[tokio::test]
 async fn a_launched_process_sees_the_launch_contract_its_spec_names_and_never_its_launchers() {
-    if crate::own_process::delegated(module_path!(), "a_launched_process_sees_the_launch_contract_its_spec_names_and_never_its_launchers") {
-        return;
-    }
-    for (k, v) in [
+    // Its own process, the launcher, started with a launch contract of its own in its environment.
+    let launcher_env = [
         ("RDM_SUPERSEDES", "launcher-predecessor"),
         ("RDM_LAUNCHER", "mesh1.admin.1,x,y"),
         ("RDM_MESH_ID", "launcher-mesh"),
         ("RDM_NOT_YET_INVENTED", "future-launch-variable"),
         ("TRACEPARENT", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
         ("TRACESTATE", "launcher=1"),
-    ] {
-        std::env::set_var(k, v);
+    ]
+    .map(|(k, v)| (k, Some(std::ffi::OsStr::new(v))));
+    if crate::own_process::delegated_with_env(module_path!(), "a_launched_process_sees_the_launch_contract_its_spec_names_and_never_its_launchers", &launcher_env) {
+        return;
+    }
+    for (k, v) in launcher_env {
+        assert_eq!(std::env::var_os(k).as_deref(), v, "the launcher process holds {k} as the cell started it");
     }
     let dir = std::env::temp_dir().join(format!("rafka-launch-env-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

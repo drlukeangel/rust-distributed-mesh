@@ -46,6 +46,8 @@ opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { workspace = true }
 http-body-util = "0.1"
+# tests/main.rs: the binary's process environment is set once, in its ctor, before any thread exists.
+ctor = "0.2"
 
 [[test]]
 name = "main"

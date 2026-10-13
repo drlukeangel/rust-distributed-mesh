@@ -29,6 +29,14 @@ fn evidence_dir(cell: &str) -> PathBuf {
     }
 }
 
+/// Runs `cell` in its own process, started with the stretched rounds (the cadence is read once per
+/// process) and the cell's own evidence directory as `RDM_EVIDENCE_DIR`: `true` in the process that
+/// delegated, once the child passed; `false` in the child, which runs the cell.
+fn delegated(cell: &str) -> bool {
+    let (stretched, evidence) = (std::ffi::OsStr::new(STRETCHED_MS), evidence_dir(cell));
+    crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_GOSSIP_INTERVAL_MS", Some(stretched)), ("RDM_BACKBONE_INTERVAL_MS", Some(stretched)), ("RDM_EVIDENCE_DIR", Some(evidence.as_os_str()))])
+}
+
 fn day0_config(dir: &std::path::Path) -> AdminConfig {
     let dir = dir.display().to_string();
     AdminConfig::from_env(|k| match k {
@@ -68,15 +76,12 @@ fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
 #[test]
 fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
     let cell = "a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log";
-    if crate::own_process::delegated(module_path!(), cell) {
+    if delegated(cell) {
         return;
     }
     let evidence = evidence_dir(cell);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&evidence).unwrap();
-    std::env::set_var("RDM_GOSSIP_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_BACKBONE_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-3016");
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
     rt.block_on(async {
@@ -149,15 +154,12 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
 #[test]
 fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_on_its_complete() {
     let cell = "a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_on_its_complete";
-    if crate::own_process::delegated(module_path!(), cell) {
+    if delegated(cell) {
         return;
     }
     let evidence = evidence_dir(cell);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&evidence).unwrap();
-    std::env::set_var("RDM_GOSSIP_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_BACKBONE_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-3016");
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
     rt.block_on(async {
@@ -248,15 +250,12 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
 #[test]
 fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_arrives() {
     let cell = "a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_arrives";
-    if crate::own_process::delegated(module_path!(), cell) {
+    if delegated(cell) {
         return;
     }
     let evidence = evidence_dir(cell);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&evidence).unwrap();
-    std::env::set_var("RDM_GOSSIP_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_BACKBONE_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-3016");
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
     rt.block_on(async {

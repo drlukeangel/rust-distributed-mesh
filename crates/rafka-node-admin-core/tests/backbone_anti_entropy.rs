@@ -7,7 +7,8 @@
 //! for longer than that while it is live and serving fences its own mesh.
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`), its mesh's primary, at the
-//! gate's cadence (`tools/test-runner` CADENCE), in a process of its own. Its Build state is wrapped
+//! gate's cadence (`tools/test-runner` CADENCE, set by the binary's ctor in `tests/main.rs`), in a
+//! process of its own. Its Build state is wrapped
 //! (`Wiring::builds`) so the cell can make every read of the current Build (R-BI3, the read the
 //! admin's round makes each turn) take three backbone intervals, which is what a store read does
 //! while the disk is held by another writer. The observer is a peer mesh's place on the backbone.
@@ -28,8 +29,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that is immediate on a correct admin is given before the cell fails by name.
 const NEVER: Duration = Duration::from_secs(20);
 /// How long one read of the current Build takes while the store is held: three backbone intervals.
@@ -177,9 +176,6 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
     let cell = "a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_every_interval";
     if crate::own_process::delegated(module_path!(), cell) {
         return;
-    }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
     }
     let track = Rungs::configured().track;
     let cap = capture();

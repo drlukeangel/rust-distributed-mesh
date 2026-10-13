@@ -1176,13 +1176,14 @@ mod one_attempt_number {
     /// ops-naming-proposal.md "Two topology changes ... never run together: one Build is in flight".
     #[tokio::test]
     async fn a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing() {
-        if crate::own_process::delegated(module_path!(), "a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing") {
+        let cell = "a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing";
+        let dir = evidence_dir(cell);
+        // Its own process, started with its evidence directory as `RDM_EVIDENCE_DIR`.
+        if crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_EVIDENCE_DIR", Some(dir.as_os_str()))]) {
             return;
         }
-        let dir = evidence_dir("a_drift_attempt_checked_while_a_submitted_change_is_written_opens_nothing");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
         let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s35");
         let root = tracing::info_span!("rdm.test.build.admission.drift-versus-submit");
         use tracing::Instrument as _;

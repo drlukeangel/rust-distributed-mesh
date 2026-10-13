@@ -6,7 +6,9 @@
 //! declarer) from a stopped node.
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`) at the gate's cadence
-//! (`tools/test-runner` CADENCE), in a process of its own (the parking flag is process-wide).
+//! (`tools/test-runner` CADENCE, set by the binary's ctor in `tests/main.rs`: a digest heartbeat is
+//! never slower than 2 s, gossip.md §3.2, and the Day-0 admin's own Ready reaches its book on that
+//! heartbeat), in a process of its own (the parking flag is process-wide).
 
 use rafka_mesh_entity::NodeId;
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
@@ -16,9 +18,6 @@ use serde_json::{json, Value};
 use std::time::{Duration, UNIX_EPOCH};
 use tracing::Instrument;
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE): a digest heartbeat is never slower
-/// than 2 s (gossip.md §3.2), and the Day-0 admin's own Ready reaches its book on that heartbeat.
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that is immediate on a correct admin is given before the cell fails by name.
 const NEVER: Duration = Duration::from_secs(20);
 
@@ -104,9 +103,6 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
     let cell = "a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_running";
     if crate::own_process::delegated(module_path!(), cell) {
         return;
-    }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
     }
     let cap = capture();
     let stop_trace = cap.run(async {

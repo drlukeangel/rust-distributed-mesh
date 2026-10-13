@@ -11,6 +11,21 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 
+/// The binary's process environment, set once, here, before `main` and before any thread exists
+/// (one binary is one process): a cell never sets or removes a variable. The gate's cadence
+/// (`tools/test-runner/src/lib.rs` CADENCE), each value only where the environment the binary was
+/// started with names none: the gate's own export, or the environment a delegating parent hands the
+/// child it starts for one cell (`own_process::delegated_with_env`, a cell whose process needs other
+/// values: a stretched round, its own evidence directory, a runtime socket), stays as given.
+#[ctor::ctor]
+fn process_env() {
+    for (k, v) in [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")] {
+        if std::env::var_os(k).is_none() {
+            std::env::set_var(k, v);
+        }
+    }
+}
+
 /// The rafka-time a test admin holds, adopted from a reference nowhere near any OS clock.
 pub fn adopted_time() -> rafka_mesh_transport::clock::RafkaTime {
     let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
