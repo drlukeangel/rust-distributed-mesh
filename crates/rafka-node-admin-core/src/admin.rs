@@ -5532,7 +5532,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // own mesh with one node-admin; it is the current Build once written.
                                     if restart.is_some() {
                                         let build_id = builds.current_build().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.into_build_id().map(|b| b.to_string()).unwrap_or_default();
-                                        tracing::info_span!("rdm.node_admin.fabric.update.via-restart", node = %name, build_id = %build_id)
+                                        tracing::info_span!(parent: &boot, "rdm.node_admin.fabric.update.via-restart", node = %name, build_id = %build_id)
                                             .in_scope(|| tracing::info!("the current Build reloaded from this admin's own builds store"));
                                     } else if cfg.fabric_primary {
                                         tracing::info_span!("rdm.node_admin.fabric.update.via-recovery", node = %name, fabric_id = %cfg.fabric_id, mesh_id = %mesh_id)

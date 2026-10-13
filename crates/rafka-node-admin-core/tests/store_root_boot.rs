@@ -401,6 +401,7 @@ fn an_admin_started_on_a_prepared_root_boots_from_its_own_row_in_recovery_with_i
     assert_eq!((attr(recovery, "node"), attr(recovery, "node_id"), attr(recovery, "supersedes"), attr(recovery, "fabric_id")), ("mesh1.admin.1".to_string(), root.node_id.to_string(), root.incarnation.to_string(), root.fabric_id.to_string()), "{recovery}");
     let reloaded = spans.iter().find(|s| s["name"] == "rdm.node_admin.fabric.update.via-restart").unwrap();
     assert_eq!(attr(reloaded, "build_id"), root.build_id.to_string(), "the accepted Build reloaded from the admin's own journal: {reloaded}");
+    assert_eq!(reloaded["trace_id"], opened["trace_id"], "the Build reload is a step of the boot's own story");
     let day0: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.create.via-accepted").collect();
     assert!(day0.is_empty(), "a recovery accepts no Build of its own: {day0:?}");
     assert_eq!(adopted["trace_id"], opened["trace_id"], "the zero-contact path is the boot's own story");
