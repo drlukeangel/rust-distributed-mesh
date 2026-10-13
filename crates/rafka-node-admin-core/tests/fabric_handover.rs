@@ -1220,7 +1220,7 @@ fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attemp
         let Seats { p, n, m, x } = f;
         let _ = p._router.shutdown().await;
         let out = tokio::time::timeout(std::time::Duration::from_secs(20), first).await.expect("the command to a holder lost mid-call ends: it is never sent again on its own").unwrap();
-        let e = out.expect_err("an uncertain command is no answer");
+        let e = out.expect_err("an uncertain command is no answer").to_string();
         assert!(e.contains("Indeterminate") && e.contains("mesh1.admin.1") && e.contains(op), "the end names the outcome, the holder and the operation: {e}");
         assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "X installs nothing on an uncertain call");
         assert_eq!(n.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "N was never called: it installed nothing");
@@ -1230,7 +1230,7 @@ fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attemp
         x.door.records.read_exits(&x.door.book).await;
         let other = "node.primary.update:b9:stop-node:mesh1.admin.1";
         let out = tokio::time::timeout(std::time::Duration::from_secs(20), tracing::Instrument::instrument(x.door.command_update_primary(&p_node, "b9", 1, other), story.clone())).await.expect("a proven-lost holder is not called");
-        let e = out.expect_err("no row records an update for b9");
+        let e = out.expect_err("no row records an update for b9").to_string();
         assert!(e.contains(other) && e.contains("no seat row") && e.contains("mesh1.admin.1"), "{e}");
         assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "no row, nothing installed");
         // The next attempt of b1: X reads P's row, and N installs only on X's call.
@@ -1346,7 +1346,7 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
         let calls = |to: &str| -> Vec<String> { spans.named(CALL).into_iter().filter(|f| f.get("op").map(String::as_str) == Some("33") && f.get("target").is_some_and(|t| t.contains(to))).map(|f| f.get("outcome").cloned().unwrap_or_else(|| "open".into())).collect() };
         let call_lines = || spans.lines().into_iter().filter(|l| l.contains(CALL)).collect::<Vec<_>>().join("\n");
         let out = tokio::time::timeout(std::time::Duration::from_secs(20), first).await.expect("an update whose successor was lost mid-call ends: it is never sent again on its own").unwrap();
-        let e = out.expect_err("a successor proven exited answered nothing");
+        let e = out.expect_err("a successor proven exited answered nothing").to_string();
         assert!(e.contains("incomplete") && e.contains("exited") && e.contains(&n_id) && e.contains(op), "the end is P's answer naming the proof, the successor and the operation: {e}\nthe 0x21 calls:\n{}", call_lines());
         let (to_p, to_n) = (calls(&p_id), calls(&n_id));
         assert!(to_p == ["Reply"] && to_n.len() == 1 && to_n[0] != "Reply" && to_n[0] != "open", "X's command answered by P; P's one call to N ended by name and was retried no more:\n{}", call_lines());
@@ -1364,7 +1364,7 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
         assert_eq!(primary.as_deref(), Some("mesh1.admin.1"), "N's seat vacated on the proof and P's view seats the ordinary rule's choice, the lowest ReadyForTraffic NodeId of mesh1's node-admins not proven gone");
         // X's next attempt: P replays from its row, N's exit is proven, and N is called no more.
         let out = tokio::time::timeout(std::time::Duration::from_secs(20), x.door.command_update_primary(&p_node, "b1", 2, op)).await.expect("the next attempt ends");
-        let e = out.expect_err("no second update under the operation");
+        let e = out.expect_err("no second update under the operation").to_string();
         assert!(e.contains(op) && e.contains(&n_id) && e.contains("exit is proven"), "{e}");
         assert_eq!((calls(&p_id).len(), calls(&n_id).len()), (2, 1), "the next command answered by P, which called N no more:\n{}", call_lines());
         assert_eq!(spans.named(LADDER).len(), 1, "no second look at a birth proven exited");

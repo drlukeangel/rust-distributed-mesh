@@ -73,9 +73,10 @@ pub trait Gate: Send + Sync {
     /// FP should issue commands to a MP"; "this same primitive should be called on MP stop or
     /// delete"): this fabric-primary commands the holder's mesh seat to move, or moves its own seats
     /// (its mesh seat, then the fabric seat), so the operation's executor is the holder's successor.
-    /// `operation` names the update's own operation. `Err` names why the seat did not move. A gate
-    /// with no seats moves nothing.
-    async fn move_seats(&self, _m: &crate::executor::SeatMove, _build_id: &BuildId, _attempt: u32, _operation: &str) -> Result<(), String> {
+    /// `operation` names the update's own operation. `Err` names why the seat did not move, and whether
+    /// the update was refused before its row or left incomplete after it ([`SeatMoveEnd`]). A gate with
+    /// no seats moves nothing.
+    async fn move_seats(&self, _m: &crate::executor::SeatMove, _build_id: &BuildId, _attempt: u32, _operation: &str) -> Result<(), SeatMoveEnd> {
         Ok(())
     }
     /// node.primary.updated for every seat update a committed row records before an operation the
@@ -457,6 +458,25 @@ impl DriveReader {
                 }
             }
             notified.await;
+        }
+    }
+}
+
+/// How a seat move that did not complete ended ([`Gate::move_seats`]), as the approved proposal
+/// node-primary-update-fabric-mesh-and-node-type.md Part C1 failure contract tells its branches apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeatMoveEnd {
+    /// Refused before the row: "refused by name, nothing changed, the Build's step fails by name".
+    Refused(String),
+    /// Not answered by node.primary.updated: after the row the seats are the successor's whatever the
+    /// call returned, or the end is uncertain; the row, where one was written, stands.
+    Incomplete(String),
+}
+
+impl std::fmt::Display for SeatMoveEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(why) | Self::Incomplete(why) => f.write_str(why),
         }
     }
 }
@@ -1102,18 +1122,37 @@ impl DriveEnv {
             Some(fp) if !still => fp.name.clone(),
             _ => self.me.clone(),
         };
-        let terminal = BuildReply::HandedOff { build_id: id.to_string(), attempt, to: to.to_string() };
+        // Refused before the row: nothing changed and the Build's step fails by name (C1 failure
+        // contract; R-BI4: only a named terminal failure makes the Build failed). Every other end
+        // hands the attempt to the view's fabric-primary.
+        let refused = match &moved {
+            Err(SeatMoveEnd::Refused(why)) => Some(format!("{}: its seats did not move before {}: node.primary.update was refused before its row: {why}", self.me, op.key())),
+            _ => None,
+        };
+        let terminal = match &refused {
+            Some(why) => BuildReply::Failed { build_id: id.to_string(), attempt, operation: op.key(), step: "primary-update".into(), reason: crate::build_run::bounded_reason(why.clone()) },
+            None => BuildReply::HandedOff { build_id: id.to_string(), attempt, to: to.to_string() },
+        };
         // The verdict's writer releases the mesh's in-flight row the claim took (R-BI7 caveat 3), at
         // the verdict and before a reader of the held run learns the attempt ended: a successor that
         // reads the verdict claims its next attempt on the same mesh rows.
+        let outcome = match &terminal {
+            BuildReply::Failed { reason, .. } => AttemptOutcome::Failed { reason: reason.clone() },
+            _ => AttemptOutcome::HandedOff { to: to.to_string() },
+        };
         match held {
-            Some(held) => held.finish(terminal, self.release_mesh(id, attempt, &self.me)).await,
-            None => match self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.to_string() }, mesh: None }).await {
+            Some(held) => held.finish(terminal.clone(), self.release_mesh(id, attempt, &self.me)).await,
+            None => match self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome, mesh: None }).await {
                 Ok(()) => self.release_mesh(id, attempt, &self.me).await,
                 Err(e) => {
                     dspan.record("reason", format!("the verdict of attempt {attempt} could not be recorded: {e}").as_str());
                 }
             },
+        }
+        if let Some(why) = refused {
+            dspan.record("outcome", "failed").record("reason", why.as_str());
+            drive.finish(terminal);
+            return Err(DriveEnd::Terminal);
         }
         dspan.record("outcome", "handed-off");
         match (moved, still) {

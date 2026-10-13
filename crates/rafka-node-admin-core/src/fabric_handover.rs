@@ -854,9 +854,11 @@ impl HandoverDoor {
             }
             Ok(None) => {}
             Err(e) => {
+                // After the row: the update is incomplete, never refused, whatever cannot be read.
                 let failed = SourceFailure { source: format!("status.storage of {}, the exit-proof row of {} under mesh {}", self.me, births(&row.successor), row.successor.mesh), op: format!("read the exit-proof row of the successor {} names", row.operation), cause: e };
-                refused("holder", "source-failed", &failed.to_string(), &of, Some(&failed));
-                return Err(failed.reply());
+                let detail = format!("{}: node.primary.update {} committed the seat(s) to {}, and whether that birth is proven exited cannot be read, so it is not called: {failed}", self.me, row.operation, births(&row.successor));
+                refused("holder", "source-failed", &detail, &of, Some(&failed));
+                return Err(Reply::incomplete(&detail));
             }
         }
         self.update_successor(row).await
@@ -960,7 +962,7 @@ impl HandoverDoor {
     /// answers nothing: its operation's row is point-read on the fabric's store root, and the
     /// successor's node.primary.updated is obtained on it before anything is installed ("Discovery is
     /// not installation"); with no row no update happened.
-    pub async fn command_update_primary(&self, holder: &crate::model::Node, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, String> {
+    pub async fn command_update_primary(&self, holder: &crate::model::Node, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, crate::build_drive::SeatMoveEnd> {
         let span = tracing::info_span!(
             "rdm.node_admin.seat.update.via-primary-update",
             node = %self.me,
@@ -982,7 +984,10 @@ impl HandoverDoor {
             Ok((successor, _)) => span.record("outcome", "updated").record("successor", successor.as_str()),
             Err((outcome, e)) => span.record("outcome", *outcome).record("detail", e.as_str()),
         };
-        r.map(|(_, seats)| seats).map_err(|(_, e)| e)
+        r.map(|(_, seats)| seats).map_err(|(outcome, e)| match outcome {
+            "refused" => crate::build_drive::SeatMoveEnd::Refused(e),
+            _ => crate::build_drive::SeatMoveEnd::Incomplete(e),
+        })
     }
 
     /// The command's end: `Err` carries the outcome its span names (`refused`, `incomplete`,
