@@ -115,7 +115,6 @@ fn replies_match_the_frozen_forty_five_variant_wire_schema() {
         (NodeRowRefused { node: "n".into(), reason: "r".into() }, "1d016e0172"),
         (NameNotApplied { node: "n".into(), answered: "a".into(), reason: "r".into() }, "1e016e01610172"),
         (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![], receipt: None }, "1f010c333132333435363738396162000000"),
-        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![], receipt: Some(ConnectionsReceipt::Established { in_flight: 0, closed: vec![connection()] }) }, "1f010c3331323334353637383961620000010000010c333132333435363738396162"),
         (RejectedConnectionScope { reason: "r".into() }, "200172"),
         (
             Nodes { nodes: vec![node_view()] },
@@ -158,6 +157,21 @@ fn replies_match_the_frozen_forty_five_variant_wire_schema() {
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {
+        let expected = bytes(hex);
+        assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");
+        assert_eq!(Status::decode_reply(&expected).unwrap(), reply);
+    }
+}
+
+/// CONTRACT: a `ConnectionsDeleted` carries its `ConnectionsReceipt` in frozen bytes after the ids it
+/// closed, did not find open and still holds: absent for a list of ids, present for `All`.
+#[test]
+fn a_connections_deleted_reply_carries_its_receipt_in_frozen_bytes() {
+    use StatusReply::ConnectionsDeleted;
+    for (reply, hex) in [
+        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![], receipt: None }, "1f010c333132333435363738396162000000"),
+        (ConnectionsDeleted { closed: vec![connection()], not_open: vec![], held: vec![], receipt: Some(ConnectionsReceipt::Established { in_flight: 0, closed: vec![connection()] }) }, "1f010c3331323334353637383961620000010000010c333132333435363738396162"),
+    ] {
         let expected = bytes(hex);
         assert_eq!(Status::encode_reply(&reply).unwrap(), expected, "{reply:?}");
         assert_eq!(Status::decode_reply(&expected).unwrap(), reply);
