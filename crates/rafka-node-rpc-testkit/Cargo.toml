@@ -12,6 +12,8 @@ doctest = false
 [dependencies]
 async-trait = "0.1"
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
+# rafka-rpc-probe: the entry admin's view, read over Node RPC through the typed objects (fabric.get, node.get).
+rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 rafka-node-rpc-contract = { path = "../rafka-node-rpc-contract" }
 rafka-mesh-entity = { path = "../rafka-mesh-entity" }
@@ -25,7 +27,6 @@ anyhow = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-reqwest = { version = "0.13.3", features = ["json"] }
 # rig: the reap stops each node it launched by a pidfd.
 libc = { version = "0.2", optional = true }
 
@@ -39,8 +40,6 @@ testkit-skew = ["rafka-mesh-transport/testkit-skew"]
 
 [dev-dependencies]
 rafka-node-rpc-testkit = { path = ".", features = ["rig"] }
-# status_probe_apply: the node's own topology answer, read as a typed held view.
-rafka-node-admin-client = { path = "../rafka-node-admin-client" }
 # tests/main.rs: the binary's process environment is set once, in its ctor, before any thread exists.
 ctor = "0.2"
 libc = "0.2"

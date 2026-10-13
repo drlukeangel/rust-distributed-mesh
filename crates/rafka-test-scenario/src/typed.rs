@@ -11,7 +11,7 @@
 use crate::estate::Estate;
 use rafka_node_admin_client::{LaunchKind as NodeKind, PathName};
 use rafka_node_admin_client::{
-    Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
+    birth_of_view, Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
 use std::sync::Arc;
 
@@ -115,14 +115,18 @@ impl Estate {
         }
     }
 
-    /// Make the nodes of `views` reachable on `peers` and hold the control base each live node-admin of
-    /// them advertises.
+    /// Make the nodes of `views` reachable on `peers` and hold the control base and the birth each live
+    /// node-admin of them advertises.
     fn note(&self, peers: &Peers, views: &[NodeView]) {
         peers.learn_known(views);
         let mut advertised = self.advertised.lock().unwrap();
+        let mut births = self.births.lock().unwrap();
         for n in views.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, NodeStatus::Dead | NodeStatus::Deleted)) {
             if let Some(base) = n.admin_api_base.as_deref().filter(|b| !b.is_empty()) {
                 advertised.insert(base.to_string(), n.name.clone());
+            }
+            if let Some(birth) = birth_of_view(n) {
+                births.insert(n.name.clone(), birth);
             }
         }
     }

@@ -583,6 +583,9 @@ pub struct Estate {
     /// The node-admin each control base names, as a birth an admin printed or a view the estate read
     /// lists it: how the handover finds the admin `admin` names.
     pub(crate) advertised: std::sync::Mutex<std::collections::BTreeMap<String, rafka_node_admin_client::PathName>>,
+    /// The birth each live node-admin `path.name` holds now, as an admin this estate started printed it
+    /// or a view the estate read lists it: the entry a probe is given ([`Self::entry_birth`]).
+    pub(crate) births: std::sync::Mutex<std::collections::BTreeMap<rafka_node_admin_client::PathName, MeshNode>>,
     /// Dropped last: stops the reaper and removes the root.
     _scope: EstateScope,
 }
@@ -667,7 +670,8 @@ impl Estate {
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin: admin.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(vec![(admin, birth)]), advertised: Default::default(), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin: admin.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), advertised: Default::default(), births: Default::default(), _scope: scope };
+        estate.hold_printed(admin, birth);
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
         // Ready and elected, not when it first answers. `fabric.get` at it names the seat, the Fabric
@@ -765,7 +769,7 @@ impl Estate {
 
     /// Run one probe invocation and record it in the RPC ledger.
     pub fn probe(&self, args: &[&str]) -> Value {
-        self.probe_handle().run(&self.admin, args).unwrap_or_else(|e| panic!("{e}"))
+        self.probe_handle().run(&self.entry_birth(), args).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// What a probe invocation needs of this estate, owned: a traffic task issues probes while the
@@ -895,8 +899,27 @@ impl Estate {
         };
         let (child, base, birth) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
         self.restarted.push(child);
-        self.printed.lock().unwrap().push((base.clone(), birth));
+        self.hold_printed(base.clone(), birth);
         base
+    }
+
+    /// Hold the birth an admin this estate started printed beside its control base `base`: the typed
+    /// objects learn it at their next handover, and a probe can enter at it now.
+    fn hold_printed(&self, base: String, birth: MeshNode) {
+        self.advertised.lock().unwrap().insert(base.clone(), birth.name.clone());
+        self.births.lock().unwrap().insert(birth.name.clone(), birth.clone());
+        self.printed.lock().unwrap().push((base, birth));
+    }
+
+    /// The birth of the node-admin the estate enters at (`Estate::admin`): what a probe is given
+    /// (`--admin-birth`). An entry whose birth the estate never held is named with every base and birth
+    /// it holds.
+    pub fn entry_birth(&self) -> MeshNode {
+        let entry = self.advertised.lock().unwrap().get(&self.admin).cloned();
+        let births = self.births.lock().unwrap();
+        entry.as_ref().and_then(|e| births.get(e)).cloned().unwrap_or_else(|| {
+            panic!("the entry at {} ({entry:?}) has no birth this estate holds; bases held: {:?}, births held: {:?}", self.admin, self.advertised.lock().unwrap(), births.keys().collect::<Vec<_>>())
+        })
     }
 
     /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone.
@@ -1078,8 +1101,9 @@ fn kill_estate_processes(root: &Path) {
     }
 }
 
-/// One estate's probe door: runs `rafka-rpc-probe` against an admin's node view and appends the
-/// invocation to the estate's RPC ledger (`rpc-ledger.jsonl`).
+/// One estate's probe door: runs `rafka-rpc-probe` entered at a node-admin's birth (it reads that
+/// admin's view over Node RPC) and appends the invocation to the estate's RPC ledger
+/// (`rpc-ledger.jsonl`).
 #[derive(Clone)]
 pub struct ProbeHandle {
     evidence: PathBuf,
@@ -1088,11 +1112,12 @@ pub struct ProbeHandle {
 }
 
 impl ProbeHandle {
-    /// One probe invocation through the admin at `admin`. `Err` names an invocation that printed
-    /// no JSON line at all; a probe that printed a line (a typed outcome, or `Refused`) is `Ok`.
-    pub fn run(&self, admin: &str, args: &[&str]) -> Result<Value, String> {
+    /// One probe invocation entered at the node-admin birth `admin`. `Err` names an invocation that
+    /// printed no JSON line at all; a probe that printed a line (a typed outcome, or `Refused`) is `Ok`.
+    pub fn run(&self, admin: &MeshNode, args: &[&str]) -> Result<Value, String> {
+        let birth = serde_json::to_string(admin).map_err(|e| format!("the birth of {} does not serialize: {e}", admin.name))?;
         let mut cmd = Command::new(binary("rafka-rpc-probe"));
-        cmd.arg("--admin").arg(admin).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
+        cmd.arg("--admin-birth").arg(birth).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
         if let Some(gw) = &self.bind {
             cmd.env("RDM_PROBE_BIND", gw);
         }

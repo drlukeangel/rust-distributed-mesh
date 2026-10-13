@@ -96,7 +96,12 @@ async fn the_seam_executes_the_selected_target_over_the_chosen_route_and_nothing
     assert_eq!(none_t.len(), 1, "{none_t:?}");
     assert_eq!(none_t[0]["attributes"]["outcome"], "NotSent");
     let none_trace = &none_t[0]["trace_id"];
-    assert!(!spans.iter().any(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")), "no route: no connection was opened");
+    // The probe reads its entry admin's view over Node RPC (fabric.get, node.get) before it chooses a
+    // route: that read's dial, to the entry admin's birth, is the one connection of the trace, and the
+    // NoActiveRoute choice opens none.
+    let entry = estate.entry_birth();
+    let opened: Vec<&Value> = spans.iter().filter(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")).collect();
+    assert!(opened.iter().all(|s| s["attributes"]["incarnation_id"] == entry.incarnation.as_str()), "no route: no connection was opened but the entry admin {}'s view read: {opened:?}", entry.name);
     assert!(served_in(&none_t).is_empty(), "no route: nothing served");
 
     let c_served: Vec<_> = served.iter().filter(|s| s["attributes"]["incarnation_id"] == c["incarnation_id"]).collect();

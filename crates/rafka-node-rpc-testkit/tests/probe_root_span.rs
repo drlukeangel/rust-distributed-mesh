@@ -10,23 +10,8 @@ use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_rpc::{ServedBirth, ServerBuilder};
 use rafka_node_rpc_testkit::proof_store::{self, FileProofStore};
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use crate::common::admin_view::{self, node};
 use std::sync::Arc;
-
-fn serve_view(view: String) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut stream = stream;
-            let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf);
-            let _ = write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{view}", view.len());
-        }
-    });
-    base
-}
 
 /// CONTRACT: forty probe invocations (twenty direct, twenty carried through a gateway), each a real Get against a live proof-store node (the call
 /// dials, opens a stream, reads a reply), each leave their `via-probe` root span in their own span
@@ -80,12 +65,12 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
         let cep = rafka_node_rpc::endpoint::bind(carrier_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let caddr = cep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
         let _crouter = Router::builder(cep).accept(rafka_node_rpc::ALPN, carrier_server).spawn();
-        let view = serde_json::json!({"nodes": [
-            {"node_id": launch.node_id.to_string(), "name": "mesh1.rpc.1", "endpoint_id": key.public().to_string(), "transport_addr": addr.to_string(), "incarnation_id": launch.incarnation.to_string()},
-            {"node_id": carrier_id.to_string(), "name": "mesh1.gateway.1", "endpoint_id": carrier_key.public().to_string(), "transport_addr": caddr.to_string(), "incarnation_id": carrier_inc.as_str()},
-        ]})
-        .to_string();
-        let admin = serve_view(view);
+        let served = admin_view::serve(vec![
+            node("mesh1.rpc.1", &launch.node_id, Some(key.public().to_string()), Some(addr), Some(launch.incarnation.clone())),
+            node("mesh1.gateway.1", &carrier_id, Some(carrier_key.public().to_string()), Some(caddr), Some(carrier_inc.clone())),
+        ])
+        .await;
+        let admin = served.birth_arg();
         let evidence = std::env::temp_dir().join(format!("rdm-probe-root-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&evidence);
         let mut missing = Vec::new();
@@ -102,7 +87,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
             let before: std::collections::BTreeSet<_> = span_files(&evidence).into_iter().collect();
             let out = tokio::task::spawn_blocking(move || {
                 std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
-                    .args(["--admin", &admin, "get", "--target", &format!("exact:{id}"), "--key", "k"])
+                    .args(["--admin-birth", &admin, "get", "--target", &format!("exact:{id}"), "--key", "k"])
                     .args(&via)
                     .env("RDM_EVIDENCE_DIR", &evidence_dir)
                     .output()
@@ -119,6 +104,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
                 missing.push(format!("run {run}: {} spans, no root", spans.lines().count()));
             }
         }
+        served.shutdown().await;
         let _ = std::fs::remove_dir_all(&evidence);
         let _ = std::fs::remove_dir_all(&data);
         assert!(missing.is_empty(), "runs whose span file holds the call's spans and not their root: {missing:?}");
@@ -132,7 +118,7 @@ fn forty_probe_runs_direct_and_carried_each_export_their_root_span() {
 fn a_probe_that_refuses_its_arguments_exits_two_and_keeps_its_refusal_span() {
     let evidence = std::env::temp_dir().join(format!("rdm-probe-refusal-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe")).args(["--admin", "http://127.0.0.1:9", "--no-such-flag", "x"]).env("RDM_EVIDENCE_DIR", &evidence).output().unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe")).args(["--no-such-flag", "x"]).env("RDM_EVIDENCE_DIR", &evidence).output().unwrap();
     assert_eq!(out.status.code(), Some(2), "{:?}", out.status);
     let v: serde_json::Value = serde_json::from_str(String::from_utf8_lossy(&out.stdout).trim()).unwrap();
     assert_eq!(v["outcome"], "Refused", "{v}");

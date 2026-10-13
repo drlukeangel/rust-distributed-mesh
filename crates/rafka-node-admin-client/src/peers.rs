@@ -24,6 +24,21 @@ pub fn birth_of_line(line: &str) -> Option<Result<MeshNode, String>> {
     Some(serde_json::from_str(json).map_err(|e| format!("{line}: not a birth: {e}")))
 }
 
+/// The birth a `node.get` view holds for its node when it holds the whole birth (endpoint, address and
+/// incarnation): how a process that read the view reaches that node as it reaches one whose birth line
+/// it read. `None` for a node not born yet.
+pub fn birth_of_view(n: &NodeView) -> Option<MeshNode> {
+    Some(MeshNode {
+        node_id: n.node_id.clone(),
+        name: n.name.clone(),
+        endpoint_id: rafka_mesh_entity::EndpointId(n.endpoint_id.clone().filter(|e| !e.is_empty())?),
+        transport_addr: n.transport_addr?,
+        incarnation: n.incarnation_id.clone()?,
+        supersedes: None,
+        runtime: None,
+    })
+}
+
 /// A client over a table of the mesh's nodes, taken from `node.get`.
 pub struct Peers {
     rpc: Arc<NodeRpcClient>,
