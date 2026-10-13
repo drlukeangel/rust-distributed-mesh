@@ -349,7 +349,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
                 let mut view = topology.write().await;
                 let mut lost = seats.gone();
                 lost.extend(view.nodes.iter().filter_map(|n| n.incarnation_id.clone().filter(|i| records.is_exited(&n.node_id, i))));
-                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), lost };
+                let inc = Incumbency { fabric: seats.fabric(), meshes: seats.meshes(), cohorts: Default::default(), lost };
                 resolve_with(&mut view.nodes, &inc);
             })
         })

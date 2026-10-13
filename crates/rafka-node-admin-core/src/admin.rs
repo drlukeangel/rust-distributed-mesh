@@ -894,7 +894,7 @@ pub(crate) fn incumbency_of(book: &DigestBook, records: &Records) -> crate::elec
     lost.extend(book.departed().into_iter().map(|op| op.incarnation));
     lost.extend(book.all().into_iter().filter_map(|d| d.node.supersedes));
     lost.extend(book.seats.gone());
-    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), lost }
+    crate::election::Incumbency { fabric: book.seats.fabric(), meshes: book.seats.meshes(), cohorts: Default::default(), lost }
 }
 
 /// Where this birth's Build log reads its authority: the committed fabric seat record held in
