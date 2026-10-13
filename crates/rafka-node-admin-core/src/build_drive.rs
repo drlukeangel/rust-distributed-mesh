@@ -905,7 +905,7 @@ impl DriveEnv {
                             departed = Some(executor.to_string());
                         }
                         Err(not_proven) => {
-                            let why = format!("executor {executor} is {class}; its departure is not proven ({not_proven}); the attempt is not claimed for another admin");
+                            let why = format!("executor {executor} is {class} ({detail}); its departure is not proven ({not_proven}); the attempt is not claimed for another admin");
                             self.blocked(drive, attempt, "", "departure-proof", &why);
                             return self.stalled(drive, why);
                         }
