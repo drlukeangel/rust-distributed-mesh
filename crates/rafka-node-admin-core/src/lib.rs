@@ -40,6 +40,7 @@ pub mod mesh_leave;
 pub mod model;
 pub mod node_commands;
 pub mod node_config;
+pub mod node_properties;
 pub mod node_update;
 pub mod node_name;
 pub mod node_rows;
