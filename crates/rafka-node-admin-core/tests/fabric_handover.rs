@@ -26,9 +26,22 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing_subscriber::layer::SubscriberExt;
 
-/// Every span, in the order it was created: name and fields.
+/// Every span, in the order it was created: name and fields (the ones recorded after it was created
+/// too), and when it was created and closed.
 #[derive(Clone, Default)]
-struct Spans(Arc<Mutex<Vec<(String, BTreeMap<String, String>)>>>);
+struct Spans(Arc<Mutex<Vec<Captured>>>);
+
+/// One captured span.
+struct Captured {
+    name: String,
+    fields: BTreeMap<String, String>,
+    created: std::time::Instant,
+    closed: Option<std::time::Instant>,
+}
+
+/// Where a span sits in its [`Spans`], kept in the span's extensions so a later record or its close
+/// finds it.
+struct At(usize);
 
 struct Fields<'a>(&'a mut BTreeMap<String, String>);
 impl tracing::field::Visit for Fields<'_> {
@@ -44,19 +57,46 @@ impl tracing::field::Visit for Fields<'_> {
 }
 
 impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> tracing_subscriber::Layer<S> for Spans {
-    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _: &tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, id: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
         let mut fields = BTreeMap::new();
         attrs.record(&mut Fields(&mut fields));
-        self.0.lock().unwrap().push((attrs.metadata().name().into(), fields));
+        let at = {
+            let mut all = self.0.lock().unwrap();
+            all.push(Captured { name: attrs.metadata().name().into(), fields, created: std::time::Instant::now(), closed: None });
+            all.len() - 1
+        };
+        if let Some(span) = ctx.span(id) {
+            span.extensions_mut().insert(At(at));
+        }
+    }
+    fn on_record(&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let Some(at) = ctx.span(id).and_then(|s| s.extensions().get::<At>().map(|a| a.0)) else { return };
+        if let Some(c) = self.0.lock().unwrap().get_mut(at) {
+            values.record(&mut Fields(&mut c.fields));
+        }
+    }
+    fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let Some(at) = ctx.span(&id).and_then(|s| s.extensions().get::<At>().map(|a| a.0)) else { return };
+        if let Some(c) = self.0.lock().unwrap().get_mut(at) {
+            c.closed = Some(std::time::Instant::now());
+        }
     }
 }
 
 impl Spans {
     fn names(&self) -> Vec<String> {
-        self.0.lock().unwrap().iter().map(|(n, _)| n.clone()).collect()
+        self.0.lock().unwrap().iter().map(|c| c.name.clone()).collect()
     }
     fn named(&self, name: &str) -> Vec<BTreeMap<String, String>> {
-        self.0.lock().unwrap().iter().filter(|(n, _)| n == name).map(|(_, f)| f.clone()).collect()
+        self.0.lock().unwrap().iter().filter(|c| c.name == name).map(|c| c.fields.clone()).collect()
+    }
+    /// Every span as one line: milliseconds from the first span to its creation and to its close,
+    /// its name and its fields.
+    fn lines(&self) -> Vec<String> {
+        let all = self.0.lock().unwrap();
+        let Some(t0) = all.first().map(|c| c.created) else { return vec![] };
+        let ms = |t: std::time::Instant| t.saturating_duration_since(t0).as_millis();
+        all.iter().map(|c| format!("{:>7}ms {:>7} {} {:?}", ms(c.created), c.closed.map(|t| format!("{}ms", ms(t))).unwrap_or_else(|| "open".into()), c.name, c.fields)).collect()
     }
     fn position(&self, name: &str) -> Option<usize> {
         self.names().iter().position(|n| n == name)
@@ -78,6 +118,8 @@ const ANNOUNCE_UPDATING: &str = "rdm.mesh.seat.update.via-announce-primary-updat
 /// "primary updated", said by the holder once the successor answered node.primary.updated (C1 step 7;
 /// R-MT1: "NA2 updates itself and answers node.primary.updated; NA1 gossips that the primary updated to NA2").
 const ANNOUNCE_UPDATED: &str = "rdm.mesh.seat.update.via-announce-primary-updated";
+/// One Node RPC call at its caller: its target, op, outcome, reason and elapsed time.
+const CALL: &str = "rdm.node_rpc.request.update.via-call";
 /// The retired successor-side row writer: no span of it may appear.
 const SEATS_COMMITTED: &str = "rdm.node_admin.seat.update.via-seats-committed";
 
@@ -310,6 +352,22 @@ fn capture() -> Spans {
     let spans = Spans::default();
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(spans.clone())).expect("this cell owns its process");
     spans
+}
+
+/// A captured cell leaves its spans whether it passed or panicked: every line of [`Spans::lines`]
+/// goes to `target/i143-testkit/fabric_handover/<cell>.<pid>.spans.txt`, so a red reads from its own
+/// spans and never from a rerun.
+struct SpanFile(Spans);
+
+impl Drop for SpanFile {
+    fn drop(&mut self) {
+        let cell = std::thread::current().name().unwrap_or("unnamed").replace("::", "__");
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/fabric_handover");
+        let path = dir.join(format!("{cell}.{}.spans.txt", std::process::id()));
+        let lines = self.0.lines();
+        let written = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, lines.join("\n")));
+        eprintln!("fabric_handover: the cell's {} spans -> {} (write: {written:?})", lines.len(), path.display());
+    }
 }
 
 async fn until(what: &str, mut f: impl FnMut() -> bool) {
@@ -1028,25 +1086,31 @@ async fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_
 /// CONTRACT (proposal Part C1 failure contract: "After the row, the successor is the committed holder
 /// whatever the call returns ... A call that reached a process other than the named birth, a refusal
 /// or no answer is never an exit proof ... The holder's call fails by name ... No row is rewritten";
-/// R14 item 4: no write of a seat lands after the row that ends its writer's authority): the
-/// fabric-primary X commands P; P writes the row, takes the row's seat and calls N; N installs and
-/// holds its answer, and its process is gone before it answers. P's call ends Indeterminate: P's
-/// update ends `Incomplete` naming it, but P is no longer primary (its book and its cut-off say the
-/// row moved the seat: `Committed`, never `Lift`), and X's command ends incomplete with P's answer,
-/// installing nothing. X's next attempt sends the identical command: P replays from its row, calls N
-/// again, and that call ends by name too; no second row is written and no seat moves back to P. What
-/// must NOT happen: an update that never ends, a cut-off lifted after the row, a second row, or P
-/// primary again.
+/// step 8: the commanding Build continues only on the successor's `node.primary.updated`; R14 item 4:
+/// no write of a seat lands after the row that ends its writer's authority; node-rpc.md §34: a reply
+/// that is nested work, as the Build carrier's, is bounded by the transport's idle timeout and
+/// keepalive): the fabric-primary X commands P; P writes the row, takes the row's seat and calls N; N
+/// installs and never answers, which is what a process that died there leaves its caller: no reply and
+/// no close within P's call bound (a dead peer is heard only at the idle timeout, after it). P's call
+/// runs to its own bound and ends Indeterminate: P's update ends `Incomplete` naming N, P is no longer
+/// primary (its book and its cut-off say the row moved the seat: `Committed`, never `Lift`), and X's
+/// command is answered by P (its call to P ends `Reply`) with that incomplete update, installing
+/// nothing. N's process is then gone, its endpoint closed. X's next attempt sends the identical
+/// command: P replays from its row, calls N again, and that call ends by name too, answered to X; no
+/// second row is written and no seat moves back to P. What must NOT happen: X's own deadline ending
+/// its command before P answers (an uncertainty about P, which is alive, in place of P's answer naming
+/// N), an update that never ends, a cut-off lifted after the row, a second row, or P primary again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_successor_lost_mid_call_leaves_the_update_incomplete_and_the_seat_the_successors_from_the_row() {
     if crate::own_process::delegated(module_path!(), "a_successor_lost_mid_call_leaves_the_update_incomplete_and_the_seat_the_successors_from_the_row") {
         return;
     }
     let spans = capture();
+    let _file = SpanFile(spans.clone());
     let f = commanded_fabric().await;
     let p_node = f.x.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
     let op = "node.primary.update:b1:stop-node:mesh1.admin.1";
-    // N holds its answer once it installed from the row: its process dies there.
+    // N installs from the row and never answers: P hears no reply and no close within its call's bound.
     f.n.view_open.send_replace(false);
     let first = tokio::spawn({
         let (door, p_node) = (f.x.door.clone(), p_node.clone());
@@ -1054,20 +1118,27 @@ async fn a_successor_lost_mid_call_leaves_the_update_incomplete_and_the_seat_the
     });
     until("N installed mesh1's seat from P's row", || f.n.door.membership.seats().mesh("mesh1") == Some(holder_of(&f.n, 4))).await;
     let Seats { p, n, m, x } = f;
-    let n_id = n.resolved.node_id.to_string();
-    let _ = n._router.shutdown().await;
+    let (n_id, p_id) = (n.resolved.node_id.to_string(), p.resolved.node_id.to_string());
+    // The 0x21 calls the update made, from their own spans: each call's outcome, by the node it targets.
+    let calls = |to: &str| -> Vec<String> { spans.named(CALL).into_iter().filter(|f| f.get("op").map(String::as_str) == Some("33") && f.get("target").is_some_and(|t| t.contains(to))).map(|f| f.get("outcome").cloned().unwrap_or_else(|| "open".into())).collect() };
+    let call_lines = || spans.lines().into_iter().filter(|l| l.contains(CALL)).collect::<Vec<_>>().join("\n");
     let out = tokio::time::timeout(std::time::Duration::from_secs(20), first).await.expect("an update whose successor was lost mid-call ends: it is never sent again on its own").unwrap();
     let e = out.expect_err("an uncertain update is no answer");
-    assert!(e.contains("Indeterminate") && e.contains(&n_id) && e.contains(op), "the end names the outcome, the successor and the operation: {e}");
+    assert!(e.contains("Indeterminate") && e.contains(&n_id) && e.contains(op), "the end is P's answer naming the outcome, the successor and the operation: {e}\nthe 0x21 calls:\n{}", call_lines());
+    assert_eq!((calls(&p_id), calls(&n_id)), (vec!["Reply".to_string()], vec!["Indeterminate".to_string()]), "X's command is answered by P once P's call to N ended by its own bound:\n{}", call_lines());
     assert!(matches!(p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }]), "the row ended P's authority over the cut-off writes: {:?}", p.cut_offs.lock().unwrap());
     assert_eq!(p.door.membership.seats().mesh("mesh1"), Some(holder_of(&n, 4)), "after the row the seat is N's at P, whatever the call returned");
     assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "X installs nothing on an incomplete update");
     let incomplete: Vec<_> = refusals(&spans).into_iter().filter(|(side, reason, _)| side == "holder" && reason == "indeterminate").collect();
     assert_eq!(incomplete.len(), 1, "P's call after the row ends by name: {:?}", refusals(&spans));
+    // N's process is gone: its endpoint closed.
+    let _ = n._router.shutdown().await;
     // X's next attempt: P replays from its row and calls N again, which is still gone.
     let out = tokio::time::timeout(std::time::Duration::from_secs(20), x.door.command_update_primary(&p_node, "b1", 2, op)).await.expect("the next attempt ends");
     let e = out.expect_err("N is still gone: no node.primary.updated");
-    assert!(e.contains(op) && e.contains(&n_id), "{e}");
+    assert!(e.contains(op) && e.contains(&n_id), "{e}\nthe 0x21 calls:\n{}", call_lines());
+    let (to_p, to_n) = (calls(&p_id), calls(&n_id));
+    assert!(to_p == ["Reply", "Reply"] && to_n.len() == 2 && to_n.iter().all(|o| o != "Reply" && o != "open"), "both commands answered by P, each of P's calls to N ended by name:\n{}", call_lines());
     assert_eq!(p.storage.seat_transfers().await.unwrap().len(), 1, "no row is rewritten");
     assert_eq!(p.door.membership.seats().mesh("mesh1"), Some(holder_of(&n, 4)), "no seat moves back to P");
     assert_eq!(spans.named(ROW_WRITTEN).len(), 1, "one row written");
