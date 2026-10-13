@@ -2567,7 +2567,7 @@ impl View {
         }
         let mut rx = self.mesh_rx.lock().unwrap();
         let prior = Prior::of(&rx, &chunk.mesh);
-        let taken = rx.take_read_chunk(chunk);
+        let taken = rx.take_chunk(chunk);
         if let Taken::Installed(i) = &taken {
             self.installed(i, fabric, side, 0, prior);
             drop(rx);
@@ -6416,7 +6416,7 @@ mod tests {
     /// primary's event, which carries v2 (the version its stop changed the birth at): v1
     /// again (a refresh at the version held, built before the stop) is refused by name; v2 carries
     /// the stop; v3 lists neither (the primary's stop cleared before it held the birth again) and
-    /// ends nothing; v2 again (older than the version held) installs nothing; v4
+    /// ends nothing; v2 again (earlier than the version held) is ignored by the receive path (R-RX3); v4
     /// lists the birth `Pending` and ends the stop, carried at v2; the birth is held again from the
     /// latest heartbeat of it refused while the stop stood, with that status. The heartbeat of the
     /// birth then gives liveness and nothing of its status, which is the projection's `Pending`, then its
@@ -6448,7 +6448,7 @@ mod tests {
         let status = || view.book.get(id.as_str()).map(|(d, _)| d.status);
         assert!(view.book.record(b(MemberStatus::ReadyForTraffic, 1)));
         assert_eq!(status(), Some(MemberStatus::Pending), "a heartbeat gives no status: none is held until the projection gives one");
-        view.take_snapshot(&members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        hear(&mut view.order.lock().unwrap(), &view, &members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
         assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "the projection's status");
         assert!(view.book.record(b(MemberStatus::Draining, 2)));
         assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "a heartbeat moves no status");
@@ -6457,19 +6457,19 @@ mod tests {
         view.book.seats.take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), epoch: 1 });
         view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher.clone(), 2), &fabric, "mesh-channel");
         assert!(view.book.get(id.as_str()).is_none() && view.book.in_flight() == vec![stop.clone()]);
-        view.take_snapshot(&members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        hear(&mut view.order.lock().unwrap(), &view, &members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
         assert_eq!(view.book.in_flight(), vec![stop.clone()], "a refresh at the version held, built before the stop, ends nothing");
-        view.take_snapshot(&members(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
-        view.take_snapshot(&members(3, vec![], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        hear(&mut view.order.lock().unwrap(), &view, &members(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone);
+        hear(&mut view.order.lock().unwrap(), &view, &members(3, vec![], vec![]), &fabric, Side::Backbone);
         assert_eq!(view.book.in_flight(), vec![stop.clone()], "a version listing neither the stop nor the birth ends nothing");
-        view.take_snapshot(&members(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        assert!(!hear(&mut view.order.lock().unwrap(), &view, &members(2, vec![], vec![stop.clone()]), &fabric, Side::Backbone), "v2 again, earlier than the v3 held, is ignored by the receive path");
         assert!(!view.book.record(b(MemberStatus::Pending, 3)), "a heartbeat of the stopped birth is refused");
-        view.take_snapshot(&members(4, vec![b(MemberStatus::Pending, 3)], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        hear(&mut view.order.lock().unwrap(), &view, &members(4, vec![b(MemberStatus::Pending, 3)], vec![]), &fabric, Side::Backbone);
         assert!(view.book.in_flight().is_empty(), "the projection moved past the stop: it is over");
         assert_eq!(view.book.get(id.as_str()).map(|(d, _)| (d.digest_seq, d.status)), Some((3, MemberStatus::Pending)), "held again from the latest heartbeat it refused, with the projection's status");
         assert!(view.book.record(b(MemberStatus::ReadyForTraffic, 4)));
         assert_eq!(status(), Some(MemberStatus::Pending), "the projection's Pending, not the heartbeat's ReadyForTraffic");
-        view.take_snapshot(&members(5, vec![b(MemberStatus::ReadyForTraffic, 4)], vec![]), &fabric, Side::Backbone, &mut view.order.lock().unwrap());
+        hear(&mut view.order.lock().unwrap(), &view, &members(5, vec![b(MemberStatus::ReadyForTraffic, 4)], vec![]), &fabric, Side::Backbone);
         assert_eq!(status(), Some(MemberStatus::ReadyForTraffic));
 
         let refused = spans.named("rdm.mesh.membership.reject.via-stopped-birth");
@@ -7383,7 +7383,7 @@ mod tests {
                 let Frame::Members { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed, .. } = f else { unreachable!() };
                 let chunk = crate::snapshot::Chunk { mesh, publisher, forwarded_by: None, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed };
                 let prior = Prior::of(&joiner.mesh_rx.lock().unwrap(), &chunk.mesh);
-                let installed = joiner.mesh_rx.lock().unwrap().take_read_chunk(chunk);
+                let installed = joiner.mesh_rx.lock().unwrap().take_chunk(chunk);
                 if let crate::snapshot::Taken::Installed(i) = installed {
                     joiner.installed(&i, &fabric, Side::Read, 0, prior);
                 }

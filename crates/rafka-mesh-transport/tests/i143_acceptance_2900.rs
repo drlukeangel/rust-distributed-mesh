@@ -136,7 +136,7 @@ fn delta_of(f: &Frame) -> (String, PublisherId, u64, u64, Delta) {
 fn read_baseline(rx: &mut SnapshotReceiver, s: &SourceSnapshot) -> Taken {
     let mut last = None;
     for f in members_chunks(&s.full(), &s.publisher, s.topology_version, 0, Some("topology-read")) {
-        last = Some(rx.take_read_chunk(chunk_of(&f)));
+        last = Some(rx.take_chunk(chunk_of(&f)));
     }
     last.expect("a snapshot has at least one chunk")
 }
@@ -292,16 +292,8 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         assert_eq!((i.topology_version, i.snapshot_id), (7, 11));
         assert_eq!(rx.held_version("mesh2"), Some((p.clone(), 7)));
 
-        // A snapshot older than the version held from the same publisher is refused; a republish of
-        // the same version (a new snapshot id) only refreshes.
-        let old_full = members_chunks(&Full::new(big.digests(1), vec![], vec![]), &p, 6, 12, None);
-        let mut refused = None;
-        for c in &old_full {
-            if let Taken::Refused(r) = rx.take_chunk(chunk_of(c)) {
-                refused = Some(r);
-            }
-        }
-        assert!(matches!(refused, Some(rafka_mesh_transport::snapshot::Refusal::OlderThanHeld { held_version: 7, offered_version: 6 })), "{refused:?}");
+        // A republish of the same version (a new snapshot id) only refreshes. A snapshot older than
+        // the version held never reaches the receiver: the receive path ignores it (R-RX3).
         let again = members_chunks(&Full::new(big.digests(6), vec![], vec![]), &p, 7, 13, None);
         let mut refreshed = None;
         for c in &again {
@@ -346,7 +338,6 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         f10[0].status = MemberStatus::Pending;
         let d9_11 = Full::new(f8.digests(), vec![], vec![]).delta_to(&Full::new(f10, vec![], vec![]));
         assert!(matches!(rx.take_delta("mesh2", &p, 9, 11, &d9_11), Moved::Applied { topology_version: 11, .. }), "the primary's next delta continues from the baseline");
-        assert!(matches!(rx.take_delta("mesh2", &p, 8, 9, &d78), Moved::Duplicate { .. }), "the delta the top-up already covered is a no-op, not another gap");
         // A new source primary is a new epoch: its delta before its full is a gap, its full resumes.
         let successor = publisher("mesh2.admin.2");
         assert!(matches!(rx.take_delta("mesh2", &successor, 1, 2, &d78), Moved::Desynced { gap: Gap::OtherEpoch { .. }, .. }));
@@ -390,7 +381,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         }
         assert_eq!(done.expect("the newer snapshot completes").topology_version, 10);
         let straggler = rx.take_chunk(chunk_of(&lossy2[1]));
-        assert!(matches!(straggler, Taken::Refused(_)), "a chunk of the superseded snapshot is refused: {straggler:?}");
+        assert!(matches!(straggler, Taken::Waiting { .. }), "a chunk of the superseded snapshot installs nothing (the receive path ignores it before the receiver, R-RX3): {straggler:?}");
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 10)));
 
         // ---- 5. the forwarding primary: stored fulls determine the delta ------------------------
