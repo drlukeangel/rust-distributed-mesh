@@ -1412,6 +1412,8 @@ async fn the_successor_refuses_a_call_before_the_initial_fabric_is_ready() {
     let spans = capture();
     let f = commanded_fabric().await;
     f.n.door.topology.write().await.fabric.status = ScopeStatus::StateSync;
+    // Its mesh's status rows on the store root hold no ready-for-traffic row either.
+    status_rows_of(&f.n, false).await;
     let op = "node.primary.update:b1:stop-node:mesh1.admin.1";
     let r = send(&f.p, &f.n, primary_update(&f.p, &f.n, 4, "b1", 1, op)).await;
     assert!(matches!(&r, Reply::RejectedFabricNotReady { reason } if reason.contains("state-sync") && reason.contains("ready-for-traffic")), "{r:?}");
@@ -1419,6 +1421,52 @@ async fn the_successor_refuses_a_call_before_the_initial_fabric_is_ready() {
     let named = refusals(&spans);
     assert!(named.iter().any(|(side, reason, _)| side == "successor" && reason == "fabric-not-ready"), "{named:?}");
     let _ = (&f.m, &f.x);
+}
+
+/// `a`'s mesh's status rows on the fabric's store root (what its admin folds and point-reads), holding
+/// the ready-for-traffic row of `a`'s fabric when `ready`: the durable fact that the initial fabric
+/// first reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic").
+async fn status_rows_of(a: &Admin, ready: bool) -> Arc<rafka_node_admin_core::status_storage::MemoryStatusStorage> {
+    use rafka_node_admin_core::status_storage::{FabricEventRow, StatusStorage};
+    let rows = Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default());
+    if ready {
+        let fabric_id = a.door.topology.read().await.fabric.id.clone();
+        rows.put_fabric_event(&FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
+    }
+    a.door.records.set_status(rows.clone(), a.door.me.mesh.clone(), a.door.me.clone(), a.door.node_id.clone());
+    rows
+}
+
+/// CONTRACT (proposal Part C1: "Before the initial fabric first reaches ready-for-traffic, every call
+/// is refused `fabric-not-ready` (R-PB1)" and "After the row, the successor is the committed holder
+/// whatever the call returns ... it installs the committed view from the row and answers"; states.md,
+/// "The initial fabric before ready-for-traffic": the ready-for-traffic row among the mesh's status
+/// rows is the durable fact that the fabric first reached ready-for-traffic): N has not heard the
+/// fabric ready yet (its view still holds the initial fabric in state-commit and it never knew it
+/// ready), while its mesh's status rows on the store root already hold the ready-for-traffic row. The
+/// fabric-primary's command to P is answered node.primary.updated: P writes the row, and N decides
+/// R-PB1 on the durable row (`rdm.node_admin.fabric.update.via-first-ready`, reason
+/// `ready-for-traffic-row-on-store-root`), installs and answers. What must NOT happen: N refusing
+/// `fabric-not-ready` after P's row for a fabric whose ready row is on the root (the live-mesh red:
+/// node_stop, trace 8b62c8d41e0832508bc83bb9c926015f, where mesh2.admin.2 refused 3 ms before the
+/// fabric state reached it by gossip).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_successor_decides_ready_for_traffic_on_the_root_row_not_on_the_state_gossip_has_not_brought() {
+    if crate::own_process::delegated(module_path!(), "the_successor_decides_ready_for_traffic_on_the_root_row_not_on_the_state_gossip_has_not_brought") {
+        return;
+    }
+    let spans = capture();
+    let f = commanded_fabric().await;
+    f.n.door.topology.write().await.fabric.status = ScopeStatus::StateCommit;
+    status_rows_of(&f.n, true).await;
+    let op = "node.primary.update:b1:stop-node:mesh1.admin.1";
+    let r = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, "b1", op)).await;
+    assert_eq!(r, updated(committed_mesh(&f.n, 4)), "N installed P's row and answered node.primary.updated");
+    assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "N holds mesh1's seat from the row");
+    assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
+    let ready: Vec<String> = spans.named("rdm.node_admin.fabric.update.via-first-ready").iter().map(|f| f["reason"].clone()).collect();
+    assert_eq!(ready, vec!["ready-for-traffic-row-on-store-root".to_string()], "N decided on the root's ready row");
+    let _ = &f.m;
 }
 
 // ---- No caller check inside the mesh (node-rpc.md §14) ----
