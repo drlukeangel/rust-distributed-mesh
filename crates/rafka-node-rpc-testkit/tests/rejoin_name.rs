@@ -5,9 +5,11 @@
 //! `mesh1.rpc.1.old` with a config. Its start presents the name it holds, the one its authority
 //! last accepted for this exact birth; the authority admits it under the row's name, installs the
 //! canonical digest and hands the row's name and config in the join answer, and the node publishes
-//! `mesh1.rpc.1.old` with that config from its first digest after the join on. What must NOT
-//! happen: the start refused `JoinMismatch("name")`, a digest of the started node naming
-//! `mesh1.rpc.1`, or one missing the row's config.
+//! `mesh1.rpc.1.old` with that config from its first digest after the join on, and its app answers
+//! every call under that name (the proof store's provenance names `mesh1.rpc.1.old`: a node's name
+//! is the one it holds, R12). What must NOT happen: the start refused `JoinMismatch("name")`, a
+//! digest of the started node naming `mesh1.rpc.1`, one missing the row's config, or an app reply
+//! naming the birth's frozen `mesh1.rpc.1`.
 //!
 //! Its own process: the cell holds process-wide state (the parking flag).
 
@@ -21,6 +23,7 @@ use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_contract::status::{Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
+use rafka_node_rpc_testkit::proof_store::{self, ProofRequest, ProofStore};
 use std::time::Duration;
 
 async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
@@ -64,7 +67,8 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
             connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
-        let _running = node::start(&launch, |b, _| b).await.expect("the node comes up");
+        let store = std::sync::Arc::new(proof_store::FileProofStore::open(&dir).unwrap());
+        let _running = node::start_with_seams(&launch, |b, _| proof_store::serve(b, store, &launch)).await.expect("the node comes up");
 
         let book = &admin.observer.membership.book;
         let mut digests = book.digest_changes();
@@ -98,6 +102,14 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
         }
         let (d, _) = book.get(launch.node_id.as_str()).unwrap();
         assert_eq!((&d.node.name, &d.config, &d.node.incarnation), (&old, &config, &incarnation), "the same birth publishes the row's name and config");
+        // Its app answers under the name it holds: the proof store's provenance is the row's name.
+        let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+        let got = match admin.observer.client.call::<ProofStore>(&target, &ProofRequest::Get { key: b"41".to_vec() }, &opts).await.0 {
+            RpcOutcome::Reply(r) => r.into_value(),
+            other => panic!("the proof store get did not end in a reply: {other:?}"),
+        };
+        let at = got.provenance().unwrap_or_else(|| panic!("the store's own reply carries its provenance: {got:?}"));
+        assert_eq!((at.node.as_str(), at.node_id.as_str(), at.incarnation_id.as_str()), (old.to_string().as_str(), node_id.as_str(), incarnation.as_str()), "the app answers under the row's name it holds: {got:?}");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
