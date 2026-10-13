@@ -1329,11 +1329,13 @@ fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attemp
 /// answer, so P asks the provider, which proves N's runtime exited. P puts N's exit-proof row (proof
 /// `provider`) and retries nothing: N's seat vacates and P's view seats the ordinary rule's choice,
 /// the lowest ReadyForTraffic NodeId of mesh1's node-admins not proven gone (P itself, in this
-/// fabric). P's update ends `Incomplete` naming the proof and X's command is answered by P with it,
-/// X installing nothing. X's next attempt sends the identical command: P reads its row, finds N's
-/// exit proven and calls N no more: no second update under the operation. What must NOT happen: a
-/// retry or a second look at a birth proven exited, X's own deadline ending its command before P
-/// answers, a cut-off lifted after the row, a second row, or a seat record moved off the row's.
+/// fabric). Seated again, P installs mesh1's seat at the next revision over the row's (epoch 5) and
+/// restores that seat's writes (ruling R-PU2 recovery order 2-3). P's update ends naming the failure,
+/// `Incomplete` on the wire, and X's command is answered by P with it, X installing nothing. X's next
+/// attempt sends the identical command: P reads its row, finds N's exit proven and calls N no more: no
+/// second update under the operation. What must NOT happen: a retry or a second look at a birth proven
+/// exited, X's own deadline ending its command before P answers, a cut-off lifted under the old
+/// revision, a second row, or the row rewritten.
 #[test]
 fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rule_and_is_called_no_more() {
     let cap = trace_capture("fabric-handover");
@@ -1365,7 +1367,7 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
         let call_lines = || spans.lines().into_iter().filter(|l| l.contains(CALL)).collect::<Vec<_>>().join("\n");
         let out = tokio::time::timeout(std::time::Duration::from_secs(20), first).await.expect("an update whose successor was lost mid-call ends: it is never sent again on its own").unwrap();
         let e = out.expect_err("a successor proven exited answered nothing").to_string();
-        assert!(e.contains("incomplete") && e.contains("exited") && e.contains(&n_id) && e.contains(op), "the end is P's answer naming the proof, the successor and the operation: {e}\nthe 0x21 calls:\n{}", call_lines());
+        assert!(e.contains("incomplete") && e.contains(rafka_node_admin_core::fabric_handover::SUCCESSOR_EXITED) && e.contains(&n_id) && e.contains(op), "the end is P's answer naming the failure, the successor and the operation: {e}\nthe 0x21 calls:\n{}", call_lines());
         let (to_p, to_n) = (calls(&p_id), calls(&n_id));
         assert!(to_p == ["Reply"] && to_n.len() == 1 && to_n[0] != "Reply" && to_n[0] != "open", "X's command answered by P; P's one call to N ended by name and was retried no more:\n{}", call_lines());
         let looks = spans.named(LADDER);
@@ -1375,8 +1377,8 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
         assert_ne!(field("call"), "", "the look names how P's call ended: {:?}", looks[0]);
         let exit = p.door.records.exit_row_of_birth("mesh1", &n.resolved.node_id, &n.resolved.incarnation, "N").await.unwrap().expect("P put N's exit-proof row among mesh1's status rows");
         assert_eq!(exit.proof, "provider");
-        assert!(matches!(p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }]), "the row ended P's authority over the cut-off writes: {:?}", p.cut_offs.lock().unwrap());
-        assert_eq!(p.door.membership.seats().mesh("mesh1"), Some(holder_of(&n, 4)), "the seat record stays the row's: no row is rewritten");
+        assert!(matches!(p.cut_offs.lock().unwrap().as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { fabric_seat: false, .. }, WriteCutOff::Restore { mesh_seat: true, fabric_seat: false, .. }]), "the row ended P's authority over the cut-off writes, and P seated again restores mesh1's seat only: {:?}", p.cut_offs.lock().unwrap());
+        assert_eq!(p.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 5)), "P holds mesh1's seat at the next revision over the row's");
         assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "X installs nothing on an incomplete update");
         let primary = p.door.topology.read().await.cohort_primary("mesh1", rafka_node_admin_core::model::NodeKind::NodeAdmin).map(|n| n.name.to_string());
         assert_eq!(primary.as_deref(), Some("mesh1.admin.1"), "N's seat vacated on the proof and P's view seats the ordinary rule's choice, the lowest ReadyForTraffic NodeId of mesh1's node-admins not proven gone");
