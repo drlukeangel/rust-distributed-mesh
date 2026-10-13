@@ -126,7 +126,7 @@ fn proof_holder_applies_cas_reports_exact_executing_birth() {
             connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
-        let server = proof_store::serve(ServerBuilder::new(), store.clone(), &launch)
+        let server = proof_store::serve(ServerBuilder::new(), store.clone(), &launch, &rafka_node_rpc_testkit::held_name::HeldName::of_birth(launch.name.clone()))
             .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .expect("the proof store seals");
         let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();

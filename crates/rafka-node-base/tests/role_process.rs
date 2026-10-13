@@ -55,7 +55,7 @@ async fn born(name: &str) -> RoleProcess {
     launcher.deployed(&launch, &key);
     let role = Role::of(&launch);
     let oracles = rafka_node_base::Oracles::open(&launch).unwrap();
-    let running = node::start_with_client(&launch, |b, resolver, client| oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, resolver)).await.unwrap();
+    let running = node::start_with_seams(&launch, |b, seams| oracles.serve(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver, &seams.name)).await.unwrap();
     let _ = oracles.declare_client.set(running.node_rpc.clone());
     RoleProcess { running, _launcher: launcher, launch, key, _dir: dir }
 }

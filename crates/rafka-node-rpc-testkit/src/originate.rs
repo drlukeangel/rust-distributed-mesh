@@ -292,6 +292,8 @@ pub struct Seams {
     pub connections: Arc<ConnectionsWriter>,
     /// The storage fault the door arms and releases.
     pub fault: Arc<StorageFault>,
+    /// The name this birth holds now: every door names the node by it, per call.
+    pub name: crate::held_name::HeldName,
 }
 
 /// Serve the door on this node's own seams, with the testkit's default carrier policy ([`POLICY`]).
@@ -304,10 +306,12 @@ pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
 /// (`rafka_mesh_entity::connections::resolve`). A shape whose carriers are not `rpc_node`s (a
 /// gateway carrying for a compute) declares its own kind here.
 pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy: CarrierPolicy) -> ServerBuilder {
-    let by = AnsweredBy { node_id: launch.node_id.to_string(), node: launch.name.to_string(), incarnation_id: launch.incarnation.to_string() };
-    let own: PathName = launch.name.clone();
+    let (node_id, incarnation_id) = (launch.node_id.to_string(), launch.incarnation.to_string());
     b.serve::<Originate, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: OriginateRequest| {
-        let (by, seams, own) = (by.clone(), seams.clone(), own.clone());
+        // The node answers and routes under the name it holds at this call (R12).
+        let own: PathName = seams.name.now();
+        let by = AnsweredBy { node_id: node_id.clone(), node: own.to_string(), incarnation_id: incarnation_id.clone() };
+        let seams = seams.clone();
         async move {
             Ok(match req {
                 OriginateRequest::Call { destination, op } => call(&by, &seams, &own, &destination, op, policy).await,

@@ -53,7 +53,7 @@ fn a_probe_given_an_admin_birth_resolves_its_target_from_that_admins_view_over_n
             connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let store = Arc::new(FileProofStore::open(&launch.data_dir).unwrap());
-        let server = proof_store::serve(ServerBuilder::new(), store, &launch)
+        let server = proof_store::serve(ServerBuilder::new(), store, &launch, &rafka_node_rpc_testkit::held_name::HeldName::of_birth(launch.name.clone()))
             .carry::<rafka_node_rpc_testkit::proof_store::ProofStore>()
             .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
             .unwrap();

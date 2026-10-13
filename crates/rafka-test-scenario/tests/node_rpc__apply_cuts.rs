@@ -205,7 +205,7 @@ async fn rig(dir: &std::path::Path) -> Rig {
     };
     let store = Arc::new(FileProofStore::open(&launch.data_dir).expect("the store opens in its data dir"));
     let cuts = Arc::new(ApplyCuts::default());
-    let server = proof_store::serve_with_cuts(ServerBuilder::new(), store.clone(), &launch, cuts.clone())
+    let server = proof_store::serve_with_cuts(ServerBuilder::new(), store.clone(), &launch, &rafka_node_rpc_testkit::held_name::HeldName::of_birth(launch.name.clone()), cuts.clone())
         .seal(ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
         .expect("the proof store seals");
     let stats = server.stats();
