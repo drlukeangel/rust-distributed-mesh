@@ -1454,17 +1454,22 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClie
     (std::sync::Arc::new(NodeRpcClient::new(ep, resolver).with_caller_system("rdm")), node_id)
 }
 
-/// CONTRACT: a recovered node keeps the config its mesh-primary told its predecessor
-/// (node-recovery.md "Retained: ... config (seeded from the Deleted row)"; fabric-node-lifecycle.md
-/// "A rewrite is lossless for every field its writer knows"). The caller puts `<mesh>.rpc.1`'s config
-/// through its mesh-primary (not the fabric-primary), the node carries it, then its runtime is
-/// killed: the mesh-primary's recovery writes the exited birth's Deleted row with that config, the
-/// new node's name claim is seeded from it (`via-node-row` moment `claim`, `seeded_from` the exited
-/// node, one key), the new node's join answer hands it that config (`via-join` `config_keys` 1),
-/// and the new node (new node.id, same path.name) carries the config.
+/// CONTRACT: a recovered node keeps the config and the tags its mesh-primary told its predecessor
+/// (node-recovery.md "Retained: ... config (seeded from the Deleted row)"; proposal
+/// node-properties-own-commands.md §8, recovery: "the successor's claim over it seeds config and tags
+/// from that Deleted row and writes the tags index entries under the successor's id, in the same
+/// write that seeds config"; fabric-node-lifecycle.md "A rewrite is lossless for every field its
+/// writer knows"). The caller puts `<mesh>.rpc.1`'s config and the tag `rabbit` through its
+/// mesh-primary (not the fabric-primary), the node carries them, then its runtime is killed: the
+/// mesh-primary's recovery writes the exited birth's Deleted row with that config and tag, the new
+/// node's name claim is seeded from it (`via-node-row` moment `claim`, `seeded_from` the exited node,
+/// one key, `tags` rabbit), the new node's join answer hands it that config (`via-join`
+/// `config_keys` 1), the new node (new node.id, same path.name) carries the config and the tag, and
+/// `node.get` by the tag names the new node and not the exited one. Nothing copies them after the
+/// create: no node.update runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor() {
-    let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor").await;
+async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_predecessor() {
+    let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_predecessor").await;
     let nodes = estate.node_values().await;
     let (node, mesh_primary, _fp) = placement(&nodes);
     let node_path = node.as_str();
@@ -1481,6 +1486,13 @@ async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor
     assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
     let told_json = json!({"tier": "gold"});
     wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
+    let labels: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
+    let tagged = rafka_node_admin_client::NodeRpc::new(&client)
+        .tags_create(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, &labels, &rafka_node_rpc::CallOptions::default())
+        .await
+        .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at {mesh_primary}: {e:?}"));
+    assert_eq!(tagged.name(), "tags-created", "the mesh-primary wrote the label's row: {tagged:?}");
+    wait_for(&format!("{node_path} carries its tag"), Duration::from_secs(30), || async { (estate.node_view(node_path).await.tags == labels).then_some(()) }).await;
 
     estate.kill_node(node_path).await;
     let after = until_node_where(&estate, node_path, &format!("{node_path} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
@@ -1494,6 +1506,7 @@ async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor
     let a = &claim["attributes"];
     assert_eq!((s(&a["node"]), s(&a["outcome"]), s(&a["seeded_from"])), (mesh_primary.clone(), "row-seeded".to_string(), s(&before["node_id"])), "the mesh-primary claims the name seeded from the exited birth's Deleted row: {claim}");
     assert_eq!(s(&a["keys"]), "1", "the seeded row carries the config told to the predecessor: {claim}");
+    assert_eq!(s(&a["tags"]), "rabbit", "the claim seeds the Deleted row's tags in the same write: {claim}");
     let deleted: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.delete.via-node-row").into_iter().filter(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned().collect();
     assert_eq!(deleted.len(), 1, "one Deleted row of the exited birth: {deleted:?}");
     assert_eq!(s(&deleted[0]["attributes"]["keys"]), "1", "the Deleted row keeps the config: {deleted:?}");
@@ -1507,9 +1520,20 @@ async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor
     assert_eq!((s(&joined["attributes"]["outcome"]), s(&joined["attributes"]["config_keys"])), ("installed".to_string(), "1".to_string()), "the new node's join answer hands its row's config: {joined}");
     let carried = wait_for(&format!("the new {node_path} carries the config"), Duration::from_secs(30), || async { let n = estate.node_value(node_path).await; (n["config"] == told_json).then_some(n) }).await;
     assert_eq!(carried["node_id"], after["node_id"], "the new node, not the exited one, carries it");
+    assert_eq!(estate.node_view(node_path).await.tags, labels, "the new node's row carries the exited node's tag");
+    let selected: Vec<String> = estate
+        .nodes_obj()
+        .await
+        .get(&rafka_node_admin_client::NodeSelector::Tags(rafka_node_admin_client::TagFilter::Any(labels.clone())))
+        .await
+        .unwrap_or_else(|e| panic!("node.get by the tag rabbit: {e:?}"))
+        .into_iter()
+        .map(|n| n.node_id.to_string())
+        .collect();
+    assert_eq!(selected, vec![s(&after["node_id"])], "the tags index names the new node under the label, and not the exited one");
     let told: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.update.via-config").into_iter().filter(|sp| sp["attributes"]["node_id"] == after["node_id"]).cloned().collect();
     assert!(told.is_empty(), "the join handed the config: no config call is sent to the starting node: {told:?}");
-    eprintln!("trace {}: via-node-row delete node_id={} keys={}; trace {}: via-node-row claim node={} seeded_from={} keys={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&claim["trace_id"]), mesh_primary, s(&a["seeded_from"]), a["keys"]);
+    eprintln!("trace {}: via-node-row delete node_id={} keys={} tags={}; trace {}: via-node-row claim node={} node_id={} seeded_from={} keys={} tags={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&deleted[0]["attributes"]["tags"]), s(&claim["trace_id"]), mesh_primary, s(&after["node_id"]), s(&a["seeded_from"]), a["keys"], s(&a["tags"]));
 }
 
 /// CONTRACT (R-BI7, proposal Part C: "The mesh-primary is the reconciler of its own mesh and does not
