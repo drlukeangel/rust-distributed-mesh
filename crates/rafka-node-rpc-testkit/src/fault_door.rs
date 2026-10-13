@@ -259,9 +259,9 @@ pub enum FaultReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// The node takes no new work.
-    Draining {
-        /// Why it refuses new work.
+    /// The node is deleting its connections (`node.connections.delete`) and takes no new call.
+    ConnectionsDeleting {
+        /// Why it refuses the call.
         reason: String,
     },
     /// The request frame was malformed.
@@ -269,8 +269,8 @@ pub enum FaultReply {
         /// How the frame was malformed.
         kind: MalformedKind,
     },
-    /// The caller is not allowed this call.
-    Unauthorized {
+    /// The transport refused the caller this call.
+    CallerRefused {
         /// Why the call is refused.
         reason: String,
     },
@@ -294,9 +294,9 @@ impl NodeProtocol for FaultDoor {
             FaultReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             FaultReply::NotReady { .. } => ReplyKind::NotReady,
             FaultReply::Busy { .. } => ReplyKind::Busy,
-            FaultReply::Draining { .. } => ReplyKind::Draining,
+            FaultReply::ConnectionsDeleting { .. } => ReplyKind::Draining,
             FaultReply::Malformed { kind } => ReplyKind::Malformed(*kind),
-            FaultReply::Unauthorized { .. } => ReplyKind::Unauthorized,
+            FaultReply::CallerRefused { .. } => ReplyKind::Unauthorized,
         }
     }
 
@@ -310,13 +310,13 @@ impl NodeProtocol for FaultDoor {
         FaultReply::Busy { reason }
     }
     fn draining(reason: String) -> FaultReply {
-        FaultReply::Draining { reason }
+        FaultReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> FaultReply {
         FaultReply::Malformed { kind }
     }
     fn unauthorized(reason: String) -> FaultReply {
-        FaultReply::Unauthorized { reason }
+        FaultReply::CallerRefused { reason }
     }
 }
 
@@ -405,9 +405,9 @@ mod tests {
             FaultReply::PeerUnresolved { reason: "r".into() },
             FaultReply::NotReady { reason: "r".into() },
             FaultReply::Busy { reason: "r".into() },
-            FaultReply::Draining { reason: "r".into() },
+            FaultReply::ConnectionsDeleting { reason: "r".into() },
             FaultReply::Malformed { kind: MalformedKind::Corrupt },
-            FaultReply::Unauthorized { reason: "r".into() },
+            FaultReply::CallerRefused { reason: "r".into() },
         ];
         assert_eq!(all.len() as u32, FaultDoor::REPLY_VARIANTS);
         for r in all {
