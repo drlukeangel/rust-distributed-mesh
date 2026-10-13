@@ -278,11 +278,32 @@ pub(crate) fn netns_listens_tcp(pid: u32, addr: SocketAddr) -> Result<bool, Stri
     netns_table_holds(pid, "tcp", addr, Some("0A"))
 }
 
+/// A `/proc/<pid>/net/<table>` read as one traversal. The kernel walks the table again from the
+/// requested byte offset on every `read()`, so a table read in several calls skips a row whenever a
+/// socket ahead of the offset closes between two calls (a busy netns: our own socket went missing
+/// from its own table in the gate, 2026-10-13). One `read()` into a buffer larger than the table is
+/// one walk; a buffer the table fills completely is grown and the read made again from the start.
+fn read_proc_table(path: &str) -> Result<String, String> {
+    use std::io::Read;
+    let mut size = 1 << 20;
+    loop {
+        let mut file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
+        let mut buf = vec![0u8; size];
+        // One read: seq_file copies every row that fits into the buffer in this one call.
+        let len = file.read(&mut buf).map_err(|e| format!("{path}: {e}"))?;
+        if len < buf.len() {
+            buf.truncate(len);
+            return String::from_utf8(buf).map_err(|e| format!("{path}: {e}"));
+        }
+        size *= 4;
+    }
+}
+
 /// Every UDP socket bound in the network namespace of `pid`, as
 /// `/proc/<pid>/net/udp` lists them (IPv4 only; an unspecified bind is kept as such).
 pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
     let path = format!("/proc/{pid}/net/udp");
-    let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    let table = read_proc_table(&path)?;
     let mut out: Vec<SocketAddr> = table
         .lines()
         .skip(1)
@@ -303,7 +324,7 @@ pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
 #[cfg(test)]
 pub(crate) fn process_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
     let path = format!("/proc/{pid}/net/{table}");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    let text = read_proc_table(&path)?;
     let inodes: Vec<String> = text
         .lines()
         .skip(1)
@@ -335,7 +356,7 @@ pub(crate) fn process_holds(pid: u32, table: &str, addr: SocketAddr, state: Opti
 
 fn netns_table_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
     let path = format!("/proc/{pid}/net/{table}");
-    let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
+    let table = read_proc_table(&path)?;
     Ok(table.lines().skip(1).any(|line| {
         if let Some(want) = state {
             if line.split_whitespace().nth(3) != Some(want) {
