@@ -21,6 +21,10 @@
 //! record names, never the view's.
 //! An executor that cannot be reached is replaced only on proof of its departure, never on
 //! silence.
+//!
+//! Each pass of a drive (its gates, its claim, its dispatch and the run's terminal) is one turn of
+//! its admin's park gate ([`crate::park_gate`]): a stopped admin begins none, and a stop waits for
+//! the pass in progress before it cuts.
 
 use crate::build::BuildId;
 use crate::build_claim::ClaimDoor;
@@ -442,7 +446,8 @@ pub struct DriveEnv {
     /// (`crate::node_rows::NodeRows::on_step`).
     pub rows: Arc<crate::node_rows::NodeRows>,
     /// The admin's park gate (`crate::park_gate`): a drive takes the view lock and calls executors,
-    /// so it begins each turn at the gate's wait point and a stop's quiesce waits for a turn of it.
+    /// so each of its passes is a turn begun at the gate's wait point, and a stop's quiesce waits for
+    /// the pass in progress.
     pub turns: crate::park_gate::ParkGate,
 }
 
@@ -758,6 +763,11 @@ impl DriveEnv {
         let mut handed_to: Option<PathName> = None;
         let mut departed: Option<String> = None;
         loop {
+            // Each pass is one turn of the admin's gate (park_gate.rs): it begins here, holding
+            // nothing, and while the admin is stopped it begins only once the admin starts. A pass in
+            // progress when a stop parks the gate runs to its end (the attempt it dispatched, its
+            // terminal handled) and the stop's quiesce waits for it, so nothing of it follows the cut.
+            let _turn = self.turns.turn("build-drive").await;
             if let Some(end) = self.may_act(drive).await {
                 return end;
             }

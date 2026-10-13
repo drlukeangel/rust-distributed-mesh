@@ -205,10 +205,13 @@ fn a_stop_cuts_only_once_no_turn_that_was_in_progress_at_the_park_is_still_runni
     let late: Vec<&Value> = named("rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|s| s["start_ns"].as_u64().unwrap() >= cut_began).collect();
     assert!(late.is_empty(), "the stopped admin published its mesh's aggregate after its cut began: {late:?}");
     // Nothing of the Build drive runs on past the cut: every span of a drive's trace, and of a run
-    // it called (its own trace), ended before the cut began. A drive held at the gate ends no span.
+    // it called (its own trace), ended before the cut began. The one exception is the span of a
+    // drive held at the gate's wait point (begun after the park, so it ran no pass): it ends when
+    // the cell's runtime drops it, with no outcome recorded, and nothing of it ran.
     let build_traces: std::collections::BTreeSet<&str> =
         spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.update.via-drive" || s["name"] == "rdm.node_admin.build.update.via-reconcile").filter_map(|s| s["trace_id"].as_str()).collect();
-    let after_cut: Vec<&Value> = spans.iter().filter(|s| s["trace_id"].as_str().is_some_and(|t| build_traces.contains(t)) && s["end_ns"].as_u64().unwrap() > cut_began).collect();
+    let held_at_the_gate = |s: &Value| s["name"] == "rdm.node_admin.build.update.via-drive" && s["attributes"].get("outcome").is_none();
+    let after_cut: Vec<&Value> = spans.iter().filter(|s| s["trace_id"].as_str().is_some_and(|t| build_traces.contains(t)) && s["end_ns"].as_u64().unwrap() > cut_began && !held_at_the_gate(s)).collect();
     assert!(after_cut.is_empty(), "the stopped admin's Build drive ran on past its cut (stop trace {stop_trace}): {after_cut:?}");
     println!(
         "stop trace {stop_trace}; quiesce waited for [{waited_for}] {} us, ended {} us before the cut began; spans in {}",
