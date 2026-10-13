@@ -113,8 +113,9 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     assert_eq!(frames.len(), 1, "{away_primary} publishes the NodeRestarting frame of {operation} once: {frames:?}");
     let version = s(&frames[0]["attributes"]["topology_version"]);
     assert!(!version.is_empty(), "the NodeRestarting frame carries the version of {away}'s aggregate at which {target} changed: {}", frames[0]);
-    let bumped: Vec<&Value> = named(&away_spans, "rdm.mesh.backbone.update.via-topology-version").into_iter().filter(|x| x["attributes"]["mesh"] == away && x["attributes"]["topology_version"] == version.as_str()).collect();
-    assert!(!bumped.is_empty(), "{away_primary} takes {away}'s topology_version {version}, the version the frame carries (the open overlay is in its aggregate)");
+    // The frame's version is taken by the publish itself, under the version lock (membership.rs `publish_status_event`), which
+    // emits no `via-topology-version` span; that span belongs to the round path. So the proof that the frame's version is
+    // the aggregate's is the other primary installing and forwarding the aggregate at exactly that version, below.
     // The other mesh's primary installs that aggregate from the backbone and forwards it onto its own mesh.
     let home_spans = spans_of(&estate, pids[&home_primary]);
     let installed: Vec<&Value> = named(&home_spans, "rdm.mesh.membership.update.via-snapshot-installed")
