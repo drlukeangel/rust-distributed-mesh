@@ -133,7 +133,7 @@ impl InnerStream for Played {
 
 #[async_trait::async_trait]
 impl Dispatcher for Script {
-    async fn dispatch(&self, _executor: &PathName, build_id: &BuildId, attempt: u32, _context: CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, _executor: &PathName, build_id: &BuildId, attempt: u32, _context: CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         let acts = self.acts.lock().unwrap().take().expect("one dispatch");
         Dispatched::Stream(Box::new(Played { acts: acts.into(), view: self.view.clone(), records: self.records.clone(), build_id: build_id.to_string(), attempt, done: false }))
     }

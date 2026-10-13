@@ -618,10 +618,11 @@ impl Dispatcher for RpcDispatcher {
     fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<crate::build_run::HeldRun> {
         (*me == self.me).then(|| self.local.hold(build_id, attempt)).flatten()
     }
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched {
+    async fn dispatch(&self, turn: &crate::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched {
         if *executor == self.me {
-            // The fabric-primary runs the attempt itself: it plans from the log the claim was decided on.
-            return local_dispatched(self.local.attempt_run(build_id, attempt, &executor.to_string(), &context, &[], &plan).await);
+            // The fabric-primary runs the attempt itself: it plans from the log the claim was decided
+            // on, and the run's turn is begun under the drive pass's.
+            return local_dispatched(self.local.attempt_run_under(turn, build_id, attempt, &executor.to_string(), &context, &[], &plan).await);
         }
         let node_id = self.topology.read().await.members().find(|n| n.name == *executor).map(|n| n.node_id.clone());
         let Some(node_id) = node_id else {

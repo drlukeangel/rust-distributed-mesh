@@ -281,7 +281,7 @@ struct Local(Arc<RunDoor>);
 
 #[async_trait::async_trait]
 impl Dispatcher for Local {
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         local_dispatched(self.0.attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
     }
 }
@@ -1007,7 +1007,7 @@ struct LostAfterStopNode {
 
 #[async_trait::async_trait]
 impl Dispatcher for LostAfterStopNode {
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         use rafka_node_rpc_contract::build::BuildReply;
         let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.to_string(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
         let run = {

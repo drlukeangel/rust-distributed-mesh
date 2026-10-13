@@ -194,8 +194,10 @@ pub trait InnerStream: Send {
 pub trait Dispatcher: Send + Sync {
     /// `build.attempt.run` for `attempt` of `build_id` at `executor`, carrying the won claim, the
     /// Build's intent (`intent`: postcard frames of the Build topic's message) and the run the
-    /// fabric-primary planned (`plan`): the operations the executor runs and nothing else.
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched;
+    /// fabric-primary planned (`plan`): the operations the executor runs and nothing else. `turn` is
+    /// the drive pass's turn of the admin's gate: a run this admin makes itself begins its own turn
+    /// under it, never waiting at the gate for the pass that waits on it.
+    async fn dispatch(&self, turn: &crate::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched;
     /// Hold the run of `attempt` of `build_id` on the admin `me` (the drive's own) while a step of the
     /// Build runs in the drive itself (the holder's own node.primary.update): a dispatch of the attempt
     /// to `me` reattaches to it ([`crate::build_run::HeldRun`]). `None` when it holds no run here.
@@ -850,7 +852,7 @@ impl DriveEnv {
             // nothing, and while the admin is stopped it begins only once the admin starts. A pass in
             // progress when a stop parks the gate runs to its end (the attempt it dispatched, its
             // terminal handled) and the stop's quiesce waits for it, so nothing of it follows the cut.
-            let _turn = self.turns.turn("build-drive").await;
+            let turn = self.turns.turn("build-drive").await;
             if let Some(end) = self.may_act(drive).await {
                 return end;
             }
@@ -864,7 +866,7 @@ impl DriveEnv {
                     // the Build ended holds no frame of it. The executor of the last attempt replays
                     // it from the receipts it wrote itself, and the facts of earlier attempts are
                     // read; the Build topic's step facts are never the answer for the last attempt.
-                    if let Some(end) = self.reattach_to_ended(drive, &p).await {
+                    if let Some(end) = self.reattach_to_ended(&turn, drive, &p).await {
                         return end;
                     }
                 }
@@ -958,7 +960,7 @@ impl DriveEnv {
                 Ok(claimed) => Some(world(drive, &claimed, &self.topology.read().await.clone())),
                 Err(_) => None,
             };
-            let inner = self.run_inner(drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
+            let inner = self.run_inner(&turn, drive, &id, attempt, &executor, context, plan).instrument(dspan.clone()).await;
             drive.clear_stall();
             match inner {
                 Inner::Terminal(t @ BuildReply::Complete { .. }) => {
@@ -1283,7 +1285,7 @@ impl DriveEnv {
 
     /// A complete Build this drive made no call of: attach to the last attempt's executor and read
     /// its frames. `None` when the attached run ended `Complete`; otherwise the end of the drive.
-    async fn reattach_to_ended(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
+    async fn reattach_to_ended(&self, turn: &crate::park_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
         let id = &drive.build_id;
         self.replay(drive, &p.steps, 0, p.attempt).await;
         let named = p.executor.clone().unwrap_or_default();
@@ -1294,7 +1296,7 @@ impl DriveEnv {
         drive.note_first_attempt(p.attempt);
         let context = self.door.contexts.get(id, p.attempt).await.ok().flatten().unwrap_or_default();
         let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %self.me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
-        let why = match self.run_inner(drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
+        let why = match self.run_inner(turn, drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
             Inner::Terminal(BuildReply::Complete { .. }) => {
                 span.record("outcome", "complete");
                 return None;
@@ -1337,9 +1339,10 @@ impl DriveEnv {
         }
     }
 
-    async fn run_inner(&self, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext, plan: RunPlan) -> Inner {
+    #[allow(clippy::too_many_arguments)]
+    async fn run_inner(&self, turn: &crate::park_gate::Turn, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext, plan: RunPlan) -> Inner {
         let intent = self.intent_of(id).await;
-        let mut stream = match self.dispatcher.dispatch(executor, id, attempt, context, intent, plan).await {
+        let mut stream = match self.dispatcher.dispatch(turn, executor, id, attempt, context, intent, plan).await {
             Dispatched::Stream(s) => s,
             Dispatched::Refused(r) => return Inner::Refused(r),
             Dispatched::Unreached(why) => return Inner::Unreached(why),

@@ -8,7 +8,8 @@
 //!   admin always serves its start (node-start: start is the only exit from stopped Leaving), and
 //!   each turn waits before it sends. A turn already past its wait point when the gate parks runs to
 //!   the end of that turn: a stop parks with [`ParkGate::quiesce`], which resolves once every such
-//!   turn has ended, so nothing a turn does follows the stop's cut;
+//!   turn has ended, so nothing a turn does follows the stop's cut. Work a turn starts on a task of
+//!   its own and waits on begins its own turn under it ([`Turn::under`]), never at the wait point;
 //! - a task that takes no such lock is spawned through the gate ([`ParkGate::spawn`]): while the
 //!   gate is parked its future is not polled, so it holds its place at the await it was at.
 //! Work a stop retires with the birth instead of holding it runs as [`ParkGate::until_parked`]: it
@@ -51,6 +52,18 @@ pub struct ParkGate {
 pub struct Turn {
     state: Arc<watch::Sender<GateState>>,
     task: &'static str,
+}
+
+impl Turn {
+    /// A turn of `task` begun under this one, at once, whether the gate is parked or not: for work
+    /// this turn starts on a task of its own and waits on (a drive pass's own run of the attempt it
+    /// dispatched), which would otherwise wait at the gate for the turn that waits on it. This turn
+    /// was past its wait point, so the stop's quiesce has not resolved; it waits for the new turn as
+    /// for every other, until the work drops it.
+    pub fn under(&self, task: &'static str) -> Turn {
+        self.state.send_modify(|s| *s.turns.entry(task).or_default() += 1);
+        Turn { state: self.state.clone(), task }
+    }
 }
 
 impl Drop for Turn {

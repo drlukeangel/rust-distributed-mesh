@@ -559,7 +559,7 @@ struct Held;
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::build_drive::Dispatcher for Held {
-    async fn dispatch(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_node_admin_core::build::BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, _: &rafka_node_admin_core::model::PathName, _: &rafka_node_admin_core::build::BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
         std::future::pending().await
     }
 }

@@ -17,6 +17,12 @@
 //!   and is never a step outcome.
 //! - **a cut call cancels nothing.** The run is its own task; the stream is a view of its
 //!   [`RunLog`]. Only a failed step or a fence ends an attempt.
+//! - **a run is a turn of the admin's park gate** (park_gate.rs). A run served for a call begins
+//!   its turn at its own wait point, before it runs anything: while the admin is stopped it waits
+//!   there, and a stop's quiesce waits for a run already past it, so nothing a run does follows the
+//!   stop's cut. A run the admin's own drive pass dispatches to itself begins its turn under the
+//!   pass's ([`crate::park_gate::Turn::under`]): it never waits at the gate for the pass that waits
+//!   on it.
 
 use crate::build::BuildId;
 use crate::build_state::{AttemptOutcome, BuildFact, BuildProjection, BuildState, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
@@ -503,6 +509,18 @@ impl RunDoor {
     /// primary (R-BI7): the attempt is read, run and receipted in the lane, numbered in the lane.
     #[allow(clippy::too_many_arguments)]
     pub async fn attempt_run_in(&self, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+        self.serve(None, lane, build_id, attempt, executor, context, intent, plan).await
+    }
+
+    /// [`Self::attempt_run`] for the fabric-primary's own drive pass dispatching the attempt to this
+    /// admin, in the pass's `turn`: the run begins its own turn under it, at once, parked gate or not
+    /// (the pass waits on the run; a run waiting at the gate for it would hold the stop's quiesce).
+    pub async fn attempt_run_under(&self, turn: &crate::park_gate::Turn, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+        self.serve(Some(turn), None, build_id, attempt, executor, context, intent, plan).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn serve(&self, under: Option<&crate::park_gate::Turn>, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         let span = tracing::info_span!(
             "rdm.node_admin.build.serve.via-attempt-run",
             node = %self.me,
@@ -512,7 +530,7 @@ impl RunDoor {
             executor,
             outcome = tracing::field::Empty,
         );
-        let attached = self.attach_or_start(lane, build_id, attempt, executor, context, intent, plan).instrument(span.clone()).await;
+        let attached = self.attach_or_start(under, lane, build_id, attempt, executor, context, intent, plan).instrument(span.clone()).await;
         span.record(
             "outcome",
             match &attached {
@@ -539,7 +557,7 @@ impl RunDoor {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn attach_or_start(&self, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+    async fn attach_or_start(&self, under: Option<&crate::park_gate::Turn>, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         if executor != self.me.to_string() {
             tracing::info_span!("rdm.node_admin.build.reject.via-not-executor", node = %self.me, build_id = %build_id, attempt, named = executor)
                 .in_scope(|| tracing::info!("the claim names another admin as the executor"));
@@ -582,12 +600,30 @@ impl RunDoor {
             return Attached::Live { disposition: Disposition::Reattached, replay, reader };
         }
         let reader = log.reader();
+        // The run's turn of the admin's gate: under the drive pass that dispatched it here, begun now;
+        // for a served call, begun by the run itself at its wait point, before it runs anything.
+        let gated = tracing::info_span!("rdm.node_admin.build.serve.via-run-turn", node = %self.me, build_id = %build_id, lane = lane.unwrap_or("fabric"), attempt, turn = tracing::field::Empty);
+        let held = under.map(|t| t.under("build-run"));
+        let gate = self.gate.clone();
         let (exec, runs, build_id, context, plan, lane) = (self.exec.clone(), self.runs.clone(), build_id.clone(), context.clone(), plan.clone(), lane.map(str::to_string));
         let run = log.clone();
         let task = tokio::spawn(
             {
                 let runs = runs.clone();
                 async move {
+                    let _turn = match held {
+                        Some(t) => {
+                            gated.record("turn", "under-drive-pass");
+                            t
+                        }
+                        None => {
+                            let waited = gate.is_parked();
+                            let t = gate.turn("build-run").instrument(gated.clone()).await;
+                            gated.record("turn", if waited { "waited-for-start" } else { "begun" });
+                            t
+                        }
+                    };
+                    drop(gated);
                     let r = exec.run_attempt(&build_id, lane.as_deref(), attempt, &context, &plan).await;
                     run.finish(terminal_of(&build_id, &r, run.last_failed_step()));
                     runs.end(&build_id, lane.as_deref(), attempt);

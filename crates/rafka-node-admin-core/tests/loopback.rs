@@ -98,7 +98,7 @@ impl Dispatcher for Loopback {
     fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<rafka_node_admin_core::build_run::HeldRun> {
         self.door(me).hold(build_id, attempt)
     }
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         if self.lost.lock().unwrap().contains(&executor.to_string()) {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }

@@ -125,7 +125,7 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, ParkGate, R
 /// `build.attempt.run` for a fabric-primary elsewhere and its run is inside its first operation when
 /// the admin's stop parks its gate. The stop's quiesce names the run (`build-run`) among the turns it
 /// waits for and resolves only once the run has ended: every call the run makes (its second
-/// operation included) and its reconcile span end before the stop's cut. Must NOT happen: a quiesce
+/// operation, on the parked gate, included) and its reconcile span end before the stop's cut. Must NOT happen: a quiesce
 /// that resolves while the run is mid-operation, so the stopped admin's run calls out after its cut.
 #[tokio::test(start_paused = true)]
 async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cut_and_calls_out_no_more() {
@@ -154,7 +154,8 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
         terminal = Some(f);
     }
     let (at, cut_at) = cut.await.unwrap();
-    assert_eq!(calls.log(), vec!["call create-mesh:mesh2".to_string(), "call create-mesh:mesh3".into(), "stop cut".into()], "every call of the run precedes the stop's cut: none follows it");
+    // The run was past its wait point at the park: its second operation runs on the parked gate, before the cut.
+    assert_eq!(calls.log(), vec!["call create-mesh:mesh2".to_string(), "call create-mesh:mesh3 (gate parked)".into(), "stop cut".into()], "every call of the run precedes the stop's cut: none follows it");
     assert!(matches!(terminal, Some(BuildReply::Complete { attempt: 1, .. })), "the run ran to its terminal before the cut: {terminal:?}");
     assert_eq!(at.named(), "build-run", "the quiesce waited for the run's turn, by name");
 
@@ -163,7 +164,9 @@ async fn a_run_served_for_a_remote_fabric_primary_ends_before_its_admins_stop_cu
     let reconcile = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile").expect("the run's reconcile span was exported");
     let cut_ns = cut_at.duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
     assert!(reconcile["end_ns"].as_u64().unwrap() <= cut_ns, "the run's reconcile ended before the stop's cut: {reconcile}");
-    println!("trace {} reconcile {}", reconcile["trace_id"], reconcile["attributes"]);
+    let turn = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.serve.via-run-turn").expect("the run's turn span was exported");
+    assert_eq!(turn["attributes"]["turn"], "begun", "the served run began its own turn at its wait point: {turn}");
+    println!("trace {} reconcile {} turn {}", reconcile["trace_id"], reconcile["attributes"], turn["attributes"]);
 }
 
 /// CONTRACT (node-stop: a stopped node does nothing outward until it is started; park_gate.rs:5-11):
@@ -194,5 +197,55 @@ async fn a_run_served_while_its_admin_is_stopped_calls_out_only_once_the_admin_s
     let spans = capture.spans();
     crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap()));
     let reconcile = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile").expect("the run's reconcile span was exported");
-    println!("trace {} reconcile {}", reconcile["trace_id"], reconcile["attributes"]);
+    let turn = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.serve.via-run-turn").expect("the run's turn span was exported");
+    assert_eq!(turn["attributes"]["turn"], "waited-for-start", "the stopped admin's run waited at the gate until the start: {turn}");
+    println!("trace {} reconcile {} turn {}", reconcile["trace_id"], reconcile["attributes"], turn["attributes"]);
+}
+
+/// CONTRACT (park_gate.rs: a turn already past its wait point when the gate parks runs to its end;
+/// build_drive.rs, a pass is one turn and runs to its end, the attempt it dispatched included): the
+/// fabric-primary's own drive pass is past its wait point when its admin's stop parks the gate, and it
+/// dispatches the attempt to its own admin. The run begins its turn under the pass's at once, runs to
+/// its terminal, and the stop's quiesce resolves once the pass and the run have both ended: nothing of
+/// either follows the cut. Must NOT happen: the pass's own run waiting at the gate for the pass that
+/// waits on it, so neither ends and the stop never cuts.
+#[tokio::test(start_paused = true)]
+async fn a_drive_pass_dispatching_to_its_own_admin_on_a_parked_gate_runs_under_its_turn_and_never_waits_at_the_gate() {
+    let (capture, _guard) = capture("mesh1.admin.1");
+    let calls = Arc::new(Calls::default());
+    let (door, gate, plan) = executor(&calls, false).await;
+    let pass = gate.turn("build-drive").await;
+    let cut = tokio::spawn({
+        let (gate, calls) = (gate.clone(), calls.clone());
+        async move {
+            let at = gate.quiesce().await;
+            calls.push("stop cut".into());
+            at
+        }
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(gate.is_parked(), "the stop parked the gate while the pass was in its turn");
+    let Attached::Live { disposition, mut reader, .. } = door.attempt_run_under(&pass, &build_id(), 1, "mesh1.admin.1", &CallContext::default(), &[], &plan).await else { panic!("the pass's own attempt is started") };
+    assert_eq!(disposition, Disposition::Started);
+    let terminal = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut terminal = None;
+        while let Some(f) = reader.next().await {
+            terminal = Some(f);
+        }
+        terminal
+    })
+    .await
+    .expect("the pass's own run reached its terminal: it did not wait at the gate for the pass");
+    assert!(matches!(terminal, Some(BuildReply::Complete { attempt: 1, .. })), "{terminal:?}");
+    assert_eq!(calls.log(), vec!["call create-mesh:mesh2 (gate parked)".to_string(), "call create-mesh:mesh3 (gate parked)".into()], "the run of a pass past its wait point ran, and the stop has not cut");
+    drop(pass);
+    let at = cut.await.unwrap();
+    assert_eq!(at.named(), "build-drive", "at the park only the pass was in a turn");
+    assert_eq!(calls.log().last().map(String::as_str), Some("stop cut"), "the stop cut once the pass and its run had ended");
+    let spans = capture.spans();
+    crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap()));
+    let turn = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.serve.via-run-turn").expect("the run's turn span was exported");
+    assert_eq!(turn["attributes"]["turn"], "under-drive-pass", "the run's turn was begun under the pass's: {turn}");
+    let reconcile = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile").expect("the run's reconcile span was exported");
+    println!("trace {} reconcile {} turn {}", reconcile["trace_id"], reconcile["attributes"], turn["attributes"]);
 }
