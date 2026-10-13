@@ -82,5 +82,6 @@ mod status_declarations;
 mod status_seat_fold;
 mod stopped_delete;
 mod stopped_gc;
+mod stopped_view;
 mod store_root_boot;
 mod topology_read;
