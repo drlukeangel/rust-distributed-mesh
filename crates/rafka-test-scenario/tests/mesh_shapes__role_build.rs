@@ -12,7 +12,7 @@
 
 use crate::build_log;
 use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeView};
-use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
+use rafka_test_scenario::estate::{wait_for, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -81,8 +81,16 @@ async fn roles_are_born_by_build_under_their_kind() {
     assert_eq!(fabric_primaries[0]["kind"], "node_admin");
 
     // Every node, whatever its kind, publishes its own CPU and RAM in its mesh digest, and the
-    // node-admin's view serves it.
-    for n in &nodes {
+    // node-admin's view serves it. The load travels on the node's own digest only (the primary's
+    // aggregate omits loads, rafka-mesh-transport membership.rs `publish`), so the view serves it once
+    // this admin has heard that digest, which can follow the status the aggregate carried.
+    let names: BTreeSet<String> = nodes.iter().map(|n| n["name"].as_str().unwrap().to_string()).collect();
+    let loaded: Vec<Value> = wait_for("every node's own digest, with its load, in the admin's view", Duration::from_secs(15), || async {
+        let now = Estate::values(&estate.settles_to_named(&names, Duration::from_secs(15)).await);
+        now.iter().all(|n| n["load"]["ram_used_bytes"].as_u64().is_some_and(|b| b > 0)).then_some(now)
+    })
+    .await;
+    for n in &loaded {
         let l = &n["load"];
         assert!(l["ram_used_bytes"].as_u64().is_some_and(|b| b > 0), "{} carries its resident memory: {n}", n["name"]);
         assert!(l["ram_budget_bytes"].as_u64() >= l["ram_used_bytes"].as_u64(), "{} memory ceiling: {n}", n["name"]);
