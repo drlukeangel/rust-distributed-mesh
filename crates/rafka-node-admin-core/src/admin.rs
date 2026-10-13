@@ -3580,6 +3580,9 @@ pub struct GossipLifecycle {
     /// This admin's mesh.delete door, once its runner exists: every birth this executor publishes
     /// deleted is handed to it (mesh-left follows the final primary's exit proof, R-MD1 item 2).
     pub leaver: crate::mesh_leave::LeaverSlot,
+    /// This admin's view projected and installed at once ([`view_projector`]): a stop this executor
+    /// applied to its own book is in its view before the next step decides from it, as a moved row is.
+    pub project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
 }
 
 #[async_trait::async_trait]
@@ -3612,6 +3615,11 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             // version at which its stop changed the birth. The stop of a deleted mesh's last admin
             // makes this fabric-primary that mesh's publisher of record (gossip.md "Mesh delete").
             self.backbone.publish_status_event(rafka_mesh_transport::membership::StatusEvent::Stopped, op).await;
+            // The view reads the book at once: the stopped birth is listed stopped before the
+            // operation's next step decides from the view (a replace's node.name.update of it).
+            if let Some(project) = &self.project {
+                project().await;
+            }
             tracing::info!("the node is stopped: every mesh drops it from its book; no heartbeat of it ends the stop, only this mesh-primary's node.joined");
         }
         .instrument(span)
@@ -5786,7 +5794,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 node_id: node_id.clone(),
                                 endpoint: Some(endpoint.clone()),
                                 node_rpc: node_rpc.clone(),
-                                lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: name.clone(), leaver: leaver.clone() })),
+                                lifecycle_events: crate::wiring::apply(wiring.lifecycle_events.take(), Arc::new(GossipLifecycle {
+                                    membership: membership.clone(),
+                                    backbone: backbone.clone(),
+                                    me: name.clone(),
+                                    leaver: leaver.clone(),
+                                    project: Some(view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone())),
+                                })),
                                 leaves: Arc::new(crate::mesh_leave::LeaveBook::default()),
                                 leave_runs: crate::mesh_leave::LeaveRuns::default(),
                                 handover: handover.clone(),
