@@ -8,6 +8,8 @@
 //! running is never recovered; a repeat submit is answered, never run twice; an exit during a
 //! workflow fails that workflow and the next tick recovers the member.
 
+use crate::build_log;
+use rafka_node_admin_client::{BuildFrame, CallEnd, Change, PathName};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::process_faults::{ExactRuntime, Fault};
 use serde_json::{json, Value};
@@ -33,22 +35,30 @@ fn live(node: &Value) -> bool {
     matches!(node["status"].as_str(), Some("pending" | "ready-for-traffic" | "draining"))
 }
 
-/// `GET /api/nodes` from the admin at `base`, or `None` while it does not answer (an admin being
-/// replaced, a successor not bound yet).
-async fn view_of(base: &str) -> Option<Vec<Value>> {
-    let http = reqwest::Client::builder().timeout(Duration::from_secs(2)).build().ok()?;
-    let r = http.get(format!("{base}/api/nodes")).send().await.ok()?;
-    let v: Value = r.json().await.ok()?;
-    v["nodes"].as_array().cloned()
+/// Every admin's view at `admins` holds at most one live birth at `path`. An admin that does not answer
+/// `node.get` for this Fabric within 2 s (being replaced, a successor not bound yet) is skipped.
+async fn at_most_one_live_birth(estate: &Estate, admins: &[PathName], path: &str) {
+    for admin in admins {
+        let Some(views) = estate.node_views_at(admin).await else { continue };
+        let at: Vec<(String, String)> = Estate::values(&views).iter().filter(|n| n["name"] == path && live(n)).map(|n| (s(&n["node_id"]), s(&n["status"]))).collect();
+        assert!(at.len() <= 1, "the view of {admin} holds two live births at {path}: {at:?}");
+    }
 }
 
-/// Every admin's view at `bases` holds at most one live birth at `path`.
-async fn at_most_one_live_birth(bases: &[String], path: &str) {
-    for base in bases {
-        let Some(nodes) = view_of(base).await else { continue };
-        let at: Vec<(String, String)> = nodes.iter().filter(|n| n["name"] == path && live(n)).map(|n| (s(&n["node_id"]), s(&n["status"]))).collect();
-        assert!(at.len() <= 1, "the view of {base} holds two live births at {path}: {at:?}");
-    }
+/// The node at `name` once `holds` is true of what `node.get` lists there, as the JSON the view
+/// serializes to.
+async fn until_node_where(estate: &Estate, name: &str, what: &str, within: Duration, holds: impl Fn(&Value) -> bool) -> Value {
+    estate
+        .until_node(name, what, within, |n| {
+            let v = serde_json::to_value(n?).expect("a view serializes");
+            holds(&v).then_some(v)
+        })
+        .await
+}
+
+/// The node at `name` once it is listed ready under a node id other than `before`'s.
+async fn until_new_birth(estate: &Estate, name: &str, before: &Value, within: Duration) -> Value {
+    until_node_where(estate, name, &format!("{name} ready as a new node"), within, |n| ready(n) && n["node_id"] != before["node_id"]).await
 }
 
 /// The predecessor `old`'s stop published its departure (`NodeStopped`) before its rename and before
@@ -76,34 +86,27 @@ fn assert_parked_before_the_successor(spans: &[Value], build: &str, attempt: &st
     assert!(dropped.len() >= admins, "each of the {admins} admins dropped the parked {node} from its book on its NodeStopped: {dropped:?}");
 }
 
+/// A fabric born at `shape` (each `(mesh, node_admin, rpc_node)`) by `build.create`, followed to its
+/// terminal frame, the view settled on it within `settle` and the fabric ready-for-traffic; the birth
+/// Build's id. The cells hold, kill and replace members: workflows the initial fabric refuses until it has
+/// first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+async fn fabric_of(test: &str, shape: &[(&str, u32, u32)], settle: Duration) -> (Estate, String) {
+    let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    let born = estate.reconcile_shape("fabric1", shape).await;
+    estate.settles_to(shape, settle).await;
+    estate.until_fabric_ready(SETTLE).await;
+    (estate, born.build_id.to_string())
+}
+
 /// mesh1 with two node-admins and three rpc nodes, through the rectifier; the birth Build's id.
 async fn estate(test: &str) -> (Estate, String) {
-    let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]})).await;
-    assert_eq!(status, 202, "{a}");
-    let build = s(&a["build_id"]);
-    estate.await_build(&build, SETTLE).await;
-    estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(60)).await;
-    // The initial fabric refuses a node replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
-    estate.until_fabric_ready(SETTLE).await;
-    (estate, build)
+    fabric_of(test, &[("mesh1", 2, 3)], Duration::from_secs(60)).await
 }
 
 /// Two meshes, so a mesh2 node is launched by mesh2's admin and proven by the fabric-primary in mesh1,
 /// which did not launch it and so cannot read its exit code from a child handle.
 async fn two_mesh_estate(test: &str) -> (Estate, String) {
-    let estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 2}, {"name": "mesh2", "node_admin": 1, "rpc_node": 2}]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    let build = s(&a["build_id"]);
-    estate.await_build(&build, SETTLE).await;
-    estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(90)).await;
-    // The cells hold, kill and replace members: workflows the initial fabric refuses until it has first
-    // reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
-    estate.until_fabric_ready(SETTLE).await;
-    (estate, build)
+    fabric_of(test, &[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(90)).await
 }
 
 /// The mesh-primary's recovery submit for `node`, once exported (node-recovery.md: the tickle,
@@ -130,28 +133,33 @@ fn placement(nodes: &[Value]) -> (String, String, Value) {
 
 /// The exact runtime `node`'s birth published in its data dir: the fault door acts on it alone.
 async fn exact_runtime(estate: &Estate, node: &str) -> ExactRuntime {
-    let dir = estate.data_dir_of(node).await;
+    let dir = estate.data_dir(node).await;
     ExactRuntime::published(Path::new(&dir)).unwrap_or_else(|r| panic!("{node}: no exact runtime published in {dir}: {r:?}"))
 }
 
-/// The highest attempt of Build `build` as the admin at `api` holds it.
-async fn attempt_at(estate: &Estate, api: &str, build: &str) -> u64 {
-    let (_, b) = estate.http_get(api, &format!("/api/builds?id={build}")).await;
-    b["attempt"].as_u64().unwrap_or_else(|| panic!("Build {build} at {api} names no attempt: {b}"))
+/// The highest attempt of Build `build` as the Build log of the node-admin `admin` holds it.
+async fn attempt_at(estate: &Estate, admin: &PathName, build: &str) -> u64 {
+    let b = build_log::build_value(&estate.carrier_at(admin).await, build).await;
+    b["attempt"].as_u64().unwrap_or_else(|| panic!("Build {build} at {admin} names no attempt: {b}"))
+}
+
+/// The receipts of the recovery of `node` at `attempt` a Build holds: its node.delete's `retire-node:<node>`
+/// NodeDeleted receipt, and the Complete of its last operation, node.update (`update-node:<node>`).
+fn recovery_receipts(b: &Value, node: &str, attempt: &str) -> Option<(Value, Value)> {
+    let (delete, update) = (format!("retire-node:{node}"), format!("update-node:{node}"));
+    let steps = b["steps"].as_array().cloned().unwrap_or_default();
+    let at = |operation: &str, step: &str| steps.iter().find(|r| r["operation"] == operation && r["step"] == step && r["attempt"].to_string() == attempt && r["outcome"] == "complete").cloned();
+    Some((at(&delete, "NodeDeleted")?, at(&update, "Complete")?))
 }
 
 /// The fabric-primary's own Build log holds the recovery of `node` at `attempt`, heard on the Build
 /// topic: its node.delete's `retire-node:<node>` NodeDeleted receipt, and the Complete of its last
 /// operation, node.update (`update-node:<node>`).
-async fn fp_recovery_receipts(estate: &Estate, fp_api: &str, build: &str, node: &str, attempt: &str) -> (Value, Value) {
-    let (delete, update) = (format!("retire-node:{node}"), format!("update-node:{node}"));
-    wait_for("the fabric-primary holds the recovery's receipts", Duration::from_secs(30), || async {
-        let (_, b) = estate.http_get(fp_api, &format!("/api/builds?id={build}")).await;
-        let steps = b["steps"].as_array().cloned().unwrap_or_default();
-        let at = |operation: &str, step: &str| steps.iter().find(|r| r["operation"] == operation && r["step"] == step && r["attempt"].to_string() == attempt && r["outcome"] == "complete").cloned();
-        Some((at(&delete, "NodeDeleted")?, at(&update, "Complete")?))
-    })
-    .await
+async fn fp_recovery_receipts(estate: &Estate, fp: &PathName, build: &str, node: &str, attempt: &str) -> (Value, Value) {
+    let held = build_log::build_fact(&estate.carrier_at(fp).await, build, "the recovery's receipts", Duration::from_secs(30), |p| recovery_receipts(&serde_json::to_value(p).expect("a Build view serializes"), node, attempt).is_some())
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
+    recovery_receipts(&serde_json::to_value(held).expect("a Build view serializes"), node, attempt).expect("the receipts were just held")
 }
 
 /// CONTRACT: a rpc node whose mesh transport stops for good exits (reserved code 4, recorded in
@@ -168,29 +176,25 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let (estate, birth_build) = two_mesh_estate("a_transport_stopped_exit_is_restarted_as_the_same_node").await;
     // The node lives in the mesh that does NOT hold the fabric-primary: its own mesh-primary is the
     // reconciler, and it submits the recovery across meshes to the fabric-primary.
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
     let mesh = if primary["mesh"] == "mesh1" { "mesh2" } else { "mesh1" };
     let node = format!("{mesh}.rpc.1");
     let node_path = node.as_str();
     let mesh_primary = s(&nodes.iter().find(|n| n["mesh"] == mesh && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the node's mesh-primary")["name"]);
-    let before = estate.node(node_path).await;
-    let data_dir = estate.data_dir_of(node_path).await;
+    let before = estate.node_value(node_path).await;
+    let data_dir = estate.data_dir(node_path).await;
     let others: Vec<(String, String)> = nodes.iter().filter(|n| n["name"] != node_path).map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
 
     // The real transport-stop path: the testkit door marks the transport stopped; the process exits through it.
     let marked = estate.probe(&["stop-transport", "--target", &format!("path:{node_path}"), "--key", "x"]);
     assert_eq!(marked["outcome"], "Reply", "{marked}");
 
-    let after = wait_for(&format!("{node_path} ready as a new node"), SETTLE, || async {
-        let n = estate.node_opt(node_path).await?;
-        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
-    })
-    .await;
+    let after = until_node_where(&estate, node_path, &format!("{node_path} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_ne!(after["node_id"], before["node_id"], "recovery creates a new node.id");
     assert_ne!(after["incarnation_id"], before["incarnation_id"], "and a new incarnation");
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
-    assert_eq!(estate.data_dir_of(node_path).await, data_dir, "the same data dir");
+    assert_eq!(estate.data_dir(node_path).await, data_dir, "the same data dir");
     assert_ne!(after["deployment_id"], before["deployment_id"], "a new runtime");
 
     // The mesh-primary proved the exit and submitted the recovery, keyed on the exited birth.
@@ -206,11 +210,11 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
     let attempt = s(&recovery["attributes"]["attempt"]);
     // The submit followed the recovery to its terminal frame and records it (never "submitted").
     assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "the recovery's terminal: {recovery}");
-    let build = estate.await_build(&birth_build, SETTLE).await;
-    assert_eq!(build["build_id"], birth_build.as_str(), "no Build was minted: {build}");
+    let build = build_log::attempt_complete(&estate.carrier().await, &birth_build, attempt.parse().expect("an attempt"), SETTLE).await;
+    assert_eq!(build.build_id.as_str(), birth_build, "no Build was minted: {build:?}");
     // The fabric-primary heard the recovery's receipts on the Build topic (its recovery dedup reads
     // them): the delete's NodeDeleted naming the exited birth, and the update's Complete.
-    let heard = fp_recovery_receipts(&estate, &s(&primary["admin_api_base"]), &birth_build, node_path, &attempt).await;
+    let heard = fp_recovery_receipts(&estate, &Estate::path(&s(&primary["name"])), &birth_build, node_path, &attempt).await;
     assert_eq!(heard.0["output"]["node_id"], before["node_id"], "the fabric-primary's NodeDeleted names the exited node: {:?}", heard.0);
     assert_eq!(heard.0["output"]["incarnation"], before["incarnation_id"], "and its exact birth: {:?}", heard.0);
     assert!(heard.1["output"].is_null(), "Complete commits no output: {:?}", heard.1);
@@ -250,9 +254,9 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
 
     // Nothing else moved.
     for (name, id) in others {
-        assert_eq!(s(&estate.node(&name).await["node_id"]), id, "{name} is untouched");
+        assert_eq!(s(&estate.node_value(&name).await["node_id"]), id, "{name} is untouched");
     }
-    estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
+    estate.settles_to(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
     estate.shutdown().await;
 }
 
@@ -272,23 +276,19 @@ async fn a_transport_stopped_exit_is_restarted_as_the_same_node() {
 async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_dir() {
     let (estate, birth_build) = estate("any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_dir").await;
     const NODE: &str = "mesh1.rpc.3";
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let primary = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     let mesh_primary = s(&nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("the mesh-primary")["name"]);
     assert_eq!(mesh_primary, primary, "one mesh: its primary holds the fabric-primary seat too");
-    let before = estate.node(NODE).await;
-    let data_dir = estate.data_dir_of(NODE).await;
+    let before = estate.node_value(NODE).await;
+    let data_dir = estate.data_dir(NODE).await;
     let others: Vec<(String, String)> = nodes.iter().filter(|n| n["name"] != NODE).map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     estate.kill_node(NODE).await;
 
-    let after = wait_for(&format!("{NODE} ready as a new node"), SETTLE, || async {
-        let n = estate.node_opt(NODE).await?;
-        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
-    })
-    .await;
+    let after = until_node_where(&estate, NODE, &format!("{NODE} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_ne!(after["incarnation_id"], before["incarnation_id"], "a new incarnation");
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
-    assert_eq!(estate.data_dir_of(NODE).await, data_dir, "the same data dir");
+    assert_eq!(estate.data_dir(NODE).await, data_dir, "the same data dir");
 
     let recovery = recovery_span(&estate, NODE, &before["node_id"]).await;
     assert_eq!(s(&recovery["attributes"]["submitter"]), mesh_primary, "{recovery}");
@@ -349,14 +349,14 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
     assert!(!named(&spans, "rdm.node_admin.deployment.update.via-pipeline").into_iter().any(|sp| sp["attributes"]["pipeline"] == "recover"), "no recovery pipeline of its own");
     let drift: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-proven-drift").into_iter().filter(|sp| s(&sp["attributes"]["scope"]).contains(&format!("exited: {NODE}"))).collect();
     assert!(drift.is_empty(), "the fabric-primary opened a drift attempt for a member: {drift:?}");
-    assert!(nodes_named_old(&estate.nodes().await).is_empty(), "no <path>.old identity");
-    let (_, build) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+    assert!(nodes_named_old(&estate.node_values().await).is_empty(), "no <path>.old identity");
+    let build = build_log::build_value(&estate.carrier().await, &birth_build).await;
     assert_eq!(build["build_id"], birth_build.as_str(), "no Build was minted: {build}");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
     for (name, id) in others {
-        assert_eq!(s(&estate.node(&name).await["node_id"]), id, "{name} is untouched");
+        assert_eq!(s(&estate.node_value(&name).await["node_id"]), id, "{name} is untouched");
     }
-    estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
+    estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     estate.shutdown().await;
 }
 
@@ -375,8 +375,8 @@ async fn any_other_unplanned_exit_is_recovered_as_a_new_node_over_the_same_data_
 async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_completes() {
     let (estate, birth_build) = estate("a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_completes").await;
     const NODE: &str = "mesh1.rpc.2";
-    let before = estate.node(NODE).await;
-    let data_dir = estate.data_dir_of(NODE).await;
+    let before = estate.node_value(NODE).await;
+    let data_dir = estate.data_dir(NODE).await;
     let key_path = Path::new(&data_dir).join("node-key");
     let key = std::fs::read(&key_path).unwrap_or_else(|e| panic!("{NODE}'s node-key in {data_dir}: {e}"));
     std::fs::remove_file(&key_path).unwrap();
@@ -390,13 +390,9 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
     assert_eq!(s(&failed["attributes"]["build_id"]), birth_build, "{failed}");
     std::fs::write(&key_path, &key).unwrap();
 
-    let after = wait_for(&format!("{NODE} ready as a new node after its recovery failed"), Duration::from_secs(60), || async {
-        let n = estate.node_opt(NODE).await?;
-        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
-    })
-    .await;
+    let after = until_node_where(&estate, NODE, &format!("{NODE} ready as a new node after its recovery failed"), Duration::from_secs(60), |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
-    assert_eq!(estate.data_dir_of(NODE).await, data_dir, "the same data dir");
+    assert_eq!(estate.data_dir(NODE).await, data_dir, "the same data dir");
     let done = wait_for("the completed submit of the exited birth is exported", Duration::from_secs(60), || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("complete")) }).await;
     assert_eq!(s(&done["attributes"]["build_id"]), birth_build, "the same Build, no Build minted: {done}");
     assert_eq!(done["attributes"]["incarnation_id"], before["incarnation_id"], "keyed on the exact exited birth: {done}");
@@ -405,7 +401,7 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
     assert_eq!(s(&done["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{done}");
     assert!(s(&done["attributes"]["after_failed_attempt"]).parse::<u64>().is_ok_and(|a| a >= failed_attempt && a < attempt), "the submit follows a Failed one of the same birth: {done}");
 
-    let (_, build) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+    let build = build_log::build_value(&estate.carrier().await, &birth_build).await;
     let steps = build["steps"].as_array().cloned().unwrap_or_default();
     let deleted: Vec<&Value> = steps.iter().filter(|r| r["operation"] == format!("retire-node:{NODE}").as_str() && r["step"] == "NodeDeleted").collect();
     assert_eq!(deleted.len(), 1, "one node.delete of the exited birth, never again: {deleted:?}");
@@ -418,7 +414,7 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
     let reconcile = reconcile_span(&spans, &birth_build, &attempt.to_string()).expect("the attempt's reconcile span");
     assert_eq!(s(&reconcile["attributes"]["operations"]), format!("create-node:{NODE},update-node:{NODE}"), "only what was left: {reconcile}");
     estate.record_trace_url(done["trace_id"].as_str().unwrap_or(""));
-    estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
+    estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
     estate.shutdown().await;
 }
 
@@ -438,24 +434,15 @@ async fn a_recovery_whose_create_failed_after_its_delete_is_submitted_again_and_
 /// second node.delete of the exited birth, a Build minted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_the_mesh_primary_seat() {
-    let estate = Estate::bootstrap(owner("a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_the_mesh_primary_seat"), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}, {"name": "mesh2", "node_admin": 2, "rpc_node": 2}]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    let birth_build = s(&a["build_id"]);
-    estate.await_build(&birth_build, SETTLE).await;
-    estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
-    // The initial fabric refuses a node replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
-    estate.until_fabric_ready(SETTLE).await;
-    let nodes = estate.nodes().await;
+    let (estate, birth_build) = fabric_of("a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_takes_the_mesh_primary_seat", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
+    let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
     let mp = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
     let heir = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != mp.as_str()).expect("mesh2's second admin")["name"]);
     const NODE: &str = "mesh2.rpc.1";
-    let before = estate.node(NODE).await;
-    let data_dir = estate.data_dir_of(NODE).await;
+    let before = estate.node_value(NODE).await;
+    let data_dir = estate.data_dir(NODE).await;
     let key_path = Path::new(&data_dir).join("node-key");
     let key = std::fs::read(&key_path).unwrap_or_else(|e| panic!("{NODE}'s node-key in {data_dir}: {e}"));
     std::fs::remove_file(&key_path).unwrap();
@@ -480,22 +467,20 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
     .await;
     // No attempt for the member is in flight (one the killed primary opened or ran is continued by
     // the drive and fails on the missing key): only a later submit can bring the path back.
-    let (_, idle) = wait_for(&format!("no attempt for {NODE} is in flight in {birth_build}"), SETTLE, || async {
-        let (status, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+    let idle = build_log::build_fact(&estate.carrier().await, &birth_build, &format!("no attempt for {NODE} is in flight"), SETTLE, |p| {
+        let b = serde_json::to_value(p).expect("a Build view serializes");
         let running = matches!(b["state"].as_str(), Some("pending" | "running"));
         let member = b["action"]["action"] == "recover" && b["action"]["path"] == NODE;
-        (status == 200 && !(running && member)).then_some((status, b))
+        !(running && member)
     })
-    .await;
+    .await
+    .map(|p| serde_json::to_value(p).expect("a Build view serializes"))
+    .unwrap_or_else(|end| panic!("{end}"));
     std::fs::write(&key_path, &key).unwrap();
 
-    let after = wait_for(&format!("{NODE} ready as a new node after mesh2's seat moved"), SETTLE, || async {
-        let n = estate.node_opt(NODE).await?;
-        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
-    })
-    .await;
+    let after = until_node_where(&estate, NODE, &format!("{NODE} ready as a new node after mesh2's seat moved"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
-    assert_eq!(estate.data_dir_of(NODE).await, data_dir, "the same data dir");
+    assert_eq!(estate.data_dir(NODE).await, data_dir, "the same data dir");
     let done = wait_for("the completed submit of the exited birth is exported", Duration::from_secs(60), || async { submits(&estate.spans()).into_iter().find(|sp| s(&sp["attributes"]["outcome"]).starts_with("complete")) }).await;
     assert_eq!((s(&done["attributes"]["submitter"]), s(&done["attributes"]["fabric_primary"])), (heir.clone(), fp.clone()), "the admin that took the seat submitted over op 0x20 to {fp}: {done}");
     assert_eq!(s(&done["attributes"]["disposition"]), "created", "the fabric-primary opened the next attempt: {done}");
@@ -523,7 +508,7 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
     );
     let reconcile = reconcile_span(&spans, &birth_build, &attempt.to_string()).expect("the attempt's reconcile span");
     assert_eq!(s(&reconcile["attributes"]["operations"]), format!("create-node:{NODE},update-node:{NODE}"), "only what was left: {reconcile}");
-    let (_, build) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+    let build = build_log::build_value(&estate.carrier().await, &birth_build).await;
     let steps = build["steps"].as_array().cloned().unwrap_or_default();
     let deleted: Vec<&Value> = steps.iter().filter(|r| r["operation"] == format!("retire-node:{NODE}").as_str() && r["step"] == "NodeDeleted").collect();
     assert_eq!(deleted.len(), 1, "one node.delete of the exited birth, never again: {deleted:?}");
@@ -537,7 +522,7 @@ async fn a_failed_build_for_a_proven_exit_is_submitted_again_by_the_admin_that_t
         admitted["trace_id"].as_str().unwrap_or(""),
     );
     estate.record_trace_url(done["trace_id"].as_str().unwrap_or(""));
-    estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 2, 2)], SETTLE).await;
+    estate.settles_to(&[("mesh1", 1, 1), ("mesh2", 2, 2)], SETTLE).await;
     estate.shutdown().await;
 }
 
@@ -631,7 +616,7 @@ fn alive(pid: u64) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// CONTRACT: `POST /api/nodes/{name}/replace` replaces a live node as the next attempt of the
+/// CONTRACT: `build.create` of a Replace change replaces a live node as the next attempt of the
 /// accepted Build (reason replace, no Build minted) by Rafka's recipe (node-replace.md 1-3): one
 /// operation `replace-node:<path>`; the old birth stops (its connections deleted inside the stop), its NodeStopped drops it from
 /// every admin's book, and it is renamed `<path>.old` while parked; node.create then starts the
@@ -645,43 +630,41 @@ fn alive(pid: u64) -> bool {
 async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_data() {
     let (estate, birth_build) = estate("a_planned_replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_data").await;
     const NODE: &str = "mesh1.rpc.1";
-    let before = estate.node(NODE).await;
+    let before = estate.node_value(NODE).await;
     // The predecessor's process and data: Rafka's to move after the create, never RDM's.
     let pid = estate.pid_of(NODE).await;
-    let old_dir = std::path::PathBuf::from(estate.data_dir_of(NODE).await);
+    let old_dir = std::path::PathBuf::from(estate.data_dir(NODE).await);
     let segment = old_dir.join("app-data").join("seg-0");
     std::fs::create_dir_all(segment.parent().unwrap()).unwrap();
     std::fs::write(&segment, b"records").unwrap();
-    let (status, r) = estate.post(&format!("/api/nodes/{NODE}/replace"), &json!({})).await;
-    assert_eq!(status, 202, "{r}");
-    assert_eq!(s(&r["build_id"]), birth_build, "no Build is minted: {r}");
-    // The attempt is the Build's current attempt as the admin at the control API learns it.
-    let opened = wait_for("the replace attempt is the Build's current attempt", Duration::from_secs(30), || async {
-        let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
-        (b["reason"] == "replace").then_some(b)
-    })
-    .await;
+    let replace = estate.submit_change(Change::Replace { node: Estate::path(NODE), incarnation: None }).await;
+    assert_eq!(replace.build_id().as_str(), birth_build, "no Build is minted");
+    let attempt_no = u64::from(replace.attempt());
+    // The attempt is the Build's current attempt as the entry admin's Build log holds it.
+    let opened = build_log::build_fact(&estate.carrier().await, &birth_build, "the replace attempt is the Build's current attempt", Duration::from_secs(30), |p| serde_json::to_value(p).expect("a Build view serializes")["reason"] == "replace")
+        .await
+        .map(|p| serde_json::to_value(p).expect("a Build view serializes"))
+        .unwrap_or_else(|end| panic!("{end}"));
     assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("replace", NODE), "{opened}");
     assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "fenced to the live birth: {opened}");
-    let attempt_no = Estate::attempt_of(&r);
     // While the replace runs, no admin's view holds two live births at the path at any step
     // (node-replace.md: the predecessor is parked and renamed before node.create claims the freed
     // name). That the view named the predecessor `<path>.old` is read from the span below.
-    let admins: Vec<String> = estate.nodes().await.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["admin_api_base"])).collect();
+    let admins: Vec<PathName> = estate.node_values().await.iter().filter(|n| n["kind"] == "node_admin").map(|n| Estate::path(&s(&n["name"]))).collect();
     assert_eq!(admins.len(), 2, "both admins serve a view");
     let old_name = format!("{NODE}.old");
-    let (after, parked_at_ready, data_at_ready) = wait_for(&format!("{NODE} ready under a new NodeId"), SETTLE, || async {
-        at_most_one_live_birth(&admins, NODE).await;
-        let nodes = estate.nodes().await;
+    let ready_what = format!("{NODE} ready under a new NodeId");
+    let watch = wait_for(&ready_what, SETTLE, || async {
+        at_most_one_live_birth(&estate, &admins, NODE).await;
+        let nodes = estate.node_values().await;
         assert!(nodes.iter().filter(|n| n["name"] == NODE).count() <= 1, "two births at {NODE}: {nodes:#?}");
         let after = nodes.into_iter().find(|n| n["name"] == NODE && ready(n) && n["node_id"] != before["node_id"])?;
         Some((after, alive(pid), std::fs::read(&segment).ok()))
-    })
-    .await;
-    assert!(parked_at_ready, "the predecessor's process {pid} is alive, parked, when the successor is ready");
+    });
+    let (_, (after, alive_at_ready, data_at_ready)) = tokio::join!(estate.follow(replace), watch);
+    assert!(alive_at_ready, "the predecessor's process {pid} is alive, parked, when the successor is ready");
     assert_eq!(data_at_ready.as_deref(), Some(&b"records"[..]), "the predecessor's data is in its own directory when the successor is ready: {segment:?}");
 
-    estate.await_attempt(&birth_build, attempt_no, SETTLE).await;
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new node has a new transport key");
     let attempt = attempt_no.to_string();
     let spans = wait_for("the replace operation's last step, its reconcile span and the successor's boot span are exported", Duration::from_secs(60), || async {
@@ -717,13 +700,13 @@ async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_par
     // After the operation: the predecessor is parked with its data, the successor has none of it.
     assert!(alive(pid), "the predecessor's process {pid} is alive, parked, after the replace completed");
     assert_eq!(std::fs::read(&segment).unwrap(), b"records", "the predecessor's data stays where it was: {segment:?}");
-    let new_dir = std::path::PathBuf::from(estate.data_dir_of(NODE).await);
+    let new_dir = std::path::PathBuf::from(estate.data_dir(NODE).await);
     assert_ne!(new_dir, old_dir, "the successor has its own directory");
     assert!(!new_dir.join("app-data").exists(), "RDM handed nothing to the successor's directory: {new_dir:?}");
     // The shape is whole: two admins and three rpc nodes ready, the successor the one birth at the
     // path; the parked predecessor is no live birth.
-    let settled = wait_for("mesh1 holds 2 admins and 3 rpc nodes ready besides the parked predecessor", Duration::from_secs(30), || async {
-        let nodes = estate.nodes().await;
+    let settled = estate.until_view("mesh1 holds 2 admins and 3 rpc nodes ready besides the parked predecessor", Duration::from_secs(30), |views| {
+        let nodes = Estate::values(views);
         let rest: Vec<&Value> = nodes.iter().filter(|n| n["node_id"] != before["node_id"]).collect();
         let count = |kind: &str| rest.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == kind).count();
         (count("node_admin") == 2 && count("rpc_node") == 3 && rest.iter().all(|n| ready(n))).then_some(nodes)
@@ -741,7 +724,7 @@ async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_par
 const DELETE_PARKED_ORDER: [&str; 4] = ["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"];
 
 /// CONTRACT: the recipe's `node[1].delete` of the stopped predecessor a replace left at `<path>.old`
-/// (node-replace.md; node-decommission.md 2-4): `DELETE /api/nodes/<path>.old` is the next attempt of
+/// (node-replace.md; node-decommission.md 2-4): `build.create` of a RemoveNode change at `<path>.old` is the next attempt of
 /// the accepted Build (reason delete, action delete fenced to the exact old birth, no Build minted).
 /// One operation `delete-node:<path>.old` asks the provider to end the stopped runtime and inspects
 /// it; only the provider's Exited is the proof, after which the executor publishes NodeDeleted for
@@ -782,30 +765,17 @@ async fn deleting_a_peer_mesh_parked_predecessor_is_admitted_from_the_fabric_pri
 /// Deleted row at `<path>.old`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth() {
-    let estate = Estate::bootstrap(owner("deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth"), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 2}, {"name": "mesh2", "node_admin": 2, "rpc_node": 2}]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    let birth_build = s(&a["build_id"]);
-    estate.await_build(&birth_build, SETTLE).await;
-    estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
-    // The initial fabric refuses a node replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
-    estate.until_fabric_ready(SETTLE).await;
+    let (estate, birth_build) = fabric_of("deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_executed_by_the_new_primary_on_the_exact_birth", &[("mesh1", 1, 2), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let parked = replace_and_park(&estate, &birth_build, "mesh2.rpc.1").await;
     let first_primary = parked.replaced_by.clone();
     assert!(first_primary.starts_with("mesh2.admin."), "mesh2's primary ran the replace: {first_primary}");
     // mesh2's primary changes: its planned replace hands the seat to mesh2's other admin, which
     // executes that replace (executor_for: the mesh primary never executes its own).
-    let before_admin = estate.node(&first_primary).await;
-    let (status, r) = estate.post(&format!("/api/nodes/{first_primary}/replace"), &json!({})).await;
-    assert_eq!(status, 202, "{r}");
-    let admin_attempt = Estate::attempt_of(&r);
-    estate.await_attempt(&birth_build, admin_attempt, SETTLE).await;
-    wait_for(&format!("{first_primary} ready under a new NodeId"), SETTLE, || async {
-        estate.nodes().await.into_iter().find(|n| n["name"] == first_primary.as_str() && ready(n) && n["node_id"] != before_admin["node_id"])
-    })
-    .await;
+    let before_admin = estate.node_value(&first_primary).await;
+    let replace = estate.submit_change(Change::Replace { node: Estate::path(&first_primary), incarnation: None }).await;
+    let admin_attempt = u64::from(replace.attempt());
+    estate.follow(replace).await;
+    until_new_birth(&estate, &first_primary, &before_admin, SETTLE).await;
     let spans = wait_for("the admin replace's dispatch is exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         dispatch_executor(&spans, &birth_build, &admin_attempt.to_string()).is_some().then_some(spans)
@@ -842,17 +812,14 @@ fn dispatch<'a>(spans: &'a [Value], build: &str, attempt: &str) -> Option<&'a Va
 
 /// A planned replace of `node`, completed, the successor ready and the predecessor parked.
 async fn replace_and_park(estate: &Estate, build: &str, node: &str) -> Parked {
-    let before = estate.node(node).await;
+    let before = estate.node_value(node).await;
     let pid = estate.pid_of(node).await;
-    let old_dir = std::path::PathBuf::from(estate.data_dir_of(node).await);
-    let (status, r) = estate.post(&format!("/api/nodes/{node}/replace"), &json!({})).await;
-    assert_eq!(status, 202, "{r}");
-    let attempt = Estate::attempt_of(&r);
-    estate.await_attempt(build, attempt, SETTLE).await;
-    let after = wait_for(&format!("{node} ready under a new NodeId"), SETTLE, || async {
-        estate.nodes().await.into_iter().find(|n| n["name"] == node && ready(n) && n["node_id"] != before["node_id"])
-    })
-    .await;
+    let old_dir = std::path::PathBuf::from(estate.data_dir(node).await);
+    let replace = estate.submit_change(Change::Replace { node: Estate::path(node), incarnation: None }).await;
+    assert_eq!(replace.build_id().as_str(), build, "no Build is minted");
+    let attempt = u64::from(replace.attempt());
+    estate.follow(replace).await;
+    let after = until_new_birth(estate, node, &before, SETTLE).await;
     assert!(alive(pid), "the predecessor {pid} is parked, alive, before its delete");
     let spans = wait_for("the replace's dispatch is exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
@@ -863,23 +830,21 @@ async fn replace_and_park(estate: &Estate, build: &str, node: &str) -> Parked {
     Parked { node: node.to_string(), before, after, pid, old_dir, replaced_by: s(&d["attributes"]["executor"]), fabric_primary: s(&d["attributes"]["node"]) }
 }
 
-/// `DELETE /api/nodes/<path>.old` of `parked`, and everything node.delete owes (node-decommission.md
+/// `build.create` of a RemoveNode change at `<path>.old` of `parked`, and everything node.delete owes (node-decommission.md
 /// 2-4). Returns the admin that executed the delete.
 async fn delete_parked_and_assert(estate: &Estate, birth_build: &str, parked: &Parked) -> String {
     let Parked { node, before, after, pid, old_dir, .. } = parked;
     let old_name = format!("{node}.old");
-    let (status, d) = estate.delete(&format!("/api/nodes/{old_name}")).await;
-    assert_eq!(status, 202, "node.delete of the parked {old_name} is accepted: {d}");
-    assert_eq!(s(&d["build_id"]), birth_build, "no Build is minted: {d}");
-    let opened = wait_for("the delete attempt is the Build's current attempt", Duration::from_secs(30), || async {
-        let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
-        (b["reason"] == "delete").then_some(b)
-    })
-    .await;
+    let delete = estate.submit_change(Change::RemoveNode { node: Estate::path(&old_name) }).await;
+    assert_eq!(delete.build_id().as_str(), birth_build, "no Build is minted");
+    let attempt_no = u64::from(delete.attempt());
+    let opened = build_log::build_fact(&estate.carrier().await, birth_build, "the delete attempt is the Build's current attempt", Duration::from_secs(30), |p| serde_json::to_value(p).expect("a Build view serializes")["reason"] == "delete")
+        .await
+        .map(|p| serde_json::to_value(p).expect("a Build view serializes"))
+        .unwrap_or_else(|end| panic!("{end}"));
     assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("delete", old_name.as_str()), "{opened}");
     assert_eq!(opened["action"]["from_incarnation"], before["incarnation_id"], "fenced to the exact old birth: {opened}");
-    let attempt_no = Estate::attempt_of(&d);
-    estate.await_attempt(birth_build, attempt_no, SETTLE).await;
+    estate.follow(delete).await;
     let attempt = attempt_no.to_string();
     let spans = wait_for("the delete's last step, its reconcile span, its dispatch and the Deleted row are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
@@ -923,7 +888,7 @@ async fn delete_parked_and_assert(estate: &Estate, birth_build: &str, parked: &P
     // The parked process is gone, its data dir stays, and the successor is untouched.
     assert!(!alive(*pid), "the parked predecessor's process {pid} exited");
     assert!(old_dir.exists(), "node.delete releases node.id and name, not storage: {old_dir:?}");
-    let now = estate.node(node).await;
+    let now = estate.node_value(node).await;
     assert!(now["node_id"] == after["node_id"] && ready(&now), "the successor at {node} is untouched: {now}");
     s(&dispatched["attributes"]["executor"])
 }
@@ -936,35 +901,37 @@ async fn delete_parked_and_assert(estate: &Estate, birth_build: &str, parked: &P
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
     let (estate, birth_build) = estate("a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births").await;
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let admins: Vec<&Value> = nodes.iter().filter(|n| n["kind"] == "node_admin").collect();
     assert_eq!(admins.len(), 2, "{nodes:#?}");
     let before = admins.iter().find(|n| n["is_primary"] != true && n["is_fabric_primary"] != true).map(|n| (*n).clone()).expect("an admin that holds no seat");
-    let stays = s(&admins.iter().find(|n| n["node_id"] != before["node_id"]).unwrap()["admin_api_base"]);
+    let stays = Estate::path(&s(&admins.iter().find(|n| n["node_id"] != before["node_id"]).unwrap()["name"]));
+    assert_eq!(estate.entry().await, stays, "the admin that stays is the entry the typed objects ask");
     let node = s(&before["name"]);
-    let (status, r) = estate.post(&format!("/api/nodes/{node}/replace"), &json!({})).await;
-    assert_eq!(status, 202, "{r}");
-    assert_eq!(s(&r["build_id"]), birth_build, "no Build is minted: {r}");
-    let attempt_no = Estate::attempt_of(&r);
-    let after = wait_for(&format!("{node} ready under a new NodeId"), SETTLE, || async {
-        at_most_one_live_birth(&[stays.clone()], &node).await;
-        let nodes = view_of(&stays).await?;
-        let successor = nodes.into_iter().find(|n| n["name"] == node.as_str() && ready(n) && n["node_id"] != before["node_id"])?;
-        at_most_one_live_birth(&[s(&successor["admin_api_base"])], &node).await;
+    let node_path = Estate::path(&node);
+    let replace = estate.submit_change(Change::Replace { node: node_path.clone(), incarnation: None }).await;
+    assert_eq!(replace.build_id().as_str(), birth_build, "no Build is minted");
+    let attempt_no = u64::from(replace.attempt());
+    // The entry admin's view is the staying admin's: read through the entry, it also learns the successor's birth.
+    let ready_what = format!("{node} ready under a new NodeId");
+    let watch = wait_for(&ready_what, SETTLE, || async {
+        let nodes = estate.node_values().await;
+        let at: Vec<&Value> = nodes.iter().filter(|n| n["name"] == node.as_str() && live(n)).collect();
+        assert!(at.len() <= 1, "the view of {stays} holds two live births at {node}: {at:#?}");
+        let successor = nodes.iter().find(|n| n["name"] == node.as_str() && ready(n) && n["node_id"] != before["node_id"]).cloned()?;
+        at_most_one_live_birth(&estate, &[node_path.clone()], &node).await;
         Some(successor)
-    })
-    .await;
+    });
+    let (_, after) = tokio::join!(estate.follow(replace), watch);
     // The successor admin's own view: itself at the path, ready, under its new NodeId.
-    let own = s(&after["admin_api_base"]);
-    let me = wait_for(&format!("the successor {node} sees itself"), Duration::from_secs(30), || async {
-        let nodes = view_of(&own).await?;
-        let at: Vec<Value> = nodes.into_iter().filter(|n| n["name"] == node.as_str() && live(n)).collect();
-        assert!(at.len() <= 1, "the successor's view holds two live births at {node}: {at:#?}");
-        at.into_iter().find(|n| n["node_id"] == after["node_id"] && ready(n))
-    })
-    .await;
+    let me = estate
+        .until_view_at(&node_path, &format!("the successor {node} sees itself"), Duration::from_secs(30), |views| {
+            let at: Vec<Value> = Estate::values(views).into_iter().filter(|n| n["name"] == node.as_str() && live(n)).collect();
+            assert!(at.len() <= 1, "the successor's view holds two live births at {node}: {at:#?}");
+            at.into_iter().find(|n| n["node_id"] == after["node_id"] && ready(n))
+        })
+        .await;
     assert_eq!(me["incarnation_id"], after["incarnation_id"], "the successor's view holds its own birth: {me}");
-    estate.await_attempt(&birth_build, attempt_no, SETTLE).await;
     let attempt = attempt_no.to_string();
     let spans = wait_for("the replace operation's last step is exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
@@ -988,10 +955,10 @@ async fn a_replaced_node_admin_sees_itself_and_no_view_holds_two_live_births() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_hung_member_whose_runtime_still_runs_is_never_recovered() {
     let (mut estate, birth_build) = two_mesh_estate("a_hung_member_whose_runtime_still_runs_is_never_recovered").await;
-    let (node, mesh_primary, primary) = placement(&estate.nodes().await);
-    let fp_api = s(&primary["admin_api_base"]);
-    let before = estate.node(&node).await;
-    let attempt_before = attempt_at(&estate, &fp_api, &birth_build).await;
+    let (node, mesh_primary, primary) = placement(&estate.node_values().await);
+    let fp = Estate::path(&s(&primary["name"]));
+    let before = estate.node_value(&node).await;
+    let attempt_before = attempt_at(&estate, &fp, &birth_build).await;
     let rt = exact_runtime(&estate, &node).await;
     let held = rt.apply(Fault::Stop).expect("the exact runtime is held");
     assert_eq!(held.state_after, Some('T'), "the OS holds the runtime: {held:?}");
@@ -1012,19 +979,16 @@ async fn a_hung_member_whose_runtime_still_runs_is_never_recovered() {
     let true_offline = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed").into_iter().find(|sp| sp["attributes"]["node_id"] == before["node_id"]).cloned();
     let true_offline = true_offline.unwrap_or_else(|| panic!("the inspection follows the TRUE OFFLINE mark of {node}"));
     assert!(start(&true_offline) <= start(&inspected), "TRUE OFFLINE, then the inspection");
-    assert_eq!(attempt_at(&estate, &fp_api, &birth_build).await, attempt_before, "no attempt is opened for a hung member");
-    assert_eq!(estate.node(&node).await["node_id"], before["node_id"], "the held member is not replaced");
+    assert_eq!(attempt_at(&estate, &fp, &birth_build).await, attempt_before, "no attempt is opened for a hung member");
+    assert_eq!(estate.node_value(&node).await["node_id"], before["node_id"], "the held member is not replaced");
 
     let thawed = rt.apply(Fault::Continue).expect("the hold is released");
     assert_ne!(thawed.state_after, Some('T'), "{thawed:?}");
-    wait_for(&format!("{node} back as its own birth"), floor * 2 + Duration::from_secs(30), || async {
-        estate.node_opt(&node).await.filter(|n| ready(n) && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"])
-    })
-    .await;
-    assert_eq!(attempt_at(&estate, &fp_api, &birth_build).await, attempt_before, "the Build gained no attempt");
+    until_node_where(&estate, &node, &format!("{node} back as its own birth"), floor * 2 + Duration::from_secs(30), |n| ready(n) && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"]).await;
+    assert_eq!(attempt_at(&estate, &fp, &birth_build).await, attempt_before, "the Build gained no attempt");
     assert_eq!(exact_runtime(&estate, &node).await, rt, "the runtime that was held serves the path");
     estate.record_trace_url(inspected["trace_id"].as_str().unwrap_or(""));
-    estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
+    estate.settles_to(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
     estate.stop().await;
 
     // Every process flushed its spans on exit: the whole record.
@@ -1047,35 +1011,29 @@ async fn a_hung_member_whose_runtime_still_runs_is_never_recovered() {
 /// holds the same endpoint key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_applied() {
-    use rafka_node_admin_client::BuildFrame;
     use rafka_node_rpc_contract::build::{BuildChange, Disposition};
     let (mut estate, birth_build) = two_mesh_estate("a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_applied").await;
-    let (node, mesh_primary, primary) = placement(&estate.nodes().await);
-    let fp_api = s(&primary["admin_api_base"]);
-    let before = estate.node(&node).await;
+    let (node, mesh_primary, primary) = placement(&estate.node_values().await);
+    let fp = Estate::path(&s(&primary["name"]));
+    let before = estate.node_value(&node).await;
     let killed = exact_runtime(&estate, &node).await.apply(Fault::Kill).expect("the exact runtime is killed");
     assert!(killed.exited, "the OS observed the exit: {killed:?}");
 
-    let after = wait_for(&format!("{node} ready as a new node"), SETTLE, || async {
-        let n = estate.node_opt(&node).await?;
-        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
-    })
-    .await;
+    let after = until_node_where(&estate, &node, &format!("{node} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     let recovery = recovery_span(&estate, &node, &before["node_id"]).await;
     assert_eq!(s(&recovery["attributes"]["submitter"]), mesh_primary, "{recovery}");
     assert_eq!(s(&recovery["attributes"]["disposition"]), "created", "{recovery}");
     let attempt = s(&recovery["attributes"]["attempt"]);
     assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{recovery}");
     // A resubmit before the fabric-primary heard the receipts would race the Build topic.
-    fp_recovery_receipts(&estate, &fp_api, &birth_build, &node, &attempt).await;
+    fp_recovery_receipts(&estate, &fp, &birth_build, &node, &attempt).await;
 
-    let caller = crate::fabric_build__build_op::Caller::of(&estate.admin).await;
     let change = BuildChange::Recover {
         node: node.parse().expect("a path.name"),
         node_id: serde_json::from_value(before["node_id"].clone()).expect("a node id"),
         incarnation: serde_json::from_value(before["incarnation_id"].clone()).expect("an incarnation"),
     };
-    let mut repeat = caller.carrier().await.create(change).await.expect("the fabric-primary answers the repeat");
+    let mut repeat = estate.carrier().await.create(change).await.expect("the fabric-primary answers the repeat");
     assert_eq!(repeat.disposition(), Disposition::AlreadyApplied, "the repeat is answered, never run");
     assert_eq!(repeat.build_id().as_str(), birth_build, "the accepted Build");
     assert_eq!(repeat.attempt().to_string(), attempt, "naming the attempt that recovered the birth");
@@ -1084,14 +1042,14 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
         other => panic!("AlreadyApplied is followed by its Complete terminal: {other:?}"),
     }
     assert!(repeat.next().await.is_none(), "nothing after the terminal");
-    assert_eq!(attempt_at(&estate, &fp_api, &birth_build).await.to_string(), attempt, "the Build gained no attempt");
-    assert_eq!(estate.node(&node).await["node_id"], after["node_id"], "the path keeps the recovered node");
+    assert_eq!(attempt_at(&estate, &fp, &birth_build).await.to_string(), attempt, "the Build gained no attempt");
+    assert_eq!(estate.node_value(&node).await["node_id"], after["node_id"], "the path keeps the recovered node");
 
     // The fabric-primary's mesh never dials the exited birth's node.id, though its key now serves the new node.
     let old = estate.probe(&["get", "--target", &format!("exact:{}", s(&before["node_id"])), "--key", "83"]);
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> resolves nothing: {old}");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
-    estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
+    estate.settles_to(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
     estate.stop().await;
 
     // Every process flushed its spans on exit: the whole record.
@@ -1120,34 +1078,38 @@ async fn a_repeat_recovery_submit_for_the_same_exited_birth_is_answered_already_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recovers_the_member() {
     let (estate, birth_build) = two_mesh_estate("an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recovers_the_member").await;
-    let (node, mesh_primary, primary) = placement(&estate.nodes().await);
-    let fp_api = s(&primary["admin_api_base"]);
-    let before = estate.node(&node).await;
+    let (node, mesh_primary, primary) = placement(&estate.node_values().await);
+    let fp = Estate::path(&s(&primary["name"]));
+    let before = estate.node_value(&node).await;
     let rt = exact_runtime(&estate, &node).await;
     assert_eq!(rt.apply(Fault::Stop).expect("the exact runtime is held").state_after, Some('T'));
-    let (status, r) = estate.post(&format!("/api/nodes/{node}/connections/delete"), &json!({})).await;
-    assert_eq!(status, 202, "the view still holds the member ready: {r}");
-    assert_eq!(s(&r["build_id"]), birth_build, "{r}");
-    let delete_attempt = Estate::attempt_of(&r);
+    let mut deleting = estate.submit_change(Change::DeleteConnections { node: Estate::path(&node) }).await;
+    assert_eq!(deleting.build_id().as_str(), birth_build, "no Build is minted");
+    let delete_attempt = u64::from(deleting.attempt());
     let killed = rt.apply(Fault::Kill).expect("the held runtime is killed");
     assert!(killed.exited, "{killed:?}");
+    // The call's own stream ends at the failed step: the held, then exited, birth never answered.
+    let ended = loop {
+        match deleting.next().await {
+            Some(Ok(BuildFrame::Failed { attempt, operation, step, reason })) => break (attempt, operation, step, reason),
+            Some(Ok(_)) => continue,
+            other => panic!("the stream of the node.connections.delete ended without its Failed frame: {other:?}"),
+        }
+    };
+    assert_eq!((u64::from(ended.0), ended.2.as_str()), (delete_attempt, "DeleteConnections"), "the stream names the failed step: {ended:?}");
 
     let operation = format!("node.connections.delete:{node}");
-    let failed = wait_for("the node.connections.delete attempt ends Failed", SETTLE, || async {
-        let (_, b) = estate.http_get(&fp_api, &format!("/api/builds?id={birth_build}")).await;
-        b["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| r["operation"] == operation.as_str() && r["attempt"] == json!(delete_attempt) && r["outcome"]["failed"].is_object())
-    })
-    .await;
+    let failed_step = |p: &Value| p["steps"].as_array().cloned().unwrap_or_default().into_iter().find(|r| r["operation"] == operation.as_str() && r["attempt"] == json!(delete_attempt) && r["outcome"]["failed"].is_object());
+    let held = build_log::build_fact(&estate.carrier_at(&fp).await, &birth_build, "the node.connections.delete attempt ends Failed", SETTLE, |p| failed_step(&serde_json::to_value(p).expect("a Build view serializes")).is_some())
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
+    let failed = failed_step(&serde_json::to_value(held).expect("a Build view serializes")).expect("the failed step was just held");
     // The exit belongs to the node.connections.delete: the held, then exited, birth never answered
     // node.connections.deleted, and the attempt ends Failed, never Complete.
     assert_eq!(s(&failed["step"]), "DeleteConnections", "the node.connections.delete is not complete: {failed}");
     assert!(s(&failed["outcome"]["failed"]["reason"]).contains("node.connections.delete { All } ended"), "the failure names how the call ended: {failed}");
 
-    let after = wait_for(&format!("{node} ready as a new node"), SETTLE, || async {
-        let n = estate.node_opt(&node).await?;
-        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
-    })
-    .await;
+    let after = until_node_where(&estate, &node, &format!("{node} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same endpoint key, from the inherited data dir");
     let recovery = wait_for("the mesh-primary's completed recovery is exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
@@ -1160,7 +1122,7 @@ async fn an_exit_during_a_workflow_fails_that_workflow_and_the_next_tick_recover
     assert!(attempt > delete_attempt, "the recovery is a later attempt than the failed node.connections.delete: {recovery}");
     assert_eq!(s(&recovery["attributes"]["outcome"]), format!("complete: attempt {attempt}"), "{recovery}");
     estate.record_trace_url(recovery["trace_id"].as_str().unwrap_or(""));
-    estate.settled_shape(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
+    estate.settles_to(&[("mesh1", 1, 2), ("mesh2", 1, 2)], Duration::from_secs(30)).await;
     estate.shutdown().await;
 }
 
@@ -1205,25 +1167,15 @@ fn num_attr(sp: &Value, k: &str) -> u64 {
 /// recovery submitted by the stopped primary, or a proven-drift attempt for the member.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery() {
-    let estate = Estate::bootstrap(owner("a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery"), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 1}, {"name": "mesh2", "node_admin": 2, "rpc_node": 2}]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    let birth_build = s(&a["build_id"]);
-    estate.await_build(&birth_build, SETTLE).await;
-    estate.settled_shape(&[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
-    // The stop of mesh2's primary below moves a seat, which the initial fabric refuses until it has first
-    // reached ready-for-traffic; a killed member keeps it from ever climbing.
-    estate.until_fabric_ready(SETTLE).await;
+    let (estate, birth_build) = fabric_of("a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_completes_the_recovery", &[("mesh1", 1, 1), ("mesh2", 2, 2)], Duration::from_secs(90)).await;
     let floor = rafka_mesh_transport::membership::staleness_floor();
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     assert!(fp.starts_with("mesh1."), "the day-0 admin keeps the fabric seat: {fp}");
     let mp = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).expect("mesh2's primary")["name"]);
     let standby = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != mp.as_str()).expect("mesh2's second admin")["name"]);
     const NODE: &str = "mesh2.rpc.1";
-    let before = estate.node(NODE).await;
+    let before = estate.node_value(NODE).await;
     estate.kill_node(NODE).await;
 
     // Round 1 on the mesh-primary that holds the seat now. Its via-peer step's span ends the round
@@ -1242,8 +1194,9 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     let round1 = wait_for(&format!("{mp} runs tickle round 1 for {NODE}"), round1_due, || async { round_end_span(&estate.spans(), &mp, &before["node_id"]).cloned() }).await;
     assert_eq!(s(&round1["attributes"]["verdict"]), "no-path", "{mp}'s round 1 finds no path to the killed {NODE}: {round1}");
     // Mid-ladder: the mesh-primary is stopped, and mesh2's seat goes to its second admin.
-    let (status, stop) = estate.post(&format!("/api/nodes/{mp}/stop"), &json!({})).await;
-    assert_eq!(status, 202, "the stop of {mp} is accepted: {stop}");
+    let stopping = estate.submit_change(Change::Stop { node: Estate::path(&mp) }).await;
+    assert_eq!(stopping.build_id().as_str(), birth_build, "no Build is minted");
+    estate.follow(stopping).await;
     let seat = wait_for(&format!("{standby} takes mesh2's seat"), floor * 2, || async {
         named(&estate.spans(), "rdm.mesh.election.resolve.via-mesh-primary")
             .into_iter()
@@ -1262,11 +1215,7 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
     .await;
     assert_eq!(s(&recovery["attributes"]["submitter"]), standby, "the new mesh-primary submitted the recovery: {recovery}");
     assert_eq!(s(&recovery["attributes"]["fabric_primary"]), fp, "{recovery}");
-    let after = wait_for(&format!("{NODE} ready as a new node"), SETTLE, || async {
-        let n = estate.node_opt(NODE).await?;
-        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
-    })
-    .await;
+    let after = until_node_where(&estate, NODE, &format!("{NODE} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     assert_eq!(after["endpoint_id"], before["endpoint_id"], "the same transport key, loaded from the inherited data dir");
 
     let spans = estate.spans();
@@ -1309,29 +1258,39 @@ async fn a_mesh_primary_handover_mid_ladder_continues_the_silence_window_and_com
 /// cohort with no other node of that type in the mesh is refused by name, `cannot transfer: no secondary
 /// of type <node_type> in mesh <mesh>`, until a secondary is available. The holder stays primary, nothing
 /// is cut off, no row is written, and the workflow that commanded it ... fails by name with that
-/// reason"): in a fabric whose fabric-primary is its mesh's only node-admin, each of the routes `replace`,
-/// `restart`, `connections/delete` and `stop` on the fabric-primary is refused by name, 422 `last-admin`
+/// reason"): in a fabric whose fabric-primary is its mesh's only node-admin, each of the changes Replace,
+/// Restart, DeleteConnections and Stop of the fabric-primary, submitted by `build.create`, is refused by name, `last-admin`
 /// with exactly `cannot transfer: no secondary of type node-admin in mesh <its mesh>`, one
-/// `rdm.node_admin.build.reject.via-last-admin` per route with the same text. The mesh seat has no
+/// `rdm.node_admin.build.reject.via-last-admin` per call with the same text. The mesh seat has no
 /// secondary, so the peer mesh's Ready primary is no successor of both seats (C2's outside search is
 /// mesh.delete's only). No attempt opens, no seat move is commanded, no row is written, and every node
 /// stays as it was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name() {
     let (estate, birth_build) = two_mesh_estate("a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused_by_name").await;
-    let before = estate.nodes().await;
+    let before = estate.node_values().await;
     let primary = before.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary").clone();
     let fp = s(&primary["name"]);
     let mesh = s(&primary["mesh"]);
     assert_eq!(before.iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh.as_str()).count(), 1, "the fabric-primary is its mesh's only admin: {before:#?}");
-    let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
-    let attempt = b["attempt"].clone();
+    let attempt = build_log::build_value(&estate.carrier().await, &birth_build).await["attempt"].clone();
     let q7 = format!("cannot transfer: no secondary of type node-admin in mesh {mesh}");
-    for action in ["replace", "restart", "connections/delete", "stop"] {
-        let (status, r) = estate.post(&format!("/api/nodes/{fp}/{action}"), &json!({})).await;
-        assert_eq!((status, r["error"].as_str(), r["detail"].as_str()), (422, Some("last-admin"), Some(q7.as_str())), "{action}: refused with Q7's exact text: {r}");
+    let node = Estate::path(&fp);
+    let carrier = estate.carrier().await;
+    for (action, change) in [
+        ("replace", Change::Replace { node: node.clone(), incarnation: None }),
+        ("restart", Change::Restart { node: node.clone() }),
+        ("node.connections.delete", Change::DeleteConnections { node: node.clone() }),
+        ("stop", Change::Stop { node: node.clone() }),
+    ] {
+        match carrier.create(change).await {
+            // The call ends naming the reason, then the refusal's text: `<reason>: <text>`.
+            Err(CallEnd::Rejected { reason, detail }) => assert_eq!((reason.as_str(), detail.as_str()), ("last-admin", format!("last-admin: {q7}").as_str()), "{action}: refused with Q7's exact text"),
+            Ok(_) => panic!("{action} of the fabric-primary {fp}, its mesh's last admin, was accepted"),
+            Err(other) => panic!("{action} of the fabric-primary {fp}, its mesh's last admin, is refused last-admin, not {other:?}"),
+        }
     }
-    let (_, b) = estate.get(&format!("/api/builds?id={birth_build}")).await;
+    let b = build_log::build_value(&estate.carrier().await, &birth_build).await;
     assert_eq!(b["attempt"], attempt, "no attempt opened: {b}");
     let spans = wait_for("the four refusals are exported", Duration::from_secs(30), || async {
         let spans = estate.spans();
@@ -1339,18 +1298,17 @@ async fn a_replace_of_the_fabric_primary_that_is_its_meshs_last_admin_is_refused
     })
     .await;
     let refused = named(&spans, "rdm.node_admin.build.reject.via-last-admin");
-    let routes: std::collections::BTreeSet<String> = refused.iter().map(|sp| s(&sp["attributes"]["route"])).collect();
-    assert_eq!(routes.len(), 4, "one refusal per route: {routes:?}");
+    assert_eq!(refused.len(), 4, "one refusal per call: {refused:?}");
     assert!(refused.iter().all(|sp| s(&sp["attributes"]["detail"]) == q7), "every refusal span carries Q7's exact text: {refused:?}");
     assert!(named(&spans, "rdm.node_admin.seat.update.via-primary-updating").is_empty(), "no node.primary.update ran");
     assert!(named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").is_empty(), "no row was written");
     assert!(
-        named(&spans, "rdm.node_admin.build.update.via-rest").into_iter().all(|sp| s(&sp["attributes"]["attempt"]).is_empty()),
+        named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().all(|sp| s(&sp["attributes"]["attempt"]).is_empty()),
         "no attempt number was recorded by any refused request"
     );
     estate.record_trace_url(refused[0]["trace_id"].as_str().unwrap_or(""));
     for n in &before {
-        assert_eq!(estate.node(&s(&n["name"])).await["incarnation_id"], n["incarnation_id"], "{} is untouched", s(&n["name"]));
+        assert_eq!(estate.node_value(&s(&n["name"])).await["incarnation_id"], n["incarnation_id"], "{} is untouched", s(&n["name"]));
     }
     estate.shutdown().await;
 }
@@ -1383,10 +1341,10 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClie
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor() {
     let (estate, _build) = two_mesh_estate("a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor").await;
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let (node, mesh_primary, _fp) = placement(&nodes);
     let node_path = node.as_str();
-    let before = estate.node(node_path).await;
+    let before = estate.node_value(node_path).await;
     let admin = nodes.iter().find(|n| n["name"] == mesh_primary.as_str()).expect("the mesh-primary's view row").clone();
     let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
@@ -1397,15 +1355,9 @@ async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor
         .await
         .unwrap_or_else(|e| panic!("node.config.update of {node_path} at {mesh_primary}: {e:?}"));
     assert_eq!(reply.name(), "config-updated", "the mesh-primary wrote the row and the node applied it: {reply:?}");
-    let told_json = json!({"tier": "gold"});
-    wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node(node_path).await["config"] == told_json).then_some(()) }).await;
 
     estate.kill_node(node_path).await;
-    let after = wait_for(&format!("{node_path} ready as a new node"), SETTLE, || async {
-        let n = estate.node_opt(node_path).await?;
-        (ready(&n) && n["node_id"] != before["node_id"]).then_some(n)
-    })
-    .await;
+    let after = until_node_where(&estate, node_path, &format!("{node_path} ready as a new node"), SETTLE, |n| ready(n) && n["node_id"] != before["node_id"]).await;
     // The new node's name claim, written by the mesh-primary, is seeded from the exited birth's
     // Deleted row: its config is the one told.
     let claim = wait_for("the new node's name claim is exported", Duration::from_secs(60), || async {
@@ -1427,8 +1379,6 @@ async fn a_recovered_node_keeps_the_config_its_mesh_primary_told_its_predecessor
     })
     .await;
     assert_eq!((s(&joined["attributes"]["outcome"]), s(&joined["attributes"]["config_keys"])), ("installed".to_string(), "1".to_string()), "the new node's join answer hands its row's config: {joined}");
-    let carried = wait_for(&format!("the new {node_path} carries the config"), Duration::from_secs(30), || async { let n = estate.node(node_path).await; (n["config"] == told_json).then_some(n) }).await;
-    assert_eq!(carried["node_id"], after["node_id"], "the new node, not the exited one, carries it");
     let told: Vec<Value> = named(&estate.spans(), "rdm.node_admin.node.update.via-config").into_iter().filter(|sp| sp["attributes"]["node_id"] == after["node_id"]).cloned().collect();
     assert!(told.is_empty(), "the join handed the config: no config call is sent to the starting node: {told:?}");
     eprintln!("trace {}: via-node-row delete node_id={} keys={}; trace {}: via-node-row claim node={} seeded_from={} keys={}", s(&deleted[0]["trace_id"]), s(&before["node_id"]), deleted[0]["attributes"]["keys"], s(&claim["trace_id"]), mesh_primary, s(&a["seeded_from"]), a["keys"]);
