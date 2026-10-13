@@ -78,6 +78,30 @@ pub trait Gate: Send + Sync {
     async fn move_seats(&self, _m: &crate::executor::SeatMove, _build_id: &BuildId, _attempt: u32, _operation: &str) -> Result<(), String> {
         Ok(())
     }
+    /// node.primary.updated for every seat update a committed row records before an operation the
+    /// drive is about to dispatch acts on that update's holder (the approved proposal
+    /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 failure contract: "The workflow
+    /// continues only after the result is installed and acknowledged: node.primary.updated answered
+    /// to the resuming executor's call, never a read alone"; "the next writer to read the row
+    /// publishes 'updated'"). `updates` names each update's row; a row not written is no update. A
+    /// row naming this birth the successor is installed from the row and this admin says "primary
+    /// updated"; a row naming another successor is that successor's node.primary.updated, obtained
+    /// on a call and installed. `Err` names why an update was not acknowledged. A gate with no seats
+    /// has none to acknowledge.
+    async fn seats_acknowledged(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId, _attempt: u32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The seat update that precedes an operation on a seat holder (R-MT1), named as its committed row
+/// is on the fabric's store root: `meshes/<mesh>/seat-transfers/<operation>`
+/// (`crate::fabric_handover::update_operation`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrecedingUpdate {
+    /// The holder's mesh, under which its row is written.
+    pub mesh: String,
+    /// The update's own operation.
+    pub operation: String,
 }
 
 /// A gate that is always open: a fixture with no membership and no seat fence.

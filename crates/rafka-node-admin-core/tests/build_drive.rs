@@ -9,7 +9,7 @@
 use rafka_node_admin_core::accepted::{AcceptedStore, FabricTopology, TopologyChange};
 use rafka_node_admin_core::build::{BuildId, BuildOperation, FabricDesired, MeshDesired};
 use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
-use rafka_node_admin_core::build_drive::{Drive, DriveEnd, DriveEnv, Gate, Read};
+use rafka_node_admin_core::build_drive::{Drive, DriveEnd, DriveEnv, Gate, PrecedingUpdate, Read};
 use rafka_node_admin_core::build_state::{BuildStateAdapter, BuildStateError, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
 use rafka_node_admin_core::executor::OperationRunner;
 use rafka_node_admin_core::http::ControlPlane;
@@ -1368,4 +1368,112 @@ async fn a_drive_that_begins_once_its_admin_stopped_claims_and_dispatches_nothin
     gate.resume();
     assert_eq!(tokio::time::timeout(Duration::from_secs(60), driving).await.expect("the drive went on once the gate opened").unwrap(), DriveEnd::Terminal);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "attempt 1 is claimed and run once the gate opened");
+}
+
+/// The view after the old holder `mesh1.admin.2` committed its seat row naming this admin, the
+/// fabric-primary `mesh1.admin.1`, its successor for both seats: this admin's view names it the
+/// holder of both, and the old holder holds none.
+fn view_after_the_row() -> Topology {
+    let mut t = view();
+    t.nodes = vec![node("mesh1.admin.1", true, true), node("mesh1.admin.2", false, false), node("mesh1.rpc.1", false, false)];
+    t
+}
+
+/// A gate over the seat rows the fixture committed: each update a row records. It records every
+/// acknowledgement the drive asks for, with how many dispatches had been made when it asked, and
+/// refuses it with `refusal` when the cell sets one.
+struct Acknowledges {
+    inner: Arc<Switch>,
+    rows: Vec<PrecedingUpdate>,
+    dispatch: Arc<crate::loopback::Loopback>,
+    asked: Mutex<Vec<(PrecedingUpdate, usize)>>,
+    refusal: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Gate for Acknowledges {
+    fn authorizes(&self) -> bool {
+        self.inner.authorizes()
+    }
+    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+        self.inner.fence().await
+    }
+    async fn fence_set(&self) {
+        self.inner.fence_set().await
+    }
+    async fn seats_acknowledged(&self, updates: &[PrecedingUpdate], _: &BuildId, _: u32) -> Result<(), String> {
+        let dispatched = self.dispatch.dispatched.lock().unwrap().len();
+        for u in updates.iter().filter(|u| self.rows.contains(u)) {
+            self.asked.lock().unwrap().push((u.clone(), dispatched));
+            if let Some(why) = &self.refusal {
+                return Err(why.clone());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The Build removing the old holder `mesh1.admin.2` after its row, driven by this admin, its
+/// successor, through `Acknowledges` over that row (`refusal` set: the acknowledgement fails).
+async fn after_the_row(refusal: Option<&str>) -> (Rig, Arc<DriveEnv>, Arc<Acknowledges>, PrecedingUpdate) {
+    let r = rig_for(view_after_the_row(), TopologyChange::RemoveNode { node: "mesh1.admin.2".parse().unwrap() }, |ran, _| ran).await;
+    let op = "retire-node:mesh1.admin.2";
+    let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rafka_mesh_entity::Seat::MeshPrimary, r.build.as_str(), op) };
+    let gate = Arc::new(Acknowledges { inner: r.switch.clone(), rows: vec![row.clone()], dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()), refusal: refusal.map(str::to_string) });
+    let e = &r.env;
+    let env = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        rows: e.rows.clone(),
+        turns: e.turns.clone(),
+    });
+    (r, env, gate, row)
+}
+
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 failure
+/// contract: "the next writer to read the row publishes 'updated'"; "The workflow continues only
+/// after the result is installed and acknowledged: node.primary.updated answered to the resuming
+/// executor's call, never a read alone"): this admin is the successor the old holder's committed
+/// row names, and its view already names it the holder of both seats, so no seat moves before the
+/// Build's operation on the old holder. The drive still asks its gate to acknowledge the update the
+/// row records before it dispatches that operation: the acknowledgement is asked with no dispatch
+/// made, and the operation is dispatched once after it. Must NOT happen: the operation on the old
+/// holder dispatched on the view alone, before the update the row records is acknowledged.
+#[tokio::test]
+async fn a_successor_whose_view_already_holds_the_seats_acknowledges_the_rows_update_before_it_dispatches_on_the_old_holder() {
+    let (r, env, gate, row) = after_the_row(None).await;
+    let drive = Drive::detached(r.build.clone());
+    assert_eq!(env.run(&drive).await, DriveEnd::Terminal);
+    let asked = gate.asked.lock().unwrap().clone();
+    assert_eq!(asked.first(), Some(&(row.clone(), 0)), "the row's update is acknowledged before any dispatch: asked {asked:?}");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1)], "the operation on the old holder is dispatched once, to this admin, its mesh's primary");
+    assert_eq!(r.ran.0.lock().unwrap().len(), 1, "it ran once: {:?}", r.ran.0.lock().unwrap());
+}
+
+/// CONTRACT (as above; C1 step 8: "Only then does the commanding Build continue"): an update the row
+/// records that this admin cannot acknowledge (the successor's call fails, the row cannot be read)
+/// leaves the Build where it is: the drive blocks once, naming why, stalls, and dispatches nothing.
+/// Must NOT happen: the operation on the old holder dispatched past an update not acknowledged.
+#[tokio::test]
+async fn an_update_the_drive_cannot_acknowledge_stalls_the_drive_by_name_and_dispatches_nothing() {
+    let (r, env, gate, row) = after_the_row(Some("the successor's call ended indeterminate")).await;
+    let drive = Drive::detached(r.build.clone());
+    let mut reader = drive.reader(1);
+    match env.run(&drive).await {
+        DriveEnd::Stalled(why) => assert!(why.contains(&row.operation) && why.contains("the successor's call ended indeterminate"), "the stall names the update and why: {why}"),
+        other => panic!("an update not acknowledged stalls the drive: {other:?}"),
+    }
+    assert_eq!(gate.asked.lock().unwrap().len(), 1, "asked once: {:?}", gate.asked.lock().unwrap());
+    assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
+    assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran");
+    match next_within(&mut reader).await {
+        Some(Read::Frame(BuildReply::Blocked { step, reason, .. })) => assert!(step == "primary-update" && reason.contains(&row.operation), "the blocker names the update: {step} {reason}"),
+        other => panic!("the caller reads the blocker naming the update, got {other:?}"),
+    }
 }
