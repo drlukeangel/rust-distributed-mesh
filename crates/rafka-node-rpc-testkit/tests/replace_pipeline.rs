@@ -64,8 +64,9 @@ impl NodeObserver for Logged<'_> {
     }
     /// The stand-in writer of the mesh's rows: the cell's sink keeps no rows, so the rename is logged
     /// and answered `NameUpdated` (the validator and the row's move are node_name_update's cells').
-    async fn update_name(&self, node: &Node, to: &PathName) -> rafka_node_rpc_contract::status::StatusReply {
-        self.log.lock().unwrap().push(format!("node.name.update:{}:{to}", node.node_id));
+    async fn update_name(&self, node: &Node, to: &PathName, cutover: Option<&rafka_node_admin_core::node_name_update::Cutover>) -> rafka_node_rpc_contract::status::StatusReply {
+        let inherits = cutover.map(|c| format!(":inherits:{}", c.retained_id)).unwrap_or_default();
+        self.log.lock().unwrap().push(format!("node.name.update:{}:{to}{inherits}", node.node_id));
         rafka_node_rpc_contract::status::StatusReply::NameUpdated { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("a known birth") }
     }
 }
@@ -132,11 +133,10 @@ impl LifecycleEvents for Recorder<'_> {
     }
 }
 
-/// Every step of a replace of a live birth, in order (node-replace.md 1-3).
-const REPLACE_ORDER: [&str; 16] = [
-    "StopNode",
-    "AwaitNodeLeft",
-    "RenamePredecessor",
+/// Every step of a replace of a live birth, in order (node-replace.md 1-4): the successor's
+/// node.create at `<path>.new` to Ready, the predecessor's stop and rename to `<path>.old`, then the
+/// successor's stop, its rename to `<path>` (the cutover) and its start under it.
+const REPLACE_ORDER: [&str; 21] = [
     "AllocateIdentity",
     "PrepareStorage",
     "PrepareNetwork",
@@ -149,6 +149,14 @@ const REPLACE_ORDER: [&str; 16] = [
     "ApplyMeshPending",
     "WaitForMeshJoin",
     "WaitForNodeReady",
+    "StopNode",
+    "AwaitNodeLeft",
+    "RenamePredecessor",
+    "StopSuccessor",
+    "AwaitSuccessorLeft",
+    "RenameSuccessor",
+    "StartSuccessor",
+    "WaitForSuccessorReady",
     "Complete",
 ];
 
@@ -224,19 +232,17 @@ fn receipts(steps: &[rafka_node_admin_core::build_state::BuildStepReceipt], oper
 }
 
 /// CONTRACT: a replace of a live, persistent-storage birth is one operation `replace-node:<path>` in
-/// the recipe's order (node-replace.md: "node[1].stop runs the complete stop and leaves the
-/// predecessor parked, with its incarnation and data retained", then "node[1].update renames name to
-/// `<name>.old` while parked", then "node.create claims the freed name and starts the successor with a
-/// new node.id/incarnation"; "Rafka transfers its data as its own recipe step"). The old birth is
-/// stopped (its connections deleted inside the stop), and the stop's departure is published (`NodeStopped`, so every book drops it)
-/// before it is renamed `<path>.old` (spanned, its receipt naming the exact old birth) and before the
-/// successor's identity exists. The successor is created in its own new directory while the
-/// predecessor is still parked: at the successor's readiness, and after the operation completes, the
-/// predecessor's process runs (parked) and its data is where it was, untouched. The replace deletes
-/// nothing: no NodeDeleting, no terminal proof, no storage moved, no NodeDeleted (the predecessor's
-/// delete is the recipe's own later step). At the successor's readiness a peer admin's view (its book,
-/// without the executor's records) holds one live birth at the path, the successor, and the path
-/// resolves to the successor.
+/// the recipe's order (node-replace.md 1-4): node.create makes the successor at `<path>.new` through
+/// its full FirstStart to Ready ("Nothing routes to `<name>.new`"); "node[1].stop runs the complete
+/// stop" and the stopped predecessor is renamed `<path>.old` by node.name.update (spanned, its receipt
+/// naming the exact old birth); "node[2].stop; then node[2].update(name=`<name>`)", the cutover,
+/// inheriting from the predecessor's retained row; "then node[2].start under `<name>`". Both stops'
+/// departures are published (`NodeStopped`). The predecessor stays stopped: at the successor's
+/// readiness under the path, and after the operation completes, its process runs and its data is
+/// where it was, untouched. The replace deletes nothing: no NodeDeleting, no terminal proof, no
+/// storage moved, no NodeDeleted (the predecessor's delete is the recipe's own later step). At the
+/// successor's readiness a peer admin's view (its book, without the executor's records) holds one
+/// live birth at the path, the successor, and the path resolves to the successor.
 #[test]
 fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_data() {
     // It installs a scoped subscriber: tracing's process-wide callsite interest cache is not shared
@@ -321,15 +327,21 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
         // no wait for a second completion follows it.
         assert!(!log.iter().any(|l| l.starts_with(&format!("awaited:stop-node:{old}"))), "the Stopped reply is node-left; nothing waits for another: {log:?}");
         let stopped = at(&format!("NodeStopped:{old}:stop-node:{}", path()));
-        let ready = at(&format!("ready:{new}"));
-        assert!(stop < stopped && stopped < ready, "stop-node (its Stopped reply is node-left), its NodeStopped, then the successor's readiness: {log:?}");
+        // The successor is Ready at `<path>.new` before the predecessor's stop; it is Ready again
+        // under `<path>` after its own stop, its cutover rename and its start.
+        let first_ready = at(&format!("ready:{new}"));
         let renamed = at(&format!("node.name.update:{old}:{}.old", path()));
-        assert!(stopped < renamed && renamed < ready, "the stopped predecessor's node.name.update to .old, after its NodeStopped: {log:?}");
-        assert_eq!(log.iter().filter(|l| l.starts_with("NodeStopped")).count(), 1, "the stop's departure is published once: {log:?}");
+        let succ_stop = at(&format!("stop-node:{new}"));
+        let cutover = at(&format!("node.name.update:{new}:{}:inherits:{old}", path()));
+        let start = at(&format!("start-node:{new}"));
+        let ready = log.iter().rposition(|l| *l == format!("ready:{new}")).unwrap();
+        assert!(first_ready < stop && stop < stopped && stopped < renamed, "the successor Ready at .new, then stop-node to the predecessor (its Stopped reply is node-left), its NodeStopped, its node.name.update to .old: {log:?}");
+        assert!(renamed < succ_stop && succ_stop < cutover && cutover < start && start < ready, "then the successor's stop, its node.name.update to the path inheriting from the predecessor, its start and its readiness under the path: {log:?}");
+        assert_eq!(log.iter().filter(|l| l.starts_with("NodeStopped")).count(), 2, "each stop's departure is published once: {log:?}");
         assert!(!log.iter().any(|l| l.starts_with("NodeDeleting") || l.starts_with("NodeDeleted")), "a replace deletes nothing: the predecessor's delete is the recipe's own later step: {log:?}");
 
-        // The predecessor gave up its path before anything was created; the sink saw exactly that birth.
-        assert_eq!(*rig.sink.renamed.lock().unwrap(), vec![(path(), first.node.node_id.clone(), first.node.incarnation_id.clone().unwrap())]);
+        // The predecessor's launch record left the path, then the successor's left `<path>.new`.
+        assert_eq!(*rig.sink.renamed.lock().unwrap(), vec![(path(), first.node.node_id.clone(), first.node.incarnation_id.clone().unwrap()), (path().successor(), second.node.node_id.clone(), second.node.incarnation_id.clone().unwrap())]);
         assert!(rig.sink.removed.lock().unwrap().is_empty(), "the successor's path is never removed");
         let all = spans.0.lock().unwrap().clone();
         let (_, parent, rename) = all
@@ -359,14 +371,15 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
 
 /// CONTRACT: a replace whose predecessor never admits stop-node (`NotSent`: the birth runs on,
 /// never stopped) fails at the stop's wait step by name and renames nothing (node-replace.md
-/// step 2: "node[1].stop runs the complete stop and leaves the predecessor stopped"; node-update.md,
-/// "Rename precondition": the node is not ready-for-traffic and holds no connection; node-stop.md, the
-/// complete stop's only proof is the birth's `stopped`). The run is stop-node and its wait,
-/// which fails naming the birth, stop-node and the admission it got. The predecessor keeps its
-/// path.name and its process runs; no successor identity is allocated and no `Complete` is
-/// receipted; no `NodeStopped` is published, as nothing parked. A birth that does not answer goes to
-/// node recovery, never a lenient replace. What must NOT happen: the predecessor's path.name given up
-/// while its process still runs (a RenamePredecessor receipt or span), or anything of a successor.
+/// step 2: "node[1].stop runs the complete stop and leaves the predecessor stopped"; node-name-update.md:
+/// the node admits no connection; node-stop.md, the complete stop's only proof is the birth's
+/// `stopped`). The successor was born at `<path>.new` first (step 1) and stays there, Ready and
+/// carrying no traffic: "A missing or failed receipt leaves the recipe at the named step". The stop's
+/// wait fails naming the birth, stop-node and the admission it got. The predecessor keeps its
+/// path.name and its process runs; no `Complete` is receipted; no `NodeStopped` is published, as
+/// nothing stopped. A birth that does not answer goes to node recovery, never a lenient replace. What
+/// must NOT happen: the predecessor's path.name given up while its process still runs (a
+/// RenamePredecessor receipt or span), or the successor stopped, renamed or started under the path.
 #[test]
 fn a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails_by_name() {
     if crate::own_process::delegated(module_path!(), "a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails_by_name") {
@@ -403,9 +416,15 @@ fn a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails
         let operation = format!("replace-node:{}", path());
         let steps = receipts(&view.steps, &operation);
         assert!(steps.iter().any(|s| s == "StopNode"), "stop-node was asked: {steps:?}");
-        for never in ["RenamePredecessor", "TerminateRuntime", "AllocateIdentity", "Complete"] {
+        assert!(steps.iter().any(|s| s == "WaitForNodeReady"), "the successor was Ready at .new before the stop: {steps:?}");
+        for never in ["RenamePredecessor", "TerminateRuntime", "StopSuccessor", "RenameSuccessor", "StartSuccessor", "Complete"] {
             assert!(!steps.iter().any(|s| s == never), "no {never} receipt: {steps:?}");
         }
+        let successor: rafka_node_admin_core::deployment::provider::DeploymentHandle = serde_json::from_value(
+            view.steps.iter().find(|r| r.operation == operation && r.step == "DeployRuntime").and_then(|r| r.output.clone()).expect("the successor's DeployRuntime receipt names its runtime"),
+        )
+        .expect("a runtime handle");
+        assert_eq!(rig.provider.inspect(&successor).await, DeploymentStatus::Running, "the successor stays at .new, Ready");
         let log = rig.log.lock().unwrap().clone();
         let old = first.node.node_id.to_string();
         assert!(log.iter().any(|l| l == &format!("stop-node:{old}")), "stop-node was asked: {log:?}");
@@ -418,8 +437,10 @@ fn a_predecessor_that_never_admits_its_stop_keeps_its_name_and_the_replace_fails
             "no rename is spanned"
         );
 
-        rig.provider.terminate(&first.handle, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
-        assert!(matches!(rig.provider.inspect(&first.handle).await, DeploymentStatus::Exited { .. }), "the predecessor was stopped");
+        for h in [&first.handle, &successor] {
+            rig.provider.terminate(h, TerminationMode::Graceful { grace: Duration::from_secs(2) }).await.unwrap();
+            assert!(matches!(rig.provider.inspect(h).await, DeploymentStatus::Exited { .. }), "the runtime was stopped");
+        }
         let _ = std::fs::remove_dir_all(&rig.template.data_root);
     })
 }

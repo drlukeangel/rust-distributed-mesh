@@ -157,8 +157,10 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
         let _ = crate::node_rows::finish_release(storage, me, r, "tags-put").await;
     }
     let was: BTreeSet<String> = known.as_ref().map(|r| r.tags.clone()).unwrap_or_default();
-    // The key a rename moved the row from stays the row's while it stands at the same key.
+    // The key a rename moved the row from, and the successor that inherited it (its labels stay out of
+    // the tags index), stay the row's while it stands at the same key.
     let renamed_from = known.as_ref().and_then(|r| r.renamed_from.clone().filter(|_| r.name == subject.name));
+    let inherited_by = known.as_ref().and_then(|r| r.inherited_by.clone().filter(|_| r.name == subject.name));
     let config = known.map(|r| r.config).unwrap_or_else(|| subject.config.clone());
     let (tags, done) = match change {
         Change::Create(labels) => {
@@ -185,7 +187,7 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
     // Nothing to change writes nothing: a label carried is a key already put, one not carried a key
     // with nothing to tombstone.
     let Some(tags) = tags else { return done };
-    let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from };
+    let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config, tags, allocated: None, renamed_from, inherited_by };
     match storage.put_node_row(&row).await {
         Ok(Ok(())) => {
             door.written().hold(&row);

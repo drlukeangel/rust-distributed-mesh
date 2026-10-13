@@ -455,6 +455,8 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         return Some(Produces::LifecycleOp);
     }
     let ret = |r: RetireStep| r.name() == step;
+    use crate::deployment::pipeline::ReplaceStep;
+    let rep = |r: ReplaceStep| r.name() == step;
     Some(if is(CreateStep::AllocateIdentity) {
         Produces::Identity
     } else if is(CreateStep::WaitForBind) {
@@ -471,11 +473,11 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::RuntimeEvidence
     } else if is(CreateStep::ApplyMeshPending) {
         Produces::MeshPending
-    } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) || step == crate::deployment::pipeline::ReplaceStep::RenamePredecessor.name() {
+    } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) || rep(ReplaceStep::RenamePredecessor) || rep(ReplaceStep::RenameSuccessor) {
         Produces::LifecycleOp
-    } else if ret(RetireStep::DeleteConnections) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
+    } else if ret(RetireStep::DeleteConnections) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() || rep(ReplaceStep::StopSuccessor) || rep(ReplaceStep::StartSuccessor) {
         Produces::CommandAdmission
-    } else if ret(RetireStep::AwaitNodeLeft) {
+    } else if ret(RetireStep::AwaitNodeLeft) || rep(ReplaceStep::AwaitSuccessorLeft) {
         Produces::Completion
     } else if step == RELEASE_STORAGE_STEP {
         Produces::Storage

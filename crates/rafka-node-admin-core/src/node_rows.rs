@@ -471,7 +471,7 @@ impl NodeRows {
                 let Some((config, tags, _)) = known? else {
                     return Err(RowRefused::Unwritten(format!("{}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know", self.me)));
                 };
-                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None, renamed_from: None };
+                let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None, renamed_from: None, inherited_by: None };
                 match self.storage.put_node_row(&row).await {
                     Ok(Ok(())) => {
                         self.written.hold(&row);
@@ -512,8 +512,12 @@ impl NodeRows {
         }
         // The tags come with the config only for a recovery's claim, from the Deleted row at this key.
         let tags = previous.as_ref().filter(|p| of == ClaimFor::Recovery && p.status == NodeStatus::Deleted).map(|p| p.tags.clone()).unwrap_or_default();
+        // A successor born at `<name>.new` (node-replace.md step 1) reads no `.old` row: it inherits
+        // at its cutover (`crate::node_name_update::Cutover`). The `.old` row seeds the create of an
+        // exited predecessor's successor at the path (the replace of an exited predecessor).
         let seed = match previous {
             Some(p) => Some(p),
+            None if name.new => None,
             None => self.storage.node_row_at(&name.renamed()).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the .old row at {} could not be read for {node_id}: {e}", name.renamed())))?.filter(|p| p.node_id != *node_id),
         };
         let config = seed.as_ref().map_or_else(|| own.clone(), |p| p.config.clone());
@@ -521,7 +525,7 @@ impl NodeRows {
             span.record("seeded_from", p.node_id.as_str());
         }
         span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
-        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: allocated.cloned(), renamed_from: None };
+        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: allocated.cloned(), renamed_from: None, inherited_by: None };
         match self.storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);
@@ -747,7 +751,7 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
             Err(why) => (Moved::ReleasePending { why }, None),
         });
     }
-    let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()) };
+    let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()), inherited_by: None };
     storage.put_node_row(&row).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: nodes.storage refused the row of {} at {to}: {e}", record.node_id)))?.map_err(RenameRefused::NameHeld)?;
     // The new name is the node's: it lets go of the old key.
     match storage.release_node_row(from, &record.node_id).await {

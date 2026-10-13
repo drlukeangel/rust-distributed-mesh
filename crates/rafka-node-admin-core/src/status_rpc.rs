@@ -545,6 +545,18 @@ impl StatusAuthority {
         self.apply_from(peer, sender, req).await
     }
 
+    /// `node.name.update` (`UpdateName`) at this admin, a caller's (`cutover` `None`) or a replace
+    /// recipe's step in-process, which names its cutover's retained row
+    /// ([`crate::node_name_update::Cutover`]): the one validator and writer of a rename.
+    pub async fn update_name(&self, req: &StatusRequest, cutover: Option<&crate::node_name_update::Cutover>) -> StatusReply {
+        let StatusRequest::UpdateName { node_id, incarnation, .. } = req else { unreachable!("update_name is called for UpdateName only") };
+        // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
+        let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
+        let doors = crate::node_name_update::NameDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
+        let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
+        crate::node_name_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), first_ready, req, cutover).await
+    }
+
     /// [`Self::apply`] of a call whose transport-proven endpoint is `peer` (`PeerContext`): the
     /// connection a command spares is the call's own, whether or not the view holds a birth for it.
     pub async fn apply_from(&self, peer: Option<iroh::PublicKey>, sender: Option<crate::model::Node>, req: &StatusRequest) -> StatusReply {
@@ -576,13 +588,7 @@ impl StatusAuthority {
                     None => StatusReply::NotReady { reason: format!("{} has not yet built its rounds; {} is refused", self.me, req.op()) },
                 };
             }
-            StatusRequest::UpdateName { node_id, incarnation, .. } => {
-                // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
-                let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
-                let doors = crate::node_name_update::NameDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
-                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
-                return crate::node_name_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), first_ready, req).await;
-            }
+            StatusRequest::UpdateName { .. } => return self.update_name(req, None).await,
             StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
                 let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
                 return crate::node_properties::tags(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), first_ready, req).await;
