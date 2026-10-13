@@ -312,19 +312,32 @@ async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_
 /// call ends indeterminate; it claims the next attempt for the successor only after it holds proof
 /// of the executor's departure (its exact runtime inspected and exited), never on silence; and the
 /// caller's one stream carries the successor's frames to `Complete`. No event is delivered twice.
+///
+/// The executor is lost at the same step every run: its own Door holds it in the restart's start, the
+/// node's `start-node` answered `Started` and its `StartNode` receipt not yet durable, and it is killed
+/// while held. The successor replays the receipted stop and reissues the start, which the node settles
+/// `AlreadyApplied`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_proof() {
     let test = "a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_claimed_only_after_proof";
-    let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
+    let sha = candidate_sha();
+    let set = binding_set(&sha);
+    let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate.admin).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
 
+    // The executor, mesh2's primary, is held in the middle of the restart: the start of the stopped node
+    // answered, its receipt not durable.
+    const EXECUTOR: &str = "mesh2.admin.1";
+    let door = Door::open(&estate.root, EXECUTOR, &caller.base_of(EXECUTOR)).await;
+    door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "restart-node", "node": NODE})).await;
     let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
-    // RED: the restart is allowed to complete before the kill lands, as in the gate's run (s82-D): no
-    // executor is lost, so no departure is proven.
+    let held = door.wait_held("lost").await;
+    assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
+    assert_eq!(held["hit"]["attempt"], json!(accepted.attempt), "the executor is held in the attempt the restart was accepted at: {held}");
+    estate.kill_node(EXECUTOR).await;
     let frames = frames_of(&mut stream).await;
-    estate.kill_node("mesh2.admin.1").await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "the caller's stream carries the successor's frames to the end: {frames:?}");
     let seen = events(&frames);
     let mut once = seen.clone();
