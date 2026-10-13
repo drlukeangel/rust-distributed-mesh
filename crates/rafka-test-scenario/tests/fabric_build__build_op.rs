@@ -135,7 +135,7 @@ async fn born_framed(estate: &Estate, caller: &Caller, shape: &[(&str, u32, u32)
         other => other.expect("the fabric-primary accepts the shape"),
     };
     frames.extend(until_complete(&mut stream).await);
-    estate.settled_shape(shape, Duration::from_secs(90)).await;
+    estate.settles_to(shape, Duration::from_secs(90)).await;
     caller.learn().await;
     // A workflow a caller submits is refused until the initial fabric has first reached ready-for-traffic
     // (states.md "The initial fabric before ready-for-traffic").
@@ -677,8 +677,8 @@ async fn lose_the_fabric_primary_creating_mesh2(estate: &mut Estate, caller: &Ca
     assert_eq!(resumed.build_id(), &build_id, "never a second Build");
     until_complete(&mut resumed).await;
     // The estate is read and stopped through the admin that holds the seat now.
-    estate.admin = caller.base_of(&successor);
-    estate.settled_shape(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(90)).await;
+    estate.enter(&path(&successor)).await;
+    estate.settles_to(&[("mesh1", 2, 1), ("mesh2", 1, 1)], Duration::from_secs(90)).await;
     let mesh2 = Meshes::new(carrier.clone()).get(&MeshSelector::Mesh("mesh2".into())).await.expect("mesh2's view at the successor").pop().expect("the successor's view holds mesh2");
     assert_eq!(mesh2.id.map(|id| id.to_string()), Some(claimed.clone()), "mesh2 is the mesh the lost fabric-primary's claim wrote");
     Lost { build_id, attempt, successor, carrier }
