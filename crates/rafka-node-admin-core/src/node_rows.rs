@@ -269,6 +269,7 @@ impl NodeRows {
             moment = "claim",
             seeded_from = tracing::field::Empty,
             keys = tracing::field::Empty,
+            tags = tracing::field::Empty,
             outcome = tracing::field::Empty,
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
@@ -478,7 +479,12 @@ impl NodeRows {
 
     /// The row of `node_id` at `name`, `status`, its config seeded from the previous row at the
     /// `path.name` (another node's row there: the store adapter refuses it unless it is `Deleted`),
-    /// else the `<name>.old` row, else `own`. A row the same node holds already is left as it is.
+    /// else the `<name>.old` row, else `own`; its tags seeded from that previous `Deleted` row
+    /// (proposal node-properties-own-commands.md §8, recovery: "the successor's claim over it seeds
+    /// config and tags from that Deleted row and writes the tags index entries under the successor's
+    /// id, in the same write that seeds config"). The store indexes a live row's labels under its node
+    /// in the put itself (`NodeRow::tag_moves`), so this one write is the inheritance: nothing is
+    /// copied later. A row the same node holds already is left as it is.
     async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, span: &tracing::Span) -> Result<Claimed, RowRefused> {
         let me = &self.me;
         let previous = self.storage.node_row_at(name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous row at {name} could not be read for {node_id}: {e}")))?;
@@ -486,6 +492,8 @@ impl NodeRows {
             self.written.hold(p);
             return Ok(Claimed::HeldByNode(p.clone()));
         }
+        // The tags come with the config only from the Deleted row at this key (a recovery's claim).
+        let tags = previous.as_ref().filter(|p| p.status == NodeStatus::Deleted).map(|p| p.tags.clone()).unwrap_or_default();
         let seed = match previous {
             Some(p) => Some(p),
             None => self.storage.node_row_at(&name.renamed()).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the .old row at {} could not be read for {node_id}: {e}", name.renamed())))?.filter(|p| p.node_id != *node_id),
@@ -494,10 +502,8 @@ impl NodeRows {
         if let Some(p) = &seed {
             span.record("seeded_from", p.node_id.as_str());
         }
-        span.record("keys", config.len() as u64);
-        // A new node carries no tags: they are its caller's meta, set through node.update (a
-        // recovery's copy of the caller-owned meta is its own step).
-        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags: Default::default(), allocated: allocated.cloned(), renamed_from: None };
+        span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
+        let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: allocated.cloned(), renamed_from: None };
         match self.storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);
@@ -604,6 +610,7 @@ impl NodeRows {
                 moment = "arrival",
                 seeded_from = tracing::field::Empty,
                 keys = tracing::field::Empty,
+                tags = tracing::field::Empty,
                 outcome = tracing::field::Empty,
                 told = tracing::field::Empty,
                 detail = tracing::field::Empty,
