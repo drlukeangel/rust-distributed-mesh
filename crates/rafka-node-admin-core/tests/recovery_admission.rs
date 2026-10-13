@@ -351,3 +351,134 @@ async fn a_recovery_run_by_a_mesh_primary_that_is_not_the_fabric_primary_is_answ
     fp_router.shutdown().await.unwrap();
     mp_router.shutdown().await.unwrap();
 }
+
+/// Two meshes: mesh1's node-admin holds the fabric-primary seat; mesh2's node-admin is mesh2's
+/// mesh-primary and nothing more. Every node is in the accepted Build.
+fn two_meshes() -> Topology {
+    let mut fp = node("mesh1.admin.1", true);
+    fp.is_fabric_primary = true;
+    let mut mp = node("mesh2.admin.1", true);
+    mp.is_fabric_primary = false;
+    Topology {
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: vec![
+            Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+            Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+        ],
+        nodes: vec![fp, node("mesh1.rpc.1", true), mp, node("mesh2.rpc.1", true)],
+    }
+}
+
+/// The fabric-primary's and mesh2's mesh-primary's control planes over one Build log (what each
+/// holds once the Build topic delivered the other's facts), the birth Build settled, and
+/// `mesh2.rpc.1` proven exited (Dead in both views): (fabric-primary, mesh-primary, Build log, the
+/// exited birth's path, node id and incarnation).
+async fn fabric_of_two_meshes() -> (Arc<ControlPlane>, Arc<ControlPlane>, Arc<MemoryBuildStateAdapter>, PathName, NodeId, IncarnationId) {
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let t = two_meshes();
+    let path: PathName = "mesh2.rpc.1".parse().unwrap();
+    let exited = t.node(&path).unwrap().clone();
+    let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let fp = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), "mesh1.admin.1".parse().unwrap(), t.clone(), crate::adopted_time()));
+    let mp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh2.admin.1".parse().unwrap(), t, crate::adopted_time()));
+    let b0 = fp.builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0).await;
+    for cp in [&fp, &mp] {
+        cp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| n.status = NodeStatus::Dead);
+    }
+    (fp, mp, builds, path, exited.node_id.clone(), exited.incarnation_id.clone().unwrap())
+}
+
+/// A refusal as the control route renders it.
+async fn rendered(refusal: Refusal) -> serde_json::Value {
+    use axum::response::IntoResponse as _;
+    let body = axum::body::to_bytes(refusal.into_response().into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// CONTRACT (R-BI7, proposal Part C caveats 2 and 3; node-recovery.md as R-BI7 moves it: "the
+/// mesh-primary opens the recovery attempt of the current Build itself: claim on its mesh's rows,
+/// then run; no call to the fabric-primary"): a node.create runs in mesh1 (a topology Build, its
+/// attempt claimed for mesh1's admin and running) when mesh2's mesh-primary proves its member
+/// `mesh2.rpc.1` exited. The mesh-primary's own door opens the recovery as an attempt of the current
+/// Build and claims it on mesh2's rows (`(build_id, mesh2, attempt)`, decided by mesh2's
+/// mesh-primary, won); the node.create's attempt in mesh1 is untouched and still running. Must NOT
+/// happen: the recovery refused because a Build runs in another mesh (`BuildInProgress`), or
+/// refused because the submitter is not the fabric-primary (`NotAuthority`).
+#[tokio::test]
+async fn a_recovery_in_mesh2_is_opened_by_its_mesh_primary_while_a_node_create_runs_in_mesh1() {
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-two-meshes", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+    let (fp, mp, builds, path, node_id, birth) = fabric_of_two_meshes().await;
+
+    // node.create in mesh1: a topology Build, its first attempt claimed for mesh1's admin.
+    let create = fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("the node.create is accepted");
+    builds.claim_attempt(&BuildAttemptClaim { build_id: create.build_id.clone(), attempt: create.attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+
+    // mesh2's mesh-primary opens its member's recovery at its own door.
+    let recovery = mp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await;
+    let opened = match recovery {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("mesh2's mesh-primary opens the recovery of its member while a node.create runs in mesh1: {other:?}"),
+    };
+    assert_eq!(opened.build_id, create.build_id, "the recovery is an attempt of the current Build (no shape change, no new Build)");
+    let p = builds.read_build(&create.build_id).await.unwrap();
+    assert_eq!((p.attempt, p.executor.as_deref(), p.state), (create.attempt, Some("mesh1.admin.1"), rafka_node_admin_core::build_state::BuildState::Running), "the node.create's attempt in mesh1 still runs: {p:?}");
+
+    let claims = capture.spans("rdm.node_admin.build.update.via-claim-decision");
+    let mine: Vec<_> = claims.iter().filter(|(_, a)| a.get("node").map(String::as_str) == Some("mesh2.admin.1")).collect();
+    assert_eq!(mine.len(), 1, "mesh2's mesh-primary decides its recovery's claim itself: {claims:?}");
+    let (_, claim) = mine[0];
+    assert_eq!((claim["mesh"].as_str(), claim["outcome"].as_str(), claim["build_id"].as_str()), ("mesh2", "won", create.build_id.as_str()), "claimed on mesh2's rows: {claim:?}");
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.update.via-claim-decision"] {
+        for (trace_id, attrs) in capture.spans(name) {
+            eprintln!("span {name} trace_id={trace_id} {attrs:?}");
+        }
+    }
+}
+
+/// CONTRACT (R-BI7 caveat 3, proposal Part C: "A topology Build's operation on mesh X and mesh X's
+/// own drift attempt cannot both be open: whichever claims first on mesh X's rows wins, the other is
+/// refused build-in-progress naming the holder"; envelope row `BuildInProgress { current_build_id,
+/// mesh, held_by }`): first, a node.create in mesh2 holds mesh2 (its attempt claimed by the
+/// fabric-primary for mesh2's admin) and mesh2's mesh-primary's recovery of its exited member is
+/// refused build-in-progress naming the Build, mesh2 and the fabric-primary that holds it. Then,
+/// the node.create converged, the recovery opens and holds mesh2, and a second node.create in mesh2
+/// is refused build-in-progress naming mesh2 and the mesh-primary that holds it. Must NOT happen:
+/// both open on mesh2, or a refusal that does not say which mesh and who holds it.
+#[tokio::test]
+async fn a_topology_operation_and_a_drift_attempt_on_one_mesh_never_both_open() {
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-one-mesh", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+    let (fp, mp, builds, path, node_id, birth) = fabric_of_two_meshes().await;
+
+    // The fabric-primary's topology operation holds mesh2.
+    let create = fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await.expect("the node.create is accepted");
+    builds.claim_attempt(&BuildAttemptClaim { build_id: create.build_id.clone(), attempt: create.attempt, executor: "mesh2.admin.1".into() }).await.unwrap();
+    let refused = match mp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await {
+        Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
+        other => panic!("the recovery is refused build-in-progress while the node.create holds mesh2: {other:?}"),
+    };
+    assert_eq!((refused["current_build_id"].as_str(), refused["mesh"].as_str(), refused["held_by"].as_str()), (Some(create.build_id.as_str()), Some("mesh2"), Some("mesh1.admin.1")), "the refusal names the Build, the mesh and its holder: {refused}");
+
+    // The node.create converges; the mesh-primary's recovery opens and holds mesh2.
+    builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: create.build_id.clone(), attempt: create.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+    let recovery = match mp.open_recovery("node-recovery", path.clone(), node_id.clone(), birth.clone()).await {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("the recovery opens once mesh2 is free: {other:?}"),
+    };
+    let second = match fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await {
+        Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
+        other => panic!("a node.create in mesh2 is refused build-in-progress while the recovery holds mesh2: {other:?}"),
+    };
+    assert_eq!((second["current_build_id"].as_str(), second["mesh"].as_str(), second["held_by"].as_str()), (Some(recovery.build_id.as_str()), Some("mesh2"), Some("mesh2.admin.1")), "the refusal names the Build, the mesh and the mesh-primary that holds it: {second}");
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-claim-decision"] {
+        for (trace_id, attrs) in capture.spans(name) {
+            eprintln!("span {name} trace_id={trace_id} {attrs:?}");
+        }
+    }
+}
