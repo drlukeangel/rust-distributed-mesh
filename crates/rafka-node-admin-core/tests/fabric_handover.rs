@@ -767,6 +767,42 @@ fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
     });
 }
 
+/// The claims of Build attempts `a`'s own Build log holds: `(attempt, executor)`.
+async fn claims_held(a: &Admin) -> Vec<(u32, String)> {
+    a.door.builds.facts().await.unwrap().into_iter().filter_map(|f| match f {
+        rafka_node_admin_core::build_state::BuildFact::Claim(c) => Some((c.attempt, c.executor)),
+        _ => None,
+    }).collect()
+}
+
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 1: "The
+/// holder is commanded from above, as a step of the Build"; build.md: "A live run is reattached, never
+/// re-claimed"): the update a fabric-primary runs on its own seats (the fabric seat moves in its row) is a
+/// step of the attempt it claimed for itself before its row, so the successor takes that claim into its
+/// Build log as it installs, and reads that attempt held by the holder. A mesh-primary's update that the
+/// fabric-primary commands (its row moves the mesh seat alone) is a step of the commander's drive, which
+/// claims the row's attempt for the successor afterwards: the holder claimed nothing, and the successor
+/// takes no claim from that row.
+/// Must NOT happen: the successor holding a claim of the row's attempt by a holder that never made it,
+/// so that the commander's claim of that attempt for the successor is refused stale-claim there.
+#[test]
+fn the_successor_takes_the_holders_claim_from_a_fabric_primarys_own_row_and_none_from_a_commanded_row() {
+    let cap = trace_capture("fabric-handover");
+    cap.run(async {
+        let build = "vhpqxdbt5w2g";
+        let f = commanded_fabric().await;
+        let op = update_operation(Seat::MeshPrimary, build, "stop-node:mesh1.admin.1");
+        let reply = send(&f.x, &f.p, update_mesh_seat(&f.p, 3, build, &op)).await;
+        assert_eq!(reply, updated(committed_mesh(&f.n, 4)), "the commanded update moved P's mesh seat to N");
+        assert_eq!(claims_held(&f.n).await, vec![], "N took no claim from a row its holder ran in no attempt of its own");
+        drop(f);
+        let g = seats_fabric().await;
+        let op = update_operation(Seat::MeshPrimary, build, "stop-node:mesh1.admin.1");
+        g.p.door.update_primary(Moving::BothSeats, None, build, 2, &op).await.expect("both seats move");
+        assert_eq!(claims_held(&g.n).await, vec![(2, "mesh1.admin.1".to_string())], "N took the fabric-primary's claim of the attempt its own update ran in");
+    });
+}
+
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 7: "The
 /// writer publishes 'primary updated' with the same identifiers"; failure contract: "The holder lost
 /// after the row, before 'updated': the successor and every reader take the seat from the row; the next
