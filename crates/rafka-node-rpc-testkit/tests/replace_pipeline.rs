@@ -62,6 +62,12 @@ impl NodeObserver for Logged<'_> {
         self.log.lock().unwrap().push(format!("awaited:{}:{}", cmd.operation_prefix(), node.node_id));
         c
     }
+    /// The stand-in writer of the mesh's rows: the cell's sink keeps no rows, so the rename is logged
+    /// and answered `NameUpdated` (the validator and the row's move are node_name_update's cells').
+    async fn update_name(&self, node: &Node, to: &PathName) -> rafka_node_rpc_contract::status::StatusReply {
+        self.log.lock().unwrap().push(format!("node.name.update:{}:{to}", node.node_id));
+        rafka_node_rpc_contract::status::StatusReply::NameUpdated { node_id: node.node_id.clone(), incarnation: node.incarnation_id.clone().expect("a known birth") }
+    }
 }
 
 /// The lifecycle events a replace publishes, in the order they leave the executor. With `peer`, each
@@ -316,6 +322,8 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
         let stopped = at(&format!("NodeStopped:{old}:stop-node:{}", path()));
         let ready = at(&format!("ready:{new}"));
         assert!(stop < stopped && stopped < ready, "stop-node (its Stopped reply is node-left), its NodeStopped, then the successor's readiness: {log:?}");
+        let renamed = at(&format!("node.name.update:{old}:{}.old", path()));
+        assert!(stopped < renamed && renamed < ready, "the stopped predecessor's node.name.update to .old, after its NodeStopped: {log:?}");
         assert_eq!(log.iter().filter(|l| l.starts_with("NodeStopped")).count(), 1, "the stop's departure is published once: {log:?}");
         assert!(!log.iter().any(|l| l.starts_with("NodeDeleting") || l.starts_with("NodeDeleted")), "a replace deletes nothing: the predecessor's delete is the recipe's own later step: {log:?}");
 
