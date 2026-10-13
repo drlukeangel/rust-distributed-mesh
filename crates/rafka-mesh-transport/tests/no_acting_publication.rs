@@ -9,7 +9,6 @@ use iroh::protocol::Router;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{Backbone, Membership, StatusEvent};
 use serde_json::Value;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const CELL: &str = "the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_for_that_mesh";
@@ -17,10 +16,6 @@ const CELL: &str = "the_fabric_primary_executing_a_peer_meshs_stop_and_delete_pu
 /// The anti-entropy interval the fabric-primary's round waits on: the wake the cell reads is the
 /// round returning at this deadline and no earlier.
 const ANTI_ENTROPY: Duration = Duration::from_millis(1500);
-
-fn evidence_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s53").join(CELL)
-}
 
 fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
     let mine = format!(".{}-", std::process::id());
@@ -109,9 +104,7 @@ async fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_not
     if crate::own_process::delegated(module_path!(), CELL) {
         return;
     }
-    let dir = evidence_dir();
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+    let dir = crate::evidence_dir();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-no-acting-publication");
 
     let fp_n = node().await;

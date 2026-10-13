@@ -3246,6 +3246,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bytes",
+ "ctor",
  "futures-lite",
  "iroh",
  "iroh-gossip",

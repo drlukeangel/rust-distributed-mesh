@@ -16,18 +16,10 @@ use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, Member
 use rafka_mesh_transport::membership::{learn_addresses, Backbone, Frame, Membership, StatusEvent};
 use rafka_mesh_transport::snapshot::PublisherId;
 use serde_json::Value;
-use std::path::PathBuf;
 use std::time::Duration;
 
 fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
-}
-
-fn evidence(cell: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s52").join(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-    dir
 }
 
 fn spans_of(dir: &std::path::Path) -> Vec<Value> {
@@ -139,7 +131,7 @@ async fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignor
     if crate::own_process::delegated(module_path!(), cell) {
         return;
     }
-    let dir = evidence(cell);
+    let dir = crate::evidence_dir();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-s53-receive-order");
 
     let (n1, n2, nm) = (node().await, node().await, node().await);

@@ -7,7 +7,6 @@ use iroh::protocol::Router;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{learn_addresses, Backbone, Membership, StatusEvent};
 use serde_json::Value;
-use std::path::PathBuf;
 use std::time::Duration;
 
 const CELL: &str = "a_member_stop_overlay_between_two_rounds_reaches_the_backbone_at_once";
@@ -18,10 +17,6 @@ const ANTI_ENTROPY: Duration = Duration::from_secs(30);
 
 /// How long a peer may wait for the overlay: a publication woken by the change, plus gossip.
 const AT_ONCE: Duration = Duration::from_secs(5);
-
-fn evidence_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s40").join(CELL)
-}
 
 fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
     let mine = format!(".{}-", std::process::id());
@@ -99,9 +94,7 @@ async fn a_member_stop_overlay_between_two_rounds_reaches_the_backbone_at_once()
     if crate::own_process::delegated(module_path!(), CELL) {
         return;
     }
-    let dir = evidence_dir();
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+    let dir = crate::evidence_dir();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-round-wake");
 
     let (src_node, peer_node) = (node().await, node().await);

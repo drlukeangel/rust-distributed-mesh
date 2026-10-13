@@ -21,20 +21,12 @@ use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, Member
 use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, Backbone, Frame, Membership, MAX_FRAME};
 use rafka_mesh_transport::snapshot::{chunks_of, Chunk, Delta, Forward, Forwarder, Full, Gap, Moved, PublisherId, SnapshotReceiver, SourceSnapshot, SourceVersion, Taken};
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::time::Duration;
 
 /// Members in the receiver cell's snapshot: enough to span more than two gossip messages.
 const BIG: u32 = 150;
 
 const CELL: &str = "members_receiver_commits_complete_snapshot_before_advancing_version";
-
-fn acceptance_dir() -> PathBuf {
-    match std::env::var("I143_ACCEPTANCE_DIR") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/2900/unit").join(CELL),
-    }
-}
 
 fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
     let mut spans = Vec::new();
@@ -211,9 +203,7 @@ async fn members_receiver_commits_complete_snapshot_before_advancing_version() {
     if crate::own_process::delegated(module_path!(), "members_receiver_commits_complete_snapshot_before_advancing_version") {
         return;
     }
-    let dir = acceptance_dir();
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+    let dir = crate::evidence_dir();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-acceptance");
     let mut result = serde_json::Map::new();
 

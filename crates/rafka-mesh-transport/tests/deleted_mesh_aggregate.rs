@@ -15,17 +15,12 @@ use rafka_mesh_transport::membership::{learn_addresses, Backbone, Frame, Members
 use rafka_mesh_transport::snapshot::SourceSnapshot;
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const HELD: &str = "a_peer_holds_a_deleted_meshs_last_admin_stopped_then_deleted_from_the_fabric_primarys_aggregate";
 const LIVE: &str = "the_fabric_primary_executing_a_live_primaryless_meshs_stop_and_delete_publishes_no_aggregate_of_it";
 const AGAIN: &str = "a_mesh_created_again_under_the_deleted_meshs_name_ends_the_deleted_meshs_aggregate";
 const BACK: &str = "a_back_to_back_stop_and_delete_of_a_deleted_meshs_last_admin_publishes_the_stopped_stage_then_the_deleted_stage";
-
-fn evidence_dir(cell: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s53").join(cell)
-}
 
 fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
     let mine = format!(".{}-", std::process::id());
@@ -160,9 +155,8 @@ async fn a_peer_holds_a_deleted_meshs_last_admin_stopped_then_deleted_from_the_f
     if crate::own_process::delegated(module_path!(), HELD) {
         return;
     }
-    let dir = evidence_dir(HELD);
+    let dir = crate::evidence_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-deleted-mesh-aggregate");
 
     let (n3, fp_n, peer_n) = (node().await, node().await, node().await);
@@ -300,9 +294,8 @@ async fn the_fabric_primary_executing_a_live_primaryless_meshs_stop_and_delete_p
     if crate::own_process::delegated(module_path!(), LIVE) {
         return;
     }
-    let dir = evidence_dir(LIVE);
+    let dir = crate::evidence_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-live-mesh-no-aggregate");
 
     let (n2, fp_n, peer_n) = (node().await, node().await, node().await);
@@ -388,9 +381,8 @@ async fn a_mesh_created_again_under_the_deleted_meshs_name_ends_the_deleted_mesh
     if crate::own_process::delegated(module_path!(), AGAIN) {
         return;
     }
-    let dir = evidence_dir(AGAIN);
+    let dir = crate::evidence_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-deleted-mesh-created-again");
 
     let fp_n = node().await;
@@ -443,9 +435,8 @@ async fn a_back_to_back_stop_and_delete_of_a_deleted_meshs_last_admin_publishes_
     if crate::own_process::delegated(module_path!(), BACK) {
         return;
     }
-    let dir = evidence_dir(BACK);
+    let dir = crate::evidence_dir();
     std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-deleted-mesh-back-to-back");
 
     let fp_n = node().await;

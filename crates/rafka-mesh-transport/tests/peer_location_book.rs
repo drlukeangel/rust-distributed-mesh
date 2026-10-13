@@ -46,7 +46,7 @@ impl iroh::protocol::ProtocolHandler for HandOver {
 
 struct Node {
     ep: iroh::Endpoint,
-    router: Router,
+    _router: Router,
     gossip: iroh_gossip::net::Gossip,
 }
 
@@ -64,7 +64,7 @@ async fn node_with(key: iroh::SecretKey, held: Option<HandOver>) -> Node {
     if let Some(held) = held {
         router = router.accept(HELD, held);
     }
-    Node { ep, router: router.spawn(), gossip }
+    Node { ep, _router: router.spawn(), gossip }
 }
 
 /// The peer admin's first birth: it holds every gossip connection the admin dials to it and hands
@@ -157,13 +157,10 @@ fn spans_of(dir: &std::path::Path) -> Vec<Value> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_never_dials_the_old() {
-    if crate::own_process::delegated(module_path!(), "an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_never_dials_the_old") {
+    if crate::own_process::delegated_with_env(module_path!(), "an_admin_accepting_a_moved_keys_newer_birth_names_only_the_new_socket_and_never_dials_the_old", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("60000")))]) {
         return;
     }
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/restore-lost/peer-location-book");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-    std::env::set_var("RDM_STALENESS_MS", "60000");
+    let dir = crate::evidence_dir();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-peer-location-book");
 
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());

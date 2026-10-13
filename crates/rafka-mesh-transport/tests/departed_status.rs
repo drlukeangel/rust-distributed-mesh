@@ -16,20 +16,10 @@ use iroh::protocol::Router;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{learn_addresses, Frame, Membership, MeshStatus};
 use serde_json::Value;
-use std::path::PathBuf;
 use std::time::Duration;
 
 fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
-}
-
-/// The cell's evidence directory: every span this process emits lands here (and at the collector
-/// when `OTEL_EXPORTER_OTLP_ENDPOINT` names one).
-fn evidence(cell: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s41").join(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-    dir
 }
 
 fn spans_of(dir: &std::path::Path) -> Vec<Value> {
@@ -126,7 +116,7 @@ async fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_fro
     if crate::own_process::delegated(module_path!(), cell) {
         return;
     }
-    let dir = evidence(cell);
+    let dir = crate::evidence_dir();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-s41-departed-status");
 
     let (p_node, m_node, y_node) = (node().await, node().await, node().await);

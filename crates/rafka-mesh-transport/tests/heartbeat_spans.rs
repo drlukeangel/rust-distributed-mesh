@@ -72,13 +72,10 @@ fn spans_of(dir: &std::path::Path) -> Vec<Value> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
-    if crate::own_process::delegated(module_path!(), "node_publish_loop_marks_heartbeat_and_stale_member_in_spans") {
+    if crate::own_process::delegated_with_env(module_path!(), "node_publish_loop_marks_heartbeat_and_stale_member_in_spans", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("2000")))]) {
         return;
     }
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/restore-lost/heartbeat");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-    std::env::set_var("RDM_STALENESS_MS", "2000");
+    let dir = crate::evidence_dir();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-heartbeat");
 
     let (a, b) = (node().await, node().await);

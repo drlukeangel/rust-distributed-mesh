@@ -11,14 +11,9 @@ use iroh::protocol::Router;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{learn_addresses, Backbone, Membership};
 use serde_json::Value;
-use std::path::PathBuf;
 use std::time::Duration;
 
 const CELL: &str = "an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it";
-
-fn evidence_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/forward-role").join(CELL)
-}
 
 fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
@@ -90,10 +85,7 @@ async fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
     if crate::own_process::delegated(module_path!(), CELL) {
         return;
     }
-    let dir = evidence_dir();
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+    let dir = crate::evidence_dir();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-forward-role");
 
     // mesh2's primary publishes on the backbone; mesh1.admin.2 (no seat) hears it there; mesh1.rpc.1

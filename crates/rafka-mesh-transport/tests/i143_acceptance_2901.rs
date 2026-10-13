@@ -14,15 +14,7 @@ use rafka_mesh_transport::membership::{
     forward_of, Backbone, Frame, Membership, StatusBook, StatusPublisher, StatusScope, STATUS_EVERY, STATUS_SENDS,
 };
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
-
-fn acceptance_dir(cell: &str) -> PathBuf {
-    match std::env::var("I143_ACCEPTANCE_DIR") {
-        Ok(d) => PathBuf::from(d),
-        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-acceptance/2901/unit").join(cell),
-    }
-}
 
 fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
     let mut spans = Vec::new();
@@ -81,9 +73,7 @@ async fn status_publisher_reinforces_changed_state_five_times_then_stops() {
         return;
     }
     let cell = "status_publisher_reinforces_changed_state_five_times_then_stops";
-    let dir = acceptance_dir(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
+    let dir = crate::evidence_dir();
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-acceptance");
 
     let fabric = FabricId::mint();

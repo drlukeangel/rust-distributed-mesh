@@ -3,6 +3,26 @@
 
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
+
+/// The process environment this binary writes, once, before any thread exists: a test binary is one
+/// process, so no test sets a variable. Evidence goes to the gate's `I143_ACCEPTANCE_DIR` when it
+/// exports one, else to this crate's own directory under `target/evidence`.
+#[ctor::ctor]
+fn process_env() {
+    let dir = std::env::var_os("I143_ACCEPTANCE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/evidence/rafka-mesh-transport"));
+    std::fs::create_dir_all(&dir).expect("the evidence directory can be created");
+    std::env::set_var("RDM_EVIDENCE_DIR", dir);
+}
+
+/// The evidence directory the binary's start-up chose: every span a cell's process emits lands here
+/// (and at the collector when `OTEL_EXPORTER_OTLP_ENDPOINT` names one), in files named by service and
+/// pid, so a cell reads back only its own process's.
+pub(crate) fn evidence_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var_os("RDM_EVIDENCE_DIR").expect("main.rs sets RDM_EVIDENCE_DIR before any test runs"))
+}
+
 mod i143_acceptance_2900;
 mod i143_acceptance_2901;
 mod i143_acceptance_2902;

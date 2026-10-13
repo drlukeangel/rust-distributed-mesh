@@ -74,10 +74,9 @@ async fn published_until(m: &Membership, own: &MeshDigest, ok: impl Fn(&GossipSt
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn node_digest_counts_active_neighbours_through_isolation_and_return() {
-    if crate::own_process::delegated(module_path!(), "node_digest_counts_active_neighbours_through_isolation_and_return") {
+    if crate::own_process::delegated_with_env(module_path!(), "node_digest_counts_active_neighbours_through_isolation_and_return", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("60000")))]) {
         return;
     }
-    std::env::set_var("RDM_STALENESS_MS", "60000");
     let (a, b) = (node().await, node().await);
     let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
     let clock = rafka_mesh_transport::clock::os_clock;
