@@ -278,32 +278,11 @@ pub(crate) fn netns_listens_tcp(pid: u32, addr: SocketAddr) -> Result<bool, Stri
     netns_table_holds(pid, "tcp", addr, Some("0A"))
 }
 
-/// A `/proc/<pid>/net/<table>` read as one traversal. The kernel walks the table again from the
-/// requested byte offset on every `read()`, so a table read in several calls skips a row whenever a
-/// socket ahead of the offset closes between two calls (a busy netns: our own socket went missing
-/// from its own table in the gate, 2026-10-13). One `read()` into a buffer larger than the table is
-/// one walk; a buffer the table fills completely is grown and the read made again from the start.
-fn read_proc_table(path: &str) -> Result<String, String> {
-    use std::io::Read;
-    let mut size = 1 << 20;
-    loop {
-        let mut file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
-        let mut buf = vec![0u8; size];
-        // One read: seq_file copies every row that fits into the buffer in this one call.
-        let len = file.read(&mut buf).map_err(|e| format!("{path}: {e}"))?;
-        if len < buf.len() {
-            buf.truncate(len);
-            return String::from_utf8(buf).map_err(|e| format!("{path}: {e}"));
-        }
-        size *= 4;
-    }
-}
-
 /// Every UDP socket bound in the network namespace of `pid`, as
 /// `/proc/<pid>/net/udp` lists them (IPv4 only; an unspecified bind is kept as such).
 pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
     let path = format!("/proc/{pid}/net/udp");
-    let table = read_proc_table(&path)?;
+    let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
     let mut out: Vec<SocketAddr> = table
         .lines()
         .skip(1)
@@ -318,45 +297,9 @@ pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
     Ok(out)
 }
 
-/// Does process `pid` itself hold a socket at `addr` (`udp`, or a `tcp` listener)? The socket's
-/// inode in the namespace table is matched against the process's own descriptors, so a port held
-/// by another process (a squatter, or an earlier birth) never passes for this runtime's.
-#[cfg(test)]
-pub(crate) fn process_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
-    let path = format!("/proc/{pid}/net/{table}");
-    let text = read_proc_table(&path)?;
-    let inodes: Vec<String> = text
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let cols: Vec<&str> = line.split_whitespace().collect();
-            if let Some(want) = state {
-                if cols.get(3) != Some(&want) {
-                    return None;
-                }
-            }
-            let (ip, port) = cols.get(1)?.split_once(':')?;
-            let (ip, port) = (u32::from_str_radix(ip, 16).ok()?, u16::from_str_radix(port, 16).ok()?);
-            let ip = IpAddr::from(ip.to_ne_bytes());
-            (port == addr.port() && (ip == addr.ip() || ip.is_unspecified())).then(|| cols.get(9).map(|s| s.to_string())).flatten()
-        })
-        .collect();
-    if inodes.is_empty() {
-        return Ok(false);
-    }
-    let fds = format!("/proc/{pid}/fd");
-    let held = std::fs::read_dir(&fds)
-        .map_err(|e| format!("{fds}: {e}"))?
-        .flatten()
-        .filter_map(|e| std::fs::read_link(e.path()).ok())
-        .filter_map(|l| l.to_str().map(String::from))
-        .any(|l| inodes.iter().any(|i| l == format!("socket:[{i}]")));
-    Ok(held)
-}
-
 fn netns_table_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
     let path = format!("/proc/{pid}/net/{table}");
-    let table = read_proc_table(&path)?;
+    let table = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
     Ok(table.lines().skip(1).any(|line| {
         if let Some(want) = state {
             if line.split_whitespace().nth(3) != Some(want) {
@@ -746,21 +689,6 @@ impl DeploymentProvider for ContainerDeploymentProvider {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_socket_is_held_only_by_the_process_whose_descriptor_it_is() {
-        let me = std::process::id();
-        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        let addr = udp.local_addr().unwrap();
-        assert_eq!(super::process_holds(me, "udp", addr, None), Ok(true), "our own UDP socket");
-        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let taddr = tcp.local_addr().unwrap();
-        assert_eq!(super::process_holds(me, "tcp", taddr, Some("0A")), Ok(true), "our own TCP listener");
-        // The same ports, asked of a process that is not us (pid 1 holds neither): false, never a
-        // host-wide "someone holds it".
-        assert_eq!(super::process_holds(1, "udp", addr, None).unwrap_or(false), false);
-        drop(udp);
-        assert_eq!(super::process_holds(me, "udp", addr, None), Ok(false), "released: nobody holds it");
-    }
 
     use super::*;
 
