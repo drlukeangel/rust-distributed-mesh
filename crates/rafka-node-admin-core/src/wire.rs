@@ -819,3 +819,180 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
         statuses: w.statuses,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::build_state::StepOutcome;
+    use crate::deployment::pipeline::{CreateStep, RetireStep};
+    use crate::model::{DeploymentId, ProviderKind};
+    use serde_json::{json, Value};
+
+    const EXTRA: &str = "zz_extra";
+
+    /// The Build fact of a completed step whose receipt carries `output`.
+    fn step_fact(operation: &str, step: &str, output: Value) -> BuildFact {
+        BuildFact::Step(BuildStepReceipt {
+            mesh: None,
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            attempt: 3,
+            operation: operation.into(),
+            step: step.into(),
+            outcome: StepOutcome::Complete,
+            output: Some(output),
+            executor: None,
+        })
+    }
+
+    /// `valid` with one field no type of its kind declares, put at the JSON pointer `at` ("" is the
+    /// output itself).
+    fn with_extra(mut valid: Value, at: &str) -> Value {
+        let shown = valid.to_string();
+        let target = valid.pointer_mut(at).unwrap_or_else(|| panic!("the valid output has nothing at {at:?}: {shown}"));
+        target.as_object_mut().unwrap_or_else(|| panic!("the valid output at {at:?} is not an object: {shown}")).insert(EXTRA.into(), json!(1));
+        valid
+    }
+
+    /// CONTRACT (CLAUDE.md "DURABLE": "a reader that does not RECOGNISE a value must REFUSE with a
+    /// named reason"; this module's doc: an output that is not the type its step produces "is refused
+    /// by name ... never dropped"): the step's valid output goes to the wire; the same output with one
+    /// field the type does not declare (at `at`) is refused, and the refusal names the step, the Build
+    /// and attempt, and the field. Must NOT happen: the field dropped and the fact sent as a different
+    /// output than the one the step committed.
+    fn unknown_field_is_refused_by_name(operation: &str, step: &str, valid: Value, at: &str) {
+        if let Err(r) = fact_to_wire(&step_fact(operation, step, valid.clone())) {
+            panic!("the valid output of step {step} was refused: {r}");
+        }
+        let Err(refusal) = fact_to_wire(&step_fact(operation, step, with_extra(valid, at))) else {
+            panic!("the output of step {step} carried the unknown field {EXTRA} at {at:?} and went to the wire: the field was dropped");
+        };
+        assert_eq!(refusal.step, step, "the step whose output was refused");
+        assert_eq!(refusal.attempt, 3);
+        let text = refusal.to_string();
+        assert!(text.contains(&format!("step {step} ")) && text.contains("attempt 3"), "the refusal names the step and attempt: {text}");
+        assert!(text.contains(&format!("unknown field `{EXTRA}`")), "the refusal names the unknown field: {text}");
+    }
+
+    fn runtime_proof() -> Value {
+        json!({ "deployment_id": "d1", "provider": "process", "control_domain_fingerprint": "cd", "locator_kind": "pid", "locator_fingerprint": "lf" })
+    }
+
+    fn roster_birth(name: &str) -> Value {
+        json!({ "node": name, "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string() })
+    }
+
+    fn terminal() -> Value {
+        json!({ "node": "mesh1.rpc.1", "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_proof(), "exit_code": 0 })
+    }
+
+    #[test]
+    fn an_identity_output_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "node_id": crate::model::NodeId::mint(), "incarnation": crate::model::IncarnationId::mint(), "supersedes": null, "deployment_id": DeploymentId::mint() });
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::AllocateIdentity.name(), valid, "");
+    }
+
+    #[test]
+    fn a_bound_output_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "transport": "127.0.0.1:4000", "listeners": [["http", "127.0.0.1:4001"]] });
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::WaitForBind.name(), valid, "");
+    }
+
+    /// An endpoint id is the endpoint's key as one string: it has no field to add, so what the reader
+    /// refuses is an object where the string is.
+    #[test]
+    fn an_endpoint_id_output_that_is_an_object_is_refused_by_name() {
+        let step = CreateStep::PrepareStorage.name();
+        let operation = "create-node:mesh1.rpc.1";
+        if let Err(r) = fact_to_wire(&step_fact(operation, step, json!("endpoint-key"))) {
+            panic!("the valid output of step {step} was refused: {r}");
+        }
+        let Err(refusal) = fact_to_wire(&step_fact(operation, step, json!({ EXTRA: 1 }))) else { panic!("an object went to the wire as the endpoint id") };
+        let text = refusal.to_string();
+        assert!(text.contains(&format!("step {step} ")) && text.contains("not a EndpointId"), "the refusal names the step and the type: {text}");
+    }
+
+    #[test]
+    fn a_deployment_handle_output_with_an_unknown_field_is_refused_by_name() {
+        let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(7), start: Some(8), container: None, domain: Some("cd".into()) };
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::DeployRuntime.name(), serde_json::to_value(&handle).unwrap(), "");
+    }
+
+    #[test]
+    fn a_runtime_evidence_output_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "deployment_id": "d1", "provider": "process", "provider_control_domain_fingerprint": "cd", "runtime_locator_kind": "pid", "runtime_locator_fingerprint": "lf" });
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::RegisterExactRuntimeHandle.name(), valid, "");
+    }
+
+    #[test]
+    fn a_mesh_pending_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::ApplyMeshPending.name(), json!({ "applied": "mesh1" }), "");
+    }
+
+    #[test]
+    fn a_lifecycle_op_output_with_an_unknown_field_is_refused_by_name() {
+        let op = rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 3,
+            operation: "retire-node:mesh1.rpc.1".into(),
+            node_id: crate::model::NodeId::mint(),
+            incarnation: crate::model::IncarnationId::mint(),
+            name: "mesh1.rpc.1".parse().unwrap(),
+            event_at_rafka_ms: 4_242,
+        };
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::NodeDeleting.name(), serde_json::to_value(&op).unwrap(), "");
+    }
+
+    #[test]
+    fn a_command_admission_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::DeleteConnections.name(), json!({ "arm": "admitted" }), "");
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::StopNode.name(), json!({ "arm": "not-sent", "reason": "no route" }), "");
+    }
+
+    #[test]
+    fn a_connections_receipt_in_an_admission_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "arm": "connections-deleted", "receipt": { "Established": { "in_flight": 0, "closed": [] } } });
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::DeleteConnections.name(), valid, "/receipt/Established");
+    }
+
+    #[test]
+    fn a_completion_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "received" }), "");
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "not-awaited", "admission": "refused" }), "");
+    }
+
+    #[test]
+    fn a_storage_disposition_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "preserved" }), "");
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "released", "locator": "dir" }), "");
+    }
+
+    #[test]
+    fn a_terminal_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "");
+    }
+
+    #[test]
+    fn a_runtime_proof_inside_a_terminal_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "/runtime");
+    }
+
+    fn exit_manifest() -> Value {
+        json!({ "mesh_id": "meshd0000001", "roster": [roster_birth("mesh1.admin.1")], "final_primary": roster_birth("mesh1.admin.1"), "final_runtime": runtime_proof(), "receipts": [terminal()] })
+    }
+
+    #[test]
+    fn an_exit_manifest_output_with_an_unknown_field_is_refused_by_name() {
+        let step = crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED;
+        unknown_field_is_refused_by_name("mesh-leave:mesh1", step, exit_manifest(), "");
+        unknown_field_is_refused_by_name("mesh-leave:mesh1", step, exit_manifest(), "/roster/0");
+        unknown_field_is_refused_by_name("mesh-leave:mesh1", step, exit_manifest(), "/final_primary");
+        unknown_field_is_refused_by_name("mesh-leave:mesh1", step, exit_manifest(), "/receipts/0");
+    }
+
+    #[test]
+    fn a_roster_amended_output_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "predecessor": roster_birth("mesh1.admin.1"), "final_primary": roster_birth("mesh1.admin.2"), "final_runtime": runtime_proof() });
+        unknown_field_is_refused_by_name("mesh-leave:mesh1", crate::mesh_leave::STEP_ROSTER_AMENDED, valid.clone(), "");
+        unknown_field_is_refused_by_name("mesh-leave:mesh1", crate::mesh_leave::STEP_ROSTER_AMENDED, valid, "/final_runtime");
+    }
+}
