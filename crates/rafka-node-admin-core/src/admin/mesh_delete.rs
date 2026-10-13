@@ -76,8 +76,10 @@ impl AdminRunner {
     }
 
     async fn shutdown_mesh_in(&self, build_id: &crate::build::BuildId, attempt: u32, mesh: &str, mesh_id: &MeshId, outer: &str) -> Result<(), crate::executor::RunEnd> {
-        // Where this owner resumes, from its own Build facts, before it calls anything.
-        let steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
+        // Where this owner resumes, from its own Build facts, before it calls anything; the run this
+        // attempt belongs to keys the fabric seat's update (ruling R-PU2).
+        let build = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?;
+        let (steps, run) = (build.steps.clone(), build.run_of(attempt));
         let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: build_id.clone(), attempt, operation: outer.to_string() };
         // The view is projected now, its proven exits read from their exit-proof rows (R-EL1, R11):
         // a primary whose exit an earlier attempt proved and recorded holds no seat here, so the
@@ -103,7 +105,7 @@ impl AdminRunner {
         // that committed row is installed here, its node.primary.updated (the approved proposal
         // node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 2: "`node.primary.updated`
         // confirms the committed transfer before any member is deleted").
-        let fabric_update = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, build_id.as_str(), outer);
+        let fabric_update = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, build_id.as_str(), run, outer);
         self.handover.fabric_seat_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric seat's committed row is not installed: {e}"))?;
         // The workflow is handed to a live holder. A holder that is not live keeps its seat (R-EL1)
         // but cannot take the workflow: it goes to the lost-final-primary path below, which proves

@@ -53,15 +53,24 @@ use tracing::Instrument as _;
 
 /// The operation identity of the seat update that precedes the Build operation `op_key` of Build
 /// `build_id` (R-MT1): node.primary.update for a mesh-primary seat (and both seats, which move in its
-/// one row), node.fabric-primary.update for the fabric seat alone. It names the Build: an operation
-/// identifies one update, and its seat-transfer row is keyed by it, so a later Build's update of the
-/// same seat before the same node operation is a new update, never the replay of an earlier Build's row.
-pub fn update_operation(seat: Seat, build_id: &str, op_key: &str) -> String {
+/// one row), node.fabric-primary.update for the fabric seat alone. Its transfer key is `(build_id,
+/// attempt)`, never the Build id alone (ruling R-PU2): `attempt` is the first attempt of the run the
+/// update belongs to ([`crate::build_state::BuildProjection::run_of`]). An operation identifies one
+/// update and its seat-transfer row is keyed by it, so a later Build's update, and the update of the
+/// next run a caller's resubmit opens on the same Build, are new updates, never the replay of an
+/// earlier row; an attempt that continues its run (a hand-off, a take-over) replays that run's row.
+pub fn update_operation(seat: Seat, build_id: &str, attempt: u32, op_key: &str) -> String {
+    let _ = attempt;
     match seat {
         Seat::MeshPrimary => format!("node.primary.update:{build_id}:{op_key}"),
         Seat::FabricPrimary => format!("node.fabric-primary.update:{build_id}:{op_key}"),
     }
 }
+
+/// The name the transfer step fails by when the successor the committed row names is proven exited
+/// after the row (ruling R-PU2): the Build is Failed under R-BI4 and the ordinary rule seats whoever it
+/// seats, the holder included.
+pub const SUCCESSOR_EXITED: &str = "successor proven exited after committed transfer";
 
 /// The fabric-primary's bound on reaching the holder and sending it the command (`UpdatePrimary`).
 /// The command's reply is the holder's whole update, its own call to the successor included, which
@@ -122,6 +131,19 @@ pub enum WriteCutOff {
     /// unchanged epoch; the rows its stores held through the cut-off are still its own (proposal Part
     /// C1 failure contract: "NA1 lifts its cut-off under the unchanged epoch").
     Lift,
+    /// After the row, the successor proven exited, the ordinary rule seated this admin again in the
+    /// named seats under the leadership revision installed from that proof (ruling R-PU2 recovery
+    /// order 3): only those seats' write scope is restored, the mesh seat's the mesh rows, the fabric
+    /// seat's `fabric/` and the other meshes' rows, never one for the other. Every row held under the
+    /// old revision stays cut: it is dropped, never written.
+    Restore {
+        /// The proof and the revision, naming the transfer.
+        reason: String,
+        /// The mesh-primary seat is this admin's again.
+        mesh_seat: bool,
+        /// The fabric-primary seat is this admin's again.
+        fabric_seat: bool,
+    },
     /// The seat row was written: this admin's authority over the moving seats' keys ended at it
     /// (R14 item 4), so every row the cut-off stores still hold is dropped and named, never written.
     Committed {
@@ -195,6 +217,7 @@ impl SeatStores {
                     tracing::info!(error = %e, "another mesh's status rows whose cut-off was lifted could not write the rows they held: they stay held");
                 }
             }
+            WriteCutOff::Restore { .. } => {}
             WriteCutOff::Committed { reason, mesh_seat, fabric_seat } => {
                 let mut seat = if mesh_seat { mesh_stores() } else { Vec::new() };
                 if fabric_seat {
@@ -673,6 +696,18 @@ impl HandoverDoor {
             Err(refusal) => span.record("outcome", "refused").record("detail", refusal_reason(refusal).1.as_str()),
         };
         r
+    }
+
+    /// [`Self::update_primary`] moving this admin's own seats as a step of its Build (the
+    /// fabric-primary moving its own seats, having nothing above it), its end told apart as the step
+    /// needs it: refused before the row, incomplete after it, or the successor proven exited after it
+    /// (ruling R-PU2: the step fails by name, [`SUCCESSOR_EXITED`]).
+    pub async fn move_own_seats(&self, moving: Moving, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, crate::build_drive::SeatMoveEnd> {
+        use crate::build_drive::SeatMoveEnd;
+        self.update_primary(moving, None, build_id, attempt, operation).await.map_err(|r| match r {
+            Reply::Incomplete { .. } => SeatMoveEnd::Incomplete(format!("{}: {r:?}", r.name())),
+            other => SeatMoveEnd::Refused(format!("{}: {other:?}", other.name())),
+        })
     }
 
     async fn update_primary_in(&self, moving: Moving, expected: Option<u64>, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, Reply> {

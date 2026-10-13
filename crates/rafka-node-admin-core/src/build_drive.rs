@@ -73,10 +73,12 @@ pub trait Gate: Send + Sync {
     /// FP should issue commands to a MP"; "this same primitive should be called on MP stop or
     /// delete"): this fabric-primary commands the holder's mesh seat to move, or moves its own seats
     /// (its mesh seat, then the fabric seat), so the operation's executor is the holder's successor.
-    /// `operation` names the update's own operation. `Err` names why the seat did not move, and whether
-    /// the update was refused before its row or left incomplete after it ([`SeatMoveEnd`]). A gate with
-    /// no seats moves nothing.
-    async fn move_seats(&self, _m: &crate::executor::SeatMove, _build_id: &BuildId, _attempt: u32, _operation: &str) -> Result<(), SeatMoveEnd> {
+    /// `operation` names the Build operation the update precedes; `run` is the first attempt of the
+    /// run `attempt` belongs to, the update's transfer key with the Build id (ruling R-PU2,
+    /// [`crate::fabric_handover::update_operation`]). `Err` names why the seat did not move, and
+    /// whether the update was refused before its row or left incomplete after it ([`SeatMoveEnd`]). A
+    /// gate with no seats moves nothing.
+    async fn move_seats(&self, _m: &crate::executor::SeatMove, _build_id: &BuildId, _attempt: u32, _run: u32, _operation: &str) -> Result<(), SeatMoveEnd> {
         Ok(())
     }
     /// node.primary.updated for every seat update a committed row records before an operation the
@@ -107,20 +109,20 @@ pub struct PrecedingUpdate {
     pub holder: Option<PathName>,
 }
 
-/// The seat updates a committed row may record before `op` of Build `build_id` (R-MT1,
-/// [`crate::executor::seat_move`]): for a stop, delete, restart, replace or node.connections.delete of
-/// a node-admin, the mesh-primary seat's update and the fabric seat's alone; for a mesh retire, the
-/// fabric seat's under that mesh. None for any other operation.
-pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId) -> Vec<PrecedingUpdate> {
+/// The seat updates a committed row may record before `op` of Build `build_id` in the run whose first
+/// attempt is `run` (R-MT1, ruling R-PU2, [`crate::executor::seat_move`]): for a stop, delete, restart,
+/// replace or node.connections.delete of a node-admin, the mesh-primary seat's update and the fabric
+/// seat's alone; for a mesh retire, the fabric seat's under that mesh. None for any other operation.
+pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId, run: u32) -> Vec<PrecedingUpdate> {
     use crate::fabric_handover::update_operation;
     use rafka_mesh_entity::Seat;
     let key = op.key();
     match op {
-        BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { mesh: mesh.clone(), operation: update_operation(Seat::FabricPrimary, build_id.as_str(), &key), holder: None }],
+        BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { mesh: mesh.clone(), operation: update_operation(Seat::FabricPrimary, build_id.as_str(), run, &key), holder: None }],
         BuildOperation::RetireNode { node, exited: None } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DeleteConnections { node, .. } | BuildOperation::StopNode { node, .. }
             if node.kind == NodeKind::NodeAdmin =>
         {
-            [Seat::MeshPrimary, Seat::FabricPrimary].into_iter().map(|seat| PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(seat, build_id.as_str(), &key), holder: Some(node.clone()) }).collect()
+            [Seat::MeshPrimary, Seat::FabricPrimary].into_iter().map(|seat| PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(seat, build_id.as_str(), run, &key), holder: Some(node.clone()) }).collect()
         }
         _ => Vec::new(),
     }
@@ -473,12 +475,17 @@ pub enum SeatMoveEnd {
     /// Not answered by node.primary.updated: after the row the seats are the successor's whatever the
     /// call returned, or the end is uncertain; the row, where one was written, stands.
     Incomplete(String),
+    /// After the row the successor the row names was proven exited (ruling R-PU2): the step fails by
+    /// name, [`crate::fabric_handover::SUCCESSOR_EXITED`], and the Build is Failed (R-BI4); the
+    /// ordinary rule seats whoever it seats and the workflow never goes on to the holder's operation.
+    SuccessorExited(String),
 }
 
 impl std::fmt::Display for SeatMoveEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(why) | Self::Incomplete(why) => f.write_str(why),
+            Self::SuccessorExited(why) => write!(f, "{}: {why}", crate::fabric_handover::SUCCESSOR_EXITED),
         }
     }
 }
@@ -946,7 +953,7 @@ impl DriveEnv {
             // first, whether this admin moved the seat, resumes after another admin's row, or holds the
             // seat from that row already: node.primary.updated answered to this executor, never the
             // view alone (proposal Part C1 failure contract), in the claim's attempt and in a re-dispatch.
-            if let Some(end) = self.updates_acknowledged(drive, &plan, attempt).await {
+            if let Some(end) = self.updates_acknowledged(drive, &plan, attempt, p.run_of(attempt)).await {
                 return end;
             }
             *dispatches += 1;
@@ -1055,8 +1062,8 @@ impl DriveEnv {
     /// Every seat update a committed row records before an operation of `plan`, acknowledged through
     /// the gate ([`Gate::seats_acknowledged`]); `Some` ends the drive stalled, the attempt blocked
     /// naming the updates and why, when one was not.
-    async fn updates_acknowledged(&self, drive: &Arc<Drive>, plan: &RunPlan, attempt: u32) -> Option<DriveEnd> {
-        let mut updates: Vec<(String, PrecedingUpdate)> = plan.operations.iter().flat_map(|op| preceding_updates(op, &drive.build_id).into_iter().map(move |u| (op.key(), u))).collect();
+    async fn updates_acknowledged(&self, drive: &Arc<Drive>, plan: &RunPlan, attempt: u32, run: u32) -> Option<DriveEnd> {
+        let mut updates: Vec<(String, PrecedingUpdate)> = plan.operations.iter().flat_map(|op| preceding_updates(op, &drive.build_id, run).into_iter().map(move |u| (op.key(), u))).collect();
         updates.dedup();
         let Some((first, _)) = updates.first().cloned() else { return None };
         let asked: Vec<PrecedingUpdate> = updates.into_iter().map(|(_, u)| u).collect();
@@ -1077,10 +1084,13 @@ impl DriveEnv {
         let Some(op) = left(drive, p, &t).into_iter().next() else { return Ok(false) };
         let Some(m) = crate::executor::seat_move(&op, &t) else { return Ok(false) };
         let attempt = p.attempt + 1;
+        // The update's transfer key: the first attempt of the run this attempt belongs to, so the
+        // next run a resubmit opens makes a new transfer (ruling R-PU2).
+        let run = p.run_of(attempt);
         if m.holder.node_id == self.door.node_id {
-            return self.own_seats_first(drive, &op, &m, attempt).await;
+            return self.own_seats_first(drive, &op, &m, attempt, run).await;
         }
-        if let Err(why) = self.gate.move_seats(&m, &drive.build_id, attempt, &op.key()).await {
+        if let Err(why) = self.gate.move_seats(&m, &drive.build_id, attempt, run, &op.key()).await {
             let why = format!("{}: the seat of {} did not move before {}: {why}", self.me, m.holder.name, op.key());
             self.blocked(drive, attempt, &op.key(), "primary-update", &why);
             return Err(self.stalled(drive, why));
@@ -1102,7 +1112,7 @@ impl DriveEnv {
     /// reattached, never re-claimed"). The attempt ends `HandedOff` to the fabric-primary of the view the
     /// update ends with: the successor once the row moved the seats, this admin when nothing moved, and
     /// then the drive waits for what its next attempt decides on to move ([`world`], R-BI4).
-    async fn own_seats_first(&self, drive: &Arc<Drive>, op: &BuildOperation, m: &crate::executor::SeatMove, attempt: u32) -> Result<bool, DriveEnd> {
+    async fn own_seats_first(&self, drive: &Arc<Drive>, op: &BuildOperation, m: &crate::executor::SeatMove, attempt: u32, run: u32) -> Result<bool, DriveEnd> {
         let id = &drive.build_id;
         let context = match self.door.claim(&self.me.to_string(), id, attempt).await {
             BuildClaimReply::Won { context } => context,
@@ -1117,7 +1127,7 @@ impl DriveEnv {
         if let Some(tp) = &context.traceparent {
             rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
         }
-        let moved = self.gate.move_seats(m, id, attempt, &op.key()).instrument(dspan.clone()).await;
+        let moved = self.gate.move_seats(m, id, attempt, run, &op.key()).instrument(dspan.clone()).await;
         let after = self.topology.read().await.clone();
         let still = still_holds(op, m, &after);
         let to = match after.fabric_primary() {

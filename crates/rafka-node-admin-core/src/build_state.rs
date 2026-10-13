@@ -420,6 +420,15 @@ impl BuildProjection {
         }
     }
 
+    /// The first attempt of the run `attempt` belongs to (ruling R-PU2): the attempt the latest
+    /// `Opened` fact opened ([`Self::opened`]), or the first attempt of the Build. A seat update's
+    /// transfer key is `(build_id, run)` ([`crate::fabric_handover::update_operation`]): the attempts
+    /// of one run (hand-offs and take-overs) share it and replay its row; a new run makes a new one.
+    pub fn run_of(&self, attempt: u32) -> u32 {
+        let _ = attempt;
+        self.opened.max(1)
+    }
+
     /// Whether `attempt` carried exactly `action`.
     pub fn carried(&self, attempt: u32, action: &AttemptAction) -> bool {
         self.attempt_actions.get(&attempt) == Some(action)
@@ -2243,6 +2252,27 @@ mod tests {
         for s in [&a, &b] {
             assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("bnew")).unwrap()));
         }
+    }
+
+    /// CONTRACT (ruling R-PU2: "The caller's resubmit opens the next attempt of the same Build ...
+    /// that attempt's node.primary.update is a new transfer key, (build_id, attempt), never the Build id
+    /// alone"; proposal Part C1: "A later attempt that reads the committed row has discovered the
+    /// commit"): attempt 1 of b1 hands off and attempt 2 continues its run (run 1); attempt 2 fails,
+    /// and the attempt a resubmit opens after it, attempt 3, begins run 3, as does attempt 4 continuing
+    /// it. Must NOT happen: a resubmitted attempt in the failed run, or a hand-off starting a new one.
+    #[tokio::test]
+    async fn a_resubmit_after_a_failed_attempt_opens_a_new_run_and_a_hand_off_continues_its_run() {
+        let m = MemoryBuildStateAdapter::new();
+        let b1 = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Claim(claim("b1", 1, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }))]).await;
+        let p = m.read_build(&b1).await.unwrap();
+        assert_eq!(p.run_of(p.attempt_to_drive()), 1, "the hand-off's next attempt continues run 1");
+        m.absorb(&[BuildFact::Claim(claim("b1", 2, "mesh1.admin.2")), BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "successor proven exited after committed transfer".into() }))]).await;
+        let p = m.read_build(&b1).await.unwrap();
+        assert_eq!((p.state, p.attempt_to_drive(), p.run_of(p.attempt_to_drive())), (BuildState::Failed, 3, 3), "the resubmit's attempt opens run 3");
+        m.absorb(&[BuildFact::Claim(claim("b1", 3, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::HandedOff { to: "mesh1.admin.3".into() }))]).await;
+        let p = m.read_build(&b1).await.unwrap();
+        assert_eq!(p.run_of(p.attempt_to_drive()), 3, "attempt 4 continues run 3");
     }
 
     /// CONTRACT (R-BI3: "a caller resubmits it"; one Build in flight): a failed Build may be driven
