@@ -11,10 +11,10 @@ use std::sync::{Arc, Mutex};
 
 /// What one request to the collector carried.
 #[derive(Debug, Clone)]
-struct Seen {
-    request_line: String,
+pub(crate) struct Seen {
+    pub(crate) request_line: String,
     content_type: Option<String>,
-    body: Vec<u8>,
+    pub(crate) body: Vec<u8>,
 }
 
 /// Read requests from `stream` until it closes, recording each and answering `200`.
@@ -57,13 +57,13 @@ fn serve(mut stream: TcpStream, seen: Arc<Mutex<Vec<Seen>>>) {
 const SERVICE: &str = "rdm-otlp-http-export";
 
 /// A collector on a loopback port of this process: every request it receives is recorded.
-struct Collector {
-    endpoint: String,
+pub(crate) struct Collector {
+    pub(crate) endpoint: String,
     seen: Arc<Mutex<Vec<Seen>>>,
 }
 
 impl Collector {
-    fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
@@ -83,7 +83,7 @@ impl Collector {
         [("OTEL_EXPORTER_OTLP_ENDPOINT", Some(std::ffi::OsStr::new(&self.endpoint))), ("RDM_EVIDENCE_DIR", None)]
     }
 
-    fn seen(&self) -> Vec<Seen> {
+    pub(crate) fn seen(&self) -> Vec<Seen> {
         self.seen.lock().unwrap().clone()
     }
 }
