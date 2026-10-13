@@ -1956,24 +1956,20 @@ impl RecoverySubmitter {
     }
 
     /// One TRUE OFFLINE birth on the mesh primary's tick (node-recovery.md "Detection and proof"
-    /// step 3, sequence step 1): the provider's inspection, named when its verdict for the birth
-    /// changes, and the recovery submitted only on an exit proof of a member that exited outside any
-    /// workflow. Any other verdict ends here, and so does the exit of a birth whose removal this
-    /// admin's book holds announced, read after the inspection (the tick's view predates it).
+    /// step 3, sequence step 1): the provider's inspection, its verdict recorded when it changes for
+    /// the birth ([`Self::record_verdict`]: named, and an exit put as the birth's exit-proof row once,
+    /// on the tick that proved it), and the recovery submitted only on an exit proof of a member that
+    /// exited outside any workflow. Any other verdict ends here, and so does the exit of a birth whose
+    /// removal this admin's book holds announced, read after the inspection (the tick's view predates
+    /// it).
     pub(crate) async fn recover_if_proven(&self, n: &Node, verdicts: &Mutex<HashMap<(NodeId, IncarnationId), Inspected>>) -> Inspected {
         let outcome = self.inspect(n).await;
-        if let Some(incarnation) = n.incarnation_id.clone() {
-            if verdicts.lock().unwrap().insert((n.node_id.clone(), incarnation), outcome.clone()).as_ref() != Some(&outcome) {
-                self.span_inspection(n, &outcome);
-            }
-        }
+        let row = self.record_verdict(n, &outcome, verdicts).await;
         if let Inspected::Exited(code, source) = &outcome {
             if let Some(Announced { announced, operation, build_id, attempt }) = self.removal_announced(n).await {
-                // The provider's exact Exited is recorded durably whatever follows: the birth's
-                // exit-proof row is the proven loss every projection reads (`Records::read_exits`).
-                let exit_proof_row = match crate::offline::put_exit_proof(&*self.status_storage, n, *code, source, local_now_ms()).await {
-                    Ok(_) => "put".to_string(),
-                    Err(e) => e,
+                let exit_proof_row = match &row {
+                    Ok(stands) => stands.to_string(),
+                    Err(e) => e.clone(),
                 };
                 let incarnation = n.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
                 tracing::info_span!(
@@ -1991,11 +1987,32 @@ impl RecoverySubmitter {
                     exit_proof_row = %exit_proof_row,
                 )
                 .in_scope(|| tracing::info!("the birth's exit belongs to the workflow that announced its removal: it is no drift, and no recovery is submitted"));
-            } else if let Err(e) = self.submit(n, *code, source).await {
+            } else if let Err(e) = self.submit(n, *code, source, row).await {
                 tracing::info!(node = %n.name, error = %e, "the recovery submit ended without the recovery; the next tick submits again");
             }
         }
         outcome
+    }
+
+    /// The verdict `outcome` of `n`'s birth, recorded by the tick once per change: the inspection's
+    /// span, and for an exit the birth's exit-proof row in status.storage (node-recovery.md "Exited
+    /// is the proof, recorded durably"; [`crate::offline::put_exit_proof`], a blind put of the birth's
+    /// own key). `verdicts` holds what this loop last recorded per birth, so a verdict that stands is
+    /// neither named nor put again by a later tick; a put the store refused records nothing, so the
+    /// next tick that proves the exit puts the row. For an exit, the answer is where its row stands:
+    /// `put` by this tick, `recorded` by an earlier one, or the store's refusal of this tick's put.
+    async fn record_verdict(&self, n: &Node, outcome: &Inspected, verdicts: &Mutex<HashMap<(NodeId, IncarnationId), Inspected>>) -> Result<&'static str, String> {
+        let incarnation = n.incarnation_id.clone().ok_or_else(|| format!("{} ({}) holds no incarnation: no birth to key its verdict by", n.name, n.node_id))?;
+        let birth = (n.node_id.clone(), incarnation);
+        if verdicts.lock().unwrap().get(&birth) == Some(outcome) {
+            return Ok("recorded");
+        }
+        self.span_inspection(n, outcome);
+        if let Inspected::Exited(code, source) = outcome {
+            crate::offline::put_exit_proof(&*self.status_storage, n, *code, source, local_now_ms()).await?;
+        }
+        verdicts.lock().unwrap().insert(birth, outcome.clone());
+        Ok("put")
     }
 
     /// The workflow whose announced removal `n`'s exact birth is under, as this admin's book holds it
@@ -2040,17 +2057,17 @@ impl RecoverySubmitter {
             .in_scope(|| tracing::info!("the mesh primary asked the provider about the TRUE OFFLINE member's exact runtime"));
     }
 
-    /// The exit is recorded durably as the birth's own exit-proof row, then this mesh primary opens
-    /// and runs the recovery itself, keyed on the exited birth ([`Self::submit_in`], R-BI7). The run
-    /// is followed to its end, so the caller holds the birth as submitted until then. A repeat
-    /// answers AlreadyApplied or BuildInProgress.
-    pub(crate) async fn submit(&self, node: &Node, code: Option<i32>, source: &'static str) -> Result<(), String> {
+    /// The recovery of `node`'s exited birth on its exit-proof row, `row` as the tick recorded it
+    /// ([`Self::record_verdict`]): a row the store refused ends the submit here, named on its own
+    /// span; on a row that stands this mesh primary opens and runs the recovery itself, keyed on the
+    /// exited birth ([`Self::submit_in`], R-BI7). The run is followed to its end, so the caller holds
+    /// the birth as submitted until then. A repeat answers AlreadyApplied or BuildInProgress.
+    pub(crate) async fn submit(&self, node: &Node, code: Option<i32>, source: &'static str, row: Result<&'static str, String>) -> Result<(), String> {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
         let span = submit_span(&self.me, node, &incarnation, code, source);
-        // The exit-proof row first: a refused put ends the submit here, named on its own span.
-        let end = match crate::offline::put_exit_proof(&*self.status_storage, node, code, source, local_now_ms()).await {
+        let end = match row {
             Ok(_) => self.submit_in(&span, node, &incarnation).instrument(span.clone()).await,
-            Err(e) => Err(e.into()),
+            Err(e) => Err(e),
         };
         settled(&span, end)
     }
@@ -8295,9 +8312,9 @@ mod tests {
     /// exits outside any workflow"; "Failure and receipts": "An exit during a workflow belongs to
     /// that workflow"): a birth whose removal the mesh primary's book holds announced (a replace's
     /// `NodeDeleting` overlay naming the exact birth, or its `NodeDeleted` departure) is not a
-    /// member to recover, however exited its exact runtime is proven: no exit-proof row, no
-    /// recovery submit, one `rdm.node_admin.build.reject.via-exit-inside-workflow` span naming the
-    /// workflow. A recovery's own node.delete of the exited birth (`retire-node:<path>`) is such a
+    /// member to recover, however exited its exact runtime is proven: its exit recorded as its
+    /// exit-proof row, no recovery submit, one `rdm.node_admin.build.reject.via-exit-inside-workflow`
+    /// span naming the workflow. A recovery's own node.delete of the exited birth (`retire-node:<path>`) is such a
     /// workflow while its overlay stands. Must NOT happen: the
     /// recover-node of the predecessor a replace retired (trace 3b983b72926d8d5e3629d7e3d1f264cf:
     /// the tick's ladder round 2 at 12:38:13.028 over the view it read before the replace's
