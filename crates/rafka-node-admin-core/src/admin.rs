@@ -2297,6 +2297,10 @@ struct SeatGate {
     control: Arc<ControlPlane>,
     /// The 0x21 door node.primary.update is commanded and run through.
     handover: Arc<crate::fabric_handover::HandoverDoor>,
+    /// The seat updates this admin has had node.primary.updated for: the ones it moved through the
+    /// door (the answer installed there) and the rows it acknowledged before a dispatch. Each is
+    /// acknowledged once.
+    acknowledged: Mutex<BTreeSet<String>>,
 }
 
 #[async_trait::async_trait]
@@ -2330,7 +2334,9 @@ impl crate::build_drive::Gate for SeatGate {
         let refused = |r: rafka_node_rpc_contract::handover::NodePrimaryUpdateReply| format!("{}: {r:?}", r.name());
         if m.holder.node_id != door.node_id {
             if m.mesh_seat {
-                door.command_update_primary(&m.holder, build_id.as_str(), attempt, &update_operation(Seat::MeshPrimary, build_id.as_str(), operation)).await?;
+                let update = update_operation(Seat::MeshPrimary, build_id.as_str(), operation);
+                door.command_update_primary(&m.holder, build_id.as_str(), attempt, &update).await?;
+                self.acknowledged.lock().unwrap().insert(update);
             }
             return Ok(());
         }
@@ -2343,7 +2349,21 @@ impl crate::build_drive::Gate for SeatGate {
             (false, true) => (Moving::FabricSeatOutside, Seat::FabricPrimary),
             (false, false) => return Ok(()),
         };
-        door.update_primary(moving, None, build_id.as_str(), attempt, &update_operation(seat, build_id.as_str(), operation)).await.map_err(refused)?;
+        let update = update_operation(seat, build_id.as_str(), operation);
+        door.update_primary(moving, None, build_id.as_str(), attempt, &update).await.map_err(refused)?;
+        self.acknowledged.lock().unwrap().insert(update);
+        Ok(())
+    }
+
+    async fn seats_acknowledged(&self, updates: &[crate::build_drive::PrecedingUpdate], build_id: &crate::build::BuildId, attempt: u32) -> Result<(), String> {
+        for u in updates {
+            if self.acknowledged.lock().unwrap().contains(&u.operation) {
+                continue;
+            }
+            if self.handover.row_acknowledged(&u.mesh, &u.operation, u.holder.as_ref(), build_id.as_str(), attempt).await? {
+                self.acknowledged.lock().unwrap().insert(u.operation.clone());
+            }
+        }
         Ok(())
     }
 }
@@ -5763,7 +5783,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     builds: builds_dyn.clone(),
                                     door: claim_door.clone(),
                                     dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
-                                    gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone(), control: control.clone(), handover: handover.clone() }),
+                                    gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), shutdown: shutdown_control.clone(), control: control.clone(), handover: handover.clone(), acknowledged: Mutex::new(BTreeSet::new()) }),
                                     departure: Arc::new(ProviderDeparture {
                                         me: name.clone(),
                                         topology: control.topology.clone(),

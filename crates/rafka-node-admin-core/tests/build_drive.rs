@@ -1418,7 +1418,7 @@ impl Gate for Acknowledges {
 async fn after_the_row(refusal: Option<&str>) -> (Rig, Arc<DriveEnv>, Arc<Acknowledges>, PrecedingUpdate) {
     let r = rig_for(view_after_the_row(), TopologyChange::RemoveNode { node: "mesh1.admin.2".parse().unwrap() }, |ran, _| ran).await;
     let op = "retire-node:mesh1.admin.2";
-    let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rafka_mesh_entity::Seat::MeshPrimary, r.build.as_str(), op) };
+    let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rafka_mesh_entity::Seat::MeshPrimary, r.build.as_str(), op), holder: Some("mesh1.admin.2".parse().unwrap()) };
     let gate = Arc::new(Acknowledges { inner: r.switch.clone(), rows: vec![row.clone()], dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()), refusal: refusal.map(str::to_string) });
     let e = &r.env;
     let env = Arc::new(DriveEnv {

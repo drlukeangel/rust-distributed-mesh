@@ -102,6 +102,27 @@ pub struct PrecedingUpdate {
     pub mesh: String,
     /// The update's own operation.
     pub operation: String,
+    /// The node the operation acts on, when it names one: the update's holder.
+    pub holder: Option<PathName>,
+}
+
+/// The seat updates a committed row may record before `op` of Build `build_id` (R-MT1,
+/// [`crate::executor::seat_move`]): for a stop, delete, restart, replace or node.connections.delete of
+/// a node-admin, the mesh-primary seat's update and the fabric seat's alone; for a mesh retire, the
+/// fabric seat's under that mesh. None for any other operation.
+pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId) -> Vec<PrecedingUpdate> {
+    use crate::fabric_handover::update_operation;
+    use rafka_mesh_entity::Seat;
+    let key = op.key();
+    match op {
+        BuildOperation::ShutdownMesh { mesh, .. } => vec![PrecedingUpdate { mesh: mesh.clone(), operation: update_operation(Seat::FabricPrimary, build_id.as_str(), &key), holder: None }],
+        BuildOperation::RetireNode { node, exited: None } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DeleteConnections { node, .. } | BuildOperation::StopNode { node, .. }
+            if node.kind == NodeKind::NodeAdmin =>
+        {
+            [Seat::MeshPrimary, Seat::FabricPrimary].into_iter().map(|seat| PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(seat, build_id.as_str(), &key), holder: Some(node.clone()) }).collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// A gate that is always open: a fixture with no membership and no seat fence.
@@ -886,11 +907,6 @@ impl DriveEnv {
             let fresh = !drive.has_run_log();
             let first = drive.note_first_attempt(attempt);
             self.replay(drive, &p.steps, if fresh { 0 } else { first }, attempt).await;
-            *dispatches += 1;
-            let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %executor, node = %self.me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
-            if let Some(tp) = &context.traceparent {
-                rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
-            }
             let plan = {
                 let t = self.topology.read().await.clone();
                 match self.plan_dispatch(drive, &p, &t, &executor) {
@@ -898,6 +914,18 @@ impl DriveEnv {
                     Err((op, f)) => return self.stop_at_fence(drive, attempt, &op, f),
                 }
             };
+            // A seat update a committed row records before an operation of this run is acknowledged
+            // first, whether this admin moved the seat, resumes after another admin's row, or holds the
+            // seat from that row already: node.primary.updated answered to this executor, never the
+            // view alone (proposal Part C1 failure contract), in the claim's attempt and in a re-dispatch.
+            if let Some(end) = self.updates_acknowledged(drive, &plan, attempt).await {
+                return end;
+            }
+            *dispatches += 1;
+            let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %executor, node = %self.me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+            if let Some(tp) = &context.traceparent {
+                rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
+            }
             // What the attempt decides on, as claimed: an attempt handed back to this admin with this
             // unchanged would end the same way again.
             let before = match self.builds.read_build(&id).await {
@@ -994,6 +1022,21 @@ impl DriveEnv {
                 }
             }
         }
+    }
+
+    /// Every seat update a committed row records before an operation of `plan`, acknowledged through
+    /// the gate ([`Gate::seats_acknowledged`]); `Some` ends the drive stalled, the attempt blocked
+    /// naming the updates and why, when one was not.
+    async fn updates_acknowledged(&self, drive: &Arc<Drive>, plan: &RunPlan, attempt: u32) -> Option<DriveEnd> {
+        let mut updates: Vec<(String, PrecedingUpdate)> = plan.operations.iter().flat_map(|op| preceding_updates(op, &drive.build_id).into_iter().map(move |u| (op.key(), u))).collect();
+        updates.dedup();
+        let Some((first, _)) = updates.first().cloned() else { return None };
+        let asked: Vec<PrecedingUpdate> = updates.into_iter().map(|(_, u)| u).collect();
+        let why = self.gate.seats_acknowledged(&asked, &drive.build_id, attempt).await.err()?;
+        let names = asked.iter().map(|u| format!("{} under mesh {}", u.operation, u.mesh)).collect::<Vec<_>>().join(", ");
+        let why = format!("{}: attempt {attempt} of Build {} dispatches nothing until node.primary.updated is acknowledged for the seat update a committed row records before it (one of {names}): {why}", self.me, drive.build_id);
+        self.blocked(drive, attempt, &first, "primary-update", &why);
+        Some(self.stalled(drive, why))
     }
 
     /// The seats the first operation left moves before it is claimed (R-MT1, [`crate::executor::seat_move`]):

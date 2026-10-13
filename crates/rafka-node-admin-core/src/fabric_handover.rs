@@ -826,7 +826,7 @@ impl HandoverDoor {
         };
         let req = Request::UpdatePrimary { fabric: self.fabric.clone(), holder: hb.clone(), seats: vec![SeatEpoch { seat: WireSeat::of(Seat::MeshPrimary, &holder.mesh), expected_epoch: held.epoch }], build_id: build_id.to_string(), attempt, operation: operation.to_string() };
         match self.call_once(&hb.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
-            Called::Reply(Reply::PrimaryUpdated { epochs }) if !epochs.is_empty() => Ok(self.install_committed(holder, &hb, epochs, build_id, attempt, operation, "primary-updated").await),
+            Called::Reply(Reply::PrimaryUpdated { epochs }) if !epochs.is_empty() => Ok(self.install_committed(&holder.name, &hb, epochs, build_id, attempt, operation, "primary-updated").await),
             Called::Reply(Reply::Incomplete { reason }) => Err(("incomplete", format!("{}: node.primary.update {operation} of {} is incomplete: {reason}", self.me, holder.name))),
             Called::Reply(refusal) => {
                 let (reason, detail) = refusal_reason(&refusal);
@@ -847,7 +847,7 @@ impl HandoverDoor {
                 let read = span("held", &births(&row.successor));
                 read.in_scope(|| tracing::info!("the fabric-primary read the committed row of a holder proven gone: it obtains the successor's node.primary.updated before it installs"));
                 match self.call_successor(&row, "commander").instrument(read).await {
-                    Ok(epochs) => Ok(self.install_committed(holder, hb, epochs, build_id, attempt, operation, "committed-row").await),
+                    Ok(epochs) => Ok(self.install_committed(&holder.name, hb, epochs, build_id, attempt, operation, "committed-row").await),
                     Err(incomplete) => Err(("incomplete", refusal_reason(&incomplete).1)),
                 }
             }
@@ -866,8 +866,8 @@ impl HandoverDoor {
     /// Install the seats `holder`'s update committed (`via` names where the answer came from), so this
     /// admin's view names the successor before it dispatches what the update preceded.
     #[allow(clippy::too_many_arguments)]
-    async fn install_committed(&self, holder: &crate::model::Node, hb: &HandoverBirth, seats: Vec<CommittedSeat>, build_id: &str, attempt: u32, operation: &str, via: &str) -> (String, Vec<CommittedSeat>) {
-        let op = self.op_of(hb, holder.name.clone(), build_id, attempt, operation);
+    async fn install_committed(&self, holder: &PathName, hb: &HandoverBirth, seats: Vec<CommittedSeat>, build_id: &str, attempt: u32, operation: &str, via: &str) -> (String, Vec<CommittedSeat>) {
+        let op = self.op_of(hb, holder.clone(), build_id, attempt, operation);
         let taken = self.membership.seats().take_together(&op, &seats);
         (self.project_view)().await;
         let successor = self.topology.read().await.births().find(|n| n.node_id == seats[0].holder.node_id).map(|n| n.name.to_string()).unwrap_or_else(|| births(&seats[0].holder));
@@ -887,6 +887,59 @@ impl HandoverDoor {
         )
         .in_scope(|| tracing::info!("the commander installed the seats node.primary.updated answered"));
         (successor, seats)
+    }
+
+    /// node.primary.updated for the update `operation` committed under `mesh`, obtained by the
+    /// executor that resumes a Build after its row and before an operation on the row's holder
+    /// (`named`, the node that operation acts on, when it names one)
+    /// (proposal Part C1 failure contract: "The workflow continues only after the result is installed
+    /// and acknowledged: node.primary.updated answered to the resuming executor's call, never a read
+    /// alone"; "the next writer to read the row publishes 'updated'. Completion needs neither gossip
+    /// delivery nor the holder's survival"). The row is point-read on the fabric's store root. A row
+    /// naming this birth the successor is installed from the row, this admin's own
+    /// node.primary.updated, and this admin, the next writer to read the row, says "primary updated"
+    /// before anything the update preceded is dispatched; a row naming another successor is that
+    /// successor's node.primary.updated, obtained on a call carrying the row, and installed. `false`:
+    /// no row, so no update happened. `Err` names why the update was not acknowledged. One
+    /// `rdm.node_admin.seat.update.via-row-acknowledged` per row acknowledged.
+    pub async fn row_acknowledged(&self, mesh: &str, operation: &str, named: Option<&PathName>, build_id: &str, attempt: u32) -> Result<bool, String> {
+        let row = self.storage.seat_transfer(mesh, operation).await.map_err(|e| format!("{}: fabric.storage, the seat-transfer row {operation} under mesh {mesh} could not be read: {e}", self.me))?;
+        let Some(row) = row.filter(|r| !r.seats.is_empty()) else { return Ok(false) };
+        let span = tracing::info_span!(
+            "rdm.node_admin.seat.update.via-row-acknowledged",
+            node = %self.me,
+            operation,
+            build_id,
+            attempt,
+            holder = %births(&row.holder),
+            successor = %births(&row.successor),
+            mesh_epoch = %epoch_of(&row.seats, Seat::MeshPrimary),
+            fabric_epoch = %epoch_of(&row.seats, Seat::FabricPrimary),
+            by = tracing::field::Empty,
+            announced = tracing::field::Empty,
+        );
+        // The holder by the name this admin's view gives its birth, else the node the operation names.
+        let holder = self.topology.read().await.births().find(|n| n.node_id == row.holder.node_id).map(|n| n.name.clone()).or_else(|| named.cloned());
+        let Some(holder) = holder else {
+            return Err(format!("{}: the row {operation} under mesh {mesh} names the holder {}, which no node of this admin's view is and the operation names no node, so the update's subject cannot be named", self.me, births(&row.holder)));
+        };
+        if row.successor == self.me_birth() {
+            let op = self.op_of(&row.holder, holder, &row.build_id, row.attempt, &row.operation);
+            {
+                let _decisions = self.decisions.clone().lock_owned().await;
+                self.membership.seats().take_together(&op, &row.seats);
+            }
+            (self.project_view)().await;
+            span.record("by", "self-install").record("announced", true);
+            span.in_scope(|| tracing::info!("the successor the row names installed it and says primary updated before anything the update preceded runs"));
+            self.backbone.announce_primary_updated(op, row.seats.clone()).instrument(span).await;
+        } else {
+            let epochs = self.call_successor(&row, "commander").instrument(span.clone()).await.map_err(|e| refusal_reason(&e).1)?;
+            self.install_committed(&holder, &row.holder, epochs, &row.build_id, row.attempt, &row.operation, "row-acknowledged").instrument(span.clone()).await;
+            span.record("by", "successor-call").record("announced", false);
+            span.in_scope(|| tracing::info!("the successor the row names answered node.primary.updated and its seats are installed"));
+        }
+        Ok(true)
     }
 
     /// The gate of a mesh.delete's leave on its owner, the fabric-primary (mesh-delete.md step 1 as the
