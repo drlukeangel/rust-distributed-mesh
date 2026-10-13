@@ -580,11 +580,20 @@ impl StatusAuthority {
                 // The mesh-primary writes the record through its config door, the one door its record changes take turns at.
                 let deleted = self.declared.lock().unwrap().connections_deleted.get(&(node_id.clone(), incarnation.clone())).cloned();
                 let doors = crate::node_update::UpdateDoors { configs: self.configs.get().map(|c| &**c), moved: &self.row_moved, rename: &self.rename };
-                let first_ready = crate::node_update::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
+                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
                 return crate::node_update::update(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, doors, deleted.as_ref(), first_ready, req).await;
             }
-            StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => return StatusReply::NotReady { reason: format!("{} serves no {} yet", self.me, req.op()) },
-            StatusRequest::UpdateNodeConfig { .. } => {
+            StatusRequest::CreateTags { .. } | StatusRequest::DeleteTags { .. } => {
+                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
+                return crate::node_properties::tags(&self.me, &self.node_id, &self.topology, &*self.nodes_storage, self.configs.get().map(|c| &**c), first_ready, req).await;
+            }
+            StatusRequest::UpdateNodeConfig { node_id, .. } => {
+                // A caller's config put, like every property command, is refused until the initial fabric
+                // has first reached ready-for-traffic (proposal node-properties-own-commands.md §1).
+                let first_ready = crate::node_properties::FirstReadyOnRoot { first_ready: &self.first_ready, status: &*self.status_storage };
+                if let Some(refused) = crate::node_properties::refused_before_first_ready(&self.me, &self.topology, first_ready, "node.config.update", node_id, &tracing::Span::current()).await {
+                    return refused;
+                }
                 return match self.configs.get() {
                     Some(configs) => configs.update(&self.me, &self.node_id, &view, &*self.nodes_storage, req).await,
                     None => StatusReply::NotReady { reason: format!("{} has no node-RPC client yet; {} is refused", self.me, req.op()) },

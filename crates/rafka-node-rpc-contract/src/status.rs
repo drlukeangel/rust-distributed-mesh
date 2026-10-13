@@ -508,10 +508,11 @@ pub const MAX_NODE_TAGS: usize = 32;
 /// The longest tag label, in bytes.
 pub const MAX_TAG_BYTES: usize = 64;
 
-/// Why `label` is not a tag label, by name, or `None` when it is one: 1 to [`MAX_TAG_BYTES`] bytes
-/// of lowercase ASCII letters, digits and `-`, starting with a letter or a digit (`rabbit`, `red`,
-/// `zone-a`). A label keys one row of the node store's tags index, so it is a key every store can
-/// hold.
+/// Why `label` is not a tag label, by name, or `None` when it is one (node-rpc-envelope.md node.tags:
+/// "A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.'"): 1 to [`MAX_TAG_BYTES`] bytes
+/// of lowercase ASCII letters, digits, `-`, `_`, `.` and `~`, not starting with `.` (`rabbit`,
+/// `zone_a`, `v1.2~rc`). A label keys one row of the node store's tags index, so it is a key every
+/// store can hold: no separator, no whitespace, and never `.` or `..`.
 pub fn tag_refusal(label: &str) -> Option<String> {
     let b = label.as_bytes();
     if b.is_empty() {
@@ -520,8 +521,11 @@ pub fn tag_refusal(label: &str) -> Option<String> {
     if b.len() > MAX_TAG_BYTES {
         return Some(format!("the tag label {:?} is {} bytes, over the {MAX_TAG_BYTES}-byte cap", within(label, MAX_TAG_BYTES), b.len()));
     }
-    if !(b[0].is_ascii_lowercase() || b[0].is_ascii_digit()) || !b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-') {
-        return Some(format!("the tag label {label:?} is not lowercase ASCII letters, digits and '-' starting with a letter or a digit"));
+    if b[0] == b'.' {
+        return Some(format!("the tag label {label:?} starts with '.'"));
+    }
+    if !b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_' | b'.' | b'~')) {
+        return Some(format!("the tag label {label:?} is not lowercase ASCII letters, digits, '-', '_', '.' and '~'"));
     }
     None
 }
