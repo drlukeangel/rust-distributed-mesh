@@ -2954,13 +2954,28 @@ impl NodeObserver for MembershipObserver {
 
     /// Ready once this admin's book holds the birth ready-for-traffic: the status its mesh-primary
     /// set from the birth's node.started (this admin, as that primary, through its status authority;
-    /// otherwise the primary's projection), never a heartbeat's.
+    /// otherwise the primary's projection), never a heartbeat's. A refusal names the status the
+    /// book's digest carries, the member status the book holds for the birth, and whether this
+    /// admin took the birth's node.started (the state it holds the birth declared).
     async fn ready(&self, node: &Node) -> Result<(), String> {
-        match self.digest_of(node) {
-            Some(d) if d.status == MemberStatus::ReadyForTraffic => Ok(()),
-            Some(d) => Err(format!("{} is held {:?}, not ready-for-traffic: its mesh-primary has not taken its node.started", node.name, d.status)),
-            None => Err(format!("no digest from {} for this birth", node.name)),
+        let Some(d) = self.digest_of(node) else {
+            return Err(format!("no digest from {} for this birth", node.name));
+        };
+        if d.status == MemberStatus::ReadyForTraffic {
+            return Ok(());
         }
+        let member = match self.book.member_status(&node.node_id, &d.node.incarnation) {
+            Some(s) => format!("the member status held for the birth is {s:?}"),
+            None => "no member status is held for the birth (a birth of another mesh, or no node.joined taken here)".to_string(),
+        };
+        let started = match self.authority.get().map(|a| a.declared.lock().unwrap().node(&node.node_id, &d.node.incarnation)) {
+            None => "node.started is not known here: this admin holds no declared states yet".to_string(),
+            Some(None) => "this admin holds no declared state of the birth: it took no node.started".to_string(),
+            Some(Some(rafka_node_rpc_contract::status::NodeState::Pending)) => "this admin holds the birth declared Pending: it took no node.started".to_string(),
+            Some(Some(rafka_node_rpc_contract::status::NodeState::ReadyForTraffic)) => "this admin holds the birth declared ReadyForTraffic: it took node.started".to_string(),
+            Some(Some(state)) => format!("this admin holds the birth declared {state:?}"),
+        };
+        Err(format!("{} is held {:?}, not ready-for-traffic: {member}; {started}", node.name, d.status))
     }
 
     async fn ready_blocker(&self, node: &Node) -> Option<String> {

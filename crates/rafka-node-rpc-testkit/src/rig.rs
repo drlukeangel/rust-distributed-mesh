@@ -72,7 +72,7 @@ impl NodeObserver for LiveMesh {
         // never the Ping alone and never its heartbeat.
         match self.membership.book.get(node.node_id.as_str()).filter(|(d, _)| node.incarnation_id.as_ref() == Some(&d.node.incarnation)) {
             Some((d, _)) if d.status == rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic => {}
-            Some((d, _)) => return Err(format!("{} is held {:?}, not ready-for-traffic: the admin side has not taken its node.started", node.name, d.status)),
+            Some((d, _)) => return Err(format!("{} is held {:?}, not ready-for-traffic: the member status the admin side holds for the birth is {:?}", node.name, d.status, self.membership.book.member_status(&node.node_id, &d.node.incarnation))),
             None => return Err(format!("no digest from {} for this birth", node.name)),
         }
         let target = self.echo_target(node)?;

@@ -4168,6 +4168,9 @@ impl Fence {
 /// The latest digest held per logical node: when it was taken, and how it was heard.
 #[derive(Debug, Clone)]
 pub struct DigestBook {
+    /// Each member's latest digest, when it was heard and how. An own-mesh birth's `status` here is
+    /// never read: its one status is `member_statuses`'s, and every read that hands out a digest
+    /// takes it from there ([`Self::hand_out`]).
     inner: Arc<Mutex<HashMap<String, (MeshDigest, Instant, Heard)>>>,
     /// Ticks when a member's birth (`MeshDigest::node`) is first held or
     /// changes, or a departure is accepted; a fresher digest of the same
@@ -4214,7 +4217,8 @@ pub struct DigestBook {
     /// The holder's own NodeId, once it published: its own birth's word about itself is its own.
     own: Arc<Mutex<Option<String>>>,
     /// The status this book holds for each own-mesh birth, by NodeId: what the mesh-primary's
-    /// projection said, or, while this book's holder is the primary, what it authored.
+    /// projection said, or, while this book's holder is the primary, what it authored. The only copy:
+    /// no held digest carries an own-mesh birth's status.
     member_statuses: Arc<Mutex<HashMap<String, (IncarnationId, rafka_mesh_entity::MemberStatus)>>>,
     /// The own-mesh births this book holds only from its mesh-primary's projection, by NodeId: the
     /// birth as the projection carried it (its identity, endpoint and runtime fact: gossip.md §3,
@@ -4757,7 +4761,7 @@ impl DigestBook {
         if self.own.lock().unwrap().as_deref() == Some(op.node_id.as_str()) {
             return false;
         }
-        let held_digest = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| d.clone());
+        let held_digest = self.get(op.node_id.as_str()).map(|(d, _)| d);
         let held = held_digest.as_ref().map(|d| (d.node.incarnation.clone(), d.digest_seq, d.status));
         if held.as_ref().is_some_and(|(inc, _, _)| *inc != op.incarnation) {
             return false;
@@ -4862,7 +4866,6 @@ impl DigestBook {
                 // lists neither, never both.
                 self.end_stop(op.node_id.as_str());
                 let again = mark.latest.clone().map(|(d, _, _)| d).or(mark.held.clone()).map(|mut d| {
-                    d.status = rafka_mesh_entity::MemberStatus::Pending;
                     d.node.name = op.name.clone();
                     d
                 });
@@ -5001,14 +5004,11 @@ impl DigestBook {
     }
 
     /// Set `status` for the birth `incarnation` of `node_id`, as its mesh-primary sets it (states.md
-    /// "Who sets each state"): held for the birth, so its projection carries it, and given to the
-    /// digest held of that exact birth. A move ticks `heard`. Returns the status held for that birth
-    /// before (`None` when none was).
+    /// "Who sets each state"): held for the birth, its one copy, which its projection and every read
+    /// of its digest carry. A move ticks `heard`. Returns the status held for that birth before
+    /// (`None` when none was).
     fn author_status(&self, node_id: &str, incarnation: &IncarnationId, status: rafka_mesh_entity::MemberStatus) -> Option<rafka_mesh_entity::MemberStatus> {
         let prior = self.member_statuses.lock().unwrap().insert(node_id.to_string(), (incarnation.clone(), status)).filter(|(inc, _)| inc == incarnation).map(|(_, s)| s);
-        if let Some((d, _, _)) = self.inner.lock().unwrap().get_mut(node_id).filter(|(d, _, _)| d.node.incarnation == *incarnation) {
-            d.status = status;
-        }
         if prior != Some(status) {
             self.heard.send_modify(|v| *v += 1);
         }
@@ -5087,9 +5087,9 @@ impl DigestBook {
         let latest = mark.latest;
         self.end_stop(d.node.node_id.as_str());
         let held_again = match latest {
-            Some((mut again, at, heard)) if self.own_mesh_member(d) => {
-                again.status = d.status;
+            Some((again, at, heard)) if self.own_mesh_member(d) => {
                 let seq = again.digest_seq;
+                self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
                 self.inner.lock().unwrap().insert(d.node.node_id.to_string(), (again, at, heard));
                 self.heard.send_modify(|v| *v += 1);
                 self.births.send_modify(|v| *v += 1);
@@ -5146,6 +5146,25 @@ impl DigestBook {
         !own_mesh.is_empty() && d.node.name.mesh == *own_mesh && !itself
     }
 
+    /// `ds` as every read hands them out: an own-mesh birth ([`Self::own_mesh_member`]) with the one
+    /// status this book holds for it ([`Self::projected_status`]), whatever its held digest says.
+    /// Called with no hold of `inner`.
+    fn hand_out<'a>(&self, ds: impl IntoIterator<Item = &'a mut MeshDigest>) {
+        let own_mesh = self.own_mesh.lock().unwrap().clone();
+        if own_mesh.is_empty() {
+            return;
+        }
+        let own = self.own.lock().unwrap().clone();
+        let holder = self.holder.lock().unwrap().clone();
+        let statuses = self.member_statuses.lock().unwrap();
+        for d in ds {
+            let itself = own.as_deref() == Some(d.node.node_id.as_str()) || d.node.name.to_string() == holder;
+            if d.node.name.mesh == own_mesh && !itself {
+                d.status = statuses.get(d.node.node_id.as_str()).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| *s).unwrap_or(rafka_mesh_entity::MemberStatus::Pending);
+            }
+        }
+    }
+
     /// The status this book holds for the own-mesh birth `d`, as a non-primary takes it: its
     /// primary's projection's, else `Pending` (a birth whose status this book was not told is not
     /// routable, states.md "Routing").
@@ -5174,16 +5193,7 @@ impl DigestBook {
             statuses.insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
             prior
         };
-        let held = {
-            let mut inner = self.inner.lock().unwrap();
-            match inner.get_mut(d.node.node_id.as_str()) {
-                Some((h, _, _)) if h.node.incarnation == d.node.incarnation => {
-                    h.status = d.status;
-                    true
-                }
-                _ => false,
-            }
-        };
+        let held = self.inner.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(h, _, _)| h.node.incarnation == d.node.incarnation);
         if held {
             self.heard.send_modify(|v| *v += 1);
         }
@@ -5238,7 +5248,9 @@ impl DigestBook {
         if heard || stopped || self.is_departed_at(node_id, now) {
             return None;
         }
-        self.projected.lock().unwrap().get(node_id).map(|(d, at)| (d.clone(), now.saturating_duration_since(*at)))
+        let mut held = self.projected.lock().unwrap().get(node_id).map(|(d, at)| (d.clone(), now.saturating_duration_since(*at)));
+        self.hand_out(held.iter_mut().map(|(d, _)| d));
+        held
     }
 
     /// Every own-mesh birth this book holds only from its mesh-primary's projection
@@ -5312,7 +5324,7 @@ impl DigestBook {
             self.overlays_moved();
             // What this receiver holds of the node as the overlay opens: found, in what status, and
             // not routable (the overlay is what makes it so).
-            let held_status = self.inner.lock().unwrap().get(op.node_id.as_str()).map(|(d, _, _)| format!("{:?}", d.status));
+            let held_status = self.get(op.node_id.as_str()).map(|(d, _)| format!("{:?}", d.status));
             tracing::info_span!(
                 "rdm.mesh.membership.update.via-node-deleting",
                 node = %op.name,
@@ -5469,7 +5481,7 @@ impl DigestBook {
         if self.is_departed(node_id) || self.in_flight.lock().unwrap().values().any(|op| op.node_id.as_str() == node_id) {
             return false;
         }
-        let Some(mesh) = self.inner.lock().unwrap().get(node_id).filter(|(d, _, _)| d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic).map(|(d, _, _)| d.node.name.mesh.clone()) else {
+        let Some(mesh) = self.get(node_id).filter(|(d, _)| d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic).map(|(d, _)| d.node.name.mesh) else {
             return false;
         };
         self.statuses.mesh(&mesh).is_some_and(|m| m.status == MESH_READY_FOR_TRAFFIC)
@@ -5502,10 +5514,9 @@ impl DigestBook {
         if self.stopped_refuses(&d, "heartbeat", now) {
             return false;
         }
-        let mut stored = d.clone();
-        if self.own_mesh_member(&d) {
-            stored.status = self.projected_status(&d);
-        }
+        // An own-mesh birth's status is not its heartbeat's: it is the one this book holds for it, and
+        // no move of it is a move of the digest.
+        let own_mesh = self.own_mesh_member(&d);
 
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
@@ -5521,9 +5532,9 @@ impl DigestBook {
                 return false;
             }
         }
-        let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != stored.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != stored.node || held.status != stored.status || now.saturating_duration_since(*at) > self.staleness_floor);
-        inner.insert(d.node.node_id.to_string(), (stored, now, Heard::Direct));
+        let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, at, _)| held.node != d.node || (!own_mesh && held.status != d.status) || now.saturating_duration_since(*at) > self.staleness_floor);
+        inner.insert(d.node.node_id.to_string(), (d, now, Heard::Direct));
         drop(inner);
         if heard_changed {
             self.heard.send_modify(|v| *v += 1);
@@ -5559,6 +5570,7 @@ impl DigestBook {
         if self.stopped_refuses(&d, "topology", now) {
             return false;
         }
+        let own_mesh = self.own_mesh_member(&d);
         let mut inner = self.inner.lock().unwrap();
         let mut held_entry = None;
         if let Some((held, at, heard)) = inner.get(d.node.node_id.as_str()) {
@@ -5579,7 +5591,7 @@ impl DigestBook {
             held_entry = Some((*at, *heard));
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
+        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || (!own_mesh && held.status != d.status));
         let (at, heard) = held_entry.unwrap_or((now, Heard::Topology));
         inner.insert(d.node.node_id.to_string(), (d.clone(), at, heard));
         drop(inner);
@@ -5607,7 +5619,7 @@ impl DigestBook {
         self.record_forwarded_inner(d, Instant::now(), Carried::NoStatus)
     }
 
-    fn record_forwarded_inner(&self, mut d: MeshDigest, now: Instant, carried: Carried) -> bool {
+    fn record_forwarded_inner(&self, d: MeshDigest, now: Instant, carried: Carried) -> bool {
         if self.is_departed_at(d.node.node_id.as_str(), now) {
             reject_departed(&d, "forwarded");
             return false;
@@ -5616,9 +5628,6 @@ impl DigestBook {
             return false;
         }
         let own_mesh = self.own_mesh_member(&d);
-        if carried == Carried::NoStatus && own_mesh {
-            d.status = self.projected_status(&d);
-        }
 
         let mut inner = self.inner.lock().unwrap();
         if let Some((held, _, _)) = inner.get(d.node.node_id.as_str()) {
@@ -5635,7 +5644,7 @@ impl DigestBook {
             }
         }
         let birth_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node);
-        let heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || held.status != d.status);
+        let mut heard_changed = inner.get(d.node.node_id.as_str()).is_none_or(|(held, _, _)| held.node != d.node || (!own_mesh && held.status != d.status));
         inner.insert(d.node.node_id.to_string(), (d.clone(), now, Heard::Forwarded));
         drop(inner);
         // An own-mesh birth held from what its mesh-primary serves (a topology read, each entry its
@@ -5643,7 +5652,8 @@ impl DigestBook {
         // first start's, which this book holds none for, is set Pending by its mesh-primary from that
         // node.joined report.
         if own_mesh && carried == Carried::Status {
-            self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status));
+            let prior = self.member_statuses.lock().unwrap().insert(d.node.node_id.to_string(), (d.node.incarnation.clone(), d.status)).filter(|(inc, _)| *inc == d.node.incarnation).map(|(_, s)| s);
+            heard_changed |= prior != Some(d.status);
         }
         let first = carried == Carried::NoStatus && own_mesh && self.primary.load(Ordering::Relaxed) && !self.member_statuses.lock().unwrap().get(d.node.node_id.as_str()).is_some_and(|(inc, _)| *inc == d.node.incarnation);
         if first {
@@ -5705,14 +5715,18 @@ impl DigestBook {
     /// is current like any member (gossip.md §6.1: a stopped status by itself and silence are not
     /// departure proof), and every aggregate carries it as held.
     pub(crate) fn current_at(&self, fresh: Duration, now: Instant) -> Vec<MeshDigest> {
-        self.inner.lock().unwrap().values().filter(|(_, at, fw)| unheard(at, *fw, now) <= fresh).map(|(d, _, _)| d.clone()).collect()
+        let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().filter(|(_, at, fw)| unheard(at, *fw, now) <= fresh).map(|(d, _, _)| d.clone()).collect();
+        self.hand_out(ds.iter_mut());
+        ds
     }
 
     /// The digests this node received straight from their members (their own word, on the channel
     /// they publish to) at or after `since`: the members that checked in since a round began. A
     /// member known only from forwarded topology, or last heard before `since`, is not here.
     pub fn heard_direct_since(&self, since: Instant) -> Vec<MeshDigest> {
-        self.inner.lock().unwrap().values().filter(|(_, at, heard)| *heard == Heard::Direct && *at >= since).map(|(d, _, _)| d.clone()).collect()
+        let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().filter(|(_, at, heard)| *heard == Heard::Direct && *at >= since).map(|(d, _, _)| d.clone()).collect();
+        self.hand_out(ds.iter_mut());
+        ds
     }
 
     /// The member's latest digest and how long it has been silent.
@@ -5722,12 +5736,16 @@ impl DigestBook {
 
     /// The member's latest digest and how long it has gone unheard at `now`.
     pub fn get_at(&self, node_id: &str, now: Instant) -> Option<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)))
+        let mut held = self.inner.lock().unwrap().get(node_id).map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now)));
+        self.hand_out(held.iter_mut().map(|(d, _)| d));
+        held
     }
 
     /// Every digest held.
     pub fn all(&self) -> Vec<MeshDigest> {
-        self.inner.lock().unwrap().values().map(|(d, _, _)| d.clone()).collect()
+        let mut ds: Vec<MeshDigest> = self.inner.lock().unwrap().values().map(|(d, _, _)| d.clone()).collect();
+        self.hand_out(ds.iter_mut());
+        ds
     }
 
     /// How long it has been since `mesh` was last heard on the backbone at `now`: the youngest
@@ -5767,7 +5785,9 @@ impl DigestBook {
 
     /// Every held member with how long it has gone unheard at `now` (a departed birth is not held).
     pub(crate) fn silent_held(&self, now: Instant) -> Vec<(MeshDigest, Duration)> {
-        self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect()
+        let mut held: Vec<(MeshDigest, Duration)> = self.inner.lock().unwrap().values().map(|(d, at, fw)| (d.clone(), unheard(at, *fw, now))).collect();
+        self.hand_out(held.iter_mut().map(|(d, _)| d));
+        held
     }
 }
 
