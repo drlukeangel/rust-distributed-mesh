@@ -99,7 +99,7 @@ pub struct SeatTransferRow {
     pub operation: String,
     /// The fabric.
     pub fabric: String,
-    /// The Build whose stop, delete, restart, replace, drain or connections delete the update precedes.
+    /// The Build whose stop, delete, restart, replace or connections delete the update precedes.
     pub build_id: String,
     /// That attempt.
     pub attempt: u32,

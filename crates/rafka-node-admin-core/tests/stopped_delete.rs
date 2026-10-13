@@ -91,9 +91,8 @@ impl TopologySink for Discard {
 /// control"; node-stop.md 6: "Delete proceeds to external exact runtime exit proof instead"): the
 /// delete of a stopped birth (Leaving, parked) records `NodeDeleting`, then `TerminateRuntime` (the
 /// provider's stop and its `Exited` inspection of the exact runtime), then `NodeDeleted`, and
-/// `Complete`. Must NOT happen: a drain or a stop sent again to the stopped birth,
-/// or any of their receipts (`DrainNode`, `AwaitNodeDrained`, `StopNode`,
-/// `AwaitNodeLeft`), or a step that releases storage (`ReleaseStorage`: node-delete.md step 3,
+/// `Complete`. Must NOT happen: a stop sent again to the stopped birth, or any of its receipts
+/// (`StopNode`, `AwaitNodeLeft`), or a step that releases storage (`ReleaseStorage`: node-delete.md step 3,
 /// "Retain the data dir, node-identity.json and endpoint key").
 #[tokio::test]
 async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof() {

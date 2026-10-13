@@ -103,7 +103,7 @@ impl AdminRunner {
         // that committed row is installed here, its node.primary.updated (the approved proposal
         // node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 2: "`node.primary.updated`
         // confirms the committed transfer before any member is deleted").
-        let fabric_update = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, &build_id.0, outer);
+        let fabric_update = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, build_id.as_str(), outer);
         self.handover.fabric_seat_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric seat's committed row is not installed: {e}"))?;
         // The workflow is handed to a live holder. A holder that is not live keeps its seat (R-EL1)
         // but cannot take the workflow: it goes to the lost-final-primary path below, which proves

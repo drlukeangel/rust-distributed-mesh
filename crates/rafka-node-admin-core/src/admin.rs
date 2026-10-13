@@ -2344,7 +2344,7 @@ impl crate::build_drive::Gate for SeatGate {
         let refused = |r: rafka_node_rpc_contract::handover::NodePrimaryUpdateReply| format!("{}: {r:?}", r.name());
         if m.holder.node_id != door.node_id {
             if m.mesh_seat {
-                door.command_update_primary(&m.holder, &build_id.0, attempt, &update_operation(Seat::MeshPrimary, &build_id.0, operation)).await?;
+                door.command_update_primary(&m.holder, build_id.as_str(), attempt, &update_operation(Seat::MeshPrimary, build_id.as_str(), operation)).await?;
             }
             return Ok(());
         }
@@ -2357,7 +2357,7 @@ impl crate::build_drive::Gate for SeatGate {
             (false, true) => (Moving::FabricSeatOutside, Seat::FabricPrimary),
             (false, false) => return Ok(()),
         };
-        door.update_primary(moving, None, &build_id.0, attempt, &update_operation(seat, &build_id.0, operation)).await.map_err(refused)?;
+        door.update_primary(moving, None, build_id.as_str(), attempt, &update_operation(seat, build_id.as_str(), operation)).await.map_err(refused)?;
         Ok(())
     }
 }
@@ -5353,7 +5353,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 tasks_early.push(park_gate.spawn(membership.top_ups(crate::topology_read::top_up_fetch(node_rpc.client.clone()))));
                 // The seat-transfer rows on the store root: this admin enters knowing who holds every seat a
                 // committed node.primary.update moved, its own included (proposal Part C1 failure contract:
-                // a holder that died between its drain and its rename reads here whether its row committed).
+                // a holder that died after its write cut-off reads here whether its row committed).
                 crate::fabric_handover::enter_seats(&*fabric_storage, &membership, &backbone, &name, &node_id).await?;
                 // The current Build: Day 0 accepts the first Build itself; every other admin hydrates it from
                 // its entry pull or the fabric control topic.
