@@ -1734,6 +1734,7 @@ impl LifecycleEvents for Departures {
     }
     async fn restarting(&self, _: &LifecycleOp) {}
     async fn stopped(&self, _: &LifecycleOp) {}
+    async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _: &LifecycleOp) {}
     async fn connections_deleting(&self, _: &LifecycleOp) {}
     async fn leaving(&self, _: &LifecycleOp) {}

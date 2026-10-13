@@ -107,6 +107,7 @@ impl LifecycleEvents for Recorder<'_> {
         self.log.lock().unwrap().push(format!("NodeStopped:{}:{}", op.node_id, op.operation));
         self.hear_status(rafka_mesh_transport::membership::StatusEvent::Stopped, op).await;
     }
+    async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, op: &LifecycleOp) {
         self.log.lock().unwrap().push(format!("node.joined:{}:{}", op.node_id, op.operation));
         if let Some(m) = self.peer {

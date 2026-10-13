@@ -71,6 +71,7 @@ impl LifecycleEvents for Recorder {
     // A recovery publishes no stop, drain, leaving or mesh-leave event; this cell records the removal
     // and restart events it asserts, and states the rest as not recorded.
     async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
     async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}

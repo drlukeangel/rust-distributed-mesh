@@ -1210,6 +1210,23 @@ impl SeatBook {
         self.inner.lock().unwrap().meshes.iter().map(|(m, h)| (m.clone(), h.clone())).collect()
     }
 
+    /// The last update held together whose former holder is the exact birth `(node_id, incarnation)`,
+    /// while every seat it moved is still the record held: the update that birth said, or was to say,
+    /// as "primary updated".
+    pub fn update_of_holder(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<(LifecycleOp, Vec<CommittedSeat>)> {
+        let held = self.inner.lock().unwrap();
+        held.together
+            .as_ref()
+            .filter(|(op, _)| &op.node_id == node_id && &op.incarnation == incarnation)
+            .filter(|(_, seats)| {
+                seats.iter().all(|c| match c.mesh_key() {
+                    None => held.fabric.as_ref() == Some(&c.record()),
+                    Some(mesh) => held.meshes.get(mesh) == Some(&c.record()),
+                })
+            })
+            .cloned()
+    }
+
     /// Every record held, as the frames a primary replays to a neighbour that came up.
     pub fn held_frames(&self) -> Vec<Frame> {
         let held = self.inner.lock().unwrap();
@@ -3414,6 +3431,9 @@ pub struct Backbone {
     /// Test seam ([`Backbone::withhold_announcements`]): asked before each announcement this
     /// [`Withhold`] covers is handed to a channel. The product sets none.
     withhold: Arc<std::sync::OnceLock<Withhold>>,
+    /// The updates this mesh's primary said "primary updated" for after their holder's stop
+    /// ([`Backbone::announce_update_of_stopped_holder`]), by operation: each is said once.
+    said_after_stop: Arc<Mutex<BTreeSet<String>>>,
 }
 
 /// Test seam (R-NS2: "Final aggregates and leadership announcements are best-effort dissemination"):
@@ -3520,6 +3540,7 @@ impl Backbone {
             deleted_versions: Arc::default(),
             deleted_seen: Arc::default(),
             withhold: Arc::default(),
+            said_after_stop: Arc::default(),
         };
         me.spawn_status_sender();
         Ok(me)
@@ -4008,6 +4029,34 @@ impl Backbone {
             let _ = self.membership.view.take(&frame, &self.fabric, "own");
         };
         tracing::Instrument::instrument(send, span).await
+    }
+
+    /// The committed update whose former holder is `op`'s birth, said as "primary updated" by this
+    /// mesh's primary, its next writer, once it executed that holder's stop and holds the stop's
+    /// matching completion (R-NS2: "Final aggregates and leadership announcements are best-effort
+    /// dissemination. A stop does not wait for their delivery. Committed lifecycle facts remain
+    /// recoverable after the sender cuts gossip, and the executing authority updates its own view from
+    /// the matching completion and publishes that fact as its author: the mesh-primary for a member";
+    /// proposal Part C1 failure contract: "the next writer to read the row publishes 'updated'.
+    /// Completion needs neither gossip delivery nor the holder's survival"). The holder's own "primary
+    /// updated" was best-effort, and from its stop's transport cut it says nothing more, so this
+    /// primary says it, once per update, before the stop's own status event: every node holds the
+    /// committed seat before it holds the former holder stopped. Nothing is said when this admin is
+    /// not `op`'s mesh's primary, or holds no update whose former holder is that exact birth (a
+    /// holder that never moved a seat, or an update a later record superseded). Returns whether it
+    /// said it.
+    pub async fn announce_update_of_stopped_holder(&self, op: &LifecycleOp) -> bool {
+        if op.name.mesh != self.mesh || !self.publishing.load(Ordering::Relaxed) {
+            return false;
+        }
+        let Some((update, seats)) = self.membership.view.book.seats.update_of_holder(&op.node_id, &op.incarnation) else { return false };
+        if !self.said_after_stop.lock().unwrap().insert(update.operation.clone()) {
+            return false;
+        }
+        let span = tracing::info_span!("rdm.mesh.seat.update.via-holder-stopped", node = %self.node, holder = %op.name, holder_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), stop = %op.operation, operation = %update.operation, build_id = %update.build_id, attempt = update.attempt, seats = %seats_named(&seats));
+        span.in_scope(|| tracing::info!("the former holder's stop completed: this mesh's primary, its next writer, says the committed update as primary updated"));
+        tracing::Instrument::instrument(self.announce_primary_updated(update, seats), span).await;
+        true
     }
 
     /// "primary updating", said once by the holder of the seats `seats` names, after its pre-check and

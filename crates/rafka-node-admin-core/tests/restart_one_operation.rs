@@ -121,6 +121,7 @@ impl LifecycleEvents for Events {
     async fn stopped(&self, op: &LifecycleOp) {
         self.note("stopped", op);
     }
+    async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, op: &LifecycleOp) {
         self.note("joined", op);
     }

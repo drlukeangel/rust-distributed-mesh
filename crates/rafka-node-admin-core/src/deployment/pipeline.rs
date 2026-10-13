@@ -756,6 +756,11 @@ pub trait LifecycleEvents: Send + Sync {
     /// The exact birth answered `stop-node` with `stopped`: it is parked. The mesh primary publishes
     /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
     async fn stopped(&self, op: &LifecycleOp);
+    /// The exact birth's `stop-node` completed (its `stopped` reply is held, whichever workflow
+    /// stopped it: a stop, a restart, a replace, a delete): from its stop's transport cut it says
+    /// nothing more. A former seat holder's committed update is said by its mesh's primary, its next
+    /// writer, from here (R-NS2).
+    async fn stop_completed(&self, op: &LifecycleOp);
     /// The stopped birth answered `start-node` with `Started`: this executor took its `node.joined`
     /// (`op` is the start's operation on that exact birth). Its stop ends here and nowhere else
     /// (node-start.md step 2), the birth is held `Pending`, and this mesh's projection says so.
@@ -789,6 +794,7 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn deleted(&self, _op: &LifecycleOp) {}
     async fn restarting(&self, _op: &LifecycleOp) {}
     async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
     async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
@@ -2170,10 +2176,14 @@ impl DeploymentPipeline<'_> {
                         () = self.until_exited(handle) => Completion::RuntimeExited,
                     },
                 };
-                // The mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.
-                if publish_stopped && c == Completion::Received {
+                // The stop's completion: a former seat holder's update is said first (R-NS2), then the
+                // mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.
+                if c == Completion::Received {
                     let op = self.command_op(&ctx, node)?;
-                    self.lifecycle.stopped(&op).await;
+                    self.lifecycle.stop_completed(&op).await;
+                    if publish_stopped {
+                        self.lifecycle.stopped(&op).await;
+                    }
                 }
                 match (proof != StopProof::Lenient, &c) {
                     (true, c) if *c != Completion::Received => Err(format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name)),

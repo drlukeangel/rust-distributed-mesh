@@ -3609,6 +3609,12 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
         .instrument(span)
         .await
     }
+    async fn stop_completed(&self, op: &rafka_mesh_entity::LifecycleOp) {
+        // A former seat holder's stop completed: its own "primary updated" was best-effort and its
+        // gossip is cut now, so this mesh's primary, its next writer, says the committed update
+        // (R-NS2; proposal Part C1 failure contract), before the stop's own status event.
+        self.backbone.announce_update_of_stopped_holder(op).await;
+    }
     async fn joined(&self, op: &rafka_mesh_entity::LifecycleOp) {
         // The executor's own book ends the stop and holds the birth Pending; its next publication
         // round carries both in this mesh's projection (gossip.md §3.1 `Members`): no frame here.
