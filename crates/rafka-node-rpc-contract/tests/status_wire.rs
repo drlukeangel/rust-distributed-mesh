@@ -3,8 +3,8 @@
 //! `node.connections.delete`'s request (21) and its two replies (31, 32), the reads' four
 //! requests (22..=25) and six replies (33..=38) with the views they carry, the mesh.delete round
 //! and manifest refusals (39, 40, 41), the tags `node.update` (20) puts, the tag filter `node.get`
-//! (22) selects by, the tags its answer (33) carries, the tag refusal (43), and the tags commands
-//! `node.tags.create` (26) and `node.tags.delete` (27) with their replies (45, 46).
+//! (22) selects by, the tags and the config its answer (33) carries, the tag refusal (43), and the tags
+//! commands `node.tags.create` (26) and `node.tags.delete` (27) with their replies (45, 46).
 //! These literals lock discriminants and positional fields independently of codec round trips.
 //! Never regenerate expectations from the Rust serializer to make a schema change pass.
 
@@ -126,7 +126,7 @@ fn replies_match_the_frozen_forty_seven_variant_wire_schema() {
             concat!(
                 "2101",
                 "0b6d657368312e7270632e31", "01", "056d65736831", "0c303132333435363738396162", "010165", "010c397763707266677776746879",
-                "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564",
+                "00", "0100", "00", "01", "00", "00", "00", "01007f000001a01f", "00", "00", "00", "0101020304", "0102010304", "0103726564", "01047469657204676f6c64",
             ),
         ),
         (Meshes { meshes: vec![mesh_view()] }, concat!("2201", "010c313132333435363738396162", "056d65736831", "01", "010d6d657368312e61646d696e2e31", "00", "010d6d657368312e61646d696e2e31")),
@@ -225,7 +225,7 @@ fn the_largest_mesh_leave_fits_the_request_ceiling() {
 }
 
 /// One node as a `node.get` answer carries it: an rpc node with its birth, provider, address, load
-/// and gossip stats, the optional fields it lacks absent.
+/// and gossip stats, a tag and a config entry, the optional fields it lacks absent.
 fn node_view() -> NodeView {
     NodeView {
         name: "mesh1.rpc.1".parse().unwrap(),
@@ -248,6 +248,7 @@ fn node_view() -> NodeView {
         load: Some(rafka_mesh_entity::NodeLoad { cpu_used_millicores: 1, cpu_budget_millicores: 2, ram_used_bytes: 3, ram_budget_bytes: 4 }),
         gossip: Some(rafka_mesh_entity::GossipStats { heard: 2, neighbours: 1, frames_sent: 3, frames_received: 4 }),
         tags: ["red".to_string()].into(),
+        config: [("tier".to_string(), "gold".to_string())].into(),
     }
 }
 

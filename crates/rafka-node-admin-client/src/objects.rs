@@ -479,9 +479,10 @@ impl Nodes {
         crate::NodeRpc::new(self.carrier.client()).connections_delete(mesh_primary, route, &birth, scope, &rafka_node_rpc::CallOptions::default()).await
     }
 
-    /// `node.config.get`.
+    /// `node.config.get`: no request of its own (node-rpc-envelope.md: its dedicated request mapping is
+    /// open); [`Self::get`] answers the whole node, its config included.
     pub fn config_get(&self) -> CallEnd {
-        CallEnd::NotBackedToday { op: NodeOp::ConfigGet, why: "no op carries node config" }
+        CallEnd::NotBackedToday { op: NodeOp::ConfigGet, why: "node.config.get has no request of its own; node.get answers the node's config" }
     }
 
     /// `node.create(spec)`: add a node to a mesh. The stream is `Started`, then the step events

@@ -1682,6 +1682,7 @@ mod tests {
             load: Some(rafka_mesh_entity::NodeLoad { cpu_used_millicores: 2400, cpu_budget_millicores: 16000, ram_used_bytes: 123_456_789, ram_budget_bytes: 64_000_000_000 }),
             gossip: Some(rafka_mesh_entity::GossipStats { heard: 20, neighbours: 5, frames_sent: 123_456, frames_received: 654_321 }),
             tags: ["rabbit".to_string(), "zone-a".to_string()].into(),
+            config: [("tier".to_string(), "gold".to_string())].into(),
         }
     }
 

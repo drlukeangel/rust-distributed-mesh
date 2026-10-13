@@ -59,8 +59,8 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
     }
 }
 
-/// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried
-/// and the tags its row carries.
+/// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
+/// the tags its row carries and the config its digest carries (R-TG1: config rides the digest).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>) -> NodeView {
     NodeView {
         name: n.name.clone(),
@@ -83,6 +83,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         load,
         gossip,
         tags,
+        config: n.config.clone(),
     }
 }
 
