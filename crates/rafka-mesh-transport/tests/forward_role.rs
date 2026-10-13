@@ -13,8 +13,6 @@ use rafka_mesh_transport::membership::{learn_addresses, Backbone, Membership};
 use serde_json::Value;
 use std::time::Duration;
 
-const CELL: &str = "an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it";
-
 fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
 }
@@ -64,109 +62,94 @@ fn addr_of(ep: &iroh::Endpoint) -> iroh::EndpointAddr {
     iroh::EndpointAddr::new(ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.port())))
 }
 
-fn spans(dir: &std::path::Path) -> Vec<Value> {
-    let mine = format!(".{}-", std::process::id());
-    let mut out = Vec::new();
-    for e in std::fs::read_dir(dir).unwrap().flatten() {
-        let n = e.file_name().to_string_lossy().to_string();
-        if n.ends_with(".spans.jsonl") && n.contains(&mine) {
-            out.extend(std::fs::read_to_string(e.path()).unwrap().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
-        }
-    }
-    out
-}
-
 fn attr(sp: &Value, k: &str) -> String {
     sp["attributes"][k].as_str().unwrap_or_default().to_string()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
-    if crate::own_process::delegated(module_path!(), CELL) {
-        return;
-    }
+#[test]
+fn an_admin_that_is_not_its_meshs_primary_forwards_nothing_into_it() {
     let dir = crate::evidence_dir();
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-forward-role");
+    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-mesh-transport-forward-role").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        // mesh2's primary publishes on the backbone; mesh1.admin.2 (no seat) hears it there; mesh1.rpc.1
+        // is on mesh1's channel through mesh1.admin.2 alone.
+        let (src, admin, rpc) = (node().await, node().await, node().await);
+        let (src_addr, admin_addr) = (addr_of(&src.ep), addr_of(&admin.ep));
+        learn_addresses(&admin.ep, &[src_addr.clone()]).unwrap();
+        learn_addresses(&rpc.ep, &[admin_addr.clone()]).unwrap();
+        let fab = fabric();
+        let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
+        let clock = rafka_mesh_transport::clock::os_clock;
+        let src_m = Membership::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.admin.1", clock(), vec![]).await.unwrap();
+        let admin_m = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.admin.2", clock(), vec![]).await.unwrap();
+        let rpc_m = Membership::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.rpc.1", clock(), vec![admin_addr.clone()]).await.unwrap();
+        let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", "mesh2.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
+        let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", "mesh1.admin.2", IncarnationId::mint(), vec![src_addr.clone()]).await.unwrap();
+        src_bb.set_mesh_primary(true);
+        assert!(!admin_bb.is_mesh_primary(), "mesh1.admin.2 holds no seat");
+        rpc_m.wait_for_neighbour().await;
 
-    // mesh2's primary publishes on the backbone; mesh1.admin.2 (no seat) hears it there; mesh1.rpc.1
-    // is on mesh1's channel through mesh1.admin.2 alone.
-    let (src, admin, rpc) = (node().await, node().await, node().await);
-    let (src_addr, admin_addr) = (addr_of(&src.ep), addr_of(&admin.ep));
-    learn_addresses(&admin.ep, &[src_addr.clone()]).unwrap();
-    learn_addresses(&rpc.ep, &[admin_addr.clone()]).unwrap();
-    let fab = fabric();
-    let (mesh1, mesh2) = (MeshId::mint(), MeshId::mint());
-    let clock = rafka_mesh_transport::clock::os_clock;
-    let src_m = Membership::join(&src.gossip, &src.ep, &fab, "mesh2", &mesh2, "mesh2.admin.1", clock(), vec![]).await.unwrap();
-    let admin_m = Membership::join(&admin.gossip, &admin.ep, &fab, "mesh1", &mesh1, "mesh1.admin.2", clock(), vec![]).await.unwrap();
-    let rpc_m = Membership::join(&rpc.gossip, &rpc.ep, &fab, "mesh1", &mesh1, "mesh1.rpc.1", clock(), vec![admin_addr.clone()]).await.unwrap();
-    let src_bb = Backbone::join(&src.gossip, &src.ep, &src_m, "mesh2", "mesh2.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
-    let admin_bb = Backbone::join(&admin.gossip, &admin.ep, &admin_m, "mesh1", "mesh1.admin.2", IncarnationId::mint(), vec![src_addr.clone()]).await.unwrap();
-    src_bb.set_mesh_primary(true);
-    assert!(!admin_bb.is_mesh_primary(), "mesh1.admin.2 holds no seat");
-    rpc_m.wait_for_neighbour().await;
-
-    let ids: Vec<(NodeId, IncarnationId)> = (0..3).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
-    let at = |seq: u64, moved: bool| -> Vec<MeshDigest> {
-        ids.iter().enumerate().map(|(k, (id, b))| member(k as u32 + 1, id, b, seq, if moved && k == 0 { MemberStatus::Draining } else { MemberStatus::ReadyForTraffic })).collect()
-    };
-    // Rounds until the non-primary admin holds the source, then a change until it holds the next
-    // version: it hears both on the backbone.
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    let mut seq = 0;
-    let v1 = loop {
-        seq += 1;
-        src_bb.publish(&src_m, at(seq, false)).await;
-        if let Some((_, v)) = admin_bb.held_source("mesh2") {
-            break v;
+        let ids: Vec<(NodeId, IncarnationId)> = (0..3).map(|_| (NodeId::mint(), IncarnationId::mint())).collect();
+        let at = |seq: u64, moved: bool| -> Vec<MeshDigest> {
+            ids.iter().enumerate().map(|(k, (id, b))| member(k as u32 + 1, id, b, seq, if moved && k == 0 { MemberStatus::Draining } else { MemberStatus::ReadyForTraffic })).collect()
+        };
+        // Rounds until the non-primary admin holds the source, then a change until it holds the next
+        // version: it hears both on the backbone.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut seq = 0;
+        let v1 = loop {
+            seq += 1;
+            src_bb.publish(&src_m, at(seq, false)).await;
+            if let Some((_, v)) = admin_bb.held_source("mesh2") {
+                break v;
+            }
+            assert!(std::time::Instant::now() < deadline, "mesh1.admin.2 never held mesh2 from the backbone");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let v2 = loop {
+            seq += 1;
+            src_bb.publish(&src_m, at(seq, true)).await;
+            if let Some((_, v)) = admin_bb.held_source("mesh2").filter(|(_, v)| *v > v1) {
+                break v;
+            }
+            assert!(std::time::Instant::now() < deadline, "mesh1.admin.2 never held mesh2's next version");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        // Its own rounds publish nothing (no seat), and its mesh holds nothing of mesh2.
+        for _ in 0..5 {
+            assert!(!admin_bb.publish(&admin_m, vec![]).await, "an admin with no seat publishes no aggregate");
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert!(std::time::Instant::now() < deadline, "mesh1.admin.2 never held mesh2 from the backbone");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    let v2 = loop {
-        seq += 1;
-        src_bb.publish(&src_m, at(seq, true)).await;
-        if let Some((_, v)) = admin_bb.held_source("mesh2").filter(|(_, v)| *v > v1) {
-            break v;
-        }
-        assert!(std::time::Instant::now() < deadline, "mesh1.admin.2 never held mesh2's next version");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    // Its own rounds publish nothing (no seat), and its mesh holds nothing of mesh2.
-    for _ in 0..5 {
-        assert!(!admin_bb.publish(&admin_m, vec![]).await, "an admin with no seat publishes no aggregate");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert_eq!(rpc_m.held_source_version("mesh2"), None, "a member reached only through a non-primary admin holds no version of mesh2 (it holds v{v2})");
+        assert_eq!(rpc_m.held_source_version("mesh2"), None, "a member reached only through a non-primary admin holds no version of mesh2 (it holds v{v2})");
 
-    // The same admin given the seat forwards at its next round: the member installs mesh2.
-    admin_bb.set_mesh_primary(true);
-    let installed = loop {
-        seq += 1;
-        src_bb.publish(&src_m, at(seq, true)).await;
-        admin_bb.publish(&admin_m, vec![]).await;
-        if let Some((_, v)) = rpc_m.held_source_version("mesh2") {
-            break v;
-        }
-        assert!(std::time::Instant::now() < deadline, "the member never installed mesh2 once mesh1.admin.2 held the seat");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    assert_eq!(installed, v2);
+        // The same admin given the seat forwards at its next round: the member installs mesh2.
+        admin_bb.set_mesh_primary(true);
+        let installed = loop {
+            seq += 1;
+            src_bb.publish(&src_m, at(seq, true)).await;
+            admin_bb.publish(&admin_m, vec![]).await;
+            if let Some((_, v)) = rpc_m.held_source_version("mesh2") {
+                break v;
+            }
+            assert!(std::time::Instant::now() < deadline, "the member never installed mesh2 once mesh1.admin.2 held the seat");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert_eq!(installed, v2);
 
-    for n in [&src, &admin, &rpc] {
-        n.ep.close().await;
-    }
-    drop(telemetry);
-    let all = spans(&dir);
-    let role: Vec<&Value> = all.iter().filter(|s| s["name"] == "rdm.mesh.backbone.update.via-forwarder" && attr(s, "node") == "mesh1.admin.2" && attr(s, "role") == "start").collect();
-    assert_eq!(role.len(), 1, "the forwarder role started once, when the seat was given");
-    let started = role[0]["start_unix_nano"].as_u64().unwrap();
-    let forwards: Vec<(u64, String)> = all
-        .iter()
-        .filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.membership.update.via-forwarded-")) && attr(s, "node") == "mesh1.admin.2")
-        .map(|s| (s["start_unix_nano"].as_u64().unwrap(), s["name"].as_str().unwrap().to_string()))
-        .collect();
-    assert!(!forwards.is_empty(), "the seat holder forwarded");
-    assert!(forwards.iter().all(|(t, _)| *t >= started), "nothing was forwarded before the seat: {forwards:?}");
-    eprintln!("forward-role: trace of the role start {} span {}; forwards {:?}", role[0]["trace_id"], role[0]["span_id"], forwards.iter().map(|(_, n)| n).collect::<Vec<_>>());
+        for n in [&src, &admin, &rpc] {
+            n.ep.close().await;
+        }
+        let all = capture.spans().expect("the cell's spans reached its evidence file");
+        let role: Vec<&Value> = all.iter().filter(|s| s["name"] == "rdm.mesh.backbone.update.via-forwarder" && attr(s, "node") == "mesh1.admin.2" && attr(s, "role") == "start").collect();
+        assert_eq!(role.len(), 1, "the forwarder role started once, when the seat was given");
+        let started = role[0]["start_unix_nano"].as_u64().unwrap();
+        let forwards: Vec<(u64, String)> = all
+            .iter()
+            .filter(|s| s["name"].as_str().is_some_and(|n| n.starts_with("rdm.mesh.membership.update.via-forwarded-")) && attr(s, "node") == "mesh1.admin.2")
+            .map(|s| (s["start_unix_nano"].as_u64().unwrap(), s["name"].as_str().unwrap().to_string()))
+            .collect();
+        assert!(!forwards.is_empty(), "the seat holder forwarded");
+        assert!(forwards.iter().all(|(t, _)| *t >= started), "nothing was forwarded before the seat: {forwards:?}");
+        eprintln!("forward-role: trace of the role start {} span {}; forwards {:?}", role[0]["trace_id"], role[0]["span_id"], forwards.iter().map(|(_, n)| n).collect::<Vec<_>>());
+    });
 }

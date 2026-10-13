@@ -1,6 +1,8 @@
 //! The crate's one integration-test executable: every file in this directory is a module
 //! here, so the crate links once. A stem runs alone as `<exe> <stem>::`.
 
+// A cell that needs its own process here needs its own environment too: the shared file's plain `delegated` is unused.
+#[allow(dead_code)]
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 
