@@ -11,7 +11,7 @@
 use crate::estate::Estate;
 use rafka_node_admin_client::{LaunchKind as NodeKind, PathName};
 use rafka_node_admin_client::{
-    Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
+    Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
 use std::sync::Arc;
 
@@ -60,11 +60,7 @@ impl Estate {
     /// node-admin a view the estate read lists at it; a base no view read so far lists is looked for
     /// in the views of every node-admin the estate knows, read now. `relearn` reads those first.
     async fn entry_at(&self, peers: &Peers, relearn: bool) -> PathName {
-        let printed = std::mem::take(&mut *self.printed.lock().unwrap());
-        for (base, birth) in &printed {
-            peers.learn_birth(birth).unwrap_or_else(|e| panic!("the handover: the admin at {base} printed a birth that cannot be dialled: {e}"));
-            self.advertised.lock().unwrap().insert(base.clone(), birth.name.clone());
-        }
+        let printed = self.learn_printed(peers);
         if relearn {
             self.relearn(peers).await;
         }
@@ -76,18 +72,36 @@ impl Estate {
                 named().unwrap_or_else(|| panic!("the handover: no admin this estate started printed the control base {} and no view of {} the estate reads lists a node-admin at it; bases held: {:?}", self.admin, self.fabric_id, self.advertised.lock().unwrap()))
             }
         };
-        if let Some((_, birth)) = printed.iter().find(|(base, _)| *base == self.admin) {
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-            loop {
-                let answer = tokio::time::timeout(std::time::Duration::from_secs(2), Fabrics::new(peers.carrier_at(entry.clone())).get()).await;
-                if matches!(answer, Ok(Ok(_))) {
-                    break;
-                }
-                assert!(tokio::time::Instant::now() < deadline, "the handover: {entry} (node {}, incarnation {}, the birth the admin at {} printed) does not answer fabric.get over Node RPC within 120 s; last: {answer:?}", birth.node_id, birth.incarnation.as_str(), self.admin);
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
+        if let Some((base, birth)) = printed.iter().find(|(base, _)| *base == self.admin) {
+            self.await_door(peers, &entry, base, birth).await;
         }
         entry
+    }
+
+    /// Learn, once, the births the admins this estate started printed, and hold the control base each
+    /// printed as the one its admin advertises. Returns what was learned.
+    fn learn_printed(&self, peers: &Peers) -> Vec<(String, MeshNode)> {
+        let printed = std::mem::take(&mut *self.printed.lock().unwrap());
+        for (base, birth) in &printed {
+            peers.learn_birth(birth).unwrap_or_else(|e| panic!("the handover: the admin at {base} printed a birth that cannot be dialled: {e}"));
+            self.advertised.lock().unwrap().insert(base.clone(), birth.name.clone());
+        }
+        printed
+    }
+
+    /// Wait until the admin `entry`, whose birth it printed beside `base`, answers `fabric.get` over Node
+    /// RPC: its door opens for its own birth (node-rpc-envelope.md, "Node RPC readiness gate": the router
+    /// answers NotReady until then).
+    async fn await_door(&self, peers: &Peers, entry: &PathName, base: &str, birth: &MeshNode) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let answer = tokio::time::timeout(std::time::Duration::from_secs(2), Fabrics::new(peers.carrier_at(entry.clone())).get()).await;
+            if matches!(answer, Ok(Ok(_))) {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "the handover: {entry} (node {}, incarnation {}, the birth the admin at {base} printed) does not answer fabric.get over Node RPC within 120 s; last: {answer:?}", birth.node_id, birth.incarnation.as_str());
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 
     /// Read `node.get` at every node-admin the estate knows of, each answering for this Fabric within
@@ -138,6 +152,36 @@ impl Estate {
         if let Some(w) = self.wire.lock().await.as_mut() {
             w.base.clear();
         }
+    }
+
+    /// Point the typed objects at the node-admin `admin`, by name. Its birth is already on `Peers` (an admin
+    /// this estate started printed it; any other is listed by a view the estate read), so the handover
+    /// reads no control base to find it, and the control base of the entry it leaves is forgotten: a
+    /// node-admin that died is never asked again. `Estate::admin` holds the base `admin` advertises, which
+    /// the probe still takes. An admin that printed its birth just now is waited for until its door opens.
+    pub async fn enter(&mut self, admin: &PathName) {
+        let peers = self.peers().await;
+        let printed = self.learn_printed(&peers);
+        let base = match printed.iter().rev().find(|(_, birth)| birth.name == *admin) {
+            Some((base, birth)) => {
+                self.await_door(&peers, admin, base, birth).await;
+                base.clone()
+            }
+            None => {
+                let views = node_views_of(&peers, admin, &self.fabric_id).await.unwrap_or_else(|| panic!("enter: {admin} does not answer node.get for {} over Node RPC; bases held: {:?}", self.fabric_id, self.advertised.lock().unwrap()));
+                self.note(&peers, &views);
+                views.iter().find(|n| n.name == *admin).and_then(|n| n.admin_api_base.clone()).filter(|b| !b.is_empty()).unwrap_or_else(|| panic!("enter: the view {admin} holds does not list a control base for itself: {:?}", views.iter().map(|n| format!("{}={:?}", n.name, n.admin_api_base)).collect::<Vec<_>>()))
+            }
+        };
+        {
+            let mut advertised = self.advertised.lock().unwrap();
+            if let Some(left) = advertised.get(&self.admin).cloned().filter(|left| left != admin) {
+                advertised.retain(|_, held| *held != left);
+            }
+            advertised.insert(base.clone(), admin.clone());
+        }
+        self.admin = base.clone();
+        *self.wire.lock().await = Some(Wire { base, peers, entry: admin.clone() });
     }
 
     /// The admin the typed objects start at.
