@@ -3390,7 +3390,8 @@ pub struct Backbone {
     /// own-Mesh source.
     own: Arc<Mutex<Option<(u64, Full)>>>,
     /// Each mesh this admin's view names, and whether its view holds that mesh deleted (its row
-    /// deleted at mesh.deleted), as the admin last set it ([`Backbone::set_view_meshes`]).
+    /// deleted at mesh.deleted), as the view the admin installed last names them
+    /// ([`Backbone::set_view_meshes`], handed at each install).
     view_meshes: Arc<Mutex<BTreeMap<String, bool>>>,
     /// The births of a deleted mesh this admin, as the fabric-primary, stopped or deleted as their
     /// executor, by `(NodeId, incarnation)`: what it publishes that mesh's aggregate for (gossip.md
@@ -3661,7 +3662,8 @@ impl Backbone {
     }
 
     /// The meshes this admin's view names now, each with whether the view holds it deleted: its row
-    /// deleted at mesh.deleted (lifecycles/states.md, "mesh deleted").
+    /// deleted at mesh.deleted (lifecycles/states.md, "mesh deleted"). The admin hands them at each
+    /// install of its view, in the order the views are installed.
     pub fn set_view_meshes(&self, meshes: BTreeMap<String, bool>) {
         let before = std::mem::replace(&mut *self.view_meshes.lock().unwrap(), meshes.clone());
         // Said once per change, while this admin is the fabric-primary: what its deleted-mesh
