@@ -115,7 +115,7 @@ async fn seed_cell(cell: &str, provider: &str) {
     let spans = spans_of(cell);
     let create = spans
         .iter()
-        .find(|s| s["name"] == "rdm.node_admin.build.create.via-rest" && s["attributes"]["build_id"] == report.build_id.as_str())
+        .find(|s| s["name"] == "rdm.node_admin.build.create.via-node-rpc" && s["attributes"]["build_id"] == report.build_id.as_str())
         .expect("the accepted seed Build's create span is exported");
     let trace = create["trace_id"].as_str().unwrap().to_string();
     let after = estate_dir(cell).join("nodes-after.json");
