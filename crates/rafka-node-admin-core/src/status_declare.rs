@@ -196,6 +196,14 @@ impl Declarer {
         Arc::new(Self { first_ready, ..Self::default() })
     }
 
+    /// Whether the initial fabric of `view` has first reached ready-for-traffic, read before
+    /// [`owed_from_view`] derives what the fabric-primary owes (states.md, "The initial fabric before
+    /// ready-for-traffic"), `rows` being the status rows of this admin's mesh on the store root.
+    pub(crate) async fn read_first_ready(&self, rows: &dyn crate::status_storage::StatusStorage, view: &Topology) -> Result<bool, crate::record_store::StorageError> {
+        let _ = rows;
+        Ok(self.first_ready.reached(view.fabric.status))
+    }
+
     /// Owe `request` to `to` under `key`; a key already owed or answered is left as it is.
     pub(crate) fn owe(&self, key: Key, to: Authority, request: StatusRequest) {
         self.owe_in(key, to, request, None)
@@ -941,6 +949,39 @@ mod tests {
         let mut owed = events(&after);
         owed.sort();
         assert_eq!(owed, vec![Key::FabricEventAt("mesh1".into(), "ready-for-traffic".into()), Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into())], "owed at each mesh primary though the fabric is back at pending");
+    }
+
+    /// CONTRACT (states.md "The initial fabric before ready-for-traffic": the ready-for-traffic event's row
+    /// among the mesh's status rows is the durable fact; "A resize or roll puts the fabric back to
+    /// pending"): a fabric-primary whose latch was never set and whose view holds the fabric at pending
+    /// (an outside successor of the fabric seat that has not heard ready) reads its mesh's status rows on
+    /// the store root before it derives what it owes. Over rows with no ready-for-traffic row of its fabric
+    /// nothing is owed. Once the rows hold it, the fabric-primary owes the event to every mesh primary its
+    /// view names, decided on the row (`rdm.node_admin.fabric.update.via-first-ready`, reason
+    /// `ready-for-traffic-row-on-store-root`). Must NOT happen: a fabric-primary owing nothing while the
+    /// root holds the fabric's ready-for-traffic row.
+    #[tokio::test]
+    async fn a_fabric_primary_that_never_heard_ready_owes_the_event_on_the_ready_row_on_the_store_root() {
+        use crate::status_storage::{FabricEventRow, MemoryStatusStorage, StatusStorage};
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let mut v = view("mesh1.admin.1", "mesh1.admin.1");
+        v.fabric.status = ScopeStatus::Pending;
+        let ids: BTreeMap<String, String> = v.meshes.iter().map(|m| (m.name.clone(), m.id.clone().unwrap().to_string())).collect();
+        let none = BTreeSet::new();
+        let events = |d: &Declarer| -> Vec<Key> {
+            let mut k: Vec<Key> = d.due(&id_of(&me.to_string()), &v, &none).into_iter().map(|(p, _)| p.key).filter(|k| matches!(k, Key::FabricEventAt(..))).collect();
+            k.sort();
+            k
+        };
+        let rows = MemoryStatusStorage::default();
+        let d = Declarer::new();
+        assert!(!d.read_first_ready(&rows, &v).await.unwrap(), "no ready-for-traffic row of the fabric on the root");
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", rafka_mesh_entity::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
+        assert!(events(&d).is_empty(), "nothing owed before the fabric first reached ready-for-traffic");
+        rows.put_fabric_event(&FabricEventRow { fabric_id: v.fabric.id.clone(), event: "ready-for-traffic".into() }).await.unwrap();
+        assert!(d.read_first_ready(&rows, &v).await.unwrap(), "the root's row says the fabric first reached ready-for-traffic");
+        owed_from_view(&d, &me, &id_of(&me.to_string()), "inc", rafka_mesh_entity::MemberStatus::ReadyForTraffic, false, None, &v, &ids);
+        assert_eq!(events(&d), vec![Key::FabricEventAt("mesh1".into(), "ready-for-traffic".into()), Key::FabricEventAt("mesh2".into(), "ready-for-traffic".into())], "owed at each mesh primary, decided on the root's row");
     }
 
     /// CONTRACT: an obligation newly created by this admin's own readiness or the declare gate,

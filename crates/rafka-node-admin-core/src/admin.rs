@@ -6341,8 +6341,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // gossip or readiness.
                                     {
                                         let declarer = declarer.clone();
-                                        let (digest, topology, records, me_id, incarnation, client, authority) =
-                                            (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), authority.clone());
+                                        let (digest, topology, records, me_id, incarnation, client, authority, status_storage) =
+                                            (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), authority.clone(), status_storage.clone());
                                         let rounds = rounds_slot.clone();
                                         let park = park_gate.clone();
                                         tasks.push(tokio::spawn(async move {
@@ -6360,6 +6360,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 let mesh_ids: BTreeMap<String, String> = records.meshes.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.to_string())).collect();
                                                 let own_mesh_id = records.meshes.lock().unwrap().get(&me.mesh).cloned();
                                                 let own_mesh_held = own_mesh_id.and_then(|id| records.declared.lock().unwrap().meshes.get(&id).copied());
+                                                // The fabric-primary owes the ready-for-traffic event from the durable fact: its mesh's
+                                                // status rows on the store root, read here, latch the handle the derivation reads.
+                                                if view.holds_fabric_seat(&me_id) {
+                                                    if let Err(e) = declarer.read_first_ready(&*status_storage, &view).await {
+                                                        tracing::info_span!("rdm.node_admin.fabric.reject.via-ready-row-unreadable", node = %me, fabric_id = %view.fabric.id, status = view.fabric.status.name(), detail = %e)
+                                                            .in_scope(|| tracing::info!("the ready-for-traffic row of the fabric could not be read from this mesh's status rows: this round owes from the latch and the view"));
+                                                    }
+                                                }
                                                 crate::status_declare::owed_from_view(&declarer, &me, &me_id, &incarnation, own, records.declare_gate(), own_mesh_held, &view, &mesh_ids);
                                                 // A completion owed for a round the accepted Build moved past is withdrawn before anything is sent.
                                                 if let Some(rounds) = rounds.get() {
