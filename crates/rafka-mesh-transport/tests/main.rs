@@ -18,9 +18,9 @@ fn process_env() {
     std::env::set_var("RDM_EVIDENCE_DIR", dir);
 }
 
-/// The evidence directory the binary's start-up chose: every span a cell's process emits lands here
-/// (and at the collector when `OTEL_EXPORTER_OTLP_ENDPOINT` names one), in files named by service and
-/// pid, so a cell reads back only its own process's.
+/// The evidence directory the binary's start-up chose: every cell's `EvidenceCapture` writes its spans
+/// here (and to the collector when `OTEL_EXPORTER_OTLP_ENDPOINT` names one), each in a file of its own,
+/// so a cell reads back only the spans its own threads emitted.
 pub(crate) fn evidence_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(std::env::var_os("RDM_EVIDENCE_DIR").expect("main.rs sets RDM_EVIDENCE_DIR before any test runs"))
 }
