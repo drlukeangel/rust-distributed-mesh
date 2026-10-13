@@ -71,6 +71,15 @@ impl PoolKey {
     }
 }
 
+/// A pooled connection a close ended: the key it was pooled under and its `stable_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedConnection {
+    /// The key it was pooled under: the peer and the birth it reached.
+    pub key: PoolKey,
+    /// The connection's `stable_id`.
+    pub connection: usize,
+}
+
 /// Test failpoint: a dial that connected stops here, before it is checked
 /// against the resolver and pooled, until released.
 #[derive(Default)]
@@ -200,6 +209,18 @@ impl Pool {
     /// Close the connections this pool holds to `peer`, whatever their scope or birth, and cancel the
     /// dials in flight to it: the next call to it dials afresh. Returns how many were closed.
     pub fn close_peer(&self, peer: &iroh::PublicKey, reason: &'static [u8]) -> usize {
+        let closed = self.close_to(peer, reason);
+        for c in &closed {
+            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %c.key.peer.fmt_short(), incarnation_id = %c.key.birth())
+                .in_scope(|| tracing::info!("a pooled connection was closed"));
+        }
+        closed.len()
+    }
+
+    /// Close the connections this pool holds to `peer`, whatever their scope or birth, and cancel the
+    /// dials in flight to it, handing back each connection closed; the caller names why on that
+    /// connection's own span. The next call to it dials afresh.
+    pub fn close_to(&self, peer: &iroh::PublicKey, reason: &'static [u8]) -> Vec<ClosedConnection> {
         for (k, d) in self.inner.dials.lock().unwrap().iter() {
             if &k.peer == peer {
                 let _ = d.cancel.send(true);
@@ -210,12 +231,13 @@ impl Pool {
             let keys: Vec<PoolKey> = conns.keys().filter(|k| &k.peer == peer).cloned().collect();
             keys.into_iter().filter_map(|k| conns.remove(&k).map(|c| (k, c))).collect()
         };
-        for (key, conn) in &closed {
-            conn.close(0u32.into(), reason);
-            tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.birth())
-                .in_scope(|| tracing::info!("a pooled connection was closed"));
-        }
-        closed.len()
+        closed
+            .into_iter()
+            .map(|(key, conn)| {
+                conn.close(0u32.into(), reason);
+                ClosedConnection { connection: conn.stable_id(), key }
+            })
+            .collect()
     }
 
     /// A live pooled connection for `key`.

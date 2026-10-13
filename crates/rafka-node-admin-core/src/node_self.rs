@@ -370,13 +370,25 @@ impl NodeSelf {
                 (routes, not_open)
             }
         };
-        // Each Direct entry closed is its data-plane connection closed; a Proxy rides its carrier's
-        // Direct and only its route retires.
+        // Each Direct entry closed is its data-plane connection closed, on that connection's own
+        // span naming the entry (R-CR6: the pool's hard cut is the stop's transport cut alone); a
+        // Proxy rides its carrier's Direct and only its route retires.
         let data_plane = self.data_plane.lock().unwrap().clone();
         if let Some(data_plane) = &data_plane {
             for route in routes.iter().filter(|r| r.kind == rafka_mesh_entity::connections::ConnectionKind::Direct) {
                 if let Some(peer) = data_plane.endpoint_of(&route.destination.node_id) {
-                    data_plane.close_pooled_to(&peer, CONNECTIONS_DELETE);
+                    for c in data_plane.close_connections_to(&peer, CONNECTIONS_DELETE) {
+                        tracing::info_span!(
+                            "rdm.node_admin.connection.delete.via-connections-delete",
+                            node = %self.held_name(),
+                            entry = %route.id,
+                            destination = %route.destination.name,
+                            peer = %c.key.peer.fmt_short(),
+                            incarnation_id = %c.key.birth(),
+                            connection = c.connection,
+                        )
+                        .in_scope(|| tracing::info!("the data-plane connection of a closed Direct entry was closed"));
+                    }
                 }
             }
         }

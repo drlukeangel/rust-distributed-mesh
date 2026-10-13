@@ -52,6 +52,10 @@ impl std::fmt::Debug for RowsHeld {
 /// it is at that moment (the source end the held projection's own source was just set to).
 type Build = Box<dyn FnOnce(&ConnectionsWriter, ConnectionEnd) -> NodeConnection + Send>;
 
+/// One queued observation: how its row is built, where it was observed (`dial`, `accept`) and the
+/// peer endpoint it was observed with.
+type Observation = (Build, &'static str, String);
+
 /// Where the process holds the name this node publishes (R12): read, never copied.
 type HeldName = Arc<dyn Fn() -> PathName + Send + Sync>;
 
@@ -73,7 +77,7 @@ struct Inner {
     idle: tokio::sync::Notify,
     /// The observations in the order they were observed: one consumer builds, stamps, writes and
     /// applies them one at a time, so the index member of a pair is always the last observed.
-    queue: tokio::sync::mpsc::UnboundedSender<(Build, &'static str)>,
+    queue: tokio::sync::mpsc::UnboundedSender<Observation>,
     /// The one write gate: held across every build, durable write and apply, whether it is an
     /// observation, a [`ConnectionsWriter::record`] or a retirement settlement; and by a start
     /// until it holds the name its join answer handed ([`ConnectionsWriter::hold_rows`]).
@@ -127,7 +131,7 @@ impl ConnectionsWriter {
     /// A writer for `own`, over its storage, holding `held` (shared with the route resolver).
     pub fn new(own: ConnectionEnd, storage: Arc<dyn ConnectionsStorage>, held: Arc<Mutex<ConnectionsHeld>>) -> Self {
         let runtime = tokio::runtime::Handle::current();
-        let (queue, mut observations) = tokio::sync::mpsc::unbounded_channel::<(Build, &'static str)>();
+        let (queue, mut observations) = tokio::sync::mpsc::unbounded_channel::<Observation>();
         let inner = Arc::new(Inner {
             own,
             held_name: std::sync::OnceLock::new(),
@@ -142,9 +146,9 @@ impl ConnectionsWriter {
         });
         let weak = Arc::downgrade(&inner);
         runtime.spawn(async move {
-            while let Some((build, origin)) = observations.recv().await {
+            while let Some((build, origin, peer)) = observations.recv().await {
                 let Some(inner) = weak.upgrade() else { break };
-                ConnectionsWriter { inner }.write_observed(build, origin).await;
+                ConnectionsWriter { inner }.write_observed(build, origin, peer).await;
             }
         });
         Self { inner }
@@ -427,13 +431,13 @@ impl ConnectionsWriter {
     /// row built from the held projection (a failing series' next ordinal) sees every earlier
     /// observation already applied. A Direct Connected settles the Proxy retirement it may owe
     /// once its own write has landed.
-    fn observed(&self, build: impl FnOnce(&Self, ConnectionEnd) -> NodeConnection + Send + 'static, origin: &'static str) {
+    fn observed(&self, build: impl FnOnce(&Self, ConnectionEnd) -> NodeConnection + Send + 'static, origin: &'static str, node: &ResolvedNode) {
         self.inner.in_flight.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        let _ = self.inner.queue.send((Box::new(build), origin));
+        let _ = self.inner.queue.send((Box::new(build), origin, node.endpoint_id.fmt_short().to_string()));
     }
 
     /// Write one queued observation inside the write gate, then settle the retirement it may owe.
-    async fn write_observed(&self, build: Build, origin: &'static str) {
+    async fn write_observed(&self, build: Build, origin: &'static str, peer: String) {
         let w = self;
         {
             let gate = w.inner.write_gate.lock().await;
@@ -443,8 +447,10 @@ impl ConnectionsWriter {
             let settles = row.kind == ConnectionKind::Direct && row.state == ConnectionState::Connected;
             let span = tracing::info_span!(
                 "rdm.node_admin.connection.update.via-observed",
+                entry = %row.id,
                 source = %row.source.name,
                 destination = %row.destination.name,
+                peer = %peer,
                 kind = kind_name(row.kind),
                 state = state_name(row.state),
                 reason = %row.reason.clone().unwrap_or_default(),
@@ -491,12 +497,12 @@ impl ConnectionsWriter {
 impl ConnectionObserver for ConnectionsWriter {
     fn direct_connected(&self, node: &ResolvedNode) {
         let destination = end_of(node);
-        self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Connected, None), "dial");
+        self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Connected, None), "dial", node);
     }
 
     fn direct_accepted(&self, node: &ResolvedNode) {
         let destination = end_of(node);
-        self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Connected, None), "accept");
+        self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Connected, None), "accept", node);
     }
 
     fn direct_failed(&self, node: &ResolvedNode, reason: &str) {
@@ -528,13 +534,14 @@ impl ConnectionObserver for ConnectionsWriter {
                 }
             },
             "dial",
+            node,
         );
     }
 
     fn direct_broken(&self, node: &ResolvedNode, reason: &str) {
         let destination = end_of(node);
         let reason = reason.to_string();
-        self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Disconnected, Some(reason)), "dial");
+        self.observed(move |_, own| Self::direct(own, destination, ConnectionState::Disconnected, Some(reason)), "dial", node);
     }
 }
 

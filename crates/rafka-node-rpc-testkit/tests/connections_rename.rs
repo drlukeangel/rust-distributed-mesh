@@ -50,6 +50,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
     }
     let cap = crate::common::capture("a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends");
     let spans = cap.spans.clone();
+    let during = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
@@ -141,6 +142,15 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
         };
         let stop = StatusRequest::StopNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 1, operation: format!("stop-node:{born}") };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
+        // The trace (R-CR6): the stop's All deletes the data-plane connection on that connection's
+        // own span, and the pool's hard cut is the stop's own transport cut, after the whole All.
+        {
+            let held = during.0.lock().unwrap();
+            let deleted: Vec<u64> = held.iter().filter(|(_, (n, _, f))| n == "rdm.node_admin.connection.delete.via-connections-delete" && f.get("node") == Some(&born.to_string()) && f.get("destination").map(String::as_str) == Some("mesh1.admin.1")).map(|(k, _)| *k).collect();
+            assert_eq!(deleted.len(), 1, "the stop's All deletes the one data-plane connection on its own span");
+            let early: Vec<_> = held.iter().filter(|(k, (n, _, _))| n == "rdm.node_rpc.connection.delete.via-hard-cut" && **k < deleted[0]).map(|(_, (_, _, f))| f.clone()).collect();
+            assert!(early.is_empty(), "no pool is hard-cut before the stop's All has deleted its connections: {early:#?}");
+        }
         admin.put_row(NodeRow { name: taken.clone(), node_id: renamed.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None });
         let key = node::load_or_mint_key(&root.join(born.to_string())).unwrap();
         admin.deployed_as(&renamed, &key, taken.clone(), Some(born.clone()));

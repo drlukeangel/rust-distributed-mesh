@@ -28,7 +28,7 @@ pub use client::{Budget, CallEvidence, CallOptions, ConnectionObserver, Decode, 
 pub use forward::CarrierEdges;
 pub use hydration::{CancelToken, HydrationGate, Retirement};
 pub use live::{Applied, LiveNodeResolver, Refusal, DEPARTED_RETENTION};
-pub use pool::{Failpoint, PoolKey};
+pub use pool::{ClosedConnection, Failpoint, PoolKey};
 pub use resolve::{NodeResolver, NodeTarget, ResolvedNode, StaticResolver};
 pub use route::{ConnectedCall, RouteChoice, RouteLeg};
 pub use server::{HandlerFault, LateReply, NodeRpcServer, PeerContext, ReplyWithhold, ServedBirth, ServerBuilder, ServerStats};

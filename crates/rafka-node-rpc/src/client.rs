@@ -240,6 +240,13 @@ impl NodeRpcClient {
         self.pool.close_peer(peer, reason.as_bytes())
     }
 
+    /// Close the connections this client holds to `peer` for `reason` and hand back each one closed,
+    /// with no span of the pool's own: the caller names why on each connection's span (a
+    /// `node.connections.delete` closing a data-plane connection is no hard cut of a pool).
+    pub fn close_connections_to(&self, peer: &iroh::PublicKey, reason: &'static str) -> Vec<crate::pool::ClosedConnection> {
+        self.pool.close_to(peer, reason.as_bytes())
+    }
+
     /// The endpoint the resolver names for the node `node` now, if it resolves: the key its pooled
     /// connections to that node are held under.
     pub fn endpoint_of(&self, node: &rafka_mesh_entity::NodeId) -> Option<iroh::PublicKey> {

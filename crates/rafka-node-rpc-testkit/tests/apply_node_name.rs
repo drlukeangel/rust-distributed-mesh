@@ -11,6 +11,12 @@
 //! refused naming the one held. What must NOT happen: a name taken while the node holds a
 //! connection, `All` answered while the call it admitted is in flight, or a digest naming the new
 //! name before the apply.
+//!
+//! The trace (R-CR6): the route's observed fact (`rdm.node_admin.connection.update.via-observed`)
+//! names its entry and the peer it was dialled to, and `All` deletes that data-plane connection on
+//! the connection's own span (`rdm.node_admin.connection.delete.via-connections-delete`) naming the
+//! same entry and peer. What must NOT happen: `All` hard-cutting a pool
+//! (`rdm.node_rpc.connection.delete.via-hard-cut`): that is the stop's own transport cut alone.
 
 use crate::common::admin_side_serving;
 use rafka_mesh_entity::launch::Launch;
@@ -27,6 +33,7 @@ use std::time::Duration;
 #[test]
 fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
     let cap = crate::common::capture("a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted");
+    let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
@@ -129,6 +136,21 @@ fn a_live_node_takes_its_rows_name_only_once_its_connections_are_deleted() {
             matches!(&deleted, StatusReply::ConnectionsDeleted { held, receipt: Some(ConnectionsReceipt::Established { in_flight: 1, closed }), .. } if held.is_empty() && closed.len() == 1),
             "every connection is deleted, the receipt counting the call in flight: {deleted:?}"
         );
+        // The trace: the closed entry's data-plane connection is deleted on its own span, naming the
+        // entry and the peer its observed fact named; All hard-cuts no pool.
+        let closed = match &deleted {
+            StatusReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Established { closed, .. }), .. } => closed[0].to_string(),
+            other => panic!("checked above: {other:?}"),
+        };
+        let fields_of = |name: &str| -> Vec<std::collections::BTreeMap<String, String>> { spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect() };
+        let deletes = fields_of("rdm.node_admin.connection.delete.via-connections-delete");
+        assert_eq!(deletes.len(), 1, "All deletes the one data-plane connection, on its own span: {deletes:#?}");
+        assert_eq!((deletes[0].get("entry"), deletes[0].get("node").map(String::as_str), deletes[0].get("destination").map(String::as_str)), (Some(&closed), Some("mesh1.rpc.1.new"), Some("mesh1.admin.1")), "{deletes:#?}");
+        let observed = fields_of("rdm.node_admin.connection.update.via-observed");
+        let dialled = observed.iter().find(|f| f.get("entry") == Some(&closed)).unwrap_or_else(|| panic!("the observed fact names the entry All closed ({closed}): {observed:#?}"));
+        assert_eq!((dialled.get("source").map(String::as_str), dialled.get("destination").map(String::as_str), dialled.get("origin").map(String::as_str)), (Some("mesh1.rpc.1.new"), Some("mesh1.admin.1"), Some("dial")), "{dialled:#?}");
+        assert!(dialled.get("peer").is_some_and(|p| !p.is_empty()) && dialled.get("peer") == deletes[0].get("peer"), "the observed fact and the delete name the same peer: {dialled:#?} vs {deletes:#?}");
+        assert!(fields_of("rdm.node_rpc.connection.delete.via-hard-cut").is_empty(), "All hard-cuts no pool");
         assert_eq!(call(apply.clone()).await, StatusReply::Applied);
         assert_eq!(running.membership.held_name(&born), taken, "the node holds the applied name");
 
