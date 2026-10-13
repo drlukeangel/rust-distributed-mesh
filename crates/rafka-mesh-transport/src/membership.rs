@@ -8069,6 +8069,69 @@ mod tests {
         assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "nothing is marked for repair: {:?}", member.mesh_rx.lock().unwrap().desynced());
     }
 
+    /// CONTRACT (R-RX3, Luke 2026-10-13: "a frame whose order key is earlier than the newest the
+    /// receiver holds for the same source is ignored, once, in the gossip receive path"; i143 s53:
+    /// out-of-order frames are ignored only in receive_order.rs): every earlier frame of the held
+    /// publisher is ignored by the receive path before the snapshot receiver reads it, so the receiver
+    /// orders nothing by version. An ordinary node of mesh1 holds mesh1.admin.1's v7 full and applies
+    /// its 7→8 delta; then:
+    /// - a copy of that delta is taken by the receive path (its key equals the held one) and the
+    ///   receiver absorbs it as a copy (`via-delta-already-held`), with no gap;
+    /// - the publisher's v6 full, its 6→7 delta and a topology read of its v6 are each ignored by the
+    ///   receive path, the ignore span naming the frame, the source, the key held and the one offered;
+    /// - the top-up installs the publisher's v9 and its 9→11 delta applies; the 8→9 delta the top-up
+    ///   already covered is ignored by the receive path.
+    /// Must NOT happen: an earlier frame of the held publisher reaching the receiver (a `via-snapshot`
+    /// refusal, or a `via-delta-already-held` for anything but the copy); the held projection moved
+    /// back; a source marked desynchronized.
+    #[test]
+    fn an_earlier_full_delta_or_read_of_the_held_publisher_is_ignored_by_the_receive_path_before_the_snapshot_receiver_reads_it() {
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let member = View::new("mesh1", "mesh1.rpc.9");
+        let hears = |f: &Frame| hear(&mut member.order.lock().unwrap(), &member, f, &fabric, Side::MeshChannel);
+        let reads = |chunk: crate::snapshot::Chunk| member.take_read_chunk(chunk, Side::Read, &fabric);
+        let held = || member.mesh_rx.lock().unwrap().held_version("mesh1");
+        let (admin, rpc1, rpc2) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.rpc.1", 1), birth_at("mesh1.rpc.2", 1));
+        let p = publisher_of(&admin);
+        let full = |version: u64, at: u64| stamped(snapshot_of("mesh1", &p, Some("mesh1.admin.1"), version, version, vec![admin.clone(), rpc1.clone(), rpc2.clone()], vec![], vec![]), at);
+        let delta = |base_version: u64, topology_version: u64, at: u64| Frame::MembersDelta { mesh: "mesh1".into(), source_publisher: p.clone(), base_version, topology_version, published_at_rafka_ms: at, changed: vec![], removed: vec![], in_flight: vec![], departed: vec![] };
+        let read = |version: u64| crate::snapshot::Chunk { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: None, topology_version: version, snapshot_id: version, chunk_index: 0, chunk_count: 1, digests: vec![admin.clone(), rpc1.clone(), rpc2.clone()], in_flight: vec![], departed: vec![] };
+
+        assert!(hears(&full(7, 700)));
+        assert!(hears(&delta(7, 8, 800)));
+        assert_eq!(held(), Some((p.clone(), 8)), "the delta applied at exactly its base");
+        assert!(hears(&delta(7, 8, 800)), "a copy of the applied delta carries the held key: taken");
+        let copies = spans.named("rdm.mesh.membership.update.via-delta-already-held");
+        assert!(copies.len() == 1 && copies[0]["held_version"] == "8" && copies[0]["topology_version"] == "8", "the receiver absorbs the copy: {copies:#?}");
+
+        assert!(!hears(&full(6, 600)), "the held publisher's v6 full is ignored by the receive path");
+        assert!(!hears(&delta(6, 7, 650)), "the held publisher's 6→7 delta is ignored by the receive path");
+        let refused = reads(read(6));
+        assert!(matches!(refused, Taken::Refused(crate::snapshot::Refusal::OlderThanHeld { held_version: 8, offered_version: 6 })), "a read of v6 is ignored by the receive path: {refused:?}");
+        assert_eq!(held(), Some((p.clone(), 8)), "nothing earlier moved the held projection back");
+        let ignored = spans.named("rdm.mesh.membership.reject.via-earlier-version");
+        for (frame, held, offered) in [
+            ("members", "published_at_rafka_ms=800 topology_version=8", "published_at_rafka_ms=600 topology_version=6"),
+            ("members-delta", "published_at_rafka_ms=800 topology_version=8", "published_at_rafka_ms=650 topology_version=7"),
+            ("topology-read", &*format!("publisher={p} topology_version=8"), "topology_version=6"),
+        ] {
+            assert!(ignored.iter().any(|f| f["frame"] == frame && f["source"] == "mesh1" && f["held"] == held && f["offered"] == offered), "the receive path names the ignored {frame}, its source and both keys: {ignored:#?}");
+        }
+
+        assert!(matches!(reads(read(9)), Taken::Installed(_)), "the top-up installs v9");
+        assert!(hears(&delta(9, 11, 1100)), "the publisher's next delta continues from the read's baseline");
+        assert_eq!(held(), Some((p.clone(), 11)));
+        assert!(!hears(&delta(8, 9, 900)), "the delta the top-up already covered is ignored by the receive path");
+        assert_eq!(held(), Some((p.clone(), 11)), "the held projection stands");
+
+        assert!(spans.named("rdm.mesh.membership.reject.via-snapshot").is_empty(), "no earlier frame reached the receiver: {:#?}", spans.named("rdm.mesh.membership.reject.via-snapshot"));
+        assert_eq!(spans.named("rdm.mesh.membership.update.via-delta-already-held").len(), 1, "the receiver absorbed the copy and nothing else");
+        assert!(member.mesh_rx.lock().unwrap().desynced().is_empty(), "nothing is marked desynchronized: {:?}", member.mesh_rx.lock().unwrap().desynced());
+    }
+
     /// CONTRACT (R-RX1, Luke 2026-10-12: no receiver refuses an input because of who sent it; R-RX3:
     /// lifecycle facts order by `topology_version`, here per publisher and subject mesh, whose counter
     /// it is): a `NodeStopped`, `NodeRestarting` or `NodeDeleting` is taken for what it carries, from a
