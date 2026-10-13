@@ -185,9 +185,10 @@ enum RoundProgress {
 /// Where a birth stands between a stop and a start.
 enum Cycle {
     /// Running: a stop has not been admitted. A birth a start brought back holds that start's command,
-    /// `(build_id, operation)`: its reissue by a later attempt of the same Build replays `Started`
-    /// (node-rpc-envelope.md: "Reissuing a naturally idempotent uncertain step can settle it"); a birth
-    /// that never stopped holds `None`.
+    /// `(build_id, operation)`: its reissue by a later attempt of the same Build answers `AlreadyApplied`
+    /// (node-rpc-envelope.md: "Reissuing a naturally idempotent uncertain step can settle it with
+    /// AlreadyApplied"); its node.joined and node.started were taken when it ran. A birth that never
+    /// stopped holds `None`.
     Live(Option<(String, String)>),
     /// A stop is under way; later stops of the birth wait for the same receipt.
     Stopping(tokio::sync::watch::Receiver<Option<ConnectionsReceipt>>),
@@ -829,7 +830,7 @@ impl NodeSelf {
                         Next::Join(outcome.clone())
                     }
                     Cycle::Stopping(_) => return StatusReply::NotReady { reason: format!("{}: a stop is still under way; start is the transition out of Leaving and only for a parked process", self.held_name()) },
-                    Cycle::Live(Some((build_id, operation))) if *build_id == op.build_id && *operation == op.operation => return StatusReply::Started,
+                    Cycle::Live(Some((build_id, operation))) if *build_id == op.build_id && *operation == op.operation => return StatusReply::AlreadyApplied,
                     Cycle::Live(_) => {
                         return StatusReply::RejectedInvalidNodeTransition { current: crate::status_rpc::declared_of_member((self.status)()) };
                     }

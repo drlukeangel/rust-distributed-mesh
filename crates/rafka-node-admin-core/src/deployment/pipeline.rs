@@ -1947,6 +1947,11 @@ impl DeploymentPipeline<'_> {
                         }
                         Ok(admission)
                     }
+                    // The reissue of the start that already brought this birth back (a later attempt
+                    // of the same Build, after its executor was lost): its node.joined and node.started
+                    // were taken when it ran; taking node.joined again would set the birth back to
+                    // Pending with no node.started to follow. Readiness is read next, as for any start.
+                    CommandAdmission::AlreadyAdmitted => Ok(admission),
                     CommandAdmission::StartFailed { step, reason } => Err(format!("{}: node.start failed at {step}: {reason}", node.name)),
                     other => Err(format!("{}: start-node was not answered Started ({other:?}); the birth is not known to have rejoined", node.name)),
                 }

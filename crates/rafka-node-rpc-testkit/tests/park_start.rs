@@ -126,12 +126,12 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         assert!(!node::stop_commanded(), "the process is live again");
         assert!(running.membership.neighbours() >= 1, "the node is a neighbour again");
         // The same start reissued by a later attempt of its Build (a successor executor whose
-        // predecessor was lost after the node started) replays its committed answer: the command is
+        // predecessor was lost after the node started) settles as AlreadyApplied: the command is
         // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a
         // naturally idempotent uncertain step can settle it"). Another command's start of this live
         // node is still refused naming its state.
         let reissued = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_park".into(), attempt: 3, operation: "start-node:mesh1.rpc.1".into() };
-        assert_eq!(call(&admin, &target, &reissued).await, StatusReply::Started, "the reissued start replays its committed Started");
+        assert_eq!(call(&admin, &target, &reissued).await, StatusReply::AlreadyApplied, "the reissued start settles as already applied");
         let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_other".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() };
         assert!(matches!(call(&admin, &target, &other).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "another Build's start of the live node is refused naming its state");
         let _ = std::fs::remove_dir_all(&dir);
