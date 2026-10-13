@@ -2947,6 +2947,14 @@ pub async fn probed_ready_blocker(client: &rafka_node_rpc::NodeRpcClient, book: 
 
 #[async_trait::async_trait]
 impl NodeObserver for MembershipObserver {
+    async fn update_name(&self, node: &Node, to: &PathName) -> rafka_node_rpc_contract::status::StatusReply {
+        use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
+        let (Some(authority), Some(incarnation)) = (self.authority.get(), node.incarnation_id.clone()) else {
+            return StatusReply::NotReady { reason: format!("{}: this admin holds no status authority yet, or the record names no birth: it is not renamed {to}", node.name) };
+        };
+        // The same door a caller's UpdateName meets at this admin, the writer of the node's mesh's rows.
+        authority.apply(None, &StatusRequest::UpdateName { node_id: node.node_id.clone(), incarnation, name: to.name() }).await
+    }
     async fn joined(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Option<Publication> {
         self.book
             .get(node_id.as_str())

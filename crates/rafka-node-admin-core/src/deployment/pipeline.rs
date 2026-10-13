@@ -474,6 +474,14 @@ pub trait NodeObserver: Send + Sync {
     async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
         Completion::NotAwaited { admission: format!("this observer holds no command book for {}", node.name) }
     }
+    /// `node.name.update` of the exact birth `node` to the name of `to` at this admin, the writer of
+    /// its mesh's rows (proposal node-properties-own-commands.md §2.1: "The replace recipe calls it as
+    /// a step"): decided in-process by the validator a caller's `UpdateName` meets (exact birth,
+    /// writer, the node admits no connection, the name), then the claim and the row's move. Answers
+    /// the command's reply.
+    async fn update_name(&self, node: &Node, to: &PathName) -> rafka_node_rpc_contract::status::StatusReply {
+        rafka_node_rpc_contract::status::StatusReply::NotReady { reason: format!("this observer holds no name door: {} is not renamed {to}", node.name) }
+    }
 }
 
 /// The runtime part of a birth's own membership digest.
@@ -2370,11 +2378,12 @@ impl DeploymentPipeline<'_> {
             // that does not answer goes to node recovery (node-recovery.md).
             self.stop_steps_with(&mut run, &mut old, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
         }
-        // node-replace.md 2: the predecessor gives up its name, renamed `<path>.old`, under the rename
-        // precondition (node-update.md): parked by its `stopped` reply, or ended on the provider's
-        // exact terminal proof above. The receipt names the exact old birth.
+        // node-replace.md 3: the predecessor gives up its name, renamed `<path>.old`: a stopped one as
+        // node.name.update (node-name-update.md), decided by this admin's own validator, the writer of
+        // the mesh's rows; an exited one, never stopped, on the provider's exact terminal proof above.
+        // The receipt names the exact old birth.
         let proof = if exited { "exited" } else { "stopped" };
-        let to = format!("{name}.old");
+        let to = name.renamed();
         self.step(&mut run, ReplaceStep::RenamePredecessor.name(), async {
             tracing::info_span!(
                 "rdm.node_admin.node.update.via-replace-rename",
@@ -2388,9 +2397,17 @@ impl DeploymentPipeline<'_> {
                 proof,
             )
             .in_scope(|| tracing::info!("the predecessor gives up its path.name: the successor is created at it"));
-            // node1.update(.old): the writer of the mesh's rows moves the predecessor's row first.
-            if let Some(rows) = self.sink.node_rows() {
-                rows.moved_to_old(&old, &op.operation).await.map_err(|e| format!("{name}: the predecessor {} keeps its path.name: {e}", old.node_id))?;
+            if exited {
+                // The exited predecessor's row, moved by the writer of the mesh's rows on its exit proof.
+                if let Some(rows) = self.sink.node_rows() {
+                    rows.moved_to_old(&old, &op.operation).await.map_err(|e| format!("{name}: the predecessor {} keeps its path.name: {e}", old.node_id))?;
+                }
+            } else {
+                // node[1].update(name=`<name>.old`): completes on the row, the stopped node sent nothing.
+                match self.observer.update_name(&old, &to).await {
+                    rafka_node_rpc_contract::status::StatusReply::NameUpdated { .. } => {}
+                    refused => return Err(format!("{name}: node.name.update of the stopped predecessor {} to {to} answered {refused:?}; it keeps its path.name", old.node_id)),
+                }
             }
             self.sink.rename_predecessor(name, &old.node_id, &birth);
             Ok(op.clone())
