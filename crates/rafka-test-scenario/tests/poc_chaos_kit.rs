@@ -157,30 +157,27 @@ async fn poc_probe_round_trips_and_a_cut_frame_is_not_sent() {
 /// node-admin on the former fabric primary's data dir with both recovery flags, and the fabric comes
 /// back by itself: the same Build, the same MeshId, every admin restored, live members preserved.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn poc_rp1_kill_every_admin_and_one_relaunch_restores_the_fabric() {
-    let mut estate = Estate::bootstrap(owner("poc_rp1_kill_every_admin_and_one_relaunch_restores_the_fabric"), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 1}]})).await;
-    assert_eq!(status, 202, "{a}");
-    let build = a["build_id"].as_str().unwrap().to_string();
-    estate.await_build(&build, SETTLE).await;
+async fn poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric() {
+    let mut estate = Estate::bootstrap(owner("poc_rp1_kill_every_admin_and_one_restarted_admin_restores_the_fabric"), "fabric1", "mesh1").await;
+    let build = estate.reconcile_shape("fabric1", &[("mesh1", 2, 1)]).await.build_id.to_string();
     let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1"].iter().map(|s| s.to_string()).collect();
-    let before = estate.settled(&want, Duration::from_secs(60)).await;
-    let holder = before.iter().find(|n| n["is_fabric_primary"] == true).and_then(|n| n["name"].as_str()).unwrap().to_string();
-    let holder_dir = if holder == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir_of(&holder).await) };
-    let rpc_id = estate.node("mesh1.rpc.1").await["node_id"].clone();
+    let before = estate.settles_to_named(&want, Duration::from_secs(60)).await;
+    let holder = before.iter().find(|n| n.is_fabric_primary).map(|n| n.name.clone()).unwrap();
+    let holder_dir = if holder.to_string() == "mesh1.admin.1" { estate.bootstrap_data_dir("mesh1") } else { PathBuf::from(estate.data_dir(&holder.to_string()).await) };
+    let rpc_id = estate.node_view("mesh1.rpc.1").await.node_id;
     for (path, pid) in estate.live_runtimes() {
         if path.file_name().unwrap().to_string_lossy().contains(".admin.") {
             estate.kill_pid(pid);
         }
     }
     estate.kill_bootstrap();
-    let base = estate.restart_admin_with(&holder_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
-    estate.admin = base;
-    let after = estate.settled(&want, Duration::from_secs(240)).await;
-    let (_, fabric) = estate.get("/api/fabric").await;
-    assert_eq!(fabric["build_id"], build.as_str(), "the same Build: {fabric}");
-    let rpc_after = after.iter().find(|n| n["name"] == "mesh1.rpc.1").unwrap();
-    assert_eq!(rpc_after["node_id"], rpc_id, "the live member is preserved");
-    eprintln!("poc: relaunched {holder}; fabric {}", fabric["status"]);
+    estate.restart_admin_with(&holder_dir, &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.enter(&holder).await;
+    let after = estate.settles_to_named(&want, Duration::from_secs(240)).await;
+    let fabric = estate.fabric_view().await;
+    assert_eq!(fabric.build_id.as_deref(), Some(build.as_str()), "the same Build: {fabric:?}");
+    let rpc_after = after.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").unwrap();
+    assert_eq!(rpc_after.node_id, rpc_id, "the live member is preserved");
+    eprintln!("poc: restarted {holder}; fabric {:?}", fabric.status);
     estate.stop().await;
 }
