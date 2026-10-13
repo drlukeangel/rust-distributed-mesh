@@ -160,9 +160,13 @@ pub fn adopt_join_answer(parent: &tracing::Span, time: &RafkaTime, node: &str, a
 pub const OWN_CLOCK_DAY0_ROOT: &str = "day0-root";
 /// Why a restarted fabric-seat holder adopts its own clock: it is the fabric's root and holds none.
 pub const OWN_CLOCK_FABRIC_SEAT: &str = "fabric-seat-held-without-rafka-time";
+/// Why an admin started on a store that names no other node adopts its own clock: nothing is alive by the
+/// store's own evidence (fabric-recovery.md "Nothing alive"), so no node holds rafka-time to read.
+pub const OWN_CLOCK_NOTHING_ALIVE: &str = "nothing-alive";
 
-/// The fabric's root adopts its own OS clock as rafka-time, once: the Day-0 root at boot, and an
-/// admin that holds the fabric seat and no rafka-time. There is no authority above either.
+/// The fabric's root adopts its own OS clock as rafka-time, once: the Day-0 root at boot, an admin
+/// that holds the fabric seat and no rafka-time, and an admin whose store names no other node. There
+/// is no authority above any of them.
 pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str, reason: &'static str) -> Adopted {
     let now = rafka_mesh_transport::clock::Clock::now_rafka_ms(&rafka_mesh_transport::clock::OsClock);
     let adopted = time.adopt(now);
@@ -270,13 +274,16 @@ async fn pull_from_fabric_primary(
     (format!("kept: {last}"), SEAT_MOVE_ATTEMPTS, None)
 }
 
-/// How long a recovering admin looks for a node that holds rafka-time before it refuses to start.
+/// How long a recovering admin whose store names other nodes looks for one that holds rafka-time
+/// before it refuses to start. A store that names none is nothing alive, and no wait
+/// ([`OWN_CLOCK_NOTHING_ALIVE`]).
 pub const RECOVERY_PULL_WITHIN: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// A node-admin with no launcher and no `JoinNode` to make (a restart from its own data dir, or a
-/// recovery started with a seed) takes rafka-time from the first node it reaches that holds one.
-/// It judges nothing and publishes nothing until it has: `contacts` are the births its durable map
-/// names (own mesh first), and the book of the membership it joined adds whoever it hears. A
+/// A node-admin with no launcher and no `JoinNode` to make (a start from its own data dir, or a
+/// recovery started with a seed) whose store names other nodes takes rafka-time from the first node
+/// it reaches that holds one. It judges nothing and publishes nothing until it has: `contacts` are
+/// the births its durable map names (own mesh first, never empty: a store that names none is nothing
+/// alive), and the book of the membership it joined adds whoever it hears. A
 /// member adopts from whoever answers, so the first reachable node serves it; the lineage descends
 /// from the fabric-primary whichever node that is.
 ///
