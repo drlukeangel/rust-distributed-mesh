@@ -30,9 +30,10 @@
 //! the host cannot, cells 6-7 are a named skip, a failure under
 //! `RDM_REQUIRE_NETFAULT=1` (CI).
 
+use rafka_node_admin_client::{BuildSpec, Builds, FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -50,20 +51,19 @@ fn owner(test: &str) -> Owner {
 /// One estate at a time: two MM fabrics on one host halve each one's CPU.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// The fabric `fabric` with `mesh1` of two admins and `rpc1` rpc nodes, and `mesh2` of two of each.
+fn shape(fabric: &str, rpc1: u32) -> FabricDesired {
+    FabricDesired { fabric: fabric.into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, rpc1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)])] }
+}
+
 /// MM with two admins and two rpc nodes per mesh, settled.
 async fn mm(estate: &Estate, fabric: &str) -> Vec<Value> {
-    let (_, a) = estate
-        .post("/api/build", &json!({"fabric": fabric, "meshes": [
-            {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
-            {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
-        ]}))
-        .await;
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.reconcile(&shape(fabric, 2)).await;
     let want: BTreeSet<String> = ["mesh1", "mesh2"]
         .iter()
         .flat_map(|m| (1..=2).flat_map(move |i| [format!("{m}.admin.{i}"), format!("{m}.rpc.{i}")]))
         .collect();
-    estate.settled(&want, Duration::from_secs(30)).await
+    Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await)
 }
 
 fn netfault(why: String) -> Option<()> {
@@ -193,12 +193,13 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     let (old_name, old_id) = (s(&old["name"]), s(&old["node_id"]));
     estate.kill_node(&old_name).await;
     let dead: BTreeMap<String, u64> = [(old_name.clone(), now_ns())].into_iter().collect();
-    // Tracked by NodeId: drift recovery may rebirth the killed path under a new NodeId.
-    let successor = wait_for("mesh2 elects a successor", rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(30), || async {
-        let p = primary(&estate.nodes().await, "mesh2");
-        (!s(&p["name"]).is_empty() && s(&p["node_id"]) != old_id).then(|| s(&p["name"]))
-    })
-    .await;
+    // Tracked by NodeId: node recovery may create the killed path again under a new NodeId.
+    let successor = estate
+        .until_view("mesh2 elects a successor", rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
+            let p = primary(&Estate::values(views), "mesh2");
+            (!s(&p["name"]).is_empty() && s(&p["node_id"]) != old_id).then(|| s(&p["name"]))
+        })
+        .await;
     wait_for("mesh2's successor publishes and forwards", Duration::from_secs(20), || {
         let spans = estate.spans();
         let (successor, dead) = (successor.clone(), dead.clone());
@@ -222,23 +223,19 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
 
     // 4. Lose the fabric primary: status publication moves, never doubled. The seat moved in
     // step 3; the primary is lost only once it alone publishes the fabric's status.
-    let (_, fabric) = estate.get("/api/fabric").await;
-    let fp = wait_for("the fabric primary alone publishes the fabric's status before it is lost", Duration::from_secs(40), || {
-        let dead = dead.clone();
-        let fabric_id = s(&fabric["id"]);
-        let estate = &estate;
-        async move {
-            let fp = estate.nodes().await.into_iter().find(|n| n["is_fabric_primary"] == true)?;
+    let fabric_id = estate.fabric_view().await.id.to_string();
+    let fp = estate
+        .until_view("the fabric primary alone publishes the fabric's status before it is lost", Duration::from_secs(40), |views| {
+            let fp = Estate::values(views).into_iter().find(|n| n["is_fabric_primary"] == true)?;
             let ev = roles(&estate.spans(), "rdm.mesh.fabric.update.via-status-publisher", "fabric");
             (holders(&ev, &fabric_id, &dead) == [s(&fp["name"])].into_iter().collect()).then_some(fp)
-        }
-    })
-    .await;
+        })
+        .await;
     let (fp_name, fp_id) = (s(&fp["name"]), s(&fp["node_id"]));
-    // Survivors from the live view at the kill, never an earlier /api/fabric answer: step 3's
+    // Survivors from the live view at the kill, never an earlier fabric.get answer: step 3's
     // lost admin may still be advertised there.
     let survivors: Vec<String> = estate
-        .nodes()
+        .node_values()
         .await
         .iter()
         .filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic" && s(&n["node_id"]) != fp_id)
@@ -259,15 +256,16 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     // primary's mesh is heard again through its successor's aggregate, a
     // peer mesh's admin may briefly name itself in its own view (and, gated,
     // publishes nothing). The converged view names the one publisher.
-    let next = wait_for("a new fabric primary alone publishes the fabric's status", rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(30), || async {
-        let n = estate.nodes().await;
-        // Tracked by NodeId: drift recovery may rebirth the lost path under a new NodeId.
-        let next = n.iter().find(|x| x["is_fabric_primary"] == true && s(&x["node_id"]) != fp_id).map(|x| s(&x["name"]))?;
-        // Status publication is keyed by the Fabric's id, the backbone's key.
-        let ev = roles(&estate.spans(), "rdm.mesh.fabric.update.via-status-publisher", "fabric");
-        (holders(&ev, &s(&fabric["id"]), &dead) == [next.clone()].into_iter().collect()).then_some(next)
-    })
-    .await;
+    let next = estate
+        .until_view("a new fabric primary alone publishes the fabric's status", rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(30), |views| {
+            let n = Estate::values(views);
+            // Tracked by NodeId: node recovery may create the lost path again under a new NodeId.
+            let next = n.iter().find(|x| x["is_fabric_primary"] == true && s(&x["node_id"]) != fp_id).map(|x| s(&x["name"]))?;
+            // Status publication is keyed by the Fabric's id, the backbone's key.
+            let ev = roles(&estate.spans(), "rdm.mesh.fabric.update.via-status-publisher", "fabric");
+            (holders(&ev, &fabric_id, &dead) == [next.clone()].into_iter().collect()).then_some(next)
+        })
+        .await;
     // The seat moves with the lowest NodeId as meshes grow and lose primaries, and a rebirth of
     // the lost path may hold it on the way: the lost primary was the last to start publishing
     // before the loss, and the last to start after it is the seat holder the view names.
@@ -277,9 +275,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     assert_eq!(before.as_deref(), Some(fp_name.as_str()), "the lost primary published before the loss: {ev:?}");
     assert_eq!(after.as_deref(), Some(next.as_str()), "the seat holder is the last to start publishing after the loss: {ev:?}");
 
-    // Stop through whoever holds the fabric now.
-    let (_, fabric) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric["admin_api_base"]);
+    // The stop follows the fabric-primary seat itself.
     estate.stop().await;
 }
 
@@ -300,24 +296,24 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     // and is ready again holding both meshes.
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
-    let before = s(&estate.node("mesh2.rpc.1").await["incarnation_id"]);
+    let before = s(&estate.node_value("mesh2.rpc.1").await["incarnation_id"]);
     let ready_before = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "incarnation_id") == before).count();
-    let (status, a) = estate.post("/api/nodes/mesh2.rpc.1/restart", &json!({})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_attempt(a["build_id"].as_str().unwrap(), Estate::attempt_of(&a), Duration::from_secs(60)).await;
+    let mut restart = estate.nodes_obj().await.restart(&"mesh2.rpc.1".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart mesh2.rpc.1: {e}"));
+    Estate::complete(&mut restart).await;
     // The Build can complete on another admin: wait for the asked one's view, and for the node's own
     // second ready.
-    let reborn = wait_for("the asked admin's view holds the restarted birth ready", Duration::from_secs(15), || async {
-        let n = estate.node_opt("mesh2.rpc.1").await?;
-        let ready_now = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "incarnation_id") == before).count();
-        (n["status"] == "ready-for-traffic" && s(&n["incarnation_id"]) == before && ready_now > ready_before).then_some(s(&n["incarnation_id"]))
-    })
-    .await;
-    assert_eq!(reborn, before, "a restart keeps the birth");
+    let restarted = estate
+        .until_node("mesh2.rpc.1", "the asked admin's view holds the restarted birth ready", Duration::from_secs(15), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            let ready_now = named(&estate.spans(), "rdm.mesh.node.update.via-ready").into_iter().filter(|sp| attr(sp, "incarnation_id") == before).count();
+            (n["status"] == "ready-for-traffic" && s(&n["incarnation_id"]) == before && ready_now > ready_before).then_some(s(&n["incarnation_id"]))
+        })
+        .await;
+    assert_eq!(restarted, before, "a restart keeps the birth");
     let spans = estate.spans();
     let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
-        .filter(|sp| attr(sp, "incarnation_id") == reborn)
+        .filter(|sp| attr(sp, "incarnation_id") == restarted)
         .max_by_key(|sp| start(sp))
         .unwrap_or_else(|| panic!("the restarted mesh2.rpc.1 reports ready"))
         .clone();
@@ -327,12 +323,12 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
         .filter(|sp| attr(sp, "node") == "mesh2.rpc.1")
         .map(start)
         .max()
-        .expect("the reborn node pulled its entry");
+        .expect("the restarted node pulled its entry");
     assert!(start(&ready) >= pulled, "ready only after the entry pull");
 
     // 6. Cut the two mesh primaries from each other: gossip repairs through
     // the other admins, and mesh2's ordinary nodes never lose mesh1.
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let (p1, p2) = (s(&primary(&nodes, "mesh1")["name"]), s(&primary(&nodes, "mesh2")["name"]));
     let cut_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let Some(cut) = Partition::start(&udp_ports(&nodes, &[p1.clone()]), &udp_ports(&nodes, &[p2.clone()])).map_err(netfault).ok() else {
@@ -351,7 +347,7 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
     // 7. Isolate mesh1's non-primary admin past the silence window and ask it
     // for a Build: cut off, it executes nothing; healed, the rightful
     // executor runs it and no live node is created again.
-    let nodes = estate.nodes().await;
+    let nodes = estate.node_values().await;
     let lone = nodes.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["is_primary"] != true).cloned().unwrap();
     let lone_name = s(&lone["name"]);
     let others: Vec<String> = nodes.iter().map(|n| s(&n["name"])).filter(|n| *n != lone_name).collect();
@@ -365,14 +361,10 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
         }
     })
     .await;
-    let main_admin = estate.admin.clone();
-    estate.admin = s(&lone["admin_api_base"]);
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric2", "meshes": [
-        {"name": "mesh1", "node_admin": 2, "rpc_node": 3},
-        {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
-    ]})).await;
-    assert_eq!(status, 202, "{a}");
-    let b = s(&a["build_id"]);
+    // build.create starts at the cut-off admin: it names the fabric-primary it sees, and the call goes there.
+    let lone_path: PathName = lone_name.parse().unwrap();
+    let mut grow = Builds::new(estate.carrier_at(&lone_path).await).create(&BuildSpec::Fabric(shape("fabric2", 3))).await.unwrap_or_else(|e| panic!("build.create through the cut-off {lone_name} was refused: {e}"));
+    let b = grow.build_id().to_string();
     tokio::time::sleep(Duration::from_secs(5)).await;
     let by_lone: Vec<String> = named(&estate.spans(), "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
@@ -381,11 +373,10 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
         .collect();
     assert!(by_lone.is_empty(), "the cut-off {lone_name} executed nothing: {by_lone:?}");
     drop(isolation);
-    estate.admin = main_admin;
-    estate.await_build(&b, Duration::from_secs(90)).await;
+    Estate::until_complete(&mut grow).await;
     let mut want: BTreeSet<String> = before.keys().cloned().collect();
     want.insert("mesh1.rpc.3".into());
-    let after = estate.settled(&want, Duration::from_secs(30)).await;
+    let after = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(30)).await);
     // Relearned with membership after the heal: every birth's current
     // runtime metadata (i143.e4.s16), no Build history replayed.
     for n in &after {
@@ -404,7 +395,5 @@ async fn gossip_repairs_a_lost_push_and_isolation_authorizes_nothing() {
         }
     })
     .await;
-    let (_, fabric) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric["admin_api_base"]);
     estate.stop().await;
 }
