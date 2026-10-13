@@ -210,7 +210,7 @@ async fn a_run_served_while_its_admin_is_stopped_calls_out_only_once_the_admin_s
 /// either follows the cut. Must NOT happen: the pass's own run waiting at the gate for the pass that
 /// waits on it, so neither ends and the stop never cuts.
 #[tokio::test(start_paused = true)]
-async fn a_drive_pass_dispatching_to_its_own_admin_on_a_parked_gate_runs_under_its_turn_and_never_waits_at_the_gate() {
+async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_under_its_turn_and_never_waits_at_the_gate() {
     let (capture, _guard) = capture("mesh1.admin.1");
     let calls = Arc::new(Calls::default());
     let (door, gate, plan) = executor(&calls, false).await;
