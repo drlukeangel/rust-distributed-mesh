@@ -624,3 +624,72 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
     assert!(named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").is_empty(), "no row was written");
     estate.record_trace_url(rejected[0]["trace_id"].as_str().unwrap_or(""));
 }
+
+/// The seat-transfer rows on the fabric's store root, `meshes/<mesh>/seat-transfers/`, each as its
+/// file name and bytes: what a seat move commits, compared whole.
+fn seat_transfer_rows(estate: &Estate) -> Vec<(String, Vec<u8>)> {
+    let meshes = estate.fabric_store_root().join("meshes");
+    let mut rows: Vec<(String, Vec<u8>)> = std::fs::read_dir(&meshes)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|m| std::fs::read_dir(m.path().join("seat-transfers")).into_iter().flatten().flatten())
+        .map(|r| (r.path().display().to_string(), std::fs::read(r.path()).unwrap_or_default()))
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// CONTRACT (R-SB1, Luke 2026-10-13: "a node.stop or node.restart of a mesh's only admin is refused
+/// by name under Q7, no secondary, before anything moves. The stop path's via-seat-hand-over to=none
+/// is the defect: a refused transfer never erases the incumbent's seat and never yields to nobody, and
+/// the destructive stop does not continue"; the approved proposal Part C1 "The no-successor cases",
+/// Q7: "`node.fabric-primary.update` with no other node-admin ReadyForTraffic in the mesh and no other
+/// mesh-primary ReadyForTraffic is refused the same way, naming both searches ... a single-admin
+/// single-mesh fabric's primary ... cannot be stopped or restarted until a secondary is ReadyForTraffic";
+/// Part C2 step 3's text): mesh1.admin.1 is the fabric's only node-admin, holding mesh1's seat and the
+/// fabric seat, beside one rpc node. Its `node.stop` and its `node.restart` are each refused
+/// `last-admin` with exactly `cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh
+/// mesh1, no other mesh-primary ReadyForTraffic`, one `rdm.node_admin.build.reject.via-last-admin` per
+/// call. Leadership is intact: every node keeps its
+/// birth and its seats (node.get), and the store root's seat-transfer rows are byte for byte what they
+/// were. The stop is not run: no stop-node served, no node.connections.delete, no seat move commanded,
+/// no row written. Through the whole run, the estate's teardown included, no admin hands its seat to
+/// nobody (`rdm.node_admin.build.update.via-seat-hand-over` with `to = none`).
+/// Must NOT happen: a stop or restart step of the only admin, a seat row written, a hand-over to none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves() {
+    let test = "a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and_nothing_moves";
+    let mut estate = Estate::bootstrap(owner(test), "fabric1", "mesh1").await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 1)]).await;
+    let before = estate.settled_views(&[("mesh1", 1, 1)]).await;
+    // A seat move is refused until the initial fabric has first reached ready-for-traffic (R-PB1).
+    estate.until_fabric_ready(SETTLE).await;
+    let rows = seat_transfer_rows(&estate);
+    let nodes = estate.nodes_obj().await;
+    let target: PathName = "mesh1.admin.1".parse().unwrap();
+    let held = before.iter().find(|n| n.name == target).expect("node.get lists the only admin");
+    assert!(held.is_primary && held.is_fabric_primary, "mesh1.admin.1 holds both seats: {held:?}");
+    let q7 = "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic";
+    for (action, refused) in [("stop", nodes.stop(&target).await.err()), ("restart", nodes.restart(&target).await.err())] {
+        let refused = refused.unwrap_or_else(|| panic!("the {action} of the fabric's only node-admin was accepted"));
+        let rafka_node_admin_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the {action} ends Rejected: {refused:?}") };
+        assert_eq!((reason.as_str(), detail.strip_prefix("last-admin: ")), ("last-admin", Some(q7)), "{action}: {refused:?}");
+    }
+    for now in estate.mesh_node_views("mesh1").await {
+        let was = before.iter().find(|n| n.name == now.name).unwrap_or_else(|| panic!("{} was there before", now.name));
+        assert_eq!((&now.incarnation_id, now.is_primary, now.is_fabric_primary), (&was.incarnation_id, was.is_primary, was.is_fabric_primary), "{} is untouched", now.name);
+    }
+    assert_eq!(seat_transfer_rows(&estate), rows, "the seat-transfer rows are unchanged");
+    estate.stop().await;
+    let spans = estate.spans();
+    let rejected: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-last-admin").into_iter().filter(|sp| attr(sp, "detail") == q7).collect();
+    assert_eq!(rejected.len(), 2, "one refusal per call: {rejected:#?}");
+    for name in ["rdm.node_admin.status.update.via-stop-node", "rdm.node_admin.node.connections.delete.via-stop", "rdm.node_admin.seat.update.via-primary-update", "rdm.node_admin.seat.update.via-seat-row-written"] {
+        let ran: Vec<&Value> = named(&spans, name);
+        assert!(ran.is_empty(), "the refused stop ran {name}: {ran:#?}");
+    }
+    let to_none: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-hand-over").into_iter().filter(|sp| attr(sp, "to") == "none").collect();
+    assert!(to_none.is_empty(), "an admin handed its seat to nobody: {to_none:#?}");
+    estate.record_trace_url(rejected[0]["trace_id"].as_str().unwrap_or(""));
+}
