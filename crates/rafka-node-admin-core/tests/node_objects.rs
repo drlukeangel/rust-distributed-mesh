@@ -1072,7 +1072,7 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
 /// CONTRACT: a Build call asked of a node-admin that does not hold the fabric-primary seat is refused
 /// `not-fabric-primary`, naming the fabric-primary that admin sees, before either door admits anything,
 /// and the refusal has its own span as every other Build refusal has (one honest name per reason,
-/// `rdm.node_admin.build.reject.via-<reason>`): `rdm.node_admin.build.reject.via-not-authority` carrying the
+/// `rdm.node_admin.build.reject.via-<reason>`): `rdm.node_admin.build.reject.via-not-fabric-primary` carrying the
 /// call's route, the refusing admin and the fabric-primary it named. No `build.create` or `build.update`
 /// span opens: nothing was admitted.
 #[test]
@@ -1091,7 +1091,7 @@ fn a_build_call_to_an_admin_without_the_fabric_seat_is_refused_under_its_own_rej
         other => panic!("a Build call to an admin without the fabric-primary seat ends Rejected not-fabric-primary, not {other:?}"),
     }
     let spans = cap.spans();
-    let refused = spans_named(&spans, "rdm.node_admin.build.reject.via-not-authority");
+    let refused = spans_named(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary");
     assert_eq!(refused.len(), 1, "the refusal has its own reject span: {spans:?}");
     let a = &refused[0]["attributes"];
     assert_eq!((a["route"].as_str(), a["node"].as_str(), a["fabric_primary"].as_str()), (Some("build.create"), Some("mesh1.admin.2"), Some("mesh1.admin.1")), "the reject span names the call, the refusing admin and the fabric-primary it named: {}", refused[0]);

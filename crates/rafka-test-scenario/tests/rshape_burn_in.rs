@@ -2217,7 +2217,7 @@ fn check_one_executor_per_attempt(claims: &[Value], inv: &mut Invariants) -> Val
 /// of a node the topology names and a reconcile open `build.create.via-node-rpc`; a restart, a replace and
 /// the delete of a replace's predecessor at `<node>.old` open the next attempt under
 /// `build.update.via-node-rpc` naming the node. An admin that does not hold the fabric-primary seat refuses
-/// the call before either door (`BuildDoor::serve`), under its own `build.reject.via-not-authority` naming
+/// the call before either door (`BuildDoor::serve`), under its own `build.reject.via-not-fabric-primary` (its `route` set; the drive's refusal of the same name carries none) naming
 /// the fabric-primary it sees.
 fn check_writes_and_writer_probes(f: &Formed, a: &Authority, spans: &[Value], inv: &mut Invariants) -> Value {
     let creates = named(spans, "rdm.node_admin.build.create.via-node-rpc");
@@ -2252,7 +2252,7 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Authority, spans: &[Value], in
     // Each probe round's one writer answer (`unknown-node`) is a refused create; its non-writers refuse before the door.
     assert_eq!(rejected_creates, a.probes.len() + at_a_door.len() - refused_opens, "every rejected topology write at the create door is a writer probe's answer or a write the cell sent the writer to see it refused");
     let non_writer_refusals = a.probes.iter().map(|p| p["answers"].as_array().unwrap().iter().filter(|x| x["reply"] == "not-fabric-primary").count()).sum::<usize>() + a.refused_writes.len() - at_a_door.len();
-    let without_the_seat = named(spans, "rdm.node_admin.build.reject.via-not-authority").len();
+    let without_the_seat = named(spans, "rdm.node_admin.build.reject.via-not-fabric-primary").into_iter().filter(|sp| !s(&sp["attributes"]["route"]).is_empty()).count();
     assert_eq!(without_the_seat, non_writer_refusals, "every refusal by an admin without the fabric-primary seat is a writer probe's non-writer answer or a write the cell sent a non-writer to see it refused, each under its own reject span");
     let mut rounds = Vec::new();
     for p in &a.probes {
@@ -2260,9 +2260,9 @@ fn check_writes_and_writer_probes(f: &Formed, a: &Authority, spans: &[Value], in
         let (from, to) = (p["from_ns"].as_u64().unwrap(), p["to_ns"].as_u64().unwrap());
         let unknown: Vec<&Value> = named(spans, "rdm.node_admin.build.reject.via-unknown-node").into_iter().filter(|sp| s(&sp["attributes"]["detail"]).contains(&path)).collect();
         assert_eq!(unknown.len(), 1, "probe round {}: exactly one admin validated the write to {path}: {unknown:?}", p["round"]);
-        let mut rejected: Vec<(String, String)> = named(spans, "rdm.node_admin.build.reject.via-not-authority")
+        let mut rejected: Vec<(String, String)> = named(spans, "rdm.node_admin.build.reject.via-not-fabric-primary")
             .into_iter()
-            .filter(|sp| (from..=to).contains(&start_ns(sp)))
+            .filter(|sp| !s(&sp["attributes"]["route"]).is_empty() && (from..=to).contains(&start_ns(sp)))
             .map(|sp| (s(&sp["attributes"]["node"]), s(&sp["attributes"]["fabric_primary"])))
             .collect();
         rejected.sort();
@@ -3421,13 +3421,13 @@ async fn retire_via_build(f: &mut Formed, a: &mut Authority, st: &Stable, node: 
     let t0 = now_ns();
     let (build_id, fin) = match how {
         Removal::Delete => {
-            let build_id = a.write(f, st, &format!("{label}: authorized retire"), Write::Delete(node.to_string())).await;
+            let build_id = a.write(f, st, &format!("{label}: retire at the fabric-primary"), Write::Delete(node.to_string())).await;
             assert_ne!(build_id, before_build, "{node}: a retire changes the topology, so it is a new accepted Build");
             let fin = a.finish(f, &build_id, Until::Gone { node: node.into() }, "during-retire").await;
             (build_id, fin)
         }
         Removal::Replace => {
-            let build_id = a.write(f, st, &format!("{label}: authorized replace"), Write::Replace(node.to_string())).await;
+            let build_id = a.write(f, st, &format!("{label}: replace at the fabric-primary"), Write::Replace(node.to_string())).await;
             assert_eq!(build_id, before_build, "{node}: a replace changes no topology, so it is the next attempt of the accepted Build and mints none");
             a.finish(f, &build_id, Until::Joined { node: node.into(), not_node_id: node_id.clone() }, "during-replace").await;
             // The recipe's next step: the stopped predecessor at `<node>.old` is deleted, the attempt
