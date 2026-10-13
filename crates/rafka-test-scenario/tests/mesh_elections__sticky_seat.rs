@@ -242,25 +242,28 @@ fn at_ns(sp: &Value) -> u64 {
 /// continue ... The successor is now the holder's primary"): the fabric-primary P is replaced through
 /// `build.create` of a Replace change (a Build attempt the rectifier executes; never a signal). P holds both seats and is
 /// its mesh's row writer, so it moves them itself before the replace runs:
-/// 1. P says "primary updating" (`via-announce-primary-updating`, sent on the backbone and its mesh
-///    channel), cuts off the writes of both seats (`via-writes-cut-off`, the fabric seat included) and
-///    writes the ONE committed row (`seat.update.via-seat-row-written` at P: holder P, successor N, both
-///    seats at their next epochs).
+/// 1. P claims the attempt the update runs in for itself (C1 step 1: "The holder is commanded from
+///    above, as a step of the Build"; `build.update.via-claim-decision` at P, won, before its row), says
+///    "primary updating" (`via-announce-primary-updating`, sent on the backbone and its mesh channel),
+///    cuts off the writes of both seats (`via-writes-cut-off`, the fabric seat included) and writes the
+///    ONE committed row (`seat.update.via-seat-row-written` at P: holder P, successor N, both seats at
+///    their next epochs, the attempt P claimed).
 /// 2. N, P's same-mesh successor, installs from the row and answers node.primary.updated
-///    (`seat.update.via-primary-updated` at N, not a replay, under P's update).
-/// 3. P's drive ends at the row (`seat-lost`; `build.reject.via-fenced` naming N), and P decides no claim
-///    after it. N claims the attempt the update preceded and no later one. Its view already names it
-///    the holder, so before it dispatches that attempt it acknowledges the row's update as the next
-///    writer to read the row (C1 failure contract: "the next writer to read the row publishes
-///    'updated'"; "never a read alone"): it installs from the row and says "primary updated"
-///    (`seat.update.via-row-acknowledged` by self-install, its `via-announce-primary-updated` sent on
-///    the backbone and its mesh channel). Then it runs the replace; no step on P runs before N's
-///    "primary updated". P's own "primary updated" on N's answer is a repeat the epoch orders: at
-///    most one, after N installed.
+///    (`seat.update.via-primary-updated` at N, not a replay, under P's update, taking P's claim of the
+///    attempt into its Build log: `claim` adopted).
+/// 3. P says "primary updated" (C1 step 7: `via-announce-primary-updated` at P, sent on the backbone and
+///    its mesh channel), and only then does its attempt end, handed off to N (`build.update.via-dispatch`
+///    at P for its own attempt, handed-off). P's drive ends at the row (`seat-lost`;
+///    `build.reject.via-fenced` naming N), and P decides no claim after its row.
+/// 4. Only then does the commanding Build continue (step 8; build.md: "A live run is reattached, never
+///    re-claimed"): N claims the next attempt, and no later one, and dispatches the replace; N says
+///    nothing (P said it; a `seat.update.via-row-acknowledged` at N, if any, announced nothing). The
+///    replace's steps on P, its stop first, run after P's "primary updated".
 /// Must NOT happen: a view showing two fabric-primaries; an observer resolving P's mesh or the fabric
-/// with no primary between the replace and the fabric's ready-for-traffic; N writing a seat row; N
-/// dispatching, or a step on P running, before N's "primary updated"; a birth made twice; an attempt
-/// with two winners. The fabric is ready again under the same Build.
+/// with no primary between the replace and the fabric's ready-for-traffic; N writing a seat row or
+/// saying "primary updated"; N claiming or dispatching, or a step on P running, before P's "primary
+/// updated"; a birth made twice; an attempt with two winners. The fabric is ready again under the same
+/// Build.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts() {
     let cell = "a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_the_new_one_acts";
@@ -323,31 +326,39 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     assert_eq!((attr(&installed, "replay").as_str(), attr(&installed, "outcome").as_str()), ("false", "held"), "N installed P's row: {installed:#?}");
     assert_eq!((attr(&installed, "mesh_epoch"), attr(&installed, "fabric_epoch")), (attr(&row, "mesh_epoch"), attr(&row, "fabric_epoch")), "N installed the row's epochs: {installed:#?}");
     assert!(descends_from(&spans, &installed, &updating), "N installs under P's node.primary.update call: {installed:#?}");
-    // The C1 failure contract: N, the next writer to read the row, acknowledges it before it dispatches
-    // the attempt the update preceded: installed from the row, and N says "primary updated".
-    let acknowledged = one("rdm.node_admin.seat.update.via-row-acknowledged", &|sp| attr(sp, "node") == n_name && attr(sp, "build_id") == build);
-    assert_eq!((attr(&acknowledged, "by").as_str(), attr(&acknowledged, "announced").as_str(), attr(&acknowledged, "operation")), ("self-install", "true", attr(&row, "operation")), "N acknowledged P's row by its own install: {acknowledged:#?}");
-    let n_said = one("rdm.mesh.seat.update.via-announce-primary-updated", &|sp| attr(sp, "node") == n_name && attr(sp, "build_id") == build);
-    assert_eq!((attr(&n_said, "backbone").as_str(), attr(&n_said, "mesh_channel").as_str()), ("sent", "sent"), "{n_said:#?}");
-    assert!(descends_from(&spans, &n_said, &acknowledged), "N says primary updated under its acknowledgement of the row: {n_said:#?}");
-    let n_dispatch = one("rdm.node_admin.build.update.via-dispatch", &|sp| attr(sp, "node") == n_name && attr(sp, "build_id") == build && num(sp, "attempt") == Some(num(&row, "attempt").unwrap()));
-    assert!(sp_end(&n_said) <= at_ns(&n_dispatch), "N dispatched the attempt the update preceded only after it said primary updated: {n_dispatch:#?}");
-    // C1 step 7: P's own "primary updated" on N's answer is a repeat the epoch orders: at most one, after
-    // N installed. The successor writes no row.
-    let p_said: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announce-primary-updated").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
-    assert!(p_said.len() <= 1, "P said primary updated more than once: {p_said:#?}");
+    // C1 step 1: the update is a step of the attempt P claimed for itself before its row: the row's attempt.
+    let transfer_attempt = num(&row, "attempt").unwrap();
+    let p_claim = one("rdm.node_admin.build.update.via-claim-decision", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt));
+    assert_eq!((attr(&p_claim, "outcome").as_str(), attr(&p_claim, "executor").as_str()), ("won", p.as_str()), "P claimed the attempt its update runs in for itself: {p_claim:#?}");
+    assert!(sp_end(&p_claim) <= at_ns(&said_updating), "P claimed its attempt before it said primary updating: {p_claim:#?}");
+    let p_attempt = one("rdm.node_admin.build.update.via-dispatch", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt));
+    assert_eq!((attr(&p_attempt, "executor").as_str(), attr(&p_attempt, "outcome").as_str()), (p.as_str(), "handed-off"), "P's own attempt ended handed off: {p_attempt:#?}");
+    assert!(descends_from(&spans, &updating, &p_attempt), "P's update runs under its own attempt: {updating:#?}");
+    assert_eq!(attr(&installed, "claim"), "adopted", "N took P's claim of the attempt into its Build log as it installed: {installed:#?}");
+    // C1 step 7: P says "primary updated" once N answered. The successor neither says it nor writes a row.
+    let p_said = one("rdm.mesh.seat.update.via-announce-primary-updated", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build);
+    assert_eq!((attr(&p_said, "backbone").as_str(), attr(&p_said, "mesh_channel").as_str()), ("sent", "sent"), "{p_said:#?}");
+    let by_n: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-announce-primary-updated").into_iter().filter(|sp| attr(sp, "node") == n_name).collect();
+    assert!(by_n.is_empty(), "the successor said primary updated: {by_n:#?}");
+    let n_acks: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-row-acknowledged").into_iter().filter(|sp| attr(sp, "node") == n_name && attr(sp, "build_id") == build).collect();
+    assert!(n_acks.iter().all(|sp| attr(sp, "announced") == "false"), "N's acknowledgement of P's row announced nothing: {n_acks:#?}");
     let n_rows: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").into_iter().filter(|sp| attr(sp, "node") == n_name).collect();
     assert!(n_rows.is_empty(), "the successor wrote a seat row: {n_rows:#?}");
-    // The order of the sequence (C1 steps 3-7).
+    // The order of the sequence (C1 steps 3-8).
     assert!(at_ns(&said_updating) <= at_ns(&cut_off) && sp_end(&cut_off) <= row_at, "P said primary updating, then cut off its writes, then wrote the row");
     assert!(sp_end(&row) <= at_ns(&installed), "N installed only after P's row");
-    assert!(sp_end(&installed) <= at_ns(&acknowledged), "N acknowledged the row only after it installed it under P's call");
-    assert!(p_said.iter().all(|sp| sp_end(&installed) <= at_ns(sp)), "P said primary updated only after N answered: {p_said:#?}");
-    // Step 8: the replace runs after the row, from the attempt the update preceded: no step on P before it.
-    let transfer_attempt = num(&row, "attempt").unwrap();
+    assert!(sp_end(&installed) <= at_ns(&p_said), "P said primary updated only after N answered");
+    assert!(sp_end(&p_said) <= sp_end(&p_attempt), "P's attempt ended only after it said primary updated");
+    // Step 8: N claims the next attempt only after P's "primary updated", and dispatches the replace.
+    let n_claim = one("rdm.node_admin.build.update.via-claim-decision", &|sp| attr(sp, "node") == n_name && attr(sp, "build_id") == build && attr(sp, "outcome") == "won");
+    assert_eq!((num(&n_claim, "attempt"), attr(&n_claim, "executor").as_str()), (Some(transfer_attempt + 1), n_name.as_str()), "N claimed the attempt after P's: {n_claim:#?}");
+    assert!(sp_end(&p_said) <= at_ns(&n_claim), "N claimed only after P said primary updated: {n_claim:#?}");
+    let n_dispatch = one("rdm.node_admin.build.update.via-dispatch", &|sp| attr(sp, "node") == n_name && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt + 1));
+    assert!(sp_end(&p_said) <= at_ns(&n_dispatch), "N dispatched the replace only after P said primary updated: {n_dispatch:#?}");
+    // The replace's steps on P, its stop first, run from N's attempt, after P's "primary updated".
     let p_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p && num(sp, "attempt").is_some_and(|a| a >= transfer_attempt)).collect();
-    assert!(!p_steps.is_empty(), "the replace's steps on P ran from attempt {transfer_attempt}");
-    assert!(p_steps.iter().all(|sp| at_ns(sp) >= sp_end(&n_said)), "no step on P ran before N said primary updated: {p_steps:#?}");
+    assert!(!p_steps.is_empty(), "the replace's steps on P ran from attempt {}", transfer_attempt + 1);
+    assert!(p_steps.iter().all(|sp| num(sp, "attempt") == Some(transfer_attempt + 1) && at_ns(sp) >= sp_end(&p_said)), "no step on P ran before P said primary updated, nor in P's own attempt: {p_steps:#?}");
     // No seatless window: from the replace until the fabric is ready again (the fabric's own
     // shutdown after that is not this cell's story), no observer resolves P's mesh or the fabric
     // with nobody.
@@ -358,23 +369,21 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
         .collect();
     assert!(vacant.is_empty(), "a seat was vacant during the hand-over: {vacant:#?}");
     // P was the fabric-primary driving the Build: its drive ends at its row (seat-lost), its committed
-    // seat check naming N (build_drive.rs `may_act`). The replace came in as a change of the accepted Build and the seats moved
-    // before any claim (build_drive.rs `seats_first`), so P dispatched nothing to N: N claims the
-    // attempt the update preceded itself, and no later attempt is claimed.
+    // seat check naming N (build_drive.rs `may_act`). P moved its seats as a step of its own attempt
+    // (build_drive.rs `own_seats_first`) and dispatched nothing to N: N claims the next attempt itself,
+    // and no later attempt is claimed.
     let p_drive: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(p_drive.iter().any(|sp| attr(sp, "outcome") == "seat-lost"), "P's drive ends at its seat row: {p_drive:#?}");
     let p_refused: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(!p_refused.is_empty() && p_refused.iter().all(|sp| attr(sp, "to") == n_name), "P's drive lost the seat at the committed record naming N: {p_refused:#?}");
     let moved: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-moved").into_iter().filter(|sp| attr(sp, "build_id") == build).collect();
     assert!(moved.iter().all(|sp| attr(sp, "to") == n_name), "every SeatMoved of the Build names N: {moved:#?}");
-    let n_claimed: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "node") == n_name && attr(sp, "build_id") == build && attr(sp, "outcome") == "won" && num(sp, "attempt") == Some(transfer_attempt)).collect();
-    assert_eq!(n_claimed.len(), 1, "N claimed the attempt the update preceded: {:#?}", named(&spans, "rdm.node_admin.build.update.via-claim-decision"));
     // A planned move leaves no fault anywhere in the run (the fault span of a handler is a root of its
     // own trace, so the whole run is read).
     let faults = named(&spans, "rdm.node_rpc.handler.reject.via-internal-rpc-failure");
     assert!(faults.is_empty(), "a planned seat move left a handler fault: {faults:#?}");
-    let later_claims: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "outcome") == "won" && num(sp, "attempt").is_some_and(|a| a > transfer_attempt)).collect();
-    assert!(later_claims.is_empty(), "N ran the attempt the update preceded; no later attempt was claimed: {later_claims:#?}");
+    let later_claims: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-claim-decision").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "outcome") == "won" && num(sp, "attempt").is_some_and(|a| a > transfer_attempt + 1)).collect();
+    assert!(later_claims.is_empty(), "N ran the replace in the attempt after P's; no later attempt was claimed: {later_claims:#?}");
     // The Build facts were handed on when P's record moved.
     let hand_over: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-seat-hand-over").into_iter().filter(|sp| attr(sp, "node") == p).collect();
     assert!(hand_over.iter().any(|sp| sp["attributes"]["facts"].as_str().and_then(|f| f.parse::<u64>().ok()).is_some()), "the hand-over span names the facts handed on: {hand_over:#?}");

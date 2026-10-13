@@ -294,6 +294,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
             records
         },
         locks: Default::default(),
+        memo: Default::default(),
         decisions: Arc::default(),
         builds: Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
         project_view,
