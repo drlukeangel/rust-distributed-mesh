@@ -465,6 +465,73 @@ impl RunDoor {
     }
 }
 
+/// What a mesh-primary's own recovery of its member came to (R-BI7; node-recovery.md as R-BI7 moves
+/// it: "the mesh-primary opens the recovery attempt of the current Build itself: claim on its mesh's
+/// rows, then run; no call to the fabric-primary").
+#[derive(Debug)]
+pub enum Recovered {
+    /// The recovery was opened and claimed at this admin's door and ran here to `terminal`
+    /// (`Complete`, or `Failed` naming the step).
+    Ran {
+        /// The attempt the recovery is.
+        opened: crate::http::Opened,
+        /// The attempt's terminal frame.
+        terminal: BuildReply,
+    },
+    /// The exited birth was recovered already, by this attempt: nothing was opened or run.
+    AlreadyApplied(crate::http::Opened),
+}
+
+/// Why a mesh-primary's own recovery did not run to a terminal.
+#[derive(Debug)]
+pub enum RecoveryNotRun {
+    /// This admin's door refused the open, by name.
+    Refused(crate::http::Refusal),
+    /// The attempt was opened and claimed, and its run was refused, by name.
+    RunRefused {
+        /// The attempt.
+        opened: crate::http::Opened,
+        /// The refusal.
+        reply: BuildReply,
+    },
+    /// The attempt's run ended without its terminal.
+    Broke {
+        /// The attempt.
+        opened: crate::http::Opened,
+        /// Why.
+        why: String,
+    },
+}
+
+/// The mesh-primary's own recovery of the exited birth `(node_id, incarnation)` at `path`: opened
+/// and claimed at `control` (this admin's door), then run through `door` (this admin's executor),
+/// followed to its terminal.
+pub async fn run_recovery(control: &crate::http::ControlPlane, door: &RunDoor, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovered, RecoveryNotRun> {
+    let opened = match control.open_recovery(route, path, node_id, incarnation).await {
+        Ok(crate::http::Recovery::Opened(o)) => o,
+        Ok(crate::http::Recovery::AlreadyApplied(o)) => return Ok(Recovered::AlreadyApplied(o)),
+        Err(r) => return Err(RecoveryNotRun::Refused(r)),
+    };
+    let p = match control.builds.read_build(&opened.build_id).await {
+        Ok(p) => p,
+        Err(e) => return Err(RecoveryNotRun::Broke { why: format!("{}: Build {} could not be read to plan attempt {}: {e}", door.me, opened.build_id, opened.attempt), opened }),
+    };
+    let observed = control.topology.read().await.clone();
+    let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
+    let context = crate::build_claim::current_context();
+    match door.attempt_run(&opened.build_id, opened.attempt, &door.me.to_string(), &context, &[], &plan).await {
+        Attached::Refused(reply) => Err(RecoveryNotRun::RunRefused { opened, reply }),
+        Attached::Ended { terminal, .. } => Ok(Recovered::Ran { opened, terminal }),
+        Attached::Live { mut reader, .. } => loop {
+            match reader.next().await {
+                Some(t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. })) => return Ok(Recovered::Ran { opened, terminal: t }),
+                Some(_) => continue,
+                None => return Err(RecoveryNotRun::Broke { why: format!("{}: the run of attempt {} of {} ended without its terminal", door.me, opened.attempt, opened.build_id), opened }),
+            }
+        },
+    }
+}
+
 /// The terminal frame an attempt's end is: `Complete`, `Failed` naming the step, or `HandedOff`.
 pub fn terminal_of(build_id: &BuildId, r: &Reconciled, failed: Option<(String, String, String)>) -> BuildReply {
     match r {

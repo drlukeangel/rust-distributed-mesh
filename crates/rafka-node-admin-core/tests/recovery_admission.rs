@@ -495,3 +495,94 @@ async fn a_topology_operation_and_a_drift_attempt_on_one_mesh_never_both_open() 
         }
     }
 }
+
+/// The recovery's three workflows as a fixture runs them: each operation writes the receipts its
+/// workflow writes, through the executor's framed Build state (`deletion_receipts` for the
+/// node.delete of the exited birth, `Complete` for the node.create and the node.update).
+struct RecoveryReceipts {
+    builds: Arc<dyn BuildStateAdapter>,
+    executor: String,
+}
+
+#[async_trait::async_trait]
+impl rafka_node_admin_core::executor::OperationRunner for RecoveryReceipts {
+    async fn run(&self, build_id: &rafka_node_admin_core::build::BuildId, attempt: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        use rafka_node_admin_core::build::BuildOperation;
+        let lane: Option<&str> = None;
+        let receipts = match op {
+            BuildOperation::RetireNode { node, exited: Some(from) } => deletion_receipts(lane, "retire-node", build_id, attempt, node, &from.node_id, &from.incarnation, &self.executor),
+            BuildOperation::CreateNode { .. } | BuildOperation::UpdateNode { .. } => {
+                vec![BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build_id.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: Some(self.executor.clone()) }]
+            }
+            other => return Err(format!("a recovery runs no {}", other.key()).into()),
+        };
+        for r in receipts {
+            self.builds.append_step_receipt(&r).await.map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+/// `executor`'s own door for `build.attempt.run` over `builds`, its view `topology` and the
+/// recovery's fixture runner.
+fn run_door(executor: &str, builds: &Arc<MemoryBuildStateAdapter>, topology: Arc<tokio::sync::RwLock<Topology>>) -> rafka_node_admin_core::build_run::RunDoor {
+    let runs = Arc::new(rafka_node_admin_core::build_run::AttemptRuns::default());
+    let framed: Arc<dyn BuildStateAdapter> = Arc::new(rafka_node_admin_core::build_run::FramedBuilds::new(builds.clone(), runs.clone()));
+    let runner = Arc::new(RecoveryReceipts { builds: framed.clone(), executor: executor.into() });
+    let exec = Arc::new(rafka_node_admin_core::executor::BuildExecutor { executor: executor.into(), builds: framed.clone(), topology, runner });
+    rafka_node_admin_core::build_run::RunDoor { me: executor.parse().unwrap(), builds: framed, exec, runs, local: builds.clone() }
+}
+
+/// CONTRACT (R-BI7 caveats 2 and 3, proposal Part C; node-recovery.md as R-BI7 moves it: "the
+/// mesh-primary opens the recovery attempt of the current Build itself: claim on its mesh's rows,
+/// then run; no call to the fabric-primary"): mesh2's mesh-primary recovers its member itself. Its
+/// own door opens and claims the recovery as attempt 1 of mesh2's lane of the current Build, its own
+/// executor runs it to `Complete` (node.delete of the exited birth, node.create, node.update), every
+/// receipt in mesh2's lane, and the attempt's verdict releases mesh2's in-flight row. The node that
+/// recovery created exits too: its recovery is admitted and runs as attempt 2 of mesh2's lane. The
+/// fabric lane of the Build is untouched throughout. Must NOT happen: the run refused because the
+/// executor's door read the fabric lane (`StaleClaim`), mesh2 still held after the verdict
+/// (`BuildInProgress` naming the completed attempt), or a receipt of the recovery in the fabric lane.
+#[tokio::test]
+async fn a_mesh_primary_runs_its_members_recovery_to_complete_and_its_mesh_admits_the_next_one() {
+    use rafka_node_admin_core::build_run::{run_recovery, Recovered};
+    use rafka_node_admin_core::build_state::BuildState;
+    use rafka_node_rpc_contract::build::BuildReply;
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-run-in-mesh", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+    let (_fp, mp, builds, path, node_id, birth) = fabric_of_two_meshes().await;
+    let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
+    let before = builds.read_build(&b0).await.unwrap();
+    let door = run_door("mesh2.admin.1", &builds, mp.topology.clone());
+
+    let (opened, terminal) = match run_recovery(&mp, &door, "node-recovery", path.clone(), node_id.clone(), birth.clone()).await {
+        Ok(Recovered::Ran { opened, terminal }) => (opened, terminal),
+        other => panic!("mesh2's mesh-primary runs its member's recovery itself: {other:?}"),
+    };
+    assert_eq!((opened.build_id.clone(), opened.mesh.as_deref(), opened.attempt), (b0.clone(), Some("mesh2"), 1), "attempt 1 of mesh2's lane of the current Build");
+    assert_eq!(terminal, BuildReply::Complete { build_id: b0.to_string(), attempt: 1 }, "the recovery ran to Complete");
+    let p = builds.read_build(&b0).await.unwrap();
+    let lane = p.lanes.get("mesh2").expect("mesh2's lane");
+    assert_eq!((lane.state, lane.attempt, lane.executor.as_deref(), lane.claimant.as_deref()), (BuildState::Complete, 1, Some("mesh2.admin.1"), Some("mesh2.admin.1")), "mesh2's lane: {lane:?}");
+    let ran: Vec<&str> = lane.steps.iter().filter(|s| s.step == "Complete").map(|s| s.operation.as_str()).collect();
+    assert_eq!(ran, vec!["retire-node:mesh2.rpc.1", "create-node:mesh2.rpc.1", "update-node:mesh2.rpc.1"], "node.delete, node.create, node.update, in mesh2's lane");
+    assert_eq!((p.attempt, p.state, p.executor.clone(), p.steps.len()), (before.attempt, before.state, before.executor.clone(), before.steps.len()), "the fabric lane is untouched");
+    assert_eq!(mp.claims.held("mesh2").await.unwrap(), None, "the attempt's verdict released mesh2's in-flight row");
+
+    // The node the recovery created exits as well: mesh2 admits its recovery.
+    let (node2, birth2) = (NodeId::mint(), IncarnationId::mint());
+    match run_recovery(&mp, &door, "node-recovery", path.clone(), node2, birth2).await {
+        Ok(Recovered::Ran { opened, terminal }) => {
+            assert_eq!((opened.mesh.as_deref(), opened.attempt), (Some("mesh2"), 2), "attempt 2 of mesh2's lane");
+            assert_eq!(terminal, BuildReply::Complete { build_id: b0.to_string(), attempt: 2 });
+        }
+        other => panic!("mesh2 admits the next recovery once the first one's verdict is in: {other:?}"),
+    }
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.update.via-claim-decision", "rdm.node_admin.build.serve.via-attempt-run", "rdm.node_admin.build.update.via-reconcile"] {
+        for (trace_id, attrs) in capture.spans(name) {
+            eprintln!("span {name} trace_id={trace_id} {attrs:?}");
+        }
+    }
+}
