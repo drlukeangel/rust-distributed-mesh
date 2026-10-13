@@ -26,7 +26,7 @@ async fn call_on(admin: &AdminSide, target: &NodeTarget, req: &StatusRequest, sc
 
 /// A live `mesh1.rpc.1.new` the admin side has heard ReadyForTraffic and resolves.
 async fn live_node(admin: &AdminSide, dir: &std::path::Path, fabric: &FabricId) -> (Launch, node::RunningNode) {
-    RuntimeFact::of_this_process("cell").unwrap().write_record(dir).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     let key = node::load_or_mint_key(dir).unwrap();
     let launch = Launch {
         fabric: "fabric1".into(),
