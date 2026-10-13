@@ -119,7 +119,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             RpcOutcome::Reply(_) => {}
             other => panic!("the node's data-plane ping did not end in a reply: {other:?}"),
         }
-        renamed_seams.connections.drain().await;
+        renamed_seams.connections.observations_landed().await;
         let before = kept_log(&store, &fabric, &born);
         assert!(
             before.iter().any(|e| e.source.name == born && e.source.node_id == renamed.node_id && e.destination.name.to_string() == "mesh1.admin.1" && e.state == ConnectionState::Connected),
@@ -200,8 +200,8 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
             RpcOutcome::Reply(_) => {}
             other => panic!("the renamed node's ping did not end in a reply: {other:?}"),
         }
-        renamed_seams.connections.drain().await;
-        peer_seams.connections.drain().await;
+        renamed_seams.connections.observations_landed().await;
+        peer_seams.connections.observations_landed().await;
 
         // Every way the entries can be wrong is named together, so one run shows each end.
         let mut wrong: Vec<String> = Vec::new();
@@ -347,16 +347,16 @@ fn a_node_renamed_while_stopped_records_its_next_connection_under_the_handed_nam
         };
         let stop = StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 1, operation: format!("stop-node:{born}") };
         assert!(matches!(call(stop).await, StatusReply::Stopped { .. }), "the node stops");
-        seams.connections.drain().await;
+        seams.connections.observations_landed().await;
         let at_stop = kept_log(&store, &fabric, &born).len();
         admin.put_row(NodeRow { name: taken.clone(), node_id: launch.node_id.clone(), status: NodeStatus::Leaving, config: Default::default(), tags: Default::default(), allocated: None, renamed_from: None });
         admin.deployed_as(&launch, &key, taken.clone(), Some(born.clone()));
         let start = StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "s1t5pj9dvg1p".into(), attempt: 2, operation: format!("start-node:{taken}") };
         assert_eq!(call(start).await, StatusReply::Started, "the node starts under its row's name");
-        seams.connections.drain().await;
+        seams.connections.observations_landed().await;
         assert_eq!(kept_log(&store, &fabric, &born).len(), at_stop, "the start's join wrote no entry: Node RPC is no connection");
         ping_admin(b"after the start").await;
-        seams.connections.drain().await;
+        seams.connections.observations_landed().await;
 
         // Every entry written after the start names the name the node holds, the handed one.
         let started = kept_log(&store, &fabric, &born)[at_stop..].to_vec();

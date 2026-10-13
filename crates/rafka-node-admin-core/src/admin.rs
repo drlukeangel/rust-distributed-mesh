@@ -5228,8 +5228,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         Err(e) => return Err(format!("connections storage: {e}")),
     }
     // An owed Proxy retirement whose write was refused is attempted again while owed
-    // (connections.md §10); the task ends with the process.
-    let _retirements = connections.spawn_retirement_reconciler(crate::connections_writer::RETIREMENT_RETRY);
+    // (connections.md §10); a node-admin has no data plane, so no recovery dial. The task ends
+    // with the process.
+    let _reconciler = connections.spawn_reconciler(crate::connections_writer::RECONCILER_TICK, None);
     // The process's one live-node resolver: the client's and the server's (an accepted
     // connection's peer is named by it).
     let node_rpc_resolver = Arc::new(rafka_node_rpc::LiveNodeResolver::default());

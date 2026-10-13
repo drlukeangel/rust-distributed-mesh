@@ -121,7 +121,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
                 other => panic!("{what}: the ping did not end in a reply: {other:?}"),
             }
         }
-        renamed_seams.connections.drain().await;
+        renamed_seams.connections.observations_landed().await;
         let before = kept_log(&store, &fabric, &born);
         for dest in ["mesh1.admin.1", "mesh1.rpc.2"] {
             assert!(before.iter().any(|e| e.source.name == born && e.destination.name.to_string() == dest), "the node holds a route to {dest}: {before:#?}");
@@ -160,7 +160,7 @@ fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_dele
 
         // It dials its peer again: the node's next entry names the name it holds.
         let _ = renamed_seams.client.call::<Ping>(&NodeTarget::ExactNode(peer.node_id.clone()), &PingRequest::Ping { payload: b"after the rename".to_vec() }, &CallOptions::default()).await;
-        renamed_seams.connections.drain().await;
+        renamed_seams.connections.observations_landed().await;
         let log = kept_log(&store, &fabric, &born);
         let mut wrong: Vec<String> = Vec::new();
         let mut latest: std::collections::BTreeMap<(String, String, String), &NodeConnection> = Default::default();
