@@ -1861,7 +1861,7 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
 /// The holder's own node.primary.update whose successor `mesh1.admin.2` is proven exited after the row
 /// (ruling R-PU2), then, in the next run, a transfer to `mesh1.admin.3`: the first call ends
 /// `SuccessorExited` with the view unchanged (the ordinary rule seats the holder again), the next
-/// moves both seats to `mesh1.admin.3` and fences the holder's Build log, naming it. Each call's
+/// moves both seats to `mesh1.admin.3` and its seat record ends the holder's Build-log decisions. Each call's
 /// attempt and transfer run are recorded.
 struct ExitedThenMoved {
     inner: Arc<Switch>,
