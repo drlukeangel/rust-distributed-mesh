@@ -2512,7 +2512,7 @@ mod tests {
     /// exception is store_root_boot's preparation of an admin's data dir before that
     /// admin starts on it (R-SB1, Luke 2026-10-13: each cell "prepares a durable store
     /// root through the storage adapters, with no previous process"): it writes the
-    /// accepted Build the admin then reloads, and reads no authority from it.
+    /// accepted Build the admin then reloads, and decides nothing from it.
     #[test]
     fn nothing_but_this_module_opens_a_build_journal() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
