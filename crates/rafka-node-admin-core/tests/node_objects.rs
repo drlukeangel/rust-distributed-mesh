@@ -222,6 +222,32 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
 
+/// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
+/// seat (`mesh1.admin.1` holds it): its claim door carries its own birth's node id.
+async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
+    let mut t = mn();
+    t.nodes.push(node("mesh1.admin.2", false));
+    let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let me: PathName = "mesh1.admin.2".parse().unwrap();
+    let control = Arc::new(ControlPlane::new(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
+    let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join: Duration::from_millis(300) });
+    let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
+    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone() });
+    let node_id = control.topology.read().await.node(&me).expect("the admin is in the view").node_id.clone();
+    let env = Arc::new(DriveEnv {
+        me: me.clone(),
+        topology: control.topology.clone(),
+        builds: rig.builds.clone(),
+        door: Arc::new(ClaimDoor { me: me.clone(), node_id: node_id.clone(), topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        dispatcher: Arc::new(Local(run.clone())),
+        gate: Arc::new(OpenGate),
+        departure: Arc::new(crate::loopback::Proofs::default()),
+        verdicts: Arc::new(crate::loopback::NoVerdicts),
+        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), node_id, control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+    });
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
+}
+
 /// The fabric-primary's Build door over a Build log of its own: the executor writes its step
 /// receipts on `rig`'s log, the fabric-primary's log holds the claim it decided and the verdict the
 /// executor reported, and no step receipt reaches it (the Build topic delivers those apart, later).
@@ -1052,4 +1078,35 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
     assert_eq!(lost.len(), 1, "the first attempt's executor was lost: {spans:?}");
     assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").len(), 1, "its departure was proven before the successor's attempt");
     assert_eq!(spans_named(&spans, "rdm.node_admin.node.connections.deleted.via-reply-frame").len(), 1, "node.connections.deleted was delivered once");
+}
+
+/// CONTRACT: a Build call asked of a node-admin that does not hold the fabric-primary seat is refused
+/// `not-fabric-primary`, naming the fabric-primary that admin sees, before either door admits anything,
+/// and the refusal has its own span as every other Build refusal has (one honest name per reason,
+/// `rdm.node_admin.build.reject.via-<reason>`): `rdm.node_admin.build.reject.via-not-authority` carrying the
+/// call's route, the refusing admin and the fabric-primary it named. No `build.create` or `build.update`
+/// span opens: nothing was admitted.
+#[test]
+fn a_build_call_to_an_admin_without_the_fabric_seat_is_refused_under_its_own_reject_span_naming_the_fabric_primary() {
+    let cap = capture();
+    let end = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let served = serve(door_without_the_seat(&rig).await).await;
+        served.carrier.create(rafka_node_rpc_contract::build::BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }).await.err()
+    });
+    match &end {
+        Some(CallEnd::Rejected { reason, detail }) => {
+            assert_eq!(reason, "not-fabric-primary", "the admin without the seat refuses by name: {detail}");
+            assert!(detail.contains("names mesh1.admin.1"), "the refusal names the fabric-primary the admin sees: {detail}");
+        }
+        other => panic!("a Build call to an admin without the fabric-primary seat ends Rejected not-fabric-primary, not {other:?}"),
+    }
+    let spans = cap.spans();
+    let refused = spans_named(&spans, "rdm.node_admin.build.reject.via-not-authority");
+    assert_eq!(refused.len(), 1, "the refusal has its own reject span: {spans:?}");
+    let a = &refused[0]["attributes"];
+    assert_eq!((a["route"].as_str(), a["node"].as_str(), a["fabric_primary"].as_str()), (Some("build.create"), Some("mesh1.admin.2"), Some("mesh1.admin.1")), "the reject span names the call, the refusing admin and the fabric-primary it named: {}", refused[0]);
+    for door in ["rdm.node_admin.build.create.via-node-rpc", "rdm.node_admin.build.update.via-node-rpc"] {
+        assert!(spans_named(&spans, door).is_empty(), "nothing was admitted: no {door} span: {spans:?}");
+    }
 }
