@@ -13,7 +13,7 @@ fn read(spans: &[Value]) -> BTreeSet<(String, String)> {
 }
 
 /// CONTRACT (rdm-crate-and-test-layout.md §3, "One binary is one process": a test captures tracing
-/// with a thread-scoped `set_default`, never `set_global_default` or a telemetry `init`; the
+/// with a thread-scoped `set_default`, never a process-wide default or a telemetry `init`; the
 /// provider's owner flushes then shuts it down in its own Drop): two cells capture at once in one
 /// process. Each reads back exactly the spans its own threads opened (one on the cell's thread, one
 /// on a worker of its runtime), from a file of its own. A thread of neither cell has no default
