@@ -74,20 +74,17 @@ impl EvidenceCapture {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         crate::enable_callsites();
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let _ = n;
-        let path = dir.join(format!("{service}.{}.spans.jsonl", crate::process_tag()));
+        let path = dir.join(format!("{service}.{}.{n}.spans.jsonl", crate::process_tag()));
         let evidence = SharedEvidence(Arc::new(span_processor("evidence", crate::JsonlSpanExporter::create_at(&path, service)?)));
         let loss = evidence.0.loss();
         let mut resource = crate::build_resource(service);
         resource = resource.merge(&opentelemetry_sdk::Resource::new([opentelemetry::KeyValue::new("rafka.evidence_file", path.display().to_string())]));
         let mut builder = TracerProvider::builder().with_resource(resource).with_span_processor(evidence.clone());
-        let _ = otlp_endpoint;
-        if let Some(endpoint) = None::<&str> {
+        if let Some(endpoint) = otlp_endpoint {
             builder = builder.with_span_processor(span_processor("otlp", crate::build_exporter(endpoint.to_string())));
         }
         let provider = builder.build();
         let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(span_export_layer(&provider, service)));
-        let _ = tracing::dispatcher::set_global_default(dispatch.clone());
         let default = tracing::dispatcher::set_default(&dispatch);
         Ok(Self { provider, evidence, loss, path, dispatch, _default: default })
     }
