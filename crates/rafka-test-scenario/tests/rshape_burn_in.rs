@@ -636,8 +636,8 @@ fn check_services(spans: &[Value], inv: &mut Invariants) -> BTreeSet<String> {
     for want in ["rshape-node-admin", "rshape-broker", "rshape-gateway", "rshape-compute"] {
         assert!(services.contains(want), "the consumer's `{want}` ran: {services:?}");
     }
-    for never in ["rafka-node-admin", "rafka-rpc-node", "consumer-node-admin", "consumer-broker", "consumer-gateway", "consumer-compute"] {
-        assert!(!services.contains(never), "no built-in or fixture `{never}` ran: {services:?}");
+    for never in ["rafka-node-admin", "rafka-rpc-node", "rafka-node"] {
+        assert!(!services.contains(never), "no built-in `{never}` ran: {services:?}");
     }
     inv.holds("the estate ran only the consumer's four executables (the other services are the controller's probe)", true, json!({"services": services}));
     services

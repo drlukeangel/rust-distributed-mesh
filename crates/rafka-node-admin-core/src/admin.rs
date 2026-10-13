@@ -3696,13 +3696,14 @@ impl AdminRunner {
                 tracing::info!(launch_id = %r.launch_id, executable = %r.executable.display(), sha256 = %r.sha256, candidate = %r.candidate.sha, "launching from the explicit executable binding");
                 r.executable
             }
+            // The built-in set: the node-admin, and the one node executable every other node_type
+            // runs, taking its node_type from the launch (rafka-node-base `run_launched`). The rpc
+            // node is the testkit's proof node: the proof protocols on top of the node runtime.
             None => {
                 let name = match kind {
-                    NodeKind::RpcNode => "rafka-rpc-node",
-                    NodeKind::Broker => "rafka-broker",
-                    NodeKind::Gateway => "rafka-gateway",
-                    NodeKind::Compute => "rafka-compute",
                     NodeKind::NodeAdmin => "rafka-node-admin",
+                    NodeKind::RpcNode => "rafka-rpc-node",
+                    _ => "rafka-node",
                 };
                 self.bin_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
             }
