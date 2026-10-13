@@ -620,13 +620,21 @@ pub enum RecoveryNotRun {
 /// "one attempt in flight per mesh"). An attempt with no verdict (its run refused or broken) keeps
 /// the mesh held, named in the error.
 pub async fn run_recovery(control: &crate::http::ControlPlane, door: &RunDoor, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovered, RecoveryNotRun> {
-    let mesh = path.mesh.clone();
-    let opened = match control.open_recovery(route, path, node_id, incarnation).await {
-        Ok(crate::http::Recovery::Opened(o)) => o,
-        Ok(crate::http::Recovery::AlreadyApplied(o)) => return Ok(Recovered::AlreadyApplied(o)),
-        Err(r) => return Err(RecoveryNotRun::Refused(r)),
-    };
+    match control.open_recovery(route, path, node_id, incarnation).await {
+        Ok(crate::http::Recovery::Opened(o)) => run_opened_recovery(control, door, o).await,
+        Ok(crate::http::Recovery::AlreadyApplied(o)) => Ok(Recovered::AlreadyApplied(o)),
+        Err(r) => Err(RecoveryNotRun::Refused(r)),
+    }
+}
+
+/// The run of the recovery attempt `opened`, which `control` opened and claimed in its mesh's lane
+/// ([`run_recovery`] after the open): planned from the lane's receipts, run through `door`, followed
+/// to its terminal, and the mesh's in-flight row released at the verdict.
+pub async fn run_opened_recovery(control: &crate::http::ControlPlane, door: &RunDoor, opened: crate::http::Opened) -> Result<Recovered, RecoveryNotRun> {
     let lane = opened.mesh.as_deref();
+    let Some(mesh) = opened.mesh.clone() else {
+        return Err(RecoveryNotRun::Broke { why: format!("{}: attempt {} of {} is a fabric-lane attempt: a recovery runs in its mesh's drift lane", door.me, opened.attempt, opened.build_id), opened });
+    };
     let p = match control.builds.read_build(&opened.build_id).await {
         Ok(p) => p.in_lane(lane),
         Err(e) => return Err(RecoveryNotRun::Broke { why: format!("{}: Build {} could not be read to plan attempt {} of mesh {mesh}'s lane: {e}; the attempt holds mesh {mesh}", door.me, opened.build_id, opened.attempt), opened }),

@@ -71,7 +71,8 @@ impl Loopback {
         self.lost.lock().unwrap().insert(executor.to_string());
     }
 
-    fn door(&self, executor: &PathName) -> Arc<RunDoor> {
+    /// `executor`'s own door for `build.attempt.run`: its view, its runner, the fixture's log or its own.
+    pub fn door(&self, executor: &PathName) -> Arc<RunDoor> {
         self.doors
             .lock()
             .unwrap()
