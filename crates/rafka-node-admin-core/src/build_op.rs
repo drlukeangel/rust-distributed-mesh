@@ -217,7 +217,7 @@ impl BuildDoor {
                             BuildReply::NotFabricPrimary { fabric_primary } => fabric_primary.clone().unwrap_or_default(),
                             _ => String::new(),
                         };
-                        tracing::info_span!("rdm.node_admin.build.reject.via-not-authority", route, node = %self.me, fabric_primary = %named)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", route, node = %self.me, fabric_primary = %named)
                             .in_scope(|| tracing::info!("a Build call is answered only by the fabric-primary"));
                         return Ok(refusal);
                     }
