@@ -21,6 +21,7 @@ use rafka_node_rpc::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, Resol
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_testkit::proof_store::{ProofReply, ProofRequest, ProofStore};
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 struct Args {
@@ -144,7 +145,7 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
     let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
     let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
+    for n in resolved(&view)? {
         resolver.insert(n);
     }
     let ep = bind_endpoint().await?;
@@ -181,21 +182,51 @@ fn target(spec: &str) -> Result<NodeTarget, String> {
 }
 
 /// Every node in the admin's view that can be dialled.
-fn resolved(view: &Value) -> Vec<ResolvedNode> {
-    view["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|n| {
-            Some(ResolvedNode {
-                node_id: NodeId::parse(n["node_id"].as_str()?).ok()?,
-                name: n["name"].as_str()?.parse().ok()?,
-                endpoint_id: n["endpoint_id"].as_str()?.parse().ok()?,
-                transport_addr: n["transport_addr"].as_str()?.parse().ok()?,
-                incarnation: IncarnationId::parse(n["incarnation_id"].as_str()?).ok()?,
-            })
-        })
-        .collect()
+///
+/// A node the admin holds with no endpoint, address or incarnation yet (`None`: created, not born) is not
+/// dialable and is left out, as an event naming it and the field it lacks. Any value that is present and
+/// is not what the field holds (a missing key, a non-string, a string that does not parse) refuses the
+/// whole call naming the node, the field, the value and the parse error: a reader that does not
+/// recognise a value never drops it.
+fn resolved(view: &Value) -> Result<Vec<ResolvedNode>, String> {
+    let entries = view["nodes"].as_array().ok_or_else(|| format!("the admin's node view holds no nodes array: nodes is {}", view["nodes"]))?;
+    let mut out = Vec::new();
+    for (at, n) in entries.iter().enumerate() {
+        let node_id_text = n["node_id"].as_str().ok_or_else(|| format!("view entry #{at}: node_id is {}, not a string", n["node_id"]))?;
+        let node_id = NodeId::parse(node_id_text).map_err(|e| format!("view entry #{at}: node_id {node_id_text:?} does not parse: {e}"))?;
+        let name = required(n, node_id_text, "name", |v| v.parse::<PathName>())?;
+        let endpoint_id = optional(n, node_id_text, "endpoint_id", |v| v.parse::<iroh::PublicKey>())?;
+        let transport_addr = optional(n, node_id_text, "transport_addr", |v| v.parse::<SocketAddr>())?;
+        let incarnation = optional(n, node_id_text, "incarnation_id", IncarnationId::parse)?;
+        match (endpoint_id, transport_addr, incarnation) {
+            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { node_id, name, endpoint_id, transport_addr, incarnation }),
+            (endpoint_id, transport_addr, incarnation) => {
+                let absent: Vec<&str> = [(endpoint_id.is_none(), "endpoint_id"), (transport_addr.is_none(), "transport_addr"), (incarnation.is_none(), "incarnation_id")]
+                    .into_iter()
+                    .filter_map(|(is_absent, field)| is_absent.then_some(field))
+                    .collect();
+                tracing::info!(node_id = node_id_text, node = %name, absent = absent.join(","), "the admin's view holds this node with no value yet for these fields: it cannot be dialled");
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A view entry's field that must be a string `parse` reads, refused by name when it is missing, is not a
+/// string, or does not parse.
+fn required<T, E: std::fmt::Display>(entry: &Value, node: &str, field: &str, parse: impl Fn(&str) -> Result<T, E>) -> Result<T, String> {
+    optional(entry, node, field, parse)?.ok_or_else(|| format!("view entry {node}: {field} is null where a value is required"))
+}
+
+/// A view entry's field the admin holds as `Option`: `null` is "no value yet" (`None`); a missing key, a
+/// non-string or a string `parse` refuses is refused by name.
+fn optional<T, E: std::fmt::Display>(entry: &Value, node: &str, field: &str, parse: impl Fn(&str) -> Result<T, E>) -> Result<Option<T>, String> {
+    match entry.get(field) {
+        None => Err(format!("view entry {node}: {field} is missing")),
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(v)) => parse(v).map(Some).map_err(|e| format!("view entry {node}: {field} {v:?} does not parse: {e}")),
+        Some(other) => Err(format!("view entry {node}: {field} is {other}, not a string")),
+    }
 }
 
 fn request(a: &Args) -> Result<ProofRequest, String> {
@@ -259,7 +290,7 @@ async fn run(a: Args) -> Result<Value, String> {
     let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
     let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
     let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
+    for n in resolved(&view)? {
         resolver.insert(n);
     }
     let ep = bind_endpoint().await?;
@@ -362,7 +393,7 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
     let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
     let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
+    for n in resolved(&view)? {
         resolver.insert(n);
     }
     let ep = bind_endpoint().await?;
@@ -433,7 +464,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
     let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
     let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
+    for n in resolved(&view)? {
         resolver.insert(n);
     }
     let ep = bind_endpoint().await?;
@@ -490,7 +521,7 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
     let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
     let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
+    for n in resolved(&view)? {
         resolver.insert(n);
     }
     let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))?;
@@ -522,4 +553,113 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     };
     client.endpoint().close().await;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved;
+    use rafka_mesh_entity::{IncarnationId, NodeId};
+    use rafka_node_admin_core::model::Node;
+    use serde_json::{json, Value};
+
+    fn entry() -> Value {
+        json!({
+            "node_id": NodeId::mint().to_string(),
+            "name": "mesh1.rpc.1",
+            "endpoint_id": iroh::SecretKey::generate().public().to_string(),
+            "transport_addr": "127.0.0.1:9",
+            "incarnation_id": IncarnationId::mint().to_string(),
+        })
+    }
+
+    fn view_with(mutate: impl FnOnce(&mut Value)) -> (Value, String) {
+        let mut e = entry();
+        mutate(&mut e);
+        let id = e["node_id"].as_str().unwrap_or_default().to_string();
+        (json!({ "nodes": [entry(), e] }), id)
+    }
+
+    /// CONTRACT: a view whose entries are all readable resolves every one of them, in order.
+    #[test]
+    fn view_with_readable_entries_resolves_each() {
+        let view = json!({ "nodes": [entry(), entry()] });
+        assert_eq!(resolved(&view).unwrap().len(), 2);
+    }
+
+    /// CONTRACT: an entry holding a string its field's type does not parse refuses the whole call, and the
+    /// refusal names the entry's node id, the field, the value and the parse error. What must NOT happen:
+    /// the entry vanishing while the readable ones resolve.
+    #[test]
+    fn view_entry_with_unparseable_field_refuses_naming_node_field_value_and_error() {
+        for (field, bad) in [
+            ("name", "not a path name"),
+            ("endpoint_id", "not-an-endpoint-id"),
+            ("transport_addr", "not-an-address"),
+            ("incarnation_id", "deadbeef01234567"),
+        ] {
+            let (view, node) = view_with(|e| e[field] = json!(bad));
+            let err = resolved(&view).unwrap_err();
+            assert!(err.contains(&node) && err.contains(field) && err.contains(&format!("{bad:?}")) && err.contains("does not parse: "), "{field}: {err}");
+        }
+    }
+
+    /// CONTRACT: a node id that does not parse refuses the call naming its position in the view, the field
+    /// and the value, because no node id is left to name it by.
+    #[test]
+    fn view_entry_with_unparseable_node_id_refuses_naming_position_and_value() {
+        let (view, _) = view_with(|e| e["node_id"] = json!("not-a-node-id"));
+        let err = resolved(&view).unwrap_err();
+        assert!(err.contains("view entry #1") && err.contains("node_id") && err.contains("\"not-a-node-id\"") && err.contains("does not parse: "), "{err}");
+    }
+
+    /// CONTRACT: a field the entry lacks, or holds as something other than a string, refuses the call
+    /// naming the node and the field.
+    #[test]
+    fn view_entry_with_missing_or_non_string_field_refuses_naming_node_and_field() {
+        for field in ["name", "endpoint_id", "transport_addr", "incarnation_id"] {
+            let (view, node) = view_with(|e| {
+                e.as_object_mut().unwrap().remove(field);
+            });
+            let err = resolved(&view).unwrap_err();
+            assert!(err.contains(&node) && err.contains(field) && err.contains("is missing"), "{field}: {err}");
+            let (view, node) = view_with(|e| e[field] = json!(7));
+            let err = resolved(&view).unwrap_err();
+            assert!(err.contains(&node) && err.contains(field) && err.contains("not a string"), "{field}: {err}");
+        }
+        let (view, node) = view_with(|e| e["name"] = Value::Null);
+        let err = resolved(&view).unwrap_err();
+        assert!(err.contains(&node) && err.contains("name") && err.contains("null"), "{err}");
+    }
+
+    /// CONTRACT: a view with no nodes array is refused naming what `nodes` held.
+    #[test]
+    fn view_without_a_nodes_array_refuses_naming_what_it_held() {
+        let err = resolved(&json!({ "nodes": "none" })).unwrap_err();
+        assert!(err.contains("nodes array") && err.contains("\"none\""), "{err}");
+        assert!(resolved(&json!({})).unwrap_err().contains("null"));
+    }
+
+    /// CONTRACT: a node the admin holds as allocated and not yet born (the admin's own `Node::allocated`
+    /// serialised: endpoint, address and incarnation all `null`) is not dialable and is left out; it does
+    /// not refuse the call, and the readable nodes beside it still resolve.
+    #[test]
+    fn view_with_an_unborn_node_leaves_it_out_and_resolves_the_rest() {
+        let unborn = serde_json::to_value(Node::allocated("mesh1.rpc.2".parse().unwrap())).unwrap();
+        assert!(unborn["endpoint_id"].is_null() && unborn["transport_addr"].is_null() && unborn["incarnation_id"].is_null(), "{unborn}");
+        let readable = entry();
+        let nodes = resolved(&json!({ "nodes": [unborn, readable.clone()] })).unwrap();
+        assert_eq!(nodes.iter().map(|n| n.node_id.to_string()).collect::<Vec<_>>(), vec![readable["node_id"].as_str().unwrap().to_string()]);
+    }
+
+    /// CONTRACT: an absent value beside an unreadable one does not hide it: an entry with a `null` endpoint
+    /// and an incarnation that does not parse still refuses.
+    #[test]
+    fn view_entry_with_a_null_field_and_an_unparseable_one_refuses() {
+        let (view, node) = view_with(|e| {
+            e["endpoint_id"] = Value::Null;
+            e["incarnation_id"] = json!("deadbeef01234567");
+        });
+        let err = resolved(&view).unwrap_err();
+        assert!(err.contains(&node) && err.contains("incarnation_id"), "{err}");
+    }
 }
