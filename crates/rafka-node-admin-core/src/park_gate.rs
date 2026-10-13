@@ -262,8 +262,9 @@ mod tests {
 
     /// CONTRACT: a task behind a parked gate makes no progress and keeps its place; the same task
     /// resumes where it was when the gate opens. What must NOT happen: a parked task that keeps
-    /// running, or one that starts over.
-    #[tokio::test]
+    /// running, or one that starts over. On the paused clock: the tick at 30 ms and the park at 45 ms fire
+    /// in deadline order, never as one timer turn whose wakes the scheduler orders.
+    #[tokio::test(start_paused = true)]
     async fn a_parked_task_holds_its_place_and_resumes_from_it() {
         let gate = ParkGate::new();
         let ticks = Arc::new(AtomicU64::new(0));
