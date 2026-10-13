@@ -5,7 +5,7 @@
 //!   (no 32-char hex product id), every admin names the same Fabric id, and a
 //!   node's transport identity is never its product identity;
 //! - a node's incarnation and a Build's id are canonical Crockford ids too (R-BI5: one id type,
-//!   never hex), and the Digest a peer hears from a restarted birth names its incarnation as one;
+//!   never hex), and the Digest a peer mesh's admin hears from a restarted birth names its incarnation and node as such;
 //! - every birth's ready span names its node, mesh and fabric ids with
 //!   `id_format = "crockford60"`, equal to the views';
 //! - a restart keeps NodeId and FabricId under a new incarnation, and a second restart of the
@@ -177,12 +177,15 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
         assert_eq!(s(&a["mesh_id"]), mesh_ids[&s(&n["mesh"])]);
     }
 
-    // The Digest a peer heard from the restarted birth names its incarnation as a Crockford id.
-    let heard = named(&spans, "rdm.mesh.membership.update.via-node-started")
+    // The Digest a peer mesh's admin heard from the restarted birth (membership.rs `note_member_state`:
+    // `via-member-state`, one span per state change of a peer mesh's member) names its incarnation
+    // and its node as Crockford ids, and they are the ids the views show.
+    let heard = named(&spans, "rdm.mesh.membership.update.via-member-state")
         .into_iter()
-        .find(|sp| sp["attributes"]["incarnation_id"] == after["incarnation_id"])
-        .unwrap_or_else(|| panic!("no peer heard the Digest of the restarted birth {}", after["incarnation_id"]));
+        .find(|sp| sp["attributes"]["member"] == "mesh2.rpc.2" && sp["attributes"]["incarnation_id"] == after["incarnation_id"] && s(&sp["attributes"]["node"]).starts_with("mesh1."))
+        .unwrap_or_else(|| panic!("no mesh1 admin heard the Digest of the restarted birth {}", after["incarnation_id"]));
     canonical("heard Digest incarnation_id", &heard["attributes"]["incarnation_id"]);
+    assert_eq!(canonical("heard Digest member_id", &heard["attributes"]["member_id"]), s(&before["node_id"]), "the Digest names the node the views show");
 
     // The removed mesh2's last admin published MeshStatus Dead while it lived, and it left with MeshLeft;
     // after that nothing publishes mesh2 Dead: the recreated mesh2's primary authors its new mesh's own
