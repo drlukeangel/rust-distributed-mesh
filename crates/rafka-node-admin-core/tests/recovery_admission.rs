@@ -585,3 +585,33 @@ async fn a_mesh_primary_runs_its_members_recovery_to_complete_and_its_mesh_admit
         }
     }
 }
+
+/// CONTRACT (build.md §1 as R-BI7 moves it: "one attempt in flight per mesh; a second
+/// topology-changing request is still refused fabric-wide while a topology Build is in progress"):
+/// mesh2's mesh-primary opens its member's recovery in mesh2's lane of the current Build, and its
+/// node.create has put a new node at the path (live in the fabric-primary's view) while the attempt
+/// is still open. The fabric-primary then accepts a node.create in mesh1, a new topology Build whose
+/// plan touches no mesh an attempt holds; from then on it is the current Build (the LIFO read answers
+/// the newest Build in progress, R-BI3), and a second node.create submitted while it is in progress is
+/// refused build-in-progress naming it. Must NOT happen: the second change admitted as a third Build
+/// because the current read still answers the recovery's Build, whose fabric lane is complete.
+#[tokio::test]
+async fn a_topology_change_accepted_while_a_recovery_runs_is_the_current_build_and_a_second_change_waits_for_it() {
+    let (fp, mp, builds, path, node_id, birth) = fabric_of_two_meshes().await;
+    let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
+    let Ok(Recovery::Opened(recovery)) = mp.open_recovery("node-recovery", path.clone(), node_id, birth).await else { panic!("mesh2's mesh-primary opens its member's recovery") };
+    assert_eq!((recovery.build_id.clone(), recovery.mesh.as_deref()), (b0.clone(), Some("mesh2")));
+    // The recovery's node.create put a new node at the path; its node.update is still to run.
+    fp.topology.write().await.nodes.iter_mut().filter(|n| n.name == path).for_each(|n| {
+        n.node_id = NodeId::mint();
+        n.incarnation_id = Some(IncarnationId::mint());
+        n.status = NodeStatus::ReadyForTraffic;
+    });
+    let create = fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await.expect("a topology change that touches no held mesh is admitted while a recovery runs in another mesh");
+    assert_ne!(create.build_id, b0, "a new topology Build");
+    assert_eq!(builds.current().await.unwrap().map(|b| b.build_id), Some(create.build_id.clone()), "the newest Build in progress is the current one");
+    match fp.submit("build.create", TopologyChange::AddNode { mesh: "mesh1".into(), node_kind: NodeKind::RpcNode }).await {
+        Err(Refusal::BuildInProgress(held)) => assert_eq!(held.current_build_id, create.build_id, "refused naming the topology Build in progress: {held:?}"),
+        other => panic!("a second topology change waits for the one in progress: {other:?}"),
+    }
+}

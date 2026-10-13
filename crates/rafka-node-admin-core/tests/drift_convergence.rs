@@ -402,7 +402,7 @@ impl Estate {
             topology: self.view.clone(),
             builds: self.builds.clone(),
             contexts: Arc::new(rafka_node_admin_core::build_claim::AttemptContexts::in_memory()),
-            claims: Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory()),
+            claims: self.claims.clone(),
         });
         Arc::new(DriveEnv {
             me: primary.clone(),
@@ -1021,6 +1021,46 @@ async fn a_secondary_node_admin_known_only_by_its_durable_row_is_recovered_by_it
 /// Two openers of one attempt number: the requested attempt (REST) and the proven-drift pass read the
 /// same settled Build, so both compute the next attempt as `k + 1`. The first append takes the number;
 /// the loser is told by name, never acknowledged for an attempt that carries someone else's action.
+/// CONTRACT (R-BI7 caveat 3: "A topology Build's operation on mesh X and mesh X's own drift attempt
+/// cannot both be open: whichever claims first on mesh X's rows wins, the other is refused
+/// build-in-progress naming the holder"): a member of mesh1 has exited when the fabric-primary
+/// accepts a node.create in mesh2; that Build's plan also repairs mesh1's unheard path, first, and it
+/// is not claimed yet when mesh1's primary opens and claims its member's recovery in mesh1's lane. The
+/// fabric-primary's drive then claims nothing in mesh1: its pass stalls naming mesh1 and the
+/// mesh-primary holding it, and nothing is dispatched. Once the mesh-primary's run reaches its verdict
+/// and releases mesh1, the fabric-primary's next pass claims what is left (the node.create in mesh2,
+/// the lost path being live again) and the Build completes. Must NOT happen: the lost path created
+/// twice, an operation dispatched in mesh1 while the recovery holds it, or the drive still held after
+/// the release.
+#[tokio::test]
+async fn a_topology_build_claims_nothing_in_a_mesh_its_recovery_holds_and_runs_once_the_recovery_releases_it() {
+    let e = estate().await;
+    let path = "mesh1.rpc.2";
+    e.world.kill(&e.node_id(path).await);
+    e.unheard(&[path]).await;
+    let mp = e.mesh_primary_of(path).await;
+    let fp = e.fabric_primary().await;
+    let create = e.door_at(&fp).await.submit("build.create", rafka_node_admin_core::accepted::TopologyChange::AddNode { mesh: "mesh2".into(), node_kind: NodeKind::RpcNode }).await.expect("the node.create is accepted: no attempt holds a mesh yet");
+    let Ok(rafka_node_admin_core::http::Recovery::Opened(recovery)) = e.submit_recovery(path).await else { panic!("mesh1's primary opens its member's recovery: the node.create's attempt is not claimed") };
+    assert_eq!((recovery.build_id.clone(), recovery.mesh.as_deref()), (create.build_id.clone(), Some("mesh1")), "the recovery is an attempt of the current Build, in mesh1's lane");
+    match e.drive_once().await {
+        DriveEnd::Stalled(why) => assert!(why.contains("mesh mesh1") && why.contains(&mp) && why.contains("one attempt in flight per mesh"), "the stall names mesh1 and its holder: {why}"),
+        other => panic!("nothing is claimed in mesh1 while its recovery holds it: {other:?}"),
+    }
+    assert!(e.dispatch.dispatched.lock().unwrap().is_empty(), "nothing is dispatched while the recovery holds mesh1");
+    let terminal = e.run_opened(&mp, recovery.clone()).await;
+    assert_eq!(terminal, rafka_node_rpc_contract::build::BuildReply::Complete { build_id: recovery.build_id.to_string(), attempt: recovery.attempt }, "the recovery ran to its verdict");
+    e.converge().await;
+    let after = e.builds.read_build(&create.build_id).await.unwrap();
+    assert_eq!(after.state, BuildState::Complete, "the node.create ran once the recovery released mesh1: {after:?}");
+    assert_eq!(e.born().iter().filter(|b| b.as_str() == path).count(), 1, "the lost path is created once, by its recovery: {:?}", e.born());
+    assert_eq!(e.born().len(), 2, "and the node.create its new path: {:?}", e.born());
+    let v = e.view.read().await;
+    for p in after.topology.meshes.values().flat_map(|m| m.nodes.iter()) {
+        assert_eq!(v.nodes.iter().filter(|n| n.name == *p && n.status.is_live()).count(), 1, "{p}: one live birth of every accepted path");
+    }
+}
+
 mod one_attempt_number {
     use super::*;
     use axum::response::IntoResponse;
