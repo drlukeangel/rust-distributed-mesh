@@ -205,6 +205,9 @@ async fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignor
     let late_delta = Frame::MembersDelta { mesh: "mesh1".into(), source_publisher: pub1.clone(), base_version: pred_version, topology_version: pred_version + 1, published_at_rafka_ms: pred_stamp, changed: vec![], removed: vec![rpc1.node.node_id.to_string()], in_flight: vec![], departed: vec![] };
     let late_stop = StatusEvent::Stopped.frame(op_of(&rpc4, "stop-node"), pub2.clone(), deleting_version - 1);
     let late_heartbeat = Frame::Digest { digest: with_seq(&rpc2, 3) };
+    // The cell's story starts here: an ignore before this instant is gossip's own reordering during setup
+    // (a resend of a version the member already holds under a later stamp), not one of the late frames.
+    let late_from = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     m1.forward(&late_full).await.unwrap();
     m1.forward(&late_delta).await.unwrap();
     m2.forward(&late_stop).await.unwrap();
@@ -226,7 +229,7 @@ async fn a_frame_published_before_what_the_receiver_holds_of_its_source_is_ignor
     drop(telemetry);
     let spans = spans_of(&dir);
     let at = |name: &str, node: &str| -> Vec<&Value> { spans.iter().filter(|s| s["name"] == name && attr(s, "node") == node).collect() };
-    let ignored = at("rdm.mesh.membership.reject.via-earlier-version", "mesh1.rpc.1");
+    let ignored: Vec<&Value> = at("rdm.mesh.membership.reject.via-earlier-version", "mesh1.rpc.1").into_iter().filter(|s| s["start_unix_nano"].as_u64().is_some_and(|t| t >= late_from)).collect();
     let mut said: Vec<(String, String, String, String, String)> = ignored.iter().map(|s| (attr(s, "channel"), attr(s, "frame"), attr(s, "source"), attr(s, "held"), attr(s, "offered"))).collect();
     let birth = |d: &MeshDigest| format!("{}/{}", d.node.node_id, d.node.incarnation.as_str());
     let mut expected = vec![
