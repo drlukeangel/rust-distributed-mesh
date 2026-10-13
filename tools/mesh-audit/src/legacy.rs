@@ -193,8 +193,8 @@ fn walk(dir: &Path, f: &mut dyn FnMut(&Path)) {
     }
 }
 
-/// A legacy role named as a whole word (`broker`, `rafka-broker`, `Broker`)
-/// in a proof-shape declaration is a violation.
+/// A legacy binary named as a whole word (`bridge`, `Bridge`) in a proof-shape
+/// declaration is a violation.
 pub fn scan_proof_shape_text(file: &Path, text: &str) -> Vec<Violation> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {

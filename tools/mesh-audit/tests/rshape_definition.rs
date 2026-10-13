@@ -344,7 +344,7 @@ fn rshape_consumer_imports_exact_candidate_without_private_paths() {
     plant("rshape-consumer-path-dependency", "a path dependency into the checkout", check_manifest(&toml.replace(&dep, "rafka-node-base = { path = \"../../crates/rafka-node-base\" }")).0);
     plant("rshape-consumer-patch-or-replace", "a [patch] shortcut", check_manifest(&format!("{toml}\n[patch.\"{RDM_URL}\"]\nrafka-node-base = {{ path = \"/x\" }}\n")).0);
     plant("rshape-consumer-floating-dependency", "a branch dependency", check_manifest(&toml.replace(&format!("rev = \"{rev}\""), "branch = \"main\"")).0);
-    plant("rshape-consumer-business-dependency", "a Rafka business crate", check_manifest(&toml.replace("[dependencies]\n", &format!("[dependencies]\nrafka-gateway = {{ git = \"{RDM_URL}\", rev = \"{rev}\" }}\n"))).0);
+    plant("rshape-consumer-business-dependency", "a Rafka business crate", check_manifest(&toml.replace("[dependencies]\n", &format!("[dependencies]\nrafka-entity-topics-record = {{ git = \"{RDM_URL}\", rev = \"{rev}\" }}\n"))).0);
     plant("rshape-consumer-wrong-source", "a foreign git source", check_manifest(&toml.replace(RDM_URL, "https://github.com/drlukeangel/rafka-v2")).0);
     plant("rshape-consumer-mixed-revs", "two different revs", check_manifest(&toml.replacen(&rev, &"1".repeat(40), 1)).0);
     plant("rshape-consumer-not-own-workspace", "no [workspace] table", check_manifest(&toml.replace("[workspace]", "")).0);

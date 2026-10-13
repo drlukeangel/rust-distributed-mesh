@@ -84,7 +84,7 @@ pub fn candidate_sha() -> String {
 /// ([`crate::estate::binary_is_fresh`]): a stale one is refused by name with its rebuild command.
 pub fn executable_in(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let p = dir.join(name);
-    assert!(p.exists(), "RED: executable `{name}` is not built at {} (cargo build -p rafka-node-rpc-testkit --bins)", p.display());
+    assert!(p.exists(), "RED: executable `{name}` is not built at {} (cargo build -p {} --bins)", p.display(), crate::estate::package_of(name));
     if let Err(why) = crate::estate::binary_is_fresh(name, &p) {
         panic!("{why}");
     }
@@ -105,16 +105,15 @@ pub fn binding_set(sha: &str) -> BindingSet {
     }
 }
 
-/// [`binding_set`] with the product role executables bound too: the broker, gateway and compute
-/// binaries the node base builds, launched as `broker`, `gateway` and `compute`.
+/// [`binding_set`] with the launch ids `broker`, `gateway` and `compute` bound too, each to the one
+/// node executable the node base builds (`rafka-node`), which takes its node_type from the launch.
 pub fn binding_set_with_roles(sha: &str) -> BindingSet {
     let mut set = binding_set(sha);
+    let path = executable_in(&bin_dir(), "rafka-node");
+    let sha256 = sha256_file(&path).unwrap();
     for role in ["broker", "gateway", "compute"] {
-        let path = bin_dir().join(format!("rafka-{role}"));
-        assert!(path.exists(), "RED: executable `rafka-{role}` is not built at {} (cargo build -p rafka-broker -p rafka-gateway -p rafka-compute)", path.display());
-        let path = path.canonicalize().unwrap();
         set.launch_ids.push(role.into());
-        set.bindings.push(Binding { launch_id: role.into(), sha256: sha256_file(&path).unwrap(), executable: path, image: None });
+        set.bindings.push(Binding { launch_id: role.into(), sha256: sha256.clone(), executable: path.clone(), image: None });
     }
     set
 }

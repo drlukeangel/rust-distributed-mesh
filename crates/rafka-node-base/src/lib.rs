@@ -9,8 +9,9 @@
 //! - the node's lifecycle as every Mesh node has it: born from node-admin's launch, published
 //!   with its RuntimeFact, declaring its state to its authority, drained and stopped on signal.
 //!
-//! The base carries no application knowledge. A role (`broker`, `gateway`, `compute`,
-//! `registry`) is a `NodeKind` the product names, the families it serves, and nothing else.
+//! The base carries no application knowledge. A role is the node_type its launch names (the
+//! `NodeKind` of its path.name), the families it serves, and nothing else. The one node executable
+//! (`rafka-node`, `src/bin/rafka_node.rs`) runs every node_type but `node_admin` from that launch.
 #![deny(missing_docs)]
 
 
@@ -57,6 +58,11 @@ pub struct Role {
 }
 
 impl Role {
+    /// The role `launch` names: the kind of its path.name, the node_type node-admin launched it as.
+    pub fn of(launch: &Launch) -> Self {
+        Self { kind: launch.name.kind }
+    }
+
     /// The broker role: kind `Broker`.
     pub fn broker() -> Self {
         Self { kind: NodeKind::Broker }
@@ -80,10 +86,15 @@ impl Role {
     }
 }
 
-/// A process's launch, as node-admin handed it (`Launch::from_env`), refused by name when the
-/// path's kind is not this role's.
+/// A process's launch, as node-admin handed it (`Launch::from_env`); a launch that is absent or
+/// malformed is refused by name.
+pub fn read_launch() -> Result<Launch> {
+    Launch::from_env(|k| std::env::var(k).ok()).map_err(|e| anyhow!("refusing to start: {e}"))
+}
+
+/// [`read_launch`], refused by name when the path's kind is not this role's.
 pub fn launch_for(role: Role) -> Result<Launch> {
-    let launch = Launch::from_env(|k| std::env::var(k).ok()).map_err(|e| anyhow!("refusing to start: {e}"))?;
+    let launch = read_launch()?;
     if launch.name.kind != role.kind {
         return Err(anyhow!("refusing to start: launched as {} but this executable is a {}", launch.name, role.name()));
     }
@@ -122,8 +133,21 @@ impl Oracles {
     }
 }
 
+/// The file name of the executable this process runs, as its telemetry service and its boot span
+/// name it; refused by name when the process cannot read its own executable path.
+pub fn executable_name() -> Result<String> {
+    let exe = std::env::current_exe().map_err(|e| anyhow!("refusing to start: this process cannot read its own executable path: {e}"))?;
+    exe.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| anyhow!("refusing to start: the executable path {} names no file", exe.display()))
+}
+
+/// The one node executable's run: the role is the node_type its launch names ([`Role::of`]), and
+/// the process runs it to completion as [`run`] does. Every node_type but `node_admin` runs this.
+pub async fn run_launched() -> Result<()> {
+    run(Role::of(&read_launch()?)).await
+}
+
 /// Run a role process to completion: boot as `launch` says, serve, wait for the stop signal (or
-/// the mesh transport stopping for good), drain, leave. Every role binary is this call.
+/// the mesh transport stopping for good), then `node.connections.delete` and leave.
 pub async fn run(role: Role) -> Result<()> {
     run_with(role, rafka_node_rpc_testkit::app_hydration::Hydration::none(), |b| b).await
 }
@@ -135,7 +159,8 @@ pub async fn run(role: Role) -> Result<()> {
 pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydration::Hydration, serve_app: impl FnOnce(ServerBuilder) -> ServerBuilder) -> Result<()> {
     // A stop that arrives while the node boots is heard from here on.
     rafka_node_rpc_testkit::node::listen_for_stop();
-    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&format!("rafka-{}", role.name()));
+    let executable = executable_name()?;
+    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(&executable);
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
@@ -143,6 +168,7 @@ pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydrati
         node_id = %launch.node_id,
         incarnation_id = %launch.incarnation,
         kind = role.name(),
+        executable = %executable,
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
         rafka_mesh_telemetry::set_parent(&boot, &tp);
@@ -173,9 +199,8 @@ pub async fn run_with(role: Role, hydration: rafka_node_rpc_testkit::app_hydrati
     boot.in_scope(|| tracing::info!(served, kind = role.name(), "role process serving on the imported substrate"));
     drop(boot);
     println!("RDM_NODE_READY {}", launch.node_id);
-    let binary = format!("rafka-{}", role.name());
     let ended = tokio::select! {
-        () = rafka_node_rpc_testkit::node::wait_for_signal(&binary) => None,
+        () = rafka_node_rpc_testkit::node::wait_for_signal(&executable) => None,
         why = running.hydration_failed() => Some(why),
     };
     if let Some(why) = ended {

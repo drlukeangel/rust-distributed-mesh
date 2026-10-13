@@ -307,13 +307,11 @@ pub fn binary(name: &str) -> PathBuf {
 }
 
 /// The package that builds `name`, for the rebuild command a refusal names.
-fn package_of(name: &str) -> &'static str {
+pub(crate) fn package_of(name: &str) -> &'static str {
     match name {
         "rafka-node-admin" => "rafka-node-admin-core",
         "rafka-rpc-probe" | "rafka-rpc-node" | "faulted-node-admin" => "rafka-node-rpc-testkit",
-        "rafka-broker" => "rafka-broker",
-        "rafka-gateway" => "rafka-gateway",
-        "rafka-compute" => "rafka-compute",
+        "rafka-node" => "rafka-node-base",
         _ => "<the package of this binary>",
     }
 }
