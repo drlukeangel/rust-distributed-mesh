@@ -346,6 +346,10 @@ pub struct Records {
     status: std::sync::OnceLock<crate::status_rpc::SeatFold>,
     /// This admin's Node RPC door, opened by an installed view ([`ServingDoor`]). Set once at start.
     door: std::sync::OnceLock<ServingDoor>,
+    /// This admin's place on the backbone: it holds the meshes the installed view names, each deleted
+    /// or not, which its publication of a deleted mesh reads ([`Backbone::publishes_deleted_mesh_of`]).
+    /// Set once at start.
+    backbone: std::sync::OnceLock<Backbone>,
 }
 
 /// An admin's Node RPC readiness gate (node-rpc-envelope.md, "Node RPC readiness gate": "The router
@@ -409,6 +413,12 @@ pub struct Seats {
     held: Option<BTreeMap<NodeId, (bool, bool)>>,
 }
 
+/// The meshes `view` names, each with whether it holds that mesh deleted: its row deleted at
+/// mesh.deleted (lifecycles/states.md, "mesh deleted").
+fn view_meshes(view: &Topology) -> BTreeMap<String, bool> {
+    view.meshes.iter().map(|m| (m.name.clone(), m.status == ScopeStatus::Dead)).collect()
+}
+
 impl Records {
     /// Hold the accepted Build's planned births per mesh; whether they changed.
     pub fn set_planned(&self, topology: &crate::accepted::FabricTopology) -> bool {
@@ -430,6 +440,13 @@ impl Records {
     pub fn set_door(&self, door: ServingDoor, installed: &Topology) {
         door.open_if_held(installed);
         let _ = self.door.set(door);
+    }
+
+    /// This admin's place on the backbone (set once, at start): it holds the meshes `installed`, the
+    /// view in place when it is set, names, each deleted or not.
+    pub fn set_backbone(&self, backbone: Backbone, installed: &Topology) {
+        backbone.set_view_meshes(view_meshes(installed));
+        let _ = self.backbone.set(backbone);
     }
 
     /// The status rows of `mesh` this admin (`name`, born as `me`) folds when it takes `mesh`'s seat
@@ -5585,6 +5602,9 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 let door = ServingDoor::new(rpc_ready.clone(), (node_id.clone(), incarnation.clone()), Box::new(move || authority.get().is_some()), name.clone());
                                 records.set_door(door, &*control.topology.read().await);
                             }
+                            // The backbone holds the meshes each installed view names: the fabric-primary's
+                            // publication of a deleted mesh reads them (mesh-delete.md step 7).
+                            records.set_backbone(backbone.clone(), &*control.topology.read().await);
                             // What this admin owes its authorities, shared with the rounds: a mesh primary's completion of
                             // a fabric round is owed through it.
                             let declarer = crate::status_declare::Declarer::with_first_ready(records.first_ready.clone());
