@@ -18,6 +18,7 @@ use rafka_node_admin_core::build_op::{BuildDoor, BuildSlot};
 use rafka_node_admin_core::fabric_handover::{update_operation, HandoverDoor, HandoverSlot, Moving, ProjectView, WriteCutOff};
 use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, MemoryFabricStorage, SeatTransferRow};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
+use rafka_node_admin_core::status_storage::MemoryStatusStorage;
 use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatEpoch, SeatUpdate};
@@ -133,6 +134,10 @@ struct Admin {
     resolver: Arc<StaticResolver>,
     resolved: ResolvedNode,
     storage: Arc<dyn FabricStorage>,
+    /// The status rows on the fabric's store root this admin's records fold and point-read (set at
+    /// birth, as the admin sets its own before its door fills): one store shared by every admin of a
+    /// fabric, its rows keyed by the mesh each names (R14).
+    status: Arc<MemoryStatusStorage>,
     /// Every write cut-off the holder's SeatTransfer step applied, in order.
     cut_offs: Arc<Mutex<Vec<WriteCutOff>>>,
     /// Holds the cut-off open while `false`: a write still issued when the step cuts off.
@@ -229,12 +234,12 @@ struct Pair {
 }
 
 async fn admin(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_slot: bool) -> (Admin, iroh::Endpoint) {
-    admin_over(fabric, mesh, path, node_id, fill_slot, Arc::new(MemoryFabricStorage::new())).await
+    admin_over(fabric, mesh, path, node_id, fill_slot, Arc::new(MemoryFabricStorage::new()), Arc::default()).await
 }
 
-/// An admin born over `storage`: a new birth (a new incarnation and a new endpoint key) of the
-/// node `node_id`, holding whatever `storage` already holds.
-async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_slot: bool, storage: Arc<dyn FabricStorage>) -> (Admin, iroh::Endpoint) {
+/// An admin born over `storage` and the status rows `status`: a new birth (a new incarnation and a
+/// new endpoint key) of the node `node_id`, holding whatever both already hold.
+async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fill_slot: bool, storage: Arc<dyn FabricStorage>, status: Arc<MemoryStatusStorage>) -> (Admin, iroh::Endpoint) {
     let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse::<SocketAddr>().unwrap()).await.unwrap();
     let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
     let time = rafka_mesh_transport::clock::RafkaTime::unadopted();
@@ -272,7 +277,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     let door = Arc::new(HandoverDoor {
         fabric: "fabric1".into(),
         me: path.parse().unwrap(),
-        node_id,
+        node_id: node_id.clone(),
         incarnation,
         topology,
         book: membership.book.clone(),
@@ -280,7 +285,11 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
         backbone,
         storage: storage.clone(),
         client: client.clone(),
-        records: Arc::new(Records::default()),
+        records: {
+            let records = Arc::new(Records::default());
+            records.set_status(status.clone(), mesh.to_string(), path.parse().unwrap(), node_id.clone());
+            records
+        },
         locks: Default::default(),
         decisions: Arc::default(),
         project_view,
@@ -298,7 +307,7 @@ async fn admin_over(fabric: &FabricId, mesh: &str, path: &str, node_id: &str, fi
     if fill_slot {
         let _ = slot.set(door.clone());
     }
-    (Admin { door, client, resolver, resolved, storage, cut_offs, writes_finish, view_open, server, facts_slot, build_slot, _router: router }, ep)
+    (Admin { door, client, resolver, resolved, storage, status, cut_offs, writes_finish, view_open, server, facts_slot, build_slot, _router: router }, ep)
 }
 
 fn node_of(a: &Admin, mesh_status: NodeStatus, fabric_primary: bool) -> Node {
@@ -323,9 +332,9 @@ fn holder_of(a: &Admin, epoch: u64) -> SeatHolder {
 /// [`Pair`], each admin born over the `fabric.storage` `storage` gives it (one store shared by every
 /// admin is the fabric's one store root, R14).
 async fn fabric_with(storage: impl Fn() -> Arc<dyn FabricStorage>) -> Pair {
-    let fabric_id = FabricId::mint();
-    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, storage()).await;
-    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, storage()).await;
+    let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryStatusStorage>::default());
+    let (incumbent, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000009", true, storage(), status.clone()).await;
+    let (successor, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000005", true, storage(), status).await;
     let nodes = vec![node_of(&incumbent, NodeStatus::ReadyForTraffic, true), node_of(&successor, NodeStatus::ReadyForTraffic, false)];
     for a in [&incumbent, &successor] {
         *a.door.topology.write().await = view(nodes.clone());
@@ -629,11 +638,12 @@ async fn seats_fabric_shared(fp: FabricSeat) -> Seats {
 
 /// The seats fabric with each admin's fabric.storage given by `storage`.
 async fn seats_fabric_with<F: std::future::Future<Output = Arc<dyn FabricStorage>>>(fp: FabricSeat, storage: impl Fn() -> F) -> Seats {
-    let fabric_id = FabricId::mint();
-    let (p, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true, storage().await).await;
-    let (n, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true, storage().await).await;
-    let (m, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true, storage().await).await;
-    let (x, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, storage().await).await;
+    // One store root per fabric (R14): every admin's status rows are the one store's.
+    let (fabric_id, status) = (FabricId::mint(), Arc::<MemoryStatusStorage>::default());
+    let (p, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.1", "000000000002", true, storage().await, status.clone()).await;
+    let (n, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.2", "000000000003", true, storage().await, status.clone()).await;
+    let (m, _) = admin_over(&fabric_id, "mesh1", "mesh1.admin.3", "000000000009", true, storage().await, status.clone()).await;
+    let (x, _) = admin_over(&fabric_id, "mesh2", "mesh2.admin.1", "000000000001", true, storage().await, status).await;
     let mut pn = node_of(&p, NodeStatus::ReadyForTraffic, fp == FabricSeat::P);
     pn.is_primary = true;
     let mut nn = node_of(&n, NodeStatus::ReadyForTraffic, false);
@@ -740,7 +750,7 @@ async fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
     assert_eq!((written[0]["node"].as_str(), written[0]["mesh_epoch"].as_str(), written[0]["fabric_epoch"].as_str()), ("mesh1.admin.1", "4", "8"), "P, the cohort's row writer, writes the one row: {written:?}");
     let installed = spans.named(UPDATED);
     assert_eq!(installed.len(), 1, "{installed:?}");
-    assert_eq!((installed[0]["node"].as_str(), installed[0]["replay"].as_str()), ("mesh1.admin.2", "false"), "{installed:?}");
+    assert_eq!((installed[0]["node"].as_str(), installed[0]["replay"].as_str(), installed[0].get("holder_exit").map(String::as_str)), ("mesh1.admin.2", "false", Some("none")), "N found no exit-proof row of P, alive: {installed:?}");
     assert!(spans.named(SEATS_COMMITTED).is_empty(), "the successor never writes a seat row");
     assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
     let _ = &f.x;
@@ -988,8 +998,14 @@ fn transfer_file(operation: &str) -> String {
 /// nothing. Once P's birth is proven gone, X's next attempt for an operation no row records finds none
 /// and ends by name (no update happened), and its next attempt of b1 point-reads P's row, calls
 /// node.primary.update on N carrying it, and installs only once N answered node.primary.updated: N's
-/// install descends from X's row read, and N says "primary updated". What must NOT happen: a command
-/// that never ends, a seat installed with no row, or X continuing on its read of the row alone.
+/// install descends from X's row read. P's exit is proven by the provider's exit-proof row X records
+/// among mesh1's status rows on the store root (elections §4.1: only the provider's exit proof vacates),
+/// so N, from the row's epoch mesh1's row writer, reads that row of the birth its row names as holder
+/// and says "primary updated" once, under X's row read (Part C1 failure contract: "The holder lost
+/// after the row, before 'updated': ... the next writer to read the row publishes 'updated'.
+/// Completion needs neither gossip delivery nor the holder's survival"). What must NOT happen: a
+/// command that never ends, a seat installed with no row, X continuing on its read of the row alone,
+/// or nobody saying "primary updated" for the committed row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attempt_obtains_node_primary_updated() {
     if crate::own_process::delegated(module_path!(), "a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attempt_obtains_node_primary_updated") {
@@ -1010,7 +1026,6 @@ async fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_
     })
     .await;
     let p_node = f.x.door.topology.read().await.members().find(|x| x.name.to_string() == "mesh1.admin.1").cloned().unwrap();
-    let p_inc = f.p.resolved.incarnation.clone();
     let op = "node.primary.update:b1:stop-node:mesh1.admin.1";
     // P holds its view projection once it wrote its row and took the row's seat: its process dies there,
     // before its call on N.
@@ -1030,8 +1045,10 @@ async fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_
     assert!(e.contains("Indeterminate") && e.contains("mesh1.admin.1") && e.contains(op), "the end names the outcome, the holder and the operation: {e}");
     assert_eq!(x.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "X installs nothing on an uncertain call");
     assert_eq!(n.door.membership.seats().mesh("mesh1"), Some(holder_of(&p, 3)), "N was never called: it installed nothing");
-    // P's birth is proven gone (the provider's exit proof).
-    x.door.membership.seats().mark_gone(p_inc);
+    // P's birth is proven gone: X records the provider's exit proof, P's exit-proof row among mesh1's
+    // status rows on the store root, and X's projection reads it.
+    x.door.records.put_exit(&p_node, None, "provider").await.expect("X records P's exit-proof row");
+    x.door.records.read_exits(&x.door.book).await;
     let other = "node.primary.update:b9:stop-node:mesh1.admin.1";
     let out = tokio::time::timeout(std::time::Duration::from_secs(20), tracing::Instrument::instrument(x.door.command_update_primary(&p_node, "b9", 1, other), story.clone())).await.expect("a proven-lost holder is not called");
     let e = out.expect_err("no row records an update for b9");
@@ -1081,6 +1098,22 @@ async fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_
     let x_installed: Vec<_> = ours(INSTALLED).into_iter().filter(|s| attr(s, "via").as_deref() == Some("committed-row")).collect();
     assert_eq!(x_installed.len(), 1);
     assert!(x_installed[0].start_time >= installed_at_n[0].end_time, "X installs only after N answered node.primary.updated");
+    // N read P's exit-proof row (the birth its row names as holder) and, the next writer to read the
+    // row, said "primary updated" once, under X's row read; P, lost before its call, said nothing.
+    assert_eq!(attr(installed_at_n[0], "holder_exit").as_deref(), Some("proven"), "N read the exit-proof row of the row's holder");
+    let said: Vec<_> = ours(ANNOUNCE_UPDATED);
+    assert_eq!(said.iter().map(|s| (attr(s, "node"), attr(s, "operation"))).collect::<Vec<_>>(), vec![(Some("mesh1.admin.2".to_string()), Some(op.to_string()))], "N, never P, says the primary updated, once");
+    let mut at = said[0].parent_span_id.to_string();
+    let mut said_under_read = false;
+    for _ in 0..64 {
+        if at == read_id {
+            said_under_read = true;
+            break;
+        }
+        let Some(up) = parent_of(&at) else { break };
+        at = up;
+    }
+    assert!(said_under_read, "N says it on its read of the row, X's call under X's row read");
 }
 
 /// CONTRACT (proposal Part C1 failure contract: "After the row, the successor is the committed holder
@@ -1452,7 +1485,7 @@ async fn a_holder_restarted_over_the_store_root_is_primary_only_when_no_row_comm
     let op = update_operation(Seat::MeshPrimary, "b1", "restart-node:mesh1.admin.1");
     assert_eq!(f.p.door.update_primary(Moving::MeshSeat, Some(3), "b1", 1, &op).await, Ok(committed_mesh(&f.n, 4)));
     // P restarted over the same root: its join gives it P at 3, then it reads the root.
-    let (restarted, _) = admin_over(&FabricId::mint(), "mesh1", "mesh1.admin.1", "000000000002", true, open(root.0.clone()).await).await;
+    let (restarted, _) = admin_over(&FabricId::mint(), "mesh1", "mesh1.admin.1", "000000000002", true, open(root.0.clone()).await, f.p.status.clone()).await;
     let mut nodes = vec![node_of(&restarted, NodeStatus::ReadyForTraffic, false), node_of(&f.n, NodeStatus::ReadyForTraffic, false)];
     nodes[1].is_primary = false;
     *restarted.door.topology.write().await = view(nodes);
@@ -1464,7 +1497,7 @@ async fn a_holder_restarted_over_the_store_root_is_primary_only_when_no_row_comm
     assert_eq!(restarted.door.topology.read().await.cohort_primary("mesh1", rafka_node_admin_core::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.2"), "its view names N");
     // A root where P died before the rename holds no row.
     let empty = DataDir::new("primary-update-restart-absent");
-    let (absent, _) = admin_over(&FabricId::mint(), "mesh1", "mesh1.admin.1", "000000000002", true, open(empty.0.clone()).await).await;
+    let (absent, _) = admin_over(&FabricId::mint(), "mesh1", "mesh1.admin.1", "000000000002", true, open(empty.0.clone()).await, Arc::default()).await;
     absent.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&f.p, 3));
     let read = rafka_node_admin_core::fabric_handover::hydrate_seats(&*absent.storage, absent.door.membership.seats()).await.expect("the root is read");
     assert_eq!(read, 0, "no row");
@@ -1545,15 +1578,13 @@ async fn the_holder_refuses_an_update_before_the_initial_fabric_is_ready_and_dec
 /// `a`'s mesh's status rows on the fabric's store root (what its admin folds and point-reads), holding
 /// the ready-for-traffic row of `a`'s fabric when `ready`: the durable fact that the initial fabric
 /// first reached ready-for-traffic (states.md, "The initial fabric before ready-for-traffic").
-async fn status_rows_of(a: &Admin, ready: bool) -> Arc<rafka_node_admin_core::status_storage::MemoryStatusStorage> {
+async fn status_rows_of(a: &Admin, ready: bool) -> Arc<MemoryStatusStorage> {
     use rafka_node_admin_core::status_storage::{FabricEventRow, StatusStorage};
-    let rows = Arc::new(rafka_node_admin_core::status_storage::MemoryStatusStorage::default());
     if ready {
         let fabric_id = a.door.topology.read().await.fabric.id.clone();
-        rows.put_fabric_event(&FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
+        a.status.put_fabric_event(&FabricEventRow { fabric_id, event: "ready-for-traffic".into() }).await.unwrap();
     }
-    a.door.records.set_status(rows.clone(), a.door.me.mesh.clone(), a.door.me.clone(), a.door.node_id.clone());
-    rows
+    a.status.clone()
 }
 
 /// CONTRACT (proposal Part C1: "Before the initial fabric first reaches ready-for-traffic, every call
