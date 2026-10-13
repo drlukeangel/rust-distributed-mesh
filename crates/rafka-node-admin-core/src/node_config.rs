@@ -121,7 +121,14 @@ impl NodeConfigs {
         // while it stands at the same key (its pending release stays the row's): a config put changes
         // the config.
         let (tags, renamed_from) = match self.written.known_row(storage, &subject.mesh, node_id).await {
-            Ok(row) => row.map(|r| (r.tags, r.renamed_from.filter(|_| r.name == subject.name))).unwrap_or_default(),
+            Ok(row) => {
+                // A writer that meets the row finishes the release a rename left pending (proposal
+                // node-properties-own-commands.md §2.1); one that fails again stays pending, named on its span.
+                if let Some(r) = &row {
+                    let _ = crate::node_rows::finish_release(storage, me, r, "config-put").await;
+                }
+                row.map(|r| (r.tags, r.renamed_from.filter(|_| r.name == subject.name))).unwrap_or_default()
+            }
             Err(why) => {
                 let detail = format!("{me}: {why}: the row of {} is not written without the tags it carries", subject.name);
                 span.record("detail", detail.as_str());

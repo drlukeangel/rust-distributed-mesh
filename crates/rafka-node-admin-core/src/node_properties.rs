@@ -150,6 +150,12 @@ async fn write(me: &PathName, me_id: &NodeId, view: &Topology, storage: &dyn Nod
         Ok(row) => row,
         Err(why) => return StatusReply::node_row_refused(&subject.name.to_string(), &format!("{me}: {why}: the tags of {} are not written", subject.name)),
     };
+    // A writer that meets the row finishes the release a rename left pending (proposal
+    // node-properties-own-commands.md §2.1), whether or not this command writes; one that fails again
+    // stays pending, named on its span.
+    if let Some(r) = &known {
+        let _ = crate::node_rows::finish_release(storage, me, r, "tags-put").await;
+    }
     let was: BTreeSet<String> = known.as_ref().map(|r| r.tags.clone()).unwrap_or_default();
     // The key a rename moved the row from stays the row's while it stands at the same key.
     let renamed_from = known.as_ref().and_then(|r| r.renamed_from.clone().filter(|_| r.name == subject.name));
