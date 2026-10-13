@@ -689,7 +689,8 @@ async fn a_handover_call_naming_a_counterparty_the_receiver_does_not_hold_is_jud
     assert_eq!(f.successor.door.membership.seats().fabric(), Some(holder_of(&f.successor, 9)), "the successor committed the seat at epoch 9");
 
     let reasons: Vec<String> = spans.named(REJECTED).iter().map(|f| f["reason"].clone()).collect();
-    assert!(!reasons.iter().any(|r| r == "not-authority"), "no call is refused because the incumbent it names is not the seat holder: {reasons:?}");
+    let not_authority: Vec<_> = spans.named(REJECTED).into_iter().filter(|f| f["reason"] == "not-authority").collect();
+    assert!(not_authority.is_empty(), "no call is refused because the incumbent it names is not the seat holder: {not_authority:?} (every refusal's reason: {reasons:?})");
     let counterparty: Vec<_> = spans.named(REJECTED).into_iter().filter(|f| f["reason"] == "wrong-birth" && (f["detail"].starts_with("the command's incumbent") || f["detail"].starts_with("the completion's successor"))).collect();
     assert!(counterparty.is_empty(), "no call is refused for the counterparty birth it names: {counterparty:?}");
     assert_eq!(spans.named(COMMITTED).len(), 2, "two commands committed");

@@ -310,10 +310,12 @@ fn replace_creates_the_successor_while_the_predecessor_stays_parked_with_its_dat
         let (old, new) = (first.node.node_id.to_string(), second.node.node_id.to_string());
         let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
         let stop = at(&format!("stop-node:{old}"));
-        let left = at(&format!("awaited:stop-node:{old}"));
+        // The stop's `Stopped` reply is its left reply (node-stop.md: stop-node answers on its own call):
+        // no wait for a second completion follows it.
+        assert!(!log.iter().any(|l| l.starts_with(&format!("awaited:stop-node:{old}"))), "the Stopped reply is node-left; nothing waits for another: {log:?}");
         let stopped = at(&format!("NodeStopped:{old}:stop-node:{}", path()));
         let ready = at(&format!("ready:{new}"));
-        assert!(stop < left && left < stopped && stopped < ready, "stop-node, node-left, its NodeStopped, then the successor's readiness: {log:?}");
+        assert!(stop < stopped && stopped < ready, "stop-node (its Stopped reply is node-left), its NodeStopped, then the successor's readiness: {log:?}");
         assert_eq!(log.iter().filter(|l| l.starts_with("NodeStopped")).count(), 1, "the stop's departure is published once: {log:?}");
         assert!(!log.iter().any(|l| l.starts_with("NodeDeleting") || l.starts_with("NodeDeleted")), "a replace deletes nothing: the predecessor's delete is the recipe's own later step: {log:?}");
 

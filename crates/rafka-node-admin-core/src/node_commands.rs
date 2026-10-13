@@ -205,6 +205,14 @@ fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> Com
     }
 }
 
+/// The completion of the command `ctx` names for `node`, received or not: the span every completion
+/// a step reads writes, whether a wait received it or the command's own reply carried it (a stop's
+/// `Stopped`, node-stop.md).
+pub fn completion_span(node: &Node, cmd: NodeCommand, ctx: &CommandContext, received: bool) {
+    tracing::info_span!("rdm.node_admin.node.update.via-completion-awaited", node = %node.name, completion = cmd.completion(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, received = received, "otel.kind" = "internal")
+        .in_scope(|| tracing::info!("the completion was awaited"));
+}
+
 /// Wait up to `within` for the completion of the command `ctx` names for `node`: its
 /// call, or the `Stopped` reply of its `stop-node` call (node-left).
 pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeCommand, ctx: &CommandContext, within: Duration) -> Completion {
@@ -214,8 +222,7 @@ pub async fn await_completion(commands: &CommandBook, node: &Node, cmd: NodeComm
     let key = CommandKey { build_id: ctx.build_id.clone(), attempt: ctx.attempt, operation: ctx.operation.clone(), node_id: node.node_id.clone(), incarnation };
     let mut rx = commands.open(key);
     let got = tokio::time::timeout(within, rx.wait_for(|done| *done)).await.is_ok_and(|r| r.is_ok());
-    tracing::info_span!("rdm.node_admin.node.update.via-completion-awaited", node = %node.name, completion = cmd.completion(), operation = %ctx.operation, build_id = %ctx.build_id, attempt = ctx.attempt, received = got, "otel.kind" = "internal")
-        .in_scope(|| tracing::info!("the completion was awaited"));
+    completion_span(node, cmd, ctx, got);
     if got {
         Completion::Received
     } else {

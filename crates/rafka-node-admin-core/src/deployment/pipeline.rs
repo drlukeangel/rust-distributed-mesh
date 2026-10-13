@@ -2212,7 +2212,10 @@ impl DeploymentPipeline<'_> {
                 // call): a `StopNode` receipt that recorded `Stopped` is the left reply, whichever executor
                 // made the call. Only an admission without it waits for the reply.
                 let c = match &admission {
-                    CommandAdmission::Stopped { .. } => Completion::Received,
+                    CommandAdmission::Stopped { .. } => {
+                        crate::node_commands::completion_span(node, NodeCommand::Stop, &ctx, true);
+                        Completion::Received
+                    }
                     _ => tokio::select! {
                         c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.completion) => c,
                         () = self.until_exited(handle) => Completion::RuntimeExited,
