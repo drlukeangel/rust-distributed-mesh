@@ -74,9 +74,10 @@ async fn node() -> Node {
 }
 
 /// CONTRACT (R-RX4: "Only a mesh's own mesh-primary publishes that mesh on the backbone. The
-/// fabric-primary never publishes a mesh as its acting primary"): the fabric-primary mesh1.admin.1
-/// holds mesh2's last admin and one rpc member, and runs its publication round as the node-admin
-/// does (publish its own mesh, then wait for the round's wake with a 1.5 s anti-entropy deadline).
+/// fabric-primary never publishes a mesh as its acting primary"): the fabric-primary mesh1.admin.1,
+/// its view naming mesh2 live, holds mesh2's last admin and one rpc member, and runs its publication
+/// round as the node-admin does (publish its own mesh, then wait for the round's wake with a 1.5 s
+/// anti-entropy deadline).
 /// While the round waits, it executes the stop of mesh2.rpc.1 (NodeStopped) and the delete of
 /// mesh2.admin.1 (the departure its book takes). Neither is a change of mesh1's own projection, so
 /// the round returns at its deadline and no earlier; the NodeStopped is stamped by the executor
@@ -94,6 +95,10 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         let fp_own = digest("mesh1.admin.1", 41_001);
         let fp_bb = Backbone::join(&fp_n.gossip, &fp_n.ep, &fp_m, "mesh1", "mesh1.admin.1", fp_own.node.incarnation.clone(), vec![]).await.unwrap();
         fp_bb.set_mesh_primary(true);
+        // The view a node-admin hands its backbone at each install: it names mesh2 live, for the
+        // accepted Build names it (rafka-node-admin-core admin.rs `project_decided_at`); a live mesh
+        // with no primary goes unheard (R-RX4).
+        fp_bb.set_view_meshes([("mesh1".to_string(), false), ("mesh2".to_string(), false)].into_iter().collect());
         fp_bb.set_fabric_primary(true);
 
         let admin2 = digest("mesh2.admin.1", 42_001);
