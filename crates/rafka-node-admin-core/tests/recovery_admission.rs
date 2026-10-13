@@ -615,3 +615,126 @@ async fn a_topology_change_accepted_while_a_recovery_runs_is_the_current_build_a
         other => panic!("a second topology change waits for the one in progress: {other:?}"),
     }
 }
+
+/// Two meshes: mesh1's node-admin holds the fabric-primary seat; mesh2 has two node-admins, and the
+/// one that holds mesh2's primary seat is `mesh2_primary`; mesh2's other members are live but
+/// `mesh2.rpc.1`, which is exited (Dead). Every node is in the accepted Build.
+fn two_meshes_two_mesh2_admins(mesh2_primary: &str) -> Topology {
+    let mut t = two_meshes();
+    for n in t.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin) {
+        n.is_primary = false;
+    }
+    t.nodes.push(node("mesh2.admin.2", false));
+    for n in t.nodes.iter_mut().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin) {
+        n.is_primary = n.name.to_string() == mesh2_primary;
+    }
+    t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.rpc.1").for_each(|n| n.status = NodeStatus::Dead);
+    t
+}
+
+/// CONTRACT (R-BI7 caveat 2: "Each mesh-primary claims drift attempts for its own mesh ... under its
+/// mesh on the fabric's shared store root, which is the writer ladder"; build.md :365 as the approved
+/// proposal A4 words it: "The next attempt is claimed after the running attempt's terminal receipt
+/// (Complete, Failed or HandedOff), or, when the executor is lost with the attempt unfinished, after
+/// exact departure proof. A live run is reattached, never re-claimed"; mesh-recovery.md:8-9: a lost
+/// mesh-primary is node-recovered by its mesh's live primary): mesh2's primary `mesh2.admin.1`
+/// opens and claims the recovery of its exited member `mesh2.rpc.1` as attempt 1 of mesh2's lane and
+/// leaves mid-run (it runs nothing more). `mesh2.admin.2` takes mesh2's seat over the same Build log
+/// and the same in-flight rows. While the lost primary is only silent (no exit of its exact birth
+/// recorded), every recovery the new primary opens is refused build-in-progress naming mesh2 and the
+/// lost claimant: silence is never departure. Once its exit is proven and recorded (the new primary's
+/// own proof, before it submits the lost primary's recovery), the new primary's recovery of the lost
+/// primary ends attempt 1 Failed naming the departed claimant, releases mesh2's in-flight row, and
+/// opens and claims attempt 2 of mesh2's lane for itself; `mesh2.rpc.1`'s exited birth is owed a
+/// submit again from attempt 1's Failed verdict (node-recovery.md "Failure and receipts"). Must NOT
+/// happen: the lane held for good by the departed claimant (every later recovery and topology
+/// operation on mesh2 refused naming it), a take-over on silence alone, or the member's recovery lost.
+#[tokio::test]
+async fn a_recovery_whose_mesh_primary_departed_mid_run_is_ended_by_the_new_mesh_primary_on_its_exit_proof() {
+    use rafka_node_admin_core::build_state::BuildState;
+    use rafka_node_admin_core::status_storage::{MemoryStatusStorage, NodeExitRow, StatusStorage};
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (pipeline, layer) = rafka_mesh_telemetry::span_capture("i143-r-bi7-departed-claimant", exporter.clone());
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    let capture = Capture { exporter, pipeline };
+
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let claims = Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory());
+    let rows: Arc<MemoryStatusStorage> = Arc::new(MemoryStatusStorage::default());
+    let before = two_meshes_two_mesh2_admins("mesh2.admin.1");
+    let member: PathName = "mesh2.rpc.1".parse().unwrap();
+    let exited = before.node(&member).unwrap().clone();
+    // The accepted Build names every node, the member included (it was live when accepted).
+    let mut accepted_view = before.clone();
+    accepted_view.nodes.iter_mut().for_each(|n| n.status = NodeStatus::ReadyForTraffic);
+    let accepted = AcceptedStore::seeded(&*builds, before.fabric.id.clone(), FabricTopology::of_observed(&accepted_view), "mesh1.admin.1").await.unwrap();
+    let b0 = builds.current_build().await.unwrap().into_build_id().unwrap();
+    settle_other(&builds, &b0).await;
+
+    // mesh2's primary opens and claims its member's recovery, then leaves mid-run.
+    let lost = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), "mesh2.admin.1".parse().unwrap(), before.clone(), crate::adopted_time()).with_claims(claims.clone()));
+    let first = match lost.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), exited.incarnation_id.clone().unwrap()).await {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("mesh2's primary opens its member's recovery: {other:?}"),
+    };
+    assert_eq!((first.mesh.as_deref(), first.attempt), (Some("mesh2"), 1), "attempt 1 of mesh2's lane");
+    let departed: PathName = "mesh2.admin.1".parse().unwrap();
+    let departed_birth = before.node(&departed).unwrap().clone();
+
+    // mesh2.admin.2 holds mesh2's seat; in its view the lost primary is silent.
+    let mut after = two_meshes_two_mesh2_admins("mesh2.admin.2");
+    after.nodes.iter_mut().filter(|n| n.name == departed).for_each(|n| {
+        n.node_id = departed_birth.node_id.clone();
+        n.incarnation_id = departed_birth.incarnation_id.clone();
+        n.status = NodeStatus::Dead;
+    });
+    after.nodes.iter_mut().filter(|n| n.name == member).for_each(|n| {
+        n.node_id = exited.node_id.clone();
+        n.incarnation_id = exited.incarnation_id.clone();
+    });
+    let heir = Arc::new(
+        ControlPlane::new(builds.clone(), accepted, "mesh2.admin.2".parse().unwrap(), after, crate::adopted_time())
+            .with_claims(claims.clone())
+            .with_first_ready(rafka_node_admin_core::fabric_state::FirstReady::new(), rows.clone()),
+    );
+    let incarnation = departed_birth.incarnation_id.clone().unwrap();
+
+    // Silence is never departure: no exit of the lost primary's exact birth is recorded.
+    let silent = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation.clone()).await {
+        Err(r @ Refusal::BuildInProgress(..)) => rendered(r).await,
+        other => panic!("while the lost primary is only silent, mesh2 stays held by its attempt: {other:?}"),
+    };
+    assert_eq!((silent["current_build_id"].as_str(), silent["mesh"].as_str(), silent["held_by"].as_str()), (Some(b0.as_str()), Some("mesh2"), Some("mesh2.admin.1")), "named by the Build, the mesh and the claimant: {silent}");
+
+    // The new primary proves the lost primary's exit and records it, then submits its recovery.
+    rows.put_node_exit(&NodeExitRow { node_id: departed_birth.node_id.clone(), name: departed.clone(), incarnation_id: incarnation.clone(), exit_code: None, proof: "provider".into(), observed_at_ms: 1 }).await.unwrap();
+    let second = match heir.open_recovery("node-recovery", departed.clone(), departed_birth.node_id.clone(), incarnation.clone()).await {
+        Ok(Recovery::Opened(o)) => o,
+        other => panic!("on the lost claimant's recorded exit, the new primary takes mesh2's lane over: {other:?}"),
+    };
+    assert_eq!((second.build_id.clone(), second.mesh.as_deref(), second.attempt), (b0.clone(), Some("mesh2"), 2), "attempt 2 of mesh2's lane");
+    let p = builds.read_build(&b0).await.unwrap();
+    let lane = p.lanes.get("mesh2").expect("mesh2's lane");
+    assert_eq!((lane.state, lane.attempt, lane.claimant.as_deref(), lane.executor.as_deref()), (BuildState::Running, 2, Some("mesh2.admin.2"), Some("mesh2.admin.2")), "the new primary claimed attempt 2: {lane:?}");
+    let ended = builds.facts().await.unwrap().into_iter().find_map(|f| match f {
+        BuildFact::Attempt(a) if a.mesh.as_deref() == Some("mesh2") && a.attempt == 1 => Some(a.outcome),
+        _ => None,
+    });
+    match ended {
+        Some(AttemptOutcome::Failed { reason }) => assert!(reason.contains("mesh2.admin.1") && reason.contains(incarnation.as_str()), "attempt 1's verdict names the departed claimant's exact birth: {reason}"),
+        other => panic!("attempt 1 of mesh2's lane ends Failed on its claimant's departure: {other:?}"),
+    }
+    let held = claims.held("mesh2").await.unwrap().expect("mesh2's in-flight row");
+    assert_eq!((held.attempt, held.lane.as_deref(), held.claimant.as_str()), (2, Some("mesh2"), "mesh2.admin.2"), "the row names attempt 2 and its claimant");
+    let owed = builds.exits_owed(&b0, "mesh2").await.unwrap();
+    assert!(owed.iter().any(|o| o.path == member && o.node_id == exited.node_id && o.attempt == 1), "the member's exited birth is owed a submit from attempt 1's verdict: {owed:?}");
+    for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-build-in-progress", "rdm.node_admin.build.update.via-departed-claimant", "rdm.node_admin.build.update.via-claim-decision"] {
+        for (trace_id, attrs) in capture.spans(name) {
+            eprintln!("span {name} trace_id={trace_id} {attrs:?}");
+        }
+    }
+    let taken = capture.spans("rdm.node_admin.build.update.via-departed-claimant");
+    assert_eq!(taken.len(), 1, "the take-over is spanned once: {taken:?}");
+    let (_, t) = &taken[0];
+    assert_eq!((t["lane"].as_str(), t["attempt"].as_str(), t["claimant"].as_str(), t["node"].as_str()), ("mesh2", "1", "mesh2.admin.1", "mesh2.admin.2"), "{t:?}");
+}
