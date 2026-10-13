@@ -624,9 +624,22 @@ impl HandoverDoor {
                     return Reply::not_authority(&reason);
                 }
                 WireSeat::Cohort { mesh, kind } => {
-                    let reason = format!("{}: the command names the {} cohort's primary seat of {mesh}; a node-admin holds the node-admin cohort's and the fabric's seats only", self.me, kind.name());
-                    refused("holder", "not-authority", &reason, &of, None);
-                    return Reply::not_authority(&reason);
+                    // Another cohort of a mesh: commanded through that mesh's primary, its commander and
+                    // row writer (Q3), alone in its command.
+                    if seats.len() != 1 {
+                        refused("holder", "conflict", &format!("{}: the command names the {} seat of {mesh} with other seats; a cohort's seat moves in its own row", self.me, kind.name()), &of, None);
+                        return Reply::RejectedConflict { operation };
+                    }
+                    let holder = self.topology.read().await.cohort_primary(mesh, *kind).cloned();
+                    let Some(holder) = holder.filter(|_| *mesh == self.me.mesh) else {
+                        let reason = format!("{}: the command names the {} seat of {mesh}; this admin, of mesh {}, names no holder of it in its view", self.me, kind.name(), self.me.mesh);
+                        refused("holder", "not-authority", &reason, &of, None);
+                        return Reply::not_authority(&reason);
+                    };
+                    return match self.update_cohort_primary(&holder, Some(e.expected_epoch), &build_id, attempt, &operation).await {
+                        Ok(epochs) => Reply::PrimaryUpdated { epochs },
+                        Err(refusal) => refusal,
+                    };
                 }
             }
         }
@@ -958,8 +971,9 @@ impl HandoverDoor {
     // ---- the fabric-primary: command the update, and resume it ----
 
     /// The fabric-primary commands the mesh-primary `holder` to update its seat (proposal Part C1 step
-    /// 1: "The holder is commanded from above"), before the Build's stop, delete, restart, replace,
-    /// or node.connections.delete of it runs: UpdatePrimary to the exact holder birth, whose answer
+    /// 1: "The holder is commanded from above"), and the update of any other cohort's seat `holder`
+    /// holds through that holder's mesh-primary ([`Self::command_cohort_update`]; Q3), before the Build's
+    /// stop, delete, restart, replace, or node.connections.delete of it runs: UpdatePrimary to the exact holder birth, whose answer
     /// is the successor's node.primary.updated. The committed seat is installed here from that answer,
     /// so this admin's view names the successor before it dispatches what the update preceded (step
     /// 8). The command is sent once: an uncertain one ends the step incomplete, and the next attempt
@@ -968,12 +982,14 @@ impl HandoverDoor {
     /// successor's node.primary.updated is obtained on it before anything is installed ("Discovery is
     /// not installation"); with no row no update happened.
     pub async fn command_update_primary(&self, holder: &crate::model::Node, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, crate::build_drive::SeatMoveEnd> {
+        let seat = if holder.kind == crate::model::NodeKind::NodeAdmin { Seat::MeshPrimary } else { Seat::Cohort(holder.kind) };
         let span = tracing::info_span!(
             "rdm.node_admin.seat.update.via-primary-update",
             node = %self.me,
             holder = %holder.name,
             holder_node_id = %holder.node_id,
-            seat = Seat::MeshPrimary.name(),
+            seat = seat.name(),
+            to = tracing::field::Empty,
             build_id,
             attempt,
             operation,
@@ -1002,6 +1018,10 @@ impl HandoverDoor {
         if self.incumbency().lost.contains(&hb.incarnation) {
             return self.committed_row(holder, &hb, build_id, attempt, operation).await;
         }
+        if holder.kind != crate::model::NodeKind::NodeAdmin {
+            return self.command_cohort_update(holder, &hb, build_id, attempt, operation).await;
+        }
+        tracing::Span::current().record("to", holder.name.to_string().as_str());
         let book = self.membership.seats();
         let Some(held) = book.mesh(&holder.mesh).filter(|h| h.is_birth(&hb.node_id, &hb.incarnation)) else {
             return Err(("refused", format!("{}'s seat records name no mesh-primary seat of {} held by {}", self.me, holder.mesh, births(&hb))));
@@ -1184,40 +1204,361 @@ impl HandoverDoor {
         match req {
             Request::PrimaryUpdate { seats, build_id, attempt, operation } => self.serve_primary_update(seats, build_id, attempt, operation).await,
             Request::UpdatePrimary { fabric, seats, build_id, attempt, operation, .. } => self.serve_update_primary(fabric, seats, build_id, attempt, operation).await,
+            Request::UpdatePrimaryFromRow { build_id, attempt, operation, .. } => {
+                let reason = format!("{} is a node-admin: it holds no seat of a cohort of another type, whose mesh-primary commands that cohort's holder with the row", self.me);
+                refused("holder", "not-authority", &reason, &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None }, None);
+                Reply::not_authority(&reason)
+            }
         }
     }
 }
 
 impl HandoverDoor {
-    /// node.primary.update of a cohort that is not node-admin, at its mesh-primary, commander and row
-    /// writer (proposal Part C1, non-admin order). Not built yet.
-    pub async fn update_cohort_primary(&self, holder: &crate::model::Node, _expected: Option<u64>, _build_id: &str, _attempt: u32, _operation: &str) -> Result<Vec<CommittedSeat>, Reply> {
-        Err(Reply::not_authority(&format!("{}: node.primary.update of the {} cohort is not built", self.me, holder.kind.name())))
+    // ---- the mesh-primary: node.primary.update of another cohort of its mesh (C1, non-admin order) ----
+
+    /// node.primary.update of `holder`'s cohort seat, a node type other than node-admin, at this admin as
+    /// its mesh's primary, the cohort's commander and its one row writer (proposal Part C1: "For a
+    /// `broker` cohort the mesh-primary is commander and writer, and the holder B1 only makes the call";
+    /// Q3). In the non-admin order ("the order of steps 1 and 5 swaps"): pre-check the successor (step
+    /// 2), say "primary updating" (3), write the ONE row (5, the commit), then command the holder with
+    /// the row's content (1, after the row), whose call on the successor answers node.primary.updated
+    /// (6), then say "primary updated" (7). Nothing is cut off: a non-admin holder has no mesh rows (step
+    /// 4). `expected` is the epoch a commander above holds the seat at (the fabric-primary's command,
+    /// proxied through this mesh-primary). Refused before the row: nothing changed. After the row the
+    /// seat is the successor's whatever the command returns: a command with no node.primary.updated ends
+    /// `Incomplete`, and a later attempt or an identical retry completes from the row.
+    pub async fn update_cohort_primary(&self, holder: &crate::model::Node, expected: Option<u64>, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, Reply> {
+        let span = tracing::info_span!(
+            "rdm.node_admin.seat.update.via-primary-updating",
+            node = %self.me,
+            seat = Seat::Cohort(holder.kind).name(),
+            holder = %holder.name,
+            build_id,
+            attempt,
+            operation,
+            successor = tracing::field::Empty,
+            successor_node_id = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            detail = tracing::field::Empty,
+        );
+        let r = self.update_cohort_primary_in(holder, expected, build_id, attempt, operation).instrument(span.clone()).await;
+        if r.is_ok() {
+            self.memo.acknowledge(operation, false);
+        }
+        match &r {
+            Ok(_) => span.record("outcome", "updated"),
+            Err(incomplete @ Reply::Incomplete { .. }) => span.record("outcome", "incomplete").record("detail", refusal_reason(incomplete).1.as_str()),
+            Err(refusal) => span.record("outcome", "refused").record("detail", refusal_reason(refusal).1.as_str()),
+        };
+        r
+    }
+
+    async fn update_cohort_primary_in(&self, holder: &crate::model::Node, expected: Option<u64>, build_id: &str, attempt: u32, operation: &str) -> Result<Vec<CommittedSeat>, Reply> {
+        let _one_at_a_time = self.locks.updating.lock().await;
+        let (mesh, kind) = (holder.mesh.clone(), holder.kind);
+        let Some(hb) = birth_of(holder) else {
+            let record = format!("the birth of {}", holder.name);
+            refused("writer", "record-absent", &format!("{}'s view holds {} with no birth", self.me, holder.name), &Refusing { operation, build_id, attempt, holder: None, successor: None }, None);
+            return Err(Reply::record_absent(&record, &self.me.to_string()));
+        };
+        let of = Refusing { operation, build_id, attempt, holder: Some(&hb), successor: None };
+        if let Some(refusal) = self.refused_before_first_ready("writer", &of).await {
+            return Err(refusal);
+        }
+        // The writer is the holder's mesh's primary (R-OW1: the mesh's one row writer).
+        let book = self.membership.seats();
+        if self.me.mesh != mesh || !book.mesh(&mesh).is_some_and(|h| h.is_birth(&self.node_id, &self.incarnation)) {
+            let reason = format!("{} is not the mesh-primary of {mesh}, the {} cohort's commander and row writer: its record names {}", self.me, kind.name(), book.mesh(&mesh).map(|h| h.to_string()).unwrap_or_else(|| "no holder".into()));
+            refused("writer", "not-authority", &reason, &of, None);
+            return Err(Reply::not_authority(&reason));
+        }
+        // A retry or a later attempt after the row: the row stands, and the update completes from it.
+        match self.storage.seat_transfer(&mesh, operation).await {
+            Ok(Some(row)) if row.holder == hb => return self.command_holder(&row, &holder.name).await,
+            Ok(Some(row)) => {
+                let detail = format!("operation {operation} committed another update (holder {}, successor {})", births(&row.holder), births(&row.successor));
+                refused("writer", "conflict", &detail, &of, None);
+                return Err(Reply::RejectedConflict { operation: operation.to_string() });
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let failed = SourceFailure { source: format!("fabric.storage of {}, seat-transfer row {operation} under mesh {mesh}", self.me), op: format!("read the seat-transfer row of {operation}"), cause: e.to_string() };
+                refused("writer", "source-failed", &failed.to_string(), &of, Some(&failed));
+                return Err(failed.reply());
+            }
+        }
+        // The seat as this writer holds it: the holder is its cohort's primary in its own view, at the
+        // epoch of the cohort's record (0 while no update or announcement has recorded the seat).
+        let wire = WireSeat::of(Seat::Cohort(kind), &mesh);
+        let view = self.topology.read().await.clone();
+        if !view.cohort_primary(&mesh, kind).is_some_and(|p| p.node_id == hb.node_id) {
+            let reason = format!("{}'s view names {} the {} primary of {mesh}, not {}", self.me, view.cohort_primary(&mesh, kind).map(|p| p.name.to_string()).unwrap_or_else(|| "no node".into()), kind.name(), holder.name);
+            refused("writer", "not-authority", &reason, &of, None);
+            return Err(Reply::not_authority(&reason));
+        }
+        let epoch = book.cohort(&mesh, kind).map(|h| h.epoch).unwrap_or(0);
+        if let Some(e) = expected.filter(|e| *e != epoch) {
+            refused("writer", "stale-seat", &format!("{}: the {} seat of {mesh} is at epoch {epoch}", self.me, kind.name()), &of, None);
+            return Err(Reply::RejectedStaleSeat { seat: wire, expected: e, current: epoch });
+        }
+        if epoch.checked_add(1).is_none() {
+            let detail = overflow_detail(&self.me, &wire, epoch);
+            refused("writer", "epoch-overflow", &detail, &of, None);
+            return Err(Reply::RejectedEpochOverflow { seat: wire, epoch });
+        }
+        // Step 2: the pre-check, from this writer's own view (Q7's text when none).
+        let nodes: Vec<crate::model::Node> = view.members().cloned().collect();
+        let successor = match crate::election::commanded_cohort_successor(&nodes, &self.incumbency(), holder) {
+            Ok(n) => n,
+            Err(text) => {
+                refused("writer", "no-successor", &text, &of, None);
+                return Err(Reply::no_successor(&text));
+            }
+        };
+        let Some(to) = birth_of(&successor) else {
+            let record = format!("the birth of {}", successor.name);
+            refused("writer", "record-absent", &format!("{}'s view holds {} with no birth", self.me, successor.name), &of, None);
+            return Err(Reply::record_absent(&record, &self.me.to_string()));
+        };
+        tracing::Span::current().record("successor", successor.name.to_string().as_str()).record("successor_node_id", to.node_id.as_str());
+        let seats = vec![CommittedSeat { seat: wire.clone(), holder: to.clone(), epoch: epoch + 1 }];
+        let row = SeatTransferRow {
+            operation: operation.to_string(),
+            fabric: self.fabric.clone(),
+            build_id: build_id.to_string(),
+            attempt,
+            holder: hb.clone(),
+            successor: to.clone(),
+            expected: vec![SeatEpoch { seat: wire.clone(), expected_epoch: epoch }],
+            seats: seats.clone(),
+        };
+        let op = self.op_of(&hb, holder.name.clone(), build_id, attempt, operation);
+        // Step 3: "primary updating", intent only, said by the mesh-primary, sole author of member status.
+        self.backbone.announce_primary_updating(op.clone(), seats.clone()).await;
+        // Step 5: the ONE row, the commit; from it the holder is no longer primary.
+        {
+            let _decisions = self.decisions.clone().lock_owned().await;
+            if let Err(e) = self.storage.put_seat_transfer(&row).await {
+                drop(_decisions);
+                let failed = SourceFailure { source: format!("fabric.storage of {}, seat-transfer row {operation} under mesh {mesh}", self.me), op: format!("put the seat-transfer row of {operation} moving the {} seat to {}", kind.name(), births(&to)), cause: e.to_string() };
+                refused("writer", "source-failed", &failed.to_string(), &Refusing { successor: Some(&to), ..of }, Some(&failed));
+                return Err(failed.reply());
+            }
+            book.take_together(&op, &seats);
+        }
+        tracing::info_span!("rdm.node_admin.seat.update.via-seat-row-written", node = %self.me, fabric = %self.fabric, operation, build_id, attempt, holder = %births(&hb), successor = %births(&to), seat = wire.name(), epoch = epoch + 1)
+            .in_scope(|| tracing::info!("the mesh-primary, the cohort's row writer, wrote the one committed row: the seat is the successor's"));
+        (self.project_view)().await;
+        // Steps 1 (after the row, carrying it), 6 and 7.
+        self.command_holder(&row, &holder.name).await
+    }
+
+    /// The mesh-primary's command to the holder `holder` of a cohort that is not node-admin, after its
+    /// committed `row` and carrying it (C1: "its command to the holder B1 comes after the row and carries
+    /// it; B1 then makes the call of step 6"), answered with the successor's node.primary.updated; then
+    /// "primary updated" (step 7). A holder proven gone is commanded no more: the row stands and this
+    /// writer obtains the successor's node.primary.updated itself (C1 failure contract: "The holder lost
+    /// after the row, before 'updated': ... Completion needs neither gossip delivery nor the holder's
+    /// survival"). Anything but node.primary.updated leaves the update `Incomplete`, named.
+    async fn command_holder(&self, row: &SeatTransferRow, holder: &PathName) -> Result<Vec<CommittedSeat>, Reply> {
+        let epochs = if self.incumbency().lost.contains(&row.holder.incarnation) {
+            self.call_successor(row, "writer").await?
+        } else {
+            let req = Request::UpdatePrimaryFromRow { fabric: row.fabric.clone(), seats: call_seats(row), build_id: row.build_id.clone(), attempt: row.attempt, operation: row.operation.clone() };
+            match self.call_once(&row.holder.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
+                Called::Reply(Reply::PrimaryUpdated { epochs }) if !epochs.is_empty() => epochs,
+                other => {
+                    let (call, why) = other.failure();
+                    let of = Refusing { operation: &row.operation, build_id: &row.build_id, attempt: row.attempt, holder: Some(&row.holder), successor: Some(&row.successor) };
+                    let detail = format!("{}: node.primary.update {} committed the seat to {}; the command to its holder {holder} did not answer node.primary.updated: {call} ({why}); the seat is the successor's from the row and the update is incomplete until a later attempt obtains its answer", self.me, row.operation, births(&row.successor));
+                    refused("writer", call, &detail, &of, None);
+                    return Err(Reply::incomplete(&detail));
+                }
+            }
+        };
+        let op = self.op_of(&row.holder, holder.clone(), &row.build_id, row.attempt, &row.operation);
+        self.backbone.announce_primary_updated(op, row.seats.clone()).await;
+        Ok(epochs)
+    }
+
+    /// The fabric-primary's command of the update of `holder`'s cohort seat, a type other than
+    /// node-admin: to the holder's mesh-primary, the cohort's commander and row writer, never to the
+    /// holder (CLAUDE.md "COMMANDS GO DOWN": "A command the fabric-primary originates for a mesh's node
+    /// reaches it as a proxy command through its mesh-primary, never directly"; Q3). When this admin is
+    /// that mesh-primary it runs the update itself. `Err` carries the outcome its span names and why.
+    async fn command_cohort_update(&self, holder: &crate::model::Node, hb: &HandoverBirth, build_id: &str, attempt: u32, operation: &str) -> Result<(String, Vec<CommittedSeat>), (&'static str, String)> {
+        let kind = holder.kind;
+        let view = self.topology.read().await.clone();
+        let Some(mp) = view.cohort_primary(&holder.mesh, crate::model::NodeKind::NodeAdmin).cloned() else {
+            return Err(("refused", format!("{}'s view seats no mesh-primary of {}: the {} seat of {} is commanded through its mesh-primary, never on the node", self.me, holder.mesh, kind.name(), holder.name)));
+        };
+        tracing::Span::current().record("to", mp.name.to_string().as_str());
+        let successor_of = |epochs: &[CommittedSeat]| view.births().find(|n| epochs.first().is_some_and(|c| c.holder.node_id == n.node_id)).map(|n| n.name.to_string()).unwrap_or_else(|| epochs.first().map(|c| births(&c.holder)).unwrap_or_default());
+        if mp.node_id == self.node_id {
+            return match self.update_cohort_primary(holder, None, build_id, attempt, operation).await {
+                Ok(epochs) => Ok((successor_of(&epochs), epochs)),
+                Err(Reply::Incomplete { reason }) => Err(("incomplete", reason)),
+                Err(refusal) => {
+                    let (reason, detail) = refusal_reason(&refusal);
+                    Err(("refused", format!("{}: node.primary.update of {} was refused: {} ({reason}: {detail})", self.me, holder.name, refusal.name())))
+                }
+            };
+        }
+        let expected = self.membership.seats().cohort(&holder.mesh, kind).map(|h| h.epoch).unwrap_or(0);
+        let req = Request::UpdatePrimary { fabric: self.fabric.clone(), holder: hb.clone(), seats: vec![SeatEpoch { seat: WireSeat::of(Seat::Cohort(kind), &holder.mesh), expected_epoch: expected }], build_id: build_id.to_string(), attempt, operation: operation.to_string() };
+        match self.call_once(&mp.node_id, &req, &CallOptions { budget: Budget::Stream { send: COMMAND_SEND }, ..CallOptions::default() }).await {
+            Called::Reply(Reply::PrimaryUpdated { epochs }) if !epochs.is_empty() => Ok(self.install_committed(&holder.name, hb, epochs, build_id, attempt, operation, "primary-updated").await),
+            Called::Reply(Reply::Incomplete { reason }) => Err(("incomplete", format!("{}: node.primary.update {operation} of {} is incomplete at {}: {reason}", self.me, holder.name, mp.name))),
+            Called::Reply(refusal) => {
+                let (reason, detail) = refusal_reason(&refusal);
+                Err(("refused", format!("{} refused node.primary.update of {}: {} ({reason}: {detail})", mp.name, holder.name, refusal.name())))
+            }
+            Called::NotDispatched(why) | Called::Indeterminate(why) => Err(("incomplete", format!("{}: node.primary.update {operation} of {}, commanded through {}, is uncertain and the step is incomplete; a later attempt sends the identical command: {why}", self.me, holder.name, mp.name))),
+        }
     }
 }
 
-/// The 0x21 door of a node that is not a node-admin. Not built yet.
+/// The seats of `row` as the calls carrying its content name them (one entry per seat the row moves).
+fn call_seats(row: &SeatTransferRow) -> Vec<SeatUpdate> {
+    row.seats.iter().map(|c| SeatUpdate { seat: c.seat.clone(), holder: row.holder.clone(), successor: row.successor.clone(), epoch: c.epoch }).collect()
+}
+
+// ---- a node of a cohort that is not node-admin: the holder's call and the successor's install ----
+
+/// The 0x21 door of a node of a cohort that is not node-admin (proposal Part C1: "For a `broker` cohort
+/// the mesh-primary is commander and writer, and the holder B1 only makes the call"). As the holder, its
+/// mesh-primary commands it after the committed row, carrying the row's content
+/// ([`Request::UpdatePrimaryFromRow`]): it calls node.primary.update on the successor's exact birth with
+/// that content and answers with the successor's node.primary.updated (step 6: "A non-admin holder then
+/// answers its commander's command"). As the successor, it installs itself as primary from the row's
+/// content the call carries and answers node.primary.updated (step 6). It writes no row and announces
+/// nothing: its mesh-primary is the writer and the sole author of member status. Its one refusal is a
+/// conflicting payload for an operation it answered (C3 edit 5): an identical repeat is answered as the
+/// first was, and nothing checks who calls (R-RX1) or the birth a call names (R-UC1a, R-RX5).
 pub struct MemberDoor {
+    me: PathName,
     membership: Membership,
+    client: Arc<NodeRpcClient>,
+    /// What this node answered node.primary.updated for, by operation: the seats the call carried and
+    /// the answer.
+    answered: std::sync::Mutex<std::collections::BTreeMap<String, (Vec<SeatUpdate>, Reply)>>,
+    /// One call at a time: a repeat arriving while its first runs is answered from it.
+    serving: tokio::sync::Mutex<()>,
 }
 
 impl MemberDoor {
-    /// The door of the birth `node_id`/`incarnation` at `me`.
-    pub fn new(_me: PathName, _node_id: NodeId, _incarnation: IncarnationId, membership: Membership, _client: Arc<NodeRpcClient>) -> Self {
-        Self { membership }
+    /// The door of the birth `node_id`/`incarnation` at `me`, on its mesh channel `membership`, calling
+    /// through `client`.
+    pub fn new(me: PathName, _node_id: NodeId, _incarnation: IncarnationId, membership: Membership, client: Arc<NodeRpcClient>) -> Self {
+        Self { me, membership, client, answered: Default::default(), serving: Default::default() }
     }
-    /// This node's mesh channel.
+
+    /// This node's mesh channel, which holds its seat records.
     pub fn membership(&self) -> &Membership {
         &self.membership
+    }
+
+    /// The answer to a repeat of `operation`: the first answer for the same seats, a conflict for others.
+    fn answered_before(&self, side: &'static str, operation: &str, seats: &[SeatUpdate], build_id: &str, attempt: u32) -> Option<Reply> {
+        let held = self.answered.lock().unwrap().get(operation).cloned()?;
+        if held.0 == seats {
+            return Some(held.1);
+        }
+        let of = Refusing { operation, build_id, attempt, holder: seats.first().map(|u| &u.holder), successor: seats.first().map(|u| &u.successor) };
+        refused(side, "conflict", &format!("{}: operation {operation} was answered for seats {:?}; this call carries {seats:?}", self.me, held.0), &of, None);
+        Some(Reply::RejectedConflict { operation: operation.to_string() })
+    }
+
+    /// Serve one node.primary.update call.
+    pub async fn serve(&self, req: Request) -> Reply {
+        let _one_at_a_time = self.serving.lock().await;
+        match req {
+            Request::PrimaryUpdate { seats, build_id, attempt, operation } => self.install(seats, build_id, attempt, operation).await,
+            Request::UpdatePrimaryFromRow { fabric, seats, build_id, attempt, operation } => self.call_successor(fabric, seats, build_id, attempt, operation).await,
+            Request::UpdatePrimary { build_id, attempt, operation, .. } => {
+                let reason = format!("{} holds no node-admin or fabric seat: the seat of its cohort is moved by its mesh-primary, which writes the row and commands it with the row's content", self.me);
+                refused("holder", "not-authority", &reason, &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None }, None);
+                Reply::not_authority(&reason)
+            }
+        }
+    }
+
+    /// The successor installs itself as its cohort's primary from the row's content the call carries
+    /// and answers node.primary.updated (C1 step 6).
+    async fn install(&self, seats: Vec<SeatUpdate>, build_id: String, attempt: u32, operation: String) -> Reply {
+        if let Some(r) = self.answered_before("successor", &operation, &seats, &build_id, attempt) {
+            return r;
+        }
+        let Some(first) = seats.first().cloned() else {
+            refused("successor", "conflict", &format!("{}: the call names no seat, so it is no committed row's content", self.me), &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None }, None);
+            return Reply::RejectedConflict { operation };
+        };
+        let committed: Vec<CommittedSeat> = seats.iter().map(SeatUpdate::committed).collect();
+        // The holder by the name this node's mesh channel holds for its birth.
+        let holder_name = self.membership.book.all().into_iter().find(|d| d.node.node_id == first.holder.node_id).map(|d| d.node.name.clone()).unwrap_or_else(|| self.me.clone());
+        let op = LifecycleOp { build_id: build_id.clone(), attempt, operation: operation.clone(), node_id: first.holder.node_id.clone(), incarnation: first.holder.incarnation.clone(), name: holder_name, event_at_rafka_ms: self.membership.clock().now_rafka_ms() };
+        let taken = self.membership.seats().take_together(&op, &committed);
+        let outcome = if taken.iter().any(|t| matches!(t, SeatTaken::Refused { .. })) {
+            "refused-not-newer"
+        } else if taken.iter().all(|t| matches!(t, SeatTaken::Same)) {
+            "same"
+        } else {
+            "held"
+        };
+        tracing::info_span!("rdm.node_admin.seat.update.via-primary-updated", node = %self.me, operation = %operation, build_id = %build_id, attempt, holder = %births(&first.holder), successor = %births(&first.successor), seat = first.seat.name(), epoch = first.epoch, replay = outcome != "held", outcome)
+            .in_scope(|| tracing::info!("the successor installed itself from the committed row's content and answers node.primary.updated"));
+        let reply = Reply::PrimaryUpdated { epochs: committed };
+        self.answered.lock().unwrap().insert(operation, (seats, reply.clone()));
+        reply
+    }
+
+    /// The holder, commanded by its mesh-primary with the committed row's content, calls
+    /// node.primary.update on the successor's exact birth carrying it and answers with the successor's
+    /// node.primary.updated (C1 step 6). A call that does not answer it is named in an `Incomplete`
+    /// answer: the seat is the successor's from the row, and the commander's next attempt sends the
+    /// identical command.
+    async fn call_successor(&self, fabric: String, seats: Vec<SeatUpdate>, build_id: String, attempt: u32, operation: String) -> Reply {
+        if let Some(r) = self.answered_before("holder", &operation, &seats, &build_id, attempt) {
+            return r;
+        }
+        let Some(first) = seats.first().cloned() else {
+            refused("holder", "conflict", &format!("{}: the command names no seat, so it carries no committed row", self.me), &Refusing { operation: &operation, build_id: &build_id, attempt, holder: None, successor: None }, None);
+            return Reply::RejectedConflict { operation };
+        };
+        let span = tracing::info_span!("rdm.node_admin.seat.update.via-holder-call", node = %self.me, fabric = %fabric, operation = %operation, build_id = %build_id, attempt, holder = %births(&first.holder), successor = %births(&first.successor), seat = first.seat.name(), epoch = first.epoch, outcome = tracing::field::Empty, detail = tracing::field::Empty);
+        let req = Request::PrimaryUpdate { seats: seats.clone(), build_id: build_id.clone(), attempt, operation: operation.clone() };
+        let (out, _) = self.client.call::<NodePrimaryUpdate>(&NodeTarget::ExactNode(first.successor.node_id.clone()), &req, &CallOptions::default()).instrument(span.clone()).await;
+        match out {
+            RpcOutcome::Reply(r) if matches!(r.value(), Reply::PrimaryUpdated { epochs } if !epochs.is_empty()) => {
+                let reply = r.value().clone();
+                span.record("outcome", "primary-updated");
+                self.answered.lock().unwrap().insert(operation, (seats, reply.clone()));
+                reply
+            }
+            other => {
+                let detail = format!("{}: node.primary.update {operation} to {} did not answer node.primary.updated: the {} call ended {} ({other:?}); the seat is the successor's from the row", self.me, births(&first.successor), req.op(), other.name());
+                span.record("outcome", other.name()).record("detail", detail.as_str());
+                Reply::incomplete(&detail)
+            }
+        }
     }
 }
 
 /// Where a member's door is set once its process holds its mesh channel.
 pub type MemberSlot = Arc<std::sync::OnceLock<Arc<MemberDoor>>>;
 
-/// Serve node.primary.update on a node that is not a node-admin. Not built yet.
-pub fn serve_member(b: ServerBuilder, _slot: MemberSlot) -> ServerBuilder {
-    b.serve::<NodePrimaryUpdate, _, _>(OpOwner::Product("rdm".into()), move |_peer: PeerContext, _req: Request| async move { Ok(Reply::NotReady { reason: "not built".into() }) })
+/// Serve node.primary.update on a node that is not a node-admin ([`MemberDoor`]). Until `slot` is
+/// filled a call is `NotReady`.
+pub fn serve_member(b: ServerBuilder, slot: MemberSlot) -> ServerBuilder {
+    b.serve::<NodePrimaryUpdate, _, _>(OpOwner::Product("rdm".into()), move |_peer: PeerContext, req: Request| {
+        let slot = slot.clone();
+        async move {
+            let Some(door) = slot.get().cloned() else {
+                return Ok(Reply::NotReady { reason: "this node has not joined its mesh yet".into() });
+            };
+            Ok(door.serve(req).await)
+        }
+    })
 }
 
 /// Hold every seat the store root's seat-transfer rows commit, as an admin entering the fabric does:

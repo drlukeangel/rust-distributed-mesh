@@ -333,6 +333,23 @@ pub enum BuildReject {
         /// fabric seat's `cannot transfer fabric seat: ...` naming both searches.
         refusal: String,
     },
+    /// The Build would stop, restart, replace, delete the connections of or retire the holder of its
+    /// cohort's seat, a node type other than node-admin, while no other node of its type is in its mesh
+    /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
+    /// no-successor cases", Q7 ruled Luke 2026-10-12: "a mesh's sole broker ... cannot be stopped or
+    /// restarted until a secondary is ReadyForTraffic"): refused by name with Q7's exact text, the holder
+    /// stays primary and nothing is admitted.
+    NoSecondary {
+        /// The seat holder the Build would end.
+        node: String,
+        /// Its mesh.
+        mesh: String,
+        /// What the Build would do to it (`restart`, `replace`, `node.connections.delete`, `stop`,
+        /// `retire`, `delete`).
+        action: String,
+        /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`.
+        refusal: String,
+    },
     /// The stopped-node garbage collector's delete of a birth that is no longer the one stopped
     /// past the ttl at its admission (fabric-node-lifecycle.md §6.9 Recheck): started, replaced, or
     /// its current stopped period no longer the one the scan aged.
@@ -381,6 +398,7 @@ impl BuildReject {
             Self::UnheardMesh { .. } => "unheard-mesh",
             Self::NodeAdminNotNodeRecovered { .. } => "node-admin-not-node-recovered",
             Self::LastAdmin { .. } => "last-admin",
+            Self::NoSecondary { .. } => "no-secondary",
             Self::NodeNotStopped { .. } => "node-not-stopped",
             Self::ReferencedByOpenBuild { .. } => "referenced-by-open-build",
             Self::FabricNotReady { .. } => "fabric-not-ready",
@@ -417,7 +435,7 @@ impl fmt::Display for BuildReject {
                 f,
                 "{workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit its rows live only in their holders' scratchpads, so nothing that moves a seat or writes caller state runs"
             ),
-            Self::LastAdmin { refusal, .. } => f.write_str(refusal),
+            Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
             Self::PathConfigMismatch { mesh, missing, extra } => write!(
                 f,
                 "mesh `{mesh}`: every materialized path carries exactly one PathConfig; missing [{}], without a node [{}]",

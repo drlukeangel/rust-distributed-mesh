@@ -2358,7 +2358,7 @@ impl crate::build_drive::Gate for SeatGate {
     /// node.primary.update before an operation on a seat holder (the approved proposal
     /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 1: "The holder is commanded from
     /// above"): a mesh-primary's seat is commanded from here (the fabric-primary commands a
-    /// mesh-primary); the fabric-primary's own seats it moves itself, having nothing above it, both in
+    /// mesh-primary); any other cohort's seat through its mesh-primary, its commander and writer (Q3); the fabric-primary's own seats it moves itself, having nothing above it, both in
     /// ONE row when it holds both (Q1: "the one row of C1 commits both seats to NA2 at their next
     /// epochs").
     async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<(), crate::build_drive::SeatMoveEnd> {
@@ -2374,8 +2374,11 @@ impl crate::build_drive::Gate for SeatGate {
             other => SeatMoveEnd::Refused(format!("{}: {other:?}", other.name())),
         };
         if m.holder.node_id != door.node_id {
-            if m.mesh_seat {
-                let update = update_operation(Seat::MeshPrimary, build_id.as_str(), operation);
+            // A mesh-primary's seat, commanded on its holder; any other cohort's seat, commanded through
+            // its mesh-primary, which writes the row (this admin itself when it is that mesh-primary).
+            if m.mesh_seat || m.cohort_seat {
+                let seat = if m.cohort_seat { Seat::Cohort(m.holder.kind) } else { Seat::MeshPrimary };
+                let update = update_operation(seat, build_id.as_str(), operation);
                 door.command_update_primary(&m.holder, build_id.as_str(), attempt, &update).await?;
             }
             return Ok(());

@@ -26,8 +26,11 @@ fn node(name: &str, primary: bool, fabric_primary: bool) -> Node {
     n
 }
 
-/// Two meshes of two node-admins and one rpc node each. `mesh1.admin.1` holds the fabric seat and
-/// mesh1's, `mesh2.admin.1` holds mesh2's. The fabric is in state-sync.
+/// Two meshes of two node-admins each, two rpc nodes in mesh1 and one in mesh2. `mesh1.admin.1` holds
+/// the fabric seat and mesh1's, `mesh2.admin.1` holds mesh2's, `mesh1.rpc.1` mesh1's rpc seat with
+/// `mesh1.rpc.2` its secondary: a stop, restart or replace of `mesh1.rpc.1` moves its seat by
+/// node.primary.update and is not refused for want of a secondary (proposal Part C1, Q7). The fabric
+/// is in state-sync.
 fn view(status: ScopeStatus) -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status, provider: ProviderKind::Process },
@@ -36,6 +39,7 @@ fn view(status: ScopeStatus) -> Topology {
             node("mesh1.admin.1", true, true),
             node("mesh1.admin.2", false, false),
             node("mesh1.rpc.1", true, false),
+            node("mesh1.rpc.2", false, false),
             node("mesh2.admin.1", true, false),
             node("mesh2.admin.2", false, false),
             node("mesh2.rpc.1", true, false),
@@ -145,7 +149,7 @@ async fn a_mesh_delete_or_node_delete_before_the_fabric_first_reaches_ready_for_
     let r = rig(ScopeStatus::StateSync).await;
     let before = r.facts().await;
     let current = r.builds.current_build().await.unwrap();
-    let mesh1 = || MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 1)]);
+    let mesh1 = || MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]);
     let cases: Vec<(TopologyChange, &str)> = vec![
         (TopologyChange::RemoveMesh { mesh: "mesh2".into() }, "mesh.delete mesh2"),
         (TopologyChange::RemoveNode { node: "mesh1.rpc.1".parse().unwrap() }, "node.delete mesh1.rpc.1"),

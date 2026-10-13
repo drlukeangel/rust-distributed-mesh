@@ -383,11 +383,14 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     let held_name = crate::held_name::HeldName::of_birth(launch.name.clone());
     let seams = crate::originate::Seams { resolver: resolver.clone(), client: data_plane.clone(), connections: connections.clone(), fault, name: held_name.clone() };
     let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
+    // node.primary.update (op 0x21) on a node that is not a node-admin: the holder its mesh-primary
+    // commands with the committed row, and the successor the holder calls (proposal Part C1, Q3).
+    let primary_update_slot: rafka_node_admin_core::fabric_handover::MemberSlot = Arc::new(std::sync::OnceLock::new());
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
-    let server = serve_kick(register(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new(), client.clone(), Some(connections.clone())), topology_slot.clone()), seams), subject.clone())
+    let server = serve_kick(register(rafka_node_admin_core::fabric_handover::serve_member(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new(), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
         .with_ready_gate(ready.clone())
@@ -562,6 +565,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                 hydration_cell: hydration_cell.clone(),
                                 hydrating: hydrating_cell.clone(),
                             }));
+                            let _ = primary_update_slot.set(Arc::new(rafka_node_admin_core::fabric_handover::MemberDoor::new(launch.name.clone(), launch.node_id.clone(), launch.incarnation.clone(), membership.clone(), client.clone())));
                             let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), hydration: hydration_cell.clone(), stats: server.stats() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));

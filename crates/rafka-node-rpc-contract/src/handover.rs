@@ -4,7 +4,11 @@
 //! incumbent writes the row").
 //!
 //! Commands only go down. The commander calls [`NodePrimaryUpdateRequest::UpdatePrimary`] on the
-//! holder of a seat (the fabric-primary on a mesh-primary). The holder, its cohort's row writer,
+//! holder of a seat (the fabric-primary on a mesh-primary), and on the mesh-primary of a cohort that is
+//! not node-admin (the fabric-primary's command for a mesh's node goes through its mesh-primary). For
+//! such a cohort the mesh-primary is commander and row writer: it writes the one row, then calls
+//! [`NodePrimaryUpdateRequest::UpdatePrimaryFromRow`] on the holder carrying the row's content, and the
+//! holder makes the call on the successor below. The holder, its cohort's row writer,
 //! pre-checks its successor, writes the ONE committed row for one or both seats, then calls
 //! [`NodePrimaryUpdateRequest::PrimaryUpdate`] on the successor carrying the row's content: every seat
 //! with its cohort, both exact births (never a name) and the committed epoch. The successor installs
@@ -90,6 +94,23 @@ pub enum NodePrimaryUpdateRequest {
         /// The update's operation identity.
         operation: String,
     },
+    /// node.primary.update of a cohort that is not node-admin, commanded by its mesh-primary, the
+    /// cohort's commander and row writer, after its one committed row and carrying the row's content
+    /// (the approved proposal Part C1: "its command to the holder B1 comes after the row and carries
+    /// it; B1 then makes the call of step 6"): the holder calls [`Self::PrimaryUpdate`] with these
+    /// seats on the successor they name and answers with the successor's node.primary.updated.
+    UpdatePrimaryFromRow {
+        /// The fabric.
+        fabric: String,
+        /// The seat the row moves, its holder and successor births and its committed epoch.
+        seats: Vec<SeatUpdate>,
+        /// The Build whose stop, delete, restart, replace or node.connections.delete the update precedes.
+        build_id: String,
+        /// That Build's attempt.
+        attempt: u32,
+        /// The update's operation identity: the row's key.
+        operation: String,
+    },
 }
 
 impl NodePrimaryUpdateRequest {
@@ -98,6 +119,7 @@ impl NodePrimaryUpdateRequest {
         match self {
             Self::PrimaryUpdate { .. } => "primary-update",
             Self::UpdatePrimary { .. } => "update-primary",
+            Self::UpdatePrimaryFromRow { .. } => "update-primary-from-row",
         }
     }
 }
@@ -293,11 +315,11 @@ impl NodeProtocol for NodePrimaryUpdate {
     /// An update is decided by the receiver's own seats and the committed row; a carried call is
     /// decided by no one.
     const FORWARDABLE: bool = false;
-    /// A successor keeps serving PrimaryUpdate after the row, and a former holder UpdatePrimary,
-    /// while it refuses new calls (node.connections.delete): a lost reply's identical retry is answered
-    /// from the row.
+    /// A successor keeps serving PrimaryUpdate after the row, and a former holder UpdatePrimary or
+    /// UpdatePrimaryFromRow, while it refuses new calls (node.connections.delete): a lost reply's
+    /// identical retry is answered from the row.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 2;
+    const REQUEST_VARIANTS: u32 = 3;
     const REPLY_VARIANTS: u32 = 16;
 
     type Request = NodePrimaryUpdateRequest;

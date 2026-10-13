@@ -379,8 +379,8 @@ impl ControlPlane {
             }) {
                 self.admit_once_ready(route, workflow, &outer).await?;
             }
-            // A Build whose plan would end a seat holder while no other node-admin of its mesh can take
-            // its seat is refused before it exists: node.primary.update has no other node of its type (R-MT1).
+            // A Build whose plan would end a seat holder while no other node of its type in its mesh can
+            // take its seat is refused before it exists: node.primary.update has no successor (R-MT1, Q7).
             if let Some(reject) = operations.iter().find_map(|op| {
                 let (node, action) = match op {
                     crate::build::BuildOperation::RetireNode { node, .. } => (node, "retire"),
@@ -832,9 +832,22 @@ impl ActionKind {
 /// ... the workflow that commanded it ... fails by name with that reason. The one exception is
 /// R-MT1's: the delete of a mesh's only node skips the update"), or, for that delete, when the fabric
 /// seat it holds has no other mesh-primary to go to (C2 step 3): the same search the holder's
-/// pre-check runs (`election::commanded_successor`), so nothing is admitted and no attempt opens.
+/// pre-check runs (`election::commanded_successor`), so nothing is admitted and no attempt opens. A
+/// node of any other type that holds its cohort's seat is refused [`BuildReject::NoSecondary`] when no
+/// other node of its type in its mesh can take the seat (`election::commanded_cohort_successor`, Q7).
 fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject> {
     let target = t.node(node)?;
+    // The holder of any other cohort's seat: its mesh-primary's node.primary.update needs another node
+    // of its type (Q7); the delete of its mesh's only node skips the update (R-MT1).
+    if target.kind != crate::model::NodeKind::NodeAdmin {
+        let holds = t.cohort_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
+        if !holds || (matches!(action, "retire" | "delete") && t.only_node(&node.mesh, &target.node_id)) {
+            return None;
+        }
+        let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
+        let refusal = crate::election::commanded_cohort_successor(&nodes, &crate::election::Incumbency::default(), target).err()?;
+        return Some(BuildReject::NoSecondary { node: node.to_string(), mesh: node.mesh.clone(), action: action.to_string(), refusal });
+    }
     let fabric_seat = t.fabric_primary().is_some_and(|fp| fp.node_id == target.node_id);
     let mesh_seat = t.cohort_primary(&node.mesh, crate::model::NodeKind::NodeAdmin).is_some_and(|p| p.node_id == target.node_id);
     let moving = match (mesh_seat, fabric_seat) {
@@ -899,6 +912,7 @@ pub(crate) fn reject_span(route: &'static str, reject: &BuildReject) {
         "unheard-mesh",
         "node-admin-not-node-recovered",
         "last-admin",
+        "no-secondary",
         "node-not-stopped",
         "referenced-by-open-build"
     );

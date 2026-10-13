@@ -220,6 +220,27 @@ pub fn cohort_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Opti
 /// e12.s41, and the cohort is read from the parsed kind until then.
 pub const NODE_ADMIN_TYPE: &str = "node-admin";
 
+/// The `node_type` of the `kind` cohort as Q7's refusal names it: [`NODE_ADMIN_TYPE`] for the
+/// node-admin cohort, the kind's name with `-` for `_` for every other (`rpc-node`, `broker`, ...),
+/// the tag-label grammar of proposal Part A1 (Q5).
+pub fn node_type_of(kind: crate::model::NodeKind) -> &'static str {
+    match kind {
+        NodeKind::NodeAdmin => NODE_ADMIN_TYPE,
+        NodeKind::RpcNode => "rpc-node",
+        NodeKind::Broker => "broker",
+        NodeKind::Gateway => "gateway",
+        NodeKind::Compute => "compute",
+    }
+}
+
+/// The successor the mesh-primary's pre-check names for a commanded node.primary.update of `holder`'s
+/// cohort seat, a cohort that is not node-admin (proposal Part C1 step 2: "the cohort election over the
+/// holder's cohort with the holder excluded names a ReadyForTraffic successor"): the lowest Ready node of
+/// `holder`'s (mesh, kind) cohort other than `holder`. `Err` is Q7's exact text naming its type and mesh.
+pub fn commanded_cohort_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Result<Node, String> {
+    cohort_successor(nodes, inc, holder).ok_or_else(|| no_secondary(node_type_of(holder.kind), &holder.mesh))
+}
+
 /// Which seats a commanded node.primary.update moves from its holder (the approved proposal
 /// node-primary-update-fabric-mesh-and-node-type.md, Part C).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

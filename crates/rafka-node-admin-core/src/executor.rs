@@ -78,10 +78,18 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // A member node of any kind is born, restarted and retired by its own mesh's primary
         // admin (the fabric primary when the mesh has none): the rule names no role, so a
         // product's kinds get the same executor as the proof product's rpc node.
+        //
+        // The holder of its cohort's seat moves that seat first, by node.primary.update its mesh-primary
+        // commands and writes (proposal Part C1, Q3; [`seat_move`]): until it has, no admin executes the
+        // operation.
         BuildOperation::CreateNode { node, .. } | BuildOperation::RestartNode { node } | BuildOperation::RetireNode { node, .. } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DeleteConnections { node, .. } | BuildOperation::StopNode { node, .. } | BuildOperation::StartNode { node, .. } | BuildOperation::DeleteNode { node, .. }
             if node.kind != NodeKind::NodeAdmin =>
         {
-            mesh_executor(&node.mesh, None, t)
+            if seat_move(op, t).is_some() {
+                None
+            } else {
+                mesh_executor(&node.mesh, None, t)
+            }
         }
         // A mesh's missing node-admin is created by that mesh's primary node-admin, its claim
         // fenced at the fabric primary (node-admin-lifecycle.md §4.3); the fabric primary creates
@@ -185,7 +193,9 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 }
 
 /// The seats `op` moves before it runs (R-MT1: node.primary.update "should be called on MP stop or
-/// delete. Caveat: delete is skipped if it's the only node on the mesh"): the node-admin it stops,
+/// delete. Caveat: delete is skipped if it's the only node on the mesh"): the node of any other type it
+/// stops, deletes, restarts, replaces or deletes the connections of, when that node holds its cohort's
+/// seat (Part C1, Q3: its mesh-primary commands the update); the node-admin it stops,
 /// deletes, restarts, replaces or deletes the connections of, when that node holds its mesh's primary
 /// seat or the fabric seat in view `t`; and for a mesh retire of the mesh that holds the fabric seat,
 /// the fabric seat alone (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part
@@ -201,7 +211,7 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
         let holder = t.fabric_primary().filter(|fp| fp.mesh == *mesh)?.clone();
-        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true });
+        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false });
     }
     let (node, delete) = match op {
         BuildOperation::RetireNode { node, exited: None } => (node, true),
@@ -209,7 +219,16 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
         _ => return None,
     };
     if node.kind != NodeKind::NodeAdmin {
-        return None;
+        // Any other cohort's seat: its holder's seat moves first, by node.primary.update its mesh-primary
+        // commands and writes (proposal Part C1: "One primitive moves the primary of any (mesh,
+        // node_type) cohort"; Q3), except for the delete of its mesh's only node (R-MT1). A holder with
+        // no other node of its type is still named: the update refuses it by Q7's name (the Build door
+        // refuses it first, `control_plane::last_admin`).
+        let holder = t.node(node)?.clone();
+        if !t.cohort_primary(&node.mesh, node.kind).is_some_and(|p| p.node_id == holder.node_id) || (delete && t.only_node(&node.mesh, &holder.node_id)) {
+            return None;
+        }
+        return Some(SeatMove { holder, mesh_seat: false, fabric_seat: false, cohort_seat: true });
     }
     let holder = t.node(node)?.clone();
     let mesh_seat = t.cohort_primary(&node.mesh, NodeKind::NodeAdmin).is_some_and(|p| p.node_id == holder.node_id);
@@ -220,12 +239,12 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     // The delete of a mesh's only node skips node.primary.update; a fabric seat on it still moves, out
     // of its mesh, which has no other node-admin to take it (C2 search step 2).
     if delete && t.only_node(&node.mesh, &holder.node_id) {
-        return fabric_seat.then_some(SeatMove { holder, mesh_seat: false, fabric_seat: true });
+        return fabric_seat.then_some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false });
     }
-    Some(SeatMove { holder, mesh_seat, fabric_seat })
+    Some(SeatMove { holder, mesh_seat, fabric_seat, cohort_seat: false })
 }
 
-/// What the fabric-primary's drive moves before an operation on a seat holder runs ([`seat_move`]).
+/// What a drive moves before an operation on a seat holder runs ([`seat_move`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatMove {
     /// The node-admin that holds the seats.
@@ -235,6 +254,9 @@ pub struct SeatMove {
     /// It holds the fabric seat: node.fabric-primary.update moves it, in the mesh seat's one row when
     /// both move; alone (the mesh seat stays) it moves out of the holder's mesh (C2 search step 2).
     pub fabric_seat: bool,
+    /// It holds the seat of its (mesh, node type) cohort, a type other than node-admin:
+    /// node.primary.update moves it, commanded and written by its mesh-primary (proposal Part C1, Q3).
+    pub cohort_seat: bool,
 }
 
 /// The admin that executes what is left of a plan: the first operation's
@@ -649,12 +671,15 @@ mod tests {
         let mut second = node("mesh2.admin.2", false, false);
         second.status = NodeStatus::PendingReconnect;
         t.nodes.push(second);
+        // mesh2.rpc.1 holds mesh2's rpc seat; the restart is of mesh2.rpc.3, which holds none, so no seat
+        // moves before it and its executor alone is the question.
         t.nodes.push(node("mesh2.rpc.1", true, false));
+        t.nodes.push(node("mesh2.rpc.3", false, false));
         for n in t.nodes.iter_mut().filter(|n| n.name.to_string() == "mesh2.admin.1") {
             n.status = NodeStatus::Dead;
             n.is_primary = false;
         }
-        let ops = [BuildOperation::RestartNode { node: "mesh2.rpc.1".parse().unwrap() }, create("mesh2.rpc.2"), create("mesh2.admin.3"), BuildOperation::RetireNode { node: "mesh2.admin.1".parse().unwrap(), exited: None }];
+        let ops = [BuildOperation::RestartNode { node: "mesh2.rpc.3".parse().unwrap() }, create("mesh2.rpc.2"), create("mesh2.admin.3"), BuildOperation::RetireNode { node: "mesh2.admin.1".parse().unwrap(), exited: None }];
         for op in &ops {
             assert_eq!(executor_for(op, &t), None, "{op:?}: mesh2.admin.2 is held, not proven gone: never the fabric primary");
             let why = why_no_executor(op, &t);

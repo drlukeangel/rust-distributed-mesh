@@ -2196,8 +2196,8 @@ fn committed_rpc(m: &Member, epoch: u64) -> Vec<CommittedSeat> {
 /// `broker` cohort the mesh-primary is commander and writer, and the holder B1 only makes the call";
 /// "For a non-admin cohort the order of steps 1 and 5 swaps: the mesh-primary is writer and commander,
 /// so it pre-checks, announces and writes the row first (steps 2-5), and its command to the holder B1
-/// comes after the row and carries it; B1 then makes the call of step 6"; step 4: "A non-admin holder
-/// has no mesh rows to drain"; step 6: "The successor ... installs itself as primary ... and answers
+/// comes after the row and carries it; B1 then makes the call of step 6"; step 4: a non-admin holder has
+/// no mesh rows whose issued writes must finish; step 6: "The successor ... installs itself as primary ... and answers
 /// `node.primary.updated { revisions }` on that call. A non-admin holder then answers its commander's
 /// command"; step 7: "The writer publishes 'primary updated'"; B1: "a living holder keeps its seat"):
 /// P, mesh1's primary, moves mesh1's rpc seat from B1 to B2. In order: P says "primary updating", P
@@ -2241,7 +2241,7 @@ fn a_mesh_primary_moves_its_rpc_cohorts_primary_by_commanding_the_holder_with_it
         assert_eq!(nodes(ANNOUNCE_UPDATED), vec!["mesh1.admin.1".to_string()], "P says updated; B1 and B2 announce nothing");
         assert_eq!(nodes(HOLDER_CALL), vec!["mesh1.rpc.1".to_string()], "B1, the holder, makes the call");
         assert_eq!(nodes(UPDATED), vec!["mesh1.rpc.2".to_string()], "B2, the successor, installs");
-        assert!(spans.named(CUT_OFF).is_empty() && f.p.cut_offs.lock().unwrap().is_empty(), "a non-admin holder has no mesh rows to drain: nothing is cut off");
+        assert!(spans.named(CUT_OFF).is_empty() && f.p.cut_offs.lock().unwrap().is_empty(), "a non-admin holder has no mesh rows: nothing is cut off");
         assert!(refusals(&spans).is_empty(), "{:?}", refusals(&spans));
         // An identical retry replays the committed result from the one row.
         let again = f.p.door.update_cohort_primary(&b1, None, "b1", 1, &op).await.expect("the retry replays");

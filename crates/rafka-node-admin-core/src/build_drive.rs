@@ -109,8 +109,9 @@ pub struct PrecedingUpdate {
 
 /// The seat updates a committed row may record before `op` of Build `build_id` (R-MT1,
 /// [`crate::executor::seat_move`]): for a stop, delete, restart, replace or node.connections.delete of
-/// a node-admin, the mesh-primary seat's update and the fabric seat's alone; for a mesh retire, the
-/// fabric seat's under that mesh. None for any other operation.
+/// a node-admin, the mesh-primary seat's update and the fabric seat's alone; of a node of any other
+/// type, its cohort seat's update; for a mesh retire, the fabric seat's under that mesh. None for any
+/// other operation.
 pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId) -> Vec<PrecedingUpdate> {
     use crate::fabric_handover::update_operation;
     use rafka_mesh_entity::Seat;
@@ -121,6 +122,10 @@ pub fn preceding_updates(op: &BuildOperation, build_id: &BuildId) -> Vec<Precedi
             if node.kind == NodeKind::NodeAdmin =>
         {
             [Seat::MeshPrimary, Seat::FabricPrimary].into_iter().map(|seat| PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(seat, build_id.as_str(), &key), holder: Some(node.clone()) }).collect()
+        }
+        // Any other cohort's seat: its mesh-primary's row under the holder's mesh (proposal Part C1, Q3).
+        BuildOperation::RetireNode { node, exited: None } | BuildOperation::RestartNode { node } | BuildOperation::ReplaceNode { node, .. } | BuildOperation::DeleteConnections { node, .. } | BuildOperation::StopNode { node, .. } => {
+            vec![PrecedingUpdate { mesh: node.mesh.clone(), operation: update_operation(Seat::Cohort(node.kind), build_id.as_str(), &key), holder: Some(node.clone()) }]
         }
         _ => Vec::new(),
     }
@@ -1375,7 +1380,7 @@ impl DriveEnv {
 
 /// Whether view `t` still names `m`'s holder the holder of the seats `m` moves before `op`.
 fn still_holds(op: &BuildOperation, m: &crate::executor::SeatMove, t: &Topology) -> bool {
-    crate::executor::seat_move(op, t).is_some_and(|still| still.holder.node_id == m.holder.node_id && still.mesh_seat == m.mesh_seat && still.fabric_seat == m.fabric_seat)
+    crate::executor::seat_move(op, t).is_some_and(|still| still.holder.node_id == m.holder.node_id && still.mesh_seat == m.mesh_seat && still.fabric_seat == m.fabric_seat && still.cohort_seat == m.cohort_seat)
 }
 
 /// A claim not won, in words that name what the claim door said.

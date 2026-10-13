@@ -48,13 +48,16 @@ const HOLDER: &str = "01 6d  0c 303132333435363738396162  0c 79727a34396a3330337
 /// `m`, `0123456789cd`, `j`.
 const SUCCESSOR: &str = "01 6d  0c 303132333435363738396364  0c 79727a37396a3330337a7378";
 
-/// CONTRACT: the family's two requests. `PrimaryUpdate` (variant 0) is the holder's call on its
+/// CONTRACT: the family's three requests. `PrimaryUpdate` (variant 0) is the holder's call on its
 /// successor carrying the committed row's content: every seat with its cohort, both exact births and
 /// the committed epoch, then the Build, its attempt and the operation. `UpdatePrimary` (variant 1) is
-/// the commander's command to the holder. What must NOT happen: a name in place of a birth, a field
-/// moved, a variant inserted before the end.
+/// the commander's command to the holder of a node-admin seat, or to the mesh-primary of any other
+/// cohort. `UpdatePrimaryFromRow` (variant 2) is a mesh-primary's command to the holder of a cohort
+/// that is not node-admin, after its row and carrying the row's content (proposal Part C1: "its
+/// command to the holder B1 comes after the row and carries it"). What must NOT happen: a name in
+/// place of a birth, a field moved, a variant inserted before the end.
 #[test]
-fn requests_match_the_frozen_two_variant_wire_schema() {
+fn requests_match_the_frozen_three_variant_wire_schema() {
     let fixtures = [
         // variant 0 | seats (len 2: MeshPrimary=1 { mesh "m" } holder successor epoch 4, FabricPrimary=0
         // holder successor epoch 8) | build_id | attempt | operation
@@ -64,13 +67,24 @@ fn requests_match_the_frozen_two_variant_wire_schema() {
             NodePrimaryUpdateRequest::UpdatePrimary { fabric: "f".into(), holder: holder(), seats: vec![SeatEpoch { seat: Seat::MeshPrimary { mesh: "m".into() }, expected_epoch: 3 }], build_id: "b".into(), attempt: 2, operation: "o".into() },
             format!("01 0166 {HOLDER} 01 01 016d 03 0162 02 016f"),
         ),
+        // variant 2 | fabric | seats (len 1: Cohort=2 { mesh "m", kind RpcNode=1 } holder successor epoch 3) | build_id | attempt | operation
+        (
+            NodePrimaryUpdateRequest::UpdatePrimaryFromRow {
+                fabric: "f".into(),
+                seats: vec![SeatUpdate { seat: Seat::Cohort { mesh: "m".into(), kind: rafka_mesh_entity::NodeKind::RpcNode }, holder: holder(), successor: successor(), epoch: 3 }],
+                build_id: "b".into(),
+                attempt: 2,
+                operation: "o".into(),
+            },
+            format!("02 0166 01 02 016d 01 {HOLDER} {SUCCESSOR} 03 0162 02 016f"),
+        ),
     ];
     for (q, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_request(&q).unwrap(), bytes(&hex), "{q:?}");
         assert_eq!(NodePrimaryUpdate::decode_request(&bytes(&hex)).unwrap(), q);
     }
-    assert_eq!(NodePrimaryUpdate::REQUEST_VARIANTS, 2);
-    assert_eq!(NodePrimaryUpdate::decode_request(&[2]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(NodePrimaryUpdate::REQUEST_VARIANTS, 3);
+    assert_eq!(NodePrimaryUpdate::decode_request(&[3]), Err(DecodeFailure::UnknownVariant));
 }
 
 /// CONTRACT: the family's sixteen replies. `PrimaryUpdated` (node.primary.updated) first, then the

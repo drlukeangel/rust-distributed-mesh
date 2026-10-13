@@ -184,11 +184,15 @@ fn node(name: &str, primary: bool) -> Node {
     n
 }
 
+/// One mesh: `mesh1.admin.1` (the fabric-primary), `mesh1.rpc.1` and `mesh1.rpc.2`, which holds mesh1's
+/// rpc seat. The cells restart `mesh1.rpc.1`, which holds no seat, so no node.primary.update precedes
+/// the restart (proposal Part C1) and the drive's gate of this fixture, which moves no seat, is never
+/// asked to; a recovery of an exited birth moves no seat (`executor::seat_move`).
 fn mn() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(rafka_mesh_entity::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
-        nodes: vec![node("mesh1.admin.1", true), node("mesh1.rpc.1", true), node("mesh1.rpc.2", false)],
+        nodes: vec![node("mesh1.admin.1", true), node("mesh1.rpc.1", false), node("mesh1.rpc.2", true)],
     }
 }
 
