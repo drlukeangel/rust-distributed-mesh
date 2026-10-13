@@ -1910,9 +1910,33 @@ pub(crate) struct RecoverySubmitter {
     pub builds: Arc<dyn crate::build_state::BuildStateAdapter>,
 }
 
+/// What a loop that proves exits last recorded per birth `(node_id, incarnation)`: the mesh primary's
+/// tick ([`RecoverySubmitter::record_verdict`]) and the fabric primary's drift pass
+/// ([`reconcile_drift`]) each hold one, and record through [`record_verdict_once`].
+pub type ExitVerdicts = Mutex<HashMap<(NodeId, IncarnationId), Inspected>>;
+
+/// The verdict rule of a loop that proves exits (node-recovery.md "Exited is the proof, recorded
+/// durably"): `outcome` of `birth` is recorded when it differs from what `verdicts` holds for that
+/// birth, by `record` (its span, and for an exit the birth's exit-proof row, a blind put of its own
+/// key); a verdict that stands is neither named nor put again by a later pass. A record that fails
+/// (the store refused the put) leaves `verdicts` as it was, so the next pass that proves the exit
+/// records it. The answer is where an exit's row stands: `put` by this call, `recorded` by an earlier
+/// one, or the refusal.
+pub(crate) async fn record_verdict_once<F>(verdicts: &ExitVerdicts, birth: (NodeId, IncarnationId), outcome: &Inspected, record: impl FnOnce() -> F) -> Result<&'static str, String>
+where
+    F: std::future::Future<Output = Result<(), String>>,
+{
+    if verdicts.lock().unwrap().get(&birth) == Some(outcome) {
+        return Ok("recorded");
+    }
+    record().await?;
+    verdicts.lock().unwrap().insert(birth, outcome.clone());
+    Ok("put")
+}
+
 /// What the provider's inspection of a TRUE OFFLINE member proved.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Inspected {
+pub enum Inspected {
     /// Exited: the exit code and where it came from.
     Exited(Option<i32>, &'static str),
     /// Not proven exited (still running, or no runtime fact): why.
@@ -1962,7 +1986,7 @@ impl RecoverySubmitter {
     /// exited outside any workflow. Any other verdict ends here, and so does the exit of a birth whose
     /// removal this admin's book holds announced, read after the inspection (the tick's view predates
     /// it).
-    pub(crate) async fn recover_if_proven(&self, n: &Node, verdicts: &Mutex<HashMap<(NodeId, IncarnationId), Inspected>>) -> Inspected {
+    pub(crate) async fn recover_if_proven(&self, n: &Node, verdicts: &ExitVerdicts) -> Inspected {
         let outcome = self.inspect(n).await;
         let row = self.record_verdict(n, &outcome, verdicts).await;
         if let Inspected::Exited(code, source) = &outcome {
@@ -2001,18 +2025,16 @@ impl RecoverySubmitter {
     /// neither named nor put again by a later tick; a put the store refused records nothing, so the
     /// next tick that proves the exit puts the row. For an exit, the answer is where its row stands:
     /// `put` by this tick, `recorded` by an earlier one, or the store's refusal of this tick's put.
-    async fn record_verdict(&self, n: &Node, outcome: &Inspected, verdicts: &Mutex<HashMap<(NodeId, IncarnationId), Inspected>>) -> Result<&'static str, String> {
+    async fn record_verdict(&self, n: &Node, outcome: &Inspected, verdicts: &ExitVerdicts) -> Result<&'static str, String> {
         let incarnation = n.incarnation_id.clone().ok_or_else(|| format!("{} ({}) holds no incarnation: no birth to key its verdict by", n.name, n.node_id))?;
-        let birth = (n.node_id.clone(), incarnation);
-        if verdicts.lock().unwrap().get(&birth) == Some(outcome) {
-            return Ok("recorded");
-        }
-        self.span_inspection(n, outcome);
-        if let Inspected::Exited(code, source) = outcome {
-            crate::offline::put_exit_proof(&*self.status_storage, n, *code, source, local_now_ms()).await?;
-        }
-        verdicts.lock().unwrap().insert(birth, outcome.clone());
-        Ok("put")
+        record_verdict_once(verdicts, (n.node_id.clone(), incarnation), outcome, || async {
+            self.span_inspection(n, outcome);
+            if let Inspected::Exited(code, source) = outcome {
+                crate::offline::put_exit_proof(&*self.status_storage, n, *code, source, local_now_ms()).await?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// The workflow whose announced removal `n`'s exact birth is under, as this admin's book holds it
@@ -2450,6 +2472,8 @@ fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], re
 /// `started` holds, per opening, the inputs it was opened on (`drift_inputs`), so an attempt that
 /// fails is opened again only once one of them moves, never once per pass; the adapter's
 /// insert-and-fail on the attempt keeps two authorities from opening it twice.
+/// `verdicts` holds the exits this loop recorded ([`record_verdict_once`]), so a proven exit's row is
+/// put once, by the pass that proved it.
 pub async fn reconcile_drift(
     time: &rafka_mesh_transport::clock::RafkaTime,
     me: &PathName,
@@ -2463,6 +2487,7 @@ pub async fn reconcile_drift(
     durable: &[crate::storage::RuntimeRow],
     started: &mut HashSet<(crate::build::BuildId, u32, Vec<String>)>,
     held: &mut HashSet<(NodeId, IncarnationId)>,
+    verdicts: &ExitVerdicts,
     hold: &(dyn Fn(&str) -> Option<u64> + Sync),
     defers: &(dyn Fn(&str) -> bool + Sync),
     decided: &(dyn Fn(&str) -> bool + Sync),
@@ -2501,6 +2526,10 @@ pub async fn reconcile_drift(
         }
     }
     let mut held_now: HashSet<(NodeId, IncarnationId)> = HashSet::new();
+    let mut proven_now: HashSet<(NodeId, IncarnationId)> = HashSet::new();
+    // Where each proven exit's row stands after this pass (`<path.name>=put|recorded|<refusal>`), named
+    // on the pass's attempt span or its unchanged refusal.
+    let mut exit_proof_rows: Vec<String> = Vec::new();
     for n in candidates {
         // A birth the Build stopped on request is not drift: its `stop-node:<path>` operation completed
         // for this exact birth (node-stop.md: no bind, no JoinNode, no replacement), and the exit it
@@ -2596,11 +2625,19 @@ pub async fn reconcile_drift(
                 }
                 continue;
             }
-            // The proof is recorded durably: the birth's exit-proof row is what every projection
-            // reads as its proven loss. A refused put leaves the birth unproven to every reader.
-            if let Err(e) = exits.put_exit(n, code, source).await {
-                tracing::info_span!("rdm.node_admin.node.reject.via-exit-row-unwritten", node = %n.name, node_id = %n.node_id, incarnation_id = %incarnation.as_str(), authority = %authority.name, error = %e)
-                    .in_scope(|| tracing::info!("the provider proves the birth exited, but its exit-proof row is not written: no projection holds it exited; the repair is decided from the proof in hand"));
+            // The proof is recorded durably, once (`record_verdict_once`): the birth's exit-proof row is
+            // what every projection reads as its proven loss, put by the pass that proved the exit and
+            // not again by a later pass that finds it standing. A refused put leaves the birth
+            // unproven to every reader, and the next pass that proves it puts the row.
+            let birth = (n.node_id.clone(), incarnation.clone());
+            proven_now.insert(birth.clone());
+            match record_verdict_once(verdicts, birth, &Inspected::Exited(code, source), || async { exits.put_exit(n, code, source).await.map(|_| ()) }).await {
+                Ok(stands) => exit_proof_rows.push(format!("{}={stands}", n.name)),
+                Err(e) => {
+                    exit_proof_rows.push(format!("{}={e}", n.name));
+                    tracing::info_span!("rdm.node_admin.node.reject.via-exit-row-unwritten", node = %n.name, node_id = %n.node_id, incarnation_id = %incarnation.as_str(), authority = %authority.name, error = %e)
+                        .in_scope(|| tracing::info!("the provider proves the birth exited, but its exit-proof row is not written: no projection holds it exited; the repair is decided from the proof in hand"));
+                }
             }
             exited.insert(incarnation.clone());
             proven.insert(n.name.clone(), crate::drift::ExitedBirth { node_id: n.node_id.clone(), incarnation, code, source });
@@ -2608,6 +2645,9 @@ pub async fn reconcile_drift(
     }
     // A hold ends with the silence: a mesh heard again holds no birth, and the next silence is a new hold.
     held.retain(|k| held_now.contains(k));
+    // A recorded exit is held while this pass still proves it: a birth no longer proven here is
+    // recorded again by the next pass that proves it.
+    verdicts.lock().unwrap().retain(|k, _| proven_now.contains(k));
     let short = crate::drift::shortfall(&current.topology, t, &exited);
     // One exited birth per attempt, in path.name order; the next pass takes the next remaining one.
     let first_exited: Option<(&PathName, &crate::drift::ExitedBirth)> =
@@ -2655,7 +2695,7 @@ pub async fn reconcile_drift(
     if started.contains(&opened_at) {
         let unchanged = (current.build_id.clone(), 0u32, vec!["unchanged".to_string(), ident.clone(), inputs.clone(), current.attempt.to_string()]);
         if started.insert(unchanged) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-drift-unchanged", node = %me, build_id = %current.build_id, failed_attempt = current.attempt, scope = %scope, inputs = %inputs)
+            tracing::info_span!("rdm.node_admin.build.reject.via-drift-unchanged", node = %me, build_id = %current.build_id, failed_attempt = current.attempt, scope = %scope, inputs = %inputs, exit_proof_rows = %exit_proof_rows.join(", "))
                 .in_scope(|| tracing::info!("the last attempt opened for these inputs ended and none of them moved since: no next attempt until one does"));
         }
         return None;
@@ -2692,6 +2732,7 @@ pub async fn reconcile_drift(
         action = action.as_ref().map(|a| match a { crate::accepted::AttemptAction::Restart { .. } => "restart", crate::accepted::AttemptAction::Replace { .. } => "replace", crate::accepted::AttemptAction::DeleteConnections { .. } => "drain", crate::accepted::AttemptAction::Stop { .. } => "stop", crate::accepted::AttemptAction::Start { .. } => "start", crate::accepted::AttemptAction::Recover { .. } => "recover", crate::accepted::AttemptAction::Delete { .. } => "delete" }).unwrap_or("none"),
         exit_code = first_exited.and_then(|(_, b)| b.code).map(|c| c.to_string()).unwrap_or_default(),
         exit_proof = first_exited.map(|(_, b)| b.source).unwrap_or("none"),
+        exit_proof_rows = %exit_proof_rows.join(", "),
     );
     let opened = crate::build_state::AttemptOpened {
         mesh: None,
@@ -6941,6 +6982,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         executor = tokio::spawn(async move {
                                             let mut started = HashSet::new();
                                             let mut held = HashSet::new();
+                                            let exit_verdicts = ExitVerdicts::default();
                                             loop {
                                                 // Held here while the admin is parked: its own wait, outside every lock.
                                                 let turn = park.turn("executor").await;
@@ -6958,7 +7000,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 // starts a reconciliation Build for proven drift.
                                                 if cut_off_view.authorizes() {
                                                     let durable_rows = if now.holds_fabric_seat(&me_id) { drift_nodes.runtimes().await.unwrap_or_default() } else { Vec::new() };
-                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &records).await;
+                                let opened =                     reconcile_drift(&drift_time, &me, &me_id, &now, &book, &*deployer, &*drift_builds, &drift_contexts, &drift_admission, &durable_rows, &mut started, &mut held, &exit_verdicts, &|mesh| ladder.lock().unwrap().fence(mesh, book.mesh_unheard(mesh, std::time::Instant::now())).and_then(|p| p.unheard_ms), &|mesh| book.backbone_meshes().contains(mesh) && !ladder.lock().unwrap().rebirth_decided(mesh), &|mesh| ladder.lock().unwrap().rebirth_decided(mesh), &records).await;
                                                     // The proofs the pass just took are in the view the attempt is planned from: a birth
                                                     // proven exited is not live there, and holds no seat.
                                                     if opened.is_some() {
