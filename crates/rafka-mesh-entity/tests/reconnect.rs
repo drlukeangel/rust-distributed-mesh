@@ -10,7 +10,7 @@ use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
 const RPC: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
 
 fn end(ordinal: u32, incarnation: &str) -> ConnectionEnd {
-    ConnectionEnd { name: PathName { mesh: "mesh1".into(), kind: NodeKind::RpcNode, ordinal, old: false, new: false }, node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(incarnation)).unwrap()) }
+    ConnectionEnd { name: PathName::new("mesh1", NodeKind::RpcNode, ordinal), node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(incarnation)).unwrap()) }
 }
 
 fn held_for(own: &ConnectionEnd) -> ConnectionsHeld {

@@ -529,19 +529,27 @@ pub fn name_refusal(name: &str) -> Option<String> {
 pub const DEFAULT_NODE_TYPE: &str = "node";
 
 /// Normalize a `node_type` supplied at `node.create`: an empty string becomes [`DEFAULT_NODE_TYPE`].
+/// Whitespace is not trimmed, so `" "` stays `" "` and [`node_type_refusal`] refuses it by name.
 pub fn normalize_node_type(node_type: &str) -> String {
-    node_type.to_string()
+    if node_type.is_empty() {
+        DEFAULT_NODE_TYPE.to_string()
+    } else {
+        node_type.to_string()
+    }
 }
 
 /// Why `node_type` is not a valid node type, by name (`node_type`), or `None` when it is within
-/// the shared identifier grammar.
-pub fn node_type_refusal(_node_type: &str) -> Option<String> {
-    None
+/// the shared identifier grammar (`1..=64` of `a-z 0-9 - _ . ~`, no leading `.`, whitespace refused).
+pub fn node_type_refusal(node_type: &str) -> Option<String> {
+    grammar_refusal("node_type", node_type)
 }
 
 /// Why `node.update` of `node_type` is refused, by name (`node_type` is immutable after `node.create`).
-pub fn node_type_update_refusal(_held_node_type: &str, _requested_node_type: &str) -> String {
-    String::new()
+pub fn node_type_update_refusal(held_node_type: &str, requested_node_type: &str) -> String {
+    if let Some(reason) = node_type_refusal(requested_node_type) {
+        return format!("node_type is immutable (set at node.create, held {held_node_type:?}); node.update cannot change node_type ({reason})");
+    }
+    format!("node_type is immutable (set at node.create, held {held_node_type:?}); node.update cannot change node_type to {requested_node_type:?}")
 }
 
 /// Why `value`, a `noun` (a tag label, a node name), is outside the one grammar both take, by name, or

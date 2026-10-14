@@ -64,13 +64,19 @@ impl NodeKind {
 
     /// The node's `node_type` identifier (`node-admin`, `rpc-node`, `broker`, `gateway` or `compute`).
     pub fn node_type(self) -> &'static str {
-        ""
+        match self {
+            Self::NodeAdmin => "node-admin",
+            Self::RpcNode => "rpc-node",
+            Self::Broker => "broker",
+            Self::Gateway => "gateway",
+            Self::Compute => "compute",
+        }
     }
 }
 
-/// A node's stable logical address `<mesh>.<kind>.<ordinal>`; `<mesh>.<kind>.<ordinal>.old` names
+/// A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.old` names
 /// the predecessor a replacement renamed to free the path for its successor, and
-/// `<mesh>.<kind>.<ordinal>.new` the successor born beside it until it takes the name
+/// `<mesh>.<kind>.<name>.new` the successor born beside it until it takes the name
 /// (node-replace.md). At most one of `old` and `new` is set: every constructor keeps it so.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathName {
@@ -78,8 +84,10 @@ pub struct PathName {
     pub mesh: String,
     /// The node's kind.
     pub kind: NodeKind,
-    /// The node's ordinal within its mesh and kind, from 1.
+    /// The node's ordinal within its mesh and kind, from 1 (`0` when `label` carries a non-numeric free-text name).
     pub ordinal: u32,
+    /// Free-text base name within `<mesh>.<kind>` when non-numeric (e.g. `"north"`); empty when `ordinal >= 1`.
+    pub label: String,
     /// The path is the `.old` name of a replaced predecessor.
     pub old: bool,
     /// The path is the `.new` name of a successor that has not yet taken the name.
@@ -126,7 +134,7 @@ pub fn is_valid_mesh_name(m: &str) -> bool {
 impl PathName {
     /// A `path.name` from its parts.
     pub fn new(mesh: impl Into<String>, kind: NodeKind, ordinal: u32) -> Self {
-        Self { mesh: mesh.into(), kind, ordinal, old: false, new: false }
+        Self { mesh: mesh.into(), kind, ordinal, label: String::new(), old: false, new: false }
     }
 
     /// The name the predecessor of a replacement keeps: this path with the `.old` suffix.
@@ -172,10 +180,10 @@ impl FromStr for PathName {
     type Err = PathNameError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split('.').collect();
-        let (mesh, kind, ord, old, new) = match parts[..] {
-            [mesh, kind, ord] => (mesh, kind, ord, false, false),
-            [mesh, kind, ord, "old"] => (mesh, kind, ord, true, false),
-            [mesh, kind, ord, "new"] => (mesh, kind, ord, false, true),
+        let (mesh, kind, base, old, new) = match parts[..] {
+            [mesh, kind, base] => (mesh, kind, base, false, false),
+            [mesh, kind, base, "old"] => (mesh, kind, base, true, false),
+            [mesh, kind, base, "new"] => (mesh, kind, base, false, true),
             [_, _, _, _] => return Err(PathNameError::Suffix(s.into())),
             _ => return Err(PathNameError::Shape(s.into())),
         };
@@ -183,18 +191,33 @@ impl FromStr for PathName {
             return Err(PathNameError::MeshName(mesh.into()));
         }
         let kind = NodeKind::from_segment(kind).ok_or_else(|| PathNameError::Kind(kind.into()))?;
-        let ordinal = ord
-            .parse::<u32>()
-            .ok()
-            .filter(|n| *n >= 1 && !ord.starts_with('0'))
-            .ok_or_else(|| PathNameError::Ordinal(ord.into()))?;
-        Ok(Self { mesh: mesh.into(), kind, ordinal, old, new })
+        let bytes = base.as_bytes();
+        if bytes.is_empty() || bytes.len() > 64 {
+            return Err(PathNameError::Ordinal(base.into()));
+        }
+        let (ordinal, label) = if bytes.iter().all(|b| b.is_ascii_digit()) {
+            let n = base
+                .parse::<u32>()
+                .ok()
+                .filter(|n| *n >= 1 && !base.starts_with('0'))
+                .ok_or_else(|| PathNameError::Ordinal(base.into()))?;
+            (n, String::new())
+        } else if bytes.iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'~')) {
+            (0, base.to_string())
+        } else {
+            return Err(PathNameError::Ordinal(base.into()));
+        };
+        Ok(Self { mesh: mesh.into(), kind, ordinal, label, old, new })
     }
 }
 
 impl fmt::Display for PathName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}", self.mesh, self.kind.segment(), self.ordinal)?;
+        if self.label.is_empty() {
+            write!(f, "{}.{}.{}", self.mesh, self.kind.segment(), self.ordinal)?;
+        } else {
+            write!(f, "{}.{}.{}", self.mesh, self.kind.segment(), self.label)?;
+        }
         if self.old {
             f.write_str(".old")?;
         }
@@ -226,7 +249,7 @@ mod tests {
         for s in ["mesh1.rpc.2", "mesh1.admin.1", "m-2.rpc.17"] {
             assert_eq!(s.parse::<PathName>().unwrap().to_string(), s);
         }
-        for s in ["mesh1.broker.1", "mesh1.gateway.3", "mesh2.compute.2"] {
+        for s in ["mesh1.broker.1", "mesh1.gateway.3", "mesh2.compute.2", "mesh1.broker.north", "mesh1.rpc.east-1"] {
             assert_eq!(s.parse::<PathName>().unwrap().to_string(), s);
         }
         assert_eq!("mesh1.registry.1".parse::<PathName>(), Err(PathNameError::Kind("registry".into())));
@@ -261,6 +284,7 @@ mod tests {
         let held: PathName = "mesh1.rpc.2.old".parse().unwrap();
         assert_eq!((held.path(), held.name()), ("mesh1.rpc".to_string(), "2.old".to_string()));
         assert_eq!(held.with_name("9").unwrap().to_string(), "mesh1.rpc.9");
+        assert_eq!(held.with_name("north").unwrap().to_string(), "mesh1.rpc.north");
         assert_eq!(held.with_name("2").unwrap(), held.base());
         assert_eq!(held.with_name("rpc.2"), Err(PathNameError::Suffix("mesh1.rpc.rpc.2".into())));
         assert_eq!(held.with_name("2.older"), Err(PathNameError::Suffix("mesh1.rpc.2.older".into())));

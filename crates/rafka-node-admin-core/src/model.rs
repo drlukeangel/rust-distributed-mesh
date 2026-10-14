@@ -204,14 +204,18 @@ impl Node {
     /// Set the node's `node_type` at creation (`node.create`), normalizing an empty string to
     /// [`rafka_node_rpc_contract::status::DEFAULT_NODE_TYPE`] (`"node"`) and refusing any value
     /// outside the shared identifier grammar by name (`node_type`).
-    pub fn with_node_type(self, _node_type: &str) -> Result<Self, String> {
+    pub fn with_node_type(self, node_type: &str) -> Result<Self, String> {
+        let normalized = rafka_node_rpc_contract::status::normalize_node_type(node_type);
+        if let Some(reason) = rafka_node_rpc_contract::status::node_type_refusal(&normalized) {
+            return Err(reason);
+        }
         Ok(self)
     }
 
     /// Attempt to update `node_type` after creation (`node.update`): always refused by name
     /// (`node_type` is immutable once set at `node.create`).
-    pub fn update_node_type(&mut self, _requested_node_type: &str) -> Result<(), String> {
-        Ok(())
+    pub fn update_node_type(&mut self, requested_node_type: &str) -> Result<(), String> {
+        Err(rafka_node_rpc_contract::status::node_type_update_refusal(self.node_type(), requested_node_type))
     }
 }
 

@@ -78,27 +78,41 @@ pub struct NodeRows {
 /// ([`WrittenRows::known_row`]), for the tags no executor record carries. A `Deleted` row stays held
 /// for its node: a rerun of the delete writes the same row.
 #[derive(Debug, Default)]
-pub struct WrittenRows(Mutex<HashMap<NodeId, NodeRow>>);
+pub struct WrittenRows {
+    rows: Mutex<HashMap<NodeId, NodeRow>>,
+    node_types: Mutex<HashMap<NodeId, String>>,
+}
 
 impl WrittenRows {
     /// Hold `row` as the writer's record of its node.
     pub fn hold(&self, row: &NodeRow) {
-        self.0.lock().unwrap().insert(row.node_id.clone(), row.clone());
+        self.rows.lock().unwrap().insert(row.node_id.clone(), row.clone());
+    }
+
+    /// Hold `node_type` as the writer's record of `node_id`'s immutable `node_type`.
+    pub fn hold_node_type(&self, node_id: &NodeId, node_type: impl Into<String>) {
+        self.node_types.lock().unwrap().insert(node_id.clone(), node_type.into());
+    }
+
+    /// The `node_type` the writer holds for `node_id`, if any.
+    pub fn node_type_of(&self, node_id: &NodeId) -> Option<String> {
+        self.node_types.lock().unwrap().get(node_id).cloned()
     }
 
     /// The node let go of its row (a withdrawn claim): the writer holds no record of it.
     pub fn forget(&self, node_id: &NodeId) {
-        self.0.lock().unwrap().remove(node_id);
+        self.rows.lock().unwrap().remove(node_id);
+        self.node_types.lock().unwrap().remove(node_id);
     }
 
     /// The config the writer holds for `node_id`, if it holds a record of it.
     pub fn config_of(&self, node_id: &NodeId) -> Option<BTreeMap<String, String>> {
-        self.0.lock().unwrap().get(node_id).map(|r| r.config.clone())
+        self.rows.lock().unwrap().get(node_id).map(|r| r.config.clone())
     }
 
     /// The row the writer holds for `node_id`, if it holds a record of it.
     pub fn row_of(&self, node_id: &NodeId) -> Option<NodeRow> {
-        self.0.lock().unwrap().get(node_id).cloned()
+        self.rows.lock().unwrap().get(node_id).cloned()
     }
 
     /// The row of `node_id` of `mesh` as this writer knows it: its record, else the row the node
@@ -314,32 +328,100 @@ impl NodeRows {
     /// `node.create`'s name claim with an explicit `node_type` (normalizing `""` to `"node"`,
     /// refusing any value outside the shared identifier grammar by name `node_type`, and copying
     /// the exited node's `node_type` on recovery).
-    pub async fn claim_with_node_type(&self, name: &PathName, node_id: &NodeId, _node_type: &str, operation: &str, allocated: Option<&Allocation>, of: ClaimFor) -> Result<(Claimed, String), RowRefused> {
+    pub async fn claim_with_node_type(&self, name: &PathName, node_id: &NodeId, node_type: &str, operation: &str, allocated: Option<&Allocation>, of: ClaimFor) -> Result<(Claimed, String), RowRefused> {
+        let me = self.held_name_now();
+        let normalized = rafka_node_rpc_contract::status::normalize_node_type(node_type);
+        if let Some(reason) = rafka_node_rpc_contract::status::node_type_refusal(&normalized) {
+            return Err(RowRefused::Unwritten(format!("{me}: {reason}; nothing is claimed or written")));
+        }
+        let inherited_type = if of == ClaimFor::Recovery {
+            self.storage
+                .node_row_at(name)
+                .await
+                .ok()
+                .flatten()
+                .filter(|p| p.status == NodeStatus::Deleted)
+                .map(|p| self.written.node_type_of(&p.node_id).unwrap_or_else(|| p.node_type().to_string()))
+        } else {
+            None
+        };
         let claimed = self.claim(name, node_id, operation, allocated, of).await?;
-        Ok((claimed, String::new()))
+        let effective = inherited_type.unwrap_or(normalized);
+        self.written.hold_node_type(node_id, effective.clone());
+        Ok((claimed, effective))
     }
 
     /// Attempt to update `node_type` through `node.update`: always refused by name (`node_type` is
     /// immutable once set at `node.create`).
-    pub async fn update_node_type(&self, _name: &PathName, _node_id: &NodeId, _requested_node_type: &str) -> Result<(), RowRefused> {
-        Ok(())
+    pub async fn update_node_type(&self, name: &PathName, node_id: &NodeId, requested_node_type: &str) -> Result<(), RowRefused> {
+        let me = self.writer_check(&name.mesh, name).await?;
+        let held_type = self.node_type_of(node_id, name);
+        Err(RowRefused::Unwritten(format!("{me}: {}", rafka_node_rpc_contract::status::node_type_update_refusal(&held_type, requested_node_type))))
     }
 
     /// The `node_type` this writer holds for `node_id`, falling back to `fallback.node_type()`.
-    pub fn node_type_of(&self, _node_id: &NodeId, _fallback: &PathName) -> String {
-        String::new()
+    pub fn node_type_of(&self, node_id: &NodeId, fallback: &PathName) -> String {
+        self.written.node_type_of(node_id).unwrap_or_else(|| fallback.node_type().to_string())
     }
 
     /// Move `record`'s row to `to` (`node.name.update`), preserving its config, tags and `node_type`.
-    pub async fn rename_row(&self, _record: &Node, _to: &PathName) -> Result<NodeRow, RowRefused> {
-        Err(RowRefused::Unwritten("unimplemented".into()))
+    pub async fn rename_row(&self, record: &Node, to: &PathName) -> Result<NodeRow, RowRefused> {
+        let me = self.writer_check(&record.mesh, to).await?;
+        if self.written.row_of(&record.node_id).is_some_and(|r| r.config.is_empty() && r.tags.is_empty()) {
+            if let Ok(Some(stored)) = self.storage.node_row_at(&record.name).await {
+                if stored.node_id == record.node_id && (!stored.config.is_empty() || !stored.tags.is_empty()) {
+                    self.written.hold(&stored);
+                }
+            }
+        }
+        let known = self.written.known_row(&*self.storage, &record.mesh, &record.node_id).await.map_err(|why| RowRefused::Unwritten(format!("{me}: {why}")))?;
+        let from = known.as_ref().map_or_else(|| record.name.clone(), |r| r.name.clone());
+        let (config, tags) = known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (record.config.clone(), Default::default()));
+        match move_row(&*self.storage, &me, record, config, tags, &from, to).await {
+            Ok((_, Some(written))) => {
+                self.written.hold(&written);
+                Ok(written)
+            }
+            Ok((_, None)) => self.storage.node_row_at(to).await.map_err(|e| RowRefused::Unwritten(format!("{me}: {e}")))?.ok_or_else(|| RowRefused::Unwritten(format!("{me}: no row stands at {to}"))),
+            Err(RenameRefused::NameHeld(h)) => Err(RowRefused::NameHeld(h)),
+            Err(RenameRefused::Unwritten(why)) => Err(RowRefused::Unwritten(why)),
+        }
     }
 
     /// Cut over a replacement successor (`<name>.new` -> `<name>`) while the predecessor stands at
     /// `retained` (`<name>.old`), inheriting config, tags and `node_type` from the retained row and
     /// marking the retained row `inherited_by` the successor.
-    pub async fn cutover_row(&self, _successor: &Node, _to: &PathName, _retained: &PathName, _retained_id: &NodeId) -> Result<NodeRow, RowRefused> {
-        Err(RowRefused::Unwritten("unimplemented".into()))
+    pub async fn cutover_row(&self, successor: &Node, to: &PathName, retained: &PathName, retained_id: &NodeId) -> Result<NodeRow, RowRefused> {
+        let me = self.writer_check(&successor.mesh, to).await?;
+        let pred_row = self
+            .storage
+            .node_row_at(retained)
+            .await
+            .map_err(|e| RowRefused::Unwritten(format!("{me}: the row at {retained} could not be read: {e}")))?
+            .filter(|r| r.node_id == *retained_id)
+            .ok_or_else(|| RowRefused::Unwritten(format!("{me}: no row stands at {retained} for the retained predecessor {retained_id}")))?;
+        let pred_type = self.node_type_of(retained_id, retained);
+        let known = self.written.known_row(&*self.storage, &successor.mesh, &successor.node_id).await.map_err(|why| RowRefused::Unwritten(format!("{me}: {why}")))?;
+        let from = known.as_ref().map_or_else(|| successor.name.clone(), |r| r.name.clone());
+        let (config, tags) = if pred_row.inherited_by.as_ref() == Some(&successor.node_id) {
+            known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (successor.config.clone(), Default::default()))
+        } else {
+            (pred_row.config.clone(), pred_row.tags.clone())
+        };
+        let written = match move_row(&*self.storage, &me, successor, config, tags, &from, to).await {
+            Ok((_, Some(row))) => {
+                self.written.hold(&row);
+                row
+            }
+            Ok((_, None)) => self.storage.node_row_at(to).await.map_err(|e| RowRefused::Unwritten(format!("{me}: {e}")))?.ok_or_else(|| RowRefused::Unwritten(format!("{me}: no row stands at {to}")))?,
+            Err(RenameRefused::NameHeld(h)) => return Err(RowRefused::NameHeld(h)),
+            Err(RenameRefused::Unwritten(why)) => return Err(RowRefused::Unwritten(why)),
+        };
+        self.written.hold_node_type(&successor.node_id, pred_type);
+        let marked = NodeRow { inherited_by: Some(successor.node_id.clone()), ..pred_row };
+        self.storage.put_node_row(&marked).await.map_err(|e| RowRefused::Unwritten(format!("{me}: {e}")))?.map_err(RowRefused::NameHeld)?;
+        self.written.hold(&marked);
+        Ok(written)
     }
 
     /// Hold the row `node_id` holds at `name` as this writer's record of it, read from the store (R13:
@@ -408,6 +490,13 @@ impl NodeRows {
     /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on
     /// and its config kept, a blind put. One `via-node-row` span.
     pub async fn deleted(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {
+        if self.written.row_of(&record.node_id).is_some_and(|r| r.config.is_empty() && r.tags.is_empty()) {
+            if let Ok(Some(stored)) = self.storage.node_row_at(&record.name).await {
+                if stored.node_id == record.node_id && (!stored.config.is_empty() || !stored.tags.is_empty()) {
+                    self.written.hold(&stored);
+                }
+            }
+        }
         let (config, config_from) = self.known_config(record);
         let tags = match self.known_tags(record).await {
             Ok(tags) => tags,

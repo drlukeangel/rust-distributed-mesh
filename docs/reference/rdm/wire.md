@@ -2100,11 +2100,11 @@ serde: `rename_all = "snake_case"`
 
 | # | variant · field | type | serde | labels | doc |
 |---|---|---|---|---|---|
-| 0 | **`NodeAdmin`** |  |  | `name() = "node_admin"`<br>`segment() = "admin"` | A node-admin. |
-| 1 | **`RpcNode`** |  |  | `name() = "rpc_node"`<br>`segment() = "rpc"` | A plain product node that serves core protocols only. |
-| 2 | **`Broker`** |  |  | `name() = "broker"`<br>`segment() = "broker"` | A broker. |
-| 3 | **`Gateway`** |  |  | `name() = "gateway"`<br>`segment() = "gateway"` | A gateway. |
-| 4 | **`Compute`** |  |  | `name() = "compute"`<br>`segment() = "compute"` | A compute node. |
+| 0 | **`NodeAdmin`** |  |  | `name() = "node_admin"`<br>`segment() = "admin"`<br>`node_type() = "node-admin"` | A node-admin. |
+| 1 | **`RpcNode`** |  |  | `name() = "rpc_node"`<br>`segment() = "rpc"`<br>`node_type() = "rpc-node"` | A plain product node that serves core protocols only. |
+| 2 | **`Broker`** |  |  | `name() = "broker"`<br>`segment() = "broker"`<br>`node_type() = "broker"` | A broker. |
+| 3 | **`Gateway`** |  |  | `name() = "gateway"`<br>`segment() = "gateway"`<br>`node_type() = "gateway"` | A gateway. |
+| 4 | **`Compute`** |  |  | `name() = "compute"`<br>`segment() = "compute"`<br>`node_type() = "compute"` | A compute node. |
 
 <a id="t-rafka_mesh_entity-digest-NodeLoad"></a>
 
@@ -2243,17 +2243,18 @@ Why a declaration was not applied, by name.
 
 ### `PathName`
 
-`crates/rafka-mesh-entity/src/path.rs` · struct · 5 fields · rafka-mesh-entity
+`crates/rafka-mesh-entity/src/path.rs` · struct · 6 fields · rafka-mesh-entity
 
-A node's stable logical address `<mesh>.<kind>.<ordinal>`; `<mesh>.<kind>.<ordinal>.old` names
+A node's stable logical address `<mesh>.<kind>.<name>`; `<mesh>.<kind>.<name>.old` names
 
 | # | field | type | serde | doc |
 |---|---|---|---|---|
 | 0 | `mesh` | `String` |  | The mesh's name. |
 | 1 | `kind` | `NodeKind` → [`NodeKind`](#t-rafka_mesh_entity-path-NodeKind) |  | The node's kind. |
-| 2 | `ordinal` | `u32` |  | The node's ordinal within its mesh and kind, from 1. |
-| 3 | `old` | `bool` |  | The path is the `.old` name of a replaced predecessor. |
-| 4 | `new` | `bool` |  | The path is the `.new` name of a successor that has not yet taken the name. |
+| 2 | `ordinal` | `u32` |  | The node's ordinal within its mesh and kind, from 1 (`0` when `label` carries a non-numeric free-text name). |
+| 3 | `label` | `String` |  | Free-text base name within `<mesh>.<kind>` when non-numeric (e.g. `"north"`); empty when `ordinal >= 1`. |
+| 4 | `old` | `bool` |  | The path is the `.old` name of a replaced predecessor. |
+| 5 | `new` | `bool` |  | The path is the `.new` name of a successor that has not yet taken the name. |
 
 <a id="t-rafka_node_rpc_testkit-resolve_probe-ProbeTarget"></a>
 
