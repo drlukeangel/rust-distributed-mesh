@@ -1759,7 +1759,7 @@ impl DeploymentPipeline<'_> {
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
             // The `Complete` receipt opens the birth's stopped period: it commits the stop's
             // lifecycle op, the exact birth and the rafka-time it stopped at, which the stopped-node
-            // garbage collector ages it from (fabric-node-lifecycle.md §6.9 Age).
+            // garbage collector ages it from (node-identity-and-state.md §6.9 Age).
             let ctx = self.command_context(&run, crate::node_commands::NodeCommand::Stop, &node);
             let op = self.command_op(&ctx, &node).map_err(|reason| PipelineError { step: RetireStep::Complete.name(), reason })?;
             let _: LifecycleOp = self.step(&mut run, RetireStep::Complete.name(), async { Ok(op) }).await?;
@@ -1934,7 +1934,7 @@ impl DeploymentPipeline<'_> {
         self.step(run, RetireStep::Complete.name(), async { Ok(()) }).await
     }
 
-    /// `node.delete` of the stopped birth `req.node` (node-decommission.md), as ONE operation under
+    /// `node.delete` of the stopped birth `req.node` (lifecycles/node-delete.md), as ONE operation under
     /// node.delete's one key, `node.delete:<path>`:
     ///
     /// ```text
@@ -2023,12 +2023,12 @@ impl DeploymentPipeline<'_> {
             // A delete of a stopped birth: its whole stop already ran (its seats moved, its drain
             // receipt, its connections cut, `stopped`, NodeStopped), and nothing is composed or
             // fabricated again. The delete proceeds to the exact runtime's exit proof
-            // (node-decommission.md 1-2, node-stop.md 6). A crashed target likewise: its stop steps
+            // (lifecycles/node-delete.md 1-2, node-stop.md 6). A crashed target likewise: its stop steps
             // are already done, and no node reply or receipt is fabricated for the exited process
             // (node-delete.md step 1); the provider's exact inspection is all that is asked.
             self.terminate_step(&mut run, &node, handle).await?
         } else {
-            // The two halves of the shutdown leg are separate operations (node-drain.md, node-stop.md):
+            // The two halves of the shutdown leg are separate operations (lifecycles/node-connections-delete.md, node-stop.md):
             // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
             // terminal proof.
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
@@ -2055,7 +2055,7 @@ impl DeploymentPipeline<'_> {
                     .in_scope(|| tracing::info!("the exited instance is deleted on the mesh primary's exit proof"));
                 }
                 // The deleted birth's row goes Deleted at its path.name, its config kept, inside the
-                // step and before node.deleted (node-decommission.md step 3): a node created at that
+                // step and before node.deleted (lifecycles/node-delete.md step 3): a node created at that
                 // path.name, a recovery's create included, claims the name over it and seeds its
                 // config from it (node-recovery.md "Retained").
                 self.deleted_row(&node, op.clone()).await
@@ -2098,7 +2098,7 @@ impl DeploymentPipeline<'_> {
         })
     }
 
-    /// `NodeDeleted`'s work (node-decommission.md step 3, before node.deleted): the writer of the
+    /// `NodeDeleted`'s work (lifecycles/node-delete.md step 3, before node.deleted): the writer of the
     /// mesh's rows writes `record`'s row `Deleted` at its `path.name`, the record and its config
     /// kept; a refusal fails the step by name.
     async fn deleted_row(&self, record: &Node, op: LifecycleOp) -> Result<LifecycleOp, String> {

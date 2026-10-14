@@ -3,7 +3,7 @@
 //!
 //! - one Iroh endpoint per process carrying the mesh, gossip and Node RPC ALPNs;
 //! - one sealed effective catalog: RDM's core protocols, the product's own families and its
-//!   transitional adapters, each named once (`node-rpc-rdm-ownership.md` §12);
+//!   transitional adapters, each named once (`node-rpc-envelope.md` §12);
 //! - one `NodeRpcServer` on that endpoint, one `LiveNodeResolver` fed by membership, one
 //!   `NodeRpcClient`;
 //! - the node's lifecycle as every Mesh node has it: born from node-admin's launch, published

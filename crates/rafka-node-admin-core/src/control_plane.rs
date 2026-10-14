@@ -326,7 +326,7 @@ impl ControlPlane {
     }
 
     /// [`ControlPlane::submit_in`], the stopped-node collector's candidate (when one) rechecked under
-    /// the admission before anything is compiled or written (fabric-node-lifecycle.md §6.9 Recheck).
+    /// the admission before anything is compiled or written (node-identity-and-state.md §6.9 Recheck).
     pub(crate) async fn submit_checked(&self, span: tracing::Span, route: &'static str, change: TopologyChange, collect: Option<&crate::stopped_gc::Candidate>) -> Result<Opened, Refusal> {
         // The span is entered by the future on each poll, never by a guard held across an await
         // (a guard stays entered on the worker while the task is parked). A refusal is reported

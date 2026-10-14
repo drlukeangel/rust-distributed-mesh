@@ -1,4 +1,4 @@
-//! The offline tickle (fabric-node-lifecycle.md §7.3, i77 PRD row 18), ported from rafka-v2's
+//! The offline tickle (node-identity-and-state.md §7.3, i77 PRD row 18), ported from rafka-v2's
 //! `node-admin/src/lib.rs::OfflineTickle`.
 //!
 //! A silent node is never restarted or deleted for being silent. Every node's own pruner marks it

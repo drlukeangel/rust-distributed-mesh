@@ -1,4 +1,4 @@
-//! The peer-mesh investigation (rafka-v2 lifecycles/mesh-investigation.md; fabric-node-lifecycle.md
+//! The peer-mesh investigation (rafka-v2 lifecycles/mesh-investigation.md; node-identity-and-state.md
 //! §7.3; ruling R-CK1).
 //!
 //! One investigation per peer mesh, owned by the fabric primary. t is the elapsed monotonic time
@@ -12,7 +12,7 @@
 //!                               each direct, then Forward{ProbeNodeState} through a member
 //!             30 s   mark       the mesh is silent (nothing is sent)
 //!             40 s   probe 2    the same, another carrier preferred
-//!             60 s   decision   opens once the probes finished; rebirth only if the latest
+//!             60 s   decision   opens once the probes finished; recovery only if the latest
 //!                               probe answered carrier-edge-lost
 //! ```
 //!
@@ -116,10 +116,10 @@ pub enum Step {
         /// How long the mesh has gone unheard, in milliseconds.
         unheard_ms: u64,
     },
-    /// The decision: `rebirth` only when the latest probe answered `carrier-edge-lost`.
+    /// The decision: `recover` only when the latest probe answered `carrier-edge-lost`.
     Decide {
-        /// Whether the mesh's node-admins are reborn.
-        rebirth: bool,
+        /// Whether the mesh's node-admins are recovered.
+        recover: bool,
         /// What the latest probe found.
         latest: ProbeOutcome,
         /// How long the mesh has gone unheard, in milliseconds.
@@ -148,7 +148,7 @@ struct State {
     /// investigation it was made for, never in a fresh one after a cancel.
     ticket: u64,
     stopped: bool,
-    /// The decision, once taken: whether it was a rebirth.
+    /// The decision, once taken: whether it was a recovery.
     verdict: Option<bool>,
 }
 
@@ -292,9 +292,9 @@ impl Ladder {
             // The latest completed probe decides; an older carrier-edge-lost never overrides a
             // newer unreachable.
             let latest = st.probes[1].or(st.probes[0]).unwrap_or(ProbeOutcome::Unreachable);
-            let rebirth = latest == ProbeOutcome::CarrierEdgeLost;
-            st.verdict = Some(rebirth);
-            out.push(Step::Decide { rebirth, latest, unheard_ms });
+            let recover = latest == ProbeOutcome::CarrierEdgeLost;
+            st.verdict = Some(recover);
+            out.push(Step::Decide { recover, latest, unheard_ms });
         }
         out
     }
@@ -599,9 +599,9 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
                     .in_scope(|| tracing::info!("the mesh is marked silent; nothing is sent"));
             }
             Step::Probe { .. } | Step::Stop { .. } => {}
-            Step::Decide { rebirth, latest, unheard_ms } => {
-                verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if rebirth { "the latest probe says a member cannot reach its own node-admin: the mesh is recovered" } else { "no member could say: the mesh is held" });
-                if rebirth {
+            Step::Decide { recover, latest, unheard_ms } => {
+                verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if recover { "the latest probe says a member cannot reach its own node-admin: the mesh is recovered" } else { "no member could say: the mesh is held" });
+                if recover {
                     let verdict_ms = w.membership.clock().now_rafka_ms();
                     let lost = view.cohort(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
                     w.records.open_mesh_recovery(&me, crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: Some(verdict_ms), opened_at: Instant::now(), lost }, "carrier-edge-lost", true);
@@ -675,7 +675,7 @@ pub(crate) fn admins_in_probe_order(view: &Topology, mesh: &str, seat: Option<&r
 /// What one probe found over every node-admin it asked, in the order asked: any node-admin
 /// answering is `admin-alive` (the mesh has a node-admin; mesh-investigation.md step 4); with none
 /// answering it is `carrier-edge-lost` only when the carrier reported its edge lost to every one of
-/// them (step 5: the rebirth reborns every node-admin of the mesh, so each must be reported
+/// them (step 5: the recovery recovers every node-admin of the mesh, so each must be reported
 /// unreachable from inside it); any other end says nothing of that node-admin, so `unreachable`.
 pub(crate) fn fold_admin_outcomes(outcomes: &[ProbeOutcome]) -> ProbeOutcome {
     if outcomes.contains(&ProbeOutcome::AdminAlive) {
@@ -890,7 +890,7 @@ mod tests {
         log.iter().filter(|(_, s)| f(s)).map(|(r, _)| *r).collect()
     }
 
-    /// CONTRACT (#2803 detection): two carrier-edge-lost probes decide a rebirth at 30 rounds, with
+    /// CONTRACT (#2803 detection): two carrier-edge-lost probes decide a recovery at 30 rounds, with
     /// the probes at 10 and 20 and the silent mark between them at 15; nothing before.
     #[test]
     fn a_peer_mesh_known_from_topology_alone_is_watched_from_the_seat() {
@@ -911,8 +911,8 @@ mod tests {
     /// member in either probe means hold"): the fence reads t, not whether the ladder has stepped the
     /// mesh yet. An admin that took the fabric-primary seat a moment ago holds a ladder that has
     /// stepped nothing, and a peer mesh its book last heard on the backbone 7 s ago is fenced from that
-    /// moment, unheard 7000 ms, no rebirth decided; a mesh heard within the tracking rung is not
-    /// fenced; a decided rebirth is read from the ladder; a mesh the backbone never carried here is
+    /// moment, unheard 7000 ms, no recovery decided; a mesh heard within the tracking rung is not
+    /// fenced; a decided recovery is read from the ladder; a mesh the backbone never carried here is
     /// what the ladder holds of it. Must NOT happen: a node of a mesh unheard past the rung claimed or
     /// dispatched for because the ladder has not stepped it yet (mesh_recover at a fabric-primary seat
     /// take ran node.create:mesh1.admin.1 0.25 s before its ladder first stepped mesh1).
@@ -933,19 +933,19 @@ mod tests {
                 }
             }
         }
-        assert!(l.recovery_decided("mesh1"), "two carrier-edge-lost probes decide the rebirth");
-        assert_eq!(l.fence("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), recovery_decided: true, unreachable_decided: false }), "the decided rebirth is the ladder's");
+        assert!(l.recovery_decided("mesh1"), "two carrier-edge-lost probes decide the recovery");
+        assert_eq!(l.fence("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), recovery_decided: true, unreachable_decided: false }), "the decided recovery is the ladder's");
         assert_eq!(l.fence("mesh9", None), None, "a mesh never carried on the backbone and never stepped: the ladder holds nothing");
     }
 
     #[test]
-    fn two_carrier_edge_lost_probes_decide_a_rebirth_at_thirty_rounds() {
+    fn two_carrier_edge_lost_probes_decide_a_recovery_at_thirty_rounds() {
         let log = walk(&mut ladder(), [CarrierEdgeLost, CarrierEdgeLost]);
         assert_eq!(at(&log, |s| matches!(s, Step::Track { .. })), vec![2]);
         assert_eq!(at(&log, |s| matches!(s, Step::Probe { n: 1, .. })), vec![10]);
         assert_eq!(at(&log, |s| matches!(s, Step::Mark { .. })), vec![15]);
         assert_eq!(at(&log, |s| matches!(s, Step::Probe { n: 2, .. })), vec![20]);
-        assert_eq!(at(&log, |s| matches!(s, Step::Decide { rebirth: true, latest: CarrierEdgeLost, .. })), vec![30]);
+        assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, latest: CarrierEdgeLost, .. })), vec![30]);
     }
 
     /// CONTRACT: the latest completed probe decides. An older carrier-edge-lost never overrides a
@@ -954,10 +954,10 @@ mod tests {
     fn the_latest_probe_decides_and_unreachable_holds() {
         for probes in [[CarrierEdgeLost, Unreachable], [Unreachable, Unreachable]] {
             let log = walk(&mut ladder(), probes);
-            assert_eq!(at(&log, |s| matches!(s, Step::Decide { rebirth: false, latest: Unreachable, .. })), vec![30], "{probes:?}");
+            assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: false, latest: Unreachable, .. })), vec![30], "{probes:?}");
         }
         let log = walk(&mut ladder(), [Unreachable, CarrierEdgeLost]);
-        assert_eq!(at(&log, |s| matches!(s, Step::Decide { rebirth: true, .. })), vec![30]);
+        assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, .. })), vec![30]);
     }
 
     fn view_of(nodes: Vec<Node>) -> Topology {
@@ -1044,7 +1044,7 @@ mod tests {
             assert_eq!(first(&|s| matches!(s, Step::Mark { .. })), Some(Duration::from_secs(30)), "every {every:?}");
             assert_eq!(first(&|s| matches!(s, Step::Probe { n: 2, .. })), Some(Duration::from_secs(40)), "every {every:?}");
             assert_eq!(first(&|s| matches!(s, Step::Decide { .. })), Some(Duration::from_secs(60)), "every {every:?}");
-            assert!(log.iter().all(|(_, s)| !matches!(s, Step::Decide { rebirth: true, .. })), "silence and unreachable probes decide no rebirth: {log:?}");
+            assert!(log.iter().all(|(_, s)| !matches!(s, Step::Decide { recover: true, .. })), "silence and unreachable probes decide no recovery: {log:?}");
             assert!(!l.recovery_decided("mesh2"));
             // A direct backbone receipt resets t and cancels the investigation.
             let later = t0 + every * k;
@@ -1111,7 +1111,7 @@ mod tests {
         assert_eq!(asked(1), vec![2000], "probe 1 is asked once, at its rung: {log:?}");
         let end = |k: u8| ended.iter().find(|(n, _)| *n == k).map(|(_, at)| *at).unwrap_or_else(|| panic!("probe {k} ended: {ended:?}"));
         assert!(asked(2).len() == 1 && asked(2)[0] >= end(1), "probe 2 is asked once, after probe 1 ended at {} ms: {log:?}", end(1));
-        let decided: Vec<u64> = log.iter().filter_map(|s| if let Step::Decide { rebirth: true, unheard_ms, .. } = s { Some(*unheard_ms) } else { None }).collect();
+        let decided: Vec<u64> = log.iter().filter_map(|s| if let Step::Decide { recover: true, unheard_ms, .. } = s { Some(*unheard_ms) } else { None }).collect();
         assert!(decided.len() == 1 && decided[0] >= end(2), "the decision is taken once, after probe 2 ended at {} ms: {decided:?}", end(2));
     }
 
@@ -1210,10 +1210,10 @@ mod tests {
         assert!(again.iter().any(|s| matches!(s, Step::Probe { n: 1, unheard_ms, .. } if *unheard_ms == ms(10))), "a fresh interval probes again at 10: {again:?}");
     }
 
-    /// CONTRACT: the rebirth of a peer mesh's node-admins is decided only by a `rebirth` decision: not
+    /// CONTRACT: the recovery of a peer mesh's node-admins is decided only by a `recovery` decision: not
     /// by a hold, not by a mesh the ladder has not stepped yet, and not once the ladder forgot it.
     #[test]
-    fn a_peer_meshs_rebirth_is_decided_only_by_a_rebirth_decision() {
+    fn a_peer_meshs_recovery_is_decided_only_by_a_recovery_decision() {
         let mut l = ladder();
         assert!(!l.recovery_decided("mesh2"), "not stepped yet");
         walk(&mut l, [CarrierEdgeLost, CarrierEdgeLost]);
@@ -1221,7 +1221,7 @@ mod tests {
         let mut held = ladder();
         assert!(!held.unreachable_decided("mesh2"), "not stepped yet: nothing is decided either way");
         walk(&mut held, [Unreachable, Unreachable]);
-        assert!(!held.recovery_decided("mesh2"), "a hold decides no rebirth");
+        assert!(!held.recovery_decided("mesh2"), "a hold decides no recovery");
         l.forget("mesh2");
         assert!(!l.recovery_decided("mesh2"));
     }
@@ -1229,8 +1229,8 @@ mod tests {
     /// CONTRACT (mesh-investigation.md step 5): the 60 s decision on `unreachable` evidence is a hold the
     /// ladder exposes as its own fact, `unreachable_decided`, beside `recovery_decided` and never
     /// with it: the fabric-primary reads the provider's exit proof of the mesh's node-admins only for
-    /// a mesh whose decision opened this way. A carrier-edge-lost decision is the rebirth, not the hold.
-    /// A mesh heard again is decided neither way. Must NOT happen: the hold read as a rebirth, or the
+    /// a mesh whose decision opened this way. A carrier-edge-lost decision is the recovery, not the hold.
+    /// A mesh heard again is decided neither way. Must NOT happen: the hold read as a recovery, or the
     /// fact surviving the silence.
     #[test]
     fn an_unreachable_decision_is_exposed_as_a_hold_and_never_as_carrier_edge_lost() {
@@ -1240,10 +1240,10 @@ mod tests {
         let fenced = l.fence("mesh2", Some(Duration::from_secs(61))).expect("an unheard mesh is fenced");
         assert_eq!((fenced.recovery_decided, fenced.unreachable_decided), (false, true), "the fence reads the hold: {fenced:?}");
         assert_eq!(l.peer_mesh("mesh2").map(|p| (p.recovery_decided, p.unreachable_decided)), Some((false, true)));
-        let mut reborn = ladder();
-        walk(&mut reborn, [CarrierEdgeLost, CarrierEdgeLost]);
-        assert!(reborn.recovery_decided("mesh2") && !reborn.unreachable_decided("mesh2"), "a carrier-edge-lost decision is the rebirth");
-        assert_eq!(reborn.peer_mesh("mesh2").map(|p| (p.recovery_decided, p.unreachable_decided)), Some((true, false)));
+        let mut recovered = ladder();
+        walk(&mut recovered, [CarrierEdgeLost, CarrierEdgeLost]);
+        assert!(recovered.recovery_decided("mesh2") && !recovered.unreachable_decided("mesh2"), "a carrier-edge-lost decision is the recovery");
+        assert_eq!(recovered.peer_mesh("mesh2").map(|p| (p.recovery_decided, p.unreachable_decided)), Some((true, false)));
         // A direct backbone receipt resets t: the mesh is decided neither way.
         assert!(matches!(l.step("mesh2", Duration::ZERO).as_slice(), [Step::Cancel { .. }]));
         assert!(!l.unreachable_decided("mesh2") && !l.recovery_decided("mesh2"), "heard again: the hold is over");
@@ -1262,7 +1262,7 @@ mod tests {
         let mut next = ladder();
         assert!(!next.recovery_decided("mesh2"), "the next primary has decided nothing yet");
         let log = walk(&mut next, [CarrierEdgeLost, CarrierEdgeLost]);
-        assert_eq!(at(&log, |s| matches!(s, Step::Decide { rebirth: true, .. })), vec![30], "it decides once, from its own 30 rounds");
+        assert_eq!(at(&log, |s| matches!(s, Step::Decide { recover: true, .. })), vec![30], "it decides once, from its own 30 rounds");
     }
 
     /// CONTRACT: two peer meshes unheard at once are two ladders; one mesh's probes, hold or

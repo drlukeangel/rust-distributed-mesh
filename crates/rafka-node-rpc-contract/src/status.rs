@@ -1,5 +1,5 @@
 //! The lifecycle/status declaration protocol on op `0x1B`, RDM's control family (the core
-//! families stay exactly Ping and Forward) (node-rpc.md §38; fabric-mesh-ops.md §3; i143.e6.s7).
+//! families stay exactly Ping and Forward) (node-rpc.md §38; node-rpc-envelope.md §3; i143.e6.s7).
 //!
 //! A node or a primary declares a committed state upward to its authority and gets the typed
 //! result of applying it. Gossip stays the dissemination plane; this is certainty that one
@@ -263,7 +263,7 @@ pub enum StatusRequest {
         /// The operation: `commit-state:<fabric_id>`.
         operation: String,
     },
-    /// Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; fabric-open-traffic.md). The reply admits the command; completion is [`Self::TrafficOpened`].
+    /// Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; lifecycles/fabric-ready-for-traffic.md). The reply admits the command; completion is [`Self::TrafficOpened`].
     OpenTraffic {
         /// The fabric the round belongs to.
         fabric_id: FabricId,

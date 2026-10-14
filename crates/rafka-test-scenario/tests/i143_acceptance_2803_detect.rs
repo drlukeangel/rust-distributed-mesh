@@ -578,7 +578,7 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
     assert!(f.recoveries(&spans).is_empty(), "timeout or unreachable alone grants no rebirth");
     assert_eq!(fabric, "ready-for-traffic", "no degraded fabric on a hold");
     // One investigation reaches the peer mesh's node-admins: no other mesh's primary tickles them on a
-    // per-member clock beside it (fabric-node-lifecycle.md §7.3, R-CK1). The peer mesh's own primary
+    // per-member clock beside it (node-identity-and-state.md §7.3, R-CK1). The peer mesh's own primary
     // tickling its own node-admin once continued is its node recovery, untouched.
     let tickled: Vec<_> = named(&spans, "rdm.node_admin.node.resolve.via-offline-tickle-failed")
         .into_iter()
@@ -589,15 +589,15 @@ async fn peer_mesh_whose_members_all_stay_silent_is_held_not_reborn() {
 }
 
 /// CONTRACT (#2803 detection): a probe that finds the node-admin cut off from its members and a later
-/// probe that finds it answering do not add up to a rebirth: the latest probe decides. Both
+/// probe that finds it answering do not add up to a recovery: the latest probe decides. Both
 /// node-admins of the peer mesh are frozen (SIGSTOP: every member's dial to them fails, so probe 1 is
 /// `carrier-edge-lost`) while every UDP path between the fabric primary's mesh and the peer mesh's
 /// node-admins is cut (netfault; the mesh is unheard). After probe 1 the node-admins are continued:
-/// probe 2 reaches them through a member and they answer, `admin-alive`. No rebirth, no degraded
+/// probe 2 reaches them through a member and they answer, `admin-alive`. No recovery, no degraded
 /// fabric, no third probe.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost() {
-    let cell = "an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost";
+async fn an_admin_that_answers_probe_two_is_not_recovered_for_probe_ones_edge_lost() {
+    let cell = "an_admin_that_answers_probe_two_is_not_recovered_for_probe_ones_edge_lost";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut f = fixture(cell).await;
@@ -645,7 +645,7 @@ async fn an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost(
     assert!(attr(&first, "detail").contains("Indeterminate"), "the probe committed over the pooled connection and lost its reply: {first:#?}");
     assert_eq!(attr(&second, "outcome"), "admin-alive", "continued, they answer the second probe: {second:#?}");
     assert_eq!(f.probes_before(&spans, story_end).len(), 2, "no third probe: {:#?}", f.probes(&spans));
-    assert!(f.recoveries(&spans).is_empty(), "the latest probe decides: no rebirth");
+    assert!(f.recoveries(&spans).is_empty(), "the latest probe decides: no recovery");
     assert!(f.verdicts(&spans).iter().any(|v| attr(v, "outcome") == "admin-alive"));
     assert_eq!(fabric, "ready-for-traffic");
     result(&dir, json!({"cell": cell, "fabric_primary": fp, "mesh": f.lost, "probe_1": first["attributes"], "probe_2": second["attributes"]}));
@@ -654,11 +654,11 @@ async fn an_admin_that_answers_probe_two_is_not_reborn_for_probe_ones_edge_lost(
 /// CONTRACT (#2803 detection): two peer meshes that lose their node-admins at the same time are two
 /// investigations. The estate has three meshes of two node-admins and two rpc nodes; the node-admins
 /// of the two meshes the fabric primary does not belong to are killed together. Each mesh is
-/// probed twice by its own members, each decided `carrier-edge-lost` and reborn once, under its own
+/// probed twice by its own members, each decided `carrier-edge-lost` and recovered once, under its own
 /// MeshId; neither is probed through the other's members.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently() {
-    let cell = "two_peer_meshes_lost_together_are_investigated_and_reborn_independently";
+async fn two_peer_meshes_lost_together_are_investigated_and_recovered_independently() {
+    let cell = "two_peer_meshes_lost_together_are_investigated_and_recovered_independently";
     let dir = acceptance_dir(cell);
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
@@ -683,7 +683,7 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     if lost.iter().any(|m| m == "mesh1") {
         estate.kill_bootstrap();
     }
-    wait_for("both meshes are reborn", Duration::from_secs(300), || {
+    wait_for("both meshes are recovered", Duration::from_secs(300), || {
         let (estate, old, lost) = (&estate, old.clone(), lost.clone());
         async move {
             let now = births(&estate.node_values().await);
@@ -693,34 +693,34 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     .await;
     let after = estate.settles_to(&shape, Duration::from_secs(120)).await;
     for m in &lost {
-        assert_eq!(estate.mesh_view(m).await.id.expect("the mesh still has its id").to_string(), mesh_ids[m], "{m} is reborn under its own MeshId");
+        assert_eq!(estate.mesh_view(m).await.id.expect("the mesh still has its id").to_string(), mesh_ids[m], "{m} is recovered under its own MeshId");
     }
     let _ = after;
     estate.stop().await;
     let spans = estate.spans();
     for m in &lost {
-        // The fabric primary that decided the rebirth probed the mesh: the seat can move to a reborn
+        // The fabric primary that decided the recovery probed the mesh: the seat can move to a recovered
         // admin while the other mesh is still unheard, and its ladder starts over from the seat.
         // A fabric primary that loses the seat takes its ladder with it, so the next holder decides
-        // again for a mesh it has not yet heard: a mesh is reborn at least once and by any one
+        // again for a mesh it has not yet heard: a mesh is recovered at least once and by any one
         // fabric primary at most once.
-        let rebirths: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == *m).collect();
-        assert!(!rebirths.is_empty(), "{m}: reborn: {rebirths:#?}");
-        for r in &rebirths {
-            assert_eq!(rebirths.iter().filter(|o| attr(o, "node") == attr(r, "node")).count(), 1, "{m}: reborn once per fabric primary: {rebirths:#?}");
+        let recoveries: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().filter(|sp| attr(sp, "mesh") == *m).collect();
+        assert!(!recoveries.is_empty(), "{m}: recovered: {recoveries:#?}");
+        for r in &recoveries {
+            assert_eq!(recoveries.iter().filter(|o| attr(o, "node") == attr(r, "node")).count(), 1, "{m}: recovered once per fabric primary: {recoveries:#?}");
         }
-        let first = rebirths.iter().min_by_key(|sp| at_ns(sp)).unwrap();
+        let first = recoveries.iter().min_by_key(|sp| at_ns(sp)).unwrap();
         let decider = attr(first, "node");
         let mut probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|sp| attr(sp, "node") == decider && attr(sp, "mesh") == *m && at_ns(sp) <= at_ns(first)).collect();
         probes.sort_by_key(|sp| attr(sp, "probe"));
         assert_eq!(probes.len(), 2, "{m}: two probes: {probes:#?}");
         for (i, p) in probes.iter().enumerate() {
             // A member may still hold a pooled connection to the killed node-admin: probe 1 over it
-            // commits and loses its reply (`Indeterminate`, unreachable). The rebirth is decided only
+            // commits and loses its reply (`Indeterminate`, unreachable). The recovery is decided only
             // on the LATEST probe being carrier-edge-lost, so probe 2 must be.
             let stale_pool = i == 0 && attr(p, "outcome") == "unreachable" && attr(p, "detail").contains("Indeterminate");
             assert!(attr(p, "outcome") == "carrier-edge-lost" || stale_pool, "{m}: {p:#?}");
-            assert!(i == 0 || attr(p, "outcome") == "carrier-edge-lost", "{m}: the latest probe decides the rebirth: {p:#?}");
+            assert!(i == 0 || attr(p, "outcome") == "carrier-edge-lost", "{m}: the latest probe decides the recovery: {p:#?}");
             assert!(attr(p, "carrier").starts_with(&format!("{m}.rpc.")), "{m} is probed through its own members only: {p:#?}");
         }
     }
@@ -846,7 +846,7 @@ async fn recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degr
         }
     })
     .await;
-    // Ten backbone publications of the reborn primary held: its republish would have gone out by then.
+    // Ten backbone publications of the recovered primary held: its republish would have gone out by then.
     tokio::time::sleep(rafka_mesh_transport::membership::backbone_gossip_interval() * 10).await;
     let held_status = f.fabric_status().await;
     let held_spans = f.estate.spans();
@@ -863,8 +863,8 @@ async fn recovered_mesh_with_a_planned_member_that_has_not_checked_in_holds_degr
     assert!(sent_while_held.is_empty(), "nothing is republished while a planned birth is missing: {sent_while_held:?}");
     let republished: Vec<u64> = mesh_sends_after(&spans, &f.lost, recovery_start(&spans, &f.lost)).values().map(|(_, first)| *first).collect();
     assert!(!republished.is_empty() && republished.iter().all(|at| *at >= cont_ms), "the adopted status is republished only after {frozen} checks in: {republished:?} vs continued at {cont_ms}");
-    let reborn_ms = recovery_start(&spans, &f.lost);
-    let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= reborn_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the reborn primary's round completed");
+    let recovered_ms = recovery_start(&spans, &f.lost);
+    let complete = named(&spans, "rdm.node_admin.mesh.update.via-round-complete").into_iter().filter(|sp| attr(sp, "mesh") == f.lost && at_ns(sp) / 1_000_000 >= recovered_ms).map(|sp| at_ns(sp) / 1_000_000).min().expect("the recovered primary's round completed");
     assert!(complete >= cont_ms, "the checklist completes only after the frozen member checks in: {complete} vs {cont_ms}");
     let recovered = degraded_cleared_at(&spans, &f.lost);
     assert!(!recovered.is_empty() && recovered.iter().all(|at| *at >= complete), "degraded clears only on the round-complete report: {recovered:?} vs {complete}");

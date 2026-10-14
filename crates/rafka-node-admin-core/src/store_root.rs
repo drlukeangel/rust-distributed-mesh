@@ -10,7 +10,7 @@
 //! (each node its own) and `status/<mesh>/` (each mesh's primary's status rows). Beside the
 //! per-fabric roots, `<store_dir>/fabrics/<name>` is the fabrics' name index (R-FN1): each fabric's
 //! claim of its name, written by its fabric-primary. The writers are exactly the writer ladder
-//! (fabric-node-lifecycle.md §4.3), so no two writers share a key. A node's data dir keeps only its
+//! (node-identity-and-state.md §4.3), so no two writers share a key. A node's data dir keeps only its
 //! own runtime material. A `store_dir` that is missing or unreadable fails the boot by name; nothing
 //! falls back to the data dir and nothing creates the `store_dir` (the provider supplies it).
 //!

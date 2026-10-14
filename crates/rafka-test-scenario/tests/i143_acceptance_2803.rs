@@ -373,7 +373,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// CONTRACT (fabric-node-lifecycle.md 2.5: "a node-admin that holds the fabric seat and finds no
+/// CONTRACT (node-identity-and-state.md 2.5: "a node-admin that holds the fabric seat and finds no
 /// live node in its durable map adopts its own clock"): every runtime of the fabric is lost at once,
 /// the admins and the ordinary members alike, so no node is left that holds rafka-time. A person
 /// starts ONE node-admin on the former fabric primary's data dir with both primary flags. No node in

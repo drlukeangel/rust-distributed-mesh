@@ -1,7 +1,7 @@
 //! `node.connections.delete { scope: All }` is just connections (R-CR5; lifecycles/node-connections-delete.md:
 //! "A connection is an open Direct or Proxy entry of the node's connections log. Gossip neighbours and
 //! the Node RPC pool are not connections, and neither scope touches them: a node that has had its
-//! connections deleted is still heard on gossip"; lifecycles/node-update.md "Rename precondition").
+//! connections deleted is still heard on gossip"; lifecycles/node-name-update.md "Rename precondition").
 //!
 //! Its own process: the cells hold process-wide state (the parking flag).
 
@@ -142,7 +142,7 @@ fn a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_goss
     })
 }
 
-/// CONTRACT: the rename precondition counts open Direct and Proxy entries only (node-update.md: "it
+/// CONTRACT: the rename precondition counts open Direct and Proxy entries only (lifecycles/node-name-update.md: "it
 /// holds no connection (gossip neighbours and the Node RPC pool are not connections)"). After a
 /// completed `All`, the commander makes a further Node RPC call to the node on a new pool connection,
 /// then sends `ApplyNodeName`: the node answers `Applied`. What must NOT happen: `Busy` naming the

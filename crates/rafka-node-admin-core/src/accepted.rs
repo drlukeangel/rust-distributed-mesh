@@ -756,7 +756,7 @@ fn plan_with(
         ops.push(BuildOperation::RestartNode { node: path.clone() });
     }
     // A live or stopped (parked) node of a kept mesh that the topology no longer names is retired
-    // (a node.delete of a stopped node retires it: node-decommission.md); a node leaving under
+    // (a node.delete of a stopped node retires it: lifecycles/node-delete.md); a node leaving under
     // another operation is that operation's. A mesh the topology no longer names is retired whole
     // (every member, dead or live, by the retire pipeline), never member by member.
     // A surplus birth's retirement is its own attempt (no action): an attempt that carries an action
@@ -1053,7 +1053,7 @@ mod tests {
         assert_eq!(plan(&cur, &o, Some(&parked)).operations, vec![BuildOperation::DeleteNode { node: old, from_incarnation: birth }]);
     }
 
-    /// CONTRACT (node-decommission.md, fabric-node-lifecycle.md 6.9 Effect): a stopped node (Leaving,
+    /// CONTRACT (lifecycles/node-delete.md, node-identity-and-state.md 6.9 Effect): a stopped node (Leaving,
     /// parked, its process alive) that the accepted topology no longer names, the topology a
     /// node.delete of it accepts, is retired: the plan is its one `RetireNode`. A node leaving under
     /// another operation (Leaving, not parked) is that operation's, never retired beside it. Must NOT
@@ -1291,7 +1291,7 @@ mod tests {
         assert_eq!(plan(&cur, &later, Some(&stop)).operations, vec![]);
     }
 
-    /// CONTRACT (node-decommission.md): the delete of the parked predecessor at `<path>.old` plans its
+    /// CONTRACT (lifecycles/node-delete.md): the delete of the parked predecessor at `<path>.old` plans its
     /// one operation `node.delete:<path>.old` until its `Complete` names the birth, whatever the view
     /// holds: the fabric-primary admitted it from the record it holds of that exact birth, and no view
     /// names a `.old` path but its replace's executor's. It never plans a create or repair of the

@@ -1,5 +1,5 @@
 //! The core ping on op `1`: the transport's liveness and sanity surface, and the
-//! mesh primary's 45 s offline tickle (fabric-node-lifecycle.md §7.3). Op `0` is
+//! mesh primary's 45 s offline tickle (node-identity-and-state.md §7.3). Op `0` is
 //! reserved as invalid, so a zeroed target is never served.
 
 use crate::outcome::{MalformedKind, ReplyKind};

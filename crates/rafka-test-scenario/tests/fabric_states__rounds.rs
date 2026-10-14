@@ -1,5 +1,5 @@
 //! i143.e12.s6 process E2E: the fabric states and their rounds (states.md; fabric-state-sync.md,
-//! fabric-state-commit.md, fabric-open-traffic.md).
+//! fabric-state-commit.md, lifecycles/fabric-ready-for-traffic.md).
 //!
 //! A real estate whose node-admin is the testkit's, carrying the testkit application
 //! (`RDM_TEST_APP`). The fabric-primary alone moves the fabric: pending, state-sync (every mesh

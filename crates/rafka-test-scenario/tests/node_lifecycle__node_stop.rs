@@ -435,7 +435,7 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     estate.record_trace_url(op["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (fabric-node-lifecycle.md §6.9, R-GC1; node-stop.md step 6): on a fabric whose
+/// CONTRACT (node-identity-and-state.md §6.9, R-GC1; node-stop.md step 6): on a fabric whose
 /// `RDM_STOPPED_NODE_TTL` is 3 s, `mesh1.rpc.1` is stopped and left alone. The fabric-primary's sweep
 /// ages it from its stop receipt and submits one ordinary node.delete Build
 /// (`rdm.node_admin.node.delete.via-stopped-ttl` with the node, the receipt's time, the ttl and the
@@ -477,7 +477,7 @@ async fn a_node_stopped_past_the_ttl_is_deleted_by_the_fabric_primarys_sweep() {
         .find(|sp| sp["attributes"]["step"] == "TerminateRuntime" && sp["attributes"]["node"] == NODE && sp["attributes"]["outcome"] == "complete" && s(&sp["attributes"]["build_id"]) == build);
     assert!(exit.is_some(), "the delete Build proved the parked process exited");
     // The stopped birth's stop already ran: its delete sends no seat transfer, node.connections.delete or stop again
-    // (node-decommission.md 1, node-stop.md 6).
+    // (lifecycles/node-delete.md 1, node-stop.md 6).
     let again: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
         .filter(|sp| s(&sp["attributes"]["build_id"]) == build && ["DeleteConnections", "StopNode", "AwaitNodeLeft"].iter().any(|st| sp["attributes"]["step"] == *st))

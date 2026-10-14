@@ -250,7 +250,7 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
     println!("trace {} reconcile {} turn {}", reconcile["trace_id"], reconcile["attributes"], turn["attributes"]);
 }
 
-/// CONTRACT (node-identity-and-state.md §8; node-update.md; R12; crit:e12.s47.1): an admin born as
+/// CONTRACT (node-identity-and-state.md §8; lifecycles/node-name-update.md; R12; crit:e12.s47.1): an admin born as
 /// `mesh1.admin.1.new` and renamed to `mesh1.admin.1` answers `build.attempt.run` and runs the
 /// attempt claimed for its new name `mesh1.admin.1` to completion, recording `mesh1.admin.1` on the
 /// claim, the turn and reconcile spans; a call naming its birth name `mesh1.admin.1.new` is refused

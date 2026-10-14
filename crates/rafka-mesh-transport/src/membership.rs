@@ -426,7 +426,7 @@ pub enum Frame {
         forwarded_by: Option<String>,
     },
     /// The mesh executor holding `op` (`node.restart:<path>`) is restarting its exact birth:
-    /// commanded silence (fabric-node-lifecycle.md: node-admin took it down and owns bringing it
+    /// commanded silence (node-identity-and-state.md: node-admin took it down and owns bringing it
     /// back). The node stays held through its own `Leaving` and silence, not routable, until a
     /// later birth of the same NodeId is heard. Same channel as `NodeDeleting`; carried in
     /// `Members.in_flight` while open.
@@ -7022,7 +7022,7 @@ mod tests {
     /// retention and not a moment longer; nothing is kept of the mesh;
     /// hearing it again departs nothing a second time.
 
-    /// CONTRACT (R4, Luke 2026-10-11; lifecycles/mesh-leave.md "Every stopping member publishes its
+    /// CONTRACT (R4, Luke 2026-10-11; lifecycles/mesh-delete.md "Every stopping member publishes its
     /// own Leaving … carries that same Leaving digest in its final `Members` aggregate over the
     /// node-admin backbone channel"): a peer mesh learns that a leaving mesh's members are leaving
     /// only from each member's own state. A node that joins a peer mesh after those members said

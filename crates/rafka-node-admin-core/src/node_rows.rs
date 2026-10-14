@@ -1,6 +1,6 @@
 //! The node rows of a mesh, written by that mesh's primary node-admin (R13; ops-naming "Node
-//! data: meta, config and exe"; lifecycles/node-create.md step 1; node-decommission.md step 3;
-//! fabric-node-lifecycle.md §2.7: "It writes its own members' `Node` rows; no other node-admin
+//! data: meta, config and exe"; lifecycles/node-create.md step 1; lifecycles/node-delete.md step 3;
+//! node-identity-and-state.md §2.7: "It writes its own members' `Node` rows; no other node-admin
 //! writes them").
 //!
 //! The writer of a mesh's rows is that mesh's primary node-admin, for every member of its mesh, itself
@@ -66,7 +66,7 @@ pub struct NodeRows {
     written: Arc<WrittenRows>,
 }
 
-/// A writer's record of the rows it holds authoritatively (fabric-node-lifecycle.md "A rewrite is
+/// A writer's record of the rows it holds authoritatively (node-identity-and-state.md "A rewrite is
 /// lossless for every field its writer knows"): per node, the row the writer last put for it (a
 /// claim, an arrival, a rename, a config put, a Deleted row) or found the node holding at a claim.
 /// The writer of a mesh's rows and its config door share one record, so a config put through the
@@ -486,7 +486,7 @@ impl NodeRows {
         span.in_scope(|| tracing::info!("node.create: the claim is withdrawn"));
     }
 
-    /// `NodeDeleted` (node-decommission.md step 3): the row at the node's `path.name` (its `.old`
+    /// `NodeDeleted` (lifecycles/node-delete.md step 3): the row at the node's `path.name` (its `.old`
     /// path for a parked predecessor) with status `Deleted`, the exact record the executor acted on
     /// and its config kept, a blind put. One `via-node-row` span.
     pub async fn deleted(&self, record: &Node, operation: &str) -> Result<(), RowRefused> {

@@ -317,7 +317,7 @@ impl ServerBuilder {
     }
 
     /// Compose a product's transitional adapter (`CatalogEntry::transitional`) into this
-    /// process's one sealed catalog (node-rpc-rdm-ownership.md §12). The server runs no handler
+    /// process's one sealed catalog (node-rpc-envelope.md §12). The server runs no handler
     /// for it: the product's own dispatcher serves the op on its legacy framing and consults
     /// [`NodeRpcServer::catalog`] to refuse what the catalog does not hold. On this server's
     /// own ALPN the op is unserved (`421`), as any catalogued op without a handler is.

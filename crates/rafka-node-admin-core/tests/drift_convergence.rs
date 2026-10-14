@@ -16,7 +16,7 @@
 //!
 //! The cells: an exited rpc node is recovered once by its mesh-primary, whatever its exit code;
 //! a silent node whose runtime runs opens no attempt and is never replaced; a lost mesh-primary admin and a lost fabric-primary admin are
-//! reborn by the right executor; members unheard through a lost forwarder are fenced, never
+//! recovered by the right executor; members unheard through a lost forwarder are fenced, never
 //! duplicated; a path the view does not hold but where a runtime runs is held. After every
 //! loss: exactly the lost paths have new births, every path of the accepted topology has
 //! exactly one live birth, and the accepted Build is complete (a recovery's attempt in its mesh's
@@ -274,7 +274,7 @@ struct Runner {
     /// workflows write them.
     builds: Arc<MemoryBuildStateAdapter>,
     /// Membership repair runs right after every birth, before the attempt's next operation: what a
-    /// reborn forwarder does to the executor's view mid-attempt.
+    /// recovered forwarder does to the executor's view mid-attempt.
     hear_after_birth: std::sync::atomic::AtomicBool,
     /// The operations of every recovery run, by key, in the order the executor ran them.
     recovering: Mutex<Vec<String>>,
@@ -779,11 +779,11 @@ async fn a_lost_fabric_primary_is_recovered_by_its_own_meshs_new_primary() {
 }
 
 /// CONTRACT (R-D1: the fabric-primary acts on a peer mesh's node-admin only when every admin of
-/// that mesh is proven gone, or as the restore the investigation's rebirth verdict authorizes; R-A2:
+/// that mesh is proven gone, or as the restore the investigation's recovery verdict authorizes; R-A2:
 /// cross-mesh only when the whole cohort is proven lost): a peer mesh's primary admin exits and every
 /// member of that mesh goes silent at once (its forwarder is gone), its second admin included,
 /// though it runs and answers. The fabric-primary's drive stalls by name while that admin is held,
-/// and once its own mesh seats it, it executes the repair: only the exited admin is reborn and no
+/// and once its own mesh seats it, it executes the repair: only the exited admin is recovered and no
 /// member that answers is created over.
 #[tokio::test]
 async fn members_unheard_through_a_lost_forwarder_are_fenced_never_duplicated() {
@@ -802,11 +802,11 @@ async fn members_unheard_through_a_lost_forwarder_are_fenced_never_duplicated() 
     let survivor = e.stalls_until_seated(lost, &primary).await;
     e.converge().await;
     e.executed_only_by(&survivor);
-    assert_eq!(e.born(), vec![primary.clone()], "only the proven-exited admin is reborn: {:?}", e.runner.ran.lock().unwrap());
+    assert_eq!(e.born(), vec![primary.clone()], "only the proven-exited admin is recovered: {:?}", e.runner.ran.lock().unwrap());
     for m in members.iter().filter(|m| **m != primary) {
         assert!(e.fence_of(m).iter().all(|o| *o == FenceOutcome::Alive), "{m} answers: never created over: {:?}", e.fence_of(m));
     }
-    // Heard again through the reborn forwarder: the topology holds.
+    // Heard again through the recovered forwarder: the topology holds.
     e.holds_the_shape().await;
 }
 
@@ -827,13 +827,13 @@ async fn a_path_the_view_does_not_hold_but_where_a_runtime_runs_is_held() {
 }
 
 /// The seeded soak's finding (seed 7, round 3, trace in the spans of
-/// `fabric_soak__seeded`): the lost mesh's primary is reborn as the attempt's first operation, its
+/// `fabric_soak__seeded`): the lost mesh's primary is recovered as the attempt's first operation, its
 /// members are heard again through it before the attempt's next operation, and that operation
 /// must find them live and leave them alone. A plan made on the older view is not a licence. The
 /// lost mesh's second admin runs and answers, so the fabric-primary stalls by name until that
 /// mesh seats it, and the seated admin executes the attempt (R-D1, R-A2).
 #[tokio::test]
-async fn members_heard_again_mid_attempt_through_the_reborn_forwarder_are_never_created_over() {
+async fn members_heard_again_mid_attempt_through_the_recovered_forwarder_are_never_created_over() {
     let e = estate().await;
     e.runner.hear_after_birth.store(true, std::sync::atomic::Ordering::SeqCst);
     let fp = e.fabric_primary().await;
@@ -848,7 +848,7 @@ async fn members_heard_again_mid_attempt_through_the_reborn_forwarder_are_never_
     let survivor = e.stalls_until_seated(lost, &primary).await;
     e.converge().await;
     e.executed_only_by(&survivor);
-    assert_eq!(e.born(), vec![primary.clone()], "only the proven-exited admin is reborn: {:?}", e.runner.ran.lock().unwrap());
+    assert_eq!(e.born(), vec![primary.clone()], "only the proven-exited admin is recovered: {:?}", e.runner.ran.lock().unwrap());
     for m in members.iter().filter(|m| **m != primary) {
         assert!(e.fence_of(m).iter().all(|o| *o == FenceOutcome::Alive), "{m} is live in the view by the time its operation runs: never created over: {:?}", e.fence_of(m));
     }
@@ -1391,7 +1391,7 @@ mod one_attempt_number {
         println!("trace_id={} admitted={admitted} refused_drift_on={}", refused[0]["trace_id"].as_str().unwrap_or_default(), before.build_id);
     }
 
-    /// CONTRACT: the proven-drift pass for a peer mesh whose rebirth the ladder decided (its two
+    /// CONTRACT: the proven-drift pass for a peer mesh whose recovery the ladder decided (its two
     /// node-admins exited, the mesh unheard) is refused at the admission, because a requested restart
     /// of the same Build was admitted first. A refused pass opened nothing, so it spends nothing:
     /// once the restart's attempt completes, the next pass releases the mesh's first recovering
@@ -1421,7 +1421,7 @@ mod one_attempt_number {
         let time = crate::adopted_time();
         let hold = |m: &str| decided(m).and_then(|p| p.unheard_ms);
         let defers = |_: &str| false;
-        let rebirth = |m: &str| decided(m).is_some_and(|p| p.recovery_decided);
+        let recovery = |m: &str| decided(m).is_some_and(|p| p.recovery_decided);
         // The restarted node holds no seat: a seat holder's restart runs node.primary.update first, and the
         // writer's view takes the moved seat from its view loop, which this harness does not run.
         let target = seatless_rpc(&e, &own).await;
@@ -1435,7 +1435,7 @@ mod one_attempt_number {
         let refused = {
             let exits = exit_records();
             let verdicts = rafka_node_admin_core::admin::ExitVerdicts::default();
-            let mut pass = Box::pin(rafka_node_admin_core::admin::reconcile_drift(&time, &me, &me_id, &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &verdicts, &hold, &defers, &rebirth, &|_| false, &exits));
+            let mut pass = Box::pin(rafka_node_admin_core::admin::reconcile_drift(&time, &me, &me_id, &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &verdicts, &hold, &defers, &recovery, &|_| false, &exits));
             // One poll while the restart holds the admission inside its write.
             let early = tokio::select! {
                 biased;
@@ -1453,7 +1453,7 @@ mod one_attempt_number {
         let settled = e.builds.current().await.unwrap().unwrap();
         assert_eq!((settled.build_id.clone(), settled.attempt), (before.build_id.clone(), before.attempt + 1), "the restart's attempt completed on the same Build");
         let t = e.view.read().await.clone();
-        let opened = rafka_node_admin_core::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &Default::default(), &hold, &defers, &rebirth, &|_| false, &exit_records()).await;
+        let opened = rafka_node_admin_core::admin::reconcile_drift(&time, &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &contexts, &cp.admission, &[], &mut started, &mut held, &Default::default(), &hold, &defers, &recovery, &|_| false, &exit_records()).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 2)), "the refused pass spent nothing: the decision still releases the first recovering node-admin (started={started:?})");
         let action = e.builds.current().await.unwrap().unwrap().action;
         assert_eq!(one_step_create_of(&action).as_deref(), Some(admins[0].as_str()), "the carrier-edge-lost verdict runs node.create of the mesh's first node-admin in path order, a one-step recipe: {action:?}");
@@ -1462,7 +1462,7 @@ mod one_attempt_number {
 
 /// CONTRACT (mesh-investigation.md step 6): a fabric primary that took the seat holds a peer mesh it
 /// never heard on the backbone as `ready` from topology alone (topology is not liveness). Once the
-/// ladder has decided that mesh's rebirth (`carrier-edge-lost`), the verdict opens the next attempt of
+/// ladder has decided that mesh's recovery (`carrier-edge-lost`), the verdict opens the next attempt of
 /// the accepted Build with node.create of the mesh's first node-admin, a one-step recipe whose reason is
 /// the recipe's; the create's own fence asks the provider about the lost admin and deletes it only on its
 /// exact exit, so the opening recovers nothing. Must NOT happen: the decided mesh
@@ -1734,7 +1734,7 @@ mod fully_crashed_mesh {
     /// carrier-edge-lost verdict opens a recovery in and the status projection reads): not before (an exit
     /// proof held for the ladder's decision opens nothing, and the attempt's opening alone gives the mesh
     /// nothing), naming the mesh and every node-admin the proof found. It is cleared only on the report of
-    /// the new mesh-primary after that moment: not by the reborn mesh's view alone, not by a report of a
+    /// the new mesh-primary after that moment: not by the recovered mesh's view alone, not by a report of a
     /// node-admin the proof found, only by a birth the proof did not find reporting after the claim
     /// ("Only on that report, the fabric-primary clears the degraded health observation"). Must NOT
     /// happen: a create of a node-admin that leaves the fabric `ready-for-traffic`, or `degraded` that
@@ -1769,22 +1769,22 @@ mod fully_crashed_mesh {
             assert_eq!(recovery.lost.iter().cloned().collect::<HashSet<_>>(), found, "it names every node-admin the proof found");
             assert_eq!(records.peer_recoveries().len(), 1, "one recovery, the mesh's");
             // The mesh's new primary: a birth the proof did not find, in the view the fabric-primary reads.
-            let reborn = IncarnationId::mint();
+            let recovered = IncarnationId::mint();
             let mut view = e.view.read().await.clone();
             for n in view.nodes.iter_mut().filter(|n| n.mesh == peer_mesh && n.kind == NodeKind::NodeAdmin) {
                 n.is_primary = n.name.to_string() == admins[0];
                 if n.is_primary {
-                    n.incarnation_id = Some(reborn.clone());
+                    n.incarnation_id = Some(recovered.clone());
                     n.status = NodeStatus::ReadyForTraffic;
                 }
             }
             let clear = || rafka_node_admin_core::investigate::restore_peer_recovery(&me, &records, &view);
             clear();
-            assert!(records.peer_recovering(), "the view of a reborn primary alone clears nothing");
+            assert!(records.peer_recovering(), "the view of a recovered primary alone clears nothing");
             records.declared.lock().unwrap().record_report(&peer_mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(found.iter().next().unwrap().clone()), std::time::Instant::now());
             clear();
             assert!(records.peer_recovering(), "a report of a node-admin the proof found is not the new primary's");
-            records.declared.lock().unwrap().record_report(&peer_mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(reborn), std::time::Instant::now());
+            records.declared.lock().unwrap().record_report(&peer_mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(recovered), std::time::Instant::now());
             clear();
             assert!(!records.peer_recovering(), "the new mesh-primary reported after the claim: degraded clears");
         }
@@ -1793,13 +1793,13 @@ mod fully_crashed_mesh {
         drop(root);
         let spans = capture.spans().expect("the cell's spans can be read");
         let named = |n: &str| spans.iter().filter(|s| s["name"] == n).collect::<Vec<_>>();
-        let rebirth = named("rdm.node_admin.mesh.create.via-recovery");
-        assert_eq!(rebirth.len(), 1, "degraded is authored once: {rebirth:?}");
-        assert_eq!((rebirth[0]["attributes"]["verdict"].as_str(), rebirth[0]["attributes"]["fabric_status"].as_str()), (Some("fully-crashed"), Some("degraded")), "{}", rebirth[0]["attributes"]);
+        let recovery = named("rdm.node_admin.mesh.create.via-recovery");
+        assert_eq!(recovery.len(), 1, "degraded is authored once: {recovery:?}");
+        assert_eq!((recovery[0]["attributes"]["verdict"].as_str(), recovery[0]["attributes"]["fabric_status"].as_str()), (Some("fully-crashed"), Some("degraded")), "{}", recovery[0]["attributes"]);
         let recovered = named("rdm.node_admin.mesh.update.via-recovered");
         assert_eq!(recovered.len(), 1, "the clear is named once: {recovered:?}");
-        assert_eq!(recovered[0]["trace_id"], rebirth[0]["trace_id"], "set and cleared are one story");
-        println!("trace_id={} authored={} cleared={}", rebirth[0]["trace_id"].as_str().unwrap_or_default(), rebirth[0]["attributes"], recovered[0]["attributes"]);
+        assert_eq!(recovered[0]["trace_id"], recovery[0]["trace_id"], "set and cleared are one story");
+        println!("trace_id={} authored={} cleared={}", recovery[0]["trace_id"].as_str().unwrap_or_default(), recovery[0]["attributes"], recovered[0]["attributes"]);
     }
 
     /// CONTRACT (mesh-investigation.md step 5, "Fully crashed"; node-create.md: "Runtime exit requires
@@ -1898,31 +1898,31 @@ async fn two_meshes_given_new_node_admins_keep_the_fabric_degraded_until_each_ne
         records.open_peer_recovery(rafka_node_admin_core::admin::PeerRecovery { mesh: mesh.into(), verdict_rafka_ms: Some(1), opened_at: std::time::Instant::now(), lost });
     }
     assert_eq!(records.peer_recoveries().len(), 2, "a recovery is open for each mesh: {:?}", records.peer_recoveries());
-    // Each mesh's first node-admin is reborn and primary in the view the fabric-primary reads.
-    let mut reborn_view = view.clone();
-    let mut reborn: BTreeMap<String, IncarnationId> = BTreeMap::new();
-    for n in reborn_view.nodes.iter_mut().filter(|n| n.kind == NodeKind::NodeAdmin) {
+    // Each mesh's first node-admin is recovered and primary in the view the fabric-primary reads.
+    let mut recovered_view = view.clone();
+    let mut recovered: BTreeMap<String, IncarnationId> = BTreeMap::new();
+    for n in recovered_view.nodes.iter_mut().filter(|n| n.kind == NodeKind::NodeAdmin) {
         n.is_primary = n.name.to_string().ends_with(".admin.1");
         if n.is_primary {
             let inc = IncarnationId::mint();
             n.incarnation_id = Some(inc.clone());
-            reborn.insert(n.mesh.clone(), inc);
+            recovered.insert(n.mesh.clone(), inc);
         }
     }
-    let report = |mesh: &str| records.declared.lock().unwrap().record_report(mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(reborn[mesh].clone()), std::time::Instant::now());
+    let report = |mesh: &str| records.declared.lock().unwrap().record_report(mesh, rafka_node_admin_core::status_rpc::Reporter::Birth(recovered[mesh].clone()), std::time::Instant::now());
     report("mesh2");
-    rafka_node_admin_core::investigate::restore_peer_recovery(&me, &records, &reborn_view);
+    rafka_node_admin_core::investigate::restore_peer_recovery(&me, &records, &recovered_view);
     assert_eq!(records.peer_recoveries().iter().map(|r| r.mesh.clone()).collect::<Vec<_>>(), vec!["mesh1".to_string()], "mesh2's new primary reported: only mesh1's recovery is left");
     assert!(records.peer_recovering(), "the fabric stays degraded while mesh1's new primary has not reported");
     report("mesh1");
-    rafka_node_admin_core::investigate::restore_peer_recovery(&me, &records, &reborn_view);
+    rafka_node_admin_core::investigate::restore_peer_recovery(&me, &records, &recovered_view);
     assert!(!records.peer_recovering(), "both new primaries reported: the fabric is ready again");
 }
 
 /// R-D1: a peer mesh the fabric primary holds unheard is held as a mesh. The provider's proof that one of
 /// its births exited is kept as evidence and authorizes no Restart, Replace or NodeDeleted; a heard mesh is
 /// repaired as ever; the hold ends with the silence and leaves nothing behind.
-/// A peer mesh whose rebirth the ladder decided (`carrier-edge-lost`), after the verdict's create of
+/// A peer mesh whose recovery the ladder decided (`carrier-edge-lost`), after the verdict's create of
 /// its first node-admin ran.
 mod decided_mesh {
     use super::fully_crashed_mesh::HeldPeer;
@@ -1934,7 +1934,7 @@ mod decided_mesh {
     /// mesh's first recovering node-admin; once mesh authority is restored, that mesh performs its own
     /// ordinary-node reconciliation"; mesh-recovery.md:8-9: "A lost member of a mesh with a live
     /// mesh-primary is node recovery, driven by that mesh-primary"): both node-admins of the peer mesh
-    /// exited while its rpc nodes live. The ladder decided the rebirth, the verdict's create of the
+    /// exited while its rpc nodes live. The ladder decided the recovery, the verdict's create of the
     /// first node-admin ran, and that admin is the mesh's primary in the view. The fabric-primary hears
     /// the mesh again before its ladder steps the decision off: the mesh's second node-admin, proven
     /// exited, is its new primary's to recover, and the fabric-primary's drift pass opens nothing for
@@ -1963,7 +1963,7 @@ mod decided_mesh {
         let receipt = rafka_node_admin_core::build_state::BuildStepReceipt { mesh: None, build_id: before.build_id.clone(), attempt: before.attempt + 1, operation: format!("node.create:{}", admins[0]), step: "Complete".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: None, executor: None };
         rafka_node_admin_core::build_state::BuildStateAdapter::append_step_receipt(&*e.builds, &receipt).await.unwrap();
         let t = e.view.read().await.clone();
-        assert!(t.holds_mesh_seat(&peer_mesh, &own_id(&t, &admins[0].parse().unwrap())), "the reborn first node-admin is the mesh's primary in the view");
+        assert!(t.holds_mesh_seat(&peer_mesh, &own_id(&t, &admins[0].parse().unwrap())), "the recovered first node-admin is the mesh's primary in the view");
         // Heard again; the ladder still holds its decision until its next round.
         let peer = peer_mesh.clone();
         let heard_still_decided = move |m: &str| (m == peer).then_some(PeerMesh { unheard_ms: None, recovery_decided: true, unreachable_decided: false });
@@ -2108,10 +2108,10 @@ mod unheard_mesh_hold {
         e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: restore, outcome: AttemptOutcome::Converged }).await.unwrap();
         {
             let fabric_id = e.view.read().await.fabric.id.clone();
-            let reborn = birth(&e.world, &e.book, &fabric_id, &admins[0], None);
+            let recovered = birth(&e.world, &e.book, &fabric_id, &admins[0], None);
             let mut v = e.view.write().await;
             v.nodes.retain(|n| n.name.to_string() != admins[0]);
-            v.nodes.push(reborn);
+            v.nodes.push(recovered);
         }
         // The decision released one node-admin, and the Build says which: a reconcile pass that holds
         // nothing of the earlier passes (a fresh `started`) reads it there, so the second node-admin's exit

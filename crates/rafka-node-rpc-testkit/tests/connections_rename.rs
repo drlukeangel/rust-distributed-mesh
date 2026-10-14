@@ -1,4 +1,4 @@
-//! A node's own connections end follows the name it holds (fabric-node-lifecycle.md §8: `source`,
+//! A node's own connections end follows the name it holds (node-identity-and-state.md §8: `source`,
 //! `destination` are "the two ends' path.names", `source_node_id`/`destination_node_id` "the minted
 //! Node.id of the instance at each end when the entry was written"; R12/R13: the node owns its name
 //! and `ApplyNodeName` makes it hold and publish the renamed one).
@@ -259,7 +259,7 @@ fn a_renamed_nodes_next_connections_entries_name_the_name_it_holds_at_both_ends(
 
 /// CONTRACT: a node renamed while it is stopped records its next connection under the name its join
 /// answer handed it (lifecycles/node-start.md step 2: the node installs the handed name before it
-/// publishes anything; fabric-node-lifecycle.md §8: a row names the ends' path.names; R12: the node
+/// publishes anything; node-identity-and-state.md §8: a row names the ends' path.names; R12: the node
 /// publishes only the row's name). `mesh1.rpc.1.new` originates a data-plane connection to its admin,
 /// is stopped, its row is renamed `mesh1.rpc.1` while it is stopped, and it starts: its start writes
 /// no entry (its join is Node RPC, which is no connection), and the next data-plane connection it

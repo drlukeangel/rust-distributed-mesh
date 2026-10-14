@@ -1558,7 +1558,7 @@ async fn caller_of(admin: &Value) -> (std::sync::Arc<rafka_node_rpc::NodeRpcClie
 /// (node-recovery.md "Retained: ... config (seeded from the Deleted row)"; proposal
 /// node-properties-own-commands.md §8, recovery: "the successor's claim over it seeds config and tags
 /// from that Deleted row and writes the tags index entries under the successor's id, in the same
-/// write that seeds config"; fabric-node-lifecycle.md "A rewrite is lossless for every field its
+/// write that seeds config"; node-identity-and-state.md "A rewrite is lossless for every field its
 /// writer knows"). The caller puts `<mesh>.rpc.1`'s config and the tag `rabbit` through its
 /// mesh-primary (not the fabric-primary), the node carries them, then its runtime is killed: the
 /// mesh-primary's recovery writes the exited birth's Deleted row with that config and tag, the new

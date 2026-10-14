@@ -1,5 +1,5 @@
 //! i143.e6.s2 functional: a dial is shared by every caller of a process birth (PRD §1.19–20, §14;
-//! node-rpc-rdm-ownership.md §8–§9), over real Iroh endpoints on 127.0.0.1 with the scenario
+//! node-rpc-envelope.md §8–§9), over real Iroh endpoints on 127.0.0.1 with the scenario
 //! crate's UDP [`Tap`] between the caller and the node. The pool's other cells are
 //! `rafka-node-rpc/tests/pool.rs`; this one drives the dial through the tap, so it lives with the
 //! crate that owns the tap.

@@ -244,7 +244,7 @@ A Status call.
 | 13.3 | `build_id` | `String` |  |  | The Build the round belongs to. |
 | 13.4 | `attempt` | `u32` |  |  | The Build attempt that holds the round. |
 | 13.5 | `operation` | `String` |  |  | The operation: `commit-state:<fabric_id>`. |
-| 14 | **`OpenTraffic`** |  |  | `op() = "open-traffic"` | Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; fabric-open-traffic.md). The reply admits the command; completion is `Self::TrafficOpened`. |
+| 14 | **`OpenTraffic`** |  |  | `op() = "open-traffic"` | Downward: the commanding authority tells the exact birth to open traffic (`open-traffic`; lifecycles/fabric-ready-for-traffic.md). The reply admits the command; completion is `Self::TrafficOpened`. |
 | 14.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  |  | The fabric the round belongs to. |
 | 14.1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The subject: the commanded or reporting birth. |
 | 14.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
@@ -1642,7 +1642,7 @@ One end of an entry, or a Proxy's carrier: its path, logical node and process bi
 
 `crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
 
-One entry of a node's connections log (connections.md §1, fabric-node-lifecycle.md §8: every
+One entry of a node's connections log (connections.md §1, node-identity-and-state.md §8: every
 
 <a id="t-rafka_mesh_entity-connections-ConnectionKind"></a>
 
@@ -2393,7 +2393,7 @@ One step of a `BuildChange::Recipe`: one node primitive acting on the node a `pa
 | 0.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The `path.name` the node is created at. |
 | 1 | **`Stop`** |  |  | node.stop of the live node at `node`: it is stopped, its process and data kept. |
 | 1.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
-| 2 | **`Update`** |  |  | node.update of the node at `node`: its `path.name` becomes `name` (node-update.md, under the |
+| 2 | **`Update`** |  |  | node.update of the node at `node`: its `path.name` becomes `name` (lifecycles/node-name-update.md, under the |
 | 2.0 | `node` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node. |
 | 2.1 | `name` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The `path.name` it takes. |
 | 3 | **`Start`** |  |  | node.start of the stopped node at `node`: the same process rejoins under the name its row holds. |

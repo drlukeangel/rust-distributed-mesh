@@ -62,7 +62,7 @@ pub trait Gate: Send + Sync {
     }
     /// What the peer-mesh investigation holds of `mesh` now (`crate::investigate::Ladder::peer_mesh`),
     /// read when asked: a node of a peer mesh held unheard is not claimed or dispatched for (R-D1),
-    /// except the mesh's first recovering node-admin once the investigation decided its rebirth.
+    /// except the mesh's first recovering node-admin once the investigation decided its recovery.
     fn peer_mesh(&self, _mesh: &str) -> Option<crate::investigate::PeerMesh> {
         None
     }
@@ -740,7 +740,7 @@ fn own_attempt(p: &BuildProjection, mesh: &str) -> u32 {
 }
 
 /// The node-admin the carrier-edge-lost verdict of `mesh` still owes a node.create (mesh-investigation.md
-/// step 6), when the investigation decided the mesh's rebirth: the node-admin the Build already carried
+/// step 6), when the investigation decided the mesh's recovery: the node-admin the Build already carried
 /// across the fence ([`crossed_admin`]) until its create completed since the mesh last executed its own
 /// work, and `first` (the mesh's first node-admin in path order) while the Build carried none.
 pub(crate) fn first_admin_owed(p: &BuildProjection, mesh: &str, first: &PathName) -> Option<PathName> {
@@ -867,7 +867,7 @@ impl DriveEnv {
     /// What the peer-mesh investigation holds of the mesh of `op`'s node when that mesh is a peer
     /// mesh it holds unheard (R-D1: loss of peer-mesh control-plane visibility fences lifecycle
     /// mutation for every node in that mesh): the mesh, how long it is unheard, and whether its
-    /// rebirth is decided. `None` for a mesh operation, a node of this admin's own mesh, or a mesh
+    /// recovery is decided. `None` for a mesh operation, a node of this admin's own mesh, or a mesh
     /// the investigation does not hold unheard.
     fn unheard_peer(&self, op: &BuildOperation) -> Option<(PathName, u64, bool)> {
         let node = op.node()?;
@@ -878,7 +878,7 @@ impl DriveEnv {
         Some((node.clone(), peer.unheard_ms?, peer.recovery_decided))
     }
 
-    /// The restore the investigation's rebirth verdict authorizes (R-D1; mesh-investigation.md steps
+    /// The restore the investigation's recovery verdict authorizes (R-D1; mesh-investigation.md steps
     /// 5-6): `op` acts on a node-admin of a peer mesh held unheard whose recovery is decided, and the
     /// Build carried no other admin of that mesh across the fence ([`crossed_admin`]). The
     /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent
@@ -1350,17 +1350,17 @@ impl DriveEnv {
         if let Some((op, f)) = first.as_ref().and_then(|op| self.fenced(p, op, crashed).map(|f| (op, f))) {
             return Err(self.stop_at_fence(me, drive, attempt, op, f, crashed));
         }
-        // The mesh's first recovering node-admin under the investigation's rebirth verdict is this
+        // The mesh's first recovering node-admin under the investigation's recovery verdict is this
         // admin's to execute (R-D1). A run handed back to this admin (its own cut, or an executor whose
         // view names this admin) is claimed for the admin this view names for what is left: an
         // operation no admin executes waits for its mesh's own seat, and one another admin executes is
         // claimed for that admin, never for this one to hand on unrun.
-        let rebirth = first.as_ref().is_some_and(|op| self.recovery_admits(p, op, crashed));
+        let recover = first.as_ref().is_some_and(|op| self.recovery_admits(p, op, crashed));
         // The create admitted on the provider's proof of a fully crashed mesh (not the ladder's decided
-        // rebirth, which the ladder told when it decided): the mesh this claim gives a node-admin.
-        let crash_mesh = first.as_ref().filter(|_| rebirth).and_then(|op| self.unheard_peer(op)).filter(|(_, _, decided)| !*decided).map(|(node, _, _)| node.mesh);
+        // recovery, which the ladder told when it decided): the mesh this claim gives a node-admin.
+        let crash_mesh = first.as_ref().filter(|_| recover).and_then(|op| self.unheard_peer(op)).filter(|(_, _, decided)| !*decided).map(|(node, _, _)| node.mesh);
         let from = std::time::Instant::now();
-        let forced = if rebirth { Some(me.clone()) } else { forced.filter(|to| to != me) };
+        let forced = if recover { Some(me.clone()) } else { forced.filter(|to| to != me) };
         let lead = match forced {
             Some(to) => Some(to),
             None => {

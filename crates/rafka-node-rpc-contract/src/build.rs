@@ -159,7 +159,7 @@ pub enum RecipeStep {
         /// The node.
         node: PathName,
     },
-    /// node.update of the node at `node`: its `path.name` becomes `name` (node-update.md, under the
+    /// node.update of the node at `node`: its `path.name` becomes `name` (lifecycles/node-name-update.md, under the
     /// rename precondition: the node is stopped, or drained with `node.connections.deleted`).
     Update {
         /// The node.

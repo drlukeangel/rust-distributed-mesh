@@ -1,4 +1,4 @@
-//! A node.delete of a stopped node (node-decommission.md step 1, node-stop.md step 6): the stopped
+//! A node.delete of a stopped node (lifecycles/node-delete.md step 1, node-stop.md step 6): the stopped
 //! birth already ran its whole stop (drain receipt, connection cut, `stopped`, `NodeStopped`), so
 //! its delete composes nothing of that stop again. It goes from the `NodeDeleting` pre-notice
 //! straight to the provider's exact runtime exit proof, then `NodeDeleted`, and releases no storage
@@ -86,7 +86,7 @@ impl TopologySink for Discard {
     fn remove_birth(&self, _: &PathName, _: &NodeId, _: &IncarnationId) {}
 }
 
-/// CONTRACT (node-decommission.md 1-2: "For a crashed process those stop steps are already done; do
+/// CONTRACT (lifecycles/node-delete.md 1-2: "For a crashed process those stop steps are already done; do
 /// not fabricate node replies or receipts. Stop and inspect the exact runtime through provider
 /// control"; node-stop.md 6: "Delete proceeds to external exact runtime exit proof instead"): the
 /// delete of a stopped birth (Leaving, parked) records `NodeDeleting`, then `TerminateRuntime` (the

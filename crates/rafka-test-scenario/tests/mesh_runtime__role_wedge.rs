@@ -1,4 +1,4 @@
-//! i143.e11.s10 process E2E: status and lifecycle on a role (PRD §13.1; fabric-node-lifecycle.md
+//! i143.e11.s10 process E2E: status and lifecycle on a role (PRD §13.1; node-identity-and-state.md
 //! §7.3). `{node_admin: 1, broker: 2, gateway: 1}`; a broker is frozen in place (SIGSTOP).
 //! - Born, the broker declared `ReadyForTraffic` to its mesh primary over the status op: the
 //!   view shows it `declared` before anything asks.

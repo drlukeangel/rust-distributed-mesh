@@ -647,7 +647,7 @@ mod tests {
     use super::*;
     use crate::build_state::BuildAttemptClaim;
 
-    /// CONTRACT (fabric-node-lifecycle.md §6.9 Age and Wire: "the age lives in the receipt", "No frame
+    /// CONTRACT (node-identity-and-state.md §6.9 Age and Wire: "the age lives in the receipt", "No frame
     /// gains a field"): a standalone stop's `Complete` receipt commits the stop's lifecycle op (the
     /// exact birth and its rafka-time), and it travels the Build topic in the shape that already
     /// carries a lifecycle op: it is encoded, decoded to the same receipt, and refused for no other

@@ -550,7 +550,7 @@ async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
     assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_round, r.attempt_ordinal)), Some((1, 3)), "the index holds the latest observation: {index:?}");
 }
 
-/// CONTRACT (fabric-node-lifecycle.md §8: `source` is the end's path.name and `source_node_id` the
+/// CONTRACT (node-identity-and-state.md §8: `source` is the end's path.name and `source_node_id` the
 /// instance that wrote the entry; R12: the node owns its name): a writer reading its name from the
 /// process's held name writes its next row under a name the node took, with the same node id and
 /// birth, and holds that row as its own Direct; the row it wrote under the birth's name stays in the
@@ -591,7 +591,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// CONTRACT (fabric-node-lifecycle.md §8: `source_node_id` is the instance at each end when the
+/// CONTRACT (node-identity-and-state.md §8: `source_node_id` is the instance at each end when the
 /// entry was written; connections.md §13 C, the backoff survives a restart): a restarted birth of
 /// `mesh1.rpc.1` (same node id, next incarnation) hydrates the previous birth's failing Direct and
 /// its next failure continues the series one ordinal up in the same round, naming its OWN birth as
@@ -621,7 +621,7 @@ async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// CONTRACT (fabric-node-lifecycle.md §8: `destination_node_id` is the instance at that end when the
+/// CONTRACT (node-identity-and-state.md §8: `destination_node_id` is the instance at that end when the
 /// entry was written; connections.md §9.1 and §9.4: a reconnect series is for the current destination
 /// incarnation): a failing series against `mesh1.rpc.3`'s birth, then a failed dial to its next
 /// birth (same node id, next incarnation), is a new incident: a new round at ordinal one, naming the

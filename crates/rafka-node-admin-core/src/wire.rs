@@ -452,7 +452,7 @@ enum Produces {
 fn produces(operation: &str, step: &str) -> Option<Produces> {
     let is = |c: CreateStep| c.name() == step;
     // A standalone stop's `Complete` commits the stop's lifecycle op: the exact birth and its
-    // rafka-time, the age of its stopped period (fabric-node-lifecycle.md §6.9 Age). Every other
+    // rafka-time, the age of its stopped period (node-identity-and-state.md §6.9 Age). Every other
     // operation's `Complete` commits none.
     if ret_complete(step) && operation.starts_with("node.stop:") {
         return Some(Produces::LifecycleOp);

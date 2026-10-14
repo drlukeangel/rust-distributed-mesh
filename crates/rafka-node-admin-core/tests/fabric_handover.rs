@@ -1821,7 +1821,7 @@ async fn the_holders_build_decisions_are_held_while_it_writes_the_seat_row() {
 }
 
 /// CONTRACT (R14 item 4: "the holder cuts off its writes to the stores its moving seats authorize,
-/// drains them, then writes the seat row"; fabric-node-lifecycle.md §4.3: the mesh-primary writes
+/// drains them, then writes the seat row"; node-identity-and-state.md §4.3: the mesh-primary writes
 /// every status of its mesh): a moving mesh seat cuts off the mesh's status rows on the fabric's
 /// store root with its Mesh row, Node rows and contacts: a status write after the cut-off is refused
 /// by name, naming the transfer; a lift gives the writes back.

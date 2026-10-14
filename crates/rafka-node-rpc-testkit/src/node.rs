@@ -390,7 +390,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
         })
     };
     let _reconciler = connections.spawn_reconciler(rafka_node_admin_core::connections_writer::RECONCILER_TICK, Some(recovery_dial));
-    // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
+    // The status kick (node-identity-and-state.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
     // The name this birth holds, read per call by every door that names it: its launch's until it joins.
     let held_name = crate::held_name::HeldName::of_birth(launch.name.clone());

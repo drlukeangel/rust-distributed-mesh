@@ -1,6 +1,6 @@
 //! Blackbox estate harness for the i143 e2e canaries.
 //!
-//! Everything here goes through public surfaces only (`docs/i143/design.md`):
+//! Everything here goes through public surfaces only (`docs/plans/i143-design.md`):
 //! the `rafka-node-admin` process and its control API, the `rafka-rpc-probe`
 //! binary and the JSONL evidence files. No internal map is read.
 

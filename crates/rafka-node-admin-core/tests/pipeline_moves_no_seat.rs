@@ -146,7 +146,7 @@ fn run_workflow(workflow: NodeCommand) -> (Result<(), rafka_node_admin_core::dep
     (r, observer.sent.into_inner().unwrap(), steps, trace_id)
 }
 
-/// CONTRACT (node-drain.md "Admission is not drain completion"; node-stop.md, the complete stop): a
+/// CONTRACT (lifecycles/node-connections-delete.md "Admission is not drain completion"; node-stop.md, the complete stop): a
 /// standalone drain or stop whose command never reached the birth (`NotSent`) established nothing:
 /// its wait step fails by name with the admission it got, and no `Complete` receipt names the birth.
 #[test]

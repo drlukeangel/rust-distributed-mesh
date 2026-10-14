@@ -1,5 +1,5 @@
 //! i143.e6.s2 functional: the scoped pool, keyed by process birth (PRD §1.19–20, §14;
-//! node-rpc-rdm-ownership.md §8–§9).
+//! node-rpc-envelope.md §8–§9).
 //!
 //! Pool identity is `(scope, peer, incarnation)`: a connection is to a process birth. The target in
 //! the framing names the node: every call to a birth shares the connection, and a new incarnation

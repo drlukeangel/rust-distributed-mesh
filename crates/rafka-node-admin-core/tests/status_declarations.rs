@@ -1754,7 +1754,7 @@ fn a_node_name_update_at_a_mesh_primary_that_has_not_heard_the_fabric_ready_is_d
 }
 
 /// CONTRACT (R-TG1; proposal §3: tags and config "Neither has a precondition beyond the fabric being
-/// ready, neither touches the name"; fabric-node-lifecycle.md "A rewrite is lossless for every field its
+/// ready, neither touches the name"; node-identity-and-state.md "A rewrite is lossless for every field its
 /// writer knows"): a caller's `node.tags.create { rabbit, red }` of the live `mesh1.rpc.1` writes its row
 /// and the tags index with the birth told nothing. A `node.config.update` of rpc.1 then writes its row
 /// with the new config and the same tags, the index unchanged. The stopped `mesh1.rpc.2`, whose row

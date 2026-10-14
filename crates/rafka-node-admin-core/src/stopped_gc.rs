@@ -1,4 +1,4 @@
-//! The stopped-node garbage collector (fabric-node-lifecycle.md §6.9, R-GC1).
+//! The stopped-node garbage collector (node-identity-and-state.md §6.9, R-GC1).
 //!
 //! A stopped node is garbage once it has been stopped longer than the fabric's
 //! `stopped_node_ttl` (`RDM_STOPPED_NODE_TTL`). The fabric-primary, the sole Build driver, sweeps

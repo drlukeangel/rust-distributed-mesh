@@ -1,6 +1,6 @@
 //! The status rows of a mesh live on the fabric's store root, written by the mesh's seat holder,
 //! and are folded into what an admin applied when it takes the mesh's seat, never at boot by an
-//! admin that does not hold it (R14 :8 and :34, R14 item 7, fabric-node-lifecycle.md §4.3).
+//! admin that does not hold it (R14 :8 and :34, R14 item 7, node-identity-and-state.md §4.3).
 
 use rafka_node_admin_core::admin::Records;
 use rafka_node_admin_core::model::*;
@@ -87,7 +87,7 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
 
 /// CONTRACT (R14 :8 status is one of the interfaces "every writer and reader sees the same rows",
 /// :34 layout `status/<mesh>/`, item 7: the rebuild on a seat change reads the shared root;
-/// fabric-node-lifecycle.md §4.3: the mesh-primary writes every status of its mesh): A, mesh1's
+/// node-identity-and-state.md §4.3: the mesh-primary writes every status of its mesh): A, mesh1's
 /// primary, applied a Mesh status, a Fabric event and two node declared states, each a row on the
 /// fabric's store root. B, the other admin of mesh1 with its own store instance over that root,
 /// folds none of them while A holds the seat: what B holds is only what B applied. When B takes the

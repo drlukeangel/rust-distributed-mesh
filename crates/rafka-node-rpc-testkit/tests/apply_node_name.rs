@@ -4,7 +4,7 @@
 //! CONTRACT: a node born `mesh1.rpc.1.new` that originated a data-plane connection to its admin
 //! answers `ApplyNodeName { name: mesh1.rpc.1 }` with `BusyHoldingConnections` naming that connection
 //! by the minted id of its open entry (proposal node-properties-own-commands.md §2.2 step 6), and holds nothing:
-//! its digest still says `.new`. The cell runs node-update.md's order ("Rename precondition": the
+//! its digest still says `.new`. The cell runs lifecycles/node-name-update.md's order ("Rename precondition": the
 //! node's `node.connections.delete { All }` has completed): `All`, held open by one call in flight
 //! at the node until the cell releases it, answers `ConnectionsDeleted` with an `Established`
 //! receipt counting that call and closing the route; only then is the name applied: `Applied`, and

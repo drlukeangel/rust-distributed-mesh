@@ -880,7 +880,7 @@ mod tests {
     }
 
     /// CONTRACT (states.md "Who sets each state": node ReadyForTraffic is set by "the node's
-    /// mesh-primary" from "the node's node.started report, after every start gate"; node-update.md:
+    /// mesh-primary" from "the node's node.started report, after every start gate"; lifecycles/node-name-update.md:
     /// "a stopped predecessor to or from `<name>.old`", the stopped node reads that name at its next
     /// start): a node-admin renamed to `mesh1.admin.2.old` while stopped and started again under the
     /// row's name is the same birth, so once it is ready it owes its node.started to mesh1's primary,
@@ -1007,7 +1007,7 @@ mod tests {
     }
 
     /// CONTRACT (states.md: "One commit stores the row, applies it, gossips it and answers the op";
-    /// fabric-mesh-ops.md: "`DeclareNodeState` and `DeclareMeshState` report committed state
+    /// node-rpc-envelope.md: "`DeclareNodeState` and `DeclareMeshState` report committed state
     /// upward"): a mesh primary whose own Mesh status row is committed Leaving (delete-mesh admitted)
     /// owes `DeclareMeshState(Leaving)` to the fabric-primary, whether or not its round is done, so
     /// the fabric-primary's map holds the mesh's Leaving and hands it to an admin it creates for the

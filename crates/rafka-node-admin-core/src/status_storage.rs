@@ -108,7 +108,7 @@ pub fn fold_declared(rows: impl IntoIterator<Item = NodeDeclaredRow>) -> HashMap
     out
 }
 
-/// The silence status a mesh primary holds for one birth of its own mesh (fabric-node-lifecycle.md
+/// The silence status a mesh primary holds for one birth of its own mesh (node-identity-and-state.md
 /// §7.3): `PendingReconnect`, then `Dead` once its offline tickle found no path on two rounds a
 /// staleness floor apart, `None` once it is heard again. Keyed by the exact birth; written only by
 /// the mesh primary's tickle loop. Observer-inferred: never itself a reason to act.
@@ -341,7 +341,7 @@ const NODE_EXIT_FORMAT: &str = "node-exit/1";
 /// One row per file under `status/<mesh>/` of the fabric's store root (`crate::store_root`):
 /// `meshes/<mesh_id>-<state>.json`, `fabric/<fabric_id>-<hex of the event key>.json`,
 /// `declared/<node_id>--<incarnation>--<state>.json`, `silence/<node_id>--<incarnation>.json` and
-/// `exits/<node_id>--<incarnation>.json`. The mesh's seat holder writes them (fabric-node-lifecycle.md
+/// `exits/<node_id>--<incarnation>.json`. The mesh's seat holder writes them (node-identity-and-state.md
 /// §4.3); every admin of the mesh reads the same rows.
 #[derive(Debug)]
 pub struct FileStatusStorage {

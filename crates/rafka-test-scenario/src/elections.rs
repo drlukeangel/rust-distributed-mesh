@@ -1,7 +1,7 @@
 //! The expected election outcome, computed from a public view alone (`node.get`). Every seat, a
 //! node-admin cohort's (the mesh primary), the fabric primary's and every other cohort's (rpc,
 //! gateway, ...), is held by its holder until that holder yields it or its exact birth is proven gone
-//! (rafka-v2 docs/architecture/fabric-node-lifecycle-elections.md §5: "For every seat: a living holder
+//! (docs/architecture/fabric-node-lifecycle-elections.md §5: "For every seat: a living holder
 //! keeps its seat; a lower-NodeId candidate that later becomes Ready never displaces it"; "a restarted
 //! node is a candidate for a later vacancy and never displaces the holder"), so a view alone cannot
 //! name a holder: [`seats_as_expected`] checks that exactly one holder is advertised per cohort with a

@@ -414,14 +414,14 @@ impl OperationRunner for Recovered {
 /// restoration of the mesh's first recovering node-admin; once mesh authority is restored, that mesh
 /// performs its own ordinary-node reconciliation"; mesh-investigation.md steps 5-6): mesh2's only
 /// node-admin is proven exited, so the fabric-primary of mesh1 is the executor of mesh2's work in
-/// its view, and the investigation holds mesh2 unheard. While no rebirth is decided the drive claims
+/// its view, and the investigation holds mesh2 unheard. While no recovery is decided the drive claims
 /// nothing and dispatches nothing for mesh2, and says so on its own span naming the mesh, the
-/// operation and how long the mesh is unheard. Once the investigation decides the rebirth, the
+/// operation and how long the mesh is unheard. Once the investigation decides the recovery, the
 /// mesh's first recovering node-admin, and only it, is claimed and run on the fabric-primary; the
 /// mesh's second admin and its ordinary node wait until the mesh is heard again, and are then run by
 /// mesh2's own primary.
 #[tokio::test]
-async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_then_only_its_first_admin() {
+async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_recovery_and_then_only_its_first_admin() {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     let mut lost = node("mesh2.admin.1", false, false);
@@ -436,7 +436,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     let drive = Drive::detached(r.build.clone());
     let before = r.builds.read_build(&r.build).await.unwrap();
 
-    // Held unheard, no rebirth decided: nothing is claimed or dispatched for mesh2.
+    // Held unheard, no recovery decided: nothing is claimed or dispatched for mesh2.
     match r.env.run(&drive).await {
         DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("31000"), "the stall names the mesh and how long it is unheard: {why}"),
         other => panic!("the fabric-primary claims nothing for a peer mesh held unheard: {other:?}"),
@@ -450,7 +450,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     assert_eq!((a.get("mesh").map(String::as_str), a.get("target").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2"), Some("mesh2.admin.1"), Some("31000"), Some("false")), "{a:?}");
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {a:?}", fenced[0].0);
 
-    // The investigation decided the rebirth: the first recovering node-admin, and only it, runs, on
+    // The investigation decided the recovery: the first recovering node-admin, and only it, runs, on
     // the fabric-primary.
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
     match r.env.run(&drive).await {
@@ -459,7 +459,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     }
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh2.admin.1".to_string()], "only the first recovering node-admin ran");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), before.attempt + 1)], "the restore ran on the fabric-primary");
-    assert!(r.proofs.given.lock().unwrap().is_empty(), "a rebirth the ladder decided is told by the ladder, never by the proof of a fully crashed mesh");
+    assert!(r.proofs.given.lock().unwrap().is_empty(), "a recovery the ladder decided is told by the ladder, never by the proof of a fully crashed mesh");
     let second = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(second.len(), 2, "{second:?}");
     assert_eq!((second[1].1.get("target").map(String::as_str), second[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{:?}", second[1].1);
@@ -562,7 +562,7 @@ async fn an_unreachable_mesh_with_a_node_admin_the_provider_does_not_prove_exite
 /// The R-D1 fixture: mesh2's only node-admin is proven exited (so the fabric-primary of mesh1 is
 /// the executor of mesh2's work in its view), mesh2 keeps its rpc node, the Build grows mesh2 to two
 /// admins and two rpc nodes, a restored `mesh2.admin.1` is seated as mesh2's primary, and the
-/// investigation holds mesh2 unheard with its rebirth decided.
+/// investigation holds mesh2 unheard with its recovery decided.
 async fn recovery_rig() -> Rig {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
@@ -576,10 +576,10 @@ async fn recovery_rig() -> Rig {
     r
 }
 
-/// CONTRACT (R-D1; mesh-investigation.md step 6, "A rebirth verdict starts the existing Mesh
+/// CONTRACT (R-D1; mesh-investigation.md step 6, "A recovery verdict starts the existing Mesh
 /// Recovery flow ... on the SAME accepted Build"; mesh-recovery.md step 2, the attempt "runs
 /// node.create for the mesh's first recovering node-admin"): which node-admin of a held mesh the
-/// rebirth already admitted is a fact of the Build (the receipts of an attempt an admin outside the
+/// recovery already admitted is a fact of the Build (the receipts of an attempt an admin outside the
 /// mesh held), not of the drive that dispatched it. After one drive restored `mesh2.admin.1` and
 /// stopped at the fence on `mesh2.admin.2`, a second drive instance over the same Build admits no
 /// second admin, whether it finds the next attempt open or already claimed for another admin

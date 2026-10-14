@@ -23,11 +23,11 @@ pub enum NodeStatus {
     /// Leaving: it has announced its departure.
     Leaving,
     /// Unheard past the staleness floor (`RDM_STALENESS_MS`, 30 s): this node's own pruner marks
-    /// the silent peer in place and keeps it; its next digest flips it back (fabric-node-lifecycle.md
+    /// the silent peer in place and keeps it; its next digest flips it back (node-identity-and-state.md
     /// §7.3, i77 PRD row 18). Never death, and never a reason to restart or delete it.
     PendingReconnect,
     /// Commanded silence: its mesh executor is restarting this exact birth (`NodeRestarting`,
-    /// fabric-node-lifecycle.md) and owns bringing it back. Held through its `Leaving` and
+    /// node-identity-and-state.md) and owns bringing it back. Held through its `Leaving` and
     /// silence, exempt from the staleness marks, never routable; the later birth's own digest
     /// clears it.
     Restarting,

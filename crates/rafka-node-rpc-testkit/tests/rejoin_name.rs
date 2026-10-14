@@ -146,7 +146,7 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
 }
 
 /// CONTRACT: a node born `mesh1.rpc.1.new` takes `mesh1.rpc.1` live (its `node.connections.delete
-/// { All }` completed, then `ApplyNodeName` answered `Applied`; node-update.md "Rename precondition") and is then stopped: its authority's held stopped digest names `mesh1.rpc.1`, and so
+/// { All }` completed, then `ApplyNodeName` answered `Applied`; lifecycles/node-name-update.md "Rename precondition") and is then stopped: its authority's held stopped digest names `mesh1.rpc.1`, and so
 /// does its row. Its start presents the name it holds, `mesh1.rpc.1`, and is admitted; its stop and
 /// start spans name `mesh1.rpc.1`. What must NOT happen: the join presenting the birth's frozen
 /// `.new`, refused `JoinMismatch("name")`, or a lifecycle span after the rename naming `.new`.

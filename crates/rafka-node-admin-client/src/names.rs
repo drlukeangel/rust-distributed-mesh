@@ -181,7 +181,7 @@ pub enum NodeEvent {
     Restarting,
     /// `node.restarted`: the restart finished.
     Restarted,
-    /// `node.updated`: the node's row holds what the update put (node-update.md).
+    /// `node.updated`: the node's row holds what the update put (lifecycles/node-name-update.md).
     Updated,
 }
 

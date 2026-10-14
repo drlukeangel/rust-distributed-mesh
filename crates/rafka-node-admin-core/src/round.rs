@@ -1,6 +1,6 @@
 //! Same status, fresh proof (R-S3): the round a new primary runs before it republishes.
 //!
-//! A newly elected or reborn primary adopts the lifecycle state it hears without inventing a
+//! A newly elected or recovered primary adopts the lifecycle state it hears without inventing a
 //! transition (takeover is hydration), but it may not stay silent. It re-sends the round's down op
 //! to every member of its checklist, and the checklist is rebuilt from fresh check-ins: a planned
 //! birth of the accepted Build counts only when its own digest arrives after the round began, as a
@@ -192,7 +192,7 @@ impl RoundDriver {
     }
 
     /// The fabric-primary's view of a mesh's primary changed (a mesh primary appeared, moved or
-    /// was reborn): the down op goes to it, so it re-sends what it owes this admin. Not the
+    /// was recovered): the down op goes to it, so it re-sends what it owes this admin. Not the
     /// takeover alone: a primary this admin has not addressed in this view is addressed now. A
     /// view where this admin is not the fabric-primary addresses nobody and forgets who it did.
     pub(crate) fn address_changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool, client: Option<&Arc<NodeRpcClient>>) {
@@ -430,20 +430,20 @@ mod tests {
     // @feature: node-lifecycle
     #[test]
     fn degraded_clears_only_on_the_current_primarys_report_after_the_decision() {
-        let (lost, reborn) = (IncarnationId::mint(), IncarnationId::mint());
+        let (lost, recovered_id) = (IncarnationId::mint(), IncarnationId::mint());
         let opened_at = Instant::now();
         let recovery = PeerRecovery { mesh: "mesh2".into(), verdict_rafka_ms: Some(1), opened_at, lost: vec![lost.clone()] };
         let later = opened_at + std::time::Duration::from_millis(5);
         // A ready primary of a newer birth that has not reported does not clear it.
-        assert!(!recovered(&recovery, Some(&reborn), None));
+        assert!(!recovered(&recovery, Some(&recovered_id), None));
         // The birth the decision found never does, reported or not.
         assert!(!recovered(&recovery, Some(&lost), Some(&report(&lost, later))));
         // A report from a birth that is not the primary now is not the primary's.
-        assert!(!recovered(&recovery, Some(&reborn), Some(&report(&IncarnationId::mint(), later))));
+        assert!(!recovered(&recovery, Some(&recovered_id), Some(&report(&IncarnationId::mint(), later))));
         // A report received before the decision is not fresh.
-        assert!(!recovered(&recovery, Some(&reborn), Some(&report(&reborn, opened_at - std::time::Duration::from_millis(1)))));
-        assert!(!recovered(&recovery, None, Some(&report(&reborn, later))));
-        assert!(recovered(&recovery, Some(&reborn), Some(&report(&reborn, later))));
+        assert!(!recovered(&recovery, Some(&recovered_id), Some(&report(&recovered_id, opened_at - std::time::Duration::from_millis(1)))));
+        assert!(!recovered(&recovery, None, Some(&report(&recovered_id, later))));
+        assert!(recovered(&recovery, Some(&recovered_id), Some(&report(&recovered_id, later))));
     }
 
     use crate::model::{Fabric, Mesh, MeshId, Node, NodeStatus, ProviderKind, ScopeStatus};
@@ -480,9 +480,9 @@ mod tests {
         assert_eq!(sent, vec!["mesh2".to_string()], "a mesh primary gained by the view is addressed");
         assert!(driver.changed_mesh_primaries(&v1, true).is_empty(), "the same view addresses nobody twice");
 
-        let mut reborn = first.clone();
-        reborn.incarnation_id = Some(IncarnationId::mint());
-        let v2 = view(vec![me.clone(), reborn]);
+        let mut recovered = first.clone();
+        recovered.incarnation_id = Some(IncarnationId::mint());
+        let v2 = view(vec![me.clone(), recovered]);
         assert_eq!(driver.changed_mesh_primaries(&v2, true).len(), 1, "a new birth of the mesh primary is addressed");
 
         // The primary was in view before its endpoint was: gaining the endpoint it is resolved by
@@ -505,8 +505,8 @@ mod tests {
     #[tokio::test]
     async fn successor_fabric_holder_keeps_degraded_until_every_mesh_primary_reports_for_its_round() {
         // The seat moved to mesh2's primary while mesh1 was being recovered; the new holder adopted degraded.
-        let (me, reborn) = (member("mesh2.admin.1", true, true), member("mesh1.admin.2", true, false));
-        let v = view(vec![me.clone(), reborn.clone()]);
+        let (me, recovered) = (member("mesh2.admin.1", true, true), member("mesh1.admin.2", true, false));
+        let v = view(vec![me.clone(), recovered.clone()]);
         let records = Records::default();
         records.set_adopted_degraded(true);
         let book = DigestBook::default();
@@ -521,7 +521,7 @@ mod tests {
         let done = driver.step(awaiting, inputs()).await;
         assert!(!done.fabric && records.adopted_degraded(), "a report of another birth is not the current primary's");
         // The current primary re-declares to the new holder: the round is complete and degraded clears.
-        records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(reborn.incarnation_id.clone().unwrap()), Instant::now());
+        records.declared.lock().unwrap().record_report("mesh1", crate::status_rpc::Reporter::Birth(recovered.incarnation_id.clone().unwrap()), Instant::now());
         let done = driver.step(awaiting, inputs()).await;
         assert!(done.fabric && !records.adopted_degraded(), "every mesh primary reported for this round");
     }

@@ -392,7 +392,7 @@ pub enum BuildReject {
         refusal: String,
     },
     /// The stopped-node garbage collector's delete of a birth that is no longer the one stopped
-    /// past the ttl at its admission (fabric-node-lifecycle.md §6.9 Recheck): started, replaced, or
+    /// past the ttl at its admission (node-identity-and-state.md §6.9 Recheck): started, replaced, or
     /// its current stopped period no longer the one the scan aged.
     NodeNotStopped {
         /// The node.
@@ -401,7 +401,7 @@ pub enum BuildReject {
         found: String,
     },
     /// The stopped-node garbage collector's delete of a birth an open Build references
-    /// (fabric-node-lifecycle.md §6.9 Selection and Recheck).
+    /// (node-identity-and-state.md §6.9 Selection and Recheck).
     ReferencedByOpenBuild {
         /// The node.
         node: String,

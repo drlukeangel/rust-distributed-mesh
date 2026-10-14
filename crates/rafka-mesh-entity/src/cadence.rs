@@ -51,7 +51,7 @@ fn cadences() -> &'static Cadences {
 }
 
 /// The staleness floor, `RDM_STALENESS_MS` (default 30 s): how long a member stays heard without
-/// a fresh word, local receipt age (fabric-node-lifecycle.md §7.3, i77 PRD row 18). Past it a
+/// a fresh word, local receipt age (node-identity-and-state.md §7.3, i77 PRD row 18). Past it a
 /// member is `PendingReconnect`: soft and reversible, never death.
 pub fn staleness_floor() -> Duration {
     cadences().staleness_floor
@@ -64,7 +64,7 @@ pub fn gossip_interval() -> Duration {
 }
 
 /// The backbone topic's gossip interval, `RDM_BACKBONE_INTERVAL_MS` (default 2 s,
-/// fabric-node-lifecycle.md:355): how often a mesh's primary publishes its mesh on the backbone.
+/// node-identity-and-state.md:355): how often a mesh's primary publishes its mesh on the backbone.
 pub fn backbone_gossip_interval() -> Duration {
     cadences().backbone_gossip_interval
 }

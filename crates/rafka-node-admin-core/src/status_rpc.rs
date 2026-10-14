@@ -1,5 +1,5 @@
 //! The lifecycle/status declarations node-admin applies as an authority (i143.e6.s7;
-//! node-rpc.md §38; fabric-mesh-ops.md §3).
+//! node-rpc.md §38; node-rpc-envelope.md §3).
 //!
 //! A declaration reaches this admin over Node RPC (`Status`, op `0x1B`). Nothing inside the mesh
 //! checks who is calling (node-rpc.md §14): a declaration is decided for the subject the request
@@ -441,7 +441,7 @@ pub fn decide(auth: &StatusAuthority, view: &Topology, declared: &Declared, req:
             if me.mesh != *mesh_name {
                 return (StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: format!("an admin of {mesh_name}") } }, None);
             }
-            // The mesh's primary writes its status (fabric-node-lifecycle.md 4.3): an admin whose view
+            // The mesh's primary writes its status (node-identity-and-state.md 4.3): an admin whose view
             // names another admin the mesh's primary is not the receiver. One whose view names none
             // yet is the admin the hand-off created, before its own seat shows in its view.
             if let Some(primary) = view.cohort_primary(mesh_name, NodeKind::NodeAdmin).filter(|p| p.node_id != auth.node_id) {
@@ -1426,7 +1426,7 @@ mod tests {
         assert!(effect.is_none());
     }
 
-    /// CONTRACT (fabric-node-lifecycle.md 4.3: "Once a node-admin is created in a mesh it is that
+    /// CONTRACT (node-identity-and-state.md 4.3: "Once a node-admin is created in a mesh it is that
     /// mesh's primary ... and writes every status from then on"): the fabric-primary's
     /// ApplyMeshState is applied by the mesh's primary. A receiver whose view names ANOTHER admin
     /// its mesh's primary refuses it naming that holder, and applies nothing; the admin the view

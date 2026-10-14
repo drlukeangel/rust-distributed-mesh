@@ -1,5 +1,5 @@
 //! The fabric states and their rounds, run by the admins of a fabric (states.md;
-//! fabric-state-sync.md, fabric-state-commit.md, fabric-open-traffic.md).
+//! fabric-state-sync.md, fabric-state-commit.md, lifecycles/fabric-ready-for-traffic.md).
 //!
 //! - The fabric-primary alone moves the fabric: `pending` → `state-sync` (every mesh is
 //!   ready-for-traffic) → `state-commit` (the application answered state-synced) →

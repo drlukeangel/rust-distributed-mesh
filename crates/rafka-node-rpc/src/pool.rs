@@ -1,5 +1,5 @@
 //! The scoped connection pool (i143 PRD §1.19–20, §14;
-//! node-rpc-rdm-ownership.md §8–§9).
+//! node-rpc-envelope.md §8–§9).
 //!
 //! A pooled connection is keyed by `(scope, peer, incarnation)`: the caller's
 //! execution scope, the peer's authenticated Iroh key and the process birth it

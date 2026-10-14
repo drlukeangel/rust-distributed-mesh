@@ -1,4 +1,4 @@
-//! The stopped-node garbage collector (fabric-node-lifecycle.md §6.9 "The stopped-node garbage
+//! The stopped-node garbage collector (node-identity-and-state.md §6.9 "The stopped-node garbage
 //! collector", R-GC1): the fabric-primary sweeps every `stopped_node_ttl`, ages each stopped birth
 //! from the current stopped period's own stop receipt in the Build log, skips a birth an open Build
 //! still references, and submits one ordinary node.delete Build per sweep; the delete's admission

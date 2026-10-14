@@ -7,7 +7,7 @@
 //! At birth the held projection is hydrated from the index, so a restart keeps its latest Proxy
 //! and the backoff of its latest Direct failure. The writer decides no route and chooses no
 //! carrier: it records facts. Every row names this node as it is when the row is written
-//! (fabric-node-lifecycle.md §8): the name it holds now (R12, read from the process's one held
+//! (node-identity-and-state.md §8): the name it holds now (R12, read from the process's one held
 //! name), its node id and its process birth.
 //!
 //! One obligation is reconciled here (connections.md §10): whenever this node's latest Direct to
@@ -235,7 +235,7 @@ impl ConnectionsWriter {
 
     /// Read this node's name from `held`, the one place the process holds the name it publishes
     /// (its membership's, R12): from then on every row this writer writes names it as the source
-    /// (fabric-node-lifecycle.md §8: `source` is the end's path.name), so a name the node takes
+    /// (node-identity-and-state.md §8: `source` is the end's path.name), so a name the node takes
     /// (`ApplyNodeName`, or the name its join answer hands it) is the source of its next row.
     /// Until then the source is the birth's name, which is the name the node holds while nothing
     /// can have given it another. Bound once, at boot; a second binding is refused by name.

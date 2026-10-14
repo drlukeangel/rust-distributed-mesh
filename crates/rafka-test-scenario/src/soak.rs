@@ -150,7 +150,7 @@ impl Config {
     /// it. Pending-reconnect: the staleness floor, then the views converge. True offline (`dead`):
     /// the mark at the floor, round 1 half a floor later, round 2 at least one floor after round 1
     /// found no path, each round at most `tickle_round`, then the mesh primary's write reaches the
-    /// view (offline.rs, fabric-node-lifecycle.md section 7.3).
+    /// view (offline.rs, node-identity-and-state.md section 7.3).
     /// The mesh primary tickles the silent nodes it watches one after another, so each of the
     /// `silent` nodes (the held node and every member of a silenced mesh) costs two rounds.
     pub fn unheard_within(&self, true_offline: bool, silent: usize) -> Duration {

@@ -1,5 +1,5 @@
 //! The node rows of a mesh, written by its primary node-admin (R13; ops-naming "Node data: meta,
-//! config and exe"; lifecycles/node-create.md step 1; node-decommission.md step 3): the executor's
+//! config and exe"; lifecycles/node-create.md step 1; lifecycles/node-delete.md step 3): the executor's
 //! claim, move to `.old` and `Deleted` row, the rows of births no create claimed, and the
 //! fabric-primary's record of a parked predecessor, which the drive of a Build feeds.
 //!
@@ -123,7 +123,7 @@ fn row_of(n: &Node) -> NodeRow {
 }
 
 /// CONTRACT: `node.delete` leaves the node's row at its `path.name` with status `Deleted`, its
-/// node id and its config kept (ops-naming, the delete point; node-decommission.md step 3), written
+/// node id and its config kept (ops-naming, the delete point; lifecycles/node-delete.md step 3), written
 /// by the mesh-primary that executes it, from the exact record it acted on. One `via-node-row` span
 /// names the row written.
 #[test]
@@ -144,7 +144,7 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record_and_config() {
     assert_eq!((a["node"].as_str(), a["subject"].as_str(), a["node_id"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("mesh1.admin.2"), Some("mesh1.rpc.1"), Some(victim.as_str()), Some("1"), Some("row-deleted")), "{a:#?}");
 }
 
-/// CONTRACT (R-TG1: tags are labels in the node's meta; node-decommission.md step 3: the `Deleted`
+/// CONTRACT (R-TG1: tags are labels in the node's meta; lifecycles/node-delete.md step 3: the `Deleted`
 /// row keeps the record and its config; proposal node-properties-own-commands.md §1, tags: "set by
 /// the create spec (may be empty); inherited with the config on recover (from the Deleted row at the
 /// claim) and on replace"): a node whose row carries tags {rabbit, red} is deleted by its mesh's
@@ -212,7 +212,7 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
     assert_eq!((a["moment"].as_str(), a["subject"].as_str(), a["node_id"].as_str(), a["seeded_from"].as_str(), a["keys"].as_str(), a["outcome"].as_str()), (Some("claim"), Some("mesh1.rpc.2"), Some(born.as_str()), Some(old.as_str()), Some("1"), Some("row-seeded")), "{a:#?}");
 }
 
-/// CONTRACT: a rewrite is lossless for every field its writer knows (fabric-node-lifecycle.md "A
+/// CONTRACT: a rewrite is lossless for every field its writer knows (node-identity-and-state.md "A
 /// rewrite is lossless"; node-recovery.md "Retained: ... config (seeded from the Deleted row)"). The
 /// mesh-primary's claim seeds a birth's row with the config of the Deleted row at its `path.name`;
 /// the executor's record of that birth (the create's own record) carries no config. When the birth

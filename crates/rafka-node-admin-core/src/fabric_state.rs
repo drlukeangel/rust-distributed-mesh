@@ -1,5 +1,5 @@
 //! The fabric states and the round checklist (states.md; fabric-state-sync.md,
-//! fabric-state-commit.md, fabric-open-traffic.md).
+//! fabric-state-commit.md, lifecycles/fabric-ready-for-traffic.md).
 //!
 //! A fabric is `pending`, then `state-sync` once every mesh is ready-for-traffic, then
 //! `state-commit` once the application answers state-synced, then `ready-for-traffic` once the

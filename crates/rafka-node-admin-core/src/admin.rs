@@ -90,7 +90,7 @@ pub struct AdminConfig {
     pub bindings: Option<rafka_mesh_entity::binding::Validated>,
     /// The two variables that named them, handed on to every node-admin this admin launches.
     pub bindings_env: BTreeMap<String, String>,
-    /// `RDM_STOPPED_NODE_TTL` (fabric-node-lifecycle.md §6.9): a node stopped longer than it is
+    /// `RDM_STOPPED_NODE_TTL` (node-identity-and-state.md §6.9): a node stopped longer than it is
     /// collected by a node.delete Build the fabric-primary submits on a sweep every ttl. Read by the
     /// fabric-primary only, held by every admin (a successor sweeps with it). `None`: blank, forever.
     pub stopped_node_ttl: Option<Duration>,
@@ -390,7 +390,7 @@ impl ServingDoor {
     }
 }
 
-/// A peer mesh the fabric primary gave a new node-admin: its carrier-edge-lost verdict's rebirth
+/// A peer mesh the fabric primary gave a new node-admin: its carrier-edge-lost verdict's recovery
 /// (`crate::investigate`), or a fully crashed mesh's create on the provider's proof of every node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerRecovery {
@@ -602,7 +602,7 @@ impl Records {
         self.peer_recovery.lock().unwrap().get(mesh).cloned()
     }
 
-    /// Whether any peer mesh is being reborn: the fabric is `degraded` while one is.
+    /// Whether any peer mesh is being recovered: the fabric is `degraded` while one is.
     pub fn peer_recovering(&self) -> bool {
         !self.peer_recovery.lock().unwrap().is_empty()
     }
@@ -1211,7 +1211,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         };
         // A birth under an open restart is held through everything below until its later birth is
         // heard: the restart's own retire (its Leaving, its removal from these records) is not a
-        // departure (fabric-node-lifecycle.md: Restarting is commanded silence).
+        // departure (node-identity-and-state.md: Restarting is commanded silence).
         let restarting = book.restart_of(d.node.node_id.as_str(), &d.node.incarnation).is_some();
         if !restarting && removed.contains(&(name.clone(), Some(d.node.incarnation.clone()))) {
             continue;
@@ -1416,7 +1416,7 @@ fn project_decided_at(fabric: &str, fabric_id: &FabricId, provider: ProviderKind
         topology.nodes = members.into_iter().chain(predecessors).collect();
     }
     if topology.fabric_primary().is_some() {
-        // The fabric primary authors `degraded` from the investigation's rebirth decision until the
+        // The fabric primary authors `degraded` from the investigation's recovery decision until the
         // recovered mesh's primary reports for its round (`crate::investigate`), and a successor holder
         // keeps an adopted `degraded` until every mesh primary reports (`crate::round`). An admin
         // that holds no seat serves the `degraded` the holder published.
@@ -1513,7 +1513,7 @@ pub(crate) async fn birth_runtime_row(nodes: &dyn crate::storage::NodesStorage, 
 
 /// A mesh's contacts and its Mesh row on the fabric's shared store root, written by that mesh's
 /// primary alone, for its own members alone (R14 item 2; the writer ladder,
-/// fabric-node-lifecycle.md §4.3: a mesh row and its members' rows are that mesh's primary's). A
+/// node-identity-and-state.md §4.3: a mesh row and its members' rows are that mesh's primary's). A
 /// round that does not hold the seat writes nothing. A round that takes it first claims the mesh's
 /// name by the mesh store's insert-and-fail and writes the Mesh row (node-identity-and-state.md
 /// §2.7): nothing else of the mesh is written until the claim wins, and a name another mesh's live
@@ -2637,7 +2637,7 @@ async fn crashed_peer_mesh(
     None
 }
 
-/// What a drift opening decides on, as one comparable string: for a rebirth (the carrier-edge-lost
+/// What a drift opening decides on, as one comparable string: for a recovery (the carrier-edge-lost
 /// verdict, or the fully crashed mesh), the decided mesh's node-admins by birth and status and the
 /// completed receipts of the create; for the
 /// mesh that lost its mesh-primary, the exited birth and the completed receipts of its create and delete
@@ -2733,7 +2733,7 @@ pub async fn reconcile_drift(
     map.nodes.extend(durable_births(t, durable, &|p| current.topology.contains(p), &|id| book.is_departed(id)));
     let t = &map;
     // The carrier-edge-lost verdict (mesh-investigation.md step 6): a peer mesh whose investigation
-    // decided its rebirth is owed node.create of a node-admin. A mesh this authority never heard on the
+    // decided its recovery is owed node.create of a node-admin. A mesh this authority never heard on the
     // backbone is held `ready` in its view from topology alone (topology is not liveness), so the
     // ladder's decision, not a status, names the mesh. The admin is the one the Build already carried
     // across the fence, else the mesh's first in path order.
@@ -2771,21 +2771,21 @@ pub async fn reconcile_drift(
             }
             continue;
         }
-        // A peer mesh with no live node-admin is reborn on the investigation's decision
+        // A peer mesh with no live node-admin is recovered on the investigation's decision
         // (`crate::investigate`), not on the first exit proof: every one of its births waits for it
         // (R-D1: provider evidence is not authority, and a node this authority replaces while the
-        // mesh's first admin is still to be reborn is a node that admin then replaces again from
+        // mesh's first admin is still to be recovered is a node that admin then replaces again from
         // its own map). A node of a mesh that still has a live node-admin is proven here as ever.
         // An ordinary birth of such a mesh is held as evidence once the ladder tracks the mesh as
         // unheard (`hold`); until then it waits with the admins.
         if n.mesh != me.mesh && defers(&n.mesh) && t.cohort(&n.mesh, NodeKind::NodeAdmin).all(|a| !a.status.is_live()) && (n.kind == NodeKind::NodeAdmin || hold(&n.mesh).is_none()) {
-            // The hold is named once per mesh and Build: an unnamed deferral is a rebirth nobody is
+            // The hold is named once per mesh and Build: an unnamed deferral is a recovery nobody is
             // waiting on.
             let unheard = book.mesh_unheard(&n.mesh, std::time::Instant::now());
             let key = (current.build_id.clone(), 0u32, vec!["deferred".to_string(), n.mesh.clone()]);
             if started.insert(key) {
                 tracing::info_span!("rdm.node_admin.build.reject.via-drift-deferred", node = %me, mesh = %n.mesh, birth = %n.name, unheard_ms = unheard.map(|d| d.as_millis().to_string()).unwrap_or_else(|| "none".into()))
-                    .in_scope(|| tracing::info!("the peer mesh's node-admins wait for the investigation's rebirth decision"));
+                    .in_scope(|| tracing::info!("the peer mesh's node-admins wait for the investigation's recovery decision"));
             }
             continue;
         }
@@ -2803,7 +2803,7 @@ pub async fn reconcile_drift(
         // So is a node-admin of a mesh with a live mesh-primary (mesh-recovery.md:8-9, "A lost member
         // of a mesh with a live mesh-primary is node recovery, driven by that mesh-primary"); a mesh
         // primary's own loss by the admin its mesh seats. So is every node-admin of a peer mesh heard
-        // again whose rebirth the ladder still holds decided: the decision released the mesh's first
+        // again whose recovery the ladder still holds decided: the decision released the mesh's first
         // recovering node-admin, which the verdict above opens, and nothing else of the mesh from here
         // (R-D1: "once mesh authority is restored, that mesh performs its own ordinary-node
         // reconciliation"), however long the ladder takes to step the decision off. What stays here is
@@ -2899,14 +2899,14 @@ pub async fn reconcile_drift(
     if verdict.is_none() && crashed.is_none() && first_exited.is_none() && surplus.is_empty() {
         return None;
     }
-    // The node-admin a rebirth owes a node.create: the carrier-edge-lost verdict's, or the fully crashed mesh's.
-    let rebirth_admin: Option<&PathName> = verdict.as_ref().map(|(_, admin)| admin).or(crashed.as_ref().map(|(_, admin, _)| admin));
+    // The node-admin a recovery owes a node.create: the carrier-edge-lost verdict's, or the fully crashed mesh's.
+    let recover_admin: Option<&PathName> = verdict.as_ref().map(|(_, admin)| admin).or(crashed.as_ref().map(|(_, admin, _)| admin));
     let attempt = current.attempt + 1;
     // The create of a node-admin into a live mesh is a one-step recipe on the existing carrier
     // (`BuildChange::Recipe`; no new wire variant): the node the create names pins the birth the view
     // holds there, so a later loss of the same path is a different action.
     let create_of = |admin: &PathName| crate::accepted::recipe_action(vec![rafka_node_rpc_contract::build::RecipeStep::Create { node: admin.clone() }], t);
-    let (key, scope, action) = if let Some(admin) = rebirth_admin {
+    let (key, scope, action) = if let Some(admin) = recover_admin {
         match create_of(admin) {
             Ok(action) => (vec![admin.to_string()], admin.to_string(), Some(action)),
             Err(e) => {
@@ -2937,11 +2937,11 @@ pub async fn reconcile_drift(
     let reason = if action.is_some() { crate::build_state::AttemptReason::Recipe } else { crate::build_state::AttemptReason::ProvenDrift };
     // An opening is keyed on what the attempt decides on, never on its number: a failed attempt
     // whose inputs are all as they were when it opened gets no next attempt from here, and one
-    // input moving opens exactly one (node-status-change.md: "a failed Build ... gets its next
+    // input moving opens exactly one (lifecycles/node-status.md: "a failed Build ... gets its next
     // attempt", once per failure; R-S2: event-driven, never per pass). A key carrying the attempt
     // number never matches the next pass (every failed attempt raises it), which reopened a resume
     // that failed fast on every pass.
-    let inputs = drift_inputs(t, &current.steps, first_exited.filter(|_| rebirth_admin.is_none()).map(|(p, b)| (p, &b.incarnation)), rebirth_admin.map(|admin| (if crashed.is_some() { "fully-crashed" } else { "carrier-edge-lost" }, admin)), &surplus);
+    let inputs = drift_inputs(t, &current.steps, first_exited.filter(|_| recover_admin.is_none()).map(|(p, b)| (p, &b.incarnation)), recover_admin.map(|admin| (if crashed.is_some() { "fully-crashed" } else { "carrier-edge-lost" }, admin)), &surplus);
     let ident = key.join(" ");
     let opened_at = (current.build_id.clone(), 0u32, vec!["opened".to_string(), ident.clone(), inputs.clone()]);
     if started.contains(&opened_at) {
@@ -3019,7 +3019,7 @@ pub async fn reconcile_drift(
         Ok(()) => {
             span.in_scope(|| {
                 if verdict.is_some() {
-                    tracing::info!("the investigation decided the mesh's rebirth: the next attempt of the same Build, node.create of its node-admin, is open")
+                    tracing::info!("the investigation decided the mesh's recovery: the next attempt of the same Build, node.create of its node-admin, is open")
                 } else if crashed.is_some() {
                     tracing::info!("every node of the fully crashed mesh is proven exited: the next attempt of the same Build, node.create of its node-admin, is open")
                 } else {
@@ -5838,7 +5838,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             // told it who holds the seats.
                             records.set_entering(entering_existing_mesh && cfg.launch.is_none());
                             let _ = records.contacts.set(nodes_storage.clone());
-                            // A fabric primary reborn from its data dir holds its durable topology as its map (rule 5):
+                            // A fabric primary recovered from its data dir holds its durable topology as its map (rule 5):
                             // every birth the accepted Build names that nodes.storage heard is in its view as not yet
                             // reached, until membership or the sweep says more. Its view is never an empty one that plans
                             // a create for every member.
@@ -6375,7 +6375,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             let mut tasks = vec![contacts_task, node_rpc_feed, runtime_rows_task, superseded_rows_task];
                             tasks.extend(tasks_early);
                             // Entering an existing mesh (a recovering mesh's first admin after its maker's join; a fabric
-                            // primary reborn into its mesh from its durable map): connect to a local node, read its
+                            // primary recovered into its mesh from its durable map): connect to a local node, read its
                             // topology and sweep the own mesh once with a Ping. Ready waits for the sweep; every node that
                             // did not answer is unheard, and node recovery's to prove (mesh-recovery.md step 6).
                             let sweep_slot: Arc<std::sync::OnceLock<crate::reenter::SweepReport>> = Arc::new(std::sync::OnceLock::new());
@@ -7268,7 +7268,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         }));
                                     }
                                     // The peer-mesh investigation (`crate::investigate`): while this admin is the fabric primary,
-                                    // a peer mesh it stops hearing on the backbone is probed through its own members and reborn
+                                    // a peer mesh it stops hearing on the backbone is probed through its own members and recovered
                                     // only when one of them cannot reach its own node-admin. Its decision is what releases the
                                     // drift check below to replace that mesh's node-admins.
                                     let ladder = Arc::new(Mutex::new(crate::investigate::Ladder::new(crate::investigate::Rungs::configured())));
@@ -7346,7 +7346,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             }
                                         });
                                     }
-                                    // The stopped-node garbage collector (fabric-node-lifecycle.md §6.9): a sweep every ttl, by the
+                                    // The stopped-node garbage collector (node-identity-and-state.md §6.9): a sweep every ttl, by the
                                     // fabric-primary only, while its view authorizes.
                                     // A blank ttl runs no sweep. The sweep submits one ordinary node.delete Build and deletes nothing.
                                     if let Some(ttl) = cfg.stopped_node_ttl {
@@ -7546,7 +7546,7 @@ mod tests {
         assert_eq!(dropped, want, "the departed birth's and the replaced birth's contacts go; the silent one's stays");
     }
 
-    /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; node-update.md: "Config on the
+    /// CONTRACT (R-OW1: "`admin_api_base` is config, never checked"; lifecycles/node-name-update.md: "Config on the
     /// row, `admin_api_base` included, is stored and gossiped as given; nothing checks it"): a
     /// node-admin birth this admin's book holds ready-for-traffic is Ready, its digest carrying no
     /// `admin_api_base`. What must NOT happen: a node-admin refused Ready for a config value RDM
@@ -7620,7 +7620,7 @@ mod tests {
         std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count()).unwrap_or(0)
     }
 
-    /// CONTRACT (R14 item 2, the writer ladder fabric-node-lifecycle.md §4.3; #3070 "the contacts
+    /// CONTRACT (R14 item 2, the writer ladder node-identity-and-state.md §4.3; #3070 "the contacts
     /// family must follow the ladder"): on one shared root, a mesh's contacts and its Mesh row are
     /// written by that mesh's primary alone, for its own members alone. A seated and an unseated
     /// admin of mesh1 run over the same held births at once: the unseated one writes nothing, the
@@ -7650,14 +7650,14 @@ mod tests {
         let mesh_rows: Vec<String> = std::fs::read_dir(root.dir().join("meshes")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".json")).collect();
         assert_eq!(mesh_rows, ["mesh1.json"], "mesh1's primary writes mesh1's row alone");
         // The seat moves to Q; mesh1.rpc.1 is replaced by a new node at its path.name.
-        let reborn = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
-        let held = vec![p.clone(), q.clone(), reborn.clone(), other.clone()];
+        let recovered = digest("mesh1.rpc.1", MemberStatus::ReadyForTraffic);
+        let held = vec![p.clone(), q.clone(), recovered.clone(), other.clone()];
         let before = p_nodes.1.load(std::sync::atomic::Ordering::SeqCst);
         tokio::join!(pw.round(&held, false, |_| false), qw.round(&held, true, |_| false));
         assert_eq!(p_nodes.1.load(std::sync::atomic::Ordering::SeqCst), before, "the old holder writes nothing once the seat moved");
         let now = crate::storage::NodesStorage::contacts(&*q_nodes).await.unwrap();
         assert_eq!(now.len(), 3, "{now:?}");
-        assert!(now.iter().any(|c| c.node_id == reborn.node.node_id) && !now.iter().any(|c| c.node_id == rpc.node.node_id), "the new holder replaced the member's contact");
+        assert!(now.iter().any(|c| c.node_id == recovered.node.node_id) && !now.iter().any(|c| c.node_id == rpc.node.node_id), "the new holder replaced the member's contact");
         // A launched birth's publication writes no contact.
         let records = Records::default();
         let _ = records.contacts.set(q_nodes.clone());
@@ -9113,7 +9113,7 @@ mod tests {
         assert_eq!(t.mesh_view("mesh1").unwrap().status, ScopeStatus::ReadyForTraffic, "heard ready: a node not ready does not take the mesh back to pending");
     }
 
-    /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the seat to a reborn
+    /// CONTRACT: an admin that does not hold the fabric-primary role (it lost the seat to a recovered
     /// mesh's admin while the fabric was degraded) answers `GET /api/fabric` with the status the holder
     /// published, `degraded`, until the holder publishes ready. Must NOT happen: `ready-for-traffic`
     /// because its own authority records (cleared with the seat) are empty.
@@ -9250,7 +9250,7 @@ mod tests {
     }
 
     /// CONTRACT (R-EL1, "a seat moves only by explicit yield": the election ignores a holder's
-    /// status; seat_watch, R-A2: only a runtime found exited is a verified loss; fabric-node-lifecycle.md
+    /// status; seat_watch, R-A2: only a runtime found exited is a verified loss; node-identity-and-state.md
     /// §7.3: every admin keeps the silence window, only the seat holder tickles): a mesh primary that
     /// goes silent keeps its seat in its successor's view until its exact runtime is proven exited
     /// (its exit-proof row, what seat_watch puts, read by the next install). Until then the successor keeps the window but
@@ -9394,9 +9394,9 @@ mod tests {
         book.record(holder.clone());
         book.seats.take(MeshPrimary, &holder_of(&holder, 1));
         book.seats.take(FabricPrimary, &holder_of(&holder, 1));
-        let mut reborn = with_id(digest("mesh1.admin.1", Pending), "900000000000");
-        reborn.node.supersedes = Some(holder.node.incarnation.clone());
-        book.record(reborn.clone());
+        let mut recovered = with_id(digest("mesh1.admin.1", Pending), "900000000000");
+        recovered.node.supersedes = Some(holder.node.incarnation.clone());
+        book.record(recovered.clone());
         let ready = with_id(digest("mesh1.admin.2", ReadyForTraffic), "800000000000");
         book.record(ready);
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &Records::default());
@@ -9732,7 +9732,7 @@ mod tests {
         assert!(!t.holds_fabric_seat(&holder.node.node_id) && !t.holds_mesh_seat("mesh1", &holder.node.node_id));
     }
 
-    /// CONTRACT (fabric-node-lifecycle-elections.md §4.4, fabric-primary-handover.md step 3): the
+    /// CONTRACT (fabric-node-lifecycle-elections.md §4.4, lifecycles/node-primary-update.md step 3): the
     /// committed next-revision seat record is the resolver's input and the incumbent yields fabric
     /// authority. A hierarchy-loop decision is announced against the seat record it was decided
     /// from: a committed handover that lands while the loop awaits (its round climb) is not

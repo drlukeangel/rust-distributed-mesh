@@ -171,7 +171,7 @@ impl rafka_node_rpc::ConnectionObserver for Observed {
     fn direct_broken(&self, _node: &ResolvedNode, _reason: &str) {}
 }
 
-/// CONTRACT (node-start.md step 2; connections.md §10; node-rpc-rdm-ownership.md §8–§9): a join
+/// CONTRACT (node-start.md step 2; connections.md §10; node-rpc-envelope.md §8–§9): a join
 /// to a commander no record names dials `NodeTarget::Endpoint` and pools the connection with no
 /// birth. Once the caller's resolver learns the commander's birth at that endpoint and address, a
 /// later `ExactNode` call adopts that pooled connection under the birth's incarnation (reusing it

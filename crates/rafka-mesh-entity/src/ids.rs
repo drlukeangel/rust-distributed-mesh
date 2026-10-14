@@ -174,7 +174,7 @@ product_id!(
     FabricId, "fabric id"
 );
 product_id!(
-    /// One entry of a node's connections log (connections.md §1, fabric-node-lifecycle.md §8: every
+    /// One entry of a node's connections log (connections.md §1, node-identity-and-state.md §8: every
     /// event receives its own minted row id). The id of a connection's open entry names that
     /// connection to `node.connections.delete` (R-CR3). Equality only.
     ConnectionId, "connection id"

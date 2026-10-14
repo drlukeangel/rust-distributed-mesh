@@ -1584,7 +1584,7 @@ pub struct DeleteMeshAdmission {
 
 /// `delete-mesh` for `key` from `sender` at the leaving mesh-primary (states.md: the mesh's
 /// `leaving` is entered by this down op, and "one commit stores the row, applies it, gossips it and
-/// answers the op"; fabric-node-lifecycle.md 2.7: the mesh's primary writes every status of its own
+/// answers the op"; node-identity-and-state.md 2.7: the mesh's primary writes every status of its own
 /// mesh row). The first round of the mesh's leave puts and applies the row before it is admitted: a
 /// refused put admits nothing and is the reply, so the owner's repeated `delete-mesh` is decided
 /// afresh. A round that finds a leave of the mesh held commits nothing: the round that began the
