@@ -788,7 +788,7 @@ async fn a_planned_replace_creates_the_successor_while_the_predecessor_stays_par
     assert_eq!(data_at_ready.as_deref(), Some(&b"records"[..]), "the predecessor's data is in its own directory when the successor is ready: {segment:?}");
 
     assert_ne!(after["endpoint_id"], before["endpoint_id"], "a new node has a new transport key");
-    let attempt = attempt_no.to_string();
+    let attempt = (attempt_no + u64::from(before["is_primary"] == true)).to_string();
     let spans = wait_for("the replace operation's last step, its reconcile span and the successor's boot span are exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
         (step_span(&spans, &birth_build, &attempt, NODE, "Complete").is_some() && reconcile_span(&spans, &birth_build, &attempt).is_some() && booted(&spans, &after)).then_some(spans)
@@ -1008,12 +1008,13 @@ async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_execute
     let admin_attempt = u64::from(replace.attempt());
     estate.follow(replace).await;
     until_new_birth(&estate, &first_primary, &before_admin, SETTLE).await;
+    let replace_attempt = (admin_attempt + 1).to_string();
     let spans = wait_for("the admin replace's dispatch is exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        dispatch_executor(&spans, &birth_build, &admin_attempt.to_string()).is_some().then_some(spans)
+        dispatch_executor(&spans, &birth_build, &replace_attempt).is_some().then_some(spans)
     })
     .await;
-    let new_primary = dispatch_executor(&spans, &birth_build, &admin_attempt.to_string()).unwrap();
+    let new_primary = dispatch_executor(&spans, &birth_build, &replace_attempt).unwrap();
     assert!(new_primary.starts_with("mesh2.admin.") && new_primary != first_primary, "mesh2's other admin took the seat: {new_primary}");
     let executor = delete_parked_and_assert(&estate, &birth_build, &parked).await;
     assert_eq!(executor, new_primary, "mesh2's new primary, which did not run the replace, executes the delete");
@@ -1049,7 +1050,7 @@ async fn replace_and_park(estate: &Estate, build: &str, node: &str) -> Parked {
     let old_dir = std::path::PathBuf::from(estate.data_dir(node).await);
     let replace = estate.submit_change(Change::Replace { node: Estate::path(node), incarnation: None }).await;
     assert_eq!(replace.build_id().as_str(), build, "no Build is minted");
-    let attempt = u64::from(replace.attempt());
+    let attempt = u64::from(replace.attempt()) + u64::from(before["is_primary"] == true);
     estate.follow(replace).await;
     let after = until_new_birth(estate, node, &before, SETTLE).await;
     assert!(alive(pid), "the predecessor {pid} is parked, alive, before its delete");

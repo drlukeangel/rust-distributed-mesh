@@ -363,6 +363,38 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothi
     eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.2 outcome=name-held over another live node's row", ours[0]["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (R-OW1 item 2: "No bypass; a conflicting holder is NameHeld, never overwritten"): the
+/// Day-0 claim of the bootstrap admin's own `path.name` is the create door's insert-and-fail. A name
+/// another live node's row holds is refused `NameHeld` naming the holder, and the holder's row stays
+/// exactly as it was; a free name is written `Pending` under the admin's node.id. One `via-node-row`
+/// span each, `moment` `claim`, operation `fabric-create`.
+#[test]
+fn a_day0_claim_of_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothing_is_written() {
+    let cap = capture();
+    let name: PathName = "mesh1.admin.1".parse().unwrap();
+    let (refused, row, held, written, me) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let held = NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
+        storage.put_node_row(&held).await.unwrap().unwrap();
+        let me = NodeId::mint();
+        let refused = rafka_node_admin_core::node_rows::claim_day0_name(&*storage, &name, &me).await;
+        let row = storage.node_row_at(&name).await.unwrap();
+        let free = Arc::new(MemoryNodesStorage::default());
+        let written = rafka_node_admin_core::node_rows::claim_day0_name(&*free, &name, &me).await;
+        (refused, row, held, written, me)
+    });
+    assert!(matches!(&refused, Err(rafka_node_admin_core::node_rows::RowRefused::NameHeld(h)) if h.by == held.node_id), "{refused:?}");
+    assert_eq!(row, Some(held.clone()), "the holder's row stands; nothing of the Day-0 admin is written");
+    assert!(matches!(&written, Ok(rafka_node_admin_core::node_rows::Claimed::Written { row, seeded_from: None }) if row.node_id == me && row.status == NodeStatus::Pending), "{written:?}");
+    let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+    let ours: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["node_id"] == me.as_str()).collect();
+    assert_eq!(ours.len(), 2, "{spans:#?}");
+    let outcomes: Vec<(Option<&str>, Option<&str>, Option<&str>)> = ours.iter().map(|s| (s["attributes"]["moment"].as_str(), s["attributes"]["operation"].as_str(), s["attributes"]["outcome"].as_str())).collect();
+    assert_eq!(outcomes, vec![(Some("claim"), Some("fabric-create"), Some("name-held")), (Some("claim"), Some("fabric-create"), Some("row-written"))], "{ours:#?}");
+    assert!(ours[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains(held.node_id.as_str())), "the refusal names the holder: {:#?}", ours[0]);
+    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.admin.1 operation=fabric-create outcome=name-held over another live node's row", ours[0]["trace_id"].as_str().unwrap_or(""));
+}
+
 /// CONTRACT: a birth no create of the writer claimed (one made before the writer took its mesh's
 /// seat) gets its row when the writer's view first holds it, from the record it holds (ops-naming
 /// "Node data": "writes the whole row from that held record"), seeded from the `Deleted` row at its
@@ -862,17 +894,26 @@ mod writer {
         eprintln!("trace {}: rdm.node_admin.node.create.via-node-row node=mesh1.admin.2 subject=mesh1.rpc.2 outcome=row-written; the fabric-primary mesh1.admin.1 wrote none", ours[0]["trace_id"].as_str().unwrap_or(""));
     }
 
-    /// CONTRACT: no node writes its own row (R12): an admin that takes its mesh's seat (and the
-    /// fabric seat) rebuilds the rows of its mesh's members from its view, every member but itself.
+    /// CONTRACT (R-OW1, ruling text item 1: "The mesh-primary writes every row in its mesh, including its
+    /// own"; item 5: a seat transfer makes the successor the writer of every row of the mesh, the
+    /// predecessor's included, and rewrites nothing): an admin that takes its mesh's seat (and the
+    /// fabric seat) rebuilds the rows of its mesh's members from its view, its own birth included: its
+    /// own row, absent, is written (`subject = mesh1.admin.1`, `node = mesh1.admin.1`, `row-written`)
+    /// under its own node.id. A row a member already holds is left as it is. What must NOT happen: a
+    /// mesh-primary that writes every member's row but its own, so its mesh's primary holds no row.
     #[test]
-    fn an_admin_that_takes_its_meshs_seat_writes_every_members_row_but_its_own() {
+    fn an_admin_that_takes_its_meshs_seat_writes_every_members_row_its_own_included() {
         let cap = capture();
-        let (own, others) = cap.run(async {
+        let (own, me_id, others, held_before, held_after) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let mut before = view();
             for n in before.nodes.iter_mut() {
                 n.is_fabric_primary = n.name.to_string() == "mesh1.admin.2";
             }
+            let rpc = before.node(&"mesh1.rpc.1".parse().unwrap()).unwrap().clone();
+            let held = NodeRow { config: tier("silver"), ..row_of(&rpc) };
+            storage.put_node_row(&held).await.unwrap().unwrap();
+            let me_id = before.node(&"mesh1.admin.1".parse().unwrap()).unwrap().node_id.clone();
             let (records, topology) = writer_of("mesh1.admin.1", &before, &storage);
             install(&records, &topology, |v| {
                 for n in v.nodes.iter_mut() {
@@ -883,13 +924,22 @@ mod writer {
             })
             .await;
             let own = storage.node_row_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
-            let others = [storage.node_row_at(&"mesh1.admin.2".parse().unwrap()).await.unwrap(), storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap()];
-            (own, others)
+            let others = storage.node_row_at(&"mesh1.admin.2".parse().unwrap()).await.unwrap();
+            let after = storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap();
+            (own, me_id, others, held, after)
         });
-        assert_eq!(own, None, "the admin writes no row of its own");
-        assert!(others.iter().all(Option::is_some), "every other member's row is written: {others:?}");
+        assert_eq!(own.map(|r| r.node_id), Some(me_id.clone()), "the mesh-primary writes its own row");
+        assert!(others.is_some(), "every other member's row is written");
+        assert_eq!(held_after, Some(held_before), "a row its node holds is never rewritten");
         let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
-        assert!(spans.iter().all(|s| s["attributes"]["subject"] != "mesh1.admin.1"), "{spans:#?}");
+        let ours: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["subject"] == "mesh1.admin.1").collect();
+        assert_eq!(ours.len(), 1, "{spans:#?}");
+        assert_eq!(
+            (ours[0]["attributes"]["node"].as_str(), ours[0]["attributes"]["node_id"].as_str(), ours[0]["attributes"]["moment"].as_str(), ours[0]["attributes"]["outcome"].as_str()),
+            (Some("mesh1.admin.1"), Some(me_id.as_str()), Some("arrival"), Some("row-written")),
+            "{ours:#?}"
+        );
+        eprintln!("trace {}: rdm.node_admin.node.create.via-node-row node=mesh1.admin.1 subject=mesh1.admin.1 moment=arrival outcome=row-written", ours[0]["trace_id"].as_str().unwrap_or(""));
     }
 
     /// Launches nothing: each spawn is counted and refused, so a create that reaches

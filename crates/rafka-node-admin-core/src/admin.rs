@@ -2361,24 +2361,17 @@ impl crate::build_drive::Gate for SeatGate {
     /// mesh-primary); any other cohort's seat through its mesh-primary, its commander and writer (Q3); the fabric-primary's own seats it moves itself, having nothing above it, both in
     /// ONE row when it holds both (Q1: "the one row of C1 commits both seats to NA2 at their next
     /// epochs").
-    async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, operation: &str) -> Result<(), crate::build_drive::SeatMoveEnd> {
-        use crate::build_drive::SeatMoveEnd;
+    async fn move_seats(&self, m: &crate::executor::SeatMove, build_id: &crate::build::BuildId, attempt: u32, run: u32, operation: &str) -> Result<(), crate::build_drive::SeatMoveEnd> {
         use crate::election::Moving;
         use crate::fabric_handover::update_operation;
         use rafka_mesh_entity::Seat;
-        use rafka_node_rpc_contract::handover::NodePrimaryUpdateReply as Reply;
         let door = &self.handover;
-        // An update left incomplete after its row, or every refusal before it (C1 failure contract).
-        let ended = |r: Reply| match r {
-            Reply::Incomplete { .. } => SeatMoveEnd::Incomplete(format!("{}: {r:?}", r.name())),
-            other => SeatMoveEnd::Refused(format!("{}: {other:?}", other.name())),
-        };
         if m.holder.node_id != door.node_id {
             // A mesh-primary's seat, commanded on its holder; any other cohort's seat, commanded through
             // its mesh-primary, which writes the row (this admin itself when it is that mesh-primary).
             if m.mesh_seat || m.cohort_seat {
                 let seat = if m.cohort_seat { Seat::Cohort(m.holder.kind) } else { Seat::MeshPrimary };
-                let update = update_operation(seat, build_id.as_str(), operation);
+                let update = update_operation(seat, build_id.as_str(), run, operation);
                 door.command_update_primary(&m.holder, build_id.as_str(), attempt, &update).await?;
             }
             return Ok(());
@@ -2392,8 +2385,8 @@ impl crate::build_drive::Gate for SeatGate {
             (false, true) => (Moving::FabricSeatOutside, Seat::FabricPrimary),
             (false, false) => return Ok(()),
         };
-        let update = update_operation(seat, build_id.as_str(), operation);
-        door.update_primary(moving, None, build_id.as_str(), attempt, &update).await.map_err(ended)?;
+        let update = update_operation(seat, build_id.as_str(), run, operation);
+        door.move_own_seats(moving, build_id.as_str(), attempt, &update).await?;
         Ok(())
     }
 
@@ -4842,11 +4835,9 @@ impl Running {
     }
 
     async fn leave_with(self, parked: bool) {
-        // A leaving admin hands its committed Build facts to the neighbours before it says
-        // anything. Its Build authority is what its fabric seat record says: a seat moved by
-        // node.primary.update or node.fabric-primary.update ended it at that record; a fabric shutdown
-        // freezes the drive.
-        self.builds.hand_over_facts("leaving", None).await;
+        // A leave hands nothing on and yields no seat (R-SB1): a seat moves only by node.primary.update
+        // or node.fabric-primary.update, whose committed row the seat watch hands the Build facts on at,
+        // or by the provider's exit proof; a fabric shutdown freezes the drive.
         self.executor.abort();
         self.hierarchy.abort();
         self.anti_entropy.abort();
@@ -5040,26 +5031,28 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     };
     let key = load_or_mint_key(&cfg.data_dir).await?;
     drop(step);
-    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = tracing::field::Empty, restart = tracing::field::Empty, writes_to = tracing::field::Empty, mesh_id = tracing::field::Empty, error = tracing::field::Empty);
+    let storage_step = tracing::info_span!(parent: &boot, "rdm.mesh.node.resolve.via-storage-opened", data_dir = %cfg.data_dir.display(), store_dir = %cfg.store_dir.display(), fabric_id = tracing::field::Empty, inherited_root = tracing::field::Empty, writes_to = tracing::field::Empty, mesh_id = tracing::field::Empty, error = tracing::field::Empty);
     // The node-admin storage boundaries: its own row, the runtimes it started, its Build journal and
     // attempt contexts in its own data dir; the fabric, mesh, nodes, connections and status stores
-    // under the fabric's shared store root (R14). An admin that finds its own row in nodes.storage
-    // was here before: it restarts as the same logical node, in the same Mesh and Fabric, holding the
-    // same Builds. Every store's temp files carry this process's incarnation, decided here, before
-    // any store opens: the launch's, else a new one (a restart supersedes the one it last ran).
+    // under the fabric's shared store root (R14). An admin that finds its own row in nodes.storage was
+    // started on an inherited root: fabric recovery, a new node with a new node.id and incarnation over
+    // the inherited data dir, at the same path.name, in the same Mesh and Fabric, holding the same Builds
+    // (fabric-recovery.md; R-SB1). Every store's temp files carry this process's incarnation, decided
+    // here, before any store opens: the launch's, else a new one.
     let storage_err = |e: crate::record_store::StorageError| e.to_string();
     let incarnation = cfg.launch.as_ref().map(|l| l.incarnation.clone()).unwrap_or_else(IncarnationId::mint);
     if let (None, Ok(p)) = (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
         crate::store_root::qualify(p.provider).map_err(|e| format!("refusing to start: {e}"))?;
     }
-    // The own row (data dir), read before the store root opens: a restarting admin's row names its
-    // Fabric, whose root it opens, and its mesh, whose rows it opens on (R-FI1). A restart is never
-    // handed its fabric id: a different one named beside the row is refused by name.
+    // The own row (data dir), read before the store root opens: the inherited row names its Fabric,
+    // whose root this admin opens, and its mesh, whose rows it opens on (R-FI1). An admin started on an
+    // inherited root is never handed its fabric id: a different one named beside the row is refused by
+    // name.
     let own_row = crate::storage::FileNodesStorage::own_in(&cfg.data_dir, &incarnation).await.map_err(storage_err)?;
     if let (None, Some(own)) = (&cfg.launch, &own_row) {
         if cfg.fabric_id_named && cfg.fabric_id != own.fabric_id {
             return Err(format!(
-                "refusing to start: {}: this admin's own row ({}) belongs to Fabric {}, and {} names Fabric {}: a restart opens the Fabric of its own row",
+                "refusing to start: {}: this admin's own row ({}) belongs to Fabric {}, and {} names Fabric {}: an admin started on an inherited root opens the Fabric of its own row",
                 cfg.data_dir.display(),
                 own.name,
                 own.fabric_id,
@@ -5070,7 +5063,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         cfg.fabric_id = own.fabric_id.clone();
     }
     storage_step.record("fabric_id", tracing::field::display(&cfg.fabric_id));
-    storage_step.record("restart", cfg.launch.is_none() && own_row.is_some());
+    storage_step.record("inherited_root", cfg.launch.is_none() && own_row.is_some());
     let store_root = crate::store_root::StoreRoot::open(&cfg.store_dir, &cfg.fabric_id).map_err(|e| format!("refusing to start: {e}"))?;
     // Before the fabric's first state-commit every row this admin writes is held in its scratchpad;
     // its commit-state action publishes them (states.md, Rounds).
@@ -5091,7 +5084,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // Each mesh's in-flight row on the fabric's store root (R-BI7 caveat 3): the one set of rows the
     // claim door, the drive's release and the recovery door all take and release.
     let mesh_claims = Arc::new(crate::mesh_claims::MeshClaims::on_root(store_root.clone(), incarnation.clone()));
-    let restart = match (&cfg.launch, own_row) {
+    let inherited = match (&cfg.launch, own_row) {
         (None, Some(own)) => {
             let fabric = fabric_storage.fabric().await.map_err(storage_err)?.ok_or_else(|| {
                 format!("{}: nodes.storage holds this admin ({}) but fabric.storage holds no Fabric record", cfg.data_dir.display(), own.name)
@@ -5113,7 +5106,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         }
         _ => None,
     };
-    if restart.is_none() {
+    if inherited.is_none() {
         let holds = if fabric_storage.fabric().await.map_err(storage_err)?.is_some() {
             Some("a Fabric record")
         } else if !mesh_storage.meshes().await.map_err(storage_err)?.is_empty() {
@@ -5128,52 +5121,100 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
         refuse_contradictory_start(&cfg, holds.filter(|_| cfg.launch.is_none())).map_err(|e| format!("refusing to start: {e}"))?;
     }
     drop(storage_step);
+    // A container fabric's node-admin is a host process its containers reach only through the
+    // fabric network's gateway (a host address, reachable from host processes too): the provider is
+    // prepared before the mesh endpoint binds, and Day 0 binds it on the gateway. On an inherited
+    // root, the provider also proves the inherited birth exited before `take_inherited_name` writes
+    // its row `Deleted` (fabric-recovery.md "Nothing alive"). A launched admin learns the policy from
+    // its launcher's entry answer, after it binds. Explicit bindings are held to the provider's image
+    // before the provider does anything.
+    if let (Some(b), None, Ok(p)) = (&cfg.bindings, &cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
+        b.check_image(provider_image(p.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
+    }
+    let early = match (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
+        (None, Ok(p)) => {
+            let prepared = crate::deployment::prepare(p, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?;
+            let provider: Arc<dyn crate::deployment::provider::DeploymentProvider> = crate::wiring::apply(wiring.provider.take(), prepared.provider.clone());
+            Some((prepared, provider))
+        }
+        _ => None,
+    };
     // Identity and the two addresses: assigned by the launching pipeline, the bootstrap admin's own,
-    // or (a restart) its own row, under a new incarnation that supersedes the one it last ran.
-    // Its bootstrap contacts are the births it last heard, its own Mesh first: hints, any one of
-    // which answering is enough.
-    let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &restart) {
+    // or (an inherited root) a node.id and incarnation this admin mints at the path.name and endpoint
+    // key of the inherited row, with a new port (fabric-recovery.md: "The relaunched node-admin is a new
+    // node over its inherited data dir"). A new node supersedes no birth (node-restart.md: a restart
+    // alone keeps the node.id and incarnation). Its bootstrap contacts are the births it last heard,
+    // its own Mesh first: hints, any one of which answering is enough.
+    let (name, node_id, incarnation, supersedes, mesh_addr, control_addr, seeds) = match (&cfg.launch, &inherited) {
         (Some(l), _) => {
             let control = cfg.api_bind;
             (l.name.clone(), l.node_id.clone(), incarnation.clone(), l.supersedes.clone(), l.bind_addr, control, l.seeds.clone())
         }
         (None, Some(own)) => {
+            let node_id = NodeId::mint();
+            let step = tracing::info_span!(
+                parent: &boot,
+                "rdm.node_admin.node.create.via-inherited-root",
+                node = %own.name,
+                node_id = %node_id,
+                incarnation_id = %incarnation.as_str(),
+                inherited_node_id = %own.node_id,
+                inherited_incarnation_id = %own.incarnation_id,
+                fabric_id = %cfg.fabric_id,
+                contacts = tracing::field::Empty,
+            );
+            // The inherited birth's node.delete is node recovery's node.delete (fabric-recovery.md "Nothing
+            // alive": "Every node the store names, the old process on the inherited data dir included, is
+            // confirmed gone by the provider, never by a wait", "node.delete of the exited instance, then
+            // node.create at the same path.name, with a new node.id over the inherited data dir"): it requires
+            // the provider's exact exit proof on the old process before writing `Deleted`.
+            let provider = match &early {
+                Some((_, p)) => p.as_ref(),
+                None => return Err(format!("refusing to start: {}: no deployment provider prepared for the inherited birth {} at {}", cfg.data_dir.display(), own.node_id, own.name)),
+            };
+            let own_runtime = nodes_storage.runtime(&own.node_id, &own.incarnation_id).await.map_err(storage_err)?;
+            exit_proof_of(provider, &None, own_runtime.as_ref())
+                .instrument(step.clone())
+                .await
+                .map_err(|e| format!("refusing to start: {}: {} cannot delete the inherited birth {} ({}) at {}: {e}", cfg.data_dir.display(), node_id, own.node_id, own.incarnation_id.as_str(), own.name))?;
+            // The inherited birth's node.delete, then this node's claim of its path.name: the first writes
+            // of this birth (`take_inherited_name`). A name another node holds refuses the start by name.
+            crate::node_rows::take_inherited_name(&*nodes_storage, own, &node_id)
+                .instrument(step.clone())
+                .await
+                .map_err(|e| format!("refusing to start: {}: {} takes {} over the inherited birth {}: {e}", cfg.data_dir.display(), node_id, own.name, own.node_id))?;
             let addr_of = |s: &str| own.listeners.iter().find(|(n, _)| n == s).map(|(_, a)| *a);
             let mut contacts = nodes_storage.contacts().await.map_err(storage_err)?;
-            contacts.retain(|c| c.node_id != own.node_id);
             contacts.sort_by_key(|c| (c.name.mesh != own.name.mesh, c.name.to_string()));
             let seeds = contacts.iter().filter_map(|c| c.gossip_addr().and_then(|a| a.ip_addrs().next().map(|ip| (a.id.to_string(), *ip)))).collect();
-            tracing::info_span!(
-                "rdm.node_admin.node.update.via-restart",
-                node = %own.name,
-                node_id = %own.node_id,
-                supersedes = %own.incarnation_id,
-                fabric_id = %cfg.fabric_id,
-                contacts = contacts.len(),
-            )
-            .in_scope(|| tracing::info!("restarting as the same logical node from nodes.storage"));
+            step.record("contacts", contacts.len());
+            step.in_scope(|| tracing::info!("fabric recovery: a new node over the inherited data dir, at its path.name"));
             (
                 own.name.clone(),
-                own.node_id.clone(),
+                node_id,
                 incarnation.clone(),
-                Some(own.incarnation_id.clone()),
-                // A restart reuses identity and data dir and binds a fresh port (the operating
-                // system assigns it), never the one it last held: its peers learn the new address
-                // from its digest.
+                None,
+                // The inherited endpoint key and a fresh port (the operating system assigns it), never the
+                // one the inherited birth held: peers learn the new address from its digest.
                 SocketAddr::new(own.transport_addr.ip(), 0),
                 addr_of("control").unwrap_or(cfg.api_bind),
                 seeds,
             )
         }
-        (None, None) => (
-            PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1),
-            NodeId::mint(),
-            incarnation.clone(),
-            None,
-            SocketAddr::new(cfg.api_bind.ip(), 0),
-            cfg.api_bind,
-            cfg.seeds.clone(),
-        ),
+        (None, None) => {
+            let name = PathName::new(&cfg.mesh, NodeKind::NodeAdmin, 1);
+            let node_id = NodeId::mint();
+            // Day 0 (R-OW1 item 2): the bootstrap admin, its mesh's primary, claims its own path.name by
+            // insert-and-fail, the first write of its birth, before Ready (`claim_day0_name`). A name another
+            // node holds refuses the start by name. A recovery start (both primary flags) is no Day 0: its row
+            // is written when it holds its mesh's seat, as every member's is (`NodeRows::arrivals`).
+            if !cfg.mesh_primary && !cfg.fabric_primary {
+                crate::node_rows::claim_day0_name_in_boot(&boot, &*nodes_storage, &name, &node_id)
+                    .await
+                    .map_err(|e| format!("refusing to start: {}: Day 0's {node_id} claims {name}: {e}", cfg.data_dir.display()))?;
+            }
+            (name, node_id, incarnation.clone(), None, SocketAddr::new(cfg.api_bind.ip(), 0), cfg.api_bind, cfg.seeds.clone())
+        }
     };
 
     // This node's own connections rows: `connections/<its path.name>/` of the store root (R14).
@@ -5182,22 +5223,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     boot.record("node", tracing::field::display(&name));
     boot.record("node_id", tracing::field::display(&node_id));
     boot.record("incarnation_id", tracing::field::display(&incarnation.as_str()));
-    // A container fabric's node-admin is a host process its containers reach only through the
-    // fabric network's gateway (a host address, reachable from host processes too): the provider is
-    // prepared before the mesh endpoint binds, and Day 0 binds it on the gateway. A launched admin
-    // learns the policy from its launcher's entry answer, after it binds.
-    // Explicit bindings are held to the provider's image before the provider does anything.
-    if let (Some(b), None, Ok(p)) = (&cfg.bindings, &cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
-        b.check_image(provider_image(p.provider)).map_err(|e| format!("refusing to start: explicit executable bindings: {e}"))?;
-    }
-    let early = match (&cfg.launch, FabricPolicy::bootstrap(cfg.spawn_type.as_deref())) {
-        (None, Ok(p)) if p.provider == ProviderKind::Container => Some(crate::deployment::prepare(p, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?),
-        _ => None,
-    };
     // A host-process admin binds on the gateway; an admin that itself runs in a container of the
     // fabric binds on its own address there (its control address), the gateway not being local.
-    let mesh_addr = match (&early, &cfg.launch, &restart) {
-        (Some(p), None, None) if rafka_mesh_entity::runtime::this_container_id().is_none() => SocketAddr::new(p.admin_ip, 0),
+    let mesh_addr = match (&early, &cfg.launch, &inherited) {
+        (Some((p, _)), None, None) if p.provider.kind() == ProviderKind::Container && rafka_mesh_entity::runtime::this_container_id().is_none() => SocketAddr::new(p.admin_ip, 0),
         _ => mesh_addr,
     };
 
@@ -5302,10 +5331,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     // it, else this admin is the mesh's first and mints it.
     // The process's one Node RPC client, built before the join: the join is its first call, and
     // the membership feed starts once the process holds a book.
-    let launched_anchor = if restart.is_some() { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
+    let launched_anchor = if inherited.is_some() { None } else { cfg.launch.as_ref().and(seed_addrs.first().cloned()) };
     let launcher_of_launch = cfg.launch.as_ref().and_then(|l| l.launcher.clone());
     // The join's authority: the admin that deployed this one. A birth that makes no `JoinNode` (the
-    // Day-0 root, a fabric-primary reborn from its durable map, a recovery start) has none, and says why.
+    // Day-0 root, an admin started on an inherited root, a recovery start) has none, and says why.
     let joins_through = match (&launched_anchor, &launcher_of_launch, &launched_runtime) {
         (Some(anchor), Some(launcher), Some(runtime)) => Some((anchor.clone(), launcher.clone(), runtime.clone())),
         _ => None,
@@ -5337,7 +5366,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     });
     let joining = match &joins_through {
         Some((_, launcher, _)) => crate::workflows::node_start::Joining::Authority { label: launcher.name.to_string() },
-        None if restart.is_some() => crate::workflows::node_start::Joining::None(crate::app_hydration::NoAuthority::FabricPrimaryReborn),
+        None if inherited.is_some() => crate::workflows::node_start::Joining::None(crate::app_hydration::NoAuthority::InheritedRoot),
         None if cfg.mesh_primary || cfg.fabric_primary => crate::workflows::node_start::Joining::None(crate::app_hydration::NoAuthority::Recovery),
         None => crate::workflows::node_start::Joining::None(crate::app_hydration::NoAuthority::Day0Root),
     };
@@ -5377,8 +5406,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // admitted it; none for a birth that made no JoinNode (the Day-0 root, a recovery start).
                 let member_cert: Option<Vec<u8>> = joined.as_ref().map(|a| a.control.member_cert.clone());
                 // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
-                // once, here. A recovery start (a flag or a restart) takes it from the nodes it reaches below.
-                if cfg.launch.is_none() && restart.is_none() && !cfg.mesh_primary && !cfg.fabric_primary {
+                // once, here. A recovery start (a flag or an inherited root) takes it from the nodes it reaches below.
+                if cfg.launch.is_none() && inherited.is_none() && !cfg.mesh_primary && !cfg.fabric_primary {
                     crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_DAY0_ROOT);
                 }
                 let mesh_id = match (&cfg.mesh_id, &joined) {
@@ -5411,24 +5440,28 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     }
                 }
                 drop(step);
-                // An admin that made no `JoinNode` and is no Day-0 root (a restart, or a recovery started with
-                // a seed) holds no rafka-time yet: it reads it from the first node it reaches, before it
-                // publishes anything or judges any lease.
+                // An admin that made no `JoinNode` and is no Day-0 root (an inherited root, or a recovery
+                // started with a seed) holds no rafka-time yet: when every node the store names — the old
+                // process on the inherited data dir included (confirmed gone by the provider before
+                // `take_inherited_name` above) — is confirmed gone by the provider, never by a wait, this
+                // admin is the only node, the fabric-primary, and its own clock is rafka-time from the
+                // start (fabric-recovery.md "Nothing alive"; origin-ordering.md). If any node answers, it is
+                // not this case and this admin takes rafka-time from the existing fabric-primary.
                 if !rafka_time.is_adopted() {
-                    // The admin that holds the fabric seat in its own seat records is the fabric's root: it
-                    // adopts its own clock at once (fabric-node-lifecycle.md 2.5). Every other admin takes
-                    // rafka-time from the first node it reaches that holds one.
-                    let held = rafka_mesh_transport::membership::SeatBook::default();
-                    crate::fabric_handover::hydrate_seats(&*fabric_storage, &held).await?;
-                    let holds_fabric_seat = held.fabric().is_some_and(|h| h.node_id == node_id);
-                    if holds_fabric_seat {
-                        crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_FABRIC_SEAT);
-                    } else {
-                        let mut contacts = Vec::new();
-                        for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
+                    let mut contacts = Vec::new();
+                    for r in nodes_storage.contacts().await.map_err(storage_err)?.into_iter().filter(|r| r.node_id != node_id) {
+                        let gone = match (&early, nodes_storage.runtime(&r.node_id, &r.incarnation_id).await.map_err(storage_err)?) {
+                            (Some((_, provider)), row) => exit_proof_of(provider.as_ref(), &None, row.as_ref()).await.is_ok(),
+                            (None, _) => false,
+                        };
+                        if !gone {
                             contacts.push(crate::reenter::MapNode { node_id: r.node_id, name: r.name, endpoint_id: r.endpoint_id, transport_addr: r.transport_addr, incarnation: r.incarnation_id, transition: None, ready: false, data_dir: None, admin_api_base: None });
                         }
-                        crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, crate::rafka_time::RECOVERY_PULL_WITHIN, &boot)
+                    }
+                    if contacts.is_empty() && (inherited.is_some() || seed_addrs.is_empty()) {
+                        crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_NOTHING_ALIVE);
+                    } else {
+                        crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, &boot)
                             .await
                             .map_err(|e| format!("refusing to start: {e}"))?;
                     }
@@ -5558,10 +5591,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 None => {
                                     // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
                                     // own mesh with one node-admin; it is the current Build once written.
-                                    if restart.is_some() {
+                                    if inherited.is_some() {
                                         let build_id = builds.current_build().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.into_build_id().map(|b| b.to_string()).unwrap_or_default();
-                                        tracing::info_span!("rdm.node_admin.fabric.update.via-restart", node = %name, build_id = %build_id)
-                                            .in_scope(|| tracing::info!("the current Build reloaded from this admin's own builds store"));
+                                        tracing::info_span!(parent: &boot, "rdm.node_admin.fabric.update.via-inherited-root", node = %name, build_id = %build_id)
+                                            .in_scope(|| tracing::info!("the current Build reloaded from the inherited data dir's builds store"));
                                     } else if cfg.fabric_primary {
                                         tracing::info_span!("rdm.node_admin.fabric.update.via-recovery", node = %name, fabric_id = %cfg.fabric_id, mesh_id = %mesh_id)
                                             .in_scope(|| tracing::info!("a fabric recovery accepts no Build of its own: the current Build is taken from the nodes it reaches"));
@@ -5584,8 +5617,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 }
                             };
 
-                            if restart.is_some() && cfg.launch.is_none() {
-                                // A fabric primary reborn into its mesh has no maker: its durable map is the topology.
+                            if inherited.is_some() && cfg.launch.is_none() {
+                                // An admin started on an inherited root has no maker: its durable map is the topology.
                                 let mut rows = nodes_storage.contacts().await.map_err(storage_err)?;
                                 rows.retain(|r| r.node_id != node_id);
                                 if let Ok(map) = crate::reenter::get_topology(crate::reenter::TopologySource::DurableMap(&rows)).await {
@@ -5609,7 +5642,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             // every birth the accepted Build names that nodes.storage heard is in its view as not yet
                             // reached, until membership or the sweep says more. Its view is never an empty one that plans
                             // a create for every member.
-                            if restart.is_some() && cfg.launch.is_none() {
+                            if inherited.is_some() && cfg.launch.is_none() {
                                 let desired = builds_dyn.current().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.map(|b| b.topology);
                                 for r in nodes_storage.contacts().await.map_err(storage_err)? {
                                     if r.node_id != node_id && desired.as_ref().is_some_and(|t| t.contains(&r.name)) {
@@ -5754,9 +5787,13 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                             // The deployment hand (used while this admin is fabric primary). A provider's host-wide
                             // resources (a container fabric's network and labels) are keyed by the Fabric's id: a Fabric
                             // name is not unique on a host.
-                            let prepared = match early {
-                                Some(p) => p,
-                                None => crate::deployment::prepare(policy, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?,
+                            let (prepared, provider_dyn) = match early {
+                                Some((p, dyn_p)) => (p, dyn_p),
+                                None => {
+                                    let p = crate::deployment::prepare(policy, &cfg.fabric_id.to_string()).await.map_err(|e| e.to_string())?;
+                                    let dyn_p: Arc<dyn crate::deployment::provider::DeploymentProvider> = crate::wiring::apply(wiring.provider.take(), p.provider.clone());
+                                    (p, dyn_p)
+                                }
                             };
                             let mut admin_env = BTreeMap::new();
                             admin_env.insert("RDM_BIN_DIR".to_string(), cfg.bin_dir.display().to_string());
@@ -5784,7 +5821,6 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 registry = registry.register(spec, hook);
                             }
                             let hooks = registry.seal().map_err(|e| format!("{e:?}"))?;
-                            let provider_dyn: Arc<dyn crate::deployment::provider::DeploymentProvider> = crate::wiring::apply(wiring.provider.take(), prepared.provider.clone());
                             let handover = Arc::new(crate::fabric_handover::HandoverDoor {
                                 fabric: cfg.fabric.clone(),
                                 me: name.clone(),
@@ -5914,6 +5950,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 deployment_id: runtime.deployment_id.clone(),
                                 incarnation: incarnation.to_string(),
                             });
+                            // This birth's exact runtime, recorded in its own data dir under its own key, a blind put
+                            // (node-recovery.md "Detection and proof" step 3: "the exact runtime recorded at launch"):
+                            // an admin started on this data dir after this birth exits proves this birth's exit from it
+                            // before deleting its row, and every node-admin this one launches is handed it with the
+                            // other runtime rows it holds.
+                            nodes_storage
+                                .put_runtime(&crate::storage::RuntimeRow { node_id: node_id.clone(), name: name.clone(), incarnation_id: incarnation.clone(), runtime: runtime.clone(), data_dir: Some(cfg.data_dir.display().to_string()) })
+                                .await
+                                .map_err(storage_err)?;
                             // Own digest, published on the membership cadence.
                             let digest = Arc::new(Mutex::new(MeshDigest {
                                 fabric_id: cfg.fabric_id.clone(),

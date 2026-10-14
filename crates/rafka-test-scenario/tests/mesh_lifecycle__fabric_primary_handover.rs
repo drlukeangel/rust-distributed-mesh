@@ -596,7 +596,7 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     // node.primary.updated under the holder's call; the holder says "primary updated"; the leave's owner
     // installs the row (`via-fabric-seat-updated`) before mesh-leaving, DeleteMesh and every stop.
     let attr_s = |sp: &Value, k: &str| s(&sp["attributes"][k]);
-    let operation = format!("node.fabric-primary.update:{b}:shutdown-mesh:{mesh1_bare}");
+    let operation = format!("node.fabric-primary.update:{b}:1:shutdown-mesh:{mesh1_bare}");
     let one = |name: &str| -> Value {
         let v: Vec<&Value> = named(&spans, name).into_iter().filter(|sp| attr_s(sp, "operation") == operation).collect();
         assert_eq!(v.len(), 1, "exactly one {name} span of {operation}: {v:?}");

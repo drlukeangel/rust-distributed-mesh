@@ -1,6 +1,7 @@
 //! A node-admin's boot and the fabric's store root (R14 items 1 and 8): a node-admin process given
 //! no `store_dir`, or one it cannot use, is refused by name at boot, naming the path and the cause;
-//! nothing falls back to its data dir.
+//! nothing falls back to its data dir. An admin started on a root prepared through the storage adapters,
+//! with no previous process, boots from its rows (R-SB1).
 
 use std::time::{Duration, Instant};
 
@@ -86,105 +87,7 @@ fn fabric_dirs(store: &std::path::Path) -> Vec<String> {
     v
 }
 
-/// CONTRACT (R-FI1=A; node-admin-lifecycle.md:65 "Restart | its own data dir (same NodeId)"): a
-/// bootstrap node-admin restarted on its own data dir, with the fabric's store_dir and no
-/// `RDM_FABRIC_ID`, reads the fabric id from its own row before the store root opens, and restarts
-/// as the same node in the same Fabric: it opens `<store_dir>/<its fabric id>/`, mints no second
-/// fabric directory, and its boot's storage step names that fabric id. What must NOT happen: the
-/// restart minting a new fabric id, opening an empty root and being refused because "fabric.storage
-/// holds no Fabric record".
-#[test]
-fn a_restarted_bootstrap_admin_opens_its_fabric_from_its_own_row() {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/a_restarted_bootstrap_admin_opens_its_fabric_from_its_own_row");
-    let _ = std::fs::remove_dir_all(&dir);
-    let store = dir.join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    let data_dir = dir.join("mesh1.admin.1");
-    let run = || {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"));
-        cmd.env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("RDM_DATA_DIR", &data_dir)
-            .env("RDM_STORE_DIR", &store)
-            .env("RDM_EVIDENCE_DIR", &dir)
-            .env("MESH_SPAWN_TYPE", "process")
-            .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0");
-        cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rafka-node-admin starts")
-    };
-    let own = data_dir.join("nodes").join("self.json");
-    let own_incarnation = || std::fs::read_to_string(&own).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["record"]["incarnation_id"].as_str().map(str::to_string));
-    let stop = |mut child: std::process::Child| {
-        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
-        let status = child.wait().unwrap();
-        let mut err = String::new();
-        std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut err).unwrap();
-        (status, err)
-    };
-
-    // Day 0: the admin mints its fabric and writes its own row and its mesh's row on the root.
-    let first = run();
-    // A panic below must not leave the Day-0 process running: it is stopped by its exact pid.
-    struct Reap(u32);
-    impl Drop for Reap {
-        fn drop(&mut self) {
-            unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
-        }
-    }
-    let reap_first = Reap(first.id());
-    let mut first = first;
-    let until = Instant::now() + Duration::from_secs(20);
-    let fabric = loop {
-        let dirs = fabric_dirs(&store);
-        if let (Some(_), [f]) = (own_incarnation(), dirs.as_slice()) {
-            if store.join(f).join("meshes").join("mesh1.json").exists() {
-                break f.clone();
-            }
-        }
-        if let Some(s) = first.try_wait().unwrap() {
-            std::mem::forget(reap_first);
-            panic!("the Day-0 admin exited {s:?}");
-        }
-        assert!(Instant::now() < until, "the Day-0 admin wrote no own row and mesh row in 20 s: {:?}", fabric_dirs(&store));
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let day0 = own_incarnation().unwrap();
-    // R-FN1: the fabric's claim of its name is at the path level, beside the per-fabric roots.
-    let index: serde_json::Value = serde_json::from_slice(&std::fs::read(store.join(rafka_node_admin_core::store_root::FABRIC_NAMES).join("fabric1.json")).expect("the fabric's name claim at <store_dir>/fabrics/fabric1")).unwrap();
-    assert_eq!(index["record"]["fabric_id"].as_str(), Some(fabric.as_str()), "the name index names this fabric: {index}");
-    let (status, err) = stop(first);
-    std::mem::forget(reap_first);
-    assert!(status.success(), "the Day-0 admin's stop: {status:?} {err}");
-
-    // The restart: same data dir and store_dir, no fabric id handed in.
-    let mut second = run();
-    let pid = second.id();
-    let reap_second = Reap(pid);
-    let until = Instant::now() + Duration::from_secs(20);
-    loop {
-        if own_incarnation().is_some_and(|i| i != day0) {
-            break;
-        }
-        if second.try_wait().unwrap().is_some() {
-            std::mem::forget(reap_second);
-            let (status, err) = stop(second);
-            panic!("the restart exited {status:?}: {err}");
-        }
-        assert!(Instant::now() < until, "the restart wrote no own row under a new incarnation in 20 s");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let (status, err) = stop(second);
-    std::mem::forget(reap_second);
-    assert!(status.success(), "the restart's stop: {status:?} {err}");
-    assert_eq!(fabric_dirs(&store), vec![fabric.clone()], "the restart opened a fabric directory other than its own");
-    let spans = spans_of(&dir, pid);
-    let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the restart left no storage step: {spans:?}"));
-    println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
-    assert_eq!(opened["attributes"]["fabric_id"].as_str(), Some(fabric.as_str()), "{opened}");
-    assert_eq!(opened["attributes"]["restart"].as_str(), Some("true"), "{opened}");
-}
-
-/// A bootstrap `rafka-node-admin` on its own data dir and the fabric's store_dir under `dir`, run again and
-/// again on the same root as a restart is.
+/// A bootstrap `rafka-node-admin` on its own data dir and the fabric's store_dir under `dir`: the Day-0 root.
 struct Day0 {
     dir: std::path::PathBuf,
     store: std::path::PathBuf,
@@ -271,17 +174,6 @@ impl Day0 {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-
-    /// A restart on the same data dir and root, stopped once it has booted: the spans it left.
-    fn restart_until_booted(&self) -> Vec<serde_json::Value> {
-        let running = self.run();
-        let until = Instant::now() + Duration::from_secs(20);
-        while !spans_of(&self.dir, running.pid).iter().any(|s| s["name"] == "rdm.node_admin.fabric.update.via-restart") {
-            assert!(Instant::now() < until, "the restart had not opened its fabric in 20 s");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        self.stop(running)
-    }
 }
 
 /// Why each `rdm.node_admin.fabric.update.via-first-ready` span in `spans` says the admin knows the fabric
@@ -313,150 +205,549 @@ fn the_fabric_primary_puts_the_ready_for_traffic_row_on_its_own_mesh() {
     println!("trace_id={}", put["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (states.md "The initial fabric before ready-for-traffic": "Once the fabric is ready-for-traffic
-/// these are admitted as usual"; "A resize or roll puts the fabric back to pending"): the durable fact
-/// that the fabric first reached ready-for-traffic is the ready-for-traffic fabric event's row among
-/// its mesh's status rows. An admin restarted on a root that holds that row knows it at boot, before
-/// any status is heard, and says why once (`rdm.node_admin.fabric.update.via-first-ready`,
-/// `ready-for-traffic-row-on-store-root`). What must NOT happen: a restarted admin, or one born into
-/// a resize after the first ready-for-traffic, refusing a caller's workflow `fabric-not-ready`
-/// because it heard pending.
+/// The durable writes of a Day-0 birth, by the span that names each: the Fabric row, mesh1's row, the
+/// accepted root Build, and a node row put at an arrival.
+const DAY0_WRITES: [&str; 3] = ["rdm.node_admin.fabric.create.via-fabric-row", "rdm.node_admin.mesh.create.via-mesh-row", "rdm.node_admin.build.create.via-accepted"];
+
+/// CONTRACT (R-OW1, ruling text item 2: "Day 0: the bootstrap admin, as mesh1's primary, claims
+/// (mesh1.admin, 1) by insert-and-fail and writes its own row through the same validation and storage
+/// path as any create, the first write of its birth, before Ready. No bypass; a conflicting holder is
+/// NameHeld, never overwritten"; item 1: "The mesh-primary writes every row in its mesh, including its
+/// own"): the Day-0 admin's first durable write is the claim of its own path.name, one
+/// `rdm.node_admin.node.create.via-node-row` span with `subject = mesh1.admin.1`, its own node.id,
+/// `moment = claim`, `outcome = row-written`, a step of its boot's own trace, started before the Fabric
+/// row, mesh1's row, the accepted root Build and Ready. Its own birth's arrival in its first view finds the
+/// row its node holds and writes nothing (`row-held-by-node`): one writer, one write. The row stands on the
+/// store root at mesh1.admin.1 under the boot's node.id. What must NOT happen: a Day-0 fabric whose
+/// primary holds no row of its own, so that `mesh1.admin.1` has no claimed name.
 #[test]
-fn an_admin_restarted_on_a_root_holding_the_ready_for_traffic_row_knows_at_boot_the_fabric_first_reached_it() {
-    let day0 = Day0::at("an_admin_restarted_on_a_root_holding_the_ready_for_traffic_row_knows_at_boot_the_fabric_first_reached_it");
-    let first = day0.day0_until_ready(true);
-    day0.stop(first);
-    assert_eq!(day0.ready_rows().len(), 1, "the root holds the ready-for-traffic row");
-    let spans = day0.restart_until_booted();
+fn the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth_before_ready() {
+    let day0 = Day0::at("the_day0_admin_claims_its_own_path_name_as_the_first_write_of_its_birth");
+    let running = day0.day0_until_ready(true);
+    let spans = day0.stop(running);
+    let attr = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or_default().to_string();
+    let start = |s: &serde_json::Value| s["start_unix_nano"].as_u64().unwrap_or(u64::MAX);
+    let boot = spans.iter().find(|s| s["name"] == "rdm.mesh.node.create.via-boot").unwrap_or_else(|| panic!("no boot span: {spans:?}"));
+    let node_id = attr(boot, "node_id");
+    assert_eq!(attr(boot, "node"), "mesh1.admin.1", "{boot}");
+    let rows: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject") == "mesh1.admin.1").collect();
+    let claims: Vec<&serde_json::Value> = rows.iter().copied().filter(|s| attr(s, "moment") == "claim").collect();
+    assert_eq!(claims.len(), 1, "the Day-0 admin claims its own path.name once: every node row span of mesh1.admin.1 {rows:?}");
+    let claim = claims[0];
+    assert_eq!(
+        (attr(claim, "node"), attr(claim, "node_id"), attr(claim, "outcome")),
+        ("mesh1.admin.1".to_string(), node_id.clone(), "row-written".to_string()),
+        "the claim of its own name under its own node.id, written: {claim}"
+    );
+    assert_eq!(claim["trace_id"], boot["trace_id"], "the claim is a step of the boot's own story: {claim}");
+    for name in DAY0_WRITES.iter().chain(["rdm.mesh.node.update.via-ready"].iter()) {
+        let later = spans.iter().find(|s| s["name"] == *name).unwrap_or_else(|| panic!("Day 0 left no {name}: {:?}", spans.iter().map(|s| &s["name"]).collect::<Vec<_>>()));
+        assert!(start(claim) < start(later), "the claim of mesh1.admin.1 starts before {name}: claim {claim} then {later}");
+    }
+    for arrival in rows.iter().filter(|s| attr(s, "moment") == "arrival") {
+        assert!(start(claim) < start(arrival), "the claim precedes its birth's arrival: {arrival}");
+        assert_eq!(attr(arrival, "outcome"), "row-held-by-node", "its own birth's arrival finds the claimed row and writes nothing: {arrival}");
+    }
+    let fabric_id = rafka_node_admin_core::model::FabricId::parse(&fabric_dirs(&day0.store).remove(0)).unwrap();
+    let row = {
+        use rafka_node_admin_core::storage::NodesStorage as _;
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let root = rafka_node_admin_core::store_root::StoreRoot::open(&day0.store, &fabric_id).unwrap();
+            let reader = rafka_node_admin_core::model::IncarnationId::mint();
+            let nodes = rafka_node_admin_core::storage::FileNodesStorage::open(&day0.data_dir, &root, "mesh1", &reader).await.unwrap();
+            nodes.node_row_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap()
+        })
+    };
+    let row = row.expect("the store root holds the row at mesh1.admin.1");
+    assert_eq!(row.node_id.to_string(), node_id, "mesh1.admin.1 is held by the Day-0 admin's node.id: {row:?}");
+    println!("trace_id={}", boot["trace_id"].as_str().unwrap_or(""));
+}
+
+/// The config and tags of the inherited birth's row at mesh1.admin.1.
+const INHERITED_CONFIG: [(&str, &str); 1] = [("zone", "a")];
+const INHERITED_TAGS: [&str; 1] = ["edge"];
+
+/// What a prepared root holds beside the fabric's own record and the accepted topology: a fabric in
+/// state-commit (its Fabric row published, no ready-for-traffic row), or one that first reached
+/// ready-for-traffic (the ready-for-traffic fabric event's row among its mesh's status rows).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum History {
+    StateCommit,
+    ReadyForTraffic,
+}
+
+/// A fabric's durable store root and the data dir of its one node-admin, prepared through the storage
+/// adapters with no previous process (R-SB1): the Fabric row and the fabric's name claim, mesh1's row,
+/// the admin's own row (fabric1, mesh1, `mesh1.admin.1`, its node key), the accepted Build of the root
+/// topology in the admin's own Build journal and, for [`History::ReadyForTraffic`], the
+/// ready-for-traffic row. The rows the fabric's state-commit publishes are held in the root's
+/// scratchpad and published by it, as the fabric-primary's commit-state action does. The store names no
+/// node but the admin itself: nothing is alive.
+struct Prepared {
+    dir: std::path::PathBuf,
+    store: std::path::PathBuf,
+    data_dir: std::path::PathBuf,
+    fabric_id: rafka_node_admin_core::model::FabricId,
+    mesh_id: rafka_node_admin_core::model::MeshId,
+    node_id: rafka_node_admin_core::model::NodeId,
+    /// The incarnation the own row says this birth last ran.
+    incarnation: rafka_node_admin_core::model::IncarnationId,
+    build_id: rafka_node_admin_core::build::BuildId,
+}
+
+impl Prepared {
+    fn at(name: &str, history: History) -> Self {
+        use rafka_node_admin_core::fabric_storage::FabricStorage as _;
+        use rafka_node_admin_core::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId};
+        use rafka_node_admin_core::status_storage::StatusStorage as _;
+        use rafka_node_admin_core::storage::{MeshStorage as _, NodesStorage as _};
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = dir.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let data_dir = dir.join("mesh1.admin.1");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let (fabric_id, mesh_id, node_id, incarnation, build_id) = (FabricId::mint(), MeshId::mint(), NodeId::mint(), IncarnationId::mint(), rafka_node_admin_core::build::BuildId::mint());
+        let key = iroh::SecretKey::generate();
+        std::fs::write(data_dir.join("node-key"), hex::encode(key.to_bytes())).unwrap();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let root = rafka_node_admin_core::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
+            assert_eq!(root.writes_to(), "scratchpad", "an empty root holds its rows until the fabric's state-commit");
+            let fabric = rafka_node_admin_core::fabric_storage::FileFabricStorage::open(&root, &incarnation).await.unwrap();
+            let identity = rafka_node_admin_core::fabric_storage::FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
+            fabric.claim_identity(&identity).await.unwrap().expect("the fabric's name is free");
+            let meshes = rafka_node_admin_core::storage::FileMeshStorage::open(&root, &incarnation).await.unwrap();
+            meshes.claim_mesh(&rafka_node_admin_core::storage::MeshRecord { mesh_id: mesh_id.clone(), name: "mesh1".into(), dead: false }).await.unwrap().expect("mesh1's name is free");
+            let nodes = rafka_node_admin_core::storage::FileNodesStorage::open(&data_dir, &root, "mesh1", &incarnation).await.unwrap();
+            let own = rafka_node_admin_core::storage::NodeRecord {
+                node_id: node_id.clone(),
+                fabric_id: fabric_id.clone(),
+                name: "mesh1.admin.1".parse().unwrap(),
+                mesh_id: mesh_id.clone(),
+                incarnation_id: incarnation.clone(),
+                endpoint_id: EndpointId(key.public().to_string()),
+                transport_addr: "127.0.0.1:1".parse().unwrap(),
+                listeners: Vec::new(),
+            };
+            nodes.put_own(&own).await.unwrap();
+            let mut runtime = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_node_admin_core::model::DeploymentId::mint().to_string()).unwrap();
+            runtime.locator = rafka_mesh_entity::runtime::RuntimeLocator::Process { pid: 1, start: u64::MAX };
+            nodes
+                .put_runtime(&rafka_node_admin_core::storage::RuntimeRow {
+                    node_id: node_id.clone(),
+                    name: own.name.clone(),
+                    incarnation_id: incarnation.clone(),
+                    runtime,
+                    data_dir: Some(data_dir.display().to_string()),
+                })
+                .await
+                .unwrap();
+            // The birth's row at its path.name and its contact among mesh1's members, as its mesh's writer
+            // left them: the name is held by this node.id.
+            nodes.put_contact(&own).await.unwrap();
+            let row = rafka_node_admin_core::storage::NodeRow {
+                name: own.name.clone(),
+                node_id: node_id.clone(),
+                status: rafka_node_admin_core::model::NodeStatus::ReadyForTraffic,
+                config: INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                tags: INHERITED_TAGS.iter().map(|t| t.to_string()).collect(),
+                allocated: None,
+                renamed_from: None,
+                inherited_by: None,
+            };
+            nodes.put_node_row(&row).await.unwrap().expect("mesh1.admin.1 is free");
+            if history == History::ReadyForTraffic {
+                let status = rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &incarnation).await.unwrap();
+                status.put_fabric_event(&rafka_node_admin_core::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: "ready-for-traffic".into() }).await.unwrap();
+            }
+            root.scratchpad().expect("held until the state-commit").publish().await.unwrap();
+            let journal = rafka_node_admin_core::build_state::FileJournal::open(&data_dir).await.unwrap();
+            let accepted = rafka_node_admin_core::build_state::BuildAccepted {
+                build_id: build_id.clone(),
+                topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
+                submitted_change: None,
+                submitted_at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
+            };
+            rafka_node_admin_core::build_state::accept(&journal, &accepted, None, "mesh1.admin.1", "prepared-root").await.unwrap();
+        });
+        let prepared = Self { dir, store, data_dir, fabric_id, mesh_id, node_id, incarnation, build_id };
+        assert_eq!(fabric_dirs(&prepared.store), vec![prepared.fabric_id.to_string()], "one fabric on the root");
+        assert!(prepared.fabric_row().exists(), "the Fabric row stands on the root");
+        assert_eq!(prepared.ready_rows().len(), usize::from(history == History::ReadyForTraffic), "{history:?}: the ready-for-traffic rows on the root");
+        prepared
+    }
+
+    fn fabric_row(&self) -> std::path::PathBuf {
+        self.store.join(self.fabric_id.to_string()).join("fabric").join("identity.json")
+    }
+
+    fn ready_rows(&self) -> Vec<std::path::PathBuf> {
+        let dir = self.store.join(self.fabric_id.to_string()).join("status").join("mesh1").join("fabric");
+        std::fs::read_dir(dir).map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default()
+    }
+
+    /// The own row the admin wrote: its incarnation, fabric id and mesh id.
+    fn own_row(&self) -> Option<(String, String, String)> {
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(self.data_dir.join("nodes").join("self.json")).ok()?).ok()?;
+        let r = &v["record"];
+        Some((r["incarnation_id"].as_str()?.to_string(), r["fabric_id"].as_str()?.to_string(), r["mesh_id"].as_str()?.to_string()))
+    }
+
+    /// The node.id the own row names.
+    fn own_node_id(&self) -> Option<String> {
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(self.data_dir.join("nodes").join("self.json")).ok()?).ok()?;
+        Some(v["record"]["node_id"].as_str()?.to_string())
+    }
+
+    /// Read through the storage adapters once the admin has ended: the row at mesh1.admin.1 and the
+    /// node.ids mesh1's contacts name.
+    fn rows_after(&self) -> (Option<rafka_node_admin_core::storage::NodeRow>, Vec<String>) {
+        use rafka_node_admin_core::storage::NodesStorage as _;
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let root = rafka_node_admin_core::store_root::StoreRoot::open(&self.store, &self.fabric_id).unwrap();
+            let reader = rafka_node_admin_core::model::IncarnationId::mint();
+            let nodes = rafka_node_admin_core::storage::FileNodesStorage::open(&self.data_dir, &root, "mesh1", &reader).await.unwrap();
+            let row = nodes.node_row_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
+            let contacts = nodes.contacts().await.unwrap().into_iter().map(|c| c.node_id.to_string()).collect();
+            (row, contacts)
+        })
+    }
+
+    /// Start a bootstrap `rafka-node-admin` on the prepared data dir and root, no fabric id handed in.
+    fn start(&self) -> Running {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"));
+        cmd.env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("RDM_DATA_DIR", &self.data_dir)
+            .env("RDM_STORE_DIR", &self.store)
+            .env("RDM_EVIDENCE_DIR", &self.dir)
+            .env("MESH_SPAWN_TYPE", "process")
+            .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0");
+        let child = cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rafka-node-admin starts");
+        let pid = child.id();
+        Running { child, pid }
+    }
+
+    /// The spans `running` has left once one named `name` is among them, within `within`.
+    fn until(&self, running: &mut Running, name: &str, within: Duration) -> Vec<serde_json::Value> {
+        let until = Instant::now() + within;
+        loop {
+            let spans = spans_of(&self.dir, running.pid);
+            if spans.iter().any(|s| s["name"] == name) {
+                return spans;
+            }
+            if let Some(status) = running.child.try_wait().unwrap() {
+                let mut err = String::new();
+                std::io::Read::read_to_string(running.child.stderr.as_mut().unwrap(), &mut err).unwrap();
+                panic!("the admin started on the prepared root exited {status:?} before {name}: {err}");
+            }
+            let story: Vec<(&serde_json::Value, &serde_json::Value)> = spans
+                .iter()
+                .filter(|s| [INHERITED_ROOT, "rdm.mesh.entry.update.via-rafka-time-adopted", "rdm.mesh.entry.resolve.via-recovery-pull"].contains(&s["name"].as_str().unwrap_or_default()))
+                .map(|s| (&s["name"], &s["attributes"]))
+                .collect();
+            assert!(Instant::now() < until, "no {name} in {} ms; its boot from its own row, its rafka-time adoption and its recovery pulls so far: {story:?}", within.as_millis());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The end of the cell: the admin is sent the signal a teardown sends, and the spans it left.
+    fn end(&self, mut running: Running) -> Vec<serde_json::Value> {
+        unsafe { libc::kill(running.pid as i32, libc::SIGTERM) };
+        let status = running.child.wait().unwrap();
+        let mut err = String::new();
+        std::io::Read::read_to_string(running.child.stderr.as_mut().unwrap(), &mut err).unwrap();
+        assert!(status.success(), "the end of {}: {status:?} {err}", running.pid);
+        spans_of(&self.dir, running.pid)
+    }
+}
+
+/// The defined zero-contact recovery path (R-SB1; fabric-recovery.md "Nothing alive": "No node is alive to
+/// read topology from or to ping"): the store names no node but this admin, so nothing is alive by the
+/// store's own evidence. The admin adopts its own clock at once, `rdm.mesh.entry.update.via-rafka-time-adopted`
+/// with `source = own-clock` and `reason = nothing-alive`, and pulls from no one: no
+/// `rdm.mesh.entry.resolve.via-recovery-pull`. Returns the adoption span.
+fn assert_zero_contact_recovery(spans: &[serde_json::Value]) -> serde_json::Value {
+    let recovery = spans.iter().find(|s| s["name"] == INHERITED_ROOT).unwrap_or_else(|| panic!("the admin did not boot as a new node over its inherited root: {spans:?}"));
+    assert_eq!(recovery["attributes"]["contacts"].as_str(), Some("0"), "the store names no other node (the inherited birth is no node to reach): {recovery}");
+    let adopted: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.entry.update.via-rafka-time-adopted").collect();
+    assert_eq!(adopted.len(), 1, "rafka-time adopted once: {adopted:?}");
+    assert_eq!((adopted[0]["attributes"]["source"].as_str(), adopted[0]["attributes"]["reason"].as_str()), (Some("own-clock"), Some("nothing-alive")), "{}", adopted[0]);
+    let pulls: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.entry.resolve.via-recovery-pull").collect();
+    assert!(pulls.is_empty(), "nothing is alive to pull from: {pulls:?}");
+    adopted[0].clone()
+}
+
+/// The boot of an admin started on an inherited root: a new node over the inherited data dir.
+const INHERITED_ROOT: &str = "rdm.node_admin.node.create.via-inherited-root";
+/// The accepted Build reloaded from the inherited data dir's own journal.
+const BUILD_RELOADED: &str = "rdm.node_admin.fabric.update.via-inherited-root";
+
+/// How long an admin started on a prepared root may take to boot: nothing it does waits on a node.
+const BOOTS_WITHIN: Duration = Duration::from_secs(10);
+
+/// CONTRACT (R-SB1, Luke 2026-10-13: "An admin started on an inherited root is fabric recovery: a new
+/// node.id and incarnation over the inherited directory (fabric-recovery.md:10), seated by the ordinary
+/// rules from its rows", "a root holding the fabric's own record and the accepted topology (the admin
+/// boots from its own row, recovery mode, FabricId and MeshIds preserved)"; fabric-recovery.md: "The
+/// relaunched node-admin is a new node over its inherited data dir: a new node.id and incarnation, the
+/// same path.name and endpoint key, and a new port"; "Nothing alive": "The launched node-admin reuses the
+/// fabric id and each MeshId it reads from the store, and mints none", "node.delete of the exited
+/// instance, then node.create at the same path.name, with a new node.id over the inherited data dir", "A
+/// node's name is released by node recovery's node.delete and taken by its node.create, which carries a
+/// new node.id"; R-FI1: a node-admin's own row names the Fabric whose root it opens): an admin started on
+/// a prepared root, with no fabric id handed in, reads the fabric id from its own row before the store
+/// root opens (the storage step names that fabric id and mesh1's id, `inherited_root = true`) and boots
+/// as a new node over it (`node.create.via-inherited-root`): a node.id and an incarnation it mints, the
+/// inherited birth named beside them, no supersedes lineage, no contact. It deletes the inherited birth
+/// (its row at mesh1.admin.1 `Deleted`, its contact dropped) and then claims mesh1.admin.1 under its own
+/// node.id, the row's config and tags seeded from the Deleted row. It takes the zero-contact recovery path
+/// at once, reloads the accepted Build from the inherited journal (`fabric.update.via-inherited-root`
+/// naming that Build), writes its own row under its new node.id and incarnation with the same FabricId
+/// and MeshId, and reaches Ready as that node. It mints no second fabric directory, and mesh1's row still
+/// names its MeshId.
+/// Must NOT happen: the inherited node.id or incarnation kept (a restart), a new fabric id or MeshId
+/// minted, a Day-0 Build accepted, the inherited birth taken for a node to reach, a wait on a node that
+/// is not there, or the name refused as held by the inherited birth.
+#[test]
+fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_fabric_and_mesh_ids() {
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_boots_as_a_new_node", History::StateCommit);
+    let mut running = root.start();
+    let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
+    let adopted = assert_zero_contact_recovery(&spans);
+    let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("no storage step: {spans:?}"));
+    let attr = |s: &serde_json::Value, k: &str| s["attributes"][k].as_str().unwrap_or_default().to_string();
+    assert_eq!((attr(opened, "fabric_id"), attr(opened, "mesh_id"), attr(opened, "inherited_root")), (root.fabric_id.to_string(), root.mesh_id.to_string(), "true".to_string()), "{opened}");
+    let recovery = spans.iter().find(|s| s["name"] == INHERITED_ROOT).unwrap();
+    let node_id = attr(recovery, "node_id");
+    let incarnation = attr(recovery, "incarnation_id");
+    assert!(rafka_node_admin_core::model::NodeId::parse(&node_id).is_ok() && node_id != root.node_id.to_string(), "a new node.id: {recovery}");
+    assert!(!incarnation.is_empty() && incarnation != root.incarnation.to_string(), "a new incarnation: {recovery}");
+    assert_eq!(
+        (attr(recovery, "node"), attr(recovery, "inherited_node_id"), attr(recovery, "inherited_incarnation_id"), attr(recovery, "fabric_id"), attr(recovery, "supersedes")),
+        ("mesh1.admin.1".to_string(), root.node_id.to_string(), root.incarnation.to_string(), root.fabric_id.to_string(), String::new()),
+        "the same path.name over the inherited birth, no supersedes lineage: {recovery}"
+    );
+    let deleted: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.delete.via-node-row" && attr(s, "subject") == "mesh1.admin.1").collect();
+    assert_eq!(deleted.len(), 1, "the inherited birth's node.delete, once: {deleted:?}");
+    assert_eq!((attr(deleted[0], "node_id"), attr(deleted[0], "outcome")), (root.node_id.to_string(), "row-deleted".to_string()), "{}", deleted[0]);
+    let claimed: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject") == "mesh1.admin.1").collect();
+    assert_eq!(claimed.len(), 1, "this node's name claim, once: {claimed:?}");
+    assert_eq!(
+        (attr(claimed[0], "node_id"), attr(claimed[0], "moment"), attr(claimed[0], "seeded_from"), attr(claimed[0], "outcome")),
+        (node_id.clone(), "claim".to_string(), root.node_id.to_string(), "row-seeded".to_string()),
+        "{}",
+        claimed[0]
+    );
+    assert!(deleted[0]["start_unix_nano"].as_u64() < claimed[0]["start_unix_nano"].as_u64(), "node.delete of the inherited birth, then the claim");
+    for s in [deleted[0], claimed[0]] {
+        assert_eq!(s["trace_id"], opened["trace_id"], "a step of the boot's own story: {s}");
+    }
+    let reloaded = spans.iter().find(|s| s["name"] == BUILD_RELOADED).unwrap();
+    assert_eq!(attr(reloaded, "build_id"), root.build_id.to_string(), "the accepted Build reloaded from the inherited journal: {reloaded}");
+    assert_eq!(reloaded["trace_id"], opened["trace_id"], "the Build reload is a step of the boot's own story");
+    let day0: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.build.create.via-accepted").collect();
+    assert!(day0.is_empty(), "a recovery accepts no Build of its own: {day0:?}");
+    assert_eq!(adopted["trace_id"], opened["trace_id"], "the zero-contact path is the boot's own story");
+    let until = Instant::now() + BOOTS_WITHIN;
+    while root.own_row().is_none_or(|(i, _, _)| i == root.incarnation.to_string()) {
+        assert!(Instant::now() < until, "the admin wrote no own row under a new incarnation");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (own_incarnation, fabric_id, mesh_id) = root.own_row().unwrap();
+    assert_eq!((root.own_node_id().unwrap_or_default(), own_incarnation), (node_id.clone(), incarnation.clone()), "the own row names the new node.id and incarnation");
+    assert_eq!((fabric_id, mesh_id), (root.fabric_id.to_string(), root.mesh_id.to_string()), "the own row keeps the FabricId and MeshId");
+    let spans = root.until(&mut running, "rdm.mesh.node.update.via-ready", BOOTS_WITHIN);
+    let ready = spans.iter().find(|s| s["name"] == "rdm.mesh.node.update.via-ready").unwrap();
+    assert_eq!(
+        (attr(ready, "node_id"), attr(ready, "fabric_id"), attr(ready, "mesh_id"), attr(ready, "build_id")),
+        (node_id.clone(), root.fabric_id.to_string(), root.mesh_id.to_string(), root.build_id.to_string()),
+        "Ready as the new node in the prepared Fabric and mesh, holding the accepted Build: {ready}"
+    );
+    assert_eq!(ready["trace_id"], opened["trace_id"], "Ready ends the boot's own story");
+    root.end(running);
+    assert_eq!(fabric_dirs(&root.store), vec![root.fabric_id.to_string()], "no second fabric directory");
+    let mesh_row: serde_json::Value = serde_json::from_slice(&std::fs::read(root.store.join(root.fabric_id.to_string()).join("meshes").join("mesh1.json")).unwrap()).unwrap();
+    assert_eq!(mesh_row["record"]["mesh_id"].as_str(), Some(root.mesh_id.to_string().as_str()), "mesh1's row keeps its MeshId: {mesh_row}");
+    let (row, contacts) = root.rows_after();
+    let row = row.expect("a row at mesh1.admin.1");
+    assert_eq!(row.node_id.to_string(), node_id, "mesh1.admin.1 is held by the new node.id: {row:?}");
+    let config: Vec<(String, String)> = row.config.into_iter().collect();
+    let tags: Vec<String> = row.tags.into_iter().collect();
+    assert_eq!((config, tags), (INHERITED_CONFIG.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), INHERITED_TAGS.iter().map(|t| t.to_string()).collect()), "config and tags seeded from the Deleted row");
+    assert!(!contacts.contains(&root.node_id.to_string()), "the inherited birth's contact is dropped: {contacts:?}");
+    println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
+}
+
+/// CONTRACT (R-SB1: "a root holding ready-for-traffic history (the first-ready latch is set at boot)";
+/// states.md "The initial fabric before ready-for-traffic": "Once the fabric is ready-for-traffic these
+/// are admitted as usual"): the durable fact that the fabric first reached ready-for-traffic is the
+/// ready-for-traffic fabric event's row among its mesh's status rows. An admin started on a prepared root
+/// holding that row knows it at boot, before any status is heard, and says why once
+/// (`rdm.node_admin.fabric.update.via-first-ready`, `ready-for-traffic-row-on-store-root`), on the
+/// zero-contact recovery path. What must NOT happen: the admin refusing a caller's workflow
+/// `fabric-not-ready` because it heard pending, or learning the fact from anything but the row.
+#[test]
+fn an_admin_started_on_a_prepared_root_holding_the_ready_for_traffic_row_knows_at_boot_the_fabric_first_reached_it() {
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_holding_the_ready_for_traffic_row", History::ReadyForTraffic);
+    let mut running = root.start();
+    let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
+    assert_zero_contact_recovery(&spans);
     let reasons = first_ready_reasons(&spans);
-    assert_eq!(reasons.first().map(String::as_str), Some("ready-for-traffic-row-on-store-root"), "the restart knows from the row, at boot: {reasons:?}");
-    let said = spans.iter().find(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready").expect("said once");
+    assert_eq!(reasons, ["ready-for-traffic-row-on-store-root"], "the admin knows from the row, at boot, once");
+    let said = spans.iter().find(|s| s["name"] == "rdm.node_admin.fabric.update.via-first-ready").unwrap();
+    let reloaded = spans.iter().find(|s| s["name"] == BUILD_RELOADED).unwrap();
+    assert!(said["start_unix_nano"].as_u64() <= reloaded["start_unix_nano"].as_u64(), "known before the boot reloads its Build: {said} {reloaded}");
+    root.end(running);
     println!("trace_id={}", said["trace_id"].as_str().unwrap_or(""));
 }
 
-/// CONTRACT (states.md "The initial fabric before ready-for-traffic": "Until the initial fabric first
+/// CONTRACT (R-SB1: "a root whose fabric is in state-commit with no prior ready-for-traffic (the latch is
+/// not set)"; states.md "The initial fabric before ready-for-traffic": "Until the initial fabric first
 /// reaches ready-for-traffic it is pending, in state-sync or in state-commit, and nothing that moves a
 /// seat or writes caller state runs"; store_root.rs: the Fabric row is published at the fabric's first
-/// STATE-COMMIT): a root that holds the Fabric row and no ready-for-traffic row is a fabric that has
-/// not first reached ready-for-traffic. An admin restarted on it does not know the fabric reached it:
-/// the Fabric row is not the signal. What must NOT happen: an admin booting while the fabric is in
-/// state-commit admitting a seat move or a caller's workflow because the root already holds the Fabric row.
+/// STATE-COMMIT): a prepared root holding the Fabric row and no ready-for-traffic row is a fabric that
+/// has not first reached ready-for-traffic. An admin started on it, on the zero-contact recovery path,
+/// does not know at boot that the fabric reached it: by the time it reloads its Build it has said no
+/// first-ready from the store, and every first-ready it ever says is its own climb's
+/// (`ready-for-traffic`). What must NOT happen: the Fabric row taken as the signal, so that a seat move or
+/// a caller's workflow is admitted while the fabric is in state-commit.
 #[test]
-fn an_admin_restarted_on_a_root_whose_fabric_is_in_state_commit_does_not_know_it_reached_ready_for_traffic() {
-    let day0 = Day0::at("an_admin_restarted_on_a_root_whose_fabric_is_in_state_commit_does_not_know_it_reached_ready_for_traffic");
-    let first = day0.day0_until_ready(false);
-    day0.stop(first);
-    // The root as the fabric-primary left it after its state-commit and before its ready-for-traffic round: the
-    // Fabric row published, no ready-for-traffic row.
-    let fabric = day0.fabric();
-    assert!(fabric.join("fabric").join("identity.json").exists(), "the Fabric row stands on the root");
-    for row in day0.ready_rows() {
-        std::fs::remove_file(row).unwrap();
-    }
-    assert!(day0.ready_rows().is_empty());
-    let spans = day0.restart_until_booted();
+fn an_admin_started_on_a_prepared_root_whose_fabric_is_in_state_commit_does_not_know_it_reached_ready_for_traffic() {
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_whose_fabric_is_in_state_commit", History::StateCommit);
+    let mut running = root.start();
+    let spans = root.until(&mut running, BUILD_RELOADED, BOOTS_WITHIN);
+    assert_zero_contact_recovery(&spans);
+    assert!(first_ready_reasons(&spans).is_empty(), "the admin knew at boot: {:?}", first_ready_reasons(&spans));
+    let spans = root.end(running);
     let reasons = first_ready_reasons(&spans);
-    assert!(reasons.iter().all(|r| r == "ready-for-traffic"), "the restart knew from something other than the fabric reaching ready-for-traffic: {reasons:?}");
-    let opened = spans.iter().find(|s| s["name"] == "rdm.node_admin.fabric.update.via-restart").expect("the restart opened its fabric");
-    println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
+    assert!(reasons.iter().all(|r| r == "ready-for-traffic"), "the admin knew from something other than the fabric reaching ready-for-traffic: {reasons:?}");
+    let reloaded = spans.iter().find(|s| s["name"] == BUILD_RELOADED).unwrap();
+    println!("trace_id={}", reloaded["trace_id"].as_str().unwrap_or(""));
 }
 
 /// CONTRACT (R-MN1: "a mesh created again under the same name is a new mesh with a new id"; R-ML2: "a
 /// dead mesh's path.name used again is mesh.create of a new mesh with a new MeshId", "a dead mesh is
-/// never restarted"; states.md: a mesh id is never reissued): a bootstrap node-admin restarted on its
-/// own data dir reads its mesh's row by its mesh's id, the one its own row holds, never by the name
-/// alone. Its mesh removed and a mesh created again under the name (mesh1's row on the store root now
-/// another MeshId's), the restart is refused by name, naming both mesh ids; its own mesh's row Dead,
-/// it is refused by name. Must NOT happen: the restart taking the recreated mesh's id as its own (the
-/// row at the name read as its mesh) and joining it.
+/// never restarted"; states.md: a mesh id is never reissued; R-SB1: the cell starts an admin on a root
+/// prepared through the storage adapters): an admin started on a prepared root reads its mesh's row by
+/// its mesh's id, the one its own row holds, never by the name alone. mesh1's row on the root another
+/// MeshId's (the mesh removed and created again under the name), the admin is refused by name, naming
+/// both mesh ids, at its storage step; its own mesh's row Dead, it is refused by name. Must NOT happen:
+/// the admin taking the recreated mesh's id as its own (the row at the name read as its mesh) and
+/// joining it.
 #[test]
-fn a_restarted_admin_reads_its_mesh_row_by_its_mesh_id_and_never_joins_a_mesh_created_again_under_its_name() {
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/a_restarted_admin_reads_its_mesh_row_by_its_mesh_id");
-    let _ = std::fs::remove_dir_all(&dir);
-    let store = dir.join("store");
-    std::fs::create_dir_all(&store).unwrap();
-    let data_dir = dir.join("mesh1.admin.1");
-    let run = || {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-node-admin"));
-        cmd.env_clear()
-            .env("PATH", std::env::var("PATH").unwrap_or_default())
-            .env("RDM_DATA_DIR", &data_dir)
-            .env("RDM_STORE_DIR", &store)
-            .env("RDM_EVIDENCE_DIR", &dir)
-            .env("MESH_SPAWN_TYPE", "process")
-            .env("RDM_NODE_ADMIN_API_BIND", "127.0.0.1:0");
-        cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().expect("rafka-node-admin starts")
-    };
-    struct Reap(u32);
-    impl Drop for Reap {
-        fn drop(&mut self) {
-            unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
-        }
-    }
-    let own = data_dir.join("nodes").join("self.json");
-    let own_incarnation = || std::fs::read_to_string(&own).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["record"]["incarnation_id"].as_str().map(str::to_string));
-    let stderr_of = |child: &mut std::process::Child| {
-        let mut err = String::new();
-        std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut err).unwrap();
-        err
-    };
-
-    // Day 0: the admin mints its fabric and mesh1, and writes its own row and mesh1's row.
-    let mut first = run();
-    let reap_first = Reap(first.id());
-    let until = Instant::now() + Duration::from_secs(20);
-    let (fabric, mesh_row) = loop {
-        if let (Some(_), [f]) = (own_incarnation(), fabric_dirs(&store).as_slice()) {
-            let row = store.join(f).join("meshes").join("mesh1.json");
-            if row.exists() {
-                break (f.clone(), row);
-            }
-        }
-        assert!(first.try_wait().unwrap().is_none(), "the Day-0 admin exited");
-        assert!(Instant::now() < until, "the Day-0 admin wrote no own row and mesh row in 20 s");
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let day0 = own_incarnation().unwrap();
-    let removed: serde_json::Value = serde_json::from_slice(&std::fs::read(&mesh_row).unwrap()).unwrap();
-    let removed_id = removed["record"]["mesh_id"].as_str().unwrap().to_string();
-    unsafe { libc::kill(first.id() as i32, libc::SIGTERM) };
-    assert!(first.wait().unwrap().success(), "the Day-0 admin's stop");
-    std::mem::forget(reap_first);
-
-    // A restart against `row` on the store root: it must be refused by name before it writes its own
-    // row again (the boot fails at its storage step).
-    let restart = |row: serde_json::Value, what: &str| -> (String, u32) {
+fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_never_joins_a_mesh_created_again_under_its_name() {
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id", History::StateCommit);
+    let mesh_row = root.store.join(root.fabric_id.to_string()).join("meshes").join("mesh1.json");
+    let held: serde_json::Value = serde_json::from_slice(&std::fs::read(&mesh_row).unwrap()).unwrap();
+    let own_id = root.mesh_id.to_string();
+    // A start against `row` at mesh1 on the root: refused by name at its storage step, before it writes
+    // its own row again.
+    let refused = |row: serde_json::Value, what: &str| -> (String, u32) {
         std::fs::write(&mesh_row, serde_json::to_vec(&row).unwrap()).unwrap();
-        let mut child = run();
-        let pid = child.id();
-        let reap = Reap(pid);
-        let until = Instant::now() + Duration::from_secs(10);
+        let mut running = root.start();
+        let until = Instant::now() + BOOTS_WITHIN;
         loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                std::mem::forget(reap);
-                let err = stderr_of(&mut child);
-                assert!(!status.success(), "{what}: the restart exited {status:?} without a refusal: {err}");
-                return (err, pid);
+            if let Some(status) = running.child.try_wait().unwrap() {
+                let mut err = String::new();
+                std::io::Read::read_to_string(running.child.stderr.as_mut().unwrap(), &mut err).unwrap();
+                assert!(!status.success(), "{what}: the admin exited {status:?} without a refusal: {err}");
+                return (err, running.pid);
             }
-            if own_incarnation().is_some_and(|i| i != day0) {
-                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                let _ = child.wait();
-                std::mem::forget(reap);
-                panic!("{what}: the restart took the row at mesh1 as its mesh and booted (its own row rewritten under a new incarnation): {}", stderr_of(&mut child));
-            }
-            assert!(Instant::now() < until, "{what}: the restart neither refused nor booted in 10 s");
+            assert!(root.own_row().is_some_and(|(i, _, _)| i == root.incarnation.to_string()), "{what}: the admin took the row at mesh1 as its mesh and booted (its own row rewritten)");
+            assert!(Instant::now() < until, "{what}: the admin neither refused nor booted in {} ms", BOOTS_WITHIN.as_millis());
             std::thread::sleep(Duration::from_millis(20));
         }
     };
     let recreated_id = rafka_node_admin_core::model::MeshId::mint().to_string();
-    let (err, pid) = restart(serde_json::json!({"format": removed["format"], "record": {"mesh_id": recreated_id, "name": "mesh1", "dead": false}}), "mesh1 created again");
-    assert!(err.contains("refusing to start") && err.contains(&removed_id) && err.contains(&recreated_id), "the refusal names this admin's mesh and the mesh created again under its name: {err}");
-    let spans = spans_of(&dir, pid);
-    let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the refused restart left no storage step: {spans:?}"));
+    let (err, pid) = refused(serde_json::json!({"format": held["format"], "record": {"mesh_id": recreated_id, "name": "mesh1", "dead": false}}), "mesh1 created again");
+    assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains(&recreated_id), "the refusal names this admin's mesh and the mesh created again under its name: {err}");
+    let spans = spans_of(&root.dir, pid);
+    let opened = spans.iter().find(|s| s["name"] == "rdm.mesh.node.resolve.via-storage-opened").unwrap_or_else(|| panic!("the refused start left no storage step: {spans:?}"));
     println!("trace_id={}", opened["trace_id"].as_str().unwrap_or(""));
-    assert_eq!(opened["attributes"]["fabric_id"].as_str(), Some(fabric.as_str()), "{opened}");
-    assert_eq!(opened["attributes"]["mesh_id"].as_str(), Some(removed_id.as_str()), "the restart's storage step names the mesh id its own row holds: {opened}");
+    assert_eq!(opened["attributes"]["fabric_id"].as_str(), Some(root.fabric_id.to_string().as_str()), "{opened}");
+    assert_eq!(opened["attributes"]["mesh_id"].as_str(), Some(own_id.as_str()), "the storage step names the mesh id the own row holds: {opened}");
     assert!(opened["attributes"]["error"].as_str().is_some_and(|e| e.contains(&recreated_id)), "the storage step names the refusal and the mesh created again: {opened}");
-    let (err, _) = restart(serde_json::json!({"format": removed["format"], "record": {"mesh_id": removed_id, "name": "mesh1", "dead": true}}), "mesh1 Dead");
-    assert!(err.contains("refusing to start") && err.contains(&removed_id) && err.contains("Dead"), "the refusal names this admin's mesh as Dead: {err}");
+    let (err, _) = refused(serde_json::json!({"format": held["format"], "record": {"mesh_id": own_id, "name": "mesh1", "dead": true}}), "mesh1 Dead");
+    assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains("Dead"), "the refusal names this admin's mesh as Dead: {err}");
 }
+
+/// CONTRACT (fabric-recovery.md "Nothing alive": "Every node the store names, the old process on the
+/// inherited data dir included, is confirmed gone by the provider, never by a wait", "node.delete of the
+/// exited instance, then node.create at the same path.name, with a new node.id over the inherited data
+/// dir"; node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded durably. Still
+/// running is no proof"; origin-ordering.md: "every node the store names, the old process on that dir
+/// included, is confirmed gone by the provider, never by a wait, so it is the only node and the
+/// fabric-primary, and its own clock is rafka-time from the start"): an admin started on a prepared root
+/// proves the inherited birth exited with the provider before `take_inherited_name` writes that birth
+/// `Deleted` or claims its `path.name`. With no runtime record of the inherited birth on the data dir, or
+/// with the inherited birth's runtime still running, the start is refused by name and the inherited
+/// birth's row at `mesh1.admin.1` stands untouched (`ReadyForTraffic` under the inherited `node.id`). Once
+/// the provider proves the inherited birth exited, the admin deletes it, claims `mesh1.admin.1` under its
+/// new `node.id`, adopts its own clock (`nothing-alive`) with no recovery pull, and reaches `Ready`.
+/// Must NOT happen: the inherited birth written `Deleted` with no exit proof or while its process still
+/// runs, or a second root booting while the first lives.
+#[test]
+fn an_admin_started_on_a_prepared_root_writes_the_inherited_birth_deleted_only_after_its_provider_exit_proof() {
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_writes_deleted_only_after_exit_proof", History::StateCommit);
+    let runtime_file = root.data_dir.join("nodes").join("runtimes").join(format!("{}--{}.json", root.node_id, root.incarnation.as_str()));
+    let exited_bytes = std::fs::read(&runtime_file).expect("Prepared::at wrote the inherited birth's exited runtime row");
+    let refused = |what: &str| -> String {
+        let mut running = root.start();
+        let until = Instant::now() + BOOTS_WITHIN;
+        loop {
+            if let Some(status) = running.child.try_wait().unwrap() {
+                let mut err = String::new();
+                std::io::Read::read_to_string(running.child.stderr.as_mut().unwrap(), &mut err).unwrap();
+                assert!(!status.success(), "{what}: the admin exited {status:?} without a refusal: {err}");
+                let (row, contacts) = root.rows_after();
+                let row = row.expect("the row at mesh1.admin.1 stands untouched");
+                assert_eq!(
+                    (row.node_id.clone(), row.status),
+                    (root.node_id.clone(), rafka_node_admin_core::model::NodeStatus::ReadyForTraffic),
+                    "{what}: the inherited birth was written Deleted without a provider exit proof: {row:?}"
+                );
+                assert_eq!(contacts, vec![root.node_id.to_string()], "{what}: the inherited birth's contact was dropped without a provider exit proof");
+                assert!(root.own_row().is_some_and(|(i, _, _)| i == root.incarnation.to_string()), "{what}: the own row was rewritten");
+                return err;
+            }
+            if !root.own_row().is_some_and(|(i, _, _)| i == root.incarnation.to_string()) {
+                let _ = running.child.kill();
+                let _ = running.child.wait();
+                panic!("{what}: the admin deleted the inherited birth and booted without a provider exit proof (its own row rewritten)");
+            }
+            if Instant::now() >= until {
+                let _ = running.child.kill();
+                let _ = running.child.wait();
+                panic!("{what}: the admin did not refuse within {} ms", BOOTS_WITHIN.as_millis());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // 1. No runtime row for the inherited birth: no exit proof, refused before Deleted is written.
+    std::fs::remove_file(&runtime_file).unwrap();
+    let err = refused("no runtime row for the inherited birth");
+    assert!(err.contains("refusing to start") && err.contains(&root.node_id.to_string()) && err.contains("no runtime fact"), "the refusal names the inherited birth and the missing runtime fact: {err}");
+    // 2. The inherited birth's runtime is still running (this test runner's live process): refused before Deleted is written.
+    let live = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_node_admin_core::model::DeploymentId::mint().to_string()).unwrap();
+    let live_row: serde_json::Value = {
+        let mut v: serde_json::Value = serde_json::from_slice(&exited_bytes).unwrap();
+        v["record"]["runtime"] = serde_json::to_value(&live).unwrap();
+        v
+    };
+    std::fs::write(&runtime_file, serde_json::to_vec(&live_row).unwrap()).unwrap();
+    let err = refused("inherited birth still running");
+    assert!(err.contains("refusing to start") && err.contains(&root.node_id.to_string()) && err.contains("Running"), "the refusal names the inherited birth and its Running runtime: {err}");
+    // 3. The inherited birth's runtime is proven exited by the provider: Deleted is written, the name claimed, Ready reached.
+    std::fs::write(&runtime_file, &exited_bytes).unwrap();
+    let mut running = root.start();
+    let spans = root.until(&mut running, "rdm.mesh.node.update.via-ready", BOOTS_WITHIN);
+    let adopted = assert_zero_contact_recovery(&spans);
+    root.end(running);
+    let (row, contacts) = root.rows_after();
+    let row = row.expect("a row at mesh1.admin.1");
+    assert_ne!(row.node_id, root.node_id, "the new node holds mesh1.admin.1 after proving the inherited birth exited: {row:?}");
+    assert!(!contacts.contains(&root.node_id.to_string()), "the inherited birth's contact is dropped once proven exited: {contacts:?}");
+    println!("trace_id={}", adopted["trace_id"].as_str().unwrap_or(""));
+}
+

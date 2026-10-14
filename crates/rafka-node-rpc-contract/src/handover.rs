@@ -229,6 +229,16 @@ pub enum NodePrimaryUpdateReply {
         /// Why.
         reason: String,
     },
+    /// The commanded `node.primary.update` ended failed after the committed row (Q10, R-PU2, R-BI4):
+    /// the Build carrier's own terminal (`Failed { step, reason }`), recording the step, the new
+    /// holder's node id and incarnation, the seats the row moved with their revisions, who the
+    /// ordinary rule seated, and the provider's proof that the new holder's process is gone.
+    Failed {
+        /// The step that failed (`primary-update`). Within [`MAX_FAILED_STEP_BYTES`].
+        step: String,
+        /// Why the step failed. Within [`MAX_FAILED_REASON_BYTES`].
+        reason: String,
+    },
 }
 
 /// The most bytes of the `holder` a `RejectedRecordAbsent` names: a path.name, as a refusal names a
@@ -238,6 +248,12 @@ pub const MAX_RECORD_ABSENT_HOLDER_BYTES: usize = crate::status::MAX_REFUSAL_NOD
 /// bound after the variant (one byte), the holder at its budget and a two-byte length prefix on each
 /// string.
 pub const MAX_RECORD_ABSENT_RECORD_BYTES: usize = 1024 - 1 - (2 + MAX_RECORD_ABSENT_HOLDER_BYTES) - 2;
+
+/// The most bytes of the `step` a `Failed` reply names.
+pub const MAX_FAILED_STEP_BYTES: usize = 128;
+/// The most bytes of the `reason` a `Failed` reply names: what is left of the 1024-byte reply bound
+/// after the variant (one byte), `step` at its budget and a two-byte length prefix on each string.
+pub const MAX_FAILED_REASON_BYTES: usize = 1024 - 1 - (2 + MAX_FAILED_STEP_BYTES) - 2;
 
 /// The most bytes a refusal's reason holds: what is left of the 1024-byte reply bound after the
 /// variant (one byte) and a two-byte length prefix.
@@ -252,6 +268,12 @@ impl NodePrimaryUpdateReply {
     /// `Incomplete` with `reason` within its budget.
     pub fn incomplete(reason: &str) -> Self {
         Self::Incomplete { reason: crate::status::within(reason, MAX_REASON_BYTES) }
+    }
+
+    /// `Failed` with `step` and `reason` within their budgets so the reply always fits
+    /// [`NodePrimaryUpdate`]'s reply bound.
+    pub fn failed(step: &str, reason: &str) -> Self {
+        Self::Failed { step: crate::status::within(step, MAX_FAILED_STEP_BYTES), reason: crate::status::within(reason, MAX_FAILED_REASON_BYTES) }
     }
 
     /// `RejectedNotAuthority` with `reason` within its budget.
@@ -298,6 +320,7 @@ impl NodePrimaryUpdateReply {
             Self::Busy { .. } => "busy",
             Self::Draining { .. } => "draining",
             Self::Unauthorized { .. } => "unauthorized",
+            Self::Failed { .. } => "failed",
         }
     }
 }
@@ -320,7 +343,7 @@ impl NodeProtocol for NodePrimaryUpdate {
     /// identical retry is answered from the row.
     const SERVED_WHILE_DRAINING: bool = true;
     const REQUEST_VARIANTS: u32 = 3;
-    const REPLY_VARIANTS: u32 = 16;
+    const REPLY_VARIANTS: u32 = 17;
 
     type Request = NodePrimaryUpdateRequest;
     type Reply = NodePrimaryUpdateReply;
@@ -329,7 +352,7 @@ impl NodeProtocol for NodePrimaryUpdate {
         use NodePrimaryUpdateReply::*;
         match reply {
             PrimaryUpdated { .. } => ReplyKind::Success,
-            RejectedConflict { .. } | RejectedFabricNotReady { .. } | RejectedNoSuccessor { .. } | RejectedNotAuthority { .. } | RejectedStaleSeat { .. } | RejectedEpochOverflow { .. } | RejectedSourceFailed { .. } | RejectedRecordAbsent { .. } | Incomplete { .. } => ReplyKind::ProtocolRefusal,
+            RejectedConflict { .. } | RejectedFabricNotReady { .. } | RejectedNoSuccessor { .. } | RejectedNotAuthority { .. } | RejectedStaleSeat { .. } | RejectedEpochOverflow { .. } | RejectedSourceFailed { .. } | RejectedRecordAbsent { .. } | Incomplete { .. } | Failed { .. } => ReplyKind::ProtocolRefusal,
             NotReady { .. } => ReplyKind::NotReady,
             Malformed { kind } => ReplyKind::Malformed(*kind),
             PeerUnresolved { .. } => ReplyKind::PeerUnresolved,

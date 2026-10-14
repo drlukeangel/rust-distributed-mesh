@@ -132,6 +132,13 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
+        tokio::time::timeout(WRONG, async {
+            while root.membership.seats().mesh("mesh1").is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the Day-0 admin takes mesh1's primary seat");
         let root_name = root.digest.lock().unwrap().node.name.to_string();
 
         let launch = launch_by(&root, "mesh1.admin.2", &admin_dir);

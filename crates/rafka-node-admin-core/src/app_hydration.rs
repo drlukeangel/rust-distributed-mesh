@@ -67,9 +67,9 @@ pub struct AcceptingAuthority {
 pub enum NoAuthority {
     /// The Day-0 root: no fabric authority exists before it.
     Day0Root,
-    /// A fabric-primary reborn from its durable map: it has no maker, and its own storage is the
-    /// authority.
-    FabricPrimaryReborn,
+    /// An admin started on an inherited root (fabric recovery): it has no maker, and hydrates from the
+    /// inherited storage.
+    InheritedRoot,
     /// A recovery start (mesh-primary or fabric-primary flags): it hydrates from the nodes it reaches.
     Recovery,
 }
@@ -79,7 +79,7 @@ impl NoAuthority {
     pub fn reason(self) -> &'static str {
         match self {
             Self::Day0Root => "the Day-0 root: no authority exists before this node",
-            Self::FabricPrimaryReborn => "a fabric-primary reborn from its durable map: its own storage is the authority",
+            Self::InheritedRoot => "an admin started on an inherited root: it hydrates from the inherited storage",
             Self::Recovery => "a recovery start: no admin accepted this birth",
         }
     }

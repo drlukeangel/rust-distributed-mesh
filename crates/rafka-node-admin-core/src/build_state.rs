@@ -302,6 +302,10 @@ pub struct BuildProjection {
     /// continue by hand-off or take-over. A step receipt from it on is this run's.
     #[serde(default)]
     pub opened: u32,
+    /// The attempt whose `Failed` verdict last failed the Build, when one did: the attempt after it,
+    /// which a caller's resubmit opens (R-BI3), begins a new run ([`Self::run_of`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<u32>,
     /// The attempt whose `Converged` verdict first completed the Build, when one did. Kept when a
     /// later attempt reopens it (a restart, a recovery, proven drift: attempts of an unchanged
     /// topology, build.md §4.1), so a Build that once realized its topology stays the known state
@@ -407,6 +411,8 @@ impl BuildProjection {
         p.reported = l.reported;
         p.attempt_actions = l.attempt_actions;
         p.completed_at = (l.state == BuildState::Complete && l.attempt > 0).then_some(l.attempt);
+        // A drift lane numbers its attempts per mesh: the fabric lane's failed attempt is not one of them.
+        p.failed_at = None;
         p
     }
 
@@ -418,6 +424,17 @@ impl BuildProjection {
             BuildState::Running | BuildState::Complete => self.attempt,
             BuildState::Pending | BuildState::Failed => self.attempt + 1,
         }
+    }
+
+    /// The first attempt of the run `attempt` belongs to (ruling R-PU2): the attempt the latest
+    /// `Opened` fact opened ([`Self::opened`]), or the first attempt of the Build. A seat update's
+    /// transfer key is `(build_id, run)` ([`crate::fabric_handover::update_operation`]): the attempts
+    /// of one run (hand-offs and take-overs) share it and replay its row; a new run makes a new one.
+    pub fn run_of(&self, attempt: u32) -> u32 {
+        // The attempt after a Failed verdict begins a new run: only a caller's resubmit drives a failed
+        // Build on (R-BI3), and that is never the continuation of the failed run.
+        let after_failure = self.failed_at.filter(|f| *f < attempt).map_or(1, |f| f + 1);
+        self.opened.max(after_failure)
     }
 
     /// Whether `attempt` carried exactly `action`.
@@ -656,6 +673,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     attempt_actions: BTreeMap::new(),
                     attempt_executors: BTreeMap::new(),
                     opened: 0,
+                    failed_at: None,
                     completed_at: None,
                     reported: Default::default(),
                     claimant: None,
@@ -787,6 +805,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                         AttemptOutcome::Failed { reason } => {
                             p.state = BuildState::Failed;
                             p.last_failure = Some(reason.clone());
+                            p.failed_at = Some(a.attempt);
                         }
                         // No attempt is in flight: the Build waits for the next claim.
                         AttemptOutcome::HandedOff { .. } => p.state = BuildState::Pending,
@@ -1624,7 +1643,7 @@ pub(crate) const JOURNAL_FILE: &str = "build-journal.jsonl";
 /// data dir before the fact counts. Re-opening it replays to the same view, so a Build accepted
 /// before an all-admin restart is still held after it.
 #[derive(Debug)]
-pub(crate) struct FileJournal {
+pub struct FileJournal {
     path: PathBuf,
     /// The replayed facts and their indexes. Held only for a snapshot, a point read or a
     /// publication's swap, never across the disk, a fold or the derivation.
@@ -2245,6 +2264,27 @@ mod tests {
         }
     }
 
+    /// CONTRACT (ruling R-PU2: "The caller's resubmit opens the next attempt of the same Build ...
+    /// that attempt's node.primary.update is a new transfer key, (build_id, attempt), never the Build id
+    /// alone"; proposal Part C1: "A later attempt that reads the committed row has discovered the
+    /// commit"): attempt 1 of b1 hands off and attempt 2 continues its run (run 1); attempt 2 fails,
+    /// and the attempt a resubmit opens after it, attempt 3, begins run 3, as does attempt 4 continuing
+    /// it. Must NOT happen: a resubmitted attempt in the failed run, or a hand-off starting a new one.
+    #[tokio::test]
+    async fn a_resubmit_after_a_failed_attempt_opens_a_new_run_and_a_hand_off_continues_its_run() {
+        let m = MemoryBuildStateAdapter::new();
+        let b1 = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Claim(claim("b1", 1, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }))]).await;
+        let p = m.read_build(&b1).await.unwrap();
+        assert_eq!(p.run_of(p.attempt_to_drive()), 1, "the hand-off's next attempt continues run 1");
+        m.absorb(&[BuildFact::Claim(claim("b1", 2, "mesh1.admin.2")), BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "successor proven exited after committed transfer".into() }))]).await;
+        let p = m.read_build(&b1).await.unwrap();
+        assert_eq!((p.state, p.attempt_to_drive(), p.run_of(p.attempt_to_drive())), (BuildState::Failed, 3, 3), "the resubmit's attempt opens run 3");
+        m.absorb(&[BuildFact::Claim(claim("b1", 3, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::HandedOff { to: "mesh1.admin.3".into() }))]).await;
+        let p = m.read_build(&b1).await.unwrap();
+        assert_eq!(p.run_of(p.attempt_to_drive()), 3, "attempt 4 continues run 3");
+    }
+
     /// CONTRACT (R-BI3: "a caller resubmits it"; one Build in flight): a failed Build may be driven
     /// again while it is newer than the current Build and the current Build is not in progress; a
     /// Build older than the current one, or any Build while another is in progress, is not.
@@ -2508,7 +2548,11 @@ mod tests {
     }
 
     /// PRD §1.4 / §7: no test, and no code outside this module, opens a Build
-    /// journal; cross-mesh authority is the live projection, never a disk.
+    /// journal; cross-mesh authority is the live projection, never a disk. The one
+    /// exception is store_root_boot's preparation of an admin's data dir before that
+    /// admin starts on it (R-SB1, Luke 2026-10-13: each cell "prepares a durable store
+    /// root through the storage adapters, with no previous process"): it writes the
+    /// accepted Build the admin then reloads, and decides nothing from it.
     #[test]
     fn nothing_but_this_module_opens_a_build_journal() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
@@ -2521,7 +2565,7 @@ mod tests {
                     if !p.ends_with("target") {
                         stack.push(p);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rafka-node-admin-core/src/admin.rs") {
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rafka-node-admin-core/src/admin.rs") && !p.ends_with("rafka-node-admin-core/tests/store_root_boot.rs") {
                     let text = std::fs::read_to_string(&p).unwrap_or_default();
                     if text.contains("FileJournal::open") || text.contains("build-journal.jsonl") || text.contains("JOURNAL_FILE") {
                         offenders.push(p);
@@ -2529,7 +2573,7 @@ mod tests {
                 }
             }
         }
-        assert!(offenders.is_empty(), "only build_state.rs and the admin's own boot may open a journal: {offenders:?}");
+        assert!(offenders.is_empty(), "only build_state.rs, the admin's own boot and store_root_boot's prepared data dir may open a journal: {offenders:?}");
     }
 
     /// An attempt of `id` opened on `mesh`'s drift lane (R-BI7): the recovery of `path`'s exited birth.
