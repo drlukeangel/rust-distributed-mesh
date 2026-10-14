@@ -311,12 +311,15 @@ impl Drop for Owned {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn firewall_inbound_ends_with_the_process_that_installed_it() {
     const CELL: &str = "firewall_inbound_ends_with_the_process_that_installed_it";
-    if crate::own_process::delegated(module_path!(), CELL) {
-        return;
-    }
     let evidence = rafka_test_scenario::estate::artifacts_root().join("chaos-kit").join(CELL);
     std::fs::create_dir_all(&evidence).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
+    if crate::own_process::delegated_with_env(
+        module_path!(),
+        CELL,
+        &[("RDM_EVIDENCE_DIR", Some(evidence.as_os_str()))],
+    ) {
+        return;
+    }
     let guard = rafka_mesh_telemetry::init_evidence_telemetry("rafka-chaos-kit");
     if let Ok(marker) = std::env::var(OWNER_MARKER) {
         let port = std::env::var(OWNER_PORT).expect("the owner is told its port");
