@@ -330,6 +330,18 @@ impl Prepared {
                 listeners: Vec::new(),
             };
             nodes.put_own(&own).await.unwrap();
+            let mut runtime = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_node_admin_core::model::DeploymentId::mint().to_string()).unwrap();
+            runtime.locator = rafka_mesh_entity::runtime::RuntimeLocator::Process { pid: 1, start: u64::MAX };
+            nodes
+                .put_runtime(&rafka_node_admin_core::storage::RuntimeRow {
+                    node_id: node_id.clone(),
+                    name: own.name.clone(),
+                    incarnation_id: incarnation.clone(),
+                    runtime,
+                    data_dir: Some(data_dir.display().to_string()),
+                })
+                .await
+                .unwrap();
             // The birth's row at its path.name and its contact among mesh1's members, as its mesh's writer
             // left them: the name is held by this node.id.
             nodes.put_contact(&own).await.unwrap();
@@ -658,3 +670,83 @@ fn an_admin_started_on_a_prepared_root_reads_its_mesh_row_by_its_mesh_id_and_nev
     let (err, _) = refused(serde_json::json!({"format": held["format"], "record": {"mesh_id": own_id, "name": "mesh1", "dead": true}}), "mesh1 Dead");
     assert!(err.contains("refusing to start") && err.contains(&own_id) && err.contains("Dead"), "the refusal names this admin's mesh as Dead: {err}");
 }
+
+/// CONTRACT (fabric-recovery.md "Nothing alive": "Every node the store names, the old process on the
+/// inherited data dir included, is confirmed gone by the provider, never by a wait", "node.delete of the
+/// exited instance, then node.create at the same path.name, with a new node.id over the inherited data
+/// dir"; node-recovery.md "Detection and proof" step 3: "Exited is the proof, recorded durably. Still
+/// running is no proof"; origin-ordering.md: "every node the store names, the old process on that dir
+/// included, is confirmed gone by the provider, never by a wait, so it is the only node and the
+/// fabric-primary, and its own clock is rafka-time from the start"): an admin started on a prepared root
+/// proves the inherited birth exited with the provider before `take_inherited_name` writes that birth
+/// `Deleted` or claims its `path.name`. With no runtime record of the inherited birth on the data dir, or
+/// with the inherited birth's runtime still running, the start is refused by name and the inherited
+/// birth's row at `mesh1.admin.1` stands untouched (`ReadyForTraffic` under the inherited `node.id`). Once
+/// the provider proves the inherited birth exited, the admin deletes it, claims `mesh1.admin.1` under its
+/// new `node.id`, adopts its own clock (`nothing-alive`) with no recovery pull, and reaches `Ready`.
+/// Must NOT happen: the inherited birth written `Deleted` with no exit proof or while its process still
+/// runs, or a second root booting while the first lives.
+#[test]
+fn an_admin_started_on_a_prepared_root_writes_the_inherited_birth_deleted_only_after_its_provider_exit_proof() {
+    let root = Prepared::at("an_admin_started_on_a_prepared_root_writes_deleted_only_after_exit_proof", History::StateCommit);
+    let runtime_file = root.data_dir.join("nodes").join("runtimes").join(format!("{}--{}.json", root.node_id, root.incarnation.as_str()));
+    let exited_bytes = std::fs::read(&runtime_file).expect("Prepared::at wrote the inherited birth's exited runtime row");
+    let refused = |what: &str| -> String {
+        let mut running = root.start();
+        let until = Instant::now() + BOOTS_WITHIN;
+        loop {
+            if let Some(status) = running.child.try_wait().unwrap() {
+                let mut err = String::new();
+                std::io::Read::read_to_string(running.child.stderr.as_mut().unwrap(), &mut err).unwrap();
+                assert!(!status.success(), "{what}: the admin exited {status:?} without a refusal: {err}");
+                let (row, contacts) = root.rows_after();
+                let row = row.expect("the row at mesh1.admin.1 stands untouched");
+                assert_eq!(
+                    (row.node_id.clone(), row.status),
+                    (root.node_id.clone(), rafka_node_admin_core::model::NodeStatus::ReadyForTraffic),
+                    "{what}: the inherited birth was written Deleted without a provider exit proof: {row:?}"
+                );
+                assert_eq!(contacts, vec![root.node_id.to_string()], "{what}: the inherited birth's contact was dropped without a provider exit proof");
+                assert!(root.own_row().is_some_and(|(i, _, _)| i == root.incarnation.to_string()), "{what}: the own row was rewritten");
+                return err;
+            }
+            if !root.own_row().is_some_and(|(i, _, _)| i == root.incarnation.to_string()) {
+                let _ = running.child.kill();
+                let _ = running.child.wait();
+                panic!("{what}: the admin deleted the inherited birth and booted without a provider exit proof (its own row rewritten)");
+            }
+            if Instant::now() >= until {
+                let _ = running.child.kill();
+                let _ = running.child.wait();
+                panic!("{what}: the admin did not refuse within {} ms", BOOTS_WITHIN.as_millis());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // 1. No runtime row for the inherited birth: no exit proof, refused before Deleted is written.
+    std::fs::remove_file(&runtime_file).unwrap();
+    let err = refused("no runtime row for the inherited birth");
+    assert!(err.contains("refusing to start") && err.contains(&root.node_id.to_string()) && err.contains("no runtime fact"), "the refusal names the inherited birth and the missing runtime fact: {err}");
+    // 2. The inherited birth's runtime is still running (this test runner's live process): refused before Deleted is written.
+    let live = rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_node_admin_core::model::DeploymentId::mint().to_string()).unwrap();
+    let live_row: serde_json::Value = {
+        let mut v: serde_json::Value = serde_json::from_slice(&exited_bytes).unwrap();
+        v["record"]["runtime"] = serde_json::to_value(&live).unwrap();
+        v
+    };
+    std::fs::write(&runtime_file, serde_json::to_vec(&live_row).unwrap()).unwrap();
+    let err = refused("inherited birth still running");
+    assert!(err.contains("refusing to start") && err.contains(&root.node_id.to_string()) && err.contains("Running"), "the refusal names the inherited birth and its Running runtime: {err}");
+    // 3. The inherited birth's runtime is proven exited by the provider: Deleted is written, the name claimed, Ready reached.
+    std::fs::write(&runtime_file, &exited_bytes).unwrap();
+    let mut running = root.start();
+    let spans = root.until(&mut running, "rdm.mesh.node.update.via-ready", BOOTS_WITHIN);
+    let adopted = assert_zero_contact_recovery(&spans);
+    root.end(running);
+    let (row, contacts) = root.rows_after();
+    let row = row.expect("a row at mesh1.admin.1");
+    assert_ne!(row.node_id, root.node_id, "the new node holds mesh1.admin.1 after proving the inherited birth exited: {row:?}");
+    assert!(!contacts.contains(&root.node_id.to_string()), "the inherited birth's contact is dropped once proven exited: {contacts:?}");
+    println!("trace_id={}", adopted["trace_id"].as_str().unwrap_or(""));
+}
+

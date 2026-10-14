@@ -1062,7 +1062,12 @@ mod tests {
             Some(BuildReject::LastAdmin { refusal, .. }) => refusal,
             other => panic!("{action} of {path} is refused last-admin: {other:?}"),
         };
-        assert_eq!(refusal("mesh1.admin.1", "stop"), "cannot transfer: no secondary of type node-admin in mesh mesh1");
+        for action in ["stop", "restart"] {
+            assert_eq!(refusal("mesh1.admin.1", action), "cannot transfer: no secondary of type node-admin in mesh mesh1");
+        }
+        assert!(crate::executor::seat_move(&crate::build::BuildOperation::StopNode { node: only.clone(), from_incarnation: crate::model::IncarnationId::mint() }, &t).is_some_and(|m| m.mesh_seat), "stop of mesh1's only node never skips the seat move");
+        assert!(crate::executor::seat_move(&crate::build::BuildOperation::RestartNode { node: only.clone() }, &t).is_some_and(|m| m.mesh_seat), "restart of mesh1's only node never skips the seat move");
+        assert_eq!(crate::executor::seat_move(&crate::build::BuildOperation::RetireNode { node: only, exited: None }, &t), None, "the delete of mesh1's only node skips the seat move");
         assert_eq!(refusal("mesh2.admin.1", "delete"), "cannot transfer: no secondary of type node-admin in mesh mesh2");
     }
 
