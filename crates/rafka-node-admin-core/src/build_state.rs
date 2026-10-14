@@ -1779,6 +1779,7 @@ pub struct FileJournal {
     mesh_held: Option<Arc<HeldJournal>>,
     cursors: Arc<Mutex<BTreeMap<PathBuf, FileCursor>>>,
     holds_fabric_seat: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
+    holds_mesh_seat: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
     /// The replayed facts and their indexes. Held only for a snapshot, a point read or a
     /// publication's swap, never across the disk, a fold or the derivation.
     log: Mutex<FactLog>,
@@ -1832,6 +1833,7 @@ impl FileJournal {
             mesh_held: None,
             cursors: Arc::new(Mutex::new(BTreeMap::new())),
             holds_fabric_seat: std::sync::OnceLock::new(),
+            holds_mesh_seat: std::sync::OnceLock::new(),
             log: Mutex::new(log),
             writer: tokio::sync::Mutex::new(Derived::default()),
         })
@@ -1840,14 +1842,15 @@ impl FileJournal {
     /// Open the Build journal on the fabric's shared `root` for an admin of `own_mesh` (R-BI6):
     /// `fabric/builds/build-journal.jsonl` (the fabric-primary's) and every
     /// `meshes/<mesh>/builds/build-journal.jsonl` (each mesh-primary's) are replayed on the blocking
-    /// pool, and writes before the fabric's first state-commit are held in `root`'s scratchpad.
+    /// pool when this admin holds the corresponding seat, and writes before the fabric's first
+    /// state-commit are held in `root`'s scratchpad.
     pub async fn open_on_root(root: &crate::store_root::StoreRoot, own_mesh: &str) -> Result<Self, BuildStateError> {
         let cursors = Arc::new(Mutex::new(BTreeMap::new()));
         let fabric_path = root.fabric_builds().join(JOURNAL_FILE);
         let mesh_path = root.mesh_builds(own_mesh).join(JOURNAL_FILE);
         let fabric_held = HeldJournal::new(fabric_path.clone(), "fabric/builds".into(), root.scratchpad(), cursors.clone());
         let mesh_held = HeldJournal::new(mesh_path, format!("meshes/{own_mesh}/builds"), root.scratchpad(), cursors.clone());
-        let journal = Self {
+        Ok(Self {
             path: fabric_path,
             root_dir: Some(root.dir().to_path_buf()),
             own_mesh: Some(own_mesh.to_string()),
@@ -1855,33 +1858,35 @@ impl FileJournal {
             mesh_held: Some(mesh_held),
             cursors,
             holds_fabric_seat: std::sync::OnceLock::new(),
+            holds_mesh_seat: std::sync::OnceLock::new(),
             log: Mutex::new(FactLog::default()),
             writer: tokio::sync::Mutex::new(Derived::default()),
-        };
-        {
-            let w = journal.writer.lock().await;
-            journal.sync(&w).await?;
-        }
-        Ok(journal)
+        })
     }
 
-    /// Set how this journal reads whether this birth holds the fabric seat (set once at boot):
-    /// `gate` gates the scratchpad publication of `fabric/builds` at state-commit (R14 item 2), and
-    /// `holds` routes fabric-lane executor receipts to `fabric/builds/` when `true` and to
-    /// `meshes/<own_mesh>/builds/` when `false`.
+    /// Set how this journal reads whether this birth holds the fabric and mesh seats (set once at boot):
+    /// `gate` gates the scratchpad publication of `fabric/builds` at state-commit (R14 item 2),
+    /// `holds_fabric` routes fabric-lane executor receipts and reads `fabric/builds/` when `true`,
+    /// and `holds_mesh` reads `meshes/<own_mesh>/builds/` when `true`.
     pub fn set_fabric_seat(
         &self,
         gate: crate::record_store::PublishGate,
-        holds: Arc<dyn Fn() -> bool + Send + Sync>,
+        holds_fabric: Arc<dyn Fn() -> bool + Send + Sync>,
+        holds_mesh: Arc<dyn Fn() -> bool + Send + Sync>,
     ) {
         if let Some(h) = &self.fabric_held {
             let _ = h.gate.set(gate);
         }
-        let _ = self.holds_fabric_seat.set(holds);
+        let _ = self.holds_fabric_seat.set(holds_fabric);
+        let _ = self.holds_mesh_seat.set(holds_mesh);
     }
 
     fn is_fabric_primary(&self) -> bool {
         self.holds_fabric_seat.get().map(|f| f()).unwrap_or(true)
+    }
+
+    fn is_mesh_primary(&self) -> bool {
+        self.holds_mesh_seat.get().map(|f| f()).unwrap_or(true)
     }
 
     fn target_path(&self, fact: &BuildFact) -> PathBuf {
@@ -1907,17 +1912,28 @@ impl FileJournal {
         let Some(root_dir) = self.root_dir.clone() else {
             return Ok(());
         };
+        let is_fabric = self.is_fabric_primary();
+        let is_mesh = self.is_mesh_primary();
+        if !is_fabric && !is_mesh {
+            return Ok(());
+        }
+        let own_mesh = self.own_mesh.clone();
         let cursors = self.cursors.clone();
         let read_facts = crate::record_store::blocking_io(move || {
-            let mut files = vec![root_dir.join("fabric").join("builds").join(JOURNAL_FILE)];
-            if let Ok(entries) = std::fs::read_dir(root_dir.join("meshes")) {
-                let mut mesh_files: Vec<PathBuf> = entries
-                    .flatten()
-                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                    .map(|e| e.path().join("builds").join(JOURNAL_FILE))
-                    .collect();
-                mesh_files.sort();
-                files.extend(mesh_files);
+            let mut files = Vec::new();
+            if is_fabric {
+                files.push(root_dir.join("fabric").join("builds").join(JOURNAL_FILE));
+                if let Ok(entries) = std::fs::read_dir(root_dir.join("meshes")) {
+                    let mut mesh_files: Vec<PathBuf> = entries
+                        .flatten()
+                        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                        .map(|e| e.path().join("builds").join(JOURNAL_FILE))
+                        .collect();
+                    mesh_files.sort();
+                    files.extend(mesh_files);
+                }
+            } else if let Some(m) = own_mesh {
+                files.push(root_dir.join("meshes").join(m).join("builds").join(JOURNAL_FILE));
             }
             let mut guard = cursors.lock().unwrap_or_else(|e| e.into_inner());
             let mut out = Vec::new();

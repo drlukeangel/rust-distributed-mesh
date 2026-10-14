@@ -5516,21 +5516,44 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         )),
                         crate::fabric_builds::SeatRecord::Open { .. } => Ok(()),
                     });
-                    let (book, records, fabric_name, fabric_id, me_id) = (
+                    let launched = cfg.launch.is_some();
+                    let (book, records_f, fabric_name, fabric_id, me_id, bb) = (
                         membership.book.clone(),
                         records.clone(),
                         cfg.fabric.clone(),
                         cfg.fabric_id.clone(),
                         node_id.clone(),
+                        backbone.clone(),
                     );
-                    let holds = Arc::new(move || match (seat_for_holds.read)() {
+                    let holds_fabric = Arc::new(move || match (seat_for_holds.read)() {
                         crate::fabric_builds::SeatRecord::Open { holder: Some(_) } => true,
                         crate::fabric_builds::SeatRecord::Moved { .. } => false,
                         crate::fabric_builds::SeatRecord::Open { holder: None } => {
-                            project(&fabric_name, &fabric_id, ProviderKind::Process, &book, &records).holds_fabric_seat(&me_id)
+                            !launched
+                                || bb.is_fabric_primary()
+                                || project(&fabric_name, &fabric_id, ProviderKind::Process, &book, &records_f).holds_fabric_seat(&me_id)
                         }
                     });
-                    journal.set_fabric_seat(gate, holds);
+                    let mesh_seat_for_holds = mesh_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name, &own_mesh);
+                    let (book_m, records_m, fabric_name_m, fabric_id_m, me_id_m, mesh_m, bb_m) = (
+                        membership.book.clone(),
+                        records.clone(),
+                        cfg.fabric.clone(),
+                        cfg.fabric_id.clone(),
+                        node_id.clone(),
+                        own_mesh.clone(),
+                        backbone.clone(),
+                    );
+                    let holds_mesh = Arc::new(move || match (mesh_seat_for_holds.read)() {
+                        crate::fabric_builds::SeatRecord::Open { holder: Some(_) } => true,
+                        crate::fabric_builds::SeatRecord::Moved { .. } => false,
+                        crate::fabric_builds::SeatRecord::Open { holder: None } => {
+                            !launched
+                                || bb_m.is_mesh_primary()
+                                || project(&fabric_name_m, &fabric_id_m, ProviderKind::Process, &book_m, &records_m).holds_mesh_seat(&mesh_m, &me_id_m)
+                        }
+                    });
+                    journal.set_fabric_seat(gate, holds_fabric, holds_mesh);
                 }
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
                 // seat change.
