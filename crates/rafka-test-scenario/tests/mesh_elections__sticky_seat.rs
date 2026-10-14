@@ -531,12 +531,12 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     p_steps.sort_by_key(|sp| at_ns(sp));
     let start_attempt = if h_id == successor_id { transfer_attempt + 3 } else { transfer_attempt + 1 };
     assert!(!p_steps.is_empty() && num(p_steps[0], "attempt") == Some(transfer_attempt + 1), "P's stop began in attempt {}: {p_steps:#?}", transfer_attempt + 1);
+    let mut in_start = false;
     for sp in &p_steps {
-        let expected = if attr(sp, "step").starts_with("Start") || attr(sp, "step") == "AwaitNodeJoined" || attr(sp, "step") == "WaitForNodeReady" {
-            start_attempt
-        } else {
-            transfer_attempt + 1
-        };
+        if attr(sp, "step").starts_with("Start") {
+            in_start = true;
+        }
+        let expected = if in_start { start_attempt } else { transfer_attempt + 1 };
         assert_eq!(num(sp, "attempt"), Some(expected), "step {} on P ran in its exact attempt: {sp:#?}", attr(sp, "step"));
         assert!(at_ns(sp) >= sp_end(&p_said), "no step on P ran before P said primary updated: {sp:#?}");
     }

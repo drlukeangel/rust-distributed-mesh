@@ -1099,18 +1099,6 @@ fn evidence_dir(cell: &str) -> std::path::PathBuf {
     }
 }
 
-/// Every span this process emitted, from the evidence exporter's JSONL files in `dir`.
-fn collect_spans(dir: &std::path::Path) -> Vec<serde_json::Value> {
-    let mut spans = Vec::new();
-    for e in std::fs::read_dir(dir).unwrap().flatten() {
-        let p = e.path();
-        if p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".spans.jsonl")) {
-            spans.extend(std::fs::read_to_string(&p).unwrap().lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()));
-        }
-    }
-    spans
-}
-
 /// Two openers of one attempt number: the requested attempt (REST) and the proven-drift pass read the
 /// same settled Build, so both compute the next attempt as `k + 1`. The first append takes the number;
 /// the loser is told by name, never acknowledged for an attempt that carries someone else's action.
@@ -1592,14 +1580,10 @@ mod fully_crashed_mesh {
     /// answer can never reach), or an opening before the ladder's decision on silence.
     #[tokio::test]
     async fn every_node_admin_of_a_peer_mesh_held_unreachable_proven_exited_opens_the_one_step_create_and_the_drive_completes_it() {
-        if crate::own_process::delegated(module_path!(), "every_node_admin_of_a_peer_mesh_held_unreachable_proven_exited_opens_the_one_step_create_and_the_drive_completes_it") {
-            return;
-        }
         let dir = evidence_dir("every_node_admin_of_a_peer_mesh_held_unreachable_proven_exited_opens_the_one_step_create_and_the_drive_completes_it");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s56");
+        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed");
         use tracing::Instrument as _;
         let trace_id = async {
@@ -1625,8 +1609,7 @@ mod fully_crashed_mesh {
         .instrument(root.clone())
         .await;
         drop(root);
-        drop(telemetry);
-        let spans = collect_spans(&dir);
+        let spans = capture.spans().expect("the cell's spans can be read");
         let named = |n: &str| spans.iter().filter(|s| s["name"] == n).collect::<Vec<_>>();
         // Two readers of the one proof: the pass that opened the attempt, and the drive whose fence
         // admits the create on it (a span under its `via-drive`). Each names its read once.
@@ -1658,14 +1641,10 @@ mod fully_crashed_mesh {
     /// first node-admin), or the hold unnamed.
     #[tokio::test]
     async fn a_peer_mesh_held_unreachable_with_one_node_admin_not_proven_exited_opens_nothing_and_names_it() {
-        if crate::own_process::delegated(module_path!(), "a_peer_mesh_held_unreachable_with_one_node_admin_not_proven_exited_opens_nothing_and_names_it") {
-            return;
-        }
         let dir = evidence_dir("a_peer_mesh_held_unreachable_with_one_node_admin_not_proven_exited_opens_nothing_and_names_it");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s56");
+        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-held");
         use tracing::Instrument as _;
         let admin2 = async {
@@ -1683,8 +1662,7 @@ mod fully_crashed_mesh {
         .instrument(root.clone())
         .await;
         drop(root);
-        drop(telemetry);
-        let spans = collect_spans(&dir);
+        let spans = capture.spans().expect("the cell's spans can be read");
         let proof: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-crash-proof").collect();
         assert_eq!(proof.len(), 1, "the held proof read is named once: {proof:?}");
         let a = &proof[0]["attributes"];
@@ -1705,14 +1683,10 @@ mod fully_crashed_mesh {
     /// members-live arm is carrier-edge-lost only), or a hold that does not name the member.
     #[tokio::test]
     async fn a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too() {
-        if crate::own_process::delegated(module_path!(), "a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too") {
-            return;
-        }
         let dir = evidence_dir("a_peer_mesh_whose_node_admins_all_exited_while_a_member_still_runs_is_held_naming_the_member_and_opens_once_it_exited_too");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s56");
+        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-member-runs");
         use tracing::Instrument as _;
         let (member, nodes) = async {
@@ -1740,8 +1714,7 @@ mod fully_crashed_mesh {
         .instrument(root.clone())
         .await;
         drop(root);
-        drop(telemetry);
-        let spans = collect_spans(&dir);
+        let spans = capture.spans().expect("the cell's spans can be read");
         let mut proofs: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-crash-proof").collect();
         proofs.sort_by_key(|p| p["end_unix_nano"].as_u64().unwrap_or_default());
         assert_eq!(proofs.len(), 2, "the proof read is named once per distinct result, held and then proven: {proofs:?}");
@@ -1768,14 +1741,10 @@ mod fully_crashed_mesh {
     /// never clears.
     #[tokio::test]
     async fn the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it() {
-        if crate::own_process::delegated(module_path!(), "the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it") {
-            return;
-        }
         let dir = evidence_dir("the_fabric_primary_authors_degraded_when_it_claims_a_fully_crashed_meshs_node_admin_and_only_its_new_primarys_report_clears_it");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s56");
+        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-degraded");
         use tracing::Instrument as _;
         async {
@@ -1822,8 +1791,7 @@ mod fully_crashed_mesh {
         .instrument(root.clone())
         .await;
         drop(root);
-        drop(telemetry);
-        let spans = collect_spans(&dir);
+        let spans = capture.spans().expect("the cell's spans can be read");
         let named = |n: &str| spans.iter().filter(|s| s["name"] == n).collect::<Vec<_>>();
         let rebirth = named("rdm.node_admin.mesh.create.via-rebirth");
         assert_eq!(rebirth.len(), 1, "degraded is authored once: {rebirth:?}");
@@ -1845,14 +1813,10 @@ mod fully_crashed_mesh {
     /// or the unborn path taken for free over a runtime recorded there that runs.
     #[tokio::test]
     async fn a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read() {
-        if crate::own_process::delegated(module_path!(), "a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read") {
-            return;
-        }
         let dir = evidence_dir("a_node_the_accepted_topology_names_that_was_never_born_holds_the_mesh_only_while_a_runtime_recorded_at_its_path_runs_or_cannot_be_read");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-        let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-s56");
+        let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-node-admin-core-s56").expect("the cell's evidence file can be created");
         let root = tracing::info_span!("rdm.test.mesh.update.fully-crashed-unborn");
         use tracing::Instrument as _;
         let unborn = async {
@@ -1882,8 +1846,7 @@ mod fully_crashed_mesh {
         .instrument(root.clone())
         .await;
         drop(root);
-        drop(telemetry);
-        let spans = collect_spans(&dir);
+        let spans = capture.spans().expect("the cell's spans can be read");
         let mut proofs: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.mesh.update.via-crash-proof").collect();
         proofs.sort_by_key(|p| p["end_unix_nano"].as_u64().unwrap_or_default());
         assert_eq!(proofs.len(), 3, "one proof read per distinct result: {proofs:?}");
