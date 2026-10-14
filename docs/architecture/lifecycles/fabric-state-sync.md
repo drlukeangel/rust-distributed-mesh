@@ -29,7 +29,7 @@ work ends; that answer starts state-commit, not ready-for-traffic.
 
 The [application handoff](../node-rpc-envelope.md#application-state-sync-handoff)
 is external integration, not a defined Node RPC family. These message values show
-context and round correlation without inventing a fence or opcode for an unspecified
+context and round correlation without inventing a target or opcode for an unspecified
 application transport. RDM owns the lifecycle; Rafka owns the state-sync work.
 
 ### State-sync handoff → application

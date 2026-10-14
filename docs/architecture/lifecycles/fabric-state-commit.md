@@ -39,7 +39,7 @@ member → mesh-primary             StateCommitted { the member }           ← 
 mesh-primary → fabric-primary     StateCommitted { the mesh-primary }     ← Applied    hook StateCommitted
 ```
 
-Each line is its own directed call with its own fence and caller span
+Each line is its own directed call with its own target and caller span
 ([target and context](../node-rpc-envelope.md#target-and-context)); when a check-in is owed is the
 [round checklist](states.md#the-round-checklist)'s. The hook frames' authors and channels are
 [Fabric round gossip hooks](../gossip.md#fabric-round-gossip-hooks).
@@ -58,13 +58,13 @@ sequenceDiagram
     participant N as Planned member birth
     participant G as Own mesh channel
     participant B as Backbone
-    F->>M: commit-state (fence + context + payload); command hook
+    F->>M: commit-state (target + context + payload); command hook
     M->>N: commit-state (exact planned birth); command hook
     M->>G: state-committing
     M->>B: state-committing
     N->>N: complete required phase action
     N->>G: state-committed return hook
-    N->>M: state-committed (own fence + trace context)
+    N->>M: state-committed (own target + trace context)
     M->>B: carry member completion gossip
     M->>M: complete own action and all planned check-ins
     M->>F: state-committed; return hook

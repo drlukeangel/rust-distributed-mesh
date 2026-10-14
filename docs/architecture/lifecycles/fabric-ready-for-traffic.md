@@ -21,7 +21,7 @@ mesh-primary → fabric-primary     TrafficOpened { the mesh-primary }     ← A
 fabric-primary                    FabricStatus ready-for-traffic; one ready-for-traffic notice to Rafka
 ```
 
-Each line is its own directed call with its own fence and caller span
+Each line is its own directed call with its own target and caller span
 ([target and context](../node-rpc-envelope.md#target-and-context)); when a check-in is owed is the
 [round checklist](states.md#the-round-checklist)'s. The hook frames' authors and channels are
 [Fabric round gossip hooks](../gossip.md#fabric-round-gossip-hooks).
@@ -43,13 +43,13 @@ sequenceDiagram
     participant N as Planned member birth
     participant G as Own mesh channel
     participant B as Backbone
-    F->>M: open-traffic (fence + context + payload); command hook
+    F->>M: open-traffic (target + context + payload); command hook
     M->>N: open-traffic (exact planned birth); command hook
     M->>G: traffic-opening
     M->>B: traffic-opening
     N->>N: complete required phase action
     N->>G: traffic-opened return hook
-    N->>M: traffic-opened (own fence + trace context)
+    N->>M: traffic-opened (own target + trace context)
     M->>B: carry member completion gossip
     M->>M: complete own action and all planned check-ins
     M->>F: traffic-opened; return hook

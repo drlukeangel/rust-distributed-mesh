@@ -191,10 +191,10 @@ Example raw history:
 ```text
 09:00 Direct Connected
 09:12 Direct Disconnected
-09:12 Direct Failed       epoch=E1 attempt=1
+09:12 Direct Failed       round=R1 attempt=1
 09:12 Proxy  Connected    via=gw2
-09:30 Direct Failed       epoch=E1 attempt=2
-10:30 Direct Failed       epoch=E1 attempt=3
+09:30 Direct Failed       round=R1 attempt=2
+10:30 Direct Failed       round=R1 attempt=3
 14:00 Direct Connected
 14:00 Proxy  Disconnected reason=direct-restored
 ```
@@ -202,7 +202,7 @@ Example raw history:
 During the outage the compacted current view is only:
 
 ```text
-Direct -> Failed(epoch=E1, attempt=3, event_time=10:30)
+Direct -> Failed(round=R1, attempt=3, event_time=10:30)
 Proxy  -> Connected(via=gw2)
 ```
 
@@ -214,7 +214,7 @@ Proxy  -> Disconnected(reason=direct-restored)
 ```
 
 Raw-log retention is therefore not part of reconnect correctness. The latest compacted Direct row carries
-the recovery epoch, attempt ordinal and time needed to reconstruct backoff even after older raw events age
+the recovery round, attempt ordinal and time needed to reconstruct backoff even after older raw events age
 out.
 
 ### 3.1 Declared indexes
@@ -385,7 +385,7 @@ gw2 -> brk2 Direct Active
 
 Sequence:
 
-1. `gw1` writes a `Direct Failed` event for `gw1 -> brk2` with a new recovery epoch and
+1. `gw1` writes a `Direct Failed` event for `gw1 -> brk2` with a new recovery round and
    `attempt_ordinal=1`.
 2. It selects an eligible carrier from the active Direct graph.
 3. It forwards the invocation once through that carrier.
@@ -466,7 +466,7 @@ current destination incarnation and no newer Direct Connected supersedes it.
 An active Proxy commonly accompanies that state, but recovery does not depend on the Proxy continuing to
 exist. If the carrier disappears, restoring Direct is still desirable.
 
-### 9.2 Recovery epoch
+### 9.2 Recovery round
 
 A new independent direct-failure incident starts a new `recovery_epoch`.
 
@@ -618,7 +618,7 @@ state
 reason
 ```
 
-Proxy transitions additionally identify the carrier. Reconnect attempts identify the recovery epoch and
+Proxy transitions additionally identify the carrier. Reconnect attempts identify the recovery round and
 attempt ordinal.
 
 The reconnect attempt span is owned by node-base and records whether it:
@@ -765,11 +765,11 @@ carrier-policy hook. Rafka owns Rafka protocol descriptors and product-specific 
 11. Every node owns repair of its own direct connections in node-base.
 12. Node-admin does not schedule or command local direct reconnect attempts.
 13. Reconnect is an internal durable reconciler, not a normal platform Job entity.
-14. The latest Direct Failed row is sufficient to reconstruct retry epoch, ordinal and next due time.
+14. The latest Direct Failed row is sufficient to reconstruct retry round, ordinal and next due time.
 15. Restart never resets reconnect exponential backoff.
 16. Any Direct Connected event, including an accepted inbound connection, creates the proxy-retirement obligation.
 17. Failed proxy-retirement writes are retried; routing safely remains on Proxy until retirement lands.
-18. Destination and carrier process incarnations fence stale route evidence.
+18. Destination and carrier process incarnations make stale route evidence refusable by name.
 19. A failed direct attempt is source-local reachability evidence, not global node-death proof.
 20. Customer traffic does not periodically probe Direct while a durable Proxy is active.
 21. A sent/committed invocation is never silently rerouted or replayed.

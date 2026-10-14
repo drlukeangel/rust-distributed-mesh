@@ -1,7 +1,7 @@
 <a id="node-rpc-typed-node-to-node-communication"></a>
 # Node RPC runtime
 
-This page owns the Node RPC runtime, how one invocation executes: the resolver, the pool, the dispatch pipeline after the target, admission and memory, supervision, `HandlerScope` and `ReplySink`, the `RpcOutcome` algebra, budgets, Draining behaviour and retry guidance. The wire (the target, the context, the typed body, the op ledger, the reserved stream codes and every schema) is [node-rpc-envelope.md](node-rpc-envelope.md).
+This page owns the Node RPC runtime, how one invocation executes: the resolver, the pool, the dispatch pipeline after the target, admission and memory, supervision, `HandlerScope` and `ReplySink`, the `RpcOutcome` algebra, budgets, connections-deleting behaviour and retry guidance. The wire (the target, the context, the typed body, the op ledger, the reserved stream codes and every schema) is [node-rpc-envelope.md](node-rpc-envelope.md).
 
 **Crates:** RDM `rafka-node-rpc` (the runtime) and `rafka-node-rpc-contract` (descriptor, framing and outcome vocabulary).
 
@@ -337,7 +337,7 @@ The receive loop is deliberately constant-cost.
 
 ```text
 read the target (421 / 424)
-  -> runtime Draining guard (never the Status family)
+  -> runtime ConnectionsDeleting guard (never the Status family)
   -> readiness guard (typed NotReady)
   -> admission
   -> start one supervised invocation task
@@ -494,7 +494,7 @@ Node RPC may evict because:
 - Iroh reports the connection closed/unusable;
 - `open_bi` fails before commit;
 - resolver/current transport state proves the exact incarnation or slot/freshness was superseded;
-- a peer answers typed `Draining`;
+- a peer answers typed `ConnectionsDeleting`;
 - topology departure invokes the pool purge hook.
 
 It must not evict merely because:
@@ -612,7 +612,7 @@ pub enum ReplyKind {
     PeerUnresolved,
     NotReady,
     Busy,
-    Draining,
+    ConnectionsDeleting,
     Malformed(MalformedKind),
     Unauthorized,
     ProtocolRefusal,
@@ -661,7 +661,7 @@ No malformed request is answered with an unserved reset. The op was served, so t
 For an early typed refusal such as:
 
 ```text
-Draining
+ConnectionsDeleting
 NotReady
 Busy
 Malformed(TooLarge)
@@ -748,7 +748,7 @@ Unary reply and streaming terminal publication happen only after the full scope 
 
 Streaming data may flow while scoped children compute.
 
-There is no independent scope-join timeout. Shutdown's drain deadline is the outer lifecycle bound.
+There is no independent scope-join timeout. Shutdown's in-flight deadline is the outer lifecycle bound.
 
 ### 30.1 Work that must outlive a call
 
@@ -809,7 +809,7 @@ Every condition that a caller's state machine can react to belongs in that type,
 - conflict;
 - partial application;
 - wrong build;
-- stale epoch;
+- stale claim revision;
 - validation;
 - durable state that could not be read;
 - dependency unavailable.
@@ -859,7 +859,7 @@ completed
 replayed
 ```
 
-For durable-job mutation, the request carries `job_id` and `claim_epoch`; stale epochs are refused by name and the durable mutation itself is fenced on that epoch.
+For durable-job mutation, the request carries `job_id` and `claim_revision`; a stale revision is refused by name and the durable mutation itself is conditional on that revision.
 
 Admission is capacity control, never deduplication.
 
@@ -895,9 +895,9 @@ If a handler continues after caller cancellation, telemetry records caller_cance
 
 ---
 
-## 35. Draining
+## 35. Connections-deleting
 
-When its node enters connections-deleting under [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`, on its own or as the first step of [node.stop](lifecycles/node-stop.md), the runtime answers new non-status calls with typed `Draining`, which proves their handler did not run. The Status family stays served.
+When its node enters connections-deleting under [node.connections.delete](lifecycles/node-connections-delete.md) with `{ scope: All }`, on its own or as the first step of [node.stop](lifecycles/node-stop.md), the runtime answers new non-status calls with typed `ConnectionsDeleting`, which proves their handler did not run. The Status family stays served.
 
 The caller invalidates pooled connections to that birth and re-enters its own target and reachability policy on a future attempt.
 
@@ -910,7 +910,7 @@ Lifecycle vocabulary is fixed:
 ```text
 not initialized = NotReady
 overloaded      = Busy
-draining        = Draining
+connections-deleting = ConnectionsDeleting
 op not served   = Unserved
 ```
 
@@ -967,7 +967,7 @@ The span names, the attributes each records and the trace edge between caller an
 | `PeerUnresolved` typed reply | `Reply` | no domain handler | no |
 | `NotReady` typed reply | `Reply` | no domain handler when guard/refusal path | no |
 | `Busy` typed reply | `Reply` | no | no |
-| `Draining` typed reply | `Reply` | no | no |
+| `ConnectionsDeleting` typed reply | `Reply` | no | no |
 | `TooLarge` typed reply | `Reply` | no | no |
 | `UnknownVariant` typed reply | `Reply` | no | no |
 | `Corrupt` typed reply | `Reply` | no | no |
@@ -991,7 +991,7 @@ The runtime itself does not retry, but callers may use these semantic facts:
 | `Busy` | possibly | domain decision |
 | `NotReady` | possibly | usually later, domain decision |
 | `PeerUnresolved` | after topology convergence | domain decision |
-| `Draining` | no; re-resolve the target | no |
+| `ConnectionsDeleting` | no; re-resolve the target | no |
 | `UnknownVariant` | maybe another compatible build | no |
 | `TooLarge` | only if request changes | no |
 | `Corrupt` | only if bug/data changes | no |

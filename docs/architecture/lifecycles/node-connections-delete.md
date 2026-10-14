@@ -83,7 +83,7 @@ not complete this stream or replace its receipt.
 6. Record that exact step receipt. Do not infer stop, stopped, exit or node.deleted.
 
 While the node is connections-deleting the runtime refuses new non-status calls with typed
-`Draining` ([Node RPC §35](../node-rpc.md#35-draining)). Control streams stay usable.
+`ConnectionsDeleting` ([Node RPC §35](../node-rpc.md#35-connections-deleting)). Control streams stay usable.
 
 ## Mermaid sequence diagram
 

@@ -39,10 +39,10 @@ of step 6. For the `node-admin` cohort the holder is commanded first because it 
 3. The writer, as the mesh-primary and sole author of member status, publishes "primary updating":
    operation, cohort, the holder's and the successor's exact births, the current and next revisions. It
    states intent only; receivers keep the current holder until the committed row names the next revision.
-4. For the `node-admin` cohort, NA1 sets its write cut-off and drains every store write already issued
+4. For the `node-admin` cohort, NA1 sets its write cut-off and finishes every store write already issued
    (R14). The mesh seat's cut-off covers the mesh's rows (`meshes/<mesh>`, `nodes/<mesh>/`); the fabric
-   seat's covers `fabric/` and Build acceptance; when both move, one drain covers both. A non-admin holder
-   has no mesh rows to drain (its own `connections/<node>/` rows are its own, R14).
+   seat's covers `fabric/` and Build acceptance; when both move, one cut-off covers both. A non-admin holder
+   has no mesh rows to finish writing (its own `connections/<node>/` rows are its own, R14).
 5. The writer writes the one seat row at the next revision(s) naming the successor. This is the commit.
    From this write the holder is no longer primary.
 6. The holder calls `node.primary.update` on the successor's exact birth, carrying the row's content. The
@@ -60,11 +60,11 @@ of step 6. For the `node-admin` cohort the holder is commanded first because it 
 
 - **Refused before the row** (step 2, or the writer's own pre-check of the call's revision): refused by
   name, nothing changed, the Build's step fails by name. Nothing was cut off, so nothing is restored.
-- **The seat-row write fails between the drain and the commit** (steps 4-5, `node-admin` cohort). The row
+- **The seat-row write fails between the cut-off and the commit** (steps 4-5, `node-admin` cohort). The row
   is a local write, temp file, fsync, rename (R14's fs contract), and it answers a named error or
   succeeds. A named error is a confirmed non-commit: the step fails by name naming the error, and NA1
   lifts its cut-off under the unchanged revision, because a primary that cannot write is a worse state
-  than a failed step. The one uncertain case is NA1 dying between the drain and the rename; NA1 resolves
+  than a failed step. The one uncertain case is NA1 dying between the cut-off and the rename; NA1 resolves
   it itself on restart by reading the row (committed: it is no longer primary; absent: it is, under the
   unchanged revision).
 - **After the row, the successor is the committed holder whatever the call returns.** The receiver never
@@ -167,7 +167,7 @@ the fabric seat to the outside mesh-primary and the incumbent stays mesh-primary
 commander → holder        (a step of the Build that stops, deletes, restarts, replaces or deletes the holder's connections)
 writer                    pre-check: a ReadyForTraffic successor in the cohort, the holder excluded
 writer → mesh channel, backbone   "primary updating" (operation, cohort, both exact births, revisions)
-writer                    write cut-off and drain (node-admin cohort); the one seat row at the next revision(s)
+writer                    write cut-off, issued writes finished (node-admin cohort); the one seat row at the next revision(s)
 holder → successor        node.primary.update (PrimaryUpdate, carrying the row's content)
   ← node.primary.updated { revisions }   (PrimaryUpdated)
 writer → mesh channel, backbone   "primary updated" (same identifiers)
@@ -189,7 +189,7 @@ sequenceDiagram
     FP->>NA1: Build step on NA1 (stop, delete, restart, replace, connections delete)
     Note over NA1: pre-check: a ReadyForTraffic successor, NA1 excluded
     NA1->>G: primary updating
-    Note over NA1: write cut-off, drain, the one seat row (commit)
+    Note over NA1: write cut-off, issued writes finished, the one seat row (commit)
     NA1->>NA2: node.primary.update (row content)
     Note over NA2: install from the row
     NA2-->>NA1: node.primary.updated { revisions }

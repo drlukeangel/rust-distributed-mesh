@@ -21,7 +21,7 @@ The sequence below reads topology from a node that is alive; when no node is,
    ([a node-admin joins the live mesh](mesh-investigation.md#a-node-admin-joins-the-live-mesh) steps 4–5); a
    non-answering member goes to [node recovery](node-recovery.md).
 4. Restore the own mesh's secondary admin as executor under that SAME accepted Build, with the
-   claim fenced at the recovered fabric-primary. Reach the other meshes through
+   claim bound to the recovered fabric-primary's seat. Reach the other meshes through
    [mesh investigation](mesh-investigation.md): its decision step runs node.create of
    a node-admin into each mesh that has none, under that mesh's own MeshId. Each such
    mesh-primary restores its own admin capacity and sweeps only its own mesh.
@@ -55,7 +55,7 @@ sequenceDiagram
 |---|---|---|---|
 | Recovered fabric-primary | GetTopology to durable-map node | [Topology schema](../node-rpc-envelope.md#topology-op-0x1e-rdm); own mesh first, no maker calls | `rdm.node_rpc.request.update.via-call`, `rdm.node_rpc.request.serve.via-direct`, `rdm.mesh.topology.serve.via-read`, `rdm.mesh.topology.update.via-read-install` |
 | Recovered own-mesh primary | Ping / node recovery | same own-mesh sweep and exact-runtime exit proof as a node-admin joining a live mesh | `rdm.node_rpc.request.update.via-call`, `rdm.node_admin.deployment.update.via-step` |
-| Recovered fabric-primary | accepted Build / claim | same Build, each mesh's own MeshId, fenced claims | `rdm.node_admin.build.update.via-claim-request`, `rdm.node_admin.build.update.via-claim-decision` |
+| Recovered fabric-primary | accepted Build / claim | same Build, each mesh's own MeshId, claims under its seat | `rdm.node_admin.build.update.via-claim-request`, `rdm.node_admin.build.update.via-claim-decision` |
 
 ## Command, completion and gossip messages
 

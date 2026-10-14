@@ -90,12 +90,12 @@ Evolution rules: a wire-incompatible change to an established family receives a 
 family, operation enums are append-only, and enum discriminants are never reordered or reused.
 
 Replies are the protocol's own typed reply enum. Every protocol supplies typed refusals the
-runtime can answer on its behalf: `busy`, `draining`, `malformed`, `not_ready`,
+runtime can answer on its behalf: `busy`, `connections-deleting`, `malformed`, `not_ready`,
 `peer_unresolved`, `unauthorized`. There is no universal success or error envelope around a
 body; a refusal is a variant of the protocol's reply.
 
-A draining node refuses new non-status calls with the protocol's `draining` refusal before
-the body is read. The status family's draining-admission invariant is defined below.
+A connections-deleting node refuses new non-status calls with the protocol's `connections-deleting` refusal before
+the body is read. The status family's connections-deleting-admission invariant is defined below.
 
 ## Reserved stream codes
 
@@ -494,7 +494,7 @@ pub enum PingReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
 }
@@ -532,7 +532,7 @@ pub enum ForwardReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
     CarrierEdgeLost { reason: String },
@@ -572,7 +572,7 @@ The [node stop pair](#node-stop-command-pair), the
 [mesh delete pair](#mesh-delete-command-pair) specify the lifecycle calls.
 The lifecycle op pairs in States are carried by 0x1B as separate down (command) and up (completion) variants; enum definitions live only here. Dead is never sent.
 
-Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connections.delete { scope: All }` is the sole path into connections-deleting. Lifecycle callers MUST NOT use ApplyNodeState(ConnectionsDeleting); ApplyNodeState carries the permitted transitions other than connections-deleting. ProbeNodeState answers Current, or Blocked { node_id, incarnation, reason, retry_on } while the subject's [hydrate_before_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook is Blocked: the probe served the exact birth and found an active readiness blocker, answered before any republish so a polled blocked birth republishes nothing. Its `reason` is the hook's own text and `retry_on` the event the hook runs again on. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Blocked { WaitForNodeReady, reason }` only from Status Blocked. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. Draining is a refusal, never the success of node.connections.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
+Status remains admissible while connections-deleting. The generic guard MUST NOT reject it before variant-specific direction, authorization, exact-birth and transition checks. `node.connections.delete { scope: All }` is the sole path into connections-deleting. Lifecycle callers MUST NOT use ApplyNodeState(ConnectionsDeleting); ApplyNodeState carries the permitted transitions other than connections-deleting. ProbeNodeState answers Current, or Blocked { node_id, incarnation, reason, retry_on } while the subject's [hydrate_before_ready](fabric-node-hooks.md#outcomes-and-the-gate) hook is Blocked: the probe served the exact birth and found an active readiness blocker, answered before any republish so a polled blocked birth republishes nothing. Its `reason` is the hook's own text and `retry_on` the event the hook runs again on. Running and Passed hooks answer Current. NotReady is the [readiness gate's](#node-rpc-readiness-gate) answer and never a hook blocker; the executor's WaitForNodeReady frames `Blocked { WaitForNodeReady, reason }` only from Status Blocked. Declarations and mesh/fabric applies answer Applied or AlreadyApplied. ApplyNodeName, sent down by the node's mesh-primary after it wrote the renamed row ([node.name.update](lifecycles/node-name-update.md)), answers Applied once the node holds and publishes the name, AlreadyApplied for the name it already holds, and `BusyHoldingConnections { connections }` naming each connection it still holds. ConnectionsDeleting is a refusal, never the success of node.connections.delete. Idempotency is the natural key `(node_id, incarnation, state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name.
 
 Nothing inside the mesh checks who sent a frame or call. `RejectedNotAuthority` says the receiver is not the authority for the call: `ReceiverNotPrimary { needed }` when the receiver does not hold the seat the declaration needs, and `SubjectUnknown` when the receiver does not hold the subject at all. `SenderNotSubject` and `Unauthorized` keep their codec positions and a mesh receiver never sends them; a caller-side `PeerUnresolved` likewise.
 
@@ -669,7 +669,7 @@ pub enum StatusReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
     RejectedUnmatchedCompletion { field: String, expected: String, reported: String },
@@ -829,7 +829,7 @@ pub enum BuildClaimReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
 }
@@ -858,7 +858,7 @@ JoinReply =
   | PeerUnresolved { reason: String }
   | NotReady { reason: String }
   | Busy { reason: String }
-  | Draining { reason: String }
+  | ConnectionsDeleting { reason: String }
   | Malformed { kind: MalformedKind }
   | Unauthorized { reason: String }
   | DeploymentAbandoned { build_id: String, attempt: u32, node_id: NodeId, incarnation: IncarnationId }
@@ -996,7 +996,7 @@ pub enum TopologyReply {
     UnknownMesh { mesh: String },
     PeerUnresolved { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
     Started,
@@ -1071,7 +1071,7 @@ pub enum BuildFactsReply {
     UnknownBuild { build_id: String },
     PeerUnresolved { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
     Started,
@@ -1142,7 +1142,7 @@ Every progress frame (Step, Blocked) carries the receipt key
 
 Blocked is live progress, **not a durable step outcome**. Durable step outcomes
 remain Complete and Failed. A stream cut cancels neither the fabric-primary's
-Build drive nor the executor's inner run. Only a fence or a failed step ends an
+Build drive nor the executor's inner run. Only a yielded seat or a failed step ends an
 attempt. Progress waits on no gossip; Build-topic facts remain durability and
 recovery evidence through the existing publication path.
 
@@ -1175,8 +1175,8 @@ ready-for-traffic these are admitted as usual. A refused Build claims no attempt
 [States](lifecycles/states.md#fabric-not-ready) gives the reason. `NotReady` is not this refusal:
 it stays the serving door's answer.
 
-Every dispatch passes the fabric-seat fence and the claim decision. A
-fabric-primary that yielded its seat cannot dispatch and refuses Fenced { node, by }.
+Every dispatch passes the fabric-seat check and the claim decision. A
+fabric-primary that yielded its seat cannot dispatch and refuses SeatYielded { node, by }.
 A cut-off fabric-primary dispatches nothing. A committed seat move ends the outer
 stream with SeatMoved, **not Indeterminate**. An accidental transport cut remains
 NotSent or Indeterminate under the existing request commit cut.
@@ -1186,7 +1186,7 @@ are idle = staleness floor and keepalive = gossip / 2. The family is not
 forwardable: every call is a stream.
 
 Caller and server emit the [runtime spans](#runtime-spans) with op=0x20; child calls continue
-the outer trace under the same rule. A dispatch refused after the seat fence records Fenced in
+the outer trace under the same rule. A dispatch refused after the seat check records SeatYielded in
 its span.
 
 Mechanism:
@@ -1306,12 +1306,12 @@ pub enum BuildReply {
     Rejected { reason: String, detail: String },
     BuildInProgress { current_build_id: String, mesh: Option<String>, held_by: Option<String> },
     AttemptTaken { detail: String },
-    Fenced { node: String, by: String },
+    SeatYielded { node: String, by: String },
     CannotDelete { build_id: String, reason: String },
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
     SeatMoved { build_id: String, fabric_primary: Option<String> },
@@ -1482,7 +1482,7 @@ server emits `rafka.mesh.connection.resolve.via-coldpull-served` or
 
 Contract source: `crates/rafka-topology/src/mesh_control.rs::MeshControlMessage`.
 
-Direction: peer. Gateway and compute product callers send to an exact peer; the gateway control drain serves the MeshControlMessage below. Request enum is MeshControlMessage; the rail is fire-and-forget and has no reply enum. Reply-shaped messages are separately sent messages, not a universal response. No family-wide typed refusal or forwardability exists; this transitional rail is not canonical Forward. Handler diagnostics include `rafka.mesh.control.reject.via-retired-v1-projection-frame`; the compatibility caller has no canonical Node RPC caller span.
+Direction: peer. Gateway and compute product callers send to an exact peer; the gateway's control-rail handler serves the MeshControlMessage below. Request enum is MeshControlMessage; the rail is fire-and-forget and has no reply enum. Reply-shaped messages are separately sent messages, not a universal response. No family-wide typed refusal or forwardability exists; this transitional rail is not canonical Forward. Handler diagnostics include `rafka.mesh.control.reject.via-retired-v1-projection-frame`; the compatibility caller has no canonical Node RPC caller span.
 
 ```rust
 pub enum MeshControlMessage {
@@ -1735,7 +1735,7 @@ pub enum MeshControlMessage {
 
 Contract source: `crates/rafka-credentials-trait/src/wire.rs::ResolveWireRequest`.
 
-Direction: upward. Compute selects the exact gateway; gateway credential drain serves and authorizes provider resolution. The request is the struct below; reply is ResolveWireResponse. Codec is a version byte followed by postcard. Not forwardable: authorization resolves the directly authenticated compute peer. Typed refusals are NotFound, Unauthorized, Unimplemented and Backend. Plaintext value is transient response data, never span/log/error/artifact data. Compatibility caller has no canonical caller span; server emits `rafka.gateway.secret.resolve.via-secrets-received` or `rafka.gateway.secret.reject.via-secrets-resolve-rejected`.
+Direction: upward. Compute selects the exact gateway; the gateway's credential handler serves and authorizes provider resolution. The request is the struct below; reply is ResolveWireResponse. Codec is a version byte followed by postcard. Not forwardable: authorization resolves the directly authenticated compute peer. Typed refusals are NotFound, Unauthorized, Unimplemented and Backend. Plaintext value is transient response data, never span/log/error/artifact data. Compatibility caller has no canonical caller span; server emits `rafka.gateway.secret.resolve.via-secrets-received` or `rafka.gateway.secret.reject.via-secrets-resolve-rejected`.
 
 ```rust
 pub struct ResolveWireRequest {
@@ -1848,7 +1848,7 @@ pub enum ProofReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
 }
@@ -1885,7 +1885,7 @@ pub enum ResolveReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
 }
@@ -1913,7 +1913,7 @@ pub enum DeclareReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
 }
@@ -1965,7 +1965,7 @@ pub enum OriginateReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
     ProxyRecorded { by: AnsweredBy, destination_node_id: String, destination_incarnation: String, carrier_node_id: String, carrier_incarnation: String, failed_attempts: u32 },

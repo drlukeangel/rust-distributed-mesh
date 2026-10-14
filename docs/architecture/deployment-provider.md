@@ -137,7 +137,7 @@ A successor may need current operational metadata that is not identity.
 
 ```text
 RuntimeFact
-    exact runtime identity/fence
+    exact runtime identity
 
 current Node runtime metadata
     operational context needed to manage the birth

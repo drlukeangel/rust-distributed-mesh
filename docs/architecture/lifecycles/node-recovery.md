@@ -78,7 +78,7 @@ mesh-primary: open + claim attempt N of its mesh's lane on its own rows, run
   node.create(same path.name, inherited data dir) → every FirstStart event, node.started, node.created
 ```
 
-Delete fences the old instance before the new join, so a late old digest cannot return
+Delete blocks the old instance before the new join, so a late old digest cannot return
 the retained endpoint key to the old port. The workflow waits on stream events and Build
 receipts, not gossip.
 

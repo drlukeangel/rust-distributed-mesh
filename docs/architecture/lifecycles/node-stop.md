@@ -49,7 +49,7 @@ Exact runtime exit belongs to [node.delete](node-delete.md), not this stop.
 ## Command and completion messages
 
 Readable execution view; the [typed-object contract](../node-rpc-envelope.md#typed-object-contract)
-owns wire mapping, fence and context:
+owns wire mapping, target and context:
 
 ```text
 node.stop

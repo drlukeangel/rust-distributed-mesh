@@ -82,7 +82,7 @@ The three words are `endpoint_id`, `id`, and the prefixed dashed RENDER of that 
   one minter at node.create, naming the exact runtime that serves the node's id and `path.name`. It stays the
   same through stop, start and restart (the process never exits) and ends at delete; recover and replace create
   a new node with its own. The process reads it once at boot (`rafka_node_base::own_incarnation_id`). A reader
-  compares incarnations for EQUALITY only: it is not a counter, and it is not the writer incarnation that fences
+  compares incarnations for EQUALITY only: it is not a counter, and it is not the writer incarnation that refuses stale writes
   a writer's rows. `node.get` returns it per node.
 - **A node has a `node_type`.** `node_type` is a field of the node record, a string the caller sets in
   node.create's spec. An omitted or empty value is stored as `node`. Its grammar is the tag-label grammar,
@@ -620,7 +620,7 @@ All removal funnels through `crates/rafka-node-base/src/lib.rs::evict_node`, whi
 `was_live` / `was_seeded` / `last_digest_age_ms` BEFORE any teardown and emits
 `rafka.mesh.connection.resolve.via-node-evict-attempt` — so a genuine dead peer and an immediate
 `neighbor_down` eviction of a millisecond-old peer are distinguishable. The teardown itself is
-`crates/rafka-node-base/src/lib.rs::purge_departure_captured`: drain and close the peer's data
+`crates/rafka-node-base/src/lib.rs::purge_departure_captured`: finish and close the peer's data
 connections, purge the iroh address book, close the control connection, drop the mesh-id
 registry row, remove `last_seen`/`live_digests`, tombstone the topology row
 (`crates/rafka-node-base/src/topology.rs::tombstone_node_digest`, span
@@ -773,7 +773,7 @@ the row with the latest `down_instant_ms`. A broker's close also stamps the outa
 the row (`short` up to 10 min, else `long`,
 `crates/rafka-entity-topology/src/offline.rs::refill_size_for`) and reserves a job-id slot there. What the broker missed is copied by its per-topic re-sync,
 which its start hook runs (§4.3). A deleted node's identity never takes its name back: a digest from
-a deleted incarnation is refused by name by the deleted fence and the peer-location book
+a deleted incarnation is refused by name as deleted and by the peer-location book
 ([gossip.md §3.1](gossip.md#31-frame-catalog)); its WAL stays in its data dir.
 
 **A replace across a STORAGE-FORMAT move is not a replace.** Preserved data under

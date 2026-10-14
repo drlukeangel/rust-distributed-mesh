@@ -17,7 +17,7 @@ removal is separate work.
 | Runtime action | Request termination and inspect the exact accepted runtime |
 | Terminal event | Executor emits node.deleted only from exact runtime Exited proof, after releasing node.id and name |
 | Storage | Retain data dir and endpoint key; a later spec can inherit them |
-| Peer fence | node.deleted blocks old `(node.id, incarnation)` in the peer-location book |
+| Peer block | node.deleted blocks old `(node.id, incarnation)` in the peer-location book |
 | Forbidden proof | Gossip, silence, Ping failure and timeout never prove runtime exit |
 
 ## Numbered end-to-end sequence
@@ -33,7 +33,7 @@ removal is separate work.
 4. The surviving executor emits node.deleted on the caller stream from the Exited
    evidence and records the complete delete receipt. The exited node cannot publish
    its own terminal proof or serve that stream.
-5. Fence the old `(node.id, incarnation)` in the peer-location book. Peers refuse a late
+5. Block the old `(node.id, incarnation)` in the peer-location book. Peers refuse a late
    digest of the deleted birth under the [frame catalog's receiver rules](../gossip.md#31-frame-catalog),
    even when a successor uses the same endpoint key.
 

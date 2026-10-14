@@ -155,7 +155,7 @@ Exactly one current fabric-primary accepts topology-changing requests. A non-pri
 
 Every workflow (node.create, node.stop, node.start, node.restart, node.delete, the recovery Build, mesh.delete, fabric.delete) is submitted as its own Build through build.create and gets its own build_id. `Fabric.build_id` names the Build whose accepted topology is current, and a Build that leaves the topology unchanged does not move it. Authority movement or proven runtime drift opens another attempt of the Build Fabric.build_id already names. Rafka's replace recipe is submitted as one Build of node primitives ([node replace](lifecycles/node-replace.md)).
 
-Workflow input is execution state, not topology: node.restart on an exact birth (node id and incarnation) and the recovery Build (`node.delete` then `node.create` at the same path.name) carry the exact birth they act on, which fences them against a stale birth. They never change the accepted topology map.
+Workflow input is execution state, not topology: node.restart on an exact birth (node id and incarnation) and the recovery Build (`node.delete` then `node.create` at the same path.name) carry the exact birth they act on, which refuses a stale birth by name. They never change the accepted topology map.
 
 Every execution attempt re-reads the accepted topology and current realized/observed state and computes remaining work. Completed step receipts prevent repeating already-satisfied work; a Build never resumes from a mutable instruction pointer.
 
@@ -471,7 +471,7 @@ This prevents a newcomer from becoming Ready before it can actually execute auth
 
 An ordinary joining or restarted admin must hydrate current control state from an existing Fabric control projection before it may commit authority-capable Ready. Missing hydration is not permission to invent topology or self-Ready.
 
-Only two deliberately fenced lifecycle roots exist:
+Only two lifecycle roots establish Ready without a live Ready authority:
 
 ```text
 Day 0
@@ -481,7 +481,7 @@ Day 0
 
 single-admin recovery root
     only when canonical lifecycle proof says no live Ready admin exists
-    use the defined fenced recovery-root Ready self-apply
+    use the defined single-admin recovery-root Ready self-apply
 ```
 
 Those roots establish lifecycle eligibility only. They do not assign primary seats; leadership is consumed from the canonical election model in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). A node-admin joining a live mesh, where a live fabric primary exists, does not use the recovery-root shortcut.
@@ -599,7 +599,7 @@ An import boundary is eligible when it proves:
 6. provider/bootstrap produces the locator and the node publishes the one normalized RuntimeFact;
 7. one provider-control-domain execution contract exists, and host locality never alters the canonical LeadershipView;
 8. one exact-runtime provider/death-proof contract exists, including Day-0 adoption;
-9. one Ready-root rule exists: ordinary admins hydrate, and only the Day-0 or fenced single-admin recovery root establishes Ready without a live Ready authority (§10.1);
+9. one Ready-root rule exists: ordinary admins hydrate, and only the Day-0 or single-admin recovery root establishes Ready without a live Ready authority (§10.1);
 10. one held-member repair mechanism exists (§13);
 11. one Direct/Proxy route-truth source exists ([connections.md](connections.md));
 12. one Node RPC certainty implementation exists;

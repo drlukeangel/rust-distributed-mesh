@@ -123,7 +123,7 @@ Rules:
 - leadership projections are derived by the canonical LeadershipView, not trusted because a publisher claimed them;
 - the aggregate/current birth projection preserves the current RuntimeFact and required current runtime metadata needed by an authority-bearing admin to manage that birth.
 
-Use **forward**, not application-level `relay`, for this topology action. Iroh Relay remains a transport term only.
+Use **forward** for this topology action. The transport's relay servers are disabled on every endpoint (`relay_mode Disabled`) and the word names nothing here.
 
 ### 3.1 Frame catalog
 
@@ -195,7 +195,7 @@ re-broadcast it exists to avoid.
 
 Receiver rules:
 
-- a `Digest`, an aggregate entry, a delta entry or a snapshot entry for a deleted exact birth is refused by name, and so is any later incarnation of a NodeId accepted as `NodeDeleted`, for the deleted retention; the deleted record keeps `(NodeId, IncarnationId)` for exact proof, the fence is the NodeId. A restart never emits `NodeDeleted`, so a new incarnation along the lineage of a node that was not deleted is taken;
+- a `Digest`, an aggregate entry, a delta entry or a snapshot entry for a deleted exact birth is refused by name, and so is any later incarnation of a NodeId accepted as `NodeDeleted`, for the deleted retention; the deleted record keeps `(NodeId, IncarnationId)` for exact proof, the refusal keys on the NodeId. A restart never emits `NodeDeleted`, so a new incarnation along the lineage of a node that was not deleted is taken;
 - a lifecycle event whose key the receiver already applied is a no-op;
 - the `NodeDeleting` overlay, like every lifecycle state and overlay, is read only by application routing, under the [routing rule](lifecycles/states.md#routing-stop); the resolver and the Node RPC client never read lifecycle;
 - a receiving primary forwards a status frame and never restates it as its own;
@@ -210,7 +210,7 @@ Receiver rules:
 - no Rafka-time field decides liveness or `Gone`: silence is local receipt age.
 
 <a id="gossip-correlation"></a>
-Correlation: a gossip frame carries no Node RPC fence or CallContext and has no W3C parent edge.
+Correlation: a gossip frame carries no Node RPC target or CallContext and has no W3C parent edge.
 Correlate a frame with its operation by `build_id`, `attempt`, `operation`, `node_id` and
 `incarnation`, and an aggregate by its `publisher`, `topology_version` and `snapshot_id`. A gossip
 receiver's TraceId or ParentSpanId need not match the operation's trace.
@@ -756,7 +756,7 @@ keeps an eternal NodeId graveyard.
 
 A NodeId accepted as `NodeDeleted` stays deleted for the retention: a later digest of the deleted
 birth, and a later incarnation wearing that NodeId, are refused. The record keeps the
-incarnation for exact proof; the fence is the NodeId. A restart never emits `NodeDeleted`, so a
+incarnation for exact proof; the refusal keys on the NodeId. A restart never emits `NodeDeleted`, so a
 restarted node that was not deleted is taken along its lineage.
 
 Every running process feeds current births, overlays and deletions from membership into its
@@ -836,7 +836,7 @@ from that store, every other kind raw, and the node installs the answer only onc
 and pulled rows share one apply rule, so nothing gossiped during the pull is lost. Only then does the node mark
 itself ready (span `rafka.mesh.entry.update.via-projection-pulled`, with `entity_rows` and `raw_applied`).
 
-A pull that cannot be answered holds the node below `ready-for-traffic`. node-admin refuses a pull it cannot serve (it is not the snapshot authority, the snapshot will not encode, or it cannot serve the system org's own record) by name (`rafka.mesh.entry.reject.via-projection-refused`). The node names each failed attempt, refused, unreachable or cut short, on `rafka.mesh.entry.reject.via-projection-pull-failed` with its reason, backs off, re-resolves the current primary node-admin from the topology it holds on every attempt, and pulls again from that authority until an answer is applied; only then does it mark itself ready. A `not-born` answer before day 0 is a valid answer and does not hold the node. Every store reads through to the broker on a runtime miss; read-through never stands in for a refused pull. The durable topics remain the completeness backstop: the pull carries the hot working set node-admin holds, not a drain of every broker.
+A pull that cannot be answered holds the node below `ready-for-traffic`. node-admin refuses a pull it cannot serve (it is not the snapshot authority, the snapshot will not encode, or it cannot serve the system org's own record) by name (`rafka.mesh.entry.reject.via-projection-refused`). The node names each failed attempt, refused, unreachable or cut short, on `rafka.mesh.entry.reject.via-projection-pull-failed` with its reason, backs off, re-resolves the current primary node-admin from the topology it holds on every attempt, and pulls again from that authority until an answer is applied; only then does it mark itself ready. A `not-born` answer before day 0 is a valid answer and does not hold the node. Every store reads through to the broker on a runtime miss; read-through never stands in for a refused pull. The durable topics remain the completeness backstop: the pull carries the hot working set node-admin holds, not a copy of every broker's whole set.
 
 ---
 
@@ -933,7 +933,7 @@ At minimum:
 7. failed rejoin never marks Dead;
 8. proven-dead held member is removed from repair targets;
 9. restarted/joining authority node cannot become Ready before required topology + `Fabric.build_id`/Build + RuntimeFact/runtime-metadata + provider-domain hydration;
-10. normal joining admin cannot self-Ready around missing hydration; only Day-0/fenced single-admin recovery-root behavior is permitted;
+10. normal joining admin cannot self-Ready around missing hydration; only Day-0/single-admin recovery-root behavior is permitted;
 11. late lower-NodeId admin can learn/adopt current runtimes it did not launch without completed Build receipts;
 12. provider/bootstrap locator production results in exactly one normalized node-published RuntimeFact, not a competing launcher-owned fact;
 13. `Fabric.build_id` and its Build come from durable storage or the JoinNode (op `0x1D`), never from gossip alone;

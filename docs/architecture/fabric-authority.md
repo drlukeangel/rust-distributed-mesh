@@ -330,7 +330,7 @@ Do not collapse these operations into one generic "re-entry" rule.
 | Mesh remove | yes | yes as estate changes | yes | Build + Mesh/Fabric lifecycle transition |
 | node-admin joins a live mesh whose node-admins are all lost | no | yes (it becomes the mesh's successor primary) | **not by the join itself** (§7) | Build (the [mesh investigation](lifecycles/mesh-investigation.md) carrier-edge-lost verdict runs node.create) + canonical LeadershipView + hydration |
 | Mesh replacement (mesh.delete, then a new mesh) | yes | yes | yes | Build + Mesh/Fabric lifecycle transition |
-| Day 0 | establishes the first accepted Build | initial authority | yes | fenced lifecycle root + canonical LeadershipView |
+| Day 0 | establishes the first accepted Build | initial authority | yes | lifecycle root + canonical LeadershipView |
 
 A reset-specific clear/rewrite/re-entry path must remain explicit. It must not be inferred from seat movement, and takeover code must not be reused as a hidden reset transition.
 
