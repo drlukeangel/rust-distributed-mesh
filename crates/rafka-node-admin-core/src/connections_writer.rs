@@ -18,15 +18,15 @@
 //! observation, at the next settlement a caller asks for, and every [`RECONCILER_TICK`] while
 //! owed. Nothing is queued; a restart reconstructs the same obligation from the same rows.
 //!
-//! A connection this node accepts is never a row (R-CN1): an accept from the exact destination
-//! birth this node reaches through its own Proxy is a recovery trigger
-//! ([`rafka_node_rpc::AcceptTrigger`]). It arms one pending attempt for that birth (connections.md
-//! §9.4: at most one per destination birth; repeated accepts coalesce) and wakes the same
-//! reconciler, which dials this node's own data-plane connection once the series' reconnect
-//! backoff from its latest Failed row has ended (§9.3), never earlier. Only that dial's Direct
-//! Connected owes the Proxy's retirement; a failed dial is the series' next Failed row and the
-//! attempt waits for its backoff; an attempt toward a birth membership no longer holds is dropped
-//! undialled (§9.5 step 1).
+//! Two paths arm the one pending direct-recovery attempt per destination birth (connections.md
+//! §9.4, Q7): a latest Direct Failed row in `held`, and a connection accepted from the exact
+//! destination birth this node reaches through its own Proxy (R-CN1,
+//! [`rafka_node_rpc::AcceptTrigger`], never a row). An accept arriving while an item is pending
+//! coalesces into it and wakes the reconciler, which dials this node's own data-plane connection
+//! once the series' reconnect backoff from its latest Failed row has ended (§9.3), never earlier.
+//! Only that dial's Direct Connected owes the Proxy's retirement; a failed dial is the series'
+//! next Failed row and the attempt waits for its backoff; an attempt toward a birth membership no
+//! longer holds is dropped undialled (§9.5 step 1).
 
 use crate::storage::ConnectionsStorage;
 use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionKind, ConnectionState, ConnectionsHeld, NodeConnection};
@@ -110,8 +110,9 @@ struct Inner {
     /// observation, a [`ConnectionsWriter::record`] or a retirement settlement; and by a start
     /// until it holds the name its join answer handed ([`ConnectionsWriter::hold_rows`]).
     write_gate: Arc<tokio::sync::Mutex<()>>,
-    /// The pending direct-recovery attempts (connections.md §9.4): at most one per destination
-    /// birth, armed by an accept from that birth while this node reaches it through its Proxy.
+    /// The pending direct-recovery attempts (connections.md §9.4, Q7): at most one per destination
+    /// birth, armed by a latest Direct Failed row or by an accept from that birth while this node
+    /// reaches it through its Proxy.
     recovery: Mutex<HashMap<(NodeId, IncarnationId), Pending>>,
     /// Wakes the reconciler once an accept armed an attempt: one stored wake however many accepts.
     wake: tokio::sync::Notify,
@@ -307,6 +308,7 @@ impl ConnectionsWriter {
         };
         tracing::info_span!("rdm.node_admin.connection.update.via-hydrate", node = %own.name, applied)
             .in_scope(|| tracing::info!("the held projection is hydrated from this node's own index"));
+        self.sync_recovery();
         let _ = self.settle_owed().await;
         Ok(applied)
     }
@@ -317,6 +319,7 @@ impl ConnectionsWriter {
         self.own_now();
         self.persist(&row).await?;
         let _ = self.inner.held.lock().unwrap().apply(row);
+        self.sync_recovery();
         Ok(())
     }
 
@@ -543,12 +546,42 @@ impl ConnectionsWriter {
                     if let Some(r) = fact {
                         span.record("entry", r.id.to_string().as_str());
                     }
-                    span.in_scope(|| tracing::info!("this node dialled its own connection toward the destination birth an accept named"));
+                    span.in_scope(|| tracing::info!("this node dialled its own connection toward the destination birth"));
                     match latest {
                         Some(r) if Some(&r.id) != basis.as_ref() && r.state == ConnectionState::Connected => self.spend(&key, &source, &destination, "direct-connected"),
-                        Some(r) if Some(&r.id) != basis.as_ref() => {}
+                        Some(r) if Some(&r.id) != basis.as_ref() => {
+                            if let Some(p) = self.inner.recovery.lock().unwrap().get_mut(&key) {
+                                p.traceparent = None;
+                            }
+                        }
                         _ => self.spend(&key, &source, &destination, "no-fact"),
                     }
+                }
+            }
+        }
+    }
+
+    /// Arm the one pending recovery attempt per `(destination, destination_incarnation)` from each
+    /// own latest Direct Failed row in `held` (connections.md §9.4, §9.5, Q7). A series for a
+    /// superseded birth at the same path is replaced by the current birth's series.
+    fn sync_recovery(&self) {
+        let directs: Vec<NodeConnection> = {
+            let held = self.inner.held.lock().unwrap();
+            held.own_latest_directs()
+                .into_iter()
+                .filter(|r| held.end_superseded(&r.destination) != Some(true))
+                .cloned()
+                .collect()
+        };
+        let mut recovery = self.inner.recovery.lock().unwrap();
+        for row in directs {
+            if row.state == ConnectionState::Failed && row.recovery.is_some() {
+                if let Some(inc) = row.destination.incarnation.clone() {
+                    recovery.retain(|(id, i), p| p.destination.name != row.destination.name || (id == &row.destination.node_id && i == &inc));
+                    recovery.entry((row.destination.node_id.clone(), inc)).or_insert_with(|| Pending {
+                        destination: row.destination.clone(),
+                        traceparent: None,
+                    });
                 }
             }
         }
@@ -611,6 +644,7 @@ impl ConnectionsWriter {
             let landed = match w.persist(&row).await {
                 Ok(()) => {
                     let _ = w.inner.held.lock().unwrap().apply(row.clone());
+                    w.sync_recovery();
                     span.record("outcome", "landed");
                     true
                 }
@@ -723,7 +757,12 @@ impl rafka_node_rpc::AcceptTrigger for ConnectionsWriter {
             "direct-connected"
         } else {
             match self.inner.recovery.lock().unwrap().entry(key) {
-                std::collections::hash_map::Entry::Occupied(_) => "coalesced",
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if e.get().traceparent.is_none() {
+                        e.get_mut().traceparent = rafka_mesh_telemetry::traceparent_of(&span);
+                    }
+                    "coalesced"
+                }
                 std::collections::hash_map::Entry::Vacant(v) => {
                     v.insert(Pending { destination: destination.clone(), traceparent: rafka_mesh_telemetry::traceparent_of(&span) });
                     "pending"
