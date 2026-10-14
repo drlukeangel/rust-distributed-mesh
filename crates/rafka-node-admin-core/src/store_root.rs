@@ -1,9 +1,11 @@
 //! The fabric's one shared store root (R14): `<store_dir>/<fabric_id>/`, one location every node
 //! of the fabric reaches on the same backing namespace.
 //!
-//! Layout: `fabric/` (the fabric-primary's), `meshes/<mesh>` (each mesh's primary's Mesh row),
+//! Layout: `fabric/` (the fabric-primary's identity, seats, mesh deletes and `fabric/builds/` Build
+//! journal), `meshes/<mesh>` (each mesh's primary's Mesh row),
 //! `meshes/<mesh>/claims/` (the mesh's one attempt in flight, inserted by its claimant: the
 //! fabric-primary for a topology operation, the mesh-primary for its drift attempt; R-BI7),
+//! `meshes/<mesh>/builds/` (the mesh's primary's Build receipts; R-BI6),
 //! `nodes/<mesh>/` (each mesh's primary's members' Node rows and contacts), `connections/<node>/`
 //! (each node its own) and `status/<mesh>/` (each mesh's primary's status rows). Beside the
 //! per-fabric roots, `<store_dir>/fabrics/<name>` is the fabrics' name index (R-FN1): each fabric's
@@ -132,9 +134,19 @@ impl StoreRoot {
     }
 
     /// `meshes/<mesh>/`: the mesh's own rows beside its Mesh row (`meshes/<mesh>/claims/`, its
-    /// in-flight attempt: `crate::mesh_claims`).
+    /// in-flight attempt: `crate::mesh_claims`; `meshes/<mesh>/builds/`, its Build receipts: R-BI6).
     pub fn meshes(&self, mesh: &str) -> PathBuf {
         self.dir.join("meshes").join(mesh)
+    }
+
+    /// `fabric/builds/`: the fabric-primary's Build journal on the shared store root (R-BI6).
+    pub fn fabric_builds(&self) -> PathBuf {
+        self.dir.join("fabric").join("builds")
+    }
+
+    /// `meshes/<mesh>/builds/`: `mesh`'s primary's Build receipts on the shared store root (R-BI6).
+    pub fn mesh_builds(&self, mesh: &str) -> PathBuf {
+        self.meshes(mesh).join("builds")
     }
 
     /// `connections/<node>/`: the node's own connections rows and raw log.

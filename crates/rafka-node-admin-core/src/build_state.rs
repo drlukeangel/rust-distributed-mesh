@@ -1687,6 +1687,11 @@ impl FileJournal {
         Ok(Self { path, log: Mutex::new(log), writer: tokio::sync::Mutex::new(Derived::default()) })
     }
 
+    /// Open the Build journal on `root` for an admin of `own_mesh` (R-BI6).
+    pub async fn open_on_root(root: &crate::store_root::StoreRoot, _own_mesh: &str) -> Result<Self, BuildStateError> {
+        Self::open(root.dir()).await
+    }
+
     /// Append `fact` as one fsynced line, then publish it ([`publish`]). The caller holds the
     /// writer's turn `w`.
     async fn append(&self, w: &Derived, fact: BuildFact) -> Result<(), BuildStateError> {
@@ -2668,5 +2673,84 @@ mod tests {
         assert_eq!(serde_json::from_str::<BuildFact>(&serde_json::to_string(&new).unwrap()).unwrap(), new);
         let fabric = serde_json::to_value(BuildFact::Claim(claim("b1", 2, "mesh1.admin.1"))).unwrap();
         assert!(fabric.get("mesh").is_none() && fabric.get("claimant").is_none(), "a fabric-lane line is written as before: {fabric}");
+    }
+
+    /// CONTRACT (R-BI6, Luke 2026-10-12: "the Build journal's location is the adapter's and
+    /// provider's choice; RDM's file adapter keeps it on the fabric's shared store root
+    /// (`fabric/builds/` under the writer ladder, the fabric-primary its writer) so a successor reads
+    /// it there; the per-admin journal and `store_root.rs`'s exclusion of it go"): a `FileJournal`
+    /// opened on a `StoreRoot` writes fabric-lane facts under `fabric/builds/build-journal.jsonl` and
+    /// mesh-lane facts under `meshes/<mesh>/builds/build-journal.jsonl` (never under a per-admin data
+    /// dir), holds writes in the root's `Scratchpad` before the first state-commit, and a successor
+    /// (whether already open on the same `StoreRoot` or freshly opened after a restart) reads both
+    /// fabric-lane and mesh-lane facts from the shared store root without gossip.
+    #[tokio::test]
+    async fn the_build_journal_lives_on_the_shared_store_root_under_the_writer_ladder_and_a_successor_reads_it_there() {
+        let d = crate::record_store::tempdir("rbi6-store-root-journal");
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let fabric_id = crate::model::FabricId::mint();
+
+        // 1. Before the first state-commit, a root opened on `store` holds writes in its scratchpad.
+        let root_pre = crate::store_root::StoreRoot::open(&store, &fabric_id).unwrap();
+        assert_eq!(root_pre.writes_to(), "scratchpad");
+        let j_mesh1 = FileJournal::open_on_root(&root_pre, "mesh1").await.unwrap();
+        j_mesh1.publish_accepted(&intent("b1")).await.unwrap();
+        j_mesh1.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+        j_mesh1.append_step_receipt(&step("b1", 1, "admit-node:mesh1.admin.1")).await.unwrap();
+        assert!(
+            !root_pre.fabric_builds().join(JOURNAL_FILE).exists(),
+            "before state-commit, nothing is written to fabric/builds/ on disk"
+        );
+        let pub_out = root_pre.scratchpad().unwrap().publish().await.unwrap();
+        assert!(
+            pub_out.stores.iter().any(|s| s.store == "fabric/builds" && s.written == 3),
+            "state-commit publishes the held fabric/builds journal lines: {pub_out:?}"
+        );
+        assert!(
+            root_pre.fabric_builds().join(JOURNAL_FILE).exists(),
+            "after state-commit, fabric/builds/build-journal.jsonl exists on the store root"
+        );
+        assert!(
+            !root_pre.dir().join(JOURNAL_FILE).exists(),
+            "no build-journal.jsonl sits at the top of the store root or a per-admin data dir"
+        );
+
+        // 2. A second admin in mesh2 opens the shared store root; a successor in mesh1 also opens it.
+        // Without gossip (`absorb_facts`), mesh2's journal already sees the accepted Build from the
+        // shared store root, opens and runs a drift-lane attempt for mesh2 (written under
+        // `meshes/mesh2/builds/build-journal.jsonl`), and the live `j_mesh1` plus a freshly opened
+        // successor `j_successor` both read the fabric-lane and mesh2-lane facts from the store root.
+        let id = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        let root_mesh2 = crate::store_root::StoreRoot::at(root_pre.dir());
+        let j_mesh2 = FileJournal::open_on_root(&root_mesh2, "mesh2").await.unwrap();
+        assert_eq!(j_mesh2.read_build(&id).await.unwrap().attempt, 1);
+
+        // Fabric-primary finishes fabric lane attempt 1 on `j_mesh1`; `j_mesh2` sees it on its next read/write
+        // without `absorb_facts`.
+        j_mesh1.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
+        assert_eq!(j_mesh2.read_build(&id).await.unwrap().state, BuildState::Complete);
+
+        // Mesh2's primary opens, claims, steps, and converges a drift attempt on mesh2's lane.
+        j_mesh2.open_attempt(&lane_open("b1", "mesh2", 1, "mesh2.rpc.2")).await.unwrap();
+        assert_eq!(j_mesh2.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.1")).await.unwrap(), ClaimOutcome::Won);
+        let mut drift_step = step("b1", 1, "retire-node:mesh2.rpc.2");
+        drift_step.mesh = Some("mesh2".into());
+        j_mesh2.append_step_receipt(&drift_step).await.unwrap();
+        let mut drift_verdict = attempt("b1", 1, AttemptOutcome::Converged);
+        drift_verdict.mesh = Some("mesh2".into());
+        j_mesh2.append_attempt_receipt(&drift_verdict).await.unwrap();
+        assert!(
+            root_pre.mesh_builds("mesh2").join(JOURNAL_FILE).exists(),
+            "mesh2's primary writes its lane's facts under meshes/mesh2/builds/build-journal.jsonl"
+        );
+
+        // Both the already-open `j_mesh1` and a newly booted successor read mesh2's converged lane from the shared store root.
+        let view_live = serde_json::to_value(j_mesh1.read_build(&id).await.unwrap()).unwrap();
+        assert_eq!(view_live["lanes"]["mesh2"]["state"], "complete", "live fabric-primary reads mesh2's lane from the store root: {view_live}");
+        let j_successor = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), "mesh1").await.unwrap();
+        let view_succ = serde_json::to_value(j_successor.read_build(&id).await.unwrap()).unwrap();
+        assert_eq!(view_succ["state"], "complete");
+        assert_eq!(view_succ["lanes"]["mesh2"]["state"], "complete", "fresh successor reads both fabric/builds and meshes/mesh2/builds: {view_succ}");
     }
 }
