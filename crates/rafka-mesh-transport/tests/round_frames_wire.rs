@@ -54,7 +54,7 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
         assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex), "{frame:?} decodes and re-encodes to the same bytes");
     }
     // The frames that existed keep their positions.
-    assert_eq!(Frame::NodeDrained { op: rafka_mesh_entity::LifecycleOp {
+    assert_eq!(Frame::NodeConnectionsDeleted { op: rafka_mesh_entity::LifecycleOp {
         build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 300 },
         forwarded_by: None }.encode()[0], 13);
 }

@@ -12,7 +12,7 @@
 use rafka_mesh_entity::{ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, RuntimeLocator, RuntimeProvider};
 use rafka_node_rpc_contract::outcome::MalformedKind;
 use rafka_node_rpc_contract::protocol::NodeProtocol;
-use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope};
+use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, MAX_RECEIPT_MANIFEST_BYTES, FabricEvent, MeshDeleteRound, MeshState, NodeSelect, NodeState, NotAuthority, RetryOn, Status, StatusReply, StatusRequest, TagFilter, TagScope, WhichMesh};
 use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 
 fn node() -> NodeId { NodeId::parse("0123456789ab").unwrap() }
@@ -30,7 +30,7 @@ fn bytes(hex: &str) -> Vec<u8> {
 }
 
 #[test]
-fn requests_match_the_frozen_twenty_eight_variant_wire_schema() {
+fn requests_match_the_frozen_thirty_variant_wire_schema() {
     use StatusRequest::*;
     let fixtures = [
         (DeclareNodeState { node_id: node(), incarnation: birth(), state: NodeState::Leaving }, "000c3031323334353637383961620c39776370726667777674687903"),
@@ -39,8 +39,8 @@ fn requests_match_the_frozen_twenty_eight_variant_wire_schema() {
         (ProbeNodeState { node_id: node(), incarnation: birth() }, "030c3031323334353637383961620c397763707266677776746879"),
         (ApplyMeshState { mesh_id: mesh(), mesh_name: "mesh1".into(), state: MeshState::Pending }, "040c313132333435363738396162056d6573683100"),
         (ApplyFabricEvent { fabric_id: fabric(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } }, "050c323132333435363738396162010d6d657368312e61646d696e2e31"),
-        (DrainNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() }, "060c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31"),
-        (NodeDrained { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31"),
+        (Reserved6 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() }, "060c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31"),
+        (Reserved7 { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() }, "070c3031323334353637383961620c3977637072666777767468790c796e6835673262717a6634720116647261696e2d6e6f64653a6d657368312e7270632e31"),
         (StopNode { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() }, "080c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31"),
         (NodeLeft { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() }, "090c3031323334353637383961620c3977637072666777767468790c796e6835673262717a663472011573746f702d6e6f64653a6d657368312e7270632e31"),
         (DeleteMesh { mesh_id: mesh(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "shutdown-mesh:1123456789ab".into() }, "0a0c3131323334353637383961620c796e6835673262717a663472011a73687574646f776e2d6d6573683a313132333435363738396162"),
@@ -76,6 +76,10 @@ fn requests_match_the_frozen_twenty_eight_variant_wire_schema() {
         (CreateTags { node_id: node(), incarnation: birth(), labels: ["red".to_string()].into() }, "1a0c3031323334353637383961620c3977637072666777767468790103726564"),
         // node_id | incarnation | scope Labels (1) (len 1: "red")
         (DeleteTags { node_id: node(), incarnation: birth(), scope: TagScope::Labels(["red".to_string()].into()) }, "1b0c3031323334353637383961620c397763707266677776746879010103726564"),
+        // node_id | incarnation | build_id | attempt 1 | operation "join-mesh:mesh1.rpc.1"
+        (JoinMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "join-mesh:mesh1.rpc.1".into() }, "1c0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201156a6f696e2d6d6573683a6d657368312e7270632e31"),
+        // node_id | incarnation | build_id | attempt 1 | operation "leave-mesh:mesh1.rpc.1"
+        (LeaveMesh { node_id: node(), incarnation: birth(), build_id: "ynh5g2bqzf4r".into(), attempt: 1, operation: "leave-mesh:mesh1.rpc.1".into() }, "1d0c3031323334353637383961620c3977637072666777767468790c796e6835673262717a66347201166c656176652d6d6573683a6d657368312e7270632e31"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REQUEST_VARIANTS);
     for (request, hex) in fixtures {
@@ -86,12 +90,12 @@ fn requests_match_the_frozen_twenty_eight_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_forty_nine_variant_wire_schema() {
+fn replies_match_the_frozen_fifty_one_variant_wire_schema() {
     use StatusReply::*;
     let fixtures = [
         (Applied, "00"),
         (AlreadyApplied, "01"),
-        (NodeDrainingApplied { in_flight: 300 }, "02ac02"),
+        (Reserved2 { in_flight: 300 }, "02ac02"),
         (Current { node_id: node(), incarnation: birth(), state: NodeState::ReadyForTraffic }, "030c3031323334353637383961620c39776370726667777674687901"),
         (RejectedStaleIncarnation { held: birth() }, "040c397763707266677776746879"),
         (RejectedStaleMesh { held: mesh() }, "050c313132333435363738396162"),
@@ -169,6 +173,10 @@ fn replies_match_the_frozen_forty_nine_variant_wire_schema() {
         (RejectedName { reason: "r".into() }, "2f0172"),
         // connections (len 1)
         (BusyHoldingConnections { connections: vec![connection()] }, "30010c333132333435363738396162"),
+        // node_id | incarnation | joined (len 2: Own (0), Backbone (1))
+        (MeshJoined { node_id: node(), incarnation: birth(), joined: vec![WhichMesh::Own, WhichMesh::Backbone] }, "310c3031323334353637383961620c397763707266677776746879020001"),
+        // node_id | incarnation | left (len 1: Own (0))
+        (MeshLeft { node_id: node(), incarnation: birth(), left: vec![WhichMesh::Own] }, "320c3031323334353637383961620c3977637072666777767468790100"),
     ];
     assert_eq!(fixtures.len() as u32, Status::REPLY_VARIANTS);
     for (reply, hex) in fixtures {

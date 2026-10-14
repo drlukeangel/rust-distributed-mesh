@@ -34,17 +34,17 @@ fn op(operation: &str) -> LifecycleOp {
     }
 }
 
-/// CONTRACT: `NodeDraining` is variant 10, `NodeLeaving` 11 and `NodeLeft` 12 and `NodeDrained` 13 of the membership
+/// CONTRACT: `NodeConnectionsDeleting` is variant 10, `NodeLeaving` 11 and `NodeLeft` 12 and `NodeConnectionsDeleted` 13 of the membership
 /// frame, appended after `Concern` (9); each is the lifecycle op (build, attempt, operation,
 /// node id, incarnation, path.name, event instant) then the forwarding primary. What must NOT
 /// happen: a field moved, a variant inserted before the end, or a self-describing encoding.
 #[test]
 fn node_command_frames_match_the_frozen_wire_schema() {
     let fixtures = [
-        (Frame::NodeDraining { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0a 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
+        (Frame::NodeConnectionsDeleting { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0a 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
         (Frame::NodeLeaving { op: op("stop-node:mesh1.rpc.1"), forwarded_by: Some("mesh2.admin.1".into()) }, "0b 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 010d6d657368322e61646d696e2e31"),
         (Frame::NodeLeft { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None }, "0c 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
-        (Frame::NodeDrained { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0d 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
+        (Frame::NodeConnectionsDeleted { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0d 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
     ];
     for (frame, hex) in fixtures {
         assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
@@ -60,22 +60,22 @@ fn node_command_frames_match_the_frozen_wire_schema() {
 #[test]
 fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() {
     for original in [
-        Frame::NodeDraining { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None },
+        Frame::NodeConnectionsDeleting { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None },
         Frame::NodeLeaving { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None },
         Frame::NodeLeft { op: op("stop-node:mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) },
-        Frame::NodeDrained { op: op("drain-node:mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) },
+        Frame::NodeConnectionsDeleted { op: op("drain-node:mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) },
     ] {
         let forwarded = forward_of(original.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
         let (want_op, kind) = match &original {
-            Frame::NodeDraining { op, .. } => (op.clone(), 10u8),
+            Frame::NodeConnectionsDeleting { op, .. } => (op.clone(), 10u8),
             Frame::NodeLeaving { op, .. } => (op.clone(), 11),
             Frame::NodeLeft { op, .. } => (op.clone(), 12),
-            Frame::NodeDrained { op, .. } => (op.clone(), 13),
+            Frame::NodeConnectionsDeleted { op, .. } => (op.clone(), 13),
             _ => unreachable!(),
         };
         assert_eq!(forwarded.encode()[0], kind);
         match forwarded {
-            Frame::NodeDraining { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeDrained { op, forwarded_by } => {
+            Frame::NodeConnectionsDeleting { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeConnectionsDeleted { op, forwarded_by } => {
                 assert_eq!(op, want_op, "the op is preserved");
                 assert_eq!(forwarded_by.as_deref(), Some("mesh2.admin.1"));
             }
@@ -86,7 +86,7 @@ fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() 
 }
 
 /// CONTRACT: `MeshLeaving` is variant 14, `MeshLeave` 15 and `MeshLeft` 16, appended after
-/// `NodeDrained` (13); each is the mesh id, build, attempt, operation, its own fields, the
+/// `NodeConnectionsDeleted` (13); each is the mesh id, build, attempt, operation, its own fields, the
 /// publisher, the event instant and the forwarding primary, in that order.
 #[test]
 fn mesh_leave_frames_match_the_frozen_wire_schema() {
@@ -99,7 +99,7 @@ fn mesh_leave_frames_match_the_frozen_wire_schema() {
         assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
         assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex), "{frame:?} decodes and re-encodes to the same bytes");
     }
-    assert_eq!(Frame::NodeDrained { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }.encode()[0], 13);
+    assert_eq!(Frame::NodeConnectionsDeleted { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }.encode()[0], 13);
 }
 
 /// CONTRACT: a peer mesh's primary forwards a mesh frame its author sent onto its own channel,

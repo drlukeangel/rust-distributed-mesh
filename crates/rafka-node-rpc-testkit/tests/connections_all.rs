@@ -13,7 +13,7 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, P
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::{NotSentReason, RpcOutcome};
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, Status, StatusReply, StatusRequest, WhichMesh};
 use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, PullRequest, PullServer};
 use rafka_node_rpc_testkit::node;
 use rafka_node_rpc_testkit::originate::Seams;
@@ -174,11 +174,11 @@ fn a_rename_after_all_and_a_further_call_on_a_new_connection_is_applied() {
     })
 }
 
-/// CONTRACT: `DrainNode` and `NodeDrained` are reserved Status positions, never sent (R-CR4;
+/// CONTRACT: `Reserved6` and `Reserved7` are reserved Status positions, never sent (R-CR4;
 /// node-rpc-envelope.md "Node stop command pair": "a receiver refuses them by name"). A live node
-/// sent `DrainNode` refuses it by name (`RejectedUnmatchedCompletion`, field `command`) and starts
+/// sent `Reserved6` refuses it by name (`RejectedUnmatchedCompletion`, field `command`) and starts
 /// nothing: it still answers `All` with `ConnectionsDeleted`. What must NOT happen: `Applied`, or a
-/// `NodeDrained` call back to the commander.
+/// `Reserved7` call back to the commander.
 #[test]
 fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
     let cap = crate::common::capture("a_reserved_status_position_is_refused_by_name_and_starts_nothing");
@@ -194,7 +194,7 @@ fn a_reserved_status_position_is_refused_by_name_and_starts_nothing() {
         let (launch, _running) = live_node(&admin, &dir, &fabric).await;
         let target = NodeTarget::ExactNode(launch.node_id.clone());
         let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
-        let retired = StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1.new".into() };
+        let retired = StatusRequest::Reserved6 { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "4wd8hn3tqe6c".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.1.new".into() };
         let reply = call_on(&admin, &target, &retired, None).await;
         assert!(matches!(&reply, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name: {reply:?}");
         let all = StatusRequest::DeleteConnections { node_id, incarnation, scope: ConnectionScope::All };
@@ -363,3 +363,88 @@ fn all_closes_the_connections_opened_while_it_waited_for_admitted_work() {
         let _ = std::fs::remove_dir_all(&dir);
     })
 }
+
+/// CONTRACT: `node.mesh.leave` refuses `BusyHoldingConnections` (`rdm.node.mesh.reject.via-busy-holding-connections`)
+/// while an entry is open in the node's connections log; once `node.connections.delete { All }` closes
+/// the log's entries, `LeaveMesh` parks the mesh channel (`rdm.node.mesh.update.via-leaving`,
+/// `rdm.node.mesh.update.via-left` with `which = "own"`) and answers `MeshLeft { joined/left: [Own] }`.
+/// `JoinMesh` then reports back via `JoinNode` (`rdm.node.mesh.update.via-joining`), unparks the mesh
+/// channel (`rdm.node.mesh.update.via-joined` with `which = "own"`), and answers `MeshJoined`. And
+/// `node.stop` shares the `node.mesh.leave` step after `node.connections.delete { All }`.
+#[test]
+fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
+    let cap = crate::common::capture("node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop");
+    let spans = cap.spans.clone();
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), "node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop") {
+            return;
+        }
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, serve_ping).await;
+        let dir = std::env::temp_dir().join(format!("connections-all-mesh-leave-join-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (launch, _running, seams) = live_node_with(&admin, &dir, &fabric, |b| b).await;
+        let target = NodeTarget::ExactNode(launch.node_id.clone());
+        let (node_id, incarnation) = (launch.node_id.clone(), launch.incarnation.clone());
+
+        // Start joins the mesh (`via-joining` + `via-joined`).
+        let join_spans = fields_of(&spans, "rdm.node.mesh.update.via-joined");
+        assert!(join_spans.iter().any(|f| f.get("node").map(String::as_str) == Some(node_id.as_str()) && f.get("which").map(String::as_str) == Some("own")), "start emitted via-joined(own): {join_spans:#?}");
+
+        // Open a data-plane connection so the node's connections log is non-empty.
+        let out = ping_admin(&seams, &admin, &CallOptions::default()).await;
+        assert!(matches!(out, RpcOutcome::Reply(_)), "ping succeeds: {out:?}");
+        assert_eq!(seams.connections.held_routes().await.len(), 1, "one open route in log");
+
+        // Standalone `LeaveMesh` while holding an open connection is refused `BusyHoldingConnections`.
+        let leave_req = StatusRequest::LeaveMesh {
+            node_id: node_id.clone(),
+            incarnation: incarnation.clone(),
+            build_id: "4wd8hn3tqe6c".into(),
+            attempt: 1,
+            operation: "leave-mesh:busy".into(),
+        };
+        let busy = call_on(&admin, &target, &leave_req, None).await;
+        assert!(matches!(&busy, StatusReply::BusyHoldingConnections { connections } if connections.len() == 1), "LeaveMesh refuses while holding a connection: {busy:?}");
+        let rejects = fields_of(&spans, "rdm.node.mesh.reject.via-busy-holding-connections");
+        assert_eq!(rejects.len(), 1, "one busy-holding-connections span: {rejects:#?}");
+        assert_eq!(rejects[0].get("operation").map(String::as_str), Some("leave-mesh:busy"));
+
+        // Close all connections, then standalone `LeaveMesh` succeeds.
+        let all = StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: incarnation.clone(), scope: ConnectionScope::All };
+        assert!(matches!(call_on(&admin, &target, &all, None).await, StatusReply::ConnectionsDeleted { held, .. } if held.is_empty()));
+        let leave_ok = StatusRequest::LeaveMesh {
+            node_id: node_id.clone(),
+            incarnation: incarnation.clone(),
+            build_id: "4wd8hn3tqe6c".into(),
+            attempt: 1,
+            operation: "leave-mesh:clean".into(),
+        };
+        let left_reply = call_on(&admin, &target, &leave_ok, None).await;
+        assert_eq!(left_reply, StatusReply::MeshLeft { node_id: node_id.clone(), incarnation: incarnation.clone(), left: vec![WhichMesh::Own] });
+        let leaving = fields_of(&spans, "rdm.node.mesh.update.via-leaving");
+        assert_eq!(leaving.len(), 1, "one via-leaving span: {leaving:#?}");
+        assert_eq!(leaving[0].get("operation").map(String::as_str), Some("leave-mesh:clean"));
+        let left_spans = fields_of(&spans, "rdm.node.mesh.update.via-left");
+        assert_eq!(left_spans.len(), 1, "one via-left span: {left_spans:#?}");
+        assert_eq!(left_spans[0].get("which").map(String::as_str), Some("own"));
+
+        // Standalone `JoinMesh` brings the node back onto the mesh channel.
+        let join_req = StatusRequest::JoinMesh {
+            node_id: node_id.clone(),
+            incarnation: incarnation.clone(),
+            build_id: "4wd8hn3tqe6c".into(),
+            attempt: 1,
+            operation: "join-mesh:rejoin".into(),
+        };
+        let joined_reply = call_on(&admin, &target, &join_req, None).await;
+        assert_eq!(joined_reply, StatusReply::MeshJoined { node_id: node_id.clone(), incarnation: incarnation.clone(), joined: vec![WhichMesh::Own] });
+        let joining = fields_of(&spans, "rdm.node.mesh.update.via-joining");
+        assert!(joining.iter().any(|f| f.get("operation").map(String::as_str) == Some("join-mesh:rejoin")), "standalone JoinMesh emitted via-joining: {joining:#?}");
+        let joined_after = fields_of(&spans, "rdm.node.mesh.update.via-joined");
+        assert!(joined_after.iter().filter(|f| f.get("node").map(String::as_str) == Some(node_id.as_str()) && f.get("which").map(String::as_str) == Some("own")).count() >= 2, "standalone JoinMesh emitted via-joined(own): {joined_after:#?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}
+
