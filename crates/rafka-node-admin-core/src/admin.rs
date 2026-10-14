@@ -4791,6 +4791,7 @@ impl AdminRunner {
                 self.retire(build_id, attempt, node).instrument(span).await.map(|_| ())
             }
             BuildOperation::ShutdownMesh { mesh, mesh_id } => return self.shutdown_mesh(build_id, attempt, mesh, mesh_id).await,
+            BuildOperation::DeleteFabric { .. } => Err("fabric.delete not implemented".into()),
             BuildOperation::RecipeStep { step, birth } => return Box::pin(self.recipe_step(build_id, lane, attempt, step, birth.as_ref())).await,
         };
         ended.map_err(crate::executor::RunEnd::Failed)

@@ -182,6 +182,12 @@ pub enum BuildOperation {
         /// The mesh's minted id.
         mesh_id: rafka_mesh_entity::MeshId,
     },
+    /// Release the fabric name and record `fabric.deleted` after every mesh's `mesh.delete` and
+    /// every other mesh's final primary's `node.delete` have completed (fabric-delete.md step 3).
+    DeleteFabric {
+        /// The fabric's minted id.
+        fabric_id: rafka_mesh_entity::FabricId,
+    },
 }
 
 impl BuildOperation {
@@ -190,7 +196,7 @@ impl BuildOperation {
         match self {
             Self::CreateNode { node, .. } | Self::RestartNode { node } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::RecipeStep { step, .. } => Some(step.node()),
-            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } => None,
+            Self::CreateMesh { .. } | Self::ShutdownMesh { .. } | Self::DeleteFabric { .. } => None,
         }
     }
 
@@ -217,6 +223,7 @@ impl BuildOperation {
             // deleted from (a stopped birth's delete runs no stop steps, a live one's stops it first).
             Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => format!("retire-node:{node}"),
             Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
+            Self::DeleteFabric { fabric_id } => format!("fabric.delete:{fabric_id}"),
         }
     }
 }

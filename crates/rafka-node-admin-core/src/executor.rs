@@ -96,7 +96,7 @@ pub fn executor_for(op: &BuildOperation, t: &Topology) -> Option<PathName> {
         // A mesh retire whose mesh holds the fabric seat waits for node.fabric-primary.update ([`seat_move`]):
         // the new fabric-primary, outside the leaving mesh, drives the rest (mesh-delete.md step 1).
         BuildOperation::ShutdownMesh { .. } if seat_move(op, t).is_some() => None,
-        BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } => fabric(),
+        BuildOperation::CreateMesh { .. } | BuildOperation::ShutdownMesh { .. } | BuildOperation::DeleteFabric { .. } => fabric(),
     }
 }
 

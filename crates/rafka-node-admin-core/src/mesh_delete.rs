@@ -1659,6 +1659,57 @@ pub trait MeshDeleter: Send + Sync {
 /// The door a running admin fills once its runner exists.
 pub type MeshDeleterSlot = Arc<OnceLock<Arc<dyn MeshDeleter>>>;
 
+/// What an unanswered mesh (`mesh`, with no live `node-admin` primary in `view`) resolves to during
+/// `fabric.delete` (lifecycles/fabric-delete.md, "An unanswered mesh during `fabric.delete`";
+/// lifecycles/mesh-investigation.md, "During `fabric.delete`"; R-FS1 revised).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnansweredMeshOutcome {
+    /// Every node of the mesh was proven exited by the provider: rows are `Deleted`, mesh row is
+    /// `Dead`, and `MeshLeft` is recorded.
+    FullyCrashed(ExitManifest),
+    /// Ordinary members are live while all `node-admin`s are proven exited: create one `node-admin`
+    /// at `path` to amend the roster from `predecessor` and run `mesh.delete`.
+    CreateAdmin {
+        /// The path for the one `node-admin` created into the leaving mesh.
+        path: crate::model::PathName,
+        /// The exited `node-admin` birth that `AcceptedRoster` names as predecessor for `RosterAmended`.
+        predecessor: RosterBirth,
+    },
+}
+
+/// Resolve an unanswered mesh `mesh` during `fabric.delete` (R-FS1 revised).
+#[allow(clippy::too_many_arguments)]
+pub async fn unanswered_mesh_delete(
+    _builds: &dyn BuildStateAdapter,
+    _provider: &dyn crate::deployment::provider::DeploymentProvider,
+    _records: &crate::admin::Records,
+    _rows: Option<&crate::node_rows::NodeRows>,
+    _status: &dyn crate::status_storage::StatusStorage,
+    _meshes: &dyn crate::storage::MeshStorage,
+    _runtime_store: &dyn crate::storage::NodesStorage,
+    _key: &MeshDeleteKey,
+    _executor: &str,
+    _mesh: &str,
+    _mesh_nodes: &[Node],
+    _held_paths: &[crate::model::PathName],
+) -> Result<UnansweredMeshOutcome, String> {
+    Err("unanswered_mesh_delete not implemented".into())
+}
+
+/// Release the fabric's name on `storage` (`FabricStorage::release_name`) and record the
+/// `fabric.delete:<fabric_id>` `Complete` receipt on `builds` (lifecycles/fabric-delete.md step 3:
+/// "The fabric-primary, still alive, releases the fabric name and reports `fabric.deleted`").
+pub async fn complete_fabric_delete(
+    _builds: &dyn BuildStateAdapter,
+    _storage: &dyn crate::fabric_storage::FabricStorage,
+    _build_id: &BuildId,
+    _attempt: u32,
+    _fabric_id: &rafka_mesh_entity::FabricId,
+    _executor: &str,
+) -> Result<(), String> {
+    Err("complete_fabric_delete not implemented".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

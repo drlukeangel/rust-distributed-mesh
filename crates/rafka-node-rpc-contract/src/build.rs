@@ -136,6 +136,11 @@ pub enum BuildChange {
         /// The steps, in the order they run.
         steps: Vec<RecipeStep>,
     },
+    /// Delete the fabric (`fabric.delete`, lifecycles/fabric-delete.md): run `mesh.delete` on each
+    /// mesh leaf-inward (the fabric-primary's own mesh last, where the fabric seat stays put),
+    /// delete each other mesh's final mesh-primary, release the fabric name and report
+    /// `fabric.deleted` while the fabric-primary remains alive for its separate `node.delete`.
+    DeleteFabric,
 }
 
 /// One step of a [`BuildChange::Recipe`]: one node primitive acting on the node a `path.name` names

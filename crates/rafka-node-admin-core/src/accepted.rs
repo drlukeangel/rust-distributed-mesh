@@ -207,6 +207,8 @@ pub enum TopologyChange {
         /// The mesh to remove.
         mesh: String,
     },
+    /// `fabric.delete` (lifecycles/fabric-delete.md).
+    DeleteFabric,
 }
 
 /// What one attempt of a Build does beyond realizing its topology: a same-path restart, a standalone
@@ -454,6 +456,9 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
             }
             next.meshes.remove(mesh);
         }
+        TopologyChange::DeleteFabric => {
+            return Err(BuildReject::EmptyFabric);
+        }
     }
     next.validate()?;
     Ok(next)
@@ -582,7 +587,7 @@ pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName
 }
 
 /// [`plan`] for `build`'s current attempt, given what its receipts say already ran.
-pub(crate) fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
+pub fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
     plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed))
 }
 

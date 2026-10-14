@@ -85,3 +85,4 @@ mod stopped_gc;
 mod stopped_view;
 mod store_root_boot;
 mod topology_read;
+mod fabric_delete;

@@ -1,0 +1,673 @@
+//! `fabric.delete` replaces `FabricShutdown` (i143.e12.s59; lifecycles/fabric-delete.md,
+//! lifecycles/mesh-investigation.md "During `fabric.delete`", R-FS1 revised).
+//!
+//! 1. `crit:e12.s59.1`: `fabric.delete` of a two-mesh fabric runs `mesh.delete` on each mesh
+//!    leaf-inward (the fabric-primary's own mesh last, where the fabric seat stays put), deletes
+//!    each other mesh's final mesh-primary (`MeshLeft` + mesh row `Dead`), releases the fabric name
+//!    (`FabricStorage::release_name`) and reports `fabric.deleted` (`Complete` of
+//!    `fabric.delete:<fabric_id>`) while the fabric-primary remains alive for its separate
+//!    `node.delete`. After that separate `node.delete`, every node row is `Deleted`, every mesh row
+//!    is `Dead` in both `status.storage` and `mesh.storage`, and no fabric identity row remains held
+//!    in `fabric.storage`.
+//! 2. `crit:e12.s59.2`: an unanswered mesh during `fabric.delete` (R-FS1 revised):
+//!    - Held (unproven runtime) is refused by name (`Failed`), writing no `Deleted` or `Dead` row
+//!      and creating no `node-admin`.
+//!    - Every node of the mesh proven exited by the provider (fully crashed) commands nothing and
+//!      creates no `node-admin`: every birth's node row is written `Deleted` on that proof, the mesh
+//!      status row and `mesh.storage` row are written `Dead` by the fabric-primary as acting primary
+//!      with no survivor (`R-MD1`), and `MeshDeleted` and `MeshLeft` are recorded.
+//!    - Ordinary members live while all `node-admin`s are proven exited (`carrier-edge-lost`)
+//!      records `AcceptedRoster` and the exited admin's `TerminateRuntime` receipt, selects the next
+//!      free `node-admin` path (`leaving_mesh_admin_path`), and once that one `node-admin` is
+//!      created into the mesh under its existing `MeshId` on the same Build, amends the roster
+//!      (`RosterAmended`), adopts held state (`roster_rows_read`), runs `mesh.delete` (`members_exited`),
+//!      and is removed last by the fabric-primary's `node.delete`.
+
+use rafka_mesh_entity::{FabricId, IncarnationId, MeshId, NodeId, NodeKind};
+use rafka_node_admin_core::accepted::{compile, plan_for_build, AcceptedStore, FabricTopology, TopologyChange};
+use rafka_node_admin_core::admin::Records;
+use rafka_node_admin_core::build::{BuildId, BuildOperation};
+use rafka_node_admin_core::build_state::{AttemptOutcome, AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildStateAdapter, BuildStepReceipt, MemoryBuildStateAdapter, StepOutcome};
+use rafka_node_admin_core::control_plane::ControlPlane;
+use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
+use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
+use rafka_node_admin_core::executor::{executor_for, seat_move};
+use rafka_node_admin_core::fabric_storage::{FabricIdentity, FabricStorage, MemoryFabricStorage};
+use rafka_node_admin_core::join::Joins;
+use rafka_node_admin_core::mesh_delete::{accepted_roster, amend_roster, birth_row_deleted, complete_fabric_delete, completion_of, handoff_verdict, leaving_roster, manifest_reference, members_exited, mesh_left_proof, mesh_left_rows, operation, owner_resume, record_completion, roster_records, roster_rows_read, unanswered_mesh_delete, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, UnansweredMeshOutcome, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_LEFT};
+use rafka_node_admin_core::model::{DeploymentId, Fabric, Mesh, Node, NodeStatus, PathName, ProviderKind, ScopeStatus};
+use rafka_node_admin_core::node_rows::{ClaimFor, Claimed, NodeRows};
+use rafka_node_admin_core::status_rpc::Declared;
+use rafka_node_admin_core::status_storage::{MeshStatusRow, MemoryStatusStorage, StatusStorage};
+use rafka_node_admin_core::storage::{MemoryMeshStorage, MemoryNodesStorage, MeshStorage, NodeRow, NodesStorage, RuntimeRow};
+use rafka_node_admin_core::topology::Topology;
+use rafka_node_rpc_contract::status::MeshState;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
+use tokio::sync::RwLock;
+
+const DOMAIN: &str = "fabric-delete-cell";
+
+#[derive(Default)]
+struct Fleet {
+    pids: BTreeMap<u32, String>,
+    running_pids: Mutex<BTreeSet<u32>>,
+    terminated: Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl DeploymentProvider for Fleet {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Process
+    }
+    fn control_domain(&self) -> String {
+        DOMAIN.into()
+    }
+    async fn spawn(&self, _: &ResolvedNodeLaunch) -> Result<DeploymentHandle, DeployError> {
+        unreachable!("a mesh or fabric delete launches nothing here")
+    }
+    async fn terminate(&self, h: &DeploymentHandle, _: TerminationMode) -> Result<(), DeployError> {
+        let pid = h.pid.unwrap();
+        self.running_pids.lock().unwrap().remove(&pid);
+        self.terminated.lock().unwrap().push(self.pids[&pid].clone());
+        Ok(())
+    }
+    async fn inspect(&self, h: &DeploymentHandle) -> DeploymentStatus {
+        let pid = h.pid.unwrap();
+        if self.running_pids.lock().unwrap().contains(&pid) {
+            DeploymentStatus::Running
+        } else {
+            DeploymentStatus::Exited { code: Some(0) }
+        }
+    }
+    async fn signal_stop(&self, _: &DeploymentHandle) -> Result<(), DeployError> {
+        Ok(())
+    }
+    async fn find(&self, _: &ResolvedNodeLaunch) -> Result<rafka_node_admin_core::deployment::provider::Found, DeployError> {
+        Ok(rafka_node_admin_core::deployment::provider::Found::NeverLaunched)
+    }
+}
+
+struct NoRpc;
+#[async_trait::async_trait]
+impl NodeObserver for NoRpc {
+    async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
+        None
+    }
+    async fn ready(&self, _: &Node) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct View(Mutex<BTreeMap<String, Node>>, Mutex<BTreeSet<String>>);
+impl TopologySink for View {
+    fn publish(&self, n: Node) {
+        self.0.lock().unwrap().insert(n.name.to_string(), n);
+    }
+    fn remove(&self, _: &PathName) {}
+    fn remove_birth(&self, name: &PathName, node_id: &NodeId, incarnation: &IncarnationId) {
+        let mut view = self.0.lock().unwrap();
+        if view.get(&name.to_string()).is_some_and(|n| n.node_id == *node_id && n.incarnation_id.as_ref() == Some(incarnation)) {
+            view.remove(&name.to_string());
+        }
+        self.1.lock().unwrap().insert(name.to_string());
+    }
+}
+
+fn node_record(name: &str, primary: bool, fabric_primary: bool) -> Node {
+    let mut n = Node::allocated(name.parse().unwrap());
+    n.status = NodeStatus::ReadyForTraffic;
+    n.is_primary = primary;
+    n.is_fabric_primary = fabric_primary;
+    n.incarnation_id = Some(IncarnationId::mint());
+    n.config = BTreeMap::from([("role".to_string(), name.to_string())]);
+    n
+}
+
+fn handle(name: &str, pid: u32) -> DeploymentHandle {
+    DeploymentHandle {
+        deployment_id: DeploymentId::parse(&rafka_mesh_entity::fixture_crockford60(&format!("dep-{name}"))).unwrap(),
+        provider: ProviderKind::Process,
+        pid: Some(pid),
+        start: Some(1),
+        container: None,
+        domain: Some(DOMAIN.into()),
+    }
+}
+
+fn live_roster(records: &[Node]) -> Result<Vec<RosterBirth>, String> {
+    records.iter().filter(|n| n.status.is_live()).map(RosterBirth::of).collect()
+}
+
+async fn rows_written(storage: &MemoryNodesStorage, rows: &NodeRows, records: &[Node]) {
+    for n in records {
+        storage
+            .put_node_row(&NodeRow {
+                name: n.name.clone(),
+                node_id: n.node_id.clone(),
+                status: NodeStatus::ReadyForTraffic,
+                config: n.config.clone(),
+                tags: Default::default(),
+                allocated: None,
+                renamed_from: None,
+                inherited_by: None,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(rows.claim(&n.name, &n.node_id, "create-node", None, ClaimFor::Create).await, Ok(Claimed::HeldByNode(_))), "the writer holds {}'s row", n.name);
+        let h = handle(&n.name.to_string(), 50_000);
+        storage
+            .put_runtime(&RuntimeRow {
+                node_id: n.node_id.clone(),
+                name: n.name.clone(),
+                incarnation_id: n.incarnation_id.clone().unwrap(),
+                runtime: h.fact().unwrap(),
+                data_dir: None,
+            })
+            .await
+            .unwrap();
+    }
+}
+
+/// crit:e12.s59.1 — `fabric.delete` of a two-mesh fabric runs `mesh.delete` leaf-inward (`mesh2`
+/// first, then the fabric-primary's own mesh `mesh1` last with the fabric seat kept on
+/// `mesh1.admin.1`), deletes `mesh2`'s final mesh-primary (`mesh2.admin.1`), releases the fabric
+/// name (`FabricStorage::release_name`), and reports `fabric.deleted` (`Complete` of
+/// `fabric.delete:<fabric_id>`) while `mesh1.admin.1` remains alive for its separate `node.delete`.
+/// Once that separate `node.delete` runs, no live node, mesh or fabric row remains.
+#[tokio::test]
+async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awaits_its_own_node_delete() {
+    let data_root = std::env::temp_dir().join(format!("fabric-delete-{}", NodeId::mint()));
+    let fabric_id = FabricId::mint();
+    let (id1, id2) = (MeshId::mint(), MeshId::mint());
+    let m1_a1 = node_record("mesh1.admin.1", true, true);
+    let m1_r1 = node_record("mesh1.rpc.1", true, false);
+    let m2_a1 = node_record("mesh2.admin.1", true, false);
+    let m2_r1 = node_record("mesh2.rpc.1", true, false);
+    let all_nodes = vec![m1_a1.clone(), m1_r1.clone(), m2_a1.clone(), m2_r1.clone()];
+    let handles: BTreeMap<String, DeploymentHandle> = all_nodes.iter().enumerate().map(|(i, n)| (n.name.to_string(), handle(&n.name.to_string(), 51_000 + i as u32))).collect();
+    let fleet = Fleet { pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(), ..Default::default() };
+
+    let observed = Arc::new(RwLock::new(Topology {
+        fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: vec![
+            Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+            Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+        ],
+        nodes: all_nodes.clone(),
+    }));
+    let initial = FabricTopology::of_observed(&*observed.read().await);
+
+    // Durable stores for fabric, meshes, statuses, and each mesh's node rows.
+    let fabric_storage = Arc::new(MemoryFabricStorage::new());
+    let identity = FabricIdentity { fabric_id: fabric_id.clone(), name: "fabric1".into() };
+    fabric_storage.claim_identity(&identity).await.unwrap().unwrap();
+    let mesh_storage = MemoryMeshStorage::default();
+    for (id, name) in [(&id1, "mesh1"), (&id2, "mesh2")] {
+        mesh_storage.claim_mesh(&rafka_node_admin_core::storage::MeshRecord { mesh_id: id.clone(), name: name.into(), dead: false }).await.unwrap().unwrap();
+    }
+    let status_storage = MemoryStatusStorage::default();
+    let declared = Mutex::new(Declared::default());
+    let nodes_storage = Arc::new(MemoryNodesStorage::default());
+    let rows_m1 = NodeRows::new(m1_a1.name.clone(), m1_a1.node_id.clone(), observed.clone(), nodes_storage.clone());
+    let rows_m2 = NodeRows::new(m2_a1.name.clone(), m2_a1.node_id.clone(), observed.clone(), nodes_storage.clone());
+    rows_written(&nodes_storage, &rows_m1, &[m1_a1.clone(), m1_r1.clone()]).await;
+    rows_written(&nodes_storage, &rows_m2, &[m2_a1.clone(), m2_r1.clone()]).await;
+
+    // Compile TopologyChange::DeleteFabric and accept the Build.
+    let deleted_topology = compile(&initial, &TopologyChange::DeleteFabric, &*observed.read().await).expect("TopologyChange::DeleteFabric compiles to an empty/deleted topology");
+    assert!(deleted_topology.meshes.is_empty(), "a deleted fabric topology names no meshes: {deleted_topology:?}");
+
+    let builds = Arc::new(MemoryBuildStateAdapter::new());
+    let accepted = AcceptedStore::seeded(&*builds, fabric_id.clone(), initial.clone(), "mesh1.admin.1").await.unwrap();
+    let mut cp = ControlPlane::new(builds.clone(), accepted, m1_a1.name.clone(), observed.read().await.clone(), crate::adopted_time());
+    cp.topology = observed.clone();
+    let opened = cp.submit("POST /api/build", TopologyChange::DeleteFabric).await.expect("DeleteFabric is accepted as a Build");
+    let build_id = opened.build_id;
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+
+    // Step 1a: initial plan orders leaf-inward: non-FP mesh (mesh2) first, FP's own mesh (mesh1)
+    // after, and DeleteFabric at the end.
+    let proj = builds.read_build(&build_id).await.unwrap();
+    let initial_ops = plan_for_build(&proj, &*observed.read().await).operations;
+    assert_eq!(
+        initial_ops,
+        vec![
+            BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2.clone() },
+            BuildOperation::ShutdownMesh { mesh: "mesh1".into(), mesh_id: id1.clone() },
+            BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() },
+        ],
+        "fabric.delete plans non-FP meshes first, FP's own mesh last, then DeleteFabric"
+    );
+
+    let joins = Joins::default();
+    let view_sink = View::default();
+    let template = LaunchTemplate {
+        fabric: "fabric1".into(),
+        fabric_id: fabric_id.clone(),
+        executable: "/nonexistent/rafka-rpc-node".into(),
+        seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
+        launcher: rafka_mesh_entity::launch::Launcher { name: m1_a1.name.clone(), node_id: m1_a1.node_id.clone(), incarnation: m1_a1.incarnation_id.clone().unwrap() },
+        env: BTreeMap::new(),
+        data_root: data_root.clone(),
+        store_dir: data_root.clone(),
+        mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+    };
+    let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &*builds, template: &template, timeouts: Timeouts::default() };
+
+    // Execute ShutdownMesh(mesh2): mesh2.admin.1 deletes mesh2.rpc.1 and hands off MeshDeleted.
+    let op_m2 = operation(&id2);
+    let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
+    let me_m2 = RosterBirth::of(&m2_a1).unwrap();
+    let rt_m2 = RuntimeProof::of(&handles["mesh2.admin.1"].fact().unwrap());
+    let m2_records = vec![m2_a1.clone(), m2_r1.clone()];
+    let roster_m2 = accepted_roster(&*builds, &key_m2, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
+    let leaving_m2 = accepted_roster(&*builds, &key_m2, STEP_LEAVING_ROSTER, "mesh2.admin.1", &me_m2, &rt_m2, || live_roster(&m2_records)).await.unwrap();
+    members_exited(
+        &*builds,
+        &key_m2,
+        "mesh2.admin.1",
+        &leaving_m2,
+        &me_m2,
+        rt_m2.clone(),
+        &m2_records,
+        &[],
+        &NoLifecycleEvents,
+        |n: Node| {
+            let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
+            async move {
+                let name = n.name.to_string();
+                pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+            }
+        },
+        |b: RosterBirth| {
+            let (rows_m2, op_m2, m2_records) = (&rows_m2, &op_m2, &m2_records);
+            async move { birth_row_deleted(Some(rows_m2), "mesh2.admin.1", op_m2, m2_records, &b).await }
+        },
+    )
+    .await
+    .unwrap();
+    let facts = builds.facts().await.unwrap();
+    let admitted_m2 = rafka_node_admin_core::mesh_delete::Admitted { roster: roster_m2, final_primary: me_m2.clone(), final_runtime: rt_m2, amendments: Vec::new() };
+    let HandoffVerdict::Accept(manifest_m2) = handoff_verdict(&facts, &key_m2, &admitted_m2, &manifest_reference(build_id.as_str(), 1, &op_m2, false)) else { panic!("mesh2 handoff accepted") };
+    record_completion(&*builds, &key_m2, "mesh1.admin.1", &manifest_m2).await.unwrap();
+    observed.write().await.nodes.retain(|n| n.name != m2_r1.name);
+    observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh2").unwrap().status = ScopeStatus::Dead;
+
+    // Step 2: after mesh2's MeshDeleted, re-planning the SAME Build plans RetireNode(mesh2.admin.1)
+    // before ShutdownMesh(mesh1) and DeleteFabric!
+    let proj = builds.read_build(&build_id).await.unwrap();
+    let after_m2_deleted = plan_for_build(&proj, &*observed.read().await).operations;
+    assert_eq!(
+        after_m2_deleted,
+        vec![
+            BuildOperation::RetireNode { node: m2_a1.name.clone(), exited: None },
+            BuildOperation::ShutdownMesh { mesh: "mesh1".into(), mesh_id: id1.clone() },
+            BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() },
+        ],
+        "after mesh2's MeshDeleted, fabric.delete plans RetireNode(mesh2.admin.1) on the same Build"
+    );
+    assert_eq!(executor_for(&after_m2_deleted[0], &*observed.read().await), Some(m1_a1.name.clone()), "fabric-primary executes RetireNode(mesh2.admin.1)");
+
+    // Execute RetireNode(mesh2.admin.1) as fabric-primary: mesh2.admin.1 stops, its row is written
+    // Deleted by FP as acting primary, and MeshLeft + mesh_left_rows write mesh2 Dead.
+    let term_m2_a1 = pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a1.clone(), handle: handles["mesh2.admin.1"].clone(), exit: None }).await.unwrap();
+    observed.write().await.nodes.iter_mut().filter(|n| n.name == m2_a1.name).for_each(|n| {
+        n.status = NodeStatus::Leaving;
+        n.parked = true;
+    });
+    rows_m1.deleted(&m2_a1, "retire-node:mesh2.admin.1").await.unwrap();
+    observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
+    let left_m2 = mesh_left_proof(&manifest_m2, &term_m2_a1).unwrap();
+    mesh_left_rows(Some(&rows_m1), &status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left_m2.receipts).await.unwrap();
+    builds
+        .append_step_receipt(&BuildStepReceipt {
+            mesh: None,
+            build_id: build_id.clone(),
+            attempt: 1,
+            operation: op_m2.clone(),
+            step: STEP_MESH_LEFT.into(),
+            outcome: StepOutcome::Complete,
+            output: serde_json::to_value(&left_m2).ok(),
+            executor: Some("mesh1.admin.1".into()),
+        })
+        .await
+        .unwrap();
+
+    // Step 1b: now only mesh1 (the FP's own mesh) and DeleteFabric remain. On mesh1, seat_move is
+    // None (the fabric seat stays on mesh1.admin.1) and executor_for is mesh1.admin.1.
+    let proj = builds.read_build(&build_id).await.unwrap();
+    let after_m2_left = plan_for_build(&proj, &*observed.read().await).operations;
+    assert_eq!(
+        after_m2_left,
+        vec![
+            BuildOperation::ShutdownMesh { mesh: "mesh1".into(), mesh_id: id1.clone() },
+            BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() },
+        ],
+        "once mesh2 is MeshLeft, ShutdownMesh(mesh1) and DeleteFabric remain"
+    );
+    assert_eq!(seat_move(&after_m2_left[0], &*observed.read().await), None, "the fabric seat stays on mesh1.admin.1 during its own mesh's mesh.delete");
+    assert_eq!(executor_for(&after_m2_left[0], &*observed.read().await), Some(m1_a1.name.clone()));
+
+    // Execute ShutdownMesh(mesh1): mesh1.admin.1 deletes mesh1.rpc.1, commits mesh1 Dead in
+    // status.storage and mesh.storage, and records MeshDeleted while staying alive itself.
+    let op_m1 = operation(&id1);
+    let key_m1 = MeshDeleteKey { mesh_id: id1.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m1.clone() };
+    let me_m1 = RosterBirth::of(&m1_a1).unwrap();
+    let rt_m1 = RuntimeProof::of(&handles["mesh1.admin.1"].fact().unwrap());
+    let m1_records = vec![m1_a1.clone(), m1_r1.clone()];
+    let roster_m1 = accepted_roster(&*builds, &key_m1, STEP_ACCEPTED_ROSTER, "mesh1.admin.1", &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
+    let leaving_m1 = accepted_roster(&*builds, &key_m1, STEP_LEAVING_ROSTER, "mesh1.admin.1", &me_m1, &rt_m1, || live_roster(&m1_records)).await.unwrap();
+    members_exited(
+        &*builds,
+        &key_m1,
+        "mesh1.admin.1",
+        &leaving_m1,
+        &me_m1,
+        rt_m1.clone(),
+        &m1_records,
+        &[],
+        &NoLifecycleEvents,
+        |n: Node| {
+            let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
+            async move {
+                let name = n.name.to_string();
+                pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+            }
+        },
+        |b: RosterBirth| {
+            let (rows_m1, op_m1, m1_records) = (&rows_m1, &op_m1, &m1_records);
+            async move { birth_row_deleted(Some(rows_m1), "mesh1.admin.1", op_m1, m1_records, &b).await }
+        },
+    )
+    .await
+    .unwrap();
+    let facts = builds.facts().await.unwrap();
+    let admitted_m1 = rafka_node_admin_core::mesh_delete::Admitted { roster: roster_m1, final_primary: me_m1.clone(), final_runtime: rt_m1, amendments: Vec::new() };
+    let HandoffVerdict::Accept(manifest_m1) = handoff_verdict(&facts, &key_m1, &admitted_m1, &manifest_reference(build_id.as_str(), 1, &op_m1, false)) else { panic!("mesh1 handoff accepted") };
+    status_storage.put_mesh_status_of("mesh1", &MeshStatusRow { mesh_id: id1.clone(), state: MeshState::Dead }).await.unwrap();
+    mesh_storage.claim_mesh(&rafka_node_admin_core::storage::MeshRecord { mesh_id: id1.clone(), name: "mesh1".into(), dead: true }).await.unwrap().unwrap();
+    record_completion(&*builds, &key_m1, "mesh1.admin.1", &manifest_m1).await.unwrap();
+    observed.write().await.nodes.retain(|n| n.name != m1_r1.name);
+    observed.write().await.meshes.iter_mut().find(|m| m.name == "mesh1").unwrap().status = ScopeStatus::Dead;
+
+    // Step 3: after mesh1's MeshDeleted, re-planning plans ONLY DeleteFabric (mesh1.admin.1 is NOT
+    // retired inside fabric.delete!).
+    let proj = builds.read_build(&build_id).await.unwrap();
+    let before_complete = plan_for_build(&proj, &*observed.read().await).operations;
+    assert_eq!(
+        before_complete,
+        vec![BuildOperation::DeleteFabric { fabric_id: fabric_id.clone() }],
+        "the fabric-primary is NOT retired inside fabric.delete; only DeleteFabric remains"
+    );
+    complete_fabric_delete(&*builds, &*fabric_storage, &build_id, 1, &fabric_id, "mesh1.admin.1").await.expect("complete_fabric_delete releases the fabric name and records fabric.deleted");
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+
+    // At fabric.deleted:
+    // - No operations remain on the fabric.delete Build.
+    // - The fabric name is released in fabric.storage (`fabric()` is None).
+    // - The fabric-primary `mesh1.admin.1` is STILL ALIVE (`ReadyForTraffic` row in nodes.storage,
+    //   runtime not terminated).
+    let proj = builds.read_build(&build_id).await.unwrap();
+    assert!(plan_for_build(&proj, &*observed.read().await).operations.is_empty(), "fabric.delete Build has no operations left at fabric.deleted");
+    assert_eq!(fabric_storage.fabric().await.unwrap(), None, "fabric identity row is released at fabric.deleted");
+    assert!(!fleet.terminated.lock().unwrap().contains(&"mesh1.admin.1".to_string()), "fabric-primary is still alive at fabric.deleted");
+    assert_eq!(nodes_storage.node_row_at(&m1_a1.name).await.unwrap().unwrap().status, NodeStatus::ReadyForTraffic, "fabric-primary's node row is still live at fabric.deleted");
+
+    // Step 4: a separate call from outside the fabric runs `node.delete` of the fabric-primary.
+    assert!(cp.of_deleted_mesh(&m1_a1.name).await, "the fabric-primary's mesh is Dead after fabric.deleted");
+    let fp_delete = cp
+        .open_attempt_in(tracing::info_span!("cell.fp-delete"), "build.create", AttemptReason::Delete, m1_a1.name.clone(), rafka_node_admin_core::control_plane::ActionKind::Delete)
+        .await
+        .expect("the separate node.delete of the fabric-primary is admitted");
+    assert_eq!(fp_delete.attempt, 2);
+    let proj2 = builds.read_build(&build_id).await.unwrap();
+    let fp_ops = plan_for_build(&proj2, &*observed.read().await).operations;
+    assert_eq!(fp_ops, vec![BuildOperation::RetireNode { node: m1_a1.name.clone(), exited: None }], "attempt 2 plans only the fabric-primary's own node.delete");
+    assert_eq!(seat_move(&fp_ops[0], &*observed.read().await), None, "the last node of the last mesh moves no seat on its separate node.delete");
+    assert_eq!(executor_for(&fp_ops[0], &*observed.read().await), Some(m1_a1.name.clone()), "the fabric-primary executes its own final node.delete");
+
+    let term_m1_a1 = pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 2, node: m1_a1.clone(), handle: handles["mesh1.admin.1"].clone(), exit: None }).await.unwrap();
+    observed.write().await.nodes.iter_mut().filter(|n| n.name == m1_a1.name).for_each(|n| {
+        n.status = NodeStatus::Leaving;
+        n.parked = true;
+    });
+    rows_m1.deleted(&m1_a1, "retire-node:mesh1.admin.1").await.unwrap();
+    let left_m1 = mesh_left_proof(&manifest_m1, &term_m1_a1).unwrap();
+    mesh_left_rows(Some(&rows_m1), &status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m1, "mesh1", &left_m1.receipts).await.unwrap();
+
+    // Every node row is Deleted, both mesh rows are Dead in status.storage and mesh.storage, and
+    // the fabric name is released.
+    for n in &all_nodes {
+        let row = nodes_storage.node_row_at(&n.name).await.unwrap().expect("node row exists");
+        assert_eq!(row.status, NodeStatus::Deleted, "{}'s node row is Deleted", n.name);
+    }
+    for (id, name) in [(&id1, "mesh1"), (&id2, "mesh2")] {
+        assert!(status_storage.mesh_status_held_of(name, &MeshStatusRow { mesh_id: id.clone(), state: MeshState::Dead }).await.unwrap(), "{name} status row is Dead");
+    }
+    let mesh_rows = mesh_storage.meshes().await.unwrap();
+    assert!(mesh_rows.iter().all(|m| m.dead), "every mesh row in mesh.storage is Dead: {mesh_rows:?}");
+    assert_eq!(fabric_storage.fabric().await.unwrap(), None, "no fabric identity row remains");
+
+    let _ = std::fs::remove_dir_all(&data_root);
+}
+
+/// crit:e12.s59.2 — An unanswered mesh during `fabric.delete` (R-FS1 revised):
+/// 1. Held (unproven runtime) is refused by name (`Err`), writing no `Deleted` or `Dead` row.
+/// 2. Fully crashed (every node proven exited by the provider) writes every member's node row
+///    `Deleted` on that proof, writes the mesh row `Dead` as acting primary with no survivor, and
+///    records `MeshDeleted` and `MeshLeft` without commanding anything or creating a `node-admin`.
+/// 3. Members live (`carrier-edge-lost`: all `node-admin`s proven exited while ordinary members
+///    live) records `AcceptedRoster` + predecessor exit, selects `mesh2.admin.2` via
+///    `leaving_mesh_admin_path`, and once `mesh2.admin.2` is created into `mesh2` under its own
+///    `MeshId` on the same Build, amends the roster (`RosterAmended`), adopts held state, runs
+///    `mesh.delete`, and is removed last by the fabric-primary's `node.delete`.
+#[tokio::test]
+async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_live_or_deletes_rows_on_crash_proof_and_refuses_unproven() {
+    let data_root = std::env::temp_dir().join(format!("fabric-delete-unanswered-{}", NodeId::mint()));
+    let fabric_id = FabricId::mint();
+    let (id1, id2) = (MeshId::mint(), MeshId::mint());
+    let fp = node_record("mesh1.admin.1", true, true);
+
+    // ---- Arm 1 (Held / unproven) & Arm 2 (Fully crashed) on mesh2 ----
+    {
+        let m2_a1 = node_record("mesh2.admin.1", false, false);
+        let m2_r1 = node_record("mesh2.rpc.1", false, false);
+        let m2_nodes = vec![m2_a1.clone(), m2_r1.clone()];
+        let handles: BTreeMap<String, DeploymentHandle> = [(&m2_a1, 52_001u32), (&m2_r1, 52_002u32)].into_iter().map(|(n, pid)| (n.name.to_string(), handle(&n.name.to_string(), pid))).collect();
+        let fleet = Fleet {
+            pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(),
+            // Initially mesh2.admin.1's runtime is still running (unproven exit).
+            running_pids: Mutex::new(BTreeSet::from([52_001u32])),
+            ..Default::default()
+        };
+        let view = Arc::new(RwLock::new(Topology {
+            fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![
+                Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            ],
+            nodes: vec![fp.clone(), m2_a1.clone(), m2_r1.clone()],
+        }));
+        let nodes_storage = Arc::new(MemoryNodesStorage::default());
+        let rows_fp = NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone());
+        rows_written(&nodes_storage, &rows_fp, &m2_nodes).await;
+        for (n, h) in [(&m2_a1, &handles["mesh2.admin.1"]), (&m2_r1, &handles["mesh2.rpc.1"])] {
+            nodes_storage.put_runtime(&RuntimeRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+        }
+        let status_storage = MemoryStatusStorage::default();
+        let mesh_storage = MemoryMeshStorage::default();
+        mesh_storage.claim_mesh(&rafka_node_admin_core::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
+        let records = Records::default();
+        let builds = MemoryBuildStateAdapter::new();
+        let build_id = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: 0 })
+            .await
+            .unwrap();
+        let op_m2 = operation(&id2);
+        let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
+        let held_paths: Vec<PathName> = view.read().await.nodes.iter().map(|n| n.name.clone()).collect();
+
+        // Arm 1: mesh2.admin.1's runtime is still running -> unproven -> Err naming mesh2.admin.1.
+        let unproven = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths).await;
+        let err = unproven.expect_err("unproven node-admin runtime refuses unanswered mesh delete");
+        assert!(err.contains("mesh2.admin.1") && err.contains("not proven exited"), "refusal names the unproven birth: {err}");
+        assert_eq!(nodes_storage.node_row_at(&m2_a1.name).await.unwrap().unwrap().status, NodeStatus::ReadyForTraffic, "no row is written Deleted when unproven");
+        assert!(!status_storage.mesh_status_held_of("mesh2", &MeshStatusRow { mesh_id: id2.clone(), state: MeshState::Dead }).await.unwrap(), "mesh row is not Dead when unproven");
+
+        // Arm 2: now every node of mesh2 (mesh2.admin.1 and mesh2.rpc.1) has crashed (proven exited
+        // by the provider). Nothing is commanded and no node-admin is created; rows are written
+        // Deleted on that proof and mesh2 is written Dead as acting primary.
+        fleet.running_pids.lock().unwrap().clear();
+        let crashed = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths)
+            .await
+            .expect("fully crashed mesh resolves on provider exit proof");
+        let UnansweredMeshOutcome::FullyCrashed(manifest) = crashed else { panic!("expected FullyCrashed, got {crashed:?}") };
+        assert_eq!(manifest.receipts.len(), 2, "every birth of mesh2 has an exit receipt");
+        for n in &m2_nodes {
+            let row = nodes_storage.node_row_at(&n.name).await.unwrap().unwrap();
+            assert_eq!(row.status, NodeStatus::Deleted, "{}'s row is written Deleted on provider exit proof", n.name);
+        }
+        assert!(status_storage.mesh_status_held_of("mesh2", &MeshStatusRow { mesh_id: id2.clone(), state: MeshState::Dead }).await.unwrap(), "mesh2 status row is written Dead by acting primary");
+        assert!(mesh_storage.meshes().await.unwrap().iter().all(|m| m.dead), "mesh2 row in mesh.storage is Dead");
+        let steps = builds.read_build(&build_id).await.unwrap().steps;
+        assert_eq!(owner_resume(&steps, &op_m2), Ok(OwnerResume::Left), "MeshLeft is recorded so no separate RetireNode is planned for the crashed primary");
+    }
+
+    // ---- Arm 3 (Members live / carrier-edge-lost: create one node-admin into mesh2) ----
+    {
+        let m2_a1 = node_record("mesh2.admin.1", false, false);
+        let m2_r1 = node_record("mesh2.rpc.1", true, false);
+        let m2_nodes = vec![m2_a1.clone(), m2_r1.clone()];
+        let handles: BTreeMap<String, DeploymentHandle> = [(&m2_a1, 53_001u32), (&m2_r1, 53_002u32)].into_iter().map(|(n, pid)| (n.name.to_string(), handle(&n.name.to_string(), pid))).collect();
+        let fleet = Fleet {
+            pids: handles.iter().map(|(n, h)| (h.pid.unwrap(), n.clone())).collect(),
+            // mesh2.admin.1 exited, while mesh2.rpc.1 is still running!
+            running_pids: Mutex::new(BTreeSet::from([53_002u32])),
+            ..Default::default()
+        };
+        let view = Arc::new(RwLock::new(Topology {
+            fabric: Fabric { id: fabric_id.clone(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![
+                Mesh { id: Some(id1.clone()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic },
+                Mesh { id: Some(id2.clone()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic },
+            ],
+            nodes: vec![fp.clone(), m2_a1.clone(), m2_r1.clone()],
+        }));
+        let nodes_storage = Arc::new(MemoryNodesStorage::default());
+        let rows_fp = NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), nodes_storage.clone());
+        rows_written(&nodes_storage, &rows_fp, &m2_nodes).await;
+        for (n, h) in [(&m2_a1, &handles["mesh2.admin.1"]), (&m2_r1, &handles["mesh2.rpc.1"])] {
+            nodes_storage.put_runtime(&RuntimeRow { node_id: n.node_id.clone(), name: n.name.clone(), incarnation_id: n.incarnation_id.clone().unwrap(), runtime: h.fact().unwrap(), data_dir: None }).await.unwrap();
+        }
+        let status_storage = MemoryStatusStorage::default();
+        let mesh_storage = MemoryMeshStorage::default();
+        mesh_storage.claim_mesh(&rafka_node_admin_core::storage::MeshRecord { mesh_id: id2.clone(), name: "mesh2".into(), dead: false }).await.unwrap().unwrap();
+        let declared = Mutex::new(Declared::default());
+        let records = Records::default();
+        let builds = MemoryBuildStateAdapter::new();
+        let build_id = BuildId::mint();
+        builds
+            .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", id1.clone()), submitted_change: Some(TopologyChange::DeleteFabric), submitted_at_ms: 0 })
+            .await
+            .unwrap();
+        let op_m2 = operation(&id2);
+        let key_m2 = MeshDeleteKey { mesh_id: id2.clone(), build_id: build_id.clone(), attempt: 1, operation: op_m2.clone() };
+        let held_paths: Vec<PathName> = view.read().await.nodes.iter().map(|n| n.name.clone()).collect();
+
+        let outcome = unanswered_mesh_delete(&builds, &fleet, &records, Some(&rows_fp), &status_storage, &mesh_storage, &*nodes_storage, &key_m2, "mesh1.admin.1", "mesh2", &m2_nodes, &held_paths)
+            .await
+            .expect("members live with admin proven exited resolves to CreateAdmin");
+        let UnansweredMeshOutcome::CreateAdmin { path, predecessor } = outcome else { panic!("expected CreateAdmin, got {outcome:?}") };
+        assert_eq!(path, "mesh2.admin.2".parse::<PathName>().unwrap(), "creates one node-admin at the next free ordinal above mesh2.admin.1");
+        assert_eq!(predecessor, RosterBirth::of(&m2_a1).unwrap());
+
+        // The one node-admin `mesh2.admin.2` is created into `mesh2` under `id2` on the same Build,
+        // becomes mesh-primary, amends the roster, adopts held state (`roster_rows_read`), and runs
+        // `mesh.delete` (`members_exited`), then is removed last by the fabric-primary's `node.delete`.
+        let m2_a2 = node_record("mesh2.admin.2", true, false);
+        let h_a2 = handle("mesh2.admin.2", 53_003);
+        let mut fleet = fleet;
+        fleet.pids.insert(53_003, "mesh2.admin.2".into());
+        let rt_a2 = RuntimeProof::of(&h_a2.fact().unwrap());
+        let me_a2 = RosterBirth::of(&m2_a2).unwrap();
+        let rows_a2 = NodeRows::new(m2_a2.name.clone(), m2_a2.node_id.clone(), view.clone(), nodes_storage.clone());
+        rows_written(&nodes_storage, &rows_a2, std::slice::from_ref(&m2_a2)).await;
+        view.write().await.nodes.retain(|n| n.name != m2_a1.name);
+        view.write().await.nodes.push(m2_a2.clone());
+
+        amend_roster(&builds, &key_m2, "mesh1.admin.1", &RosterAmended { predecessor: predecessor.clone(), final_primary: me_a2.clone(), final_runtime: rt_a2.clone() })
+            .await
+            .expect("RosterAmended admits the created mesh2.admin.2");
+
+        let owner_facts = builds.facts().await.unwrap();
+        let (leaving, known) = leaving_roster(&builds, &builds, &key_m2, "mesh2.admin.2", &me_a2, &rt_a2, || unreachable!("amended primary uses owner's accepted roster"), || async { Ok(owner_facts) })
+            .await
+            .unwrap();
+        let current_nodes = view.read().await.nodes.clone();
+        let records_for_leave = roster_records(&current_nodes, &leaving, |_| None);
+        roster_rows_read(Some(&rows_a2), "mesh2.admin.2", &op_m2, &leaving, &records_for_leave).await;
+
+        let joins = Joins::default();
+        let view_sink = View::default();
+        let template = LaunchTemplate {
+            fabric: "fabric1".into(),
+            fabric_id: fabric_id.clone(),
+            executable: "/nonexistent/rafka-rpc-node".into(),
+            seeds: vec![("fpkey".into(), "127.0.0.1:34000".parse().unwrap())],
+            launcher: rafka_mesh_entity::launch::Launcher { name: m2_a2.name.clone(), node_id: m2_a2.node_id.clone(), incarnation: m2_a2.incarnation_id.clone().unwrap() },
+            env: BTreeMap::new(),
+            data_root: data_root.clone(),
+            store_dir: data_root.clone(),
+            mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        };
+        let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view_sink, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
+        let manifest = members_exited(
+            &builds,
+            &key_m2,
+            "mesh2.admin.2",
+            &leaving,
+            &me_a2,
+            rt_a2.clone(),
+            &records_for_leave,
+            &known,
+            &NoLifecycleEvents,
+            |n: Node| {
+                let (pipeline, handles, build_id) = (&pipeline, &handles, &build_id);
+                async move {
+                    let name = n.name.to_string();
+                    pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: n, handle: handles[&name].clone(), exit: None }).await.map_err(|e| e.to_string())
+                }
+            },
+            |b: RosterBirth| {
+                let (rows_a2, op_m2, records_for_leave) = (&rows_a2, &op_m2, &records_for_leave);
+                async move { birth_row_deleted(Some(rows_a2), "mesh2.admin.2", op_m2, records_for_leave, &b).await }
+            },
+        )
+        .await
+        .expect("created admin mesh2.admin.2 completes mesh.delete of mesh2");
+
+        record_completion(&builds, &key_m2, "mesh1.admin.1", &manifest).await.unwrap();
+        let term_a2 = pipeline.retire(&rafka_node_admin_core::deployment::pipeline::RetireRequest { build_id: build_id.clone(), attempt: 1, node: m2_a2.clone(), handle: h_a2, exit: None }).await.unwrap();
+        view.write().await.nodes.iter_mut().filter(|n| n.name == m2_a2.name).for_each(|n| {
+            n.status = NodeStatus::Leaving;
+            n.parked = true;
+        });
+        rows_fp.deleted(&m2_a2, "retire-node:mesh2.admin.2").await.unwrap();
+        let left = mesh_left_proof(&manifest, &term_a2).unwrap();
+        mesh_left_rows(Some(&rows_fp), &status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left.receipts).await.unwrap();
+
+        for name in [&m2_a1.name, &m2_r1.name, &m2_a2.name] {
+            let row = nodes_storage.node_row_at(name).await.unwrap().unwrap();
+            assert_eq!(row.status, NodeStatus::Deleted, "{name}'s node row is Deleted");
+        }
+        assert!(status_storage.mesh_status_held_of("mesh2", &MeshStatusRow { mesh_id: id2.clone(), state: MeshState::Dead }).await.unwrap());
+    }
+
+    let _ = std::fs::remove_dir_all(&data_root);
+}

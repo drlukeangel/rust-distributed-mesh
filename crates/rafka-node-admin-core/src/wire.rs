@@ -153,6 +153,7 @@ enum WireChange {
     RemoveNode { node: PathName },
     CreateMesh { desired: WireMeshDesired },
     RemoveMesh { mesh: String },
+    DeleteFabric,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -195,6 +196,7 @@ impl From<&TopologyChange> for WireChange {
             TopologyChange::RemoveNode { node } => Self::RemoveNode { node: node.clone() },
             TopologyChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             TopologyChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh: mesh.clone() },
+            TopologyChange::DeleteFabric => Self::DeleteFabric,
         }
     }
 }
@@ -207,6 +209,7 @@ impl From<WireChange> for TopologyChange {
             WireChange::RemoveNode { node } => Self::RemoveNode { node },
             WireChange::CreateMesh { desired } => Self::CreateMesh { desired: desired.into() },
             WireChange::RemoveMesh { mesh } => Self::RemoveMesh { mesh },
+            WireChange::DeleteFabric => Self::DeleteFabric,
         }
     }
 }
