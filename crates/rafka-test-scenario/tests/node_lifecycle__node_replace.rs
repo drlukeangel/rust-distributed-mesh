@@ -882,12 +882,13 @@ async fn deleting_a_parked_predecessor_after_its_mesh_primary_changed_is_execute
     let admin_attempt = u64::from(replace.attempt());
     estate.follow(replace).await;
     until_new_birth(&estate, &first_primary, &before_admin, SETTLE).await;
+    let replace_attempt = (admin_attempt + 1).to_string();
     let spans = wait_for("the admin replace's dispatch is exported", Duration::from_secs(60), || async {
         let spans = estate.spans();
-        dispatch_executor(&spans, &birth_build, &admin_attempt.to_string()).is_some().then_some(spans)
+        dispatch_executor(&spans, &birth_build, &replace_attempt).is_some().then_some(spans)
     })
     .await;
-    let new_primary = dispatch_executor(&spans, &birth_build, &admin_attempt.to_string()).unwrap();
+    let new_primary = dispatch_executor(&spans, &birth_build, &replace_attempt).unwrap();
     assert!(new_primary.starts_with("mesh2.admin.") && new_primary != first_primary, "mesh2's other admin took the seat: {new_primary}");
     let executor = delete_parked_and_assert(&estate, &birth_build, &parked).await;
     assert_eq!(executor, new_primary, "mesh2's new primary, which did not run the replace, executes the delete");
