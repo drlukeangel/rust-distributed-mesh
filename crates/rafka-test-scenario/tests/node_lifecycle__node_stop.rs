@@ -391,7 +391,7 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     let mut stop = estate.nodes_obj().await.stop(&NODE.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.stop of {NODE}: {e}"));
     let r = stop.accepted().clone();
     assert_eq!(r.build_id.to_string(), birth_build, "no Build is minted: {r:?}");
-    let attempt_no = u64::from(r.attempt);
+    let attempt_no = u64::from(r.attempt) + u64::from(before["is_primary"] == true);
     let opened = build_log::build_fact(&estate.carrier().await, &birth_build, "the stop attempt is the Build's current attempt", Duration::from_secs(30), |b| serde_json::to_value(b).is_ok_and(|b| b["reason"] == "stop")).await.unwrap_or_else(|end| panic!("{end}"));
     let opened = serde_json::to_value(opened).expect("a Build view serializes");
     assert_eq!((s(&opened["action"]["action"]).as_str(), s(&opened["action"]["path"]).as_str()), ("stop", NODE), "{opened}");

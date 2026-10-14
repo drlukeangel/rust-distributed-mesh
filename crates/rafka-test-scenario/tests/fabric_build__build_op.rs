@@ -29,8 +29,6 @@ use std::time::Duration;
 
 const FABRIC: &str = "fabric1";
 const SHAPE: [(&str, u32, u32); 2] = [("mesh1", 2, 1), ("mesh2", 2, 2)];
-/// A restart of an rpc node of `mesh2`: executed by `mesh2`'s own primary, not the fabric-primary.
-const NODE: &str = "mesh2.rpc.1";
 /// The events a restart's stream carries, in order.
 const RESTART_EVENTS: [NodeEvent; 6] = [
     NodeEvent::Restarting,
@@ -152,6 +150,12 @@ fn spans_named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
     named(spans, name)
 }
 
+/// The rpc node of `mesh2` that holds no seat: executed by `mesh2`'s own primary with no preceding
+/// seat move, so its restart is one attempt (`accepted.attempt`).
+async fn seatless_node(estate: &Estate) -> PathName {
+    estate.node_views().await.into_iter().filter(|n| n.name.to_string().starts_with("mesh2.rpc.") && !n.is_primary).map(|n| n.name).min().expect("an rpc node of mesh2 holding no seat")
+}
+
 /// CONTRACT (acceptance 1): `node.restart` over `0x20` is one call. The stream is `Started`, a frame
 /// per step as its `Complete` receipt becomes durable on the admin that wrote it, and `Complete`,
 /// pushed by the executor through the fabric-primary: the node is executed by `mesh2`'s own primary,
@@ -163,8 +167,9 @@ async fn a_restart_over_the_build_family_is_one_call_that_pushes_every_step_fram
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
+    let node = seatless_node(&estate).await;
 
-    let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
+    let mut stream = caller.nodes(&carrier).restart(&node).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
     let frames = frames_of(&mut stream).await;
     assert_eq!(frames.first(), Some(&Frame::Started { build_id: accepted.build_id.clone(), attempt: accepted.attempt }));
@@ -209,22 +214,23 @@ async fn a_cut_outer_stream_leaves_the_build_running_and_a_resubmit_after_the_en
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
+    let node = seatless_node(&estate).await;
     let nodes = caller.nodes(&carrier);
 
-    let mut cut = nodes.restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
+    let mut cut = nodes.restart(&node).await.expect("the fabric-primary accepts the restart");
     let accepted = cut.accepted().clone();
     // The first frame is the call's `Started`; the cut follows it, before any step is reported.
     assert!(matches!(cut.next().await, Some(Ok(Frame::Started { .. }))));
     drop(cut);
 
-    let mut attached = nodes.resume(WorkflowKind::Restart(path(NODE)), &accepted).await.expect("the re-submit is accepted");
+    let mut attached = nodes.resume(WorkflowKind::Restart(node.clone()), &accepted).await.expect("the re-submit is accepted");
     assert_eq!(attached.disposition(), StartDisposition::Attached, "the Build the cut left running is the one the re-submit attaches to");
     assert_eq!(attached.accepted().build_id, accepted.build_id, "never a second Build");
     let first = frames_of(&mut attached).await;
     assert_eq!(first.last(), Some(&Frame::Complete));
     assert_eq!(events(&first), RESTART_EVENTS, "{first:?}");
 
-    let mut again = nodes.resume(WorkflowKind::Restart(path(NODE)), &accepted).await.expect("the second re-submit is accepted");
+    let mut again = nodes.resume(WorkflowKind::Restart(node), &accepted).await.expect("the second re-submit is accepted");
     assert_eq!(again.disposition(), StartDisposition::AlreadyApplied);
     let second = frames_of(&mut again).await;
     assert_eq!(second.last(), Some(&Frame::Complete), "the terminal frame follows AlreadyApplied");
@@ -274,7 +280,8 @@ async fn an_attempt_run_to_a_node_the_claim_does_not_name_or_with_a_stale_claim_
     let mut estate = Estate::bootstrap(owner(test), FABRIC, "mesh1").await;
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
-    let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
+    let node = seatless_node(&estate).await;
+    let mut stream = caller.nodes(&carrier).restart(&node).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
     assert_eq!(frames_of(&mut stream).await.last(), Some(&Frame::Complete));
 
@@ -313,13 +320,14 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
+    let node = seatless_node(&estate).await;
 
     // The executor, mesh2's primary, is held in the middle of the restart: the start of the stopped node
     // answered, its receipt not durable.
     const EXECUTOR: &str = "mesh2.admin.1";
     let door = Door::at(&estate, EXECUTOR).await;
-    door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "restart-node", "node": NODE})).await;
-    let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
+    door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "restart-node", "node": node.to_string()})).await;
+    let mut stream = caller.nodes(&carrier).restart(&node).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
     let held = door.wait_held("lost").await;
     assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
@@ -360,12 +368,13 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     let mut estate = Estate::bootstrap_external(owner(test), FABRIC, "mesh1", &set, &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
     let caller = Caller::of(&estate).await;
     let carrier = born(&estate, &caller, &SHAPE).await;
+    let node = seatless_node(&estate).await;
     let fp = carrier.fabric_primary().to_string();
 
     // The cut: the fabric-primary's claim is durable and broadcast, and the drive has not dispatched.
     let door = Door::at(&estate, &fp).await;
     door.arm("claimed", json!({"kind": "claimed-attempt", "attempt": null})).await;
-    let mut stream = caller.nodes(&carrier).restart(&path(NODE)).await.expect("the fabric-primary accepts the restart");
+    let mut stream = caller.nodes(&carrier).restart(&node).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
     let held = door.wait_held("claimed").await;
     assert_eq!(s(&held["hit"]["build_id"]), accepted.build_id.as_str(), "{held}");
@@ -384,7 +393,7 @@ async fn a_successor_fabric_primary_starts_the_attempt_its_predecessor_claimed_a
     // A seat moves to a surviving admin; the caller re-submits there by the Build id.
     let successor = caller.successor_of(&fp).await;
     let carrier = caller.carrier_at(&successor);
-    let mut resumed = caller.nodes(&carrier).resume(WorkflowKind::Restart(path(NODE)), &accepted).await.expect("the successor accepts the re-submit");
+    let mut resumed = caller.nodes(&carrier).resume(WorkflowKind::Restart(node), &accepted).await.expect("the successor accepts the re-submit");
     assert_eq!(resumed.accepted().build_id, accepted.build_id, "never a second Build");
     let frames = frames_of(&mut resumed).await;
     assert_eq!(frames.last(), Some(&Frame::Complete), "{frames:?}");
