@@ -1858,19 +1858,22 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string()], "the holder never said primary updated");
 }
 
-/// The holder's own node.primary.update whose successor `mesh1.admin.2` is proven exited after the row
-/// (ruling R-PU2), then, in the next run, a transfer to `mesh1.admin.3`: the first call ends
-/// `SuccessorExited` with the view unchanged (the ordinary rule seats the holder again), the next
-/// moves both seats to `mesh1.admin.3` and its seat record ends the holder's Build-log decisions. Each call's
-/// attempt and transfer run are recorded.
-struct ExitedThenMoved {
+const GONE_REASON: &str = "the new holder's process is gone, provider-confirmed, after the committed row: step primary-update; new holder mesh1 000000000003; moved mesh-primary (mesh1) revision 4; ordinary rule seated mesh-primary (mesh1): mesh1.admin.1; provider proof: the provider proved its exact birth exited with code 0";
+
+/// A node.primary.update whose new holder's process is gone, provider-confirmed, after the row
+/// (ruling R-PU2, Q10), then, in the next run, a transfer to `successor`: the first call ends
+/// `SeatMoveEnd::Failed` with the view unchanged (the ordinary rule seats the holder again), the next
+/// moves the requested seats to `successor`. Records `(attempt, run, claimed_before)` for each call.
+struct GoneAfterRowThenMoved {
     inner: Arc<Switch>,
     topology: Arc<RwLock<Topology>>,
-    calls: Mutex<Vec<(u32, u32)>>,
+    builds: Arc<rafka_node_admin_core::build_state::MemoryBuildStateAdapter>,
+    successor: &'static str,
+    calls: Mutex<Vec<(u32, u32, Option<String>)>>,
 }
 
 #[async_trait::async_trait]
-impl Gate for ExitedThenMoved {
+impl Gate for GoneAfterRowThenMoved {
     fn authorizes(&self) -> bool {
         self.inner.authorizes()
     }
@@ -1880,43 +1883,53 @@ impl Gate for ExitedThenMoved {
     async fn fence_set(&self) {
         self.inner.fence_set().await
     }
-    async fn move_seats(&self, _: &rafka_node_admin_core::executor::SeatMove, _: &BuildId, attempt: u32, run: u32, _: &str) -> Result<(), rafka_node_admin_core::build_drive::SeatMoveEnd> {
+    async fn move_seats(&self, m: &rafka_node_admin_core::executor::SeatMove, build: &BuildId, attempt: u32, run: u32, _: &str) -> Result<(), rafka_node_admin_core::build_drive::SeatMoveEnd> {
+        let claimed = self.builds.read_build(build).await.ok().and_then(|p| p.attempt_executors.get(&attempt).cloned());
         let first = {
             let mut calls = self.calls.lock().unwrap();
-            calls.push((attempt, run));
+            calls.push((attempt, run, claimed));
             calls.len() == 1
         };
         if first {
-            return Err(rafka_node_admin_core::build_drive::SeatMoveEnd::SuccessorExited("mesh1.admin.1: node.primary.update committed the seat(s) to mesh1.admin.2, whose exit is proven (proof provider)".into()));
+            return Err(rafka_node_admin_core::build_drive::SeatMoveEnd::Failed { step: "primary-update".into(), reason: GONE_REASON.into() });
         }
         for n in self.topology.write().await.nodes.iter_mut() {
-            let successor = n.name.to_string() == "mesh1.admin.3";
-            (n.is_primary, n.is_fabric_primary) = (successor && n.name.kind == NodeKind::NodeAdmin, successor);
+            if n.mesh == m.holder.mesh {
+                let is_succ = n.name.to_string() == self.successor;
+                if m.mesh_seat {
+                    n.is_primary = is_succ && n.name.kind == NodeKind::NodeAdmin;
+                }
+            }
+            if m.fabric_seat {
+                n.is_fabric_primary = n.name.to_string() == self.successor;
+            }
         }
-        self.inner.fence_to(Some("mesh1.admin.3"));
+        if m.fabric_seat {
+            self.inner.fence_to(Some(self.successor));
+        }
         Ok(())
     }
 }
 
-/// CONTRACT (ruling R-PU2, Luke 2026-10-13: "the transfer step fails by name, `successor proven exited
-/// after committed transfer`, the Build is Failed under R-BI4"; recovery order (4) "The executor
-/// durably records Failed { step, reason } and ends the workflow; it never proceeds to P's stop. The
-/// terminal receipt goes through the Build journal"; (5) "The caller's resubmit opens the next attempt
-/// of the same Build ... that attempt's node.primary.update is a new transfer key, (build_id,
-/// attempt), never the Build id alone"): the fabric-primary `mesh1.admin.1` holds both seats and its
-/// Build retires it. Its own update in attempt 1 (run 1) ends with its successor proven exited after
-/// the row and the ordinary rule seats it again: attempt 1 ends `Failed` at step primary-update naming
-/// the failure, the drive ends at that terminal, and nothing is dispatched or run. The caller's
+/// CONTRACT (ruling R-PU2, Q8/Q9/Q10 + Luke 2026-10-13: when the new holder's process is gone,
+/// provider-confirmed, after the committed row, the transfer step fails with `Failed { step, reason }`,
+/// the Build is Failed under R-BI4; recovery order (4) "The executor durably records Failed { step,
+/// reason } and ends the workflow; it never proceeds to P's stop. The terminal receipt goes through the
+/// Build journal"; (5) "The caller's resubmit opens the next attempt of the same Build ... under its
+/// own key, (build_id, run), never the Build id alone"): the fabric-primary `mesh1.admin.1` holds both
+/// seats and its Build removes it. Its own update in attempt 1 (run 1) ends with the new holder's
+/// process gone after the row and the ordinary rule seats it again: attempt 1 ends `Failed` at step
+/// primary-update, the drive ends at that terminal, and nothing is dispatched or run. The caller's
 /// resubmit (a fresh drive of the failed Build) claims attempt 2, which opens run 2: its update is a
 /// new transfer (run 2), which moves the seats to `mesh1.admin.3`, and the drive goes on from the
 /// moved seat. Must NOT happen: the attempt handed back to the holder and the drive idle on it, the
-/// retire dispatched in attempt 1, or attempt 2's update keyed by run 1 (it would replay run 1's row).
+/// remove dispatched in attempt 1, or attempt 2's update keyed by run 1 (it would replay run 1's row).
 #[tokio::test(start_paused = true)]
-async fn a_holders_own_update_whose_successor_is_proven_exited_after_the_row_fails_by_name_and_the_resubmit_runs_a_new_transfer() {
+async fn a_holders_own_update_whose_new_holders_process_is_gone_after_the_row_fails_and_the_resubmit_runs_a_new_transfer() {
     let mut t = view();
     t.nodes = vec![node("mesh1.admin.1", true, true), node("mesh1.admin.2", false, false), node("mesh1.admin.3", false, false), node("mesh1.rpc.1", false, false)];
     let r = rig_for(t, TopologyChange::RemoveNode { node: "mesh1.admin.1".parse().unwrap() }, |ran, _| ran).await;
-    let gate = Arc::new(ExitedThenMoved { inner: r.switch.clone(), topology: r.env.topology.clone(), calls: Mutex::new(Vec::new()) });
+    let gate = Arc::new(GoneAfterRowThenMoved { inner: r.switch.clone(), topology: r.env.topology.clone(), builds: r.builds.clone(), successor: "mesh1.admin.3", calls: Mutex::new(Vec::new()) });
     let e = &r.env;
     let holder = Arc::new(DriveEnv {
         me: e.me.clone(),
@@ -1943,17 +1956,70 @@ async fn a_holders_own_update_whose_successor_is_proven_exited_after_the_row_fai
         }
     };
     let first = verdicts(1).await;
-    assert_eq!(end, DriveEnd::Terminal, "the named failure ends the drive at a terminal: verdicts {first:?}");
-    assert!(matches!(first.as_slice(), [rafka_node_admin_core::build_state::AttemptOutcome::Failed { reason }] if reason.starts_with(rafka_node_admin_core::fabric_handover::SUCCESSOR_EXITED)), "attempt 1 failed by name: {first:?}");
+    assert_eq!(end, DriveEnd::Terminal, "the failed step ends the drive at a terminal: verdicts {first:?}");
+    assert!(matches!(first.as_slice(), [rafka_node_admin_core::build_state::AttemptOutcome::Failed { reason }] if reason.starts_with("the new holder's process is gone, provider-confirmed, after the committed row")), "attempt 1 failed with the plain-English reason: {first:?}");
     match terminal_of(&drive).await {
-        BuildReply::Failed { attempt, step, reason, .. } => assert!(attempt == 1 && step == "primary-update" && reason.starts_with(rafka_node_admin_core::fabric_handover::SUCCESSOR_EXITED), "{step}: {reason}"),
+        BuildReply::Failed { attempt, step, reason, .. } => assert!(attempt == 1 && step == "primary-update" && reason.starts_with("the new holder's process is gone, provider-confirmed, after the committed row"), "{step}: {reason}"),
         other => panic!("the drive's terminal is the failed step: {other:?}"),
     }
-    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "the retire is never reached: ran {:?}, dispatched {:?}", r.ran.0.lock().unwrap(), r.dispatch.dispatched.lock().unwrap());
+    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "the remove is never reached: ran {:?}, dispatched {:?}", r.ran.0.lock().unwrap(), r.dispatch.dispatched.lock().unwrap());
     // The caller's resubmit: a drive of the failed Build claims its next attempt.
     let resubmit = Drive::detached(r.build.clone());
     let _ = tokio::time::timeout(Duration::from_secs(60), holder.run(&resubmit)).await.expect("the resubmitted drive ends");
-    assert_eq!(*gate.calls.lock().unwrap(), vec![(1, 1), (2, 2)], "attempt 2 opens run 2: its update is a new transfer key");
+    assert_eq!(*gate.calls.lock().unwrap(), vec![(1, 1, Some("mesh1.admin.1".into())), (2, 2, Some("mesh1.admin.1".into()))], "attempt 2 opens run 2: its update is a new transfer key");
     let second = verdicts(2).await;
     assert!(matches!(second.as_slice(), [rafka_node_admin_core::build_state::AttemptOutcome::HandedOff { to }] if to == "mesh1.admin.3"), "attempt 2 moved the seats and handed the Build to mesh1.admin.3: {second:?}");
+}
+
+/// CONTRACT (Q10 commanded arm: "When a commanded node.primary.update ends, the holder answers the
+/// fabric-primary with the Build carrier's own terminal, `Failed { step, reason }` (R-BI4; the
+/// envelope's only durable step outcomes are Complete and Failed). 0x21 gains that variant;
+/// `Incomplete` is not used for a step that ended. The FP fails the step on the variant, never on the
+/// reason's text ... The FP claims the attempt at the claim door BEFORE it commands"): the
+/// fabric-primary `mesh1.admin.1` drives a Build that removes `mesh2.admin.1`, mesh2's primary. There
+/// is no separate arm: the fabric-primary claims attempt 1 at the claim door before it commands
+/// `mesh2.admin.1`'s seat move. In run 1, the commanded move answers `Failed { step, reason }`: attempt
+/// 1 ends `Failed`, the Build is `Failed`, and nothing is dispatched to mesh2. On the caller's
+/// resubmit, the fabric-primary claims attempt 2 (opening run 2) before commanding `mesh2.admin.1`'s
+/// seat move, which moves mesh2's seat to `mesh2.admin.3`, hands off attempt 2, and claims attempt 3
+/// for `mesh2.admin.3` to run the remove.
+#[tokio::test(start_paused = true)]
+async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fails_the_build_and_the_resubmit_opens_the_next_run() {
+    let mut t = view();
+    t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
+    t.nodes.push(node("mesh2.admin.1", true, false));
+    t.nodes.push(node("mesh2.admin.2", false, false));
+    t.nodes.push(node("mesh2.admin.3", false, false));
+    let r = rig_for(t, TopologyChange::RemoveNode { node: "mesh2.admin.1".parse().unwrap() }, |ran, _| ran).await;
+    let gate = Arc::new(GoneAfterRowThenMoved { inner: r.switch.clone(), topology: r.env.topology.clone(), builds: r.builds.clone(), successor: "mesh2.admin.3", calls: Mutex::new(Vec::new()) });
+    let e = &r.env;
+    let commander = Arc::new(DriveEnv {
+        me: e.me.clone(),
+        topology: e.topology.clone(),
+        builds: e.builds.clone(),
+        door: e.door.clone(),
+        dispatcher: e.dispatcher.clone(),
+        gate: gate.clone(),
+        departure: e.departure.clone(),
+        verdicts: e.verdicts.clone(),
+        rows: e.rows.clone(),
+        turns: e.turns.clone(),
+    });
+    let drive = Drive::detached(r.build.clone());
+    let end = tokio::time::timeout(Duration::from_secs(60), commander.run(&drive)).await.expect("the drive ends");
+    assert_eq!(end, DriveEnd::Terminal, "the commanded Failed reply ends the drive at a terminal");
+    assert_eq!(*gate.calls.lock().unwrap(), vec![(1, 1, Some("mesh1.admin.1".into()))], "the fabric-primary claimed attempt 1 at the claim door BEFORE it commanded");
+    match terminal_of(&drive).await {
+        BuildReply::Failed { attempt, step, reason, .. } => assert!(attempt == 1 && step == "primary-update" && reason == GONE_REASON, "{step}: {reason}"),
+        other => panic!("the drive's terminal is the failed step: {other:?}"),
+    }
+    assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing was dispatched when the commanded update ended Failed");
+    // The caller's resubmit opens run 2: attempt 2 is claimed before commanding, moves mesh2's seat to
+    // mesh2.admin.3, and attempt 3 dispatches the remove to mesh2.admin.3.
+    let resubmit = Drive::detached(r.build.clone());
+    let end2 = tokio::time::timeout(Duration::from_secs(60), commander.run(&resubmit)).await.expect("the resubmitted drive ends");
+    assert_eq!(end2, DriveEnd::Terminal, "the resubmitted Build completes");
+    assert_eq!(*gate.calls.lock().unwrap(), vec![(1, 1, Some("mesh1.admin.1".into())), (2, 2, Some("mesh1.admin.1".into()))], "attempt 2 opened run 2 and was claimed before commanding");
+    assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh2.admin.3".to_string(), 3)], "attempt 3 dispatched the remove to the new mesh2 primary");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["retire-node:mesh2.admin.1".to_string()]);
 }

@@ -73,12 +73,13 @@ fn requests_match_the_frozen_two_variant_wire_schema() {
     assert_eq!(NodePrimaryUpdate::decode_request(&[2]), Err(DecodeFailure::UnknownVariant));
 }
 
-/// CONTRACT: the family's sixteen replies. `PrimaryUpdated` (node.primary.updated) first, then the
+/// CONTRACT: the family's seventeen replies. `PrimaryUpdated` (node.primary.updated) first, then the
 /// successor's two refusals (a conflicting payload, the initial fabric not ready), the holder's
 /// refusals before the row, the runtime facts, `Incomplete` (the call after the row did not answer),
-/// and the framework's outcomes. There is no wrong-birth refusal (R-UC1a, R-RX5).
+/// the framework's outcomes, and `Failed` (the step ended failed after the committed row). There is no
+/// wrong-birth refusal (R-UC1a, R-RX5).
 #[test]
-fn replies_match_the_frozen_sixteen_variant_wire_schema() {
+fn replies_match_the_frozen_seventeen_variant_wire_schema() {
     use NodePrimaryUpdateReply::*;
     let fixtures = [
         // epochs (len 1) | seat FabricPrimary=0 | holder birth | epoch 8
@@ -102,13 +103,15 @@ fn replies_match_the_frozen_sixteen_variant_wire_schema() {
         (Busy { reason: "b".into() }, "0d 01 62".to_string()),
         (Draining { reason: "d".into() }, "0e 01 64".to_string()),
         (Unauthorized { reason: "u".into() }, "0f 01 75".to_string()),
+        // step "s" | reason "r"
+        (Failed { step: "s".into(), reason: "r".into() }, "10 0173 0172".to_string()),
     ];
     for (r, hex) in fixtures {
         assert_eq!(NodePrimaryUpdate::encode_reply(&r).unwrap(), bytes(&hex), "{r:?}");
         assert_eq!(NodePrimaryUpdate::decode_reply(&bytes(&hex)).unwrap(), r);
     }
-    assert_eq!(NodePrimaryUpdate::REPLY_VARIANTS, 16);
-    assert_eq!(NodePrimaryUpdate::decode_reply(&[16]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(NodePrimaryUpdate::REPLY_VARIANTS, 17);
+    assert_eq!(NodePrimaryUpdate::decode_reply(&[17]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
@@ -123,11 +126,12 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
         RejectedFabricNotReady { reason: "r".into() },
         RejectedNoSuccessor { reason: "n".into() },
         RejectedNotAuthority { reason: "a".into() },
-        RejectedStaleSeat { seat: Seat::FabricPrimary, expected: 1, current: 2 },
+        RejectedStaleSeat { seat: Seat::MeshPrimary { mesh: "m".into() }, expected: 1, current: 2 },
         RejectedEpochOverflow { seat: Seat::FabricPrimary, epoch: u64::MAX },
         RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() },
         RejectedRecordAbsent { record: "r".into(), holder: "h".into() },
         Incomplete { reason: "i".into() },
+        Failed { step: "s".into(), reason: "r".into() },
     ] {
         assert_eq!(NodePrimaryUpdate::classify_reply(&r), ReplyKind::ProtocolRefusal, "{r:?}");
     }
@@ -156,6 +160,9 @@ fn the_largest_request_fits_the_frame_ceiling() {
     assert!(record.ends_with('…') && holder.ends_with('…'), "a cut field says it was cut: {r:?}");
     let short = NodePrimaryUpdateReply::record_absent("the seat-transfer row o under mesh m", "mesh2.admin.1");
     assert_eq!(short, NodePrimaryUpdateReply::RejectedRecordAbsent { record: "the seat-transfer row o under mesh m".into(), holder: "mesh2.admin.1".into() }, "fields within their budgets are kept whole");
+    // A failed step whose step and reason are each longer than the bound is cut to its budgets, never reset.
+    let r = NodePrimaryUpdateReply::failed(&huge, &huge);
+    assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES, "{r:?}");
     // Each refusal's reason is cut to the reply's bound, never reset.
     let r = NodePrimaryUpdateReply::no_successor(&huge);
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES, "{r:?}");
