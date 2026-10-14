@@ -383,8 +383,43 @@ mod tests {
         assert_eq!(order.admit(&updating(vec![mesh_seat("mesh2", 1)])), Ok(()), "another mesh's cohort is another source");
     }
 
-    /// CONTRACT (R-RX3 names three order keys; nothing else is ordered here): a frame with no order
-    /// key (a seat record, a status, a NodeDeleted) is taken however often it arrives.
+    /// CONTRACT (docs/architecture/gossip.md, R-RX3, Luke 2026-10-13 Q2: "`Seated { seat, holder }` |
+    /// Holder record's `revision`, per complete seat key (`(mesh, node_type)` for a cohort, `fabric`
+    /// for the fabric seat)"): a `Seated` record orders by its holder revision within its complete seat
+    /// key; records for different cohorts (`mesh-primary`, `rpc_node-primary`, `broker-primary`,
+    /// another mesh's cohort, `fabric-primary`) never suppress each other; a late record at an earlier
+    /// revision for the same seat is ignored by name (`revision=<held>` vs `revision=<offered>`); a
+    /// copy of the held revision is taken. Must NOT happen: a cohort's higher revision suppressing
+    /// another cohort's lower revision, or an older revision of the same seat passing the receive path.
+    #[test]
+    fn seated_records_order_by_revision_per_complete_seat_key_and_different_cohorts_never_suppress_each_other() {
+        use rafka_mesh_entity::{NodeKind, Seat, SeatHolder};
+        let mut order = ReceiveOrder::default();
+        let seated = |seat: Seat, mesh: &str, revision: u64| Frame::Seated {
+            seat,
+            holder: SeatHolder { mesh: mesh.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: revision },
+        };
+        assert_eq!(order.admit(&seated(Seat::MeshPrimary, "mesh1", 5)), Ok(()));
+        assert_eq!(order.admit(&seated(Seat::Cohort(NodeKind::RpcNode), "mesh1", 2)), Ok(()), "mesh1's rpc cohort is its own seat key, never suppressed by mesh1's admin revision 5");
+        assert_eq!(order.admit(&seated(Seat::Cohort(NodeKind::Broker), "mesh1", 1)), Ok(()), "mesh1's broker cohort is its own seat key");
+        assert_eq!(order.admit(&seated(Seat::Cohort(NodeKind::RpcNode), "mesh2", 1)), Ok(()), "mesh2's rpc cohort is its own seat key");
+        assert_eq!(order.admit(&seated(Seat::FabricPrimary, "mesh1", 3)), Ok(()), "the fabric seat is its own seat key");
+        assert_eq!(order.admit(&seated(Seat::Cohort(NodeKind::RpcNode), "mesh1", 2)), Ok(()), "a copy of the held revision is taken");
+        assert_eq!(
+            order.admit(&seated(Seat::Cohort(NodeKind::RpcNode), "mesh1", 1)),
+            Err(Earlier { frame: "seated", source: "rpc_node-primary mesh1".into(), held: "revision=2".into(), offered: "revision=1".into() }),
+            "a late older revision of the same cohort is ignored by name"
+        );
+        assert_eq!(
+            order.admit(&seated(Seat::FabricPrimary, "mesh2", 2)),
+            Err(Earlier { frame: "seated", source: "fabric-primary".into(), held: "revision=3".into(), offered: "revision=2".into() }),
+            "the fabric seat orders across meshes under one fabric key"
+        );
+        assert_eq!(order.admit(&seated(Seat::Cohort(NodeKind::RpcNode), "mesh1", 3)), Ok(()), "a newer revision of the cohort advances its key");
+    }
+
+    /// CONTRACT (R-RX3): a frame with no order key (a status, a NodeDeleted) is taken however often
+    /// it arrives.
     #[test]
     fn a_frame_with_no_order_key_is_always_taken() {
         let mut order = ReceiveOrder::default();

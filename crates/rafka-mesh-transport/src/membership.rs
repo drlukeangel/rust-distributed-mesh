@@ -7658,6 +7658,63 @@ mod tests {
         assert_eq!(seats.mesh("mesh1"), Some(admin), "and the mesh-primary record is untouched");
     }
 
+    /// CONTRACT (docs/architecture/gossip.md, R-RX3, Luke 2026-10-13 Q2): a `Seated` record's revision
+    /// per complete seat key is its order key in the one gossip receive path (`receive_order.rs`), and
+    /// `note_seat` stops comparing revisions. When a cohort's holder exits and the next holder is
+    /// announced at a higher revision, a late older `Seated` record naming the exited holder is ignored
+    /// by the receive path with `rdm.mesh.membership.reject.via-earlier-version` (`revision=<held>` vs
+    /// `revision=<offered>`), emits no `refused-not-newer` handler span, and cannot restore the exited
+    /// holder; records for other cohorts (`mesh-primary`, `broker-primary`, `fabric-primary`) on the
+    /// same channel never suppress each other, and neighbour-up replay carries every cohort's holder.
+    #[test]
+    fn a_late_older_seated_record_is_ignored_by_the_receive_path_and_cannot_restore_an_exited_holder() {
+        use rafka_mesh_entity::NodeKind;
+        use tracing_subscriber::layer::SubscriberExt;
+        let spans = OpenedSpans::default();
+        let _capture = tracing::subscriber::set_default(tracing_subscriber::registry().with(spans.clone()));
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let member = View::new("mesh1", "mesh1.rpc.9");
+        let mut channel = crate::receive_order::ReceiveOrder::default();
+        let (admin, exited_rpc, next_rpc, broker) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.rpc.1", 1), birth_at("mesh1.rpc.2", 1), birth_at("mesh1.broker.1", 1));
+
+        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::MeshPrimary, holder: seat_of(&admin, 5) }, &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::Cohort(NodeKind::RpcNode), holder: seat_of(&exited_rpc, 1) }, &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::Cohort(NodeKind::Broker), holder: seat_of(&broker, 1) }, &fabric, Side::MeshChannel));
+        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::FabricPrimary, holder: seat_of(&admin, 2) }, &fabric, Side::MeshChannel));
+
+        // The rpc cohort's first holder exits and the mesh-primary seats the successor at revision 2.
+        member.book.seats.mark_gone(exited_rpc.node.incarnation.clone());
+        assert!(hear(&mut channel, &member, &Frame::Seated { seat: Seat::Cohort(NodeKind::RpcNode), holder: seat_of(&next_rpc, 2) }, &fabric, Side::MeshChannel));
+        assert_eq!(member.book.seats.cohort("mesh1", NodeKind::RpcNode), Some(seat_of(&next_rpc, 2)));
+
+        // A delayed Seated frame naming the exited holder at revision 1 arrives on the channel.
+        assert!(!hear(&mut channel, &member, &Frame::Seated { seat: Seat::Cohort(NodeKind::RpcNode), holder: seat_of(&exited_rpc, 1) }, &fabric, Side::MeshChannel), "the older Seated frame is ignored by the receive path");
+        assert_eq!(member.book.seats.cohort("mesh1", NodeKind::RpcNode), Some(seat_of(&next_rpc, 2)), "the exited holder is not restored");
+        assert_eq!(member.book.seats.mesh("mesh1"), Some(seat_of(&admin, 5)));
+        assert_eq!(member.book.seats.cohort("mesh1", NodeKind::Broker), Some(seat_of(&broker, 1)));
+        assert_eq!(member.book.seats.fabric(), Some(seat_of(&admin, 2)));
+
+        let ignored = spans.named("rdm.mesh.membership.reject.via-earlier-version");
+        assert_eq!(
+            ignored.iter().map(|f| (f["frame"].as_str(), f["source"].as_str(), f["held"].as_str(), f["offered"].as_str())).collect::<Vec<_>>(),
+            vec![("seated", "rpc_node-primary mesh1", "revision=2", "revision=1")],
+            "{ignored:#?}"
+        );
+        let announced = spans.named("rdm.mesh.seat.update.via-announcement");
+        assert!(announced.iter().all(|f| f["outcome"] == "held"), "the handler emits no refused-not-newer span: {announced:#?}");
+
+        // Neighbour-up replay carries every cohort's holder, not only the admin's.
+        let joiner = View::new("mesh1", "mesh1.rpc.8");
+        let mut joiner_ch = crate::receive_order::ReceiveOrder::default();
+        for f in member.book.seats.held_frames() {
+            assert!(hear(&mut joiner_ch, &joiner, &f, &fabric, Side::MeshChannel));
+        }
+        assert_eq!(joiner.book.seats.mesh("mesh1"), Some(seat_of(&admin, 5)));
+        assert_eq!(joiner.book.seats.cohort("mesh1", NodeKind::RpcNode), Some(seat_of(&next_rpc, 2)));
+        assert_eq!(joiner.book.seats.cohort("mesh1", NodeKind::Broker), Some(seat_of(&broker, 1)));
+        assert_eq!(joiner.book.seats.fabric(), Some(seat_of(&admin, 2)));
+    }
+
     /// CONTRACT (gossip.md §3.3, R-A2): a member tops up from its own mesh's current primary, the
     /// birth its held seat record names, never from an election of its own. With the seat on the
     /// admin whose NodeId is the higher of two Ready admins, the member's primary is that holder.
