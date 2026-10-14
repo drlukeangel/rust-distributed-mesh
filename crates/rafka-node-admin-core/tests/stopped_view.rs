@@ -7,7 +7,7 @@
 //! installed view (`node_name_update::update`).
 // @feature: node-lifecycle
 
-use crate::mesh_leave_resume::{capture, trace_id};
+use crate::mesh_delete_resume::{capture, trace_id};
 use iroh::SecretKey;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{Backbone, Membership};
@@ -88,7 +88,7 @@ fn a_stop_the_executor_applied_is_in_its_view_before_the_cutover_rename_decides_
         let install = view_projector(me.clone(), view.clone(), "fabric1".into(), fabric.clone(), ProviderKind::Process, book.clone(), records.clone());
         install().await;
         assert!(view.read().await.holds_mesh_seat("mesh1", &own.node.node_id), "{MP} holds mesh1's seat in its view");
-        let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: me.clone(), leaver: Arc::new(std::sync::OnceLock::new()), project: Some(install.clone()) };
+        let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: me.clone(), mesh_deleter: Arc::new(std::sync::OnceLock::new()), project: Some(install.clone()) };
 
         // The successor's row at its create spec's name, and the door its record changes take turns at.
         let rows = MemoryNodesStorage::default();
