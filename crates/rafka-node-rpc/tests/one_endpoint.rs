@@ -159,3 +159,67 @@ async fn a_callers_stale_birth_is_not_the_targets_business() {
     assert!(matches!(&out, RpcOutcome::Reply(_)), "{out:?}");
     assert!(!ev.unwrap().reused, "a new incarnation in the caller's view is a new connection");
 }
+
+#[derive(Default)]
+struct Observed(std::sync::Mutex<Vec<ResolvedNode>>);
+
+impl rafka_node_rpc::ConnectionObserver for Observed {
+    fn direct_connected(&self, node: &ResolvedNode) {
+        self.0.lock().unwrap().push(node.clone());
+    }
+    fn direct_failed(&self, _node: &ResolvedNode, _reason: &str) {}
+    fn direct_broken(&self, _node: &ResolvedNode, _reason: &str) {}
+}
+
+/// CONTRACT (node-start.md step 2; connections.md §10; node-rpc-rdm-ownership.md §8–§9): a join
+/// to a commander no record names dials `NodeTarget::Endpoint` and pools the connection with no
+/// birth. Once the caller's resolver learns the commander's birth at that endpoint and address, a
+/// later `ExactNode` call adopts that pooled connection under the birth's incarnation (reusing it
+/// instead of opening a second connection to the same admin), records its `Direct` connection fact
+/// under the resolved birth, and purges the connection when a later birth supersedes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_join_to_an_endpoint_no_record_names_is_adopted_by_the_birth_and_purged_when_superseded() {
+    let key = SecretKey::generate();
+    let p = process(&key).await;
+    let resolver = Arc::new(StaticResolver::new());
+    let observed = Arc::new(Observed::default());
+    let ep = rafka_node_rpc::endpoint::bind(SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let client = NodeRpcClient::new(ep, resolver.clone()).with_connection_observer(observed.clone());
+
+    let endpoint_target = NodeTarget::Endpoint { endpoint_id: key.public(), addr: p.resolved.transport_addr };
+    let (out, join_ev) = client.call::<Ping>(&endpoint_target, &echo(), &CallOptions::default()).await;
+    assert!(matches!(&out, RpcOutcome::Reply(_)), "{out:?}");
+    let join_ev = join_ev.unwrap();
+    assert_eq!(client.pooled(), vec![rafka_node_rpc::PoolKey { scope: None, peer: key.public(), incarnation: None }]);
+    assert!(observed.0.lock().unwrap().is_empty(), "no record named the commander at the join");
+
+    // The resolver learns the commander's birth (as GetTopology / membership installs it).
+    resolver.insert(p.resolved.clone());
+    let exact = NodeTarget::ExactNode(p.resolved.node_id.clone());
+    let (out, exact_ev) = client.call::<Ping>(&exact, &echo(), &CallOptions::default()).await;
+    assert!(matches!(&out, RpcOutcome::Reply(_)), "{out:?}");
+    let exact_ev = exact_ev.unwrap();
+    assert!(exact_ev.reused, "the ExactNode call reuses the join's connection instead of opening a second one to the same admin");
+    assert_eq!(exact_ev.connection, join_ev.connection, "same underlying connection");
+    assert_eq!(
+        client.pooled(),
+        vec![rafka_node_rpc::PoolKey { scope: None, peer: key.public(), incarnation: Some(p.resolved.incarnation.clone()) }],
+        "the join's pooled connection is adopted under the resolved birth and no birthless entry remains"
+    );
+    assert_eq!(*observed.0.lock().unwrap(), vec![p.resolved.clone()], "the Direct connection fact is recorded once the birth is known");
+
+    // Superseding the birth purges the adopted connection.
+    let mut next_birth = p.resolved.clone();
+    next_birth.incarnation = IncarnationId::mint();
+    resolver.insert(next_birth.clone());
+    let (out, next_ev) = client.call::<Ping>(&exact, &echo(), &CallOptions::default()).await;
+    assert!(matches!(&out, RpcOutcome::Reply(_)), "{out:?}");
+    let next_ev = next_ev.unwrap();
+    assert!(!next_ev.reused, "a new birth evicts the adopted join connection and dials a new one");
+    assert_eq!(
+        client.pooled(),
+        vec![rafka_node_rpc::PoolKey { scope: None, peer: key.public(), incarnation: Some(next_birth.incarnation.clone()) }],
+        "only the new birth's connection remains pooled"
+    );
+}
+
