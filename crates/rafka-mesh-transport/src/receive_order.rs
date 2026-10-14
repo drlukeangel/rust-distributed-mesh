@@ -15,6 +15,8 @@
 //!   per publisher and subject mesh, for that is whose counter the version is (the publisher's
 //!   version of the subject's mesh, [`crate::membership::Frame::NodeStopped`]); a successor publisher
 //!   counts from 1 again;
+//! - `Seated`: the holder record's `revision`, per complete seat key (`(mesh, node_type)` for a
+//!   cohort, `fabric` for the fabric seat; `docs/architecture/gossip.md`);
 //! - "primary updating" and "primary updated" (`PrimaryUpdating`, `PrimaryUpdated`): each seat's
 //!   committed epoch, per cohort, already in the body (the approved proposal
 //!   node-primary-update-fabric-mesh-and-node-type.md Part C1 step 7: "A late 'updating' never undoes
@@ -23,8 +25,7 @@
 //!   ignored when either cohort holds a newer key, and then neither key moves.
 //!
 //! Every other frame carries none of these keys and is taken as it arrives; its handler applies the
-//! data rules it already has (a seat record's epoch, a status's `changed_at_rafka_ms`, a lifecycle
-//! key already applied).
+//! data rules it already has (a status's `changed_at_rafka_ms`, a lifecycle key already applied).
 //!
 //! A frame whose key equals the held one is taken: the chunks of one publication share its key, and
 //! a copy is the handler's to absorb (a chunk already held, a delta already applied).
@@ -50,7 +51,8 @@ enum Source {
     Mesh(String),
     /// One publisher's lifecycle facts of one mesh.
     Lifecycle { publisher: String, mesh: String },
-    /// One seat's cohort: the mesh-primary seat of a mesh, or the fabric seat (`mesh` empty).
+    /// One complete seat key: a `(mesh, node_type)` cohort (`mesh-primary` for `node_admin`), or the
+    /// fabric seat (`mesh` empty).
     Cohort { seat: &'static str, mesh: String },
 }
 
@@ -66,14 +68,49 @@ impl std::fmt::Display for Source {
     }
 }
 
+/// How a seat key's revision arrived: "updating" precedes a settled record ("updated" or `Seated`) at
+/// the same revision.
+#[derive(Debug, Clone, Copy)]
+enum SeatStage {
+    Updating,
+    Updated,
+    Seated,
+}
+
+impl SeatStage {
+    fn settled(self) -> bool {
+        !matches!(self, Self::Updating)
+    }
+}
+
+impl PartialEq for SeatStage {
+    fn eq(&self, other: &Self) -> bool {
+        self.settled() == other.settled()
+    }
+}
+
+impl Eq for SeatStage {}
+
+impl PartialOrd for SeatStage {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SeatStage {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.settled().cmp(&other.settled())
+    }
+}
+
 /// A frame's order key. One source only ever holds one kind of key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
     DigestSeq(u64),
     Publication { published_at_rafka_ms: u64, topology_version: u64 },
     TopologyVersion(u64),
-    /// A seat update's committed epoch; at one epoch the "updated" is after the "updating".
-    SeatEpoch { epoch: u64, updated: bool },
+    /// A seat's revision; at one revision a settled record ("updated" or `Seated`) is after "updating".
+    Seat { revision: u64, stage: SeatStage },
 }
 
 impl std::fmt::Display for Key {
@@ -82,19 +119,21 @@ impl std::fmt::Display for Key {
             Key::DigestSeq(seq) => write!(f, "digest_seq={seq}"),
             Key::Publication { published_at_rafka_ms, topology_version } => write!(f, "published_at_rafka_ms={published_at_rafka_ms} topology_version={topology_version}"),
             Key::TopologyVersion(v) => write!(f, "topology_version={v}"),
-            Key::SeatEpoch { epoch, updated } => write!(f, "epoch={epoch} {}", if *updated { "updated" } else { "updating" }),
+            Key::Seat { revision, stage: SeatStage::Updating } => write!(f, "epoch={revision} updating"),
+            Key::Seat { revision, stage: SeatStage::Updated } => write!(f, "epoch={revision} updated"),
+            Key::Seat { revision, stage: SeatStage::Seated } => write!(f, "revision={revision}"),
         }
     }
 }
 
 /// The frame's name in spans and each source with its order key; empty for a frame with no order key.
 fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
-    let seats = |name: &'static str, seats: &[rafka_mesh_entity::seat::transfer::CommittedSeat], updated: bool| {
-        (name, seats.iter().map(|c| (Source::Cohort { seat: c.seat.name(), mesh: c.mesh_key().unwrap_or_default().to_string() }, Key::SeatEpoch { epoch: c.epoch, updated })).collect())
+    let seats = |name: &'static str, seats: &[rafka_mesh_entity::seat::transfer::CommittedSeat], stage: SeatStage| {
+        (name, seats.iter().map(|c| (Source::Cohort { seat: c.seat.name(), mesh: c.mesh_key().unwrap_or_default().to_string() }, Key::Seat { revision: c.epoch, stage })).collect())
     };
     match f {
-        Frame::PrimaryUpdating { seats: s, .. } => seats("primary-updating", s, false),
-        Frame::PrimaryUpdated { seats: s, .. } => seats("primary-updated", s, true),
+        Frame::PrimaryUpdating { seats: s, .. } => seats("primary-updating", s, SeatStage::Updating),
+        Frame::PrimaryUpdated { seats: s, .. } => seats("primary-updated", s, SeatStage::Updated),
         other => match order_of(other) {
             Some((name, source, key)) => (name, vec![(source, key)]),
             None => ("", Vec::new()),
@@ -115,6 +154,11 @@ fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
         Frame::NodeDeleting { op, publisher, topology_version, .. } => Some(("node-deleting", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
         Frame::NodeRestarting { op, publisher, topology_version, .. } => Some(("node-restarting", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
         Frame::NodeStopped { op, publisher, topology_version, .. } => Some(("node-stopped", Source::Lifecycle { publisher: publisher.to_string(), mesh: op.name.mesh.clone() }, Key::TopologyVersion(*topology_version))),
+        Frame::Seated { seat, holder } => Some((
+            "seated",
+            Source::Cohort { seat: seat.name(), mesh: if *seat == rafka_mesh_entity::Seat::FabricPrimary { String::new() } else { holder.mesh.clone() } },
+            Key::Seat { revision: holder.epoch, stage: SeatStage::Seated },
+        )),
         _ => None,
     }
 }

@@ -579,12 +579,13 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a read is served with the rafka-time the node adopted (never its own clock) and the
-/// seat it holds in its own seat records: none for a replica, the mesh's for its primary, the
-/// fabric's for the fabric-primary.
+/// CONTRACT: a read is served with the rafka-time the node adopted (never its own clock), the
+/// seat it holds in its own seat records (none for a replica, the mesh's for its primary, the
+/// fabric's for the fabric-primary), and every cohort's holder record the node holds (not only the
+/// admin's), which `get_topology` installs into the caller's seat book.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_holds() {
-    use rafka_mesh_entity::{Seat, SeatHolder};
+    use rafka_mesh_entity::{NodeKind, Seat, SeatHolder};
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
@@ -598,13 +599,21 @@ async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_hold
 
     let (seat, holder) = held(Seat::MeshPrimary);
     server.membership.seats().take(seat, &holder);
+    let rpc_holder = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 2 };
+    let broker_holder = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 3 };
+    server.membership.seats().take(Seat::Cohort(NodeKind::RpcNode), &rpc_holder);
+    server.membership.seats().take(Seat::Cohort(NodeKind::Broker), &broker_holder);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().seat, Some(Seat::MeshPrimary));
+    assert_eq!(caller.membership.seats().mesh("mesh1"), Some(holder.clone()));
+    assert_eq!(caller.membership.seats().cohort("mesh1", NodeKind::RpcNode), Some(rpc_holder), "join and catch-up carry every cohort's holder, not only the admin's");
+    assert_eq!(caller.membership.seats().cohort("mesh2", NodeKind::Broker), Some(broker_holder), "peer mesh cohort holders are carried and installed too");
 
     let (seat, holder) = held(Seat::FabricPrimary);
     server.membership.seats().take(seat, &holder);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().seat, Some(Seat::FabricPrimary), "the fabric seat outranks the mesh seat it also holds");
+    assert_eq!(caller.membership.seats().fabric(), Some(holder));
     server.ep.close().await;
     caller.ep.close().await;
 }

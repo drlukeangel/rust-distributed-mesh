@@ -1592,7 +1592,11 @@ pub async fn enter_seats(storage: &dyn FabricStorage, membership: &Membership, b
     let book = membership.seats();
     let rows = hydrated(storage, book).await?;
     for row in rows.iter().filter(|r| r.holder.node_id == *node_id && !r.seats.is_empty()) {
-        let current = row.seats.iter().all(|c| c.mesh_key().map_or_else(|| book.fabric(), |m| book.mesh(m)) == Some(c.record()));
+        let current = row.seats.iter().all(|c| match &c.seat {
+            rafka_mesh_entity::seat::transfer::Seat::FabricPrimary => book.fabric() == Some(c.record()),
+            rafka_mesh_entity::seat::transfer::Seat::MeshPrimary { mesh } => book.mesh(mesh) == Some(c.record()),
+            rafka_mesh_entity::seat::transfer::Seat::Cohort { mesh, kind } => book.cohort(mesh, *kind) == Some(c.record()),
+        });
         if !current {
             continue;
         }

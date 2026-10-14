@@ -1230,9 +1230,9 @@ impl SeatBook {
             .as_ref()
             .filter(|(op, _)| &op.node_id == node_id && &op.incarnation == incarnation)
             .filter(|(_, seats)| {
-                seats.iter().all(|c| match c.mesh_key() {
-                    None => held.fabric.as_ref() == Some(&c.record()),
-                    Some(mesh) => held.meshes.get(mesh) == Some(&c.record()),
+                seats.iter().all(|c| {
+                    let (seat, mesh) = committed_key(c);
+                    held.get(seat, &mesh) == Some(c.record())
                 })
             })
             .cloned()
@@ -2773,16 +2773,13 @@ impl View {
         self.via.lock().unwrap().entry(d.node.name.mesh.clone()).or_insert(via);
     }
 
-    /// Hold a seat record this node heard, naming what it did with it.
+    /// Hold a seat record this node heard, naming what it did with it. An older revision of the
+    /// same seat was already ignored by the receive path (R-RX3, [`crate::receive_order`]).
     fn note_seat(&self, seat: Seat, holder: &SeatHolder, via: &'static str) -> SeatTaken {
         let taken = self.book.seats.take(seat, holder);
-        let (outcome, previous) = match &taken {
-            SeatTaken::Held { previous } => ("held", previous.as_ref().map(ToString::to_string).unwrap_or_default()),
-            SeatTaken::Same => ("same", String::new()),
-            SeatTaken::Refused { held } => ("refused-not-newer", held.to_string()),
-        };
-        if !matches!(taken, SeatTaken::Same) {
-            tracing::info_span!("rdm.mesh.seat.update.via-announcement", node = %self.node, seat = seat.name(), holder = %holder, via, outcome, previous = %previous)
+        if let SeatTaken::Held { previous } = &taken {
+            let previous = previous.as_ref().map(ToString::to_string).unwrap_or_default();
+            tracing::info_span!("rdm.mesh.seat.update.via-announcement", node = %self.node, seat = seat.name(), holder = %holder, via, outcome = "held", previous = %previous)
                 .in_scope(|| tracing::info!("a seat record was heard"));
         }
         taken
