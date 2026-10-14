@@ -1220,6 +1220,8 @@ impl DeploymentPipeline<'_> {
             io_calls = tracing::field::Empty,
             io_queued_ms = tracing::field::Empty,
             io_ms = tracing::field::Empty,
+            awaiting = tracing::field::Empty,
+            awaited = tracing::field::Empty,
         );
         let started = Instant::now();
         if run.reusing {
@@ -1232,8 +1234,32 @@ impl DeploymentPipeline<'_> {
             run.reusing = false;
         }
         // Where the time of a step that took long went: its blocking calls' wait for a thread and their
-        // run on one, beside the elapsed time.
-        let (r, io) = crate::record_store::io_time(work.instrument(span.clone())).await;
+        // run on one, beside the elapsed time. A step cancelled while awaiting a blocking call or a
+        // peer call still records its elapsed time, any blocking I/O it began, and outcome = "cancelled".
+        struct StepGuard {
+            span: tracing::Span,
+            started: Instant,
+            io: crate::record_store::IoTime,
+            done: bool,
+        }
+        impl Drop for StepGuard {
+            fn drop(&mut self) {
+                if !self.done {
+                    self.span.record("elapsed_ms", self.started.elapsed().as_millis() as u64);
+                    if self.io.calls() > 0 {
+                        self.span
+                            .record("io_calls", self.io.calls())
+                            .record("io_queued_ms", self.io.queued_ms())
+                            .record("io_ms", self.io.ran_ms());
+                    }
+                    self.span.record("outcome", "cancelled");
+                }
+            }
+        }
+        let io = crate::record_store::IoTime::default();
+        let mut guard = StepGuard { span: span.clone(), started, io: io.clone(), done: false };
+        let r = crate::record_store::io_time_with(io.clone(), work.instrument(span.clone())).await;
+        guard.done = true;
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
         if io.calls() > 0 {
             span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
@@ -1495,6 +1521,8 @@ impl DeploymentPipeline<'_> {
         };
         let claiming = &mut *claimed;
         let endpoint_id: EndpointId = self.step(run, CreateStep::PrepareStorage.name(), async {
+            let step_span = tracing::Span::current();
+            let mut done_awaits: Vec<&'static str> = Vec::with_capacity(3);
             // The name claim, by the writer of the mesh's rows (lifecycles/node-create.md step 1):
             // before anything is prepared or launched for the birth (refused, nothing is), and after
             // the AllocateIdentity receipt names its node id, so an executor lost at any point leaves
@@ -1508,23 +1536,33 @@ impl DeploymentPipeline<'_> {
                 // A create over an exited birth's data dir is node recovery's (node-recovery.md step
                 // 4), whose claim inherits the Deleted row's tags with its config.
                 let of = if inherits { crate::node_rows::ClaimFor::Recovery } else { crate::node_rows::ClaimFor::Create };
+                step_span.record("awaiting", "claim");
                 rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated), of)
                     .await
                     .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
+                done_awaits.push("claim");
+                step_span.record("awaited", done_awaits.join(",").as_str());
                 *claiming = Some(id.node_id.clone());
             }
             // An inherited data dir keeps its key: it is loaded, never minted; both on the blocking pool.
+            step_span.record("awaiting", "transport-key");
             let key = if inherits {
                 let dir = data_dir.clone();
                 crate::record_store::blocking_io(move || load_transport_key(&dir)).await?
             } else {
                 EndpointId(crate::admin::load_or_mint_key(&data_dir).await?.public().to_string())
             };
+            done_awaits.push("transport-key");
+            step_span.record("awaited", done_awaits.join(",").as_str());
             if !req.held_runtimes.is_empty() {
+                step_span.record("awaiting", "held-runtimes");
                 for row in &req.held_runtimes {
                     crate::storage::FileNodesStorage::put_runtime_in(&data_dir, &self.template.launcher.incarnation, row).await.map_err(|e| e.to_string())?;
                 }
+                done_awaits.push("held-runtimes");
+                step_span.record("awaited", done_awaits.join(",").as_str());
             }
+            step_span.record("awaiting", "done");
             Ok(key)
         })
         .await?;

@@ -53,7 +53,12 @@ impl Capture {
             .build()
             .unwrap();
         let _g = tracing::dispatcher::set_default(&self.dispatch);
-        rt.block_on(f)
+        rt.block_on(async {
+            // Warm the blocking pool before the cell's clock starts, so PrepareStorage's first
+            // blocking_io call runs on an existing blocking thread rather than paying thread spawn.
+            let _ = tokio::task::spawn_blocking(|| ()).await;
+            f.await
+        })
     }
 
     fn spans(&self) -> Vec<Value> {
@@ -163,13 +168,16 @@ impl NodeObserver for Membership {
 }
 
 #[derive(Default)]
-struct Published(Mutex<Vec<Node>>);
+struct Published(Mutex<Vec<Node>>, std::sync::OnceLock<Arc<rafka_node_admin_core::node_rows::NodeRows>>);
 impl TopologySink for Published {
     fn publish(&self, n: Node) {
         self.0.lock().unwrap().push(n);
     }
     fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
     fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
+    fn node_rows(&self) -> Option<Arc<rafka_node_admin_core::node_rows::NodeRows>> {
+        self.1.get().cloned()
+    }
 }
 
 fn node(name: &str, primary: bool) -> Node {
@@ -212,6 +220,8 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
     let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+    let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default())));
+    let _ = rig.sink.1.set(rows.clone());
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
@@ -221,7 +231,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         gate: Arc::new(OpenGate),
         departure,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows,
         turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
@@ -239,6 +249,8 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
     let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
     let node_id = control.topology.read().await.node(&me).expect("the admin is in the view").node_id.clone();
+    let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default())));
+    let _ = rig.sink.1.set(rows.clone());
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
@@ -248,7 +260,7 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), node_id, control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows,
         turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
@@ -265,6 +277,8 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
     let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+    let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default())));
+    let _ = rig.sink.1.set(rows.clone());
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
@@ -274,7 +288,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
-        rows: Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default()))),
+        rows,
         turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
