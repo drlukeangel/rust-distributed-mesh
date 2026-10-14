@@ -841,7 +841,8 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     // of its type (Q7); the delete of its mesh's only node skips the update (R-MT1).
     if target.kind != crate::model::NodeKind::NodeAdmin {
         let holds = t.cohort_primary(&node.mesh, target.kind).is_some_and(|p| p.node_id == target.node_id);
-        if !holds || (matches!(action, "retire" | "delete") && t.only_node(&node.mesh, &target.node_id)) {
+        let only_of_cohort = t.cohort(&node.mesh, target.kind).filter(|n| !n.exit_proven).all(|n| n.node_id == target.node_id);
+        if !holds || (action == "retire" && only_of_cohort) || (action == "delete" && t.only_node(&node.mesh, &target.node_id)) {
             return None;
         }
         let nodes: Vec<crate::model::Node> = t.members().cloned().collect();
@@ -1088,6 +1089,9 @@ mod tests {
                 None => panic!("{action} of mesh2's sole rpc node is refused by name"),
             }
         }
+        let retire_sole = crate::build::BuildOperation::RetireNode { node: "mesh2.rpc.1".parse().unwrap(), exited: None };
+        assert!(last_admin(&"mesh2.rpc.1".parse().unwrap(), "retire", &t).is_none(), "retiring the sole member of a non-admin cohort skips node.primary.update");
+        assert_eq!(crate::executor::seat_move(&retire_sole, &t), None, "retiring the sole member of a non-admin cohort moves no seat");
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The

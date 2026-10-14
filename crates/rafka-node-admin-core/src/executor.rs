@@ -221,11 +221,12 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     if node.kind != NodeKind::NodeAdmin {
         // Any other cohort's seat: its holder's seat moves first, by node.primary.update its mesh-primary
         // commands and writes (proposal Part C1: "One primitive moves the primary of any (mesh,
-        // node_type) cohort"; Q3), except for the delete of its mesh's only node (R-MT1). A holder with
-        // no other node of its type is still named: the update refuses it by Q7's name (the Build door
-        // refuses it first, `control_plane::last_admin`).
+        // node_type) cohort"; Q3), except when retiring the cohort's only live node. A holder with
+        // no other node of its type is still named for non-delete actions: the update refuses it by Q7's
+        // name (the Build door refuses it first, `control_plane::last_admin`).
         let holder = t.node(node)?.clone();
-        if !t.cohort_primary(&node.mesh, node.kind).is_some_and(|p| p.node_id == holder.node_id) || (delete && t.only_node(&node.mesh, &holder.node_id)) {
+        let only_of_cohort = t.cohort(&node.mesh, node.kind).filter(|n| !n.exit_proven).all(|n| n.node_id == holder.node_id);
+        if !t.cohort_primary(&node.mesh, node.kind).is_some_and(|p| p.node_id == holder.node_id) || (delete && only_of_cohort) {
             return None;
         }
         return Some(SeatMove { holder, mesh_seat: false, fabric_seat: false, cohort_seat: true });

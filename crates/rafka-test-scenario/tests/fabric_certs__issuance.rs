@@ -63,9 +63,10 @@ fn held_by(spans: &[Value], node: &str) -> Vec<(String, TestMemberCert)> {
 async fn every_join_is_issued_a_fresh_member_cert_and_a_new_meshs_first_admin_is_launched_with_its_issuer() {
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let mesh = |m: &str| MeshDesired::of(m, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]);
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh("mesh1"), mesh("mesh2")] }).await;
-    let want: std::collections::BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| [format!("{m}.admin.1"), format!("{m}.admin.2"), format!("{m}.rpc.1")]).collect();
+    let mesh1 = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)]);
+    let mesh2 = MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]);
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1, mesh2] }).await;
+    let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh2.admin.1", "mesh2.admin.2", "mesh2.rpc.1"].into_iter().map(str::to_string).collect();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;
 
     // Restart mesh1.rpc.1 through the Build: a new JoinNode of the same node.

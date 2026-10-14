@@ -39,8 +39,8 @@ fn s(v: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gateway_reaches_the_brokers_new_birth_after_its_restart() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 1), (NodeKind::Gateway, 1)])] }).await;
-    let want = ["mesh1.admin.1", "mesh1.broker.1", "mesh1.gateway.1"].iter().map(|n| n.to_string()).collect();
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 1)])] }).await;
+    let want = ["mesh1.admin.1", "mesh1.broker.1", "mesh1.broker.2", "mesh1.gateway.1"].iter().map(|n| n.to_string()).collect();
     estate.settles_to_named(&want, Duration::from_secs(30)).await;
     let broker = estate.node_value("mesh1.broker.1").await;
     let (broker_id, old_birth, addr) = (s(&broker["node_id"]), s(&broker["incarnation_id"]), s(&broker["transport_addr"]));

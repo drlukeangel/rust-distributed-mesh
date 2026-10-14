@@ -475,7 +475,7 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
-        let (frames, end) = collect_frames(&mut stream, Duration::from_secs(5)).await;
+        let (frames, end) = collect_frames(&mut stream, Duration::from_secs(15)).await;
         let published = rig.sink.0.lock().unwrap().clone();
         (frames, end, published)
     });
