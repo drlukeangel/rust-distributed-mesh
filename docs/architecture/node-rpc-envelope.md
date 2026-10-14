@@ -142,7 +142,7 @@ sees only the catalog.
 | `0x01` | ping | core | live | canonical | `Ping` |
 | `0x11` | echo | core | retired | | |
 | `0x1A` | forward | core | live | canonical | `Forward` |
-| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the generated [wire page](/home/admin/rafka-v2/docs/reference/rdm/wire.md); `Reserved6`, `Reserved7` and `NodeLeft` are reserved positions, never sent; until the initial fabric has first reached ready-for-traffic, every node property command (`UpdateName`, `CreateTags`, `DeleteTags`, `UpdateNodeConfig`) is refused `fabric-not-ready`, and `DeleteMesh` and the node workflow calls are sent only for a Build admitted past that refusal ([States](lifecycles/states.md#fabric-not-ready)) |
+| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the generated [wire page](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md); `Reserved6`, `Reserved7` and `NodeLeft` are reserved positions, never sent; until the initial fabric has first reached ready-for-traffic, every node property command (`UpdateName`, `CreateTags`, `DeleteTags`, `UpdateNodeConfig`) is refused `fabric-not-ready`, and `DeleteMesh` and the node workflow calls are sent only for a Build admitted past that refusal ([States](lifecycles/states.md#fabric-not-ready)) |
 | `0x1C` | build-claim | rdm | live | canonical | `ClaimAttempt` |
 | `0x1D` | join | rdm | live | canonical | `JoinNode` |
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
@@ -570,7 +570,7 @@ Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contra
 
 Direction: upward for declarations; downward for applies and probes. An ordinary node declares to its mesh-primary node-admin. Every node's status, node-admins included, is set by its mesh's primary on the node's report, and the mesh-primary sets its own ([node.status](lifecycles/node-status.md)); a mesh-primary declares its mesh state to the fabric-primary. Authority applies/probes the exact node birth; fabric-primary applies mesh state at its bootstrap admin and fabric events at its mesh-primary.
 
-The request and reply ceilings and the request and reply variants, in their positional order, are on the generated wire page ([wire.md](/home/admin/rafka-v2/docs/reference/rdm/wire.md)). Forwardable. Nested enum order is part of the wire schema. Typed stale, authority and invalid-transition refusals are separate from runtime refusals. Caller/server emit the runtime spans above; status handling emits `rdm.node_admin.status.update.via-declaration` or `rdm.node_admin.status.update.via-probe` for the corresponding effects. Stop command/completion evidence follows the separate pair below.
+The request and reply ceilings and the request and reply variants, in their positional order, are on the generated wire page ([wire.md](/home/admin/rust-distributed-mesh/docs/reference/rdm/wire.md)). Forwardable. Nested enum order is part of the wire schema. Typed stale, authority and invalid-transition refusals are separate from runtime refusals. Caller/server emit the runtime spans above; status handling emits `rdm.node_admin.status.update.via-declaration` or `rdm.node_admin.status.update.via-probe` for the corresponding effects. Stop command/completion evidence follows the separate pair below.
 
 Fabric and mesh lifecycle semantics are owned by [States](lifecycles/states.md#states).
 The [node stop pair](#node-stop-command-pair), the
@@ -635,7 +635,11 @@ pub enum StatusRequest {
     ApplyNodeName { node_id: NodeId, incarnation: IncarnationId, name: String },
     UpdateName { node_id: NodeId, incarnation: IncarnationId, name: String },
     DeleteConnections { node_id: NodeId, incarnation: IncarnationId, scope: ConnectionScope },
-    CreateTags { node_id: NodeId, incarnation: IncarnationId, labels: Vec<String> },
+    GetNodes { select: NodeSelect },
+    GetMeshes { mesh: Option<String> },
+    GetFabric,
+    GetConnections { node_id: NodeId, incarnation: IncarnationId },
+    CreateTags { node_id: NodeId, incarnation: IncarnationId, labels: BTreeSet<String> },
     DeleteTags { node_id: NodeId, incarnation: IncarnationId, scope: TagScope },
     JoinMesh { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
     LeaveMesh { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
@@ -659,6 +663,9 @@ pub enum WhichMesh {
     Own,
     Backbone,
 }
+
+// NodeSelect (Id, Mesh or Tags), TagFilter, NodeView, MeshView, FabricView, ConnectionsView, NodeStatus and
+// MeshDeleteRound are on the generated wire page with their fields.
 
 pub enum NotAuthority {
     ReceiverNotPrimary { needed: String },
@@ -706,15 +713,27 @@ pub enum StatusReply {
     ConfigNotApplied { node: String, answered: String, reason: String },
     Blocked { node_id: NodeId, incarnation: IncarnationId, reason: String, retry_on: RetryOn },
     NameUpdated { node_id: NodeId, incarnation: IncarnationId },
-    RejectedAdmittingConnections { status: MemberStatus, held_connections: Vec<ConnectionId> },
-    RejectedName { reason: String },
+    RejectedAdmittingConnections { status: NodeStatus, held_connections: Vec<ConnectionId> },
     NameHeld { name: String, by: NodeId },
     NodeRowRefused { node: String, reason: String },
     NameNotApplied { node: String, answered: String, reason: String },
     ConnectionsDeleted { closed: Vec<ConnectionId>, not_open: Vec<ConnectionId>, held: Vec<ConnectionId>, receipt: Option<ConnectionsReceipt> },
     RejectedConnectionScope { reason: String },
-    TagsCreated { node_id: NodeId, incarnation: IncarnationId, already_carried: Vec<String> },
-    TagsDeleted { node_id: NodeId, incarnation: IncarnationId, not_carried: Vec<String> },
+    Nodes { nodes: Vec<NodeView> },
+    Meshes { meshes: Vec<MeshView> },
+    Fabric { fabric: FabricView },
+    Connections { connections: ConnectionsView },
+    UnknownMesh { mesh: String },
+    ReadOverBound { read: String, bytes: u64, max: u64 },
+    RejectedStaleRound { held: MeshDeleteRound, offered: MeshDeleteRound },
+    RejectedConflictingRound { held: MeshDeleteRound, offered: MeshDeleteRound },
+    RejectedIncompleteManifest { missing: u32, without_exit: Vec<String>, reason: String },
+    RejectedSourceFailed { source: String, op: String, cause: String },
+    RejectedTags { reason: String },
+    RejectedFabricNotReady { workflow: String, status: String },
+    TagsCreated { node_id: NodeId, incarnation: IncarnationId, already_carried: BTreeSet<String> },
+    TagsDeleted { node_id: NodeId, incarnation: IncarnationId, not_carried: BTreeSet<String> },
+    RejectedName { reason: String },
     BusyHoldingConnections { connections: Vec<ConnectionId> },
     MeshJoined { node_id: NodeId, incarnation: IncarnationId, joined: Vec<WhichMesh> },
     MeshLeft { node_id: NodeId, incarnation: IncarnationId, left: Vec<WhichMesh> },

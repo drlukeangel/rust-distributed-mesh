@@ -179,9 +179,9 @@ the [`Members` example](../gossip.md#examples) with `mesh2`, `digests` holding i
 ```
 
 The separate node.delete's frames are the fabric-primary's `NodeStopped` and `NodeDeleted` for
-`mesh2.admin.1`, the same shapes as the catalog's examples with `publisher` the fabric-primary's
-exact birth and `operation` `node.delete:mesh2.admin.1`. No `Members` aggregate for `mesh2` follows
-them.
+`mesh2.admin.1`, the catalog's shapes with `operation` `node.delete:mesh2.admin.1`: `NodeStopped`
+with `publisher` the fabric-primary's exact birth, and `NodeDeleted` with `op` and `forwarded_by`
+only. No `Members` aggregate for `mesh2` follows them.
 
 On the wire, mesh.delete rides the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm);
 the command to the mesh-primary and its mesh.deleted report use the
