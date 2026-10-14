@@ -22,7 +22,7 @@ executor, deletes it afterwards.
 | Tiers | Ordinary nodes in parallel, then the other node-admins in parallel; a tier starts only when every node.delete of the tier before it is complete |
 | Terminal event | `mesh.deleted`, reported by the mesh-primary, still alive, from its members' exact exit proofs |
 | Rows | Each member's row deleted (its node.delete); the mesh row deleted at mesh.deleted, written by the mesh-primary |
-| After | The mesh-primary keeps publishing its aggregate until a separate node.delete, with the fabric-primary as executor, deletes it; that delete's `NodeStopped` and `NodeDeleted` are the executor's events, and the mesh's aggregate is never published again (R-RX4) |
+| After | The mesh-primary keeps publishing its aggregate until a separate node.delete, with the fabric-primary as executor, deletes it; its final aggregate, the mesh deleted and itself deleting, is its last gossip, and the fabric-primary publishes nothing for the mesh or that admin (R-RX4) |
 | Identity | A mesh's deleted and a node's deleted release names as [States](states.md) states; a mesh created again under the same name claims its names over the deleted mesh and node rows |
 | Build step key | `mesh.delete:<mesh_id>`; each member's step is its own `node.delete:<path.name>` |
 | Forbidden proof | Silence, a closed endpoint, a failed call or a timeout never proves a member exited |
@@ -49,11 +49,12 @@ executor, deletes it afterwards.
    before it accepts the report.
 6. After mesh.deleted the mesh-primary keeps publishing its aggregate, itself the only member and
    the mesh deleted ([Mesh delete gossip](../gossip.md#mesh-delete)).
-7. A separate [node.delete](node-delete.md) deletes the mesh-primary. The fabric-primary is its
-   executor: it stops it, proves its exit, writes its row deleted as the writer of a mesh with no
-   primary (R-OW1), and publishes the executor's own events, `NodeStopped` then `NodeDeleted`,
-   each from exact proof, as every node.delete does. The mesh's aggregate is never published again
-   (R-RX4); receivers hold the mesh for the deleted retention and then nothing
+7. A separate [node.delete](node-delete.md) deletes the mesh-primary, the fabric-primary its
+   executor. When the delete reaches the mesh-primary, its final aggregate, the mesh deleted and
+   itself deleting, is its last gossip: the node.delete's NodeDeleting in aggregate form. The
+   fabric-primary stops it, proves its exit and writes its row deleted as the writer of a mesh
+   with no primary (R-OW1); it publishes nothing for the mesh or that admin (R-RX4). Receivers
+   hold the mesh for the deleted retention from that final aggregate and then nothing
    ([Mesh delete gossip](../gossip.md#mesh-delete)).
 
 <a id="resume-after-the-primarys-loss"></a>
@@ -89,9 +90,9 @@ mesh.delete
   ← mesh.deleted            from the mesh-primary, still alive; mesh row deleted
 
 node.delete (the mesh-primary)   a separate call; the fabric-primary is the executor
-  ← every node.stop event   the fabric-primary publishes NodeStopped
-  ← node.deleted            from exact provider exit proof; the fabric-primary publishes NodeDeleted
-                            the mesh's aggregate is never published again
+  ← the final aggregate     from the mesh-primary: the mesh deleted, itself deleting; its last gossip
+  ← every node.stop event   on the delete's stream; nothing published
+  ← node.deleted            from exact provider exit proof; nothing published
 ```
 
 Decoded wire views of the two mesh-level calls, both on op `0x1B` (27); the three postcard
@@ -178,10 +179,10 @@ the [`Members` example](../gossip.md#examples) with `mesh2`, `digests` holding i
 }
 ```
 
-The separate node.delete's frames are the fabric-primary's `NodeStopped` and `NodeDeleted` for
-`mesh2.admin.1`, the catalog's shapes with `operation` `node.delete:mesh2.admin.1`: `NodeStopped`
-with `publisher` the fabric-primary's exact birth, and `NodeDeleted` with `op` and `forwarded_by`
-only. No `Members` aggregate for `mesh2` follows them.
+The separate node.delete's last frame is `mesh2.admin.1`'s final aggregate: the same `Members` with
+`mesh2.admin.1` deleting under `operation` `node.delete:mesh2.admin.1`, and the mesh's status
+deleted. The fabric-primary publishes no `NodeStopped` or `NodeDeleted` for it, and no `Members`
+aggregate for `mesh2` follows.
 
 On the wire, mesh.delete rides the [Build carrier](../node-rpc-envelope.md#build-op-0x20-rdm);
 the command to the mesh-primary and its mesh.deleted report use the
@@ -224,15 +225,15 @@ sequenceDiagram
     M->>B: aggregate: mesh deleted, itself the only member
     Note over C,F: separate call
     C->>F: build.create(node.delete of the mesh-primary)
+    F->>M: node.delete
+    M->>B: final aggregate: mesh deleted, itself deleting (its last gossip)
     F->>M: node.stop
     M-->>F: node.stopped
-    F->>B: NodeStopped (executor's event)
     F->>P: stop and inspect the exact runtime
     P-->>F: exact Exited
     F->>F: mesh-primary row deleted, node.deleted
-    F->>B: NodeDeleted (executor's event)
     F-->>C: node.deleted
-    Note over B,R: no Members aggregate for the mesh after its last admin stops
+    Note over B,R: nothing is published for the mesh after its final aggregate
     Note over R: deleted mesh held until the deleted retention
 ```
 
