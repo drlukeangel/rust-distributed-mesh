@@ -500,8 +500,18 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
             // The row's name and config the join answer handed are held before this node publishes
             // anything or declares readiness: every digest from its first carries them (R-JN1).
             install_handed(&membership, &joined.control);
-                drop(step);
             let current_name = membership.node_name();
+            tracing::info_span!(
+                parent: &step,
+                "rdm.node.mesh.update.via-joined",
+                node = %current_name,
+                node_id = %launch.node_id,
+                mesh = %launch.name.mesh,
+                mesh_id = %mesh_id,
+                which = rafka_node_rpc_contract::status::WhichMesh::Own.name(),
+            )
+            .in_scope(|| tracing::info!("joined the mesh channel"));
+            drop(step);
             let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &membership.book, &current_name);
             // This node serves the topology it holds from here on (until now a read is `NotReady`).
             let status = Arc::new(Mutex::new(MemberStatus::Pending));
@@ -728,6 +738,15 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         self.hydration.gate().close();
         let neighbours = self.membership.neighbours();
         self.membership.park().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-left",
+            node = %self.membership.node_name(),
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.mesh_id,
+            which = rafka_node_rpc_contract::status::WhichMesh::Own.name(),
+        )
+        .in_scope(|| tracing::info!("left the mesh channel"));
         let pooled = self.client.close_pooled("node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
         rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
@@ -741,6 +760,62 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows };
         rafka_node_admin_core::workflows::node_start::node_start(&mut start, rafka_node_admin_core::app_hydration::StartKind::AfterStop).await
+    }
+
+    async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rafka_node_rpc_contract::status::WhichMesh>, String> {
+        use rafka_node_rpc_contract::status::WhichMesh;
+        use tracing::Instrument as _;
+        let mut digest = self.membership.with_config(&self.digest);
+        digest.status = MemberStatus::Pending;
+        let me_name = digest.node.name.to_string();
+        let Some(key) = spare else {
+            return Err(format!("{me_name}: commander-uncalled: JoinMesh came on no Node RPC call"));
+        };
+        let joining_span = tracing::info_span!(
+            "rdm.node.mesh.update.via-joining",
+            node = %me_name,
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.mesh_id,
+            authority = %key.fmt_short(),
+            operation = %operation,
+        );
+        let client = self.client.clone();
+        let (answer, _) = rafka_node_admin_core::join::call_join_to(
+            &client,
+            || {
+                let (node, client) = (me_name.clone(), client.clone());
+                async move { rafka_node_admin_core::workflows::node_start::reached_back(&node, &client, &key).await.map(|t| (t, key.fmt_short().to_string())) }
+            },
+            &digest,
+            rafka_node_admin_core::workflows::node_start::JOIN_ATTEMPTS,
+        )
+        .instrument(joining_span)
+        .await
+        .map_err(|e| format!("{me_name}: {e}"))?;
+        install_handed(&self.membership, &answer.control);
+        let installed = self.membership.held_name(&self.name).to_string();
+        rafka_node_admin_core::rafka_time::adopt_join_answer(&tracing::Span::current(), &self.rafka_time, &installed, &answer);
+        self.membership.unpark().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-joined",
+            node = %installed,
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.mesh_id,
+            which = WhichMesh::Own.name(),
+        )
+        .in_scope(|| tracing::info!("joined the mesh channel"));
+        self.membership.learn_statuses(&answer.statuses);
+        self.membership.wait_for_neighbour().await;
+        let mut pending = self.digest.clone();
+        pending.status = MemberStatus::Pending;
+        let _ = self.membership.publish(&pending).await;
+        let mut pub_slot = self.publisher.lock().unwrap();
+        if pub_slot.is_none() {
+            *pub_slot = Some(spawn_publisher(&self.membership, &self.digest, &self.status, &self.server));
+        }
+        Ok(vec![WhichMesh::Own])
     }
 }
 
@@ -794,6 +869,15 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
         // Only now are its connections recorded: the join's names the handed name.
         drop(self.rows.take());
         s.membership.unpark().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-joined",
+            node = %s.membership.node_name(),
+            node_id = %s.node_id,
+            mesh = %s.membership.mesh_name(),
+            mesh_id = %s.mesh_id,
+            which = rafka_node_rpc_contract::status::WhichMesh::Own.name(),
+        )
+        .in_scope(|| tracing::info!("joined the mesh channel"));
         drop(step);
         Ok(s.membership.clone())
     }
@@ -1072,7 +1156,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             // Every call addressed this birth from its endpoint: a hook blocked on its authority's word
             // counts it, whether or not a record names the caller.
             me.addressed.note(&peer.endpoint_id);
-            if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::DeleteConnections { .. }) {
+            if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::DeleteConnections { .. } | StatusRequest::JoinMesh { .. } | StatusRequest::LeaveMesh { .. }) {
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone());
                 let reply = me.own.serve(commander.as_ref(), Some(peer.endpoint_id), &req).await.expect("a command");
                 tracing::info_span!("rdm.node_admin.status.update.via-command", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")

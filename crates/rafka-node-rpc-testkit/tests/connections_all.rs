@@ -389,7 +389,7 @@ fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
 
         // Start joins the mesh (`via-joining` + `via-joined`).
         let join_spans = fields_of(&spans, "rdm.node.mesh.update.via-joined");
-        assert!(join_spans.iter().any(|f| f.get("node").map(String::as_str) == Some(node_id.as_str()) && f.get("which").map(String::as_str) == Some("own")), "start emitted via-joined(own): {join_spans:#?}");
+        assert!(join_spans.iter().any(|f| f.get("node_id").map(String::as_str) == Some(node_id.as_str()) && f.get("which").map(String::as_str) == Some("own")), "start emitted via-joined(own): {join_spans:#?}");
 
         // Open a data-plane connection so the node's connections log is non-empty.
         let out = ping_admin(&seams, &admin, &CallOptions::default()).await;
@@ -442,7 +442,7 @@ fn node_mesh_leave_and_node_mesh_join_standalone_and_inside_stop() {
         let joining = fields_of(&spans, "rdm.node.mesh.update.via-joining");
         assert!(joining.iter().any(|f| f.get("operation").map(String::as_str) == Some("join-mesh:rejoin")), "standalone JoinMesh emitted via-joining: {joining:#?}");
         let joined_after = fields_of(&spans, "rdm.node.mesh.update.via-joined");
-        assert!(joined_after.iter().filter(|f| f.get("node").map(String::as_str) == Some(node_id.as_str()) && f.get("which").map(String::as_str) == Some("own")).count() >= 2, "standalone JoinMesh emitted via-joined(own): {joined_after:#?}");
+        assert!(joined_after.iter().filter(|f| f.get("node_id").map(String::as_str) == Some(node_id.as_str()) && f.get("which").map(String::as_str) == Some("own")).count() >= 2, "standalone JoinMesh emitted via-joined(own): {joined_after:#?}");
 
         let _ = std::fs::remove_dir_all(&dir);
     })

@@ -494,40 +494,30 @@ pub enum Frame {
         /// The mesh primary that marked the birth silent.
         observer: String,
     },
-    /// The owning mesh-admin accepted `drain-node:<path>` for the exact birth in `op`
-    /// (gossip.md, node-draining): drain intent, never completion. The command hook publishes it
-    /// on the admin's own mesh channel and the backbone; a peer mesh's primary forwards it onto its
-    /// own channel (`forwarded_by`).
-    NodeDraining {
-        /// The accepted drain command.
+    /// Reserved position (R-CR4; gossip.md, node-connections-deleting): never sent on any channel.
+    NodeConnectionsDeleting {
+        /// The accepted command.
         op: LifecycleOp,
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
     },
-    /// The owning mesh-admin accepted `stop-node:<path>` for the exact birth in `op`
-    /// (gossip.md, node-leaving): stop intent, never exit proof. Same channels as
-    /// [`Frame::NodeDraining`].
+    /// Reserved position (R-CR4; gossip.md, node-leaving): never sent on any channel.
     NodeLeaving {
         /// The accepted stop command.
         op: LifecycleOp,
         /// The local primary that forwards the frame onto its own channel.
         forwarded_by: Option<String>,
     },
-    /// The exact birth in `op` sent its `node-left` completion (gossip.md, node-left): a
-    /// check-in, not exit proof. The node publishes it on its own mesh channel; its owning
-    /// mesh-admin carries it onto the backbone preserving `op` and naming itself in
-    /// `forwarded_by`; a peer mesh's primary forwards it onto its own channel.
+    /// Reserved position (R-CR4; gossip.md, node-left): never sent on any channel.
     NodeLeft {
         /// The stop operation and the exact birth that left.
         op: LifecycleOp,
         /// The admin or primary that forwards the frame.
         forwarded_by: Option<String>,
     },
-    /// The exact birth in `op` sent its `node-drained` completion (gossip.md, node-drained): no
-    /// eligible work remains in flight and the process keeps running. Published by the node on
-    /// its own mesh channel; carried and forwarded exactly as [`Frame::NodeLeft`].
-    NodeDrained {
-        /// The drain operation and the exact birth that drained.
+    /// Reserved position (R-CR4; gossip.md, node-connections-deleted): never sent on any channel.
+    NodeConnectionsDeleted {
+        /// The operation and the exact birth whose connections were deleted.
         op: LifecycleOp,
         /// The admin or primary that forwards the frame.
         forwarded_by: Option<String>,
@@ -1351,10 +1341,10 @@ pub fn forward_of(frame: Frame, me: &str, own_mesh: &str) -> Option<Frame> {
         Frame::NodeStopped { op, publisher, topology_version, .. } if op.name.mesh != own_mesh => Some(Frame::NodeStopped { op, forwarded_by: Some(me.to_string()), publisher, topology_version }),
         Frame::PrimaryUpdated { op, seats } if op.name.mesh != own_mesh => Some(Frame::PrimaryUpdated { op, seats }),
         Frame::PrimaryUpdating { op, seats } if op.name.mesh != own_mesh => Some(Frame::PrimaryUpdating { op, seats }),
-        Frame::NodeDraining { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDraining { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeConnectionsDeleting { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleting { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeaving { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeaving { op, forwarded_by: Some(me.to_string()) }),
         Frame::NodeLeft { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeLeft { op, forwarded_by: Some(me.to_string()) }),
-        Frame::NodeDrained { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeDrained { op, forwarded_by: Some(me.to_string()) }),
+        Frame::NodeConnectionsDeleted { op, .. } if op.name.mesh != own_mesh => Some(Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me.to_string()) }),
         Frame::MeshLeaving { mesh_id, build_id, attempt, operation, publisher, event_at_rafka_ms, forwarded_by: None } if publisher_mesh(&publisher) != own_mesh => {
             Some(Frame::MeshLeaving { mesh_id, build_id, attempt, operation, publisher, event_at_rafka_ms, forwarded_by: Some(me.to_string()) })
         }
@@ -2136,11 +2126,11 @@ impl View {
                 self.book.depart(op.clone());
                 Vec::new()
             }
-            Frame::NodeDraining { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeDrained { op, forwarded_by } => {
+            Frame::NodeConnectionsDeleting { op, forwarded_by } | Frame::NodeLeaving { op, forwarded_by } | Frame::NodeLeft { op, forwarded_by } | Frame::NodeConnectionsDeleted { op, forwarded_by } => {
                 let kind = match f {
-                    Frame::NodeDraining { .. } => "node-draining",
+                    Frame::NodeConnectionsDeleting { .. } => "node-connections-deleting",
                     Frame::NodeLeaving { .. } => "node-leaving",
-                    Frame::NodeDrained { .. } => "node-drained",
+                    Frame::NodeConnectionsDeleted { .. } => "node-connections-deleted",
                     _ => "node-left",
                 };
                 tracing::info_span!(
@@ -2157,9 +2147,9 @@ impl View {
                     via,
                 )
                 .in_scope(|| tracing::info!("a lifecycle command or completion frame was heard: evidence of the accepted command, never liveness, completion or exit proof"));
-                // A node's own `node-drained` or `node-left`, heard on this mesh's channel: the owning
-                // mesh-admin carries it onto the backbone (gossip.md, node-drained, node-left).
-                if let (Frame::NodeLeft { .. } | Frame::NodeDrained { .. }, None, "mesh-channel") = (f, forwarded_by, via) {
+                // A node's own `node-connections-deleted` or `node-left`, heard on this mesh's channel: the owning
+                // mesh-admin carries it onto the backbone.
+                if let (Frame::NodeLeft { .. } | Frame::NodeConnectionsDeleted { .. }, None, "mesh-channel") = (f, forwarded_by, via) {
                     if let Some(carry) = self.completion_carrier.lock().unwrap().clone() {
                         carry(f);
                     }
@@ -2861,6 +2851,7 @@ pub struct Membership {
     mesh: Channel,
     view: View,
     fabric: FabricId,
+    mesh_id: MeshId,
     cut_off: Arc<Mutex<CutOff>>,
     /// The digest book this membership holds.
     pub book: DigestBook,
@@ -2949,7 +2940,7 @@ impl Membership {
         });
         let forward_path = ForwardPath::new(view.forwarder.clone(), Arc::default(), sink);
         let name = view.held_name.clone();
-        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
+        let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
         me.watch_meshes();
         Ok(me)
     }
@@ -3022,6 +3013,16 @@ impl Membership {
     /// This node's launch path name.
     pub fn node(&self) -> &str {
         &self.view.node
+    }
+
+    /// This node's mesh name (`<mesh>`).
+    pub fn mesh_name(&self) -> &str {
+        &self.view.mesh
+    }
+
+    /// This node's minted mesh id.
+    pub fn mesh_id(&self) -> &MeshId {
+        &self.mesh_id
     }
 
     /// This node's current path name, as it publishes itself: the name its row gave it, else its launch name.
@@ -3376,11 +3377,13 @@ impl Membership {
         tokio::spawn(async move {
             let mut last_heartbeat: Option<Instant> = None;
             loop {
-                let d = digest();
-                let _ = me.publish(&d).await;
-                if last_heartbeat.is_none_or(|at| at.elapsed() >= HEARTBEAT_EVERY) {
-                    last_heartbeat = Some(Instant::now());
-                    me.heartbeat(&d);
+                if !*me.mesh.parked.borrow() {
+                    let d = digest();
+                    let _ = me.publish(&d).await;
+                    if last_heartbeat.is_none_or(|at| at.elapsed() >= HEARTBEAT_EVERY) {
+                        last_heartbeat = Some(Instant::now());
+                        me.heartbeat(&d);
+                    }
                 }
                 tokio::time::sleep(every).await;
             }
@@ -4138,7 +4141,7 @@ impl Backbone {
         let me_name = self.current_name();
         let carried = match frame {
             Frame::NodeLeft { op, .. } => Frame::NodeLeft { op, forwarded_by: Some(me_name) },
-            Frame::NodeDrained { op, .. } => Frame::NodeDrained { op, forwarded_by: Some(me_name) },
+            Frame::NodeConnectionsDeleted { op, .. } => Frame::NodeConnectionsDeleted { op, forwarded_by: Some(me_name) },
             Frame::StateCommitted { hook, .. } => Frame::StateCommitted { hook, forwarded_by: Some(me_name) },
             Frame::TrafficOpened { hook, .. } => Frame::TrafficOpened { hook, forwarded_by: Some(me_name) },
             _ => return,

@@ -70,17 +70,17 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 9.1 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The silent holder's node. |
 | 9.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The silent holder's exact birth. |
 | 9.3 | `observer` | `String` |  | The mesh primary that marked the birth silent. |
-| 10 | **`NodeDraining`** |  |  | The owning mesh-admin accepted `drain-node:<path>` for the exact birth in `op` |
-| 10.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The accepted drain command. |
+| 10 | **`NodeConnectionsDeleting`** |  |  | Reserved position (R-CR4; gossip.md, node-connections-deleting): never sent on any channel. |
+| 10.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The accepted command. |
 | 10.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 11 | **`NodeLeaving`** |  |  | The owning mesh-admin accepted `stop-node:<path>` for the exact birth in `op` |
+| 11 | **`NodeLeaving`** |  |  | Reserved position (R-CR4; gossip.md, node-leaving): never sent on any channel. |
 | 11.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The accepted stop command. |
 | 11.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 12 | **`NodeLeft`** |  |  | The exact birth in `op` sent its `node-left` completion (gossip.md, node-left): a |
+| 12 | **`NodeLeft`** |  |  | Reserved position (R-CR4; gossip.md, node-left): never sent on any channel. |
 | 12.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The stop operation and the exact birth that left. |
 | 12.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
-| 13 | **`NodeDrained`** |  |  | The exact birth in `op` sent its `node-drained` completion (gossip.md, node-drained): no |
-| 13.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The drain operation and the exact birth that drained. |
+| 13 | **`NodeConnectionsDeleted`** |  |  | Reserved position (R-CR4; gossip.md, node-connections-deleted): never sent on any channel. |
+| 13.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation and the exact birth whose connections were deleted. |
 | 13.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
 | 14 | **`MeshLeaving`** |  |  | The fabric-primary accepted `leave-mesh` for `mesh_id` (gossip.md, mesh-leaving): leave |
 | 14.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  | The mesh that leaves. |

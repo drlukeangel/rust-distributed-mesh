@@ -532,7 +532,7 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     let start_attempt = if h_id == successor_id { transfer_attempt + 3 } else { transfer_attempt + 1 };
     assert!(!p_steps.is_empty() && num(p_steps[0], "attempt") == Some(transfer_attempt + 1), "P's stop began in attempt {}: {p_steps:#?}", transfer_attempt + 1);
     for sp in &p_steps {
-        let expected = if attr(sp, "step").starts_with("Start") || attr(sp, "step") == "AwaitNodeJoined" {
+        let expected = if attr(sp, "step").starts_with("Start") || attr(sp, "step") == "AwaitNodeJoined" || attr(sp, "step") == "WaitForNodeReady" {
             start_attempt
         } else {
             transfer_attempt + 1

@@ -499,7 +499,7 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                         return Ok(StatusReply::Applied);
                     }
                     match &req {
-                        R::DrainNode { .. } | R::NodeDrained { .. } => Ok(rafka_node_admin_core::node_commands::refuse_reserved(&receiver, "", &req)),
+                        R::Reserved6 { .. } | R::Reserved7 { .. } => Ok(rafka_node_admin_core::node_commands::refuse_reserved(&receiver, "", &req)),
                         R::NodeLeft { .. } => Ok(rafka_node_admin_core::node_commands::refuse_node_left(&receiver, "the commanded birth", "", &req)),
                         _ => Ok(StatusReply::NotReady { reason: "the admin side serves round check-ins and declarations only".into() }),
                     }

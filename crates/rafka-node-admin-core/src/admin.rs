@@ -3347,7 +3347,25 @@ impl crate::node_self::Session for AdminSession {
         self.hydration.gate().close();
         let neighbours = self.membership.neighbours();
         self.membership.park().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-left",
+            node = %self.membership.node_name(),
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.mesh_id,
+            which = rafka_node_rpc_contract::status::WhichMesh::Own.name(),
+        )
+        .in_scope(|| tracing::info!("left the mesh channel"));
         self.backbone.park().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-left",
+            node = %self.membership.node_name(),
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.mesh_id,
+            which = rafka_node_rpc_contract::status::WhichMesh::Backbone.name(),
+        )
+        .in_scope(|| tracing::info!("left the backbone channel"));
         let pooled = self.client.close_pooled("node.connections.delete");
         let accepted = self.server.close_connections_except(spare, "node.connections.delete");
         crate::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress }
@@ -3360,6 +3378,77 @@ impl crate::node_self::Session for AdminSession {
         let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %held, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AdminAfterStop { session: self, root, commander, retire: Some(retire), rows };
         crate::workflows::node_start::node_start(&mut start, crate::app_hydration::StartKind::AfterStop).await
+    }
+
+    async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<rafka_node_rpc_contract::status::WhichMesh>, String> {
+        use rafka_node_rpc_contract::status::WhichMesh;
+        use tracing::Instrument as _;
+        let mut digest = self.digest.lock().unwrap().clone();
+        digest.status = MemberStatus::Pending;
+        let me_name = digest.node.name.to_string();
+        let Some(key) = spare else {
+            return Err(format!("{me_name}: commander-uncalled: JoinMesh came on no Node RPC call"));
+        };
+        let joining_span = tracing::info_span!(
+            "rdm.node.mesh.update.via-joining",
+            node = %me_name,
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.mesh_id,
+            authority = %key.fmt_short(),
+            operation = %operation,
+        );
+        let client = self.client.clone();
+        let (answer, _) = crate::join::call_join_to(
+            &client,
+            || {
+                let (node, client) = (me_name.clone(), client.clone());
+                async move { crate::workflows::node_start::reached_back(&node, &client, &key).await.map(|t| (t, key.fmt_short().to_string())) }
+            },
+            &digest,
+            crate::workflows::node_start::JOIN_ATTEMPTS,
+        )
+        .instrument(joining_span)
+        .await
+        .map_err(|e| format!("{me_name}: {e}"))?;
+        {
+            let mut d = self.digest.lock().unwrap();
+            if let Some(n) = &answer.control.name {
+                self.membership.set_name(n.clone());
+                d.node.name = n.clone();
+            }
+            if let Some(c) = &answer.control.config {
+                self.membership.set_config(c.clone());
+                d.config = c.clone();
+            }
+        }
+        let installed = self.digest.lock().unwrap().node.name.to_string();
+        crate::rafka_time::adopt_join_answer(&tracing::Span::current(), &self.rafka_time, &installed, &answer);
+        self.membership.unpark().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-joined",
+            node = %installed,
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.mesh_id,
+            which = WhichMesh::Own.name(),
+        )
+        .in_scope(|| tracing::info!("joined the mesh channel"));
+        self.backbone.unpark().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-joined",
+            node = %installed,
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.mesh_id,
+            which = WhichMesh::Backbone.name(),
+        )
+        .in_scope(|| tracing::info!("joined the backbone channel"));
+        self.membership.learn_statuses(&answer.statuses);
+        self.membership.wait_for_neighbour().await;
+        let pending = self.digest.lock().unwrap().clone();
+        let _ = self.membership.publish(&pending).await;
+        Ok(vec![WhichMesh::Own, WhichMesh::Backbone])
     }
 }
 
@@ -3421,7 +3510,25 @@ impl crate::workflows::node_start::StartNode for AdminAfterStop<'_> {
             drop(self.rows.take());
         }
         s.membership.unpark().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-joined",
+            node = %s.membership.node_name(),
+            node_id = %s.node_id,
+            mesh = %s.membership.mesh_name(),
+            mesh_id = %s.mesh_id,
+            which = rafka_node_rpc_contract::status::WhichMesh::Own.name(),
+        )
+        .in_scope(|| tracing::info!("joined the mesh channel"));
         s.backbone.unpark().await;
+        tracing::info_span!(
+            "rdm.node.mesh.update.via-joined",
+            node = %s.membership.node_name(),
+            node_id = %s.node_id,
+            mesh = %s.membership.mesh_name(),
+            mesh_id = %s.mesh_id,
+            which = rafka_node_rpc_contract::status::WhichMesh::Backbone.name(),
+        )
+        .in_scope(|| tracing::info!("joined the backbone channel"));
         drop(step);
         Ok(s.membership.clone())
     }
@@ -5647,6 +5754,16 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         membership.set_config(c.clone());
                     }
                 }
+                tracing::info_span!(
+                    parent: &step,
+                    "rdm.node.mesh.update.via-joined",
+                    node = %membership.node_name(),
+                    node_id = %node_id,
+                    mesh = %cfg.mesh,
+                    mesh_id = %mesh_id,
+                    which = rafka_node_rpc_contract::status::WhichMesh::Own.name(),
+                )
+                .in_scope(|| tracing::info!("joined the mesh channel"));
                 drop(step);
                 // An admin that made no `JoinNode` and is no Day-0 root (an inherited root, or a recovery
                 // started with a seed) holds no rafka-time yet: when every node the store names — the old
@@ -5678,6 +5795,16 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let backbone = Backbone::join(&gossip, &endpoint, &membership, &cfg.mesh, &name.to_string(), incarnation.clone(), seed_addrs.clone())
                     .await
                     .map_err(|e| format!("backbone: {e}"))?;
+                tracing::info_span!(
+                    parent: &boot,
+                    "rdm.node.mesh.update.via-joined",
+                    node = %membership.node_name(),
+                    node_id = %node_id,
+                    mesh = %cfg.mesh,
+                    mesh_id = %mesh_id,
+                    which = rafka_node_rpc_contract::status::WhichMesh::Backbone.name(),
+                )
+                .in_scope(|| tracing::info!("joined the backbone channel"));
                 if let Some(seam) = wiring.announcement_seam.take() {
                     let me = name.to_string();
                     backbone.withhold_announcements(Arc::new(move |announcement, channel| seam.withholds(&me, announcement, channel)));
@@ -6720,7 +6847,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 }
                                                 return;
                                             }
-                                            let (Frame::NodeLeft { op, .. } | Frame::NodeDrained { op, .. }) = f else { return };
+                                            let (Frame::NodeLeft { op, .. } | Frame::NodeConnectionsDeleted { op, .. }) = f else { return };
                                             let key = crate::node_commands::CommandKey { build_id: op.build_id.clone(), attempt: op.attempt, operation: op.operation.clone(), node_id: op.node_id.clone(), incarnation: op.incarnation.clone() };
                                             if commands.is_open(&key) {
                                                 let (backbone, f) = (backbone.clone(), f.clone());

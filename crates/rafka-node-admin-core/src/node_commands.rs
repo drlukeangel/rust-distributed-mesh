@@ -264,7 +264,7 @@ pub const RETIRED_PAIR_IS_RESERVED: &str = "no command: DrainNode and NodeDraine
 /// A reserved `DrainNode` or `NodeDrained` at `receiver` (node-rpc-envelope.md "Node stop command
 /// pair": "a receiver refuses them by name"): nothing starts, and the reply names the position.
 pub fn refuse_reserved(receiver: &str, caller: &str, req: &StatusRequest) -> StatusReply {
-    let (StatusRequest::DrainNode { node_id, incarnation, build_id, attempt, operation } | StatusRequest::NodeDrained { node_id, incarnation, build_id, attempt, operation }) = req else {
+    let (StatusRequest::Reserved6 { node_id, incarnation, build_id, attempt, operation } | StatusRequest::Reserved7 { node_id, incarnation, build_id, attempt, operation }) = req else {
         unreachable!("refuse_reserved is called for the reserved pair only")
     };
     let reported = format!("{} {operation} (build {build_id}, attempt {attempt})", req.op());

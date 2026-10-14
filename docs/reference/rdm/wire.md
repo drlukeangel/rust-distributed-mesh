@@ -156,8 +156,8 @@ A carrier's answer to a Forward call.
 | `NAME` | `"status"` |
 | `FORWARDABLE` | `true` |
 | `SERVED_WHILE_CONNECTIONS_DELETING` | `true` |
-| `REQUEST_VARIANTS` | `28` |
-| `REPLY_VARIANTS` | `49` |
+| `REQUEST_VARIANTS` | `30` |
+| `REPLY_VARIANTS` | `51` |
 | `MAX_REQUEST_FRAME_BYTES` | `if MAX_CONFIG_REQUEST_BYTES>MAX_DECLARATION_REQUEST_BYTES { MAX_CONFIG_REQUEST_BYTES } else { MAX_DECLARATION_REQUEST_BYTES }` |
 | `MAX_REPLY_FRAME_BYTES` | `64 * 1024` |
 
@@ -165,7 +165,7 @@ A carrier's answer to a Forward call.
 
 ### `StatusRequest`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 28 variants · rafka-node-rpc-contract
+`crates/rafka-node-rpc-contract/src/status.rs` · enum · 30 variants · rafka-node-rpc-contract
 
 A Status call.
 
@@ -192,18 +192,18 @@ A Status call.
 | 5 | **`ApplyFabricEvent`** |  |  | `op() = "apply-fabric-event"` | Downward: the fabric-primary applies a Fabric event at a mesh primary. |
 | 5.0 | `fabric_id` | `FabricId` → [`FabricId`](#t-rafka_mesh_entity-ids-FabricId) |  |  | The fabric the event belongs to. |
 | 5.1 | `event` | `FabricEvent` → [`FabricEvent`](#t-rafka_node_rpc_contract-status-FabricEvent) |  |  | The event applied. |
-| 6 | **`DrainNode`** |  |  | `op() = "drain-node"` | Reserved position (R-CR4): never sent. A node's connections are deleted by |
+| 6 | **`Reserved6`** |  |  | `op() = "reserved-6"` | Reserved position (R-CR4): never sent. A node's connections are deleted by |
 | 6.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
 | 6.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 6.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 6.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
-| 6.4 | `operation` | `String` |  |  | The operation: `drain-node:<path>`. |
-| 7 | **`NodeDrained`** |  |  | `op() = "node-drained"` | Reserved position (R-CR4): never sent; a receiver refuses this by name. |
-| 7.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth that drained. |
+| 6.4 | `operation` | `String` |  |  | The operation. |
+| 7 | **`Reserved7`** |  |  | `op() = "reserved-7"` | Reserved position (R-CR4): never sent; a receiver refuses this by name. |
+| 7.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth reported. |
 | 7.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 7.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 7.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
-| 7.4 | `operation` | `String` |  |  | The operation: `drain-node:<path>`. |
+| 7.4 | `operation` | `String` |  |  | The operation. |
 | 8 | **`StopNode`** |  |  | `op() = "stop-node"` | Downward: the owning mesh-admin tells the exact birth to stop (`stop-node`; node-stop.md): |
 | 8.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
 | 8.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
@@ -300,12 +300,24 @@ A Status call.
 | 27.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth whose tags shrink. |
 | 27.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 27.2 | `scope` | `TagScope` → [`TagScope`](#t-rafka_node_rpc_contract-status-TagScope) |  |  | Which labels. |
+| 28 | **`JoinMesh`** |  |  | `op() = "node.mesh.join"` | Downward: the commanding authority tells the exact birth to join its mesh channel(s) |
+| 28.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
+| 28.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 28.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
+| 28.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
+| 28.4 | `operation` | `String` |  |  | The operation: `join-mesh:<path.name>` or `start-node:<path.name>`. |
+| 29 | **`LeaveMesh`** |  |  | `op() = "node.mesh.leave"` | Downward: the commanding authority tells the exact birth to leave its mesh channel(s) |
+| 29.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
+| 29.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 29.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
+| 29.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
+| 29.4 | `operation` | `String` |  |  | The operation: `leave-mesh:<path.name>` or `stop-node:<path.name>`. |
 
 <a id="t-rafka_node_rpc_contract-status-StatusReply"></a>
 
 ### `StatusReply`
 
-`crates/rafka-node-rpc-contract/src/status.rs` · enum · 49 variants · rafka-node-rpc-contract
+`crates/rafka-node-rpc-contract/src/status.rs` · enum · 51 variants · rafka-node-rpc-contract
 
 The typed result of a Status call.
 
@@ -313,7 +325,7 @@ The typed result of a Status call.
 |---|---|---|---|---|---|
 | 0 | **`Applied`** |  |  | `name() = "applied"` | Applied now by the authority, and durable where the ruling asks it to be. |
 | 1 | **`AlreadyApplied`** |  |  | `name() = "already-applied"` | The same natural key was already at that state: one logical event. |
-| 2 | **`NodeDrainingApplied`** |  |  | `name() = "node-draining-applied"` | The exact birth entered `Draining` (or already was), with the work still in flight now. |
+| 2 | **`Reserved2`** |  |  | `name() = "reserved-2"` | Reserved position (R-CR4): never sent. |
 | 2.0 | `in_flight` | `u64` |  |  | The work still in flight. |
 | 3 | **`Current`** |  |  | `name() = "current"` | The exact birth's own answer to a probe: it reasserted its presence, and this is its state. |
 | 3.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The answering birth's logical node. |
@@ -439,8 +451,16 @@ The typed result of a Status call.
 | 46.2 | `not_carried` | `BTreeSet<String>` |  |  | The named labels the node did not carry: nothing was removed for them. |
 | 47 | **`RejectedName`** |  |  | `name() = "rejected-name"` | The `UpdateName` was not made: `name` is outside the name grammar (`name_refusal`), or the |
 | 47.0 | `reason` | `String` |  |  | Why, by name, naming the name; within `MAX_REFUSAL_REASON_BYTES`. |
-| 48 | **`BusyHoldingConnections`** |  |  | `name() = "busy-holding-connections"` | The exact birth's answer to `ApplyNodeName` while it holds connections (R-CR1; proposal |
+| 48 | **`BusyHoldingConnections`** |  |  | `name() = "busy-holding-connections"` | The exact birth's answer to `ApplyNodeName` or `LeaveMesh` while it holds connections (R-CR1; |
 | 48.0 | `connections` | `Vec<ConnectionId>` → [`ConnectionId`](#t-rafka_mesh_entity-ids-ConnectionId) |  |  | Each connection it holds, by the minted id of its open entry; at most |
+| 49 | **`MeshJoined`** |  |  | `name() = "mesh-joined"` | `node.mesh.joined`: the exact birth joined its mesh channel(s) and published its first |
+| 49.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth that joined. |
+| 49.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 49.2 | `joined` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rafka_node_rpc_contract-status-WhichMesh) |  |  | The mesh channels joined, in order. |
+| 50 | **`MeshLeft`** |  |  | `name() = "mesh-left"` | `node.mesh.left`: the exact birth left its mesh channel(s), its endpoint still bound |
+| 50.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth that left. |
+| 50.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
+| 50.2 | `left` | `Vec<WhichMesh>` → [`WhichMesh`](#t-rafka_node_rpc_contract-status-WhichMesh) |  |  | The mesh channels left, in order. |
 
 ## 0x1C `build-claim`
 
@@ -2606,6 +2626,19 @@ Which of a node's tag labels `node.tags.delete` removes (node-rpc-envelope.md, n
 | 0 | **`All`** |  |  | `name() = "all"` | Every label the node carries. A tag of its own, never a value in the list. |
 | 1 | **`Labels`** |  |  | `name() = "labels"` | The named labels: at least one, at most `MAX_NODE_TAGS`, each a label (`tag_refusal`). |
 | 1.0 | `0` | `BTreeSet<String>` |  |  |  |
+
+<a id="t-rafka_node_rpc_contract-status-WhichMesh"></a>
+
+### `WhichMesh`
+
+`crates/rafka-node-rpc-contract/src/status.rs` · enum · 2 variants · rafka-node-rpc-contract
+
+Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left
+
+| # | variant · field | type | serde | labels | doc |
+|---|---|---|---|---|---|
+| 0 | **`Own`** |  |  | `name() = "own"` | The node's own mesh channel (`<fabric_id>/<mesh_id>`). |
+| 1 | **`Backbone`** |  |  | `name() = "backbone"` | The fabric's admin-backbone channel (`<fabric_id>/admin-backbone`), carried by a node-admin. |
 
 <a id="t-rafka_mesh_entity-wire-WireDigest"></a>
 

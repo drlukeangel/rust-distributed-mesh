@@ -119,8 +119,8 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         assert_eq!(own.config, config, "the birth's own digest carries the config it was told");
         let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default() };
         assert_eq!(call(stale_config).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() }, "a config for another birth is refused with the one held");
-        // The reserved DrainNode is refused by name; node.connections.delete { All } is answered with its receipt.
-        let retired = StatusRequest::DrainNode { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() };
+        // The reserved Reserved6 is refused by name; node.connections.delete { All } is answered with its receipt.
+        let retired = StatusRequest::Reserved6 { node_id: node.node_id.clone(), incarnation: incarnation.clone(), build_id: "08zd8rg6hhjh".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() };
         assert!(matches!(call(retired).await, StatusReply::RejectedUnmatchedCompletion { field, .. } if field == "command"), "a reserved position is refused by name");
         let all = StatusRequest::DeleteConnections { node_id: node.node_id.clone(), incarnation: incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
         let deleted = call(all).await;

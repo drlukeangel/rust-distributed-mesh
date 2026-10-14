@@ -27,7 +27,7 @@ use crate::model::{IncarnationId, NodeId, PathName};
 use rafka_mesh_entity::{LifecycleOp, MemberStatus, MeshDigest};
 use rafka_mesh_transport::membership::Membership;
 use rafka_node_rpc::{NodeRpcClient, NodeRpcServer, NodeTarget};
-use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionScope, ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest, WhichMesh};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -155,6 +155,12 @@ pub trait Session: Send + Sync {
     /// birth's connections rows: the session drops it once it holds the name its join answer handed,
     /// and no earlier, so the join's connection is recorded under that name (node-start.md step 2).
     async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<crate::connections_writer::RowsHeld>) -> Result<(), StartFailed>;
+    /// Standalone `node.mesh.join` (`JoinMesh` on 0x1B): report `JoinNode` to the authority reached
+    /// back over `spare` and re-enter the mesh channel (and backbone, for a node-admin).
+    async fn join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> Result<Vec<WhichMesh>, String> {
+        let _ = (spare, operation);
+        Err("this session does not support standalone node.mesh.join".into())
+    }
 }
 
 /// Declares a state this birth entered to its authority.
@@ -668,8 +674,20 @@ impl NodeSelf {
             let StatusRequest::DeleteConnections { scope, .. } = req else { unreachable!("matched above") };
             return Some(self.serve_delete_connections(commander, scope).await);
         }
-        if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::NodeDrained { .. }) {
+        if matches!(req, StatusRequest::Reserved6 { .. } | StatusRequest::Reserved7 { .. }) {
             return Some(crate::node_commands::refuse_reserved(&self.held_name().to_string(), &named(commander), req));
+        }
+        if let StatusRequest::LeaveMesh { incarnation, operation, .. } = req {
+            if *incarnation != self.incarnation {
+                return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
+            }
+            return Some(self.serve_leave_mesh(spare, operation).await);
+        }
+        if let StatusRequest::JoinMesh { incarnation, operation, .. } = req {
+            if *incarnation != self.incarnation {
+                return Some(StatusReply::RejectedStaleIncarnation { held: self.incarnation.clone() });
+            }
+            return Some(self.serve_join_mesh(spare, operation).await);
         }
         let (incarnation, build_id, attempt, operation) = match req {
             StatusRequest::StopNode { incarnation, build_id, attempt, operation, .. }
@@ -698,6 +716,103 @@ impl NodeSelf {
         match req {
             StatusRequest::StopNode { .. } => Some(self.stop(commander, spare, op, parent).await),
             _ => Some(self.start(commander, spare, op, parent).await),
+        }
+    }
+
+    /// Standalone `node.mesh.leave` (`LeaveMesh` on 0x1B; node-mesh-leave.md): refuses
+    /// `BusyHoldingConnections` when the connections log still holds an open entry, otherwise
+    /// leaves the mesh channel (and backbone, for a node-admin) and cuts the Node RPC pool.
+    async fn serve_leave_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> StatusReply {
+        let writer = self.connections.lock().unwrap().clone();
+        if let Some(w) = &writer {
+            let open = w.held_routes().await;
+            if !open.is_empty() {
+                let connections: Vec<rafka_mesh_entity::ConnectionId> = open.into_iter().map(|r| r.id).collect();
+                tracing::info_span!(
+                    "rdm.node.mesh.reject.via-busy-holding-connections",
+                    node = %self.held_name(),
+                    node_id = %self.node_id,
+                    mesh = %self.membership.mesh_name(),
+                    mesh_id = %self.membership.mesh_id(),
+                    operation = %operation,
+                    connections = ?connections,
+                    "otel.kind" = "internal"
+                )
+                .in_scope(|| tracing::info!("node.mesh.leave refused: this birth still holds open connections"));
+                return StatusReply::BusyHoldingConnections { connections };
+            }
+        }
+        let (_, left) = self.leave_mesh(spare, operation).await;
+        StatusReply::MeshLeft { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), left }
+    }
+
+    /// The `node.mesh.leave` primitive (node-mesh-leave.md): shared by standalone `LeaveMesh` and
+    /// `node.stop` step 3. Emits `rdm.node.mesh.update.via-leaving`, leaves the mesh channel (and
+    /// the backbone for a node-admin, each emitting `rdm.node.mesh.update.via-left`), and cuts the
+    /// Node RPC pool while sparing `spare`.
+    async fn leave_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> (CutReport, Vec<WhichMesh>) {
+        use tracing::Instrument;
+        let leaving_span = tracing::info_span!(
+            "rdm.node.mesh.update.via-leaving",
+            node = %self.held_name(),
+            node_id = %self.node_id,
+            mesh = %self.membership.mesh_name(),
+            mesh_id = %self.membership.mesh_id(),
+            operation = %operation,
+            "otel.kind" = "internal"
+        );
+        async {
+            let session = self.session.lock().unwrap().clone();
+            let report = match &session {
+                Some(session) => session.cut(spare.as_slice()).await,
+                None => {
+                    self.membership.park().await;
+                    tracing::info_span!(
+                        "rdm.node.mesh.update.via-left",
+                        node = %self.held_name(),
+                        node_id = %self.node_id,
+                        mesh = %self.membership.mesh_name(),
+                        mesh_id = %self.membership.mesh_id(),
+                        which = WhichMesh::Own.name(),
+                    )
+                    .in_scope(|| tracing::info!("left the mesh channel"));
+                    if let Some(backbone) = &self.backbone {
+                        backbone.park().await;
+                        tracing::info_span!(
+                            "rdm.node.mesh.update.via-left",
+                            node = %self.held_name(),
+                            node_id = %self.node_id,
+                            mesh = %self.membership.mesh_name(),
+                            mesh_id = %self.membership.mesh_id(),
+                            which = WhichMesh::Backbone.name(),
+                        )
+                        .in_scope(|| tracing::info!("left the backbone channel"));
+                    }
+                    CutReport::default()
+                }
+            };
+            let mut left = vec![WhichMesh::Own];
+            if self.backbone.is_some() {
+                left.push(WhichMesh::Backbone);
+            }
+            (report, left)
+        }
+        .instrument(leaving_span)
+        .await
+    }
+
+    /// Standalone `node.mesh.join` (`JoinMesh` on 0x1B; node-mesh-join.md): reports `JoinNode` to
+    /// the authority reached back over `spare` (`rdm.node.mesh.update.via-joining`), re-enters the
+    /// mesh channel (`rdm.node.mesh.update.via-joined`), and answers `MeshJoined`.
+    async fn serve_join_mesh(&self, spare: Option<iroh::PublicKey>, operation: &str) -> StatusReply {
+        let Some(session) = self.session.lock().unwrap().clone() else {
+            return StatusReply::NotReady { reason: format!("{}: this process holds no session to join its mesh with", self.held_name()) };
+        };
+        self.server.resume();
+        self.admit_new_connections();
+        match session.join_mesh(spare, operation).await {
+            Ok(joined) => StatusReply::MeshJoined { node_id: self.node_id.clone(), incarnation: self.incarnation.clone(), joined },
+            Err(reason) => StatusReply::NotReady { reason },
         }
     }
 
@@ -803,19 +918,15 @@ impl NodeSelf {
             tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %op.operation, status = "Leaving", members = count, published)
                 .in_scope(|| tracing::info!("the last aggregate before the stop carries this node Leaving"));
         }
-        // 5. The stop's own step after its connections are deleted (node-stop.md step 3): cut its
-        // transport, its gossip neighbours and its Node RPC pool, sparing the commander's connection the
-        // stop call rides. Never its endpoint. The cut runs inside its own span: the span's start is
-        // when the cut began, and what it cut is recorded on it once it ends.
+        // 5. The stop's own step after its connections are deleted (node-stop.md step 3;
+        // node-mesh-leave.md): leave the mesh and cut its transport, its gossip neighbours and its
+        // Node RPC pool, sparing the commander's connection the stop call rides. Never its endpoint.
         let cut = tracing::info_span!(
             "rdm.node_admin.node.update.via-stop-transport-cut",
             node = %self.held_name(), operation = %op.operation,
             neighbours = tracing::field::Empty, pooled = tracing::field::Empty, accepted = tracing::field::Empty, turns_in_progress = tracing::field::Empty
         );
-        let report = match &session {
-            Some(session) => session.cut(spare.as_slice()).instrument(cut.clone()).await,
-            None => CutReport::default(),
-        };
+        let (report, _) = self.leave_mesh(spare, &op.operation).instrument(cut.clone()).await;
         cut.record("neighbours", report.neighbours);
         cut.record("pooled", report.pooled);
         cut.record("accepted", report.accepted);

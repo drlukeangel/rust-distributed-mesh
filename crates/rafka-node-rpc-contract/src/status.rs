@@ -141,7 +141,7 @@ pub enum StatusRequest {
     },
     /// Reserved position (R-CR4): never sent. A node's connections are deleted by
     /// [`Self::DeleteConnections`]; a receiver refuses this by name.
-    DrainNode {
+    Reserved6 {
         /// The birth commanded.
         node_id: NodeId,
         /// The incarnation of that birth.
@@ -150,12 +150,12 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `drain-node:<path>`.
+        /// The operation.
         operation: String,
     },
     /// Reserved position (R-CR4): never sent; a receiver refuses this by name.
-    NodeDrained {
-        /// The birth that drained.
+    Reserved7 {
+        /// The birth reported.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
@@ -163,7 +163,7 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `drain-node:<path>`.
+        /// The operation.
         operation: String,
     },
     /// Downward: the owning mesh-admin tells the exact birth to stop (`stop-node`; node-stop.md):
@@ -441,6 +441,61 @@ pub enum StatusRequest {
         /// Which labels.
         scope: TagScope,
     },
+    /// Downward: the commanding authority tells the exact birth to join its mesh channel(s)
+    /// (`node.mesh.join`; node-mesh-join.md), reporting `JoinNode` back to the commander,
+    /// installing the handed name, cert, config and rafka-time, opening the mesh channel
+    /// (`WhichMesh::Own`, and `WhichMesh::Backbone` for a node-admin) and publishing its
+    /// first `Digest` heartbeat, answered [`StatusReply::MeshJoined`].
+    JoinMesh {
+        /// The birth commanded.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// The operation: `join-mesh:<path.name>` or `start-node:<path.name>`.
+        operation: String,
+    },
+    /// Downward: the commanding authority tells the exact birth to leave its mesh channel(s)
+    /// (`node.mesh.leave`; node-mesh-leave.md), closing the mesh channel (`WhichMesh::Own`,
+    /// and `WhichMesh::Backbone` for a node-admin) while keeping its endpoint bound, answered
+    /// [`StatusReply::MeshLeft`], or [`StatusReply::BusyHoldingConnections`] if any connection
+    /// entry is still open in its connections log.
+    LeaveMesh {
+        /// The birth commanded.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The Build the operation belongs to.
+        build_id: String,
+        /// The Build attempt that holds the operation.
+        attempt: u32,
+        /// The operation: `leave-mesh:<path.name>` or `stop-node:<path.name>`.
+        operation: String,
+    },
+}
+
+/// Which mesh channel a `node.mesh.join` joined or a `node.mesh.leave` left
+/// (node-rpc-envelope.md, "Node mesh join and leave command pairs"). Positional order is part
+/// of the wire schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WhichMesh {
+    /// The node's own mesh channel (`<fabric_id>/<mesh_id>`).
+    Own,
+    /// The fabric's admin-backbone channel (`<fabric_id>/admin-backbone`), carried by a node-admin.
+    Backbone,
+}
+
+impl WhichMesh {
+    /// The channel's name in spans and evidence.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Own => "own",
+            Self::Backbone => "backbone",
+        }
+    }
 }
 
 /// Which nodes `node.get` selects. Positional order is part of the wire schema.
@@ -688,8 +743,8 @@ impl StatusRequest {
             Self::ProbeNodeState { .. } => "probe-node-state",
             Self::ApplyMeshState { .. } => "apply-mesh-state",
             Self::ApplyFabricEvent { .. } => "apply-fabric-event",
-            Self::DrainNode { .. } => "drain-node",
-            Self::NodeDrained { .. } => "node-drained",
+            Self::Reserved6 { .. } => "reserved-6",
+            Self::Reserved7 { .. } => "reserved-7",
             Self::StopNode { .. } => "stop-node",
             Self::NodeLeft { .. } => "node-left",
             Self::DeleteMesh { .. } => "delete-mesh",
@@ -710,6 +765,8 @@ impl StatusRequest {
             Self::GetConnections { .. } => "node.connections.get",
             Self::CreateTags { .. } => "node.tags.create",
             Self::DeleteTags { .. } => "node.tags.delete",
+            Self::JoinMesh { .. } => "node.mesh.join",
+            Self::LeaveMesh { .. } => "node.mesh.leave",
         }
     }
 }
@@ -803,8 +860,8 @@ pub enum StatusReply {
     Applied,
     /// The same natural key was already at that state: one logical event.
     AlreadyApplied,
-    /// The exact birth entered `Draining` (or already was), with the work still in flight now.
-    NodeDrainingApplied {
+    /// Reserved position (R-CR4): never sent.
+    Reserved2 {
         /// The work still in flight.
         in_flight: u64,
     },
@@ -1160,14 +1217,35 @@ pub enum StatusReply {
         /// Why, by name, naming the name; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
     },
-    /// The exact birth's answer to `ApplyNodeName` while it holds connections (R-CR1; proposal
-    /// node-properties-own-commands.md §2.2 step 6, "`Busy { connections }` naming each connection it
-    /// still holds"): it keeps its name and holds nothing. Not [`StatusReply::Busy`], the protocol's
-    /// admission bound.
+    /// The exact birth's answer to `ApplyNodeName` or `LeaveMesh` while it holds connections (R-CR1;
+    /// proposal node-properties-own-commands.md §2.2 step 6, "`Busy { connections }` naming each
+    /// connection it still holds"): it keeps its name and holds nothing. Not [`StatusReply::Busy`],
+    /// the protocol's admission bound.
     BusyHoldingConnections {
         /// Each connection it holds, by the minted id of its open entry; at most
         /// [`MAX_REPORTED_CONNECTIONS`].
         connections: Vec<ConnectionId>,
+    },
+    /// `node.mesh.joined`: the exact birth joined its mesh channel(s) and published its first
+    /// `Digest` heartbeat (`[Own]` for an rpc-node or storage-node, `[Own, Backbone]` for a
+    /// node-admin).
+    MeshJoined {
+        /// The birth that joined.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The mesh channels joined, in order.
+        joined: Vec<WhichMesh>,
+    },
+    /// `node.mesh.left`: the exact birth left its mesh channel(s), its endpoint still bound
+    /// (`[Own]` for an rpc-node or storage-node, `[Own, Backbone]` for a node-admin).
+    MeshLeft {
+        /// The birth that left.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The mesh channels left, in order.
+        left: Vec<WhichMesh>,
     },
 }
 
@@ -1347,7 +1425,7 @@ impl StatusReply {
         match self {
             Self::Applied => "applied",
             Self::AlreadyApplied => "already-applied",
-            Self::NodeDrainingApplied { .. } => "node-draining-applied",
+            Self::Reserved2 { .. } => "reserved-2",
             Self::Current { .. } => "current",
             Self::RejectedStaleIncarnation { .. } => "rejected-stale-incarnation",
             Self::RejectedStaleMesh { .. } => "rejected-stale-mesh",
@@ -1394,6 +1472,8 @@ impl StatusReply {
             Self::TagsDeleted { .. } => "tags-deleted",
             Self::RejectedName { .. } => "rejected-name",
             Self::BusyHoldingConnections { .. } => "busy-holding-connections",
+            Self::MeshJoined { .. } => "mesh-joined",
+            Self::MeshLeft { .. } => "mesh-left",
         }
     }
 }
@@ -1411,8 +1491,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A connections-deleting node still answers its authority's probe and apply.
     const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
-    const REQUEST_VARIANTS: u32 = 28;
-    const REPLY_VARIANTS: u32 = 49;
+    const REQUEST_VARIANTS: u32 = 30;
+    const REPLY_VARIANTS: u32 = 51;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1421,7 +1501,7 @@ impl NodeProtocol for Status {
         match reply {
             StatusReply::Applied
             | StatusReply::AlreadyApplied
-            | StatusReply::NodeDrainingApplied { .. }
+            | StatusReply::Reserved2 { .. }
             | StatusReply::Current { .. }
             | StatusReply::CurrentParked { .. }
             | StatusReply::ConfigUpdated { .. }
@@ -1435,7 +1515,9 @@ impl NodeProtocol for Status {
             | StatusReply::Connections { .. }
             | StatusReply::TagsCreated { .. }
             | StatusReply::TagsDeleted { .. }
-            | StatusReply::Started => ReplyKind::Success,
+            | StatusReply::Started
+            | StatusReply::MeshJoined { .. }
+            | StatusReply::MeshLeft { .. } => ReplyKind::Success,
             StatusReply::RejectedStaleIncarnation { .. }
             | StatusReply::RejectedStaleMesh { .. }
             | StatusReply::RejectedStaleFabric { .. }
@@ -1524,7 +1606,7 @@ mod tests {
         let all = [
             (StatusReply::Applied, ReplyKind::Success),
             (StatusReply::AlreadyApplied, ReplyKind::Success),
-            (StatusReply::NodeDrainingApplied { in_flight: 3 }, ReplyKind::Success),
+            (StatusReply::Reserved2 { in_flight: 3 }, ReplyKind::Success),
             (StatusReply::Current { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), state: NodeState::ReadyForTraffic }, ReplyKind::Success),
             (StatusReply::RejectedStaleIncarnation { held: IncarnationId::mint() }, ReplyKind::ProtocolRefusal),
             (StatusReply::RejectedStaleMesh { held: MeshId::mint() }, ReplyKind::ProtocolRefusal),
@@ -1571,6 +1653,8 @@ mod tests {
             (StatusReply::TagsDeleted { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), not_carried: ["blue".to_string()].into() }, ReplyKind::Success),
             (StatusReply::RejectedName { reason: "r".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }, ReplyKind::ProtocolRefusal),
+            (StatusReply::MeshJoined { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), joined: vec![WhichMesh::Own, WhichMesh::Backbone] }, ReplyKind::Success),
+            (StatusReply::MeshLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), left: vec![WhichMesh::Own] }, ReplyKind::Success),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -1585,8 +1669,8 @@ mod tests {
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending },
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
-            StatusRequest::DrainNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
-            StatusRequest::NodeDrained { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
+            StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.1".into() },
+            StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "reserved-7:mesh1.rpc.1".into() },
             StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
             StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
             StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "shutdown-mesh:m".into() },
@@ -1616,6 +1700,8 @@ mod tests {
             StatusRequest::GetConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
             StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: ["rabbit".to_string()].into() },
             StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
+            StatusRequest::JoinMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "join-mesh:mesh1.rpc.1".into() },
+            StatusRequest::LeaveMesh { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "leave-mesh:mesh1.rpc.1".into() },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {

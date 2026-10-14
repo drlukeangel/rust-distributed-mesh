@@ -302,7 +302,33 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             let to = node.resolve_authority().await?;
             let mut digest = node.join_digest();
             digest.status = MemberStatus::Pending;
-            let (answer, through) = join(&name, &client, &to, &digest).await?;
+            let mesh_id_str = digest.mesh_id.as_ref().map(ToString::to_string).unwrap_or_default();
+            let op_name = match kind {
+                StartKind::FirstStart => format!("node.create:{name}"),
+                StartKind::AfterStop => format!("node.start:{name}"),
+            };
+            let joining_span = match kind {
+                StartKind::FirstStart => tracing::info_span!(
+                    parent: &step,
+                    "rdm.node.mesh.update.via-joining",
+                    node = %name,
+                    node_id = %node_id,
+                    mesh = %path.mesh,
+                    mesh_id = %mesh_id_str,
+                    authority = %label,
+                    operation = %op_name,
+                ),
+                StartKind::AfterStop => tracing::info_span!(
+                    "rdm.node.mesh.update.via-joining",
+                    node = %name,
+                    node_id = %node_id,
+                    mesh = %path.mesh,
+                    mesh_id = %mesh_id_str,
+                    authority = %label,
+                    operation = %op_name,
+                ),
+            };
+            let (answer, through) = join(&name, &client, &to, &digest).instrument(joining_span).await?;
             // Who answered, as the join answer names it (node-start.md step 2), and the endpoint it
             // answered on.
             step.record("served_by", through.name.to_string().as_str());
