@@ -2039,3 +2039,137 @@ async fn a_subject_the_mesh_primary_does_not_hold_is_answered_subject_unknown_ne
         }
     }
 }
+
+/// CONTRACT (docs/architecture/lifecycles/node-replace.md, Luke 2026-10-13 D2: "Retained predecessor
+/// labels are removed from the active index, not erased from its row. Rollback must restore the
+/// predecessor's index entries under its original id. A repeated cutover must preserve the successor's
+/// already-inherited values rather than overwrite subsequent updates"):
+/// 1. When the predecessor `mesh1.rpc.2` (moved to `mesh1.rpc.2.old` with config `{zone: a}` and tags
+///    `{rabbit, red}`) is cut over to the successor `mesh1.rpc.2.new` (`Cutover` to `2`), the successor
+///    at `mesh1.rpc.2` inherits `{zone: a}` and `{rabbit, red}` under its own id, and the retained
+///    predecessor row at `mesh1.rpc.2.old` is marked `inherited_by` the successor (keeping `{rabbit,
+///    red}` on the row while removing the predecessor's id from the active tag index).
+/// 2. Subsequent config and tag updates on the successor (`{zone: b, tier: gold}`, tags `{rabbit,
+///    blue}`) are preserved across a repeated cutover — both when the successor's row is already at
+///    `mesh1.rpc.2` and when the successor is moved back to `mesh1.rpc.2.new` and cut over to `2` a
+///    second time.
+/// 3. Rollback (moving the stopped successor back to `mesh1.rpc.2.new` and moving the stopped
+///    predecessor from `mesh1.rpc.2.old` back to `mesh1.rpc.2`) restores the predecessor's row at
+///    `mesh1.rpc.2` with `inherited_by: None` and restores the predecessor's tag-index entries under its
+///    original `node_id`.
+#[test]
+fn replace_cutover_preserves_subsequent_updates_on_repeat_and_rollback_restores_predecessor_tag_index() {
+    use rafka_node_admin_core::node_name_update::Cutover;
+    use rafka_node_rpc_contract::status::TagScope;
+    let cap = capture();
+    cap.run(async {
+        let (rig, b) = rig().await;
+        quiet_door(&rig).await;
+        let pred = &b["rpc2"];
+        stopped_with_row(&rig, pred, &["rabbit", "red"]).await;
+        let pred_cfg: BTreeMap<String, String> = [("zone".to_string(), "a".to_string())].into();
+        assert_eq!(
+            reply(&call(&rig, &b["admin2"], &StatusRequest::UpdateNodeConfig { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap(), config: pred_cfg.clone() }).await),
+            StatusReply::ConfigUpdated { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap() }
+        );
+        // Step 1 of replace: predecessor moved from mesh1.rpc.2 to mesh1.rpc.2.old.
+        let old_name: PathName = "mesh1.rpc.2.old".parse().unwrap();
+        assert_eq!(
+            rig.authority.update_name(&update_name(pred, "2.old"), None).await,
+            StatusReply::NameUpdated { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap() }
+        );
+        assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [pred.node.node_id.clone()].into());
+        assert_eq!(rig.nodes.tagged("red").await.unwrap(), [pred.node.node_id.clone()].into());
+
+        // Step 2: successor created at mesh1.rpc.2.new (stopped here so the row move is tested directly).
+        let mut succ = birth("mesh1.rpc.2.new", NodeKind::RpcNode, "mesh1", false, false);
+        (succ.node.parked, succ.node.status) = (true, NodeStatus::Leaving);
+        rig.topology.write().await.nodes.push(succ.node.clone());
+        stopped_with_row(&rig, &succ, &[]).await;
+
+        let cutover = Cutover { retained: old_name.clone(), retained_id: pred.node.node_id.clone() };
+        let base_name: PathName = "mesh1.rpc.2".parse().unwrap();
+        let new_name: PathName = "mesh1.rpc.2.new".parse().unwrap();
+        assert_eq!(
+            rig.authority.update_name(&update_name(&succ, "2"), Some(&cutover)).await,
+            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
+        );
+        // After cutover: successor holds mesh1.rpc.2 with inherited config & tags under its own id;
+        // retained predecessor row at .old keeps its tags on the row with inherited_by set, and its id
+        // is removed from the active tag index.
+        let succ_row = rig.nodes.node_row_at(&base_name).await.unwrap().expect("successor row at mesh1.rpc.2");
+        assert_eq!((succ_row.node_id.clone(), succ_row.config.clone(), succ_row.tags.clone()), (succ.node.node_id.clone(), pred_cfg.clone(), labels(&["rabbit", "red"])));
+        let retained = rig.nodes.node_row_at(&old_name).await.unwrap().expect("retained predecessor row at mesh1.rpc.2.old");
+        assert_eq!((retained.node_id.clone(), retained.tags.clone(), retained.inherited_by.clone()), (pred.node.node_id.clone(), labels(&["rabbit", "red"]), Some(succ.node.node_id.clone())));
+        assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [succ.node.node_id.clone()].into(), "only the successor's id is in the active index after cutover");
+        assert_eq!(rig.nodes.tagged("red").await.unwrap(), [succ.node.node_id.clone()].into());
+
+        // Subsequent updates on the successor after inheritance.
+        let succ_cfg: BTreeMap<String, String> = [("zone".to_string(), "b".to_string()), ("tier".to_string(), "gold".to_string())].into();
+        assert_eq!(
+            reply(&call(&rig, &b["admin2"], &StatusRequest::UpdateNodeConfig { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), config: succ_cfg.clone() }).await),
+            StatusReply::ConfigUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
+        );
+        assert_eq!(
+            reply(&call(&rig, &b["admin2"], &create_tags(&succ, &["blue"])).await),
+            StatusReply::TagsCreated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), already_carried: Default::default() }
+        );
+        assert_eq!(
+            reply(&call(&rig, &b["admin2"], &delete_tags(&succ, TagScope::Labels(labels(&["red"])))).await),
+            StatusReply::TagsDeleted { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), not_carried: Default::default() }
+        );
+
+        // D2(b) case 1: same-name repeated cutover while successor is at mesh1.rpc.2.
+        assert_eq!(
+            rig.authority.update_name(&update_name(&succ, "2"), Some(&cutover)).await,
+            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
+        );
+        let row_after_same = rig.nodes.node_row_at(&base_name).await.unwrap().unwrap();
+        assert_eq!((row_after_same.config, row_after_same.tags), (succ_cfg.clone(), labels(&["rabbit", "blue"])), "a same-name repeated cutover preserves subsequent updates");
+
+        // D2(b) case 2: successor moved back to mesh1.rpc.2.new and cut over to mesh1.rpc.2 again.
+        assert_eq!(
+            rig.authority.update_name(&update_name(&succ, "2.new"), None).await,
+            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
+        );
+        assert_eq!(
+            rig.authority.update_name(&update_name(&succ, "2"), Some(&cutover)).await,
+            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
+        );
+        let row_after_recutover = rig.nodes.node_row_at(&base_name).await.unwrap().unwrap();
+        assert_eq!(
+            (row_after_recutover.config, row_after_recutover.tags),
+            (succ_cfg, labels(&["rabbit", "blue"])),
+            "a repeated cutover from .new preserves the successor's already-inherited and updated values rather than overwriting them from .old"
+        );
+        assert_eq!(rig.nodes.tagged("blue").await.unwrap(), [succ.node.node_id.clone()].into());
+        assert!(rig.nodes.tagged("red").await.unwrap().is_empty(), "the deleted tag red was not resurrected from .old");
+
+        // D2(a): Rollback moves the stopped successor back to mesh1.rpc.2.new and moves the stopped
+        // predecessor from mesh1.rpc.2.old back to mesh1.rpc.2, restoring the predecessor's tag-index
+        // entries under its original id.
+        assert_eq!(
+            rig.authority.update_name(&update_name(&succ, "2.new"), None).await,
+            StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() }
+        );
+        assert_eq!(
+            reply(&call(&rig, &b["admin2"], &delete_tags(&succ, TagScope::All)).await),
+            StatusReply::TagsDeleted { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap(), not_carried: Default::default() }
+        );
+        assert_eq!(rig.nodes.node_row_at(&new_name).await.unwrap().map(|r| r.node_id), Some(succ.node.node_id.clone()));
+        assert_eq!(
+            rig.authority.update_name(&update_name(pred, "2"), None).await,
+            StatusReply::NameUpdated { node_id: pred.node.node_id.clone(), incarnation: pred.node.incarnation_id.clone().unwrap() }
+        );
+        let restored = rig.nodes.node_row_at(&base_name).await.unwrap().expect("predecessor row restored at mesh1.rpc.2");
+        assert_eq!(
+            (restored.node_id.clone(), restored.config, restored.tags, restored.inherited_by),
+            (pred.node.node_id.clone(), pred_cfg, labels(&["rabbit", "red"]), None),
+            "rollback restores the predecessor row at its original name with inherited_by cleared"
+        );
+        assert_eq!(rig.nodes.node_row_at(&old_name).await.unwrap(), None, "mesh1.rpc.2.old is released");
+        assert_eq!(rig.nodes.tagged("rabbit").await.unwrap(), [pred.node.node_id.clone()].into(), "rollback restores rabbit in the tag index under the predecessor's original id");
+        assert_eq!(rig.nodes.tagged("red").await.unwrap(), [pred.node.node_id.clone()].into(), "rollback restores red in the tag index under the predecessor's original id");
+    });
+}
+
