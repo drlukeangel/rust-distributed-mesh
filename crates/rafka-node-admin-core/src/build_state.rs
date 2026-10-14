@@ -12,10 +12,10 @@
 //! RDM adapters:
 //! - [`MemoryBuildStateAdapter`]: the in-memory fact log that backs the live
 //!   fabric control projection;
-//! - [`FileJournal`]: an optional local journal of the same facts for a
-//!   same-admin restart and replay evidence. It is never cross-mesh authority:
-//!   a successor in another mesh continues a Build from the live projection,
-//!   never from a dead admin's disk.
+//! - [`FileJournal`]: the file adapter's journal on the fabric's shared store
+//!   root (`fabric/builds/` written by the fabric-primary, `meshes/<mesh>/builds/`
+//!   written by each mesh's primary under the writer ladder; R-BI6), so a
+//!   successor reads it there.
 
 use crate::accepted::{AttemptAction, FabricTopology, TopologyChange};
 use crate::build::BuildId;
@@ -1524,19 +1524,31 @@ impl LocalBuildLog for MemoryBuildStateAdapter {
 impl LocalBuildLog for FileJournal {
     async fn derive_on_every_fact(&self, derive: FactDerivation) {
         let mut w = self.writer.lock().await;
+        let _ = self.sync(&w).await;
         derive(&snapshot(&self.log));
         w.0 = Some(derive);
     }
 
     async fn absorb_facts(&self, facts: &[BuildFact]) {
         let w = self.writer.lock().await;
+        let _ = self.sync(&w).await;
+        let held = snapshot(&self.log);
+        let mut new: Vec<BuildFact> = Vec::new();
         for f in facts {
-            if is_new(&snapshot(&self.log), f) {
-                if let Err(e) = self.append(&w, f.clone()).await {
+            if is_new(&held, f) && is_new(&new, f) {
+                new.push(f.clone());
+            }
+        }
+        drop(held);
+        if self.root_dir.is_none() {
+            for f in new {
+                if let Err(e) = self.append(&w, f).await {
                     tracing::info_span!("rdm.node_admin.build.reject.via-journal-unwritten", path = %self.path.display(), error = %e)
                         .in_scope(|| tracing::info!("a Build fact heard from the fabric could not be journaled"));
                 }
             }
+        } else {
+            publish(&self.log, w.0.as_ref(), new);
         }
     }
 }
@@ -1636,15 +1648,137 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     }
 }
 
-/// The journal file name inside an admin's own data dir.
+/// The journal file name under `fabric/builds/` and `meshes/<mesh>/builds/` on the store root.
 pub(crate) const JOURNAL_FILE: &str = "build-journal.jsonl";
 
-/// `builds.storage`: the same facts, one JSON line each, appended and fsynced in the admin's own
-/// data dir before the fact counts. Re-opening it replays to the same view, so a Build accepted
-/// before an all-admin restart is still held after it.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileCursor {
+    dev: u64,
+    ino: u64,
+    len: u64,
+}
+
+impl FileCursor {
+    fn from_meta(m: &std::fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt as _;
+        Self { dev: m.dev(), ino: m.ino(), len: m.len() }
+    }
+}
+
+async fn append_lines_to_file(
+    path: &Path,
+    lines: Vec<Vec<u8>>,
+    cursors: &Arc<Mutex<BTreeMap<PathBuf, FileCursor>>>,
+) -> Result<(), BuildStateError> {
+    use std::io::Write as _;
+    let path = path.to_path_buf();
+    let cursors = cursors.clone();
+    let bytes_written: u64 = lines.iter().map(|l| l.len() as u64).sum();
+    crate::record_store::blocking_io(move || {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| BuildStateError::Io(format!("{}: {e}", parent.display())))?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| BuildStateError::Io(e.to_string()))?;
+        for line in &lines {
+            f.write_all(line).map_err(|e| BuildStateError::Io(e.to_string()))?;
+        }
+        f.sync_data().map_err(|e| BuildStateError::Io(e.to_string()))?;
+        if let Ok(m) = f.metadata() {
+            let next = FileCursor::from_meta(&m);
+            let mut guard = cursors.lock().unwrap_or_else(|e| e.into_inner());
+            let prev_len = guard.get(&path).filter(|c| c.dev == next.dev && c.ino == next.ino).map(|c| c.len).unwrap_or(0);
+            if prev_len + bytes_written == next.len {
+                guard.insert(path, next);
+            }
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// One journal file (`fabric/builds/build-journal.jsonl` or `meshes/<mesh>/builds/build-journal.jsonl`)
+/// held in a [`crate::store_root::StoreRoot`]'s scratchpad until the fabric's first state-commit
+/// publishes it.
+struct HeldJournal {
+    path: PathBuf,
+    store: String,
+    append: tokio::sync::Mutex<()>,
+    held: Mutex<Option<Vec<Vec<u8>>>>,
+    gate: std::sync::OnceLock<crate::record_store::PublishGate>,
+    cursors: Arc<Mutex<BTreeMap<PathBuf, FileCursor>>>,
+}
+
+impl std::fmt::Debug for HeldJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeldJournal").field("store", &self.store).field("path", &self.path).finish()
+    }
+}
+
+impl HeldJournal {
+    fn new(
+        path: PathBuf,
+        store: String,
+        scratchpad: Option<&Arc<crate::record_store::Scratchpad>>,
+        cursors: Arc<Mutex<BTreeMap<PathBuf, FileCursor>>>,
+    ) -> Arc<Self> {
+        let h = Arc::new(Self {
+            path,
+            store,
+            append: tokio::sync::Mutex::new(()),
+            held: Mutex::new(Some(Vec::new())),
+            gate: std::sync::OnceLock::new(),
+            cursors,
+        });
+        if !scratchpad.is_some_and(|s| s.enrol(h.clone())) {
+            *h.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        h
+    }
+}
+
+#[async_trait]
+impl crate::record_store::HeldStore for HeldJournal {
+    async fn publish(&self) -> Result<crate::record_store::StorePublished, crate::record_store::StorageError> {
+        let _g = self.append.lock().await;
+        let Some(lines) = self.held.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+            return Ok(crate::record_store::StorePublished { store: self.store.clone(), ..Default::default() });
+        };
+        if let Some(Err(why)) = self.gate.get().map(|gate| gate()) {
+            *self.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            return Ok(crate::record_store::StorePublished {
+                store: self.store.clone(),
+                dropped: lines.len(),
+                why_dropped: Some(why),
+                ..Default::default()
+            });
+        }
+        let written = lines.len();
+        if written > 0 {
+            append_lines_to_file(&self.path, lines, &self.cursors)
+                .await
+                .map_err(|e| crate::record_store::StorageError::Io { file: self.path.display().to_string(), reason: e.to_string() })?;
+        }
+        *self.held.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(crate::record_store::StorePublished { store: self.store.clone(), written, ..Default::default() })
+    }
+}
+
+/// `builds.storage`: the Build facts, one JSON line each, appended and fsynced on the fabric's
+/// shared store root (`fabric/builds/build-journal.jsonl` written by the fabric-primary,
+/// `meshes/<mesh>/builds/build-journal.jsonl` written by each mesh's primary under the writer
+/// ladder; R-BI6) before the fact counts, so a successor reads them there.
 pub struct FileJournal {
     path: PathBuf,
+    root_dir: Option<PathBuf>,
+    own_mesh: Option<String>,
+    fabric_held: Option<Arc<HeldJournal>>,
+    mesh_held: Option<Arc<HeldJournal>>,
+    cursors: Arc<Mutex<BTreeMap<PathBuf, FileCursor>>>,
+    holds_fabric_seat: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
     /// The replayed facts and their indexes. Held only for a snapshot, a point read or a
     /// publication's swap, never across the disk, a fold or the derivation.
     log: Mutex<FactLog>,
@@ -1652,6 +1786,12 @@ pub struct FileJournal {
     /// holding the derivation each publication runs. An async lock, so a writer waiting on another's
     /// fsync or derivation yields its worker; readers never take it.
     writer: tokio::sync::Mutex<Derived>,
+}
+
+impl std::fmt::Debug for FileJournal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileJournal").field("path", &self.path).field("root_dir", &self.root_dir).field("own_mesh", &self.own_mesh).finish()
+    }
 }
 
 impl FileJournal {
@@ -1684,26 +1824,207 @@ impl FileJournal {
             Ok(log)
         })
         .await?;
-        Ok(Self { path, log: Mutex::new(log), writer: tokio::sync::Mutex::new(Derived::default()) })
+        Ok(Self {
+            path,
+            root_dir: None,
+            own_mesh: None,
+            fabric_held: None,
+            mesh_held: None,
+            cursors: Arc::new(Mutex::new(BTreeMap::new())),
+            holds_fabric_seat: std::sync::OnceLock::new(),
+            log: Mutex::new(log),
+            writer: tokio::sync::Mutex::new(Derived::default()),
+        })
     }
 
-    /// Open the Build journal on `root` for an admin of `own_mesh` (R-BI6).
-    pub async fn open_on_root(root: &crate::store_root::StoreRoot, _own_mesh: &str) -> Result<Self, BuildStateError> {
-        Self::open(root.dir()).await
+    /// Open the Build journal on the fabric's shared `root` for an admin of `own_mesh` (R-BI6):
+    /// `fabric/builds/build-journal.jsonl` (the fabric-primary's) and every
+    /// `meshes/<mesh>/builds/build-journal.jsonl` (each mesh-primary's) are replayed on the blocking
+    /// pool, and writes before the fabric's first state-commit are held in `root`'s scratchpad.
+    pub async fn open_on_root(root: &crate::store_root::StoreRoot, own_mesh: &str) -> Result<Self, BuildStateError> {
+        let cursors = Arc::new(Mutex::new(BTreeMap::new()));
+        let fabric_path = root.fabric_builds().join(JOURNAL_FILE);
+        let mesh_path = root.mesh_builds(own_mesh).join(JOURNAL_FILE);
+        let fabric_held = HeldJournal::new(fabric_path.clone(), "fabric/builds".into(), root.scratchpad(), cursors.clone());
+        let mesh_held = HeldJournal::new(mesh_path, format!("meshes/{own_mesh}/builds"), root.scratchpad(), cursors.clone());
+        let journal = Self {
+            path: fabric_path,
+            root_dir: Some(root.dir().to_path_buf()),
+            own_mesh: Some(own_mesh.to_string()),
+            fabric_held: Some(fabric_held),
+            mesh_held: Some(mesh_held),
+            cursors,
+            holds_fabric_seat: std::sync::OnceLock::new(),
+            log: Mutex::new(FactLog::default()),
+            writer: tokio::sync::Mutex::new(Derived::default()),
+        };
+        {
+            let w = journal.writer.lock().await;
+            journal.sync(&w).await?;
+        }
+        Ok(journal)
     }
 
-    /// Append `fact` as one fsynced line, then publish it ([`publish`]). The caller holds the
-    /// writer's turn `w`.
-    async fn append(&self, w: &Derived, fact: BuildFact) -> Result<(), BuildStateError> {
-        use std::io::Write as _;
-        let line = serde_json::to_string(&fact).map_err(|e| BuildStateError::Io(e.to_string()))?;
-        let path = self.path.clone();
-        crate::record_store::blocking_io(move || {
-            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path).map_err(|e| BuildStateError::Io(e.to_string()))?;
-            writeln!(f, "{line}").and_then(|_| f.sync_data()).map_err(|e| BuildStateError::Io(e.to_string()))
+    /// Set how this journal reads whether this birth holds the fabric seat (set once at boot):
+    /// `gate` gates the scratchpad publication of `fabric/builds` at state-commit (R14 item 2), and
+    /// `holds` routes fabric-lane executor receipts to `fabric/builds/` when `true` and to
+    /// `meshes/<own_mesh>/builds/` when `false`.
+    pub fn set_fabric_seat(
+        &self,
+        gate: crate::record_store::PublishGate,
+        holds: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) {
+        if let Some(h) = &self.fabric_held {
+            let _ = h.gate.set(gate);
+        }
+        let _ = self.holds_fabric_seat.set(holds);
+    }
+
+    fn is_fabric_primary(&self) -> bool {
+        self.holds_fabric_seat.get().map(|f| f()).unwrap_or(true)
+    }
+
+    fn target_path(&self, fact: &BuildFact) -> PathBuf {
+        let Some(root_dir) = &self.root_dir else {
+            return self.path.clone();
+        };
+        let mesh = match fact {
+            BuildFact::Accepted(_) | BuildFact::Forget { .. } => None,
+            BuildFact::Opened(o) => o.mesh.as_deref(),
+            BuildFact::Claim(c) => c.mesh.as_deref(),
+            BuildFact::Step(s) => s.mesh.as_deref().or_else(|| (!self.is_fabric_primary()).then_some(self.own_mesh.as_deref()).flatten()),
+            BuildFact::Attempt(a) => a.mesh.as_deref().or_else(|| (!self.is_fabric_primary()).then_some(self.own_mesh.as_deref()).flatten()),
+        };
+        match mesh {
+            Some(m) => root_dir.join("meshes").join(m).join("builds").join(JOURNAL_FILE),
+            None => self.path.clone(),
+        }
+    }
+
+    /// Sync any unseen lines from `<root>/fabric/builds/build-journal.jsonl` and
+    /// `<root>/meshes/*/builds/build-journal.jsonl` on the blocking pool under the writer's turn `w`.
+    async fn sync(&self, w: &Derived) -> Result<(), BuildStateError> {
+        let Some(root_dir) = self.root_dir.clone() else {
+            return Ok(());
+        };
+        let cursors = self.cursors.clone();
+        let read_facts = crate::record_store::blocking_io(move || {
+            let mut files = vec![root_dir.join("fabric").join("builds").join(JOURNAL_FILE)];
+            if let Ok(entries) = std::fs::read_dir(root_dir.join("meshes")) {
+                let mut mesh_files: Vec<PathBuf> = entries
+                    .flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|e| e.path().join("builds").join(JOURNAL_FILE))
+                    .collect();
+                mesh_files.sort();
+                files.extend(mesh_files);
+            }
+            let mut guard = cursors.lock().unwrap_or_else(|e| e.into_inner());
+            let mut out = Vec::new();
+            for file in files {
+                let meta = match std::fs::metadata(&file) {
+                    Ok(m) if m.is_file() => m,
+                    Ok(_) => continue,
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => continue,
+                    Err(e) => return Err(BuildStateError::Io(format!("{}: {e}", file.display()))),
+                };
+                let next = FileCursor::from_meta(&meta);
+                let offset = match guard.get(&file) {
+                    Some(c) if *c == next => continue,
+                    Some(c) if c.dev == next.dev && c.ino == next.ino && next.len >= c.len => c.len,
+                    _ => 0,
+                };
+                let mut f = match std::fs::File::open(&file) {
+                    Ok(f) => f,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(BuildStateError::Io(format!("{}: {e}", file.display()))),
+                };
+                if offset > 0 {
+                    use std::io::Seek as _;
+                    f.seek(std::io::SeekFrom::Start(offset))
+                        .map_err(|e| BuildStateError::Io(format!("{}: {e}", file.display())))?;
+                }
+                let mut reader = std::io::BufReader::new(f);
+                let mut buf = String::new();
+                let mut line_no = 0usize;
+                let mut pos = offset;
+                loop {
+                    buf.clear();
+                    let n = reader.read_line(&mut buf).map_err(|e| BuildStateError::Io(format!("{}: {e}", file.display())))?;
+                    if n == 0 {
+                        break;
+                    }
+                    pos += n as u64;
+                    line_no += 1;
+                    if buf.trim().is_empty() {
+                        continue;
+                    }
+                    let fact: BuildFact = serde_json::from_str(&buf)
+                        .map_err(|e| BuildStateError::CorruptJournal { line: line_no, reason: e.to_string() })?;
+                    out.push(fact);
+                }
+                guard.insert(file, FileCursor { len: pos, ..next });
+            }
+            Ok(out)
         })
         .await?;
-        publish(&self.log, w.0.as_ref(), vec![fact]);
+        if !read_facts.is_empty() {
+            let held = snapshot(&self.log);
+            let mut new: Vec<BuildFact> = Vec::new();
+            for f in read_facts {
+                if is_new(&held, &f) && is_new(&new, &f) {
+                    new.push(f);
+                }
+            }
+            drop(held);
+            publish(&self.log, w.0.as_ref(), new);
+        }
+        Ok(())
+    }
+
+    /// Sync from the store root when no push is mid-derivation: a reader never waits behind a writer.
+    async fn sync_for_read(&self) -> Result<(), BuildStateError> {
+        if self.root_dir.is_some() {
+            if let Ok(w) = self.writer.try_lock() {
+                self.sync(&w).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Append `fact` as one fsynced line (or hold it in the scratchpad before state-commit), then
+    /// publish it ([`publish`]). The caller holds the writer's turn `w`.
+    async fn append(&self, w: &Derived, fact: BuildFact) -> Result<(), BuildStateError> {
+        let mut line = serde_json::to_vec(&fact).map_err(|e| BuildStateError::Io(e.to_string()))?;
+        line.push(b'\n');
+        let path = self.target_path(&fact);
+        let held = [self.fabric_held.as_ref(), self.mesh_held.as_ref()]
+            .into_iter()
+            .flatten()
+            .find(|h| h.path == path);
+        match held {
+            Some(h) => {
+                let _g = h.append.lock().await;
+                let in_scratchpad = {
+                    let mut guard = h.held.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some(lines) = guard.as_mut() {
+                        lines.push(line.clone());
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if !in_scratchpad {
+                    append_lines_to_file(&path, vec![line], &self.cursors).await?;
+                }
+            }
+            None => {
+                append_lines_to_file(&path, vec![line], &self.cursors).await?;
+            }
+        }
+        if is_new(&snapshot(&self.log), &fact) {
+            publish(&self.log, w.0.as_ref(), vec![fact]);
+        }
         Ok(())
     }
 }
@@ -1712,6 +2033,7 @@ impl FileJournal {
 impl BuildStateAdapter for FileJournal {
     async fn publish_accepted(&self, accepted: &BuildAccepted) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
+        self.sync(&w).await?;
         if !accepted_conflict(&snapshot(&self.log), accepted)? {
             self.append(&w, BuildFact::Accepted(accepted.clone())).await?;
         }
@@ -1720,6 +2042,7 @@ impl BuildStateAdapter for FileJournal {
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
+        self.sync(&w).await?;
         let free = {
             let held = snapshot(&self.log);
             if !known(&held, &opened.build_id) {
@@ -1734,23 +2057,28 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+        self.sync_for_read().await?;
         read_own(&self.log, build_id)
     }
 
     async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
+        self.sync_for_read().await?;
         Ok(current_build(&self.log))
     }
 
     async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.sync_for_read().await?;
         Ok(newest_accepted_at_ms(&self.log))
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
+        self.sync_for_read().await?;
         Ok(active(&snapshot(&self.log)))
     }
 
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
         let w = self.writer.lock().await;
+        self.sync(&w).await?;
         {
             let held = snapshot(&self.log);
             if !known(&held, &claim.build_id) {
@@ -1769,40 +2097,53 @@ impl BuildStateAdapter for FileJournal {
 
     async fn adopt_claim(&self, claim: &BuildAttemptClaim) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
-        if is_new(&snapshot(&self.log), &BuildFact::Claim(claim.clone())) {
-            self.append(&w, BuildFact::Claim(claim.clone())).await?;
+        self.sync(&w).await?;
+        let fact = BuildFact::Claim(claim.clone());
+        if is_new(&snapshot(&self.log), &fact) {
+            if self.root_dir.is_none() {
+                self.append(&w, fact).await?;
+            } else {
+                publish(&self.log, w.0.as_ref(), vec![fact]);
+            }
         }
         Ok(())
     }
 
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
+        self.sync(&w).await?;
         self.append(&w, BuildFact::Step(receipt.clone())).await
     }
 
     async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
+        self.sync(&w).await?;
         self.append(&w, BuildFact::Attempt(receipt.clone())).await
     }
 
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.sync_for_read().await?;
         Ok(snapshot(&self.log).as_ref().clone())
     }
 
     async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+        self.sync_for_read().await?;
         Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
     }
 
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+        self.sync_for_read().await?;
         Ok(self.log.lock().unwrap().mesh_deleted_of(node_id, incarnation))
     }
 
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
+        self.sync_for_read().await?;
         Ok(self.log.lock().unwrap().exits_owed(build_id, mesh))
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         let w = self.writer.lock().await;
+        self.sync(&w).await?;
         self.append(&w, BuildFact::Forget { build_id: build_id.clone() }).await
     }
 }
@@ -2553,9 +2894,8 @@ mod tests {
     }
 
     /// PRD §1.4 / §7: no test, and no code outside this module, opens a Build
-    /// journal; cross-mesh authority is the live projection, never a disk. The one
-    /// exception is store_root_boot's preparation of an admin's data dir before that
-    /// admin starts on it (R-SB1, Luke 2026-10-13: each cell "prepares a durable store
+    /// journal; the one exception is store_root_boot's preparation of a store root before
+    /// an admin starts on it (R-SB1, Luke 2026-10-13: each cell "prepares a durable store
     /// root through the storage adapters, with no previous process"): it writes the
     /// accepted Build the admin then reloads, and decides nothing from it.
     #[test]
@@ -2578,7 +2918,7 @@ mod tests {
                 }
             }
         }
-        assert!(offenders.is_empty(), "only build_state.rs, the admin's own boot and store_root_boot's prepared data dir may open a journal: {offenders:?}");
+        assert!(offenders.is_empty(), "only build_state.rs, the admin's own boot and store_root_boot's prepared store root may open a journal: {offenders:?}");
     }
 
     /// An attempt of `id` opened on `mesh`'s drift lane (R-BI7): the recovery of `path`'s exited birth.

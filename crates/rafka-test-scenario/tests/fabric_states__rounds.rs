@@ -401,11 +401,13 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     let id_of: std::collections::BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
     let holds = |prefix: &str| after.iter().any(|r| r.starts_with(prefix));
     assert!(holds("fabric/identity.json"), "the fabric-primary published the Fabric row: {after:#?}");
+    assert!(holds("fabric/builds/"), "the fabric-primary published the Build journal under fabric/builds/ (R-BI6): {after:#?}");
     // The per-seat rows under `fabric/seats` go (the approved proposal
     // node-primary-update-fabric-mesh-and-node-type.md, Part C2: "the leadership view is folded from the
-    // transfer rows"): under fabric/ the fabric-primary holds its identity row and nothing else.
-    let only_identity = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r == "fabric/identity.json");
-    assert!(only_identity(&after), "the Fabric row carries no pointer to the newest Build and no seat row stands beside it: the fabric-primary's fabric/ rows are the identity and nothing else: {after:#?}");
+    // transfer rows"): under fabric/ the fabric-primary holds its identity row and its `fabric/builds/`
+    // Build journal (R-BI6), and nothing else.
+    let only_identity_and_builds = |rows: &[String]| rows.iter().filter(|r| r.starts_with("fabric/")).all(|r| r == "fabric/identity.json" || r.starts_with("fabric/builds/"));
+    assert!(only_identity_and_builds(&after), "the Fabric row carries no pointer to the newest Build and no seat row stands beside it: the fabric-primary's fabric/ rows are the identity and fabric/builds/ and nothing else: {after:#?}");
     for mesh in ["mesh1", "mesh2"] {
         assert!(holds(&format!("meshes/{mesh}.json")), "{mesh}'s primary published its Mesh row: {after:#?}");
     }
@@ -431,9 +433,9 @@ async fn the_store_root_holds_no_row_until_state_commit_publishes_what_each_node
     let later = rows_on(&root);
     estate.artifact("rows-after-second-state-commit.json", &json!(later));
     // The fabric-primary accepted the second Build after the first state-commit: the Build is its own
-    // entity in the builds store, so no row under `fabric/` names it, and the other mesh's primary
-    // reads it as the current Build.
-    assert!(only_identity(&later), "accepting the second Build writes no row under `fabric/` for it: {later:#?}");
+    // entity in the builds store, so no pointer row under `fabric/` names it, and the other mesh's
+    // primary reads it as the current Build.
+    assert!(only_identity_and_builds(&later), "accepting the second Build writes no pointer row under `fabric/` for it: {later:#?}");
     let other_fabric = estate.fabric_view_at(&"mesh2.admin.1".parse().unwrap()).await.expect("mesh2.admin.1 answers fabric.get for this Fabric");
     estate.artifact("mesh2-admin-fabric-after-second-build.json", &serde_json::to_value(&other_fabric).expect("a view serializes"));
     assert_eq!(other_fabric.build_id.as_deref(), Some(second.as_str()), "the other mesh's primary reads the second Build as the current Build: {other_fabric:?}");

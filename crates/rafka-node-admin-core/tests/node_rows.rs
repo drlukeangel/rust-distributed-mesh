@@ -1308,13 +1308,12 @@ mod writer {
     }
 
     /// CONTRACT (build.md §5.2: a step receipt is not committed until it is durable in storage that
-    /// survives the loss of the admin that wrote it, and the Build journal is never copied into the
-    /// shared store root; node-rpc-envelope.md Build carrier: "Completed steps are not rerun", an
+    /// survives the loss of the admin that wrote it; node-rpc-envelope.md Build carrier: "Completed steps are not rerun", an
     /// idempotent uncertain step is settled by its natural key; lifecycles/node-create.md step 1: the
     /// claim precedes the launch, and "Runtime exit requires independent exact provider proof, even for
     /// a deployment that never joined"): attempt 1 of `create-node:mesh1.rpc.7` runs on executor A
     /// through its name claim and A is lost inside `DeployRuntime`, before anything is launched. A's
-    /// receipts are in A's own journal only and never reach B's. B runs attempt 2 holding only what
+    /// receipts never reach B's. B runs attempt 2 holding only what
     /// the shared store holds: A's claim row. B's create takes the identity A's claim was made with
     /// (the same node id, incarnation and deployment), the provider proving no runtime of that exact
     /// deployment exists, its claim finds the row that birth holds (`row-held-by-node`) and it reaches
