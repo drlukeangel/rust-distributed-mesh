@@ -65,6 +65,8 @@ pub fn resolved(d: &MeshDigest) -> Option<ResolvedNode> {
 
 /// Apply every departure and every birth `book` holds to `resolver`, naming what changed.
 pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
+    let held_holder = book.holder_name();
+    let node = held_holder.as_deref().unwrap_or(node);
     for op in book.departed() {
         let applied = resolver.depart(&op.node_id, &op.incarnation, &op.name);
         if applied == Applied::Departed {

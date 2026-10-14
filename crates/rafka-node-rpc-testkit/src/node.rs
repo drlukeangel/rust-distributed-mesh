@@ -501,7 +501,8 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
             // anything or declares readiness: every digest from its first carries them (R-JN1).
             install_handed(&membership, &joined.control);
                 drop(step);
-            let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &membership.book, &name);
+            let current_name = membership.node_name();
+            let (node_rpc, node_rpc_feed) = crate::node_rpc::ProcessNodeRpc::with_client(resolver.clone(), client.clone(), &membership.book, &current_name);
             // This node serves the topology it holds from here on (until now a read is `NotReady`).
             let status = Arc::new(Mutex::new(MemberStatus::Pending));
             {
@@ -601,7 +602,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                         let holder = membership.seats().mesh(&node.name.mesh);
                                         if authority_moved(told.as_ref(), holder.as_ref()) && owed.lock().unwrap().is_none() {
                                             let state = node_state_of(*status.lock().unwrap());
-                                            tracing::info_span!("rdm.node_rpc.status.update.via-authority-moved", node = %node.name, state = ?state, to = %holder.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
+                                            tracing::info_span!("rdm.node_rpc.status.update.via-authority-moved", node = %membership.held_name(&node.name), state = ?state, to = %holder.as_ref().map(|h| h.node_id.to_string()).unwrap_or_default())
                                                 .in_scope(|| tracing::info!("the mesh's primary seat moved to another birth: this birth's state is owed to it"));
                                             *owed.lock().unwrap() = Some(state);
                                         }
@@ -620,7 +621,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                             };
                             let becoming = Becoming {
                                 boot: boot.clone(),
-                                name: name.clone(),
+                                name: membership.node_name(),
                                 kind: launch.name.kind.name(),
                                 incarnation_id: launch.incarnation.to_string(),
                                 node_id: launch.node_id.clone(),
@@ -1086,7 +1087,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let mesh = me.digest.node.name.mesh.clone();
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone()).or_else(|| me.membership.seats().mesh(&mesh).map(|held| held.node_id));
                 let reply = match commander {
-                    None => StatusReply::NotReady { reason: format!("{} names no caller at endpoint {} and has not yet heard who holds the primary seat of {mesh}", me.digest.node.name, peer.endpoint_id) },
+                    None => StatusReply::NotReady { reason: format!("{} names no caller at endpoint {} and has not yet heard who holds the primary seat of {mesh}", me.membership.held_name(&me.digest.node.name), peer.endpoint_id) },
                     Some(commander) => me.own.serve(Some(&commander), None, &req).await.expect("a round op"),
                 };
                 tracing::info_span!("rdm.node_admin.status.update.via-round-op", node = %me.membership.held_name(&me.digest.node.name), op = req.op(), sender = %sender_name, outcome = reply.name(), "otel.kind" = "internal")
@@ -1123,7 +1124,7 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                     if let Some((reason, retry_on)) = blocker {
                         let on = retry_on.name();
                         let reply = StatusReply::blocked(me.digest.node.node_id.clone(), me.digest.node.incarnation.clone(), &reason, retry_on);
-                        tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.digest.node.name, sender = %sender_name, state = "blocked", blocker = %reason, retry_on = on)
+                        tracing::info_span!("rdm.node_admin.status.update.via-probe", node = %me.membership.held_name(&me.digest.node.name), sender = %sender_name, state = "blocked", blocker = %reason, retry_on = on)
                             .in_scope(|| tracing::info!("probed by a node-admin: the hook's blocker answered Blocked, nothing re-published"));
                         return Ok(reply);
                     }
