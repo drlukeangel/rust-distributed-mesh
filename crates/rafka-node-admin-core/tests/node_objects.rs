@@ -53,7 +53,12 @@ impl Capture {
             .build()
             .unwrap();
         let _g = tracing::dispatcher::set_default(&self.dispatch);
-        rt.block_on(f)
+        rt.block_on(async {
+            // Warm the blocking pool before the cell's clock starts, so PrepareStorage's first
+            // blocking_io call runs on an existing blocking thread rather than paying thread spawn.
+            let _ = tokio::task::spawn_blocking(|| ()).await;
+            f.await
+        })
     }
 
     fn spans(&self) -> Vec<Value> {
@@ -163,13 +168,16 @@ impl NodeObserver for Membership {
 }
 
 #[derive(Default)]
-struct Published(Mutex<Vec<Node>>);
+struct Published(Mutex<Vec<Node>>, std::sync::OnceLock<Arc<rafka_node_admin_core::node_rows::NodeRows>>);
 impl TopologySink for Published {
     fn publish(&self, n: Node) {
         self.0.lock().unwrap().push(n);
     }
     fn remove(&self, _: &rafka_node_admin_core::model::PathName) {}
     fn remove_birth(&self, _: &rafka_node_admin_core::model::PathName, _: &rafka_mesh_entity::NodeId, _: &rafka_mesh_entity::IncarnationId) {}
+    fn node_rows(&self) -> Option<Arc<rafka_node_admin_core::node_rows::NodeRows>> {
+        self.1.get().cloned()
+    }
 }
 
 fn node(name: &str, primary: bool) -> Node {
@@ -212,6 +220,8 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
     let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+    let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default())));
+    let _ = rig.sink.1.set(rows.clone());
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
@@ -238,6 +248,8 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
     let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
     let node_id = control.topology.read().await.node(&me).expect("the admin is in the view").node_id.clone();
+    let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default())));
+    let _ = rig.sink.1.set(rows);
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
@@ -263,6 +275,8 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
     let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+    let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default())));
+    let _ = rig.sink.1.set(rows);
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
@@ -501,6 +515,20 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     let join_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForMeshJoin").collect();
     assert_eq!(join_step.len(), 1, "the pipeline ran the join step once");
     assert_eq!(join_step[0]["attributes"]["outcome"], "failed", "and it failed there");
+    let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage").collect();
+    assert_eq!(prepare.len(), 1, "PrepareStorage ran once: {spans:?}");
+    assert_eq!(prepare[0]["attributes"]["awaited"], "claim,transport-key", "PrepareStorage names every await it ran: {}", prepare[0]);
+    assert_eq!(prepare[0]["attributes"]["awaiting"], "done", "PrepareStorage completed every await: {}", prepare[0]);
+    let claim_row: Vec<&Value> = spans_named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["moment"] == "claim").collect();
+    assert_eq!(claim_row.len(), 1, "PrepareStorage opened the claim via-node-row span: {spans:?}");
+    assert_eq!(claim_row[0]["attributes"]["outcome"], "row-written", "the claim row was written: {}", claim_row[0]);
+    assert_eq!(
+        claim_row[0]["attributes"]["awaited"],
+        "writer-check,read-previous-row,read-old-row,put-node-row",
+        "the claim span names every await of the claim: {}",
+        claim_row[0]
+    );
+    assert_eq!(claim_row[0]["attributes"]["awaiting"], "done", "the claim completed every await: {}", claim_row[0]);
     // Each step's wall and, for one that ran blocking calls, their wait for a thread and their run.
     let walls: Vec<String> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()

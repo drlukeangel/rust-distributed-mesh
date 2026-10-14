@@ -1051,6 +1051,11 @@ pub trait BuildStateAdapter: Send + Sync {
     /// A point read by the Build: every adapter answers it from its index (or delegates to the adapter
     /// it decorates), never by reading or folding the fact log.
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
+    /// The path name this admin's membership view holds (`Some` once the fabric Build topic joined
+    /// with the endpoint's location book).
+    fn held_name(&self) -> Option<crate::model::PathName> {
+        None
+    }
 }
 
 /// An exited birth whose node workflow stopped at a Failed attempt and is not done

@@ -942,6 +942,7 @@ impl NodeSelf {
         }
         .instrument(span.clone())
         .await;
+        span.record("node", self.held_name().to_string().as_str());
         span.record("outcome", reply.name());
         reply
     }

@@ -457,6 +457,9 @@ impl BuildStateAdapter for FaultedBuilds {
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
+    fn held_name(&self) -> Option<rafka_node_admin_core::model::PathName> {
+        self.inner.held_name()
+    }
 }
 
 /// The deployment provider; its control domain reads foreign while the provider-domain cut is armed.

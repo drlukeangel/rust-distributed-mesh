@@ -194,6 +194,7 @@ pub struct FabricBuildStateAdapter {
     /// own mesh's primary seat, never the fabric seat's, so an admin that yielded the fabric seat
     /// still opens and claims its own mesh's drift attempts while it holds its mesh's seat.
     mesh_seat_gate: Authority,
+    book: rafka_mesh_transport::membership::LocationBook,
 }
 
 /// What the committed fabric seat record says of this birth's Build authority.
@@ -452,7 +453,7 @@ impl FabricBuildStateAdapter {
                 receiver = r;
             }
         });
-        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name.clone(), seat), mesh_seat_gate: Authority::new(node_name, SeatSource::unrecorded()) })
+        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name.clone(), seat), mesh_seat_gate: Authority::new(node_name, SeatSource::unrecorded()), book: book.clone() })
     }
 
     /// Join the Build topic to every live node-admin `admins` names, as the
@@ -645,6 +646,10 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
     async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
         self.local.exits_owed(build_id, mesh).await
+    }
+
+    fn held_name(&self) -> Option<crate::model::PathName> {
+        self.book.held_path_name()
     }
 
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {

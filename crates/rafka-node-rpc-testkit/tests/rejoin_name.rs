@@ -37,6 +37,7 @@ async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &Statu
 #[test]
 fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
     let cap = crate::common::capture("a_node_renamed_while_stopped_starts_under_its_rows_name_and_config");
+    let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         if crate::own_process::delegated(module_path!(), "a_node_renamed_while_stopped_starts_under_its_rows_name_and_config") {
             return;
@@ -110,6 +111,36 @@ fn a_node_renamed_while_stopped_starts_under_its_rows_name_and_config() {
         };
         let at = got.provenance().unwrap_or_else(|| panic!("the store's own reply carries its provenance: {got:?}"));
         assert_eq!((at.node.as_str(), at.node_id.as_str(), at.incarnation_id.as_str()), (old.to_string().as_str(), node_id.as_str(), incarnation.as_str()), "the app answers under the row's name it holds: {got:?}");
+        // Every span of the started node after its join names the row's name it holds, never its boot name (R12, crit:e12.s47.2).
+        let join_seq = {
+            let held_spans = spans.0.lock().unwrap();
+            *held_spans
+                .iter()
+                .find(|(_, (n, _, f))| n == "rdm.mesh.node.update.via-join-admitted" && f.get("installed").map(String::as_str) == Some(old.to_string().as_str()))
+                .expect("the start's join installed the row's name")
+                .0
+        };
+        let join_closed = spans.3.lock().unwrap()[&join_seq];
+        let held_spans = spans.0.lock().unwrap();
+        let admin_name = admin.launcher.name.to_string();
+        let after_join: Vec<(u64, String, String)> = held_spans
+            .iter()
+            .filter_map(|(&seq, (n, _, f))| {
+                let node = f.get("node")?;
+                (seq > join_closed && node != &admin_name).then(|| (seq, n.clone(), node.clone()))
+            })
+            .collect();
+        assert!(!after_join.is_empty(), "the started node emitted spans after its join");
+        for (seq, span, node) in &after_join {
+            assert_eq!(node, &old.to_string(), "span #{seq} ({span}) after the join must name the row's name {old}, never the boot name {born}: {after_join:?}");
+        }
+        let start_nodes: Vec<String> = held_spans
+            .values()
+            .filter(|(n, _, _)| n == "rdm.node_admin.status.update.via-start-node")
+            .map(|(_, _, f)| f["node"].clone())
+            .collect();
+        assert_eq!(start_nodes, vec![old.to_string()], "rdm.node_admin.status.update.via-start-node names the row's name the node holds after the join");
+        drop(held_spans);
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

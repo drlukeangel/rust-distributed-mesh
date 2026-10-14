@@ -307,12 +307,12 @@ pub async fn node_start<N: StartNode>(node: &mut N, kind: StartKind) -> Result<(
             // answered on.
             step.record("served_by", through.name.to_string().as_str());
             step.record("endpoint", through.anchor.as_str());
-            crate::rafka_time::adopt_join_answer(&step, &rafka_time, &name, &answer);
             // The name the answer hands (a join that hands none is refused, `crate::join::call_join`):
-            // the node holds it from the channel step on, and every later step is named by it.
+            // the node holds it from the answer on, and every step from here is named by it.
             if let Some(handed) = &answer.control.name {
                 name = handed.to_string();
             }
+            crate::rafka_time::adopt_join_answer(&step, &rafka_time, &name, &answer);
             step.record("installed", name.as_str());
             drop(step);
             (Ok((through, label)), Some(answer))

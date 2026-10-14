@@ -267,6 +267,8 @@ impl NodeRows {
             node_id = %node_id,
             operation,
             moment = "claim",
+            awaiting = "writer-check",
+            awaited = tracing::field::Empty,
             seeded_from = tracing::field::Empty,
             keys = tracing::field::Empty,
             tags = tracing::field::Empty,
@@ -274,14 +276,17 @@ impl NodeRows {
             detail = tracing::field::Empty,
             "otel.kind" = "internal",
         );
+        let mut guard = ClaimGuard { span: span.clone(), done: false };
         let r = tracing::Instrument::instrument(
             async {
                 self.writer_check(&name.mesh, name).await?;
-                self.put_seeded(name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, of, &span).await
+                span.record("awaited", "writer-check");
+                self.put_seeded(name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, of, &span, "writer-check").await
             },
             span.clone(),
         )
         .await;
+        guard.done = true;
         record_claim(&span, &r);
         span.in_scope(|| tracing::info!("node.create: the name claim decided"));
         r
@@ -436,14 +441,14 @@ impl NodeRows {
     /// ([`WrittenRows::known_row`]), so a node renamed while stopped (told nothing of it, R12) keeps
     /// its one row where the rename put it, whatever name a view still lists it at.
     #[allow(clippy::too_many_arguments)]
-    async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span) -> Result<Claimed, RowRefused> {
+    async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
         let me = &self.me;
         match self.written.known_row(&*self.storage, &name.mesh, node_id).await {
             Ok(Some(held)) => return Ok(Claimed::HeldByNode(held)),
             Ok(None) => {}
             Err(e) => return Err(RowRefused::Unwritten(format!("{me}: the row {node_id} holds could not be read before its row at {name} was written: {e}"))),
         }
-        let claimed = seeded_put(&*self.storage, &self.me, name, node_id, status, own, allocated, of, span).await?;
+        let claimed = seeded_put(&*self.storage, &self.me, name, node_id, status, own, allocated, of, span, prefix).await?;
         match &claimed {
             Claimed::Written { row, .. } | Claimed::HeldByNode(row) => self.written.hold(row),
         }
@@ -488,6 +493,8 @@ impl NodeRows {
                 subject = %birth.name,
                 node_id = %birth.node_id,
                 moment = "arrival",
+                awaiting = tracing::field::Empty,
+                awaited = tracing::field::Empty,
                 seeded_from = tracing::field::Empty,
                 keys = tracing::field::Empty,
                 tags = tracing::field::Empty,
@@ -524,7 +531,7 @@ impl NodeRows {
             }
             // A recovery's claim precedes its birth's arrival (the create claims before it launches),
             // so an arrival that finds no row of its node is never a recovery's: a plain create's seed.
-            None => self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, ClaimFor::Create, span).await?,
+            None => self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, ClaimFor::Create, span, "").await?,
         };
         if let Claimed::HeldByNode(row) = &claimed {
             if let Err(why) = finish_release(&*self.storage, me, row, "rebuild").await {
@@ -557,6 +564,19 @@ impl NodeRows {
     }
 }
 
+struct ClaimGuard {
+    span: tracing::Span,
+    done: bool,
+}
+
+impl Drop for ClaimGuard {
+    fn drop(&mut self) {
+        if !self.done {
+            self.span.record("outcome", "cancelled");
+        }
+    }
+}
+
 /// The outcome of a row put on its span.
 fn record_claim(span: &tracing::Span, r: &Result<Claimed, RowRefused>) {
     match r {
@@ -572,13 +592,24 @@ fn record_claim(span: &tracing::Span, r: &Result<Claimed, RowRefused>) {
     }
 }
 
+fn push_awaited(awaited: &mut String, step: &str) {
+    if !awaited.is_empty() {
+        awaited.push(',');
+    }
+    awaited.push_str(step);
+}
 
 /// [`NodeRows::put_seeded`]'s one write, by `me` into `storage`: the row of `node_id` at `name`, its
 /// config and tags seeded as that method says. A row the same node holds already is left as it is.
 #[allow(clippy::too_many_arguments)]
-async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span) -> Result<Claimed, RowRefused> {
+async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
+    let mut awaited = prefix.to_string();
+    span.record("awaiting", "read-previous-row");
     let previous = storage.node_row_at(name).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the previous row at {name} could not be read for {node_id}: {e}")))?;
+    push_awaited(&mut awaited, "read-previous-row");
+    span.record("awaited", awaited.as_str());
     if let Some(p) = previous.as_ref().filter(|p| p.node_id == *node_id) {
+        span.record("awaiting", "done");
         return Ok(Claimed::HeldByNode(p.clone()));
     }
     // The tags come with the config only for a recovery's claim, from the Deleted row at this key.
@@ -589,7 +620,13 @@ async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, 
     let seed = match previous {
         Some(p) => Some(p),
         None if name.new => None,
-        None => storage.node_row_at(&name.renamed()).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the .old row at {} could not be read for {node_id}: {e}", name.renamed())))?.filter(|p| p.node_id != *node_id),
+        None => {
+            span.record("awaiting", "read-old-row");
+            let old = storage.node_row_at(&name.renamed()).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the .old row at {} could not be read for {node_id}: {e}", name.renamed())))?.filter(|p| p.node_id != *node_id);
+            push_awaited(&mut awaited, "read-old-row");
+            span.record("awaited", awaited.as_str());
+            old
+        }
     };
     let config = seed.as_ref().map_or_else(|| own.clone(), |p| p.config.clone());
     if let Some(p) = &seed {
@@ -597,8 +634,15 @@ async fn seeded_put(storage: &dyn NodesStorage, me: &PathName, name: &PathName, 
     }
     span.record("keys", config.len() as u64).record("tags", labels(&tags).as_str());
     let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status, config, tags, allocated: allocated.cloned(), renamed_from: None, inherited_by: None };
-    match storage.put_node_row(&row).await {
-        Ok(Ok(())) => Ok(Claimed::Written { row, seeded_from: seed.map(|p| p.node_id) }),
+    span.record("awaiting", "put-node-row");
+    let put = storage.put_node_row(&row).await;
+    push_awaited(&mut awaited, "put-node-row");
+    span.record("awaited", awaited.as_str());
+    match put {
+        Ok(Ok(())) => {
+            span.record("awaiting", "done");
+            Ok(Claimed::Written { row, seeded_from: seed.map(|p| p.node_id) })
+        }
         Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
         Err(e) => Err(RowRefused::Unwritten(format!("{me}: nodes.storage refused the row of {name} ({node_id}): {e}"))),
     }
@@ -688,6 +732,8 @@ async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, n
             node_id = %node_id,
             operation,
             moment = "claim",
+            awaiting = "read-previous-row",
+            awaited = tracing::field::Empty,
             seeded_from = tracing::field::Empty,
             keys = tracing::field::Empty,
             tags = tracing::field::Empty,
@@ -702,6 +748,8 @@ async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, n
             node_id = %node_id,
             operation,
             moment = "claim",
+            awaiting = "read-previous-row",
+            awaited = tracing::field::Empty,
             seeded_from = tracing::field::Empty,
             keys = tracing::field::Empty,
             tags = tracing::field::Empty,
@@ -710,7 +758,9 @@ async fn own_claim(parent: Option<&tracing::Span>, storage: &dyn NodesStorage, n
             "otel.kind" = "internal",
         ),
     };
-    let r = tracing::Instrument::instrument(seeded_put(storage, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, of, &span), span.clone()).await;
+    let mut guard = ClaimGuard { span: span.clone(), done: false };
+    let r = tracing::Instrument::instrument(seeded_put(storage, name, name, node_id, NodeStatus::Pending, &BTreeMap::new(), None, of, &span, ""), span.clone()).await;
+    guard.done = true;
     record_claim(&span, &r);
     span.in_scope(|| tracing::info!("node.create: the name claim decided"));
     r

@@ -378,7 +378,8 @@ impl std::fmt::Display for TopologyFailure {
 /// complete. `mesh = None` reads every mesh the target holds; `since` is the source version held
 /// for the one `mesh` asked for.
 pub async fn get_topology(client: &NodeRpcClient, target: &NodeTarget, answerer_mesh: &str, membership: &Membership, mesh: Option<&str>, since: Option<SourceVersion>) -> Result<TopologyRead, TopologyFailure> {
-    let read = read_with(client, target, membership.node(), mesh, since, |c| membership.take_read_chunk(c, answerer_mesh)).await?;
+    let node_name = membership.node_name();
+    let read = read_with(client, target, &node_name, mesh, since, |c| membership.take_read_chunk(c, answerer_mesh)).await?;
     // The seat records the target holds are this node's too, wherever they supersede its own: it
     // computes no seat before it has them.
     membership.learn_seats(&read.seats, "entry");
