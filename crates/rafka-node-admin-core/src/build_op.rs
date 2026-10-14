@@ -642,7 +642,7 @@ impl Dispatcher for RpcDispatcher {
             || self.topology.try_read().ok().is_some_and(|t| t.held_name_of(&self.me, None) == *me);
         is_me.then(|| self.local.hold(build_id, attempt)).flatten()
     }
-    async fn dispatch(&self, turn: &crate::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched {
+    async fn dispatch(&self, turn: &crate::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched {
         let me = self.local.held_name().await;
         if *executor == self.me || *executor == me {
             // The fabric-primary runs the attempt itself: it plans from the log the claim was decided

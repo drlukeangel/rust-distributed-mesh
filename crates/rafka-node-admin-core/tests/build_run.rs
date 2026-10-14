@@ -11,7 +11,7 @@ use rafka_node_admin_core::build_run::{AttemptRuns, Attached, FramedBuilds, RunD
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::executor::{BuildExecutor, OperationRunner, RunEnd, RunPlan};
 use rafka_node_admin_core::model::*;
-use rafka_node_admin_core::park_gate::ParkGate;
+use rafka_node_admin_core::stop_gate::StopGate;
 use rafka_node_rpc_contract::build::{BuildReply, Disposition};
 use rafka_node_rpc_contract::context::CallContext;
 use serde_json::{json, Value};
@@ -76,7 +76,7 @@ impl Calls {
 /// when `hold_first` is set.
 struct CallingOut {
     calls: Arc<Calls>,
-    gate: ParkGate,
+    gate: StopGate,
     hold_first: bool,
 }
 
@@ -95,7 +95,7 @@ impl OperationRunner for CallingOut {
 
 /// `mesh1.admin.1`'s executor door with its own gate, attempt 1 of the cell's Build claimed for it by
 /// a fabric-primary elsewhere, and a run of two operations it plans.
-async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, ParkGate, RunPlan) {
+async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, StopGate, RunPlan) {
     let memory = Arc::new(MemoryBuildStateAdapter::new());
     let runs = Arc::new(AttemptRuns::default());
     let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()));
@@ -108,7 +108,7 @@ async fn executor(calls: &Arc<Calls>, hold_first: bool) -> (RunDoor, ParkGate, R
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
         nodes: vec![admin],
     }));
-    let gate = ParkGate::new();
+    let gate = StopGate::new();
     let runner = Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first });
     let exec = Arc::new(BuildExecutor { executor: "mesh1.admin.1".into(), builds: builds.clone(), topology, runner });
     memory
@@ -273,7 +273,7 @@ async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
         meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
         nodes: vec![admin],
     }));
-    let gate = ParkGate::new();
+    let gate = StopGate::new();
     let runner = Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first: false });
     let exec = Arc::new(BuildExecutor { executor: "mesh1.admin.1.new".into(), builds: builds.clone(), topology: topology.clone(), runner });
     let door = RunDoor { me: "mesh1.admin.1.new".parse().unwrap(), builds, exec, runs, local: memory.clone(), gate };

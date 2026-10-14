@@ -133,7 +133,7 @@ async fn rig_for(t: Topology, change: TopologyChange, runner: impl FnOnce(Arc<Cr
         gate: switch.clone(),
         departure: proofs.clone(),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
     Rig { builds, env, switch, dispatch, proofs, ran, build: opened.build_id }
 }
@@ -391,13 +391,13 @@ async fn a_lost_executors_successor_is_its_same_mesh_admin_and_the_drive_waits_f
 
 /// Births `mesh2.admin.1` anew in place of its exited birth when its create has run, seated as
 /// mesh2's primary, as the restore of a mesh's first admin does.
-struct Reborn {
+struct Recovered {
     ran: Arc<Creates>,
     topology: Arc<RwLock<Topology>>,
 }
 
 #[async_trait::async_trait]
-impl OperationRunner for Reborn {
+impl OperationRunner for Recovered {
     async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.ran.run(build, lane, attempt, op).await?;
         if op.key() == "node.create:mesh2.admin.1" {
@@ -429,8 +429,8 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     t.nodes.push(lost);
     t.nodes.push(node("mesh2.rpc.1", true, false));
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
-    let r = rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await;
-    let held = |rebirth_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(31_000), rebirth_decided, unreachable_decided: false };
+    let r = rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await;
+    let held = |recovery_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(31_000), recovery_decided, unreachable_decided: false };
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-unheard-mesh-drive");
     let drive = Drive::detached(r.build.clone());
@@ -447,7 +447,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     let fenced = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(fenced.len(), 1, "the fence is named once: {fenced:?}");
     let a = &fenced[0].1;
-    assert_eq!((a.get("mesh").map(String::as_str), a.get("target").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("rebirth_decided").map(String::as_str)), (Some("mesh2"), Some("mesh2.admin.1"), Some("31000"), Some("false")), "{a:?}");
+    assert_eq!((a.get("mesh").map(String::as_str), a.get("target").map(String::as_str), a.get("unheard_ms").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2"), Some("mesh2.admin.1"), Some("31000"), Some("false")), "{a:?}");
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {a:?}", fenced[0].0);
 
     // The investigation decided the rebirth: the first recovering node-admin, and only it, runs, on
@@ -462,7 +462,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     assert!(r.proofs.given.lock().unwrap().is_empty(), "a rebirth the ladder decided is told by the ladder, never by the proof of a fully crashed mesh");
     let second = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(second.len(), 2, "{second:?}");
-    assert_eq!((second[1].1.get("target").map(String::as_str), second[1].1.get("rebirth_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{:?}", second[1].1);
+    assert_eq!((second[1].1.get("target").map(String::as_str), second[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{:?}", second[1].1);
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", second[1].0, second[1].1);
 
     // Heard again: mesh2's own primary runs the rest of the mesh.
@@ -484,7 +484,7 @@ async fn crashed_rig() -> Rig {
         t.nodes.push(lost);
     }
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
-    rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await
+    rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await
 }
 
 /// CONTRACT (mesh-investigation.md step 5, "Fully crashed": "The fabric-primary acts on the provider's
@@ -500,7 +500,7 @@ async fn crashed_rig() -> Rig {
 async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric_primary_and_nothing_else_of_the_held_mesh_does() {
     let r = crashed_rig().await;
     r.proofs.exited.lock().unwrap().extend(["mesh2.admin.1", "mesh2.admin.2", "mesh2.rpc.1", "mesh2.rpc.2"].map(String::from));
-    let held = |unreachable_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: false, unreachable_decided };
+    let held = |unreachable_decided: bool| rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), recovery_decided: false, unreachable_decided };
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-crashed-mesh-drive");
     let drive = Drive::detached(r.build.clone());
     let before = r.builds.read_build(&r.build).await.unwrap();
@@ -508,7 +508,7 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
     // No decision: the fence stands for the first admin.
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.1") && why.contains("no rebirth decided"), "{why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.1") && why.contains("no recovery decided"), "{why}"),
         other => panic!("nothing is claimed for a held mesh with no decision: {other:?}"),
     }
     assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing dispatched, nothing run");
@@ -525,7 +525,7 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
     assert_eq!(*r.proofs.given.lock().unwrap(), vec![("mesh2".to_string(), r.build.to_string(), before.attempt + 1)], "the claim of the fully crashed mesh's create told the proof the mesh was given a node-admin");
     let fenced = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(fenced.len(), 2, "the fence is named for the undecided admin.1 and then for admin.2: {fenced:?}");
-    assert_eq!((fenced[1].1.get("target").map(String::as_str), fenced[1].1.get("rebirth_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("false")), "{:?}", fenced[1].1);
+    assert_eq!((fenced[1].1.get("target").map(String::as_str), fenced[1].1.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("false")), "{:?}", fenced[1].1);
     eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={} {:?}", fenced[1].0, fenced[1].1);
 }
 
@@ -540,7 +540,7 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
 async fn an_unreachable_mesh_with_a_node_admin_the_provider_does_not_prove_exited_is_held_and_nothing_of_it_runs() {
     let r = crashed_rig().await;
     r.proofs.exited.lock().unwrap().insert("mesh2.admin.1".to_string());
-    r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: false, unreachable_decided: true });
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), recovery_decided: false, unreachable_decided: true });
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-crash-proof-held");
     let drive = Drive::detached(r.build.clone());
     let before = r.builds.read_build(&r.build).await.unwrap();
@@ -563,7 +563,7 @@ async fn an_unreachable_mesh_with_a_node_admin_the_provider_does_not_prove_exite
 /// the executor of mesh2's work in its view), mesh2 keeps its rpc node, the Build grows mesh2 to two
 /// admins and two rpc nodes, a restored `mesh2.admin.1` is seated as mesh2's primary, and the
 /// investigation holds mesh2 unheard with its rebirth decided.
-async fn rebirth_rig() -> Rig {
+async fn recovery_rig() -> Rig {
     let mut t = view();
     t.meshes.push(Mesh { id: Some(MeshId::mint()), name: "mesh2".into(), status: ScopeStatus::ReadyForTraffic });
     let mut lost = node("mesh2.admin.1", false, false);
@@ -571,8 +571,8 @@ async fn rebirth_rig() -> Rig {
     t.nodes.push(lost);
     t.nodes.push(node("mesh2.rpc.1", true, false));
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh2".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) };
-    let r = rig_for(t, change, |ran, topology| Arc::new(Reborn { ran, topology })).await;
-    r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), rebirth_decided: true, unreachable_decided: false });
+    let r = rig_for(t, change, |ran, topology| Arc::new(Recovered { ran, topology })).await;
+    r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(61_000), recovery_decided: true, unreachable_decided: false });
     r
 }
 
@@ -586,7 +586,7 @@ async fn rebirth_rig() -> Rig {
 /// outside mesh2: nothing more runs, and it names the fence on `mesh2.admin.2`.
 #[tokio::test]
 async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of_a_held_mesh() {
-    let r = rebirth_rig().await;
+    let r = recovery_rig().await;
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-second-drive");
     let first = Drive::detached(r.build.clone());
     match r.env.run(&first).await {
@@ -612,7 +612,7 @@ async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of
     let fenced = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(fenced.len(), 3, "{fenced:?}");
     for (trace, a) in &fenced {
-        assert_eq!((a.get("target").map(String::as_str), a.get("rebirth_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{a:?}");
+        assert_eq!((a.get("target").map(String::as_str), a.get("recovery_decided").map(String::as_str)), (Some("mesh2.admin.2"), Some("true")), "{a:?}");
         eprintln!("span rdm.node_admin.build.reject.via-unheard-mesh-drive trace_id={trace} {a:?}");
     }
 }
@@ -1065,7 +1065,7 @@ impl rafka_node_admin_core::build_drive::InnerStream for FedStream {
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::build_drive::Dispatcher for Fed {
-    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, _: &PathName, _: &BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, _: &PathName, _: &BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
         let items = self.items.lock().unwrap().take().expect("one dispatch");
         self.dispatched.notify_one();
         rafka_node_admin_core::build_drive::Dispatched::Stream(Box::new(FedStream(items)))
@@ -1362,7 +1362,7 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
         for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2") {
             n.status = NodeStatus::PendingReconnect;
         }
-        r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(120_000), rebirth_decided: false, unreachable_decided: false });
+        r.switch.peer.lock().unwrap().insert("mesh2".into(), rafka_node_admin_core::investigate::PeerMesh { unheard_ms: Some(120_000), recovery_decided: false, unreachable_decided: false });
         let drive = Drive::detached(r.build.clone());
         let first = r.env.run(&drive).await;
         let dispatches = r.dispatch.dispatched.lock().unwrap().len();
@@ -1737,7 +1737,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
         gate: n_switch,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
-        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
     let (p_drive, n_drive) = (Drive::detached(r.build.clone()), Drive::detached(r.build.clone()));
     let p_driving = tokio::spawn({
@@ -1926,7 +1926,7 @@ async fn a_successor_that_reads_the_holders_attempt_ended_claims_the_next_attemp
         gate: n_switch,
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
-        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
     let n_drive = Drive::detached(r.build.clone());
     let end = tokio::time::timeout(Duration::from_secs(60), successor.run(&n_drive)).await.expect("the successor's drive ends");
@@ -2029,7 +2029,7 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
         gate: n_gate.clone(),
         departure: e.departure.clone(),
         verdicts: e.verdicts.clone(),
-        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
     let n_drive = Drive::detached(r.build.clone());
     assert_eq!(tokio::time::timeout(Duration::from_secs(60), successor.run(&n_drive)).await.expect("the successor's drive ends"), DriveEnd::Terminal);
@@ -2238,7 +2238,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             exec,
             runs: Arc::new(rafka_node_admin_core::build_run::AttemptRuns::default()),
             local: builds.clone(),
-            gate: rafka_node_admin_core::park_gate::ParkGate::new(),
+            gate: rafka_node_admin_core::stop_gate::StopGate::new(),
         });
         let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep, Arc::new(rafka_node_rpc::StaticResolver::new())));
@@ -2272,7 +2272,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             gate: switch,
             departure: Arc::new(crate::loopback::Proofs::default()),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
-            turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+            turns: rafka_node_admin_core::stop_gate::StopGate::new(),
         });
 
         let drive = Drive::detached(opened.build_id.clone());

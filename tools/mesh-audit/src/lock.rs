@@ -259,7 +259,7 @@ pub const STATUS_WIRE: &str = "crates/rafka-node-rpc-contract/tests/status_wire.
 pub const FRAMING: &str = "crates/rafka-node-rpc-contract/src/framing.rs";
 pub const CATALOG: &str = "crates/rafka-node-rpc-contract/src/catalog.rs";
 pub const CONTEXT_CELLS: &str = "crates/rafka-node-rpc/tests/context.rs";
-pub const RETIRE_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/retire_pipeline.rs";
+pub const RETIRE_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/node_delete_pipeline.rs";
 pub const DRIFT_CELLS: &str = "crates/rafka-node-admin-core/tests/drift_convergence.rs";
 pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_probe_apply.rs";
 

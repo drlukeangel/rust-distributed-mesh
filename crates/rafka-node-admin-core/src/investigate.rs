@@ -164,8 +164,8 @@ pub struct PeerMesh {
     /// `Some(ms unheard)` while the ladder tracks the mesh as unheard: loss of its control-plane
     /// visibility fences lifecycle mutation for every node of the mesh (R-D1).
     pub unheard_ms: Option<u64>,
-    /// The ladder has decided the rebirth of the mesh's node-admins.
-    pub rebirth_decided: bool,
+    /// The ladder has decided the recovery of the mesh's node-admins.
+    pub recovery_decided: bool,
     /// The ladder's 60 s decision found the latest probe `unreachable`: no member answered and no
     /// carrier reported its edge to a node-admin lost. The mesh is held; its node-admin is created
     /// only on the provider's exact exit proof of every node of the mesh
@@ -203,11 +203,11 @@ impl Ladder {
         self.meshes.remove(mesh);
     }
 
-    /// Has this ladder decided the rebirth of `mesh`'s node-admins? A fabric primary holds that
-    /// rebirth back for every peer mesh it hears on the backbone until this is true: a node-admin
+    /// Has this ladder decided the recovery of `mesh`'s node-admins? A fabric primary holds that
+    /// recovery back for every peer mesh it hears on the backbone until this is true: a node-admin
     /// whose runtime was proven exited is replaced when the ladder decides, not before, and a
     /// fabric primary that took the seat a moment ago has decided nothing yet.
-    pub(crate) fn rebirth_decided(&self, mesh: &str) -> bool {
+    pub(crate) fn recovery_decided(&self, mesh: &str) -> bool {
         self.meshes.get(mesh).is_some_and(|s| s.verdict == Some(true))
     }
 
@@ -222,7 +222,7 @@ impl Ladder {
     /// `None` when the ladder holds no investigation of the mesh at all.
     pub fn peer_mesh(&self, mesh: &str) -> Option<PeerMesh> {
         let st = self.meshes.get(mesh)?;
-        Some(PeerMesh { unheard_ms: st.tracked.then(|| st.unheard.as_millis() as u64), rebirth_decided: st.verdict == Some(true), unreachable_decided: st.verdict == Some(false) })
+        Some(PeerMesh { unheard_ms: st.tracked.then(|| st.unheard.as_millis() as u64), recovery_decided: st.verdict == Some(true), unreachable_decided: st.verdict == Some(false) })
     }
 
     /// What the R-D1 fence reads of `mesh`, for the Build door, the drive and the drift check alike:
@@ -232,11 +232,11 @@ impl Ladder {
     /// the backbone never carried here.
     /// A mesh heard on the backbone is fenced from the rung the ladder tracks it from
     /// ([`Rungs::track`]), whether or not the ladder has stepped it yet (a fabric-primary that took the
-    /// seat a moment ago has stepped nothing), and its decided rebirth is the ladder's; a mesh the
+    /// seat a moment ago has stepped nothing), and its decided recovery is the ladder's; a mesh the
     /// backbone never carried is what the ladder holds of it (watched from the seat).
     pub fn fence(&self, mesh: &str, unheard: Option<Duration>) -> Option<PeerMesh> {
         match unheard {
-            Some(t) => (t >= self.rungs.track).then(|| PeerMesh { unheard_ms: Some(t.as_millis() as u64), rebirth_decided: self.rebirth_decided(mesh), unreachable_decided: self.unreachable_decided(mesh) }),
+            Some(t) => (t >= self.rungs.track).then(|| PeerMesh { unheard_ms: Some(t.as_millis() as u64), recovery_decided: self.recovery_decided(mesh), unreachable_decided: self.unreachable_decided(mesh) }),
             None => self.peer_mesh(mesh),
         }
     }
@@ -335,9 +335,9 @@ pub(crate) const PROBE_FANOUT: usize = 3;
 
 /// What the driver needs of its admin.
 pub struct Watch {
-    /// The admin's park gate: this watch is held at its own wait while the admin is parked, never
+    /// The admin's stop gate: this watch is held at its own wait while the admin is stopped, never
     /// where it reads the view.
-    pub gate: crate::park_gate::ParkGate,
+    pub gate: crate::stop_gate::StopGate,
     /// This admin's `path.name`.
     pub me: PathName,
     /// The node id this admin was born with: whether it holds the fabric seat is decided by it.
@@ -480,7 +480,7 @@ pub fn restore_peer_recovery(me: &PathName, records: &Records, view: &Topology) 
         if crate::round::recovered(&recovery, primary.as_ref(), report.as_ref()) {
             records.close_peer_recovery(&recovery.mesh);
             tracing::info_span!("rdm.node_admin.mesh.update.via-recovered", node = %me, mesh = %recovery.mesh, primary = ?primary, verdict_rafka_ms = ?recovery.verdict_rafka_ms)
-                .in_scope(|| tracing::info!("the reborn mesh's primary reported its round complete: the fabric is ready again"));
+                .in_scope(|| tracing::info!("the recovered mesh's primary reported its round complete: the fabric is ready again"));
         }
     }
 }
@@ -496,12 +496,12 @@ pub(crate) struct Investigations {
     probes: Mutex<tokio::task::JoinSet<()>>,
     /// Woken when a probe ends, so the step it opens (probe 2, the decision) is taken then.
     landed: Arc<tokio::sync::Notify>,
-    /// The admin's park gate: a probe in flight while the admin is parked is held where it stands.
-    gate: crate::park_gate::ParkGate,
+    /// The admin's stop gate: a probe in flight while the admin is parked is held where it stands.
+    gate: crate::stop_gate::StopGate,
 }
 
 impl Investigations {
-    pub(crate) fn new(me: String, ladder: Arc<Mutex<Ladder>>, gate: crate::park_gate::ParkGate) -> Self {
+    pub(crate) fn new(me: String, ladder: Arc<Mutex<Ladder>>, gate: crate::stop_gate::StopGate) -> Self {
         Self { me: Mutex::new(me), ladder, probes: Mutex::new(tokio::task::JoinSet::new()), landed: Arc::new(tokio::sync::Notify::new()), gate }
     }
 
@@ -600,7 +600,7 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
             }
             Step::Probe { .. } | Step::Stop { .. } => {}
             Step::Decide { rebirth, latest, unheard_ms } => {
-                verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if rebirth { "the latest probe says a member cannot reach its own node-admin: the mesh is reborn" } else { "no member could say: the mesh is held" });
+                verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if rebirth { "the latest probe says a member cannot reach its own node-admin: the mesh is recovered" } else { "no member could say: the mesh is held" });
                 if rebirth {
                     let verdict_ms = w.membership.clock().now_rafka_ms();
                     let lost = view.cohort(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
@@ -921,7 +921,7 @@ mod tests {
         let mut l = Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500)));
         assert_eq!(
             l.fence("mesh1", Some(Duration::from_secs(7))),
-            Some(PeerMesh { unheard_ms: Some(7000), rebirth_decided: false, unreachable_decided: false }),
+            Some(PeerMesh { unheard_ms: Some(7000), recovery_decided: false, unreachable_decided: false }),
             "a seat taken a moment ago: the ladder stepped nothing, t is 7 s, the mesh is fenced"
         );
         assert_eq!(l.fence("mesh1", Some(Duration::from_millis(200))), None, "heard within the tracking rung: no fence");
@@ -933,8 +933,8 @@ mod tests {
                 }
             }
         }
-        assert!(l.rebirth_decided("mesh1"), "two carrier-edge-lost probes decide the rebirth");
-        assert_eq!(l.fence("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), rebirth_decided: true, unreachable_decided: false }), "the decided rebirth is the ladder's");
+        assert!(l.recovery_decided("mesh1"), "two carrier-edge-lost probes decide the rebirth");
+        assert_eq!(l.fence("mesh1", Some(Duration::from_secs(8))), Some(PeerMesh { unheard_ms: Some(8000), recovery_decided: true, unreachable_decided: false }), "the decided rebirth is the ladder's");
         assert_eq!(l.fence("mesh9", None), None, "a mesh never carried on the backbone and never stepped: the ladder holds nothing");
     }
 
@@ -1045,7 +1045,7 @@ mod tests {
             assert_eq!(first(&|s| matches!(s, Step::Probe { n: 2, .. })), Some(Duration::from_secs(40)), "every {every:?}");
             assert_eq!(first(&|s| matches!(s, Step::Decide { .. })), Some(Duration::from_secs(60)), "every {every:?}");
             assert!(log.iter().all(|(_, s)| !matches!(s, Step::Decide { rebirth: true, .. })), "silence and unreachable probes decide no rebirth: {log:?}");
-            assert!(!l.rebirth_decided("mesh2"));
+            assert!(!l.recovery_decided("mesh2"));
             // A direct backbone receipt resets t and cancels the investigation.
             let later = t0 + every * k;
             assert!(book.record_forwarded_at(admin.clone(), later));
@@ -1087,7 +1087,7 @@ mod tests {
     /// runs, or a decision taken with a probe outstanding.
     #[tokio::test(start_paused = true)]
     async fn a_running_probe_never_holds_the_ladder() {
-        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::park_gate::ParkGate::new());
+        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::stop_gate::StopGate::new());
         let ended = Arc::new(Mutex::new(Vec::<(u8, u64)>::new()));
         let t0 = tokio::time::Instant::now();
         let mut log: Vec<Step> = Vec::new();
@@ -1116,7 +1116,7 @@ mod tests {
     }
 
     /// CONTRACT (node-stop: a stopped admin's tasks are held, and it says nothing once cut;
-    /// park_gate.rs: a task that takes no lock a handler needs is held where it stands while the gate
+    /// stop_gate.rs: a task that takes no lock a handler needs is held where it stands while the gate
     /// is parked): a probe the investigation started before its admin parked makes no step while the
     /// admin is parked, and finishes, from where it was, once the gate opens. Must NOT happen: a
     /// stopped admin's probe going on to its next call (a ping, a status kick through a peer) after
@@ -1124,7 +1124,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_probe_in_flight_when_the_admin_parks_makes_no_step_until_the_gate_opens() {
         use std::sync::atomic::{AtomicU32, Ordering};
-        let gate = crate::park_gate::ParkGate::new();
+        let gate = crate::stop_gate::StopGate::new();
         let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), gate.clone());
         let calls = Arc::new(AtomicU32::new(0));
         let start = |_n: u8| {
@@ -1215,19 +1215,19 @@ mod tests {
     #[test]
     fn a_peer_meshs_rebirth_is_decided_only_by_a_rebirth_decision() {
         let mut l = ladder();
-        assert!(!l.rebirth_decided("mesh2"), "not stepped yet");
+        assert!(!l.recovery_decided("mesh2"), "not stepped yet");
         walk(&mut l, [CarrierEdgeLost, CarrierEdgeLost]);
-        assert!(l.rebirth_decided("mesh2"));
+        assert!(l.recovery_decided("mesh2"));
         let mut held = ladder();
         assert!(!held.unreachable_decided("mesh2"), "not stepped yet: nothing is decided either way");
         walk(&mut held, [Unreachable, Unreachable]);
-        assert!(!held.rebirth_decided("mesh2"), "a hold decides no rebirth");
+        assert!(!held.recovery_decided("mesh2"), "a hold decides no rebirth");
         l.forget("mesh2");
-        assert!(!l.rebirth_decided("mesh2"));
+        assert!(!l.recovery_decided("mesh2"));
     }
 
     /// CONTRACT (mesh-investigation.md step 5): the 60 s decision on `unreachable` evidence is a hold the
-    /// ladder exposes as its own fact, `unreachable_decided`, beside `rebirth_decided` and never
+    /// ladder exposes as its own fact, `unreachable_decided`, beside `recovery_decided` and never
     /// with it: the fabric-primary reads the provider's exit proof of the mesh's node-admins only for
     /// a mesh whose decision opened this way. A carrier-edge-lost decision is the rebirth, not the hold.
     /// A mesh heard again is decided neither way. Must NOT happen: the hold read as a rebirth, or the
@@ -1236,17 +1236,17 @@ mod tests {
     fn an_unreachable_decision_is_exposed_as_a_hold_and_never_as_carrier_edge_lost() {
         let mut l = ladder();
         walk(&mut l, [Unreachable, Unreachable]);
-        assert!(l.unreachable_decided("mesh2") && !l.rebirth_decided("mesh2"));
+        assert!(l.unreachable_decided("mesh2") && !l.recovery_decided("mesh2"));
         let fenced = l.fence("mesh2", Some(Duration::from_secs(61))).expect("an unheard mesh is fenced");
-        assert_eq!((fenced.rebirth_decided, fenced.unreachable_decided), (false, true), "the fence reads the hold: {fenced:?}");
-        assert_eq!(l.peer_mesh("mesh2").map(|p| (p.rebirth_decided, p.unreachable_decided)), Some((false, true)));
+        assert_eq!((fenced.recovery_decided, fenced.unreachable_decided), (false, true), "the fence reads the hold: {fenced:?}");
+        assert_eq!(l.peer_mesh("mesh2").map(|p| (p.recovery_decided, p.unreachable_decided)), Some((false, true)));
         let mut reborn = ladder();
         walk(&mut reborn, [CarrierEdgeLost, CarrierEdgeLost]);
-        assert!(reborn.rebirth_decided("mesh2") && !reborn.unreachable_decided("mesh2"), "a carrier-edge-lost decision is the rebirth");
-        assert_eq!(reborn.peer_mesh("mesh2").map(|p| (p.rebirth_decided, p.unreachable_decided)), Some((true, false)));
+        assert!(reborn.recovery_decided("mesh2") && !reborn.unreachable_decided("mesh2"), "a carrier-edge-lost decision is the rebirth");
+        assert_eq!(reborn.peer_mesh("mesh2").map(|p| (p.recovery_decided, p.unreachable_decided)), Some((true, false)));
         // A direct backbone receipt resets t: the mesh is decided neither way.
         assert!(matches!(l.step("mesh2", Duration::ZERO).as_slice(), [Step::Cancel { .. }]));
-        assert!(!l.unreachable_decided("mesh2") && !l.rebirth_decided("mesh2"), "heard again: the hold is over");
+        assert!(!l.unreachable_decided("mesh2") && !l.recovery_decided("mesh2"), "heard again: the hold is over");
     }
 
     /// CONTRACT (#2803 detection): a fabric primary that loses its seat drops every investigation;
@@ -1256,11 +1256,11 @@ mod tests {
     fn a_ladder_dropped_with_the_seat_starts_over_for_the_next_fabric_primary() {
         let mut first = ladder();
         walk(&mut first, [CarrierEdgeLost, CarrierEdgeLost]);
-        assert!(first.rebirth_decided("mesh2"));
+        assert!(first.recovery_decided("mesh2"));
         first.clear();
         assert!(first.meshes().is_empty(), "nothing survives the seat");
         let mut next = ladder();
-        assert!(!next.rebirth_decided("mesh2"), "the next primary has decided nothing yet");
+        assert!(!next.recovery_decided("mesh2"), "the next primary has decided nothing yet");
         let log = walk(&mut next, [CarrierEdgeLost, CarrierEdgeLost]);
         assert_eq!(at(&log, |s| matches!(s, Step::Decide { rebirth: true, .. })), vec![30], "it decides once, from its own 30 rounds");
     }
@@ -1280,8 +1280,8 @@ mod tests {
             // mesh3 is heard throughout.
             assert!(l.step("mesh3", tick(0)).is_empty());
         }
-        assert!(l.rebirth_decided("mesh2"));
-        assert!(!l.rebirth_decided("mesh3"), "mesh3 was never decided");
+        assert!(l.recovery_decided("mesh2"));
+        assert!(!l.recovery_decided("mesh3"), "mesh3 was never decided");
     }
 
     /// CONTRACT (#2803 detection): forgetting the investigation of a mesh the backbone no longer
@@ -1409,7 +1409,7 @@ mod tests {
         let carriers = Arc::new(Mutex::new(BTreeMap::new()));
         let capture = crate::span_capture::Capture::new("i143-3097-probe-order");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::park_gate::ParkGate::new());
+        let inv = Investigations::new("mesh1.admin.1".into(), Arc::new(Mutex::new(Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500))))), crate::stop_gate::StopGate::new());
         let start = |n: u8| {
             let (rig, carriers, view, record) = (rig.clone(), carriers.clone(), view.clone(), record.clone());
             async move { probe(&*rig, &carriers, &view, Some(record), "mesh2", n).await }

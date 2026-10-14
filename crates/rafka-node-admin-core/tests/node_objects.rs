@@ -219,7 +219,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     let control = Arc::new(ControlPlane::new(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::stop_gate::StopGate::new() });
     let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default())));
     let _ = rig.sink.1.set(rows.clone());
     let env = Arc::new(DriveEnv {
@@ -231,7 +231,7 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
         gate: Arc::new(OpenGate),
         departure,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
@@ -246,7 +246,7 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
     let control = Arc::new(ControlPlane::new(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join: Duration::from_millis(300) });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::stop_gate::StopGate::new() });
     let node_id = control.topology.read().await.node(&me).expect("the admin is in the view").node_id.clone();
     let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default())));
     let _ = rig.sink.1.set(rows);
@@ -259,7 +259,7 @@ async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
@@ -274,7 +274,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
     let control = Arc::new(ControlPlane::new(fp.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::stop_gate::StopGate::new() });
     let rows = Arc::new(rafka_node_admin_core::node_rows::NodeRows::new(me.clone(), control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), control.topology.clone(), Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default())));
     let _ = rig.sink.1.set(rows);
     let env = Arc::new(DriveEnv {
@@ -286,7 +286,7 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
-        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
@@ -296,7 +296,7 @@ struct Local(Arc<RunDoor>);
 
 #[async_trait::async_trait]
 impl Dispatcher for Local {
-    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         local_dispatched(self.0.attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
     }
 }
@@ -1067,7 +1067,7 @@ struct LostAfterStopNode {
 
 #[async_trait::async_trait]
 impl Dispatcher for LostAfterStopNode {
-    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         use rafka_node_rpc_contract::build::BuildReply;
         let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.to_string(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
         let run = {

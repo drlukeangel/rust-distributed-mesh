@@ -17,11 +17,11 @@
 //!   and is never a step outcome.
 //! - **a cut call cancels nothing.** The run is its own task; the stream is a view of its
 //!   [`RunLog`]. Only a failed step or a fence ends an attempt.
-//! - **a run is a turn of the admin's park gate** (park_gate.rs). A run served for a call begins
+//! - **a run is a turn of the admin's park gate** (stop_gate.rs). A run served for a call begins
 //!   its turn at its own wait point, before it runs anything: while the admin is stopped it waits
 //!   there, and a stop's quiesce waits for a run already past it, so nothing a run does follows the
 //!   stop's cut. A run the admin's own drive pass dispatches to itself begins its turn under the
-//!   pass's ([`crate::park_gate::Turn::under`]): it never waits at the gate for the pass that waits
+//!   pass's ([`crate::stop_gate::Turn::under`]): it never waits at the gate for the pass that waits
 //!   on it.
 
 use crate::build::BuildId;
@@ -498,8 +498,8 @@ pub struct RunDoor {
     /// This admin's own Build log, where the intent a call carries is absorbed before the attempt
     /// is planned.
     pub local: Arc<dyn LocalBuildLog>,
-    /// This admin's park gate (park_gate.rs): a stopped admin's tasks are held at it.
-    pub gate: crate::park_gate::ParkGate,
+    /// This admin's stop gate (stop_gate.rs): a stopped admin's tasks are held at it.
+    pub gate: crate::stop_gate::StopGate,
 }
 
 impl RunDoor {
@@ -530,12 +530,12 @@ impl RunDoor {
     /// [`Self::attempt_run`] for the fabric-primary's own drive pass dispatching the attempt to this
     /// admin, in the pass's `turn`: the run begins its own turn under it, at once, parked gate or not
     /// (the pass waits on the run; a run waiting at the gate for it would hold the stop's quiesce).
-    pub async fn attempt_run_under(&self, turn: &crate::park_gate::Turn, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+    pub async fn attempt_run_under(&self, turn: &crate::stop_gate::Turn, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         self.serve(Some(turn), None, build_id, attempt, executor, context, intent, plan).await
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn serve(&self, under: Option<&crate::park_gate::Turn>, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+    async fn serve(&self, under: Option<&crate::stop_gate::Turn>, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         let me = self.held_name().await;
         let span = tracing::info_span!(
             "rdm.node_admin.build.serve.via-attempt-run",
@@ -573,7 +573,7 @@ impl RunDoor {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn attach_or_start(&self, under: Option<&crate::park_gate::Turn>, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+    async fn attach_or_start(&self, under: Option<&crate::stop_gate::Turn>, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         let me = self.held_name().await;
         if executor != me.to_string() {
             tracing::info_span!("rdm.node_admin.build.reject.via-not-executor", node = %me, build_id = %build_id, attempt, named = executor)
@@ -1036,7 +1036,7 @@ mod tests {
             nodes: vec![admin],
         }));
         let exec = Arc::new(BuildExecutor { executor: me.into(), builds: builds.clone(), topology, runner: Arc::new(Nothing) });
-        (RunDoor { me: me.parse().unwrap(), builds, exec, runs, local: memory.clone(), gate: crate::park_gate::ParkGate::new() }, memory)
+        (RunDoor { me: me.parse().unwrap(), builds, exec, runs, local: memory.clone(), gate: crate::stop_gate::StopGate::new() }, memory)
     }
 
     async fn accepted(memory: &MemoryBuildStateAdapter) {

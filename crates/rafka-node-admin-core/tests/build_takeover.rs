@@ -133,7 +133,7 @@ fn drive_env(me: &str, a: &Admin, topology: &Arc<RwLock<Topology>>, dispatch: Ar
         gate: Arc::new(OpenGate),
         departure: proofs,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     })
 }
 

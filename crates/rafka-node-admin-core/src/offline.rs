@@ -195,8 +195,8 @@ pub(crate) struct OfflineTickle {
     /// This node-admin's path.name, named on every span it emits: a seat handed over mid-window is
     /// read from which admin ran each round.
     observer: String,
-    /// The admin's park gate: a stop's park retires the rounds in flight.
-    gate: crate::park_gate::ParkGate,
+    /// The admin's stop gate: a stop's park retires the rounds in flight.
+    gate: crate::stop_gate::StopGate,
 }
 
 impl Drop for OfflineTickle {
@@ -215,7 +215,7 @@ impl OfflineTickle {
     }
 
     /// The tickle of node-admin `observer` (its path.name), whose rounds a park of `gate` retires.
-    pub fn observed_by(observer: String, gate: crate::park_gate::ParkGate) -> Self {
+    pub fn observed_by(observer: String, gate: crate::stop_gate::StopGate) -> Self {
         let mut tickle = Self::default();
         tickle.observer = observer;
         tickle.gate = gate;
@@ -418,7 +418,7 @@ impl OfflineTickle {
             report.tickled.push(id.clone());
             // The round: the direct connect, and only when it fails, the via-peer rung, its probes
             // under one span of this round. It takes no lock and waits on nothing of this admin's; a
-            // stop's park cancels it where it stands (`ParkGate::until_parked`), and it never resumes.
+            // stop's park cancels it where it stands (`StopGate::until_parked`), and it never resumes.
             let (direct, carried) = (tickle(id.clone()), via_peer(id.clone()));
             let (node_id, at, observer) = (id.clone(), path.clone(), self.observer.clone());
             // The verdict's instant on the tick clock: this tick's `now_ms` plus the time since it began.
@@ -456,10 +456,10 @@ impl OfflineTickle {
 /// The recovery of a TRUE OFFLINE birth (`follow`: the provider's proof, the submit, and the Build
 /// followed to its end, `RecoverySubmitter::recover_if_proven`), run beside the mesh-primary's loop.
 /// A stop's park cancels it where it stands, the view lock it holds or waits on included, and does not
-/// wait for it (`ParkGate::until_parked`); a submit it already made is answered AlreadyApplied or
+/// wait for it (`StopGate::until_parked`); a submit it already made is answered AlreadyApplied or
 /// BuildInProgress when it comes again. The birth leaves `in_flight` either way, so the first tick
 /// that finds it due again, after a start or at the seat's next holder, submits it again.
-pub(crate) fn spawn_recovery_follower<F>(gate: &crate::park_gate::ParkGate, in_flight: std::sync::Arc<std::sync::Mutex<HashSet<(crate::model::NodeId, crate::model::IncarnationId)>>>, birth: (crate::model::NodeId, crate::model::IncarnationId), follow: F) -> tokio::task::JoinHandle<()>
+pub(crate) fn spawn_recovery_follower<F>(gate: &crate::stop_gate::StopGate, in_flight: std::sync::Arc<std::sync::Mutex<HashSet<(crate::model::NodeId, crate::model::IncarnationId)>>>, birth: (crate::model::NodeId, crate::model::IncarnationId), follow: F) -> tokio::task::JoinHandle<()>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -747,7 +747,7 @@ pub(crate) mod tests {
             use crate::model::{IncarnationId, NodeId};
             use std::collections::HashSet;
             use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-            let gate = crate::park_gate::ParkGate::new();
+            let gate = crate::stop_gate::StopGate::new();
             let ended = Arc::new(AtomicUsize::new(0));
             let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), gate.clone());
             let tick = async |t: &mut OfflineTickle, now: u64| {
@@ -1129,7 +1129,7 @@ pub(crate) mod tests {
         let verdict_at = PROBE_DELAY + 2 * BUDGET;
         let capture = crate::span_capture::Capture::new("i143-3068-hold-down-from-verdict");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
-        let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), crate::park_gate::ParkGate::new());
+        let mut t = OfflineTickle::observed_by("mesh1.admin.1".into(), crate::stop_gate::StopGate::new());
         let round = async |t: &mut OfflineTickle, now: u64| {
             t.tick(
                 now,

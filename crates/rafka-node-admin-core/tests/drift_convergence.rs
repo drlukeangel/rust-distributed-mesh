@@ -468,7 +468,7 @@ impl Estate {
             gate,
             departure: Arc::new(WorldProofs { view: self.view.clone(), book: self.book.clone(), provider: Provider(self.world.clone()), records: self.records.clone(), me: primary.clone() }),
             verdicts: Arc::new(crate::loopback::NoVerdicts),
-            turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+            turns: rafka_node_admin_core::stop_gate::StopGate::new(),
         })
     }
 
@@ -1414,14 +1414,14 @@ mod one_attempt_number {
         let g = gate(&e, Holds::Attempt(AttemptReason::Restart));
         let cp = door(&e, g.clone()).await;
         let me: PathName = fp.parse().unwrap();
-        let decided = |m: &str| (m == peer_mesh).then_some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true, unreachable_decided: false });
+        let decided = |m: &str| (m == peer_mesh).then_some(PeerMesh { unheard_ms: Some(30_000), recovery_decided: true, unreachable_decided: false });
         let mut started = HashSet::new();
         let mut held = HashSet::new();
         let contexts = rafka_node_admin_core::build_claim::AttemptContexts::in_memory();
         let time = crate::adopted_time();
         let hold = |m: &str| decided(m).and_then(|p| p.unheard_ms);
         let defers = |_: &str| false;
-        let rebirth = |m: &str| decided(m).is_some_and(|p| p.rebirth_decided);
+        let rebirth = |m: &str| decided(m).is_some_and(|p| p.recovery_decided);
         // The restarted node holds no seat: a seat holder's restart runs node.primary.update first, and the
         // writer's view takes the moved seat from its view loop, which this harness does not run.
         let target = seatless_rpc(&e, &own).await;
@@ -1529,9 +1529,9 @@ mod fully_crashed_mesh {
     use rafka_node_admin_core::investigate::PeerMesh;
 
     /// The ladder's 60 s decision on a mesh no member answered for: `unreachable`, a hold.
-    const DECIDED_UNREACHABLE: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(60_000), rebirth_decided: false, unreachable_decided: true });
+    const DECIDED_UNREACHABLE: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(60_000), recovery_decided: false, unreachable_decided: true });
     /// The same mesh before the decision opens (30 s: silent-marked, probes outstanding).
-    const BEFORE_THE_DECISION: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: false, unreachable_decided: false });
+    const BEFORE_THE_DECISION: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(30_000), recovery_decided: false, unreachable_decided: false });
 
     /// The fabric-primary's gate while the investigation holds one peer mesh unheard: the drive's fence
     /// reads what the ladder holds of it.
@@ -1793,7 +1793,7 @@ mod fully_crashed_mesh {
         drop(root);
         let spans = capture.spans().expect("the cell's spans can be read");
         let named = |n: &str| spans.iter().filter(|s| s["name"] == n).collect::<Vec<_>>();
-        let rebirth = named("rdm.node_admin.mesh.create.via-rebirth");
+        let rebirth = named("rdm.node_admin.mesh.create.via-recovery");
         assert_eq!(rebirth.len(), 1, "degraded is authored once: {rebirth:?}");
         assert_eq!((rebirth[0]["attributes"]["verdict"].as_str(), rebirth[0]["attributes"]["fabric_status"].as_str()), (Some("fully-crashed"), Some("degraded")), "{}", rebirth[0]["attributes"]);
         let recovered = named("rdm.node_admin.mesh.update.via-recovered");
@@ -1873,7 +1873,7 @@ mod fully_crashed_mesh {
         let before = e.builds.current().await.unwrap().unwrap();
         let (mut held, mut started) = (Held::new(), HashSet::new());
         assert_eq!(pass(&e, &mut started, &mut held, &|_| BEFORE_THE_DECISION).await, None, "no decision yet");
-        let heard = |m: &str| (m == peer_mesh).then_some(PeerMesh { unheard_ms: None, rebirth_decided: false, unreachable_decided: false });
+        let heard = |m: &str| (m == peer_mesh).then_some(PeerMesh { unheard_ms: None, recovery_decided: false, unreachable_decided: false });
         assert_eq!(pass(&e, &mut started, &mut held, &heard).await, None, "heard again: the mesh's exits are its own mesh-primary's");
         let after = e.builds.current().await.unwrap().unwrap();
         assert_eq!(after.attempt, before.attempt, "no attempt was opened");
@@ -1952,7 +1952,7 @@ mod decided_mesh {
         }
         e.unheard(&admins.iter().map(String::as_str).collect::<Vec<_>>()).await;
         let before = e.builds.current().await.unwrap().unwrap();
-        let decided = PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true, unreachable_decided: false };
+        let decided = PeerMesh { unheard_ms: Some(30_000), recovery_decided: true, unreachable_decided: false };
         let (mut held, mut started) = (Held::new(), HashSet::new());
         let peer = peer_mesh.clone();
         let unheard = move |m: &str| (m == peer).then_some(decided);
@@ -1966,7 +1966,7 @@ mod decided_mesh {
         assert!(t.holds_mesh_seat(&peer_mesh, &own_id(&t, &admins[0].parse().unwrap())), "the reborn first node-admin is the mesh's primary in the view");
         // Heard again; the ladder still holds its decision until its next round.
         let peer = peer_mesh.clone();
-        let heard_still_decided = move |m: &str| (m == peer).then_some(PeerMesh { unheard_ms: None, rebirth_decided: true, unreachable_decided: false });
+        let heard_still_decided = move |m: &str| (m == peer).then_some(PeerMesh { unheard_ms: None, recovery_decided: true, unreachable_decided: false });
         let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-s56-decided-mesh-rest");
         assert_eq!(pass(&e, &mut started, &mut held, &heard_still_decided).await, None, "the second node-admin is its mesh-primary's to recover while the decision is still held");
         let opened: Vec<_> = ["rdm.node_admin.build.update.via-proven-drift", "rdm.node_admin.build.update.via-carrier-edge-lost"].iter().flat_map(|n| capture.spans(n)).collect();
@@ -2001,11 +2001,11 @@ mod unheard_mesh_hold {
         let t = e.view.read().await.clone();
         // The provider's probe of what is recorded at a path, as the running admin's runner is (set once).
         records.set_path_probe(Arc::new(Probe(e.world.clone())));
-        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &Default::default(), &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.rebirth_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided), records).await
+        rafka_node_admin_core::admin::reconcile_drift(&crate::adopted_time(), &me, &own_id(&t, &me), &t, &e.book, &e.provider, &*e.builds, &rafka_node_admin_core::build_claim::AttemptContexts::in_memory(), &tokio::sync::Mutex::new(()), &[], started, held, &Default::default(), &|m| peer(m).and_then(|p| p.unheard_ms), &|m| peer(m).is_some_and(|p| !p.recovery_decided), &|m| peer(m).is_some_and(|p| p.recovery_decided), &|m| peer(m).is_some_and(|p| p.unreachable_decided), records).await
     }
 
-    const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), rebirth_decided: false, unreachable_decided: false });
-    const HEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: None, rebirth_decided: false, unreachable_decided: false });
+    const UNHEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: Some(4_000), recovery_decided: false, unreachable_decided: false });
+    const HEARD: Option<PeerMesh> = Some(PeerMesh { unheard_ms: None, recovery_decided: false, unreachable_decided: false });
 
     #[tokio::test]
     async fn an_exited_birth_of_an_unheard_peer_mesh_opens_no_attempt_and_is_kept_as_evidence_once() {
@@ -2087,7 +2087,7 @@ mod unheard_mesh_hold {
         assert_eq!(pass(&e, &mut started, &mut held, &|_| UNHEARD).await, None, "before the ladder's decision the mesh's node-admins wait for it");
         let rpc_id = e.node_id(&rpc).await;
         assert_eq!(held.iter().map(|(n, _)| n.to_string()).collect::<Vec<_>>(), vec![rpc_id], "only the ordinary node's exit is held as evidence; the admins wait for the decision");
-        let decided = |_: &str| Some(PeerMesh { unheard_ms: Some(30_000), rebirth_decided: true, unreachable_decided: false });
+        let decided = |_: &str| Some(PeerMesh { unheard_ms: Some(30_000), recovery_decided: true, unreachable_decided: false });
         let opened = pass(&e, &mut started, &mut held, &decided).await;
         assert_eq!(opened, Some((before.build_id.clone(), before.attempt + 1)), "the decision releases the first recovering node-admin");
         let action = e.builds.current().await.unwrap().unwrap().action;
@@ -2117,7 +2117,7 @@ mod unheard_mesh_hold {
         // nothing of the earlier passes (a fresh `started`) reads it there, so the second node-admin's exit
         // is evidence, not an attempt, until the mesh is heard again.
         let mut fresh = HashSet::new();
-        assert_eq!(pass(&e, &mut fresh, &mut held, &decided).await, None, "no second node-admin of the reborn mesh is recovered from here");
+        assert_eq!(pass(&e, &mut fresh, &mut held, &decided).await, None, "no second node-admin of the recovered mesh is recovered from here");
         let second = e.node_id(&admins[1]).await;
         assert!(held.iter().any(|(n, _)| n.as_str() == second), "the second node-admin's exit is held as evidence: {held:?}");
         assert_eq!(e.builds.current().await.unwrap().unwrap().attempt, restore, "no attempt was opened after the restore");

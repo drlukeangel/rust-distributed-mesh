@@ -354,9 +354,9 @@ where
 
 /// What the watch drives.
 pub struct Watch {
-    /// The admin's park gate: this watch is held at its own wait while the admin is parked, never
+    /// The admin's stop gate: this watch is held at its own wait while the admin is stopped, never
     /// where it reads the view.
-    pub gate: crate::park_gate::ParkGate,
+    pub gate: crate::stop_gate::StopGate,
     /// This admin's path.name.
     pub me: PathName,
     /// This admin's NodeId.

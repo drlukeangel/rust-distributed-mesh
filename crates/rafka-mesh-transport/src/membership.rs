@@ -1634,7 +1634,7 @@ impl Channel {
                     *shared.write().await = None;
                     drop(receiver.take());
                     left.send_modify(|n| *n += 1);
-                    tracing::info_span!("rdm.mesh.connection.delete.via-channel-parked", node = %book.observer_name(), channel = %channel)
+                    tracing::info_span!("rdm.mesh.connection.delete.via-channel-stopped", node = %book.observer_name(), channel = %channel)
                         .in_scope(|| tracing::info!("the topic is left: the channel is parked"));
                     let _ = parked_rx.wait_for(|p| !*p).await;
                 }
@@ -3646,7 +3646,14 @@ impl Backbone {
     /// This Mesh's aggregate as a round publishes it: `members` with this mesh's own overlays and
     /// departures only (a peer mesh's travel in that mesh's aggregate).
     fn own_full(&self, membership: &Membership, members: Vec<MeshDigest>) -> Full {
-        let (in_flight, departed) = membership.book.overlays_of(&self.mesh);
+        let (mut in_flight, departed) = membership.book.overlays_of(&self.mesh);
+        if members.len() == 1
+            && members[0].node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin
+            && members[0].status != rafka_mesh_entity::MemberStatus::Leaving
+        {
+            let last_id = &members[0].node.node_id;
+            in_flight.retain(|op| op.is_restart() || op.is_stop() || &op.node_id != last_id);
+        }
         Full::new(members, in_flight, departed)
     }
 

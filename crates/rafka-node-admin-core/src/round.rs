@@ -116,7 +116,7 @@ pub(crate) fn reports_of<'a>(declared: &crate::status_rpc::Declared, view: &crat
     meshes.filter_map(|m| declared.report_of(m, view.cohort_primary(m, NodeKind::NodeAdmin)).map(|r| (m.to_string(), r))).collect()
 }
 
-/// Whether the mesh a fabric-primary decided to rebirth is back: its current primary is a birth the
+/// Whether the mesh a fabric-primary decided to recover is back: its current primary is a birth the
 /// decision did not find, it reported to this fabric-primary, and it reported after the decision.
 /// A ready primary of a newer birth that has not reported is not this.
 pub fn recovered(recovery: &PeerRecovery, primary: Option<&IncarnationId>, report: Option<&MeshReport>) -> bool {
@@ -504,7 +504,7 @@ mod tests {
     // @feature: node-lifecycle
     #[tokio::test]
     async fn successor_fabric_holder_keeps_degraded_until_every_mesh_primary_reports_for_its_round() {
-        // The seat moved to mesh2's primary while mesh1 was being reborn; the new holder adopted degraded.
+        // The seat moved to mesh2's primary while mesh1 was being recovered; the new holder adopted degraded.
         let (me, reborn) = (member("mesh2.admin.1", true, true), member("mesh1.admin.2", true, false));
         let v = view(vec![me.clone(), reborn.clone()]);
         let records = Records::default();

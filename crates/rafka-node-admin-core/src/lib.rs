@@ -47,7 +47,7 @@ pub mod node_name;
 pub mod node_rows;
 pub mod node_rpc;
 pub mod node_self;
-pub mod park_gate;
+pub mod stop_gate;
 pub mod offline;
 pub mod rafka_time;
 pub mod readiness;

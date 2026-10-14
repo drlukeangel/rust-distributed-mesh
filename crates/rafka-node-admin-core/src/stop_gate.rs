@@ -3,16 +3,16 @@
 //! A node-admin that is stopped keeps its process, its endpoint and everything it holds, and does
 //! nothing outward until it is started again. Its tasks are held two ways:
 //! - a task that takes the view lock, or any other lock a handler of the parked admin needs, begins
-//!   each turn at its own wait point ([`ParkGate::turn`]), where it holds nothing, and ends the turn
+//!   each turn at its own wait point ([`StopGate::turn`]), where it holds nothing, and ends the turn
 //!   (drops its [`Turn`]) before its idle wait. It is never held mid-critical-section, so the parked
 //!   admin always serves its start (node-start: start is the only exit from stopped Leaving), and
 //!   each turn waits before it sends. A turn already past its wait point when the gate parks runs to
-//!   the end of that turn: a stop parks with [`ParkGate::quiesce`], which resolves once every such
+//!   the end of that turn: a stop parks with [`StopGate::quiesce`], which resolves once every such
 //!   turn has ended, so nothing a turn does follows the stop's cut. Work a turn starts on a task of
 //!   its own and waits on begins its own turn under it ([`Turn::under`]), never at the wait point;
-//! - a task that takes no such lock is spawned through the gate ([`ParkGate::spawn`]): while the
+//! - a task that takes no such lock is spawned through the gate ([`StopGate::spawn`]): while the
 //!   gate is parked its future is not polled, so it holds its place at the await it was at.
-//! Work a stop retires with the birth instead of holding it runs as [`ParkGate::until_parked`]: it
+//! Work a stop retires with the birth instead of holding it runs as [`StopGate::until_parked`]: it
 //! ends at the park and never resumes. The gate restarts nothing.
 
 use std::collections::BTreeMap;
@@ -43,7 +43,7 @@ impl GateState {
 
 /// One gate, shared by every task of a node-admin.
 #[derive(Clone)]
-pub struct ParkGate {
+pub struct StopGate {
     state: Arc<watch::Sender<GateState>>,
 }
 
@@ -80,13 +80,13 @@ impl Drop for Turn {
     }
 }
 
-impl Default for ParkGate {
+impl Default for StopGate {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl ParkGate {
+impl StopGate {
     /// An open gate.
     pub fn new() -> Self {
         Self { state: Arc::new(watch::Sender::new(GateState::default())) }
@@ -153,7 +153,7 @@ impl ParkGate {
     /// Spawn `task` behind this gate: held wherever it stands while the gate is parked. Only for a
     /// task that takes no lock another task or handler needs (a task held while waiting on, or
     /// holding, such a lock keeps it from them); every other task begins its turns at
-    /// [`ParkGate::turn`].
+    /// [`StopGate::turn`].
     pub fn spawn<F>(&self, task: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
@@ -162,7 +162,7 @@ impl ParkGate {
         tokio::spawn(self.hold(task))
     }
 
-    /// `task`, held wherever it stands while the gate is parked: what [`ParkGate::spawn`] runs, for a
+    /// `task`, held wherever it stands while the gate is parked: what [`StopGate::spawn`] runs, for a
     /// caller that runs it on a task of its own (a `JoinSet`). The same rule: only for a task that
     /// takes no lock another task or handler needs.
     pub fn hold<F>(&self, task: F) -> impl Future<Output = F::Output> + Send + 'static
@@ -223,7 +223,7 @@ mod tests {
     #[tokio::test]
     async fn a_quiesce_resolves_only_once_every_turn_in_progress_has_ended_and_none_begins_after_it() {
         use futures_util::FutureExt;
-        let gate = ParkGate::new();
+        let gate = StopGate::new();
         let a = gate.turn("hierarchy").await;
         let b = gate.turn("executor").await;
         let quiesce = gate.quiesce();
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(gate.state().borrow().in_progress(), 0);
     }
 
-    /// CONTRACT (park_gate.rs: a task spawned through the gate is not polled while it is parked): a
+    /// CONTRACT (stop_gate.rs: a task spawned through the gate is not polled while it is parked): a
     /// task woken by its own work and by the park at the same moment is held where it stands; it
     /// makes no step past the park. Each of the 64 trials gives the gate one fresh such moment (a
     /// select that polled its branches in a random order would step past the park about half the
@@ -254,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn a_task_woken_by_its_own_work_and_the_park_at_once_makes_no_step_past_the_park() {
         for trial in 0..64 {
-            let gate = ParkGate::new();
+            let gate = StopGate::new();
             let (work, steps) = (Arc::new(tokio::sync::Notify::new()), Arc::new(AtomicU64::new(0)));
             let (w, n) = (work.clone(), steps.clone());
             let task = gate.spawn(async move {
@@ -279,7 +279,7 @@ mod tests {
     /// in deadline order, never as one timer turn whose wakes the scheduler orders.
     #[tokio::test(start_paused = true)]
     async fn a_parked_task_holds_its_place_and_resumes_from_it() {
-        let gate = ParkGate::new();
+        let gate = StopGate::new();
         let ticks = Arc::new(AtomicU64::new(0));
         let t = ticks.clone();
         let done = gate.spawn(async move {

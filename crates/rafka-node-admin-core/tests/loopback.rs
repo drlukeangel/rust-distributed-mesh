@@ -84,10 +84,10 @@ impl Loopback {
                     let topology = self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone());
                     let runner = Arc::new(OwnReceipts { inner: self.runner.clone(), builds: framed.clone() });
                     let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: framed.clone(), topology, runner });
-                    return Arc::new(RunDoor { me: executor.clone(), builds: framed, exec, runs, local: own, gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+                    return Arc::new(RunDoor { me: executor.clone(), builds: framed, exec, runs, local: own, gate: rafka_node_admin_core::stop_gate::StopGate::new() });
                 }
                 let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: self.builds.clone(), topology: self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone()), runner: self.runner.clone() });
-                Arc::new(RunDoor { me: executor.clone(), builds: self.builds.clone(), exec, runs: Arc::new(AttemptRuns::default()), local: self.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() })
+                Arc::new(RunDoor { me: executor.clone(), builds: self.builds.clone(), exec, runs: Arc::new(AttemptRuns::default()), local: self.local.clone(), gate: rafka_node_admin_core::stop_gate::StopGate::new() })
             })
             .clone()
     }
@@ -98,7 +98,7 @@ impl Dispatcher for Loopback {
     fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<rafka_node_admin_core::build_run::HeldRun> {
         self.door(me).hold(build_id, attempt)
     }
-    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         if self.lost.lock().unwrap().contains(&executor.to_string()) {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }

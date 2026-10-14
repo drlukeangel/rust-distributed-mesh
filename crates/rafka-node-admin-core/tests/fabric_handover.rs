@@ -557,7 +557,7 @@ struct Held;
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::build_drive::Dispatcher for Held {
-    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, _: &rafka_node_admin_core::model::PathName, _: &rafka_node_admin_core::build::BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::stop_gate::Turn, _: &rafka_node_admin_core::model::PathName, _: &rafka_node_admin_core::build::BuildId, _: u32, _: rafka_node_rpc_contract::context::CallContext, _: Vec<Vec<u8>>, _: rafka_node_admin_core::executor::RunPlan) -> rafka_node_admin_core::build_drive::Dispatched {
         std::future::pending().await
     }
 }
@@ -584,7 +584,7 @@ async fn build_door(a: &Admin, builds: Arc<rafka_node_admin_core::build_state::M
     control.topology = a.door.topology.clone();
     let control = Arc::new(control);
     let exec = Arc::new(rafka_node_admin_core::executor::BuildExecutor { executor: me.to_string(), builds: dyn_builds.clone(), topology: control.topology.clone(), runner: Arc::new(NoRuns) });
-    let run = Arc::new(rafka_node_admin_core::build_run::RunDoor { me: me.clone(), builds: dyn_builds.clone(), exec, runs: Arc::default(), local: builds.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+    let run = Arc::new(rafka_node_admin_core::build_run::RunDoor { me: me.clone(), builds: dyn_builds.clone(), exec, runs: Arc::default(), local: builds.clone(), gate: rafka_node_admin_core::stop_gate::StopGate::new() });
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
@@ -594,7 +594,7 @@ async fn build_door(a: &Admin, builds: Arc<rafka_node_admin_core::build_state::M
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(crate::loopback::NoVerdicts),
-        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        turns: rafka_node_admin_core::stop_gate::StopGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: a.door.membership.seats().clone(), incarnation: a.resolved.incarnation.clone(), incumbent: a.door.clone() })
 }

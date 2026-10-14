@@ -23,7 +23,7 @@
 //! silence.
 //!
 //! Each pass of a drive (its gates, its claim, its dispatch and the run's terminal) is one turn of
-//! its admin's park gate ([`crate::park_gate`]): a stopped admin begins none, and a stop waits for
+//! its admin's stop gate ([`crate::stop_gate`]): a stopped admin begins none, and a stop waits for
 //! the pass in progress before it cuts.
 
 use crate::build::BuildId;
@@ -267,7 +267,7 @@ pub trait Dispatcher: Send + Sync {
     /// fabric-primary planned (`plan`): the operations the executor runs and nothing else. `turn` is
     /// the drive pass's turn of the admin's gate: a run this admin makes itself begins its own turn
     /// under it, never waiting at the gate for the pass that waits on it.
-    async fn dispatch(&self, turn: &crate::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched;
+    async fn dispatch(&self, turn: &crate::stop_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched;
     /// Hold the run of `attempt` of `build_id` on the admin `me` (the drive's own) while a step of the
     /// Build runs in the drive itself (the holder's own node.primary.update): a dispatch of the attempt
     /// to `me` reattaches to it ([`crate::build_run::HeldRun`]). `None` when it holds no run here.
@@ -595,10 +595,10 @@ pub struct DriveEnv {
     pub departure: Arc<dyn DepartureProof>,
     /// Records an executor's verdict on this admin's log.
     pub verdicts: Arc<dyn VerdictSink>,
-    /// The admin's park gate (`crate::park_gate`): a drive takes the view lock and calls executors,
+    /// The admin's stop gate (`crate::stop_gate`): a drive takes the view lock and calls executors,
     /// so each of its passes is a turn begun at the gate's wait point, and a stop's quiesce waits for
     /// the pass in progress.
-    pub turns: crate::park_gate::ParkGate,
+    pub turns: crate::stop_gate::StopGate,
 }
 
 /// The drives this admin holds, by Build.
@@ -875,15 +875,15 @@ impl DriveEnv {
             return None;
         }
         let peer = self.gate.peer_mesh(&node.mesh)?;
-        Some((node.clone(), peer.unheard_ms?, peer.rebirth_decided))
+        Some((node.clone(), peer.unheard_ms?, peer.recovery_decided))
     }
 
     /// The restore the investigation's rebirth verdict authorizes (R-D1; mesh-investigation.md steps
-    /// 5-6): `op` acts on a node-admin of a peer mesh held unheard whose rebirth is decided, and the
+    /// 5-6): `op` acts on a node-admin of a peer mesh held unheard whose recovery is decided, and the
     /// Build carried no other admin of that mesh across the fence ([`crossed_admin`]). The
     /// fabric-primary executes it, whatever else the mesh's view holds (an admin held silent
     /// included): it is the mesh's first recovering node-admin.
-    fn rebirth_admits(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> bool {
+    fn recovery_admits(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> bool {
         self.unheard_peer(op).is_some_and(|(node, _, decided)| (decided || self.crash_admits(p, op, &node, crashed)) && node.kind == NodeKind::NodeAdmin && crossed_admin(p, &node.mesh).is_none_or(|crossed| crossed == node))
     }
 
@@ -925,11 +925,11 @@ impl DriveEnv {
     }
 
     /// The fence on `op` (R-D1): a node of a peer mesh held unheard is not claimed or dispatched for,
-    /// except the mesh's first recovering node-admin once the investigation decided its rebirth, or
-    /// once the provider proves the mesh fully crashed ([`Self::rebirth_admits`]). `Some` names the
+    /// except the mesh's first recovering node-admin once the investigation decided its recovery, or
+    /// once the provider proves the mesh fully crashed ([`Self::recovery_admits`]). `Some` names the
     /// fence.
     fn fenced(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> Option<(PathName, u64, bool)> {
-        if p.topology.meshes.is_empty() || self.rebirth_admits(p, op, crashed) {
+        if p.topology.meshes.is_empty() || self.recovery_admits(p, op, crashed) {
             return None;
         }
         self.unheard_peer(op)
@@ -943,18 +943,18 @@ impl DriveEnv {
             "{me}: {} acts on {node} of peer mesh {mesh}, which the peer-mesh investigation holds unheard ({unheard_ms} ms){}: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
             op.key(),
             if decided {
-                "; its decided rebirth admits only the mesh's first recovering node-admin"
+                "; its decided recovery admits only the mesh's first recovering node-admin"
             } else if unreachable && crashed.contains(&node.mesh) {
                 "; its decision is unreachable and the provider proves every node of the mesh exited, which admits only the create of the mesh's first node-admin"
             } else if unreachable {
                 "; its decision is unreachable and the provider does not prove every node of the mesh exited (rdm.node_admin.mesh.update.via-crash-proof names which), so nothing of it is admitted"
             } else {
-                ", with no rebirth decided"
+                ", with no recovery decided"
             },
             mesh = node.mesh,
         );
         if drive.stall_is_new(&format!("unheard-mesh|{}|{}|{decided}", node.mesh, op.key())) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id, attempt, node = %me, operation = %op.key(), target = %node, mesh = %node.mesh, unheard_ms, rebirth_decided = decided)
+            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id, attempt, node = %me, operation = %op.key(), target = %node, mesh = %node.mesh, unheard_ms, recovery_decided = decided)
                 .in_scope(|| tracing::info!("the drive claims and dispatches nothing for a node of a peer mesh held unheard"));
         }
         self.blocked(drive, attempt, &op.key(), "unheard-mesh", &why);
@@ -962,7 +962,7 @@ impl DriveEnv {
     }
 
     /// What this admin dispatches to `executor` for what is left of `p` in view `t` ([`left`]). The
-    /// mesh's first recovering node-admin under a rebirth verdict runs alone, on this admin (the
+    /// mesh's first recovering node-admin under a recovery verdict runs alone, on this admin (the
     /// fabric-primary); its receipts are what fence every other admin of that mesh. Otherwise the executor's run
     /// ([`run_of`]) is cut before the first operation on a peer mesh held unheard (R-D1) and before
     /// an operation no admin executes in this view (it waits for its mesh's own seat, never for the
@@ -970,7 +970,7 @@ impl DriveEnv {
     /// the investigation. `Err` names the fence on the first operation.
     fn plan_dispatch(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName, crashed: &HashSet<String>) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
         let ops = left(drive, p, t);
-        if let Some(op) = ops.first().filter(|op| *executor == *me && self.rebirth_admits(p, op, crashed)) {
+        if let Some(op) = ops.first().filter(|op| *executor == *me && self.recovery_admits(p, op, crashed)) {
             return Ok(RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| me.to_string()) });
         }
         let mut plan = run_of(&ops, t, executor);
@@ -999,12 +999,12 @@ impl DriveEnv {
         Ok(plan)
     }
 
-    async fn pass(self: &Arc<Self>, drive: &Arc<Drive>, dispatches: &mut u32, last_turn: &mut Option<crate::park_gate::Turn>) -> DriveEnd {
+    async fn pass(self: &Arc<Self>, drive: &Arc<Drive>, dispatches: &mut u32, last_turn: &mut Option<crate::stop_gate::Turn>) -> DriveEnd {
         let id = drive.build_id.clone();
         let mut handed_to: Option<PathName> = None;
         let mut departed: Option<String> = None;
         loop {
-            // Each pass is one turn of the admin's gate (park_gate.rs): it begins here, holding
+            // Each pass is one turn of the admin's gate (stop_gate.rs): it begins here, holding
             // nothing, and while the admin is stopped it begins only once the admin starts. A pass in
             // progress when a stop parks the gate runs to its end (the attempt it dispatched, its
             // terminal handled) and the stop's quiesce waits for it, so nothing of it follows the cut.
@@ -1355,7 +1355,7 @@ impl DriveEnv {
         // view names this admin) is claimed for the admin this view names for what is left: an
         // operation no admin executes waits for its mesh's own seat, and one another admin executes is
         // claimed for that admin, never for this one to hand on unrun.
-        let rebirth = first.as_ref().is_some_and(|op| self.rebirth_admits(p, op, crashed));
+        let rebirth = first.as_ref().is_some_and(|op| self.recovery_admits(p, op, crashed));
         // The create admitted on the provider's proof of a fully crashed mesh (not the ladder's decided
         // rebirth, which the ladder told when it decided): the mesh this claim gives a node-admin.
         let crash_mesh = first.as_ref().filter(|_| rebirth).and_then(|op| self.unheard_peer(op)).filter(|(_, _, decided)| !*decided).map(|(node, _, _)| node.mesh);
@@ -1434,7 +1434,7 @@ impl DriveEnv {
 
     /// A complete Build this drive made no call of: attach to the last attempt's executor and read
     /// its frames. `None` when the attached run ended `Complete`; otherwise the end of the drive.
-    async fn reattach_to_ended(&self, me: &PathName, turn: &crate::park_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
+    async fn reattach_to_ended(&self, me: &PathName, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
         let id = &drive.build_id;
         self.replay(drive, &p.steps, 0, p.attempt).await;
         let named = p.executor.clone().unwrap_or_default();
@@ -1485,7 +1485,7 @@ impl DriveEnv {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn run_inner(&self, turn: &crate::park_gate::Turn, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext, plan: RunPlan) -> Inner {
+    async fn run_inner(&self, turn: &crate::stop_gate::Turn, drive: &Arc<Drive>, id: &BuildId, attempt: u32, executor: &PathName, context: CallContext, plan: RunPlan) -> Inner {
         let intent = self.intent_of(id).await;
         let mut stream = match self.dispatcher.dispatch(turn, executor, id, attempt, context, intent, plan).await {
             Dispatched::Stream(s) => s,

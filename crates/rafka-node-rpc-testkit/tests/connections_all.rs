@@ -102,7 +102,7 @@ fn named(spans: &Spans, name: &str) -> usize {
 /// CONTRACT: a live node's `node.connections.delete { All }` closes every open Direct or Proxy entry
 /// of its connections log and nothing else. It answers `ConnectionsDeleted` holding nothing, and the
 /// node is still heard on gossip: the admin side receives a later digest of the same birth. What must
-/// NOT happen: the gossip channel parked (`rdm.mesh.connection.delete.via-channel-parked`), or the
+/// NOT happen: the gossip channel parked (`rdm.mesh.connection.delete.via-channel-stopped`), or the
 /// Node RPC pool hard-cut (`rdm.node_rpc.connection.delete.via-hard-cut`).
 #[test]
 fn a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_gossip() {
@@ -136,7 +136,7 @@ fn a_standalone_all_closes_the_log_connections_and_leaves_the_node_heard_on_goss
         })
         .await;
         assert!(heard.is_ok(), "the node is still heard on gossip after All: no digest of it past seq {seq_at_all} in twenty gossip intervals");
-        assert_eq!(named(&spans, "rdm.mesh.connection.delete.via-channel-parked"), 0, "All parks no gossip channel");
+        assert_eq!(named(&spans, "rdm.mesh.connection.delete.via-channel-stopped"), 0, "All parks no gossip channel");
         assert_eq!(named(&spans, "rdm.node_rpc.connection.delete.via-hard-cut"), 0, "All hard-cuts no Node RPC pool connection");
         let _ = std::fs::remove_dir_all(&dir);
     })

@@ -13,7 +13,7 @@
 //!
 //! Evidence: the new fabric-primary's peer-mesh investigation finds, through a member of mesh1
 //! that answers, that mesh1's node-admins cannot be reached (`carrier-edge-lost`), records the
-//! recovery verdict (`via-rebirth`), and only then creates mesh1's first node-admin; a reconcile of B by a
+//! recovery verdict (`via-recovery`), and only then creates mesh1's first node-admin; a reconcile of B by a
 //! mesh2 admin names mesh1's admin primary as the previous executor.
 
 use crate::build_log;
@@ -137,7 +137,7 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap_or(0);
     // The recovery verdict: the fabric-primary's probes of mesh2 went through a member that
     // answered and reported mesh2's node-admins lost, the latest probe decided, and the recovery opened.
-    let rebirth = named(&spans, "rdm.node_admin.mesh.create.via-rebirth").into_iter().find(|r| attr(r, "mesh") == "mesh2" && attr(r, "node").starts_with("mesh1.")).unwrap_or_else(|| panic!("the recovery of mesh2 opened (via-rebirth)")).clone();
+    let rebirth = named(&spans, "rdm.node_admin.mesh.create.via-recovery").into_iter().find(|r| attr(r, "mesh") == "mesh2" && attr(r, "node").starts_with("mesh1.")).unwrap_or_else(|| panic!("the recovery of mesh2 opened (via-recovery)")).clone();
     let probes: Vec<&Value> = named(&spans, "rdm.node_admin.mesh.update.via-probe").into_iter().filter(|p| attr(p, "mesh") == "mesh2" && attr(p, "node") == attr(&rebirth, "node") && at(p) > killed_ns && at(p) < at(&rebirth)).collect();
     let last = probes.iter().max_by_key(|p| at(p)).unwrap_or_else(|| panic!("mesh2 was probed by the fabric-primary before its recovery verdict"));
     assert_eq!(attr(last, "outcome"), "carrier-edge-lost", "the latest probe: a member of mesh2 cannot reach its node-admins: {probes:#?}");
@@ -153,7 +153,7 @@ async fn a_lost_mesh_recovers_as_itself_under_the_same_build() {
         .filter(|c| attr(c, "build_id") == b && attr(c, "node").starts_with("mesh2.") && at(c) > killed_ns && at(c) < at(&rebirth))
         .map(|c| format!("{} attempt {} at {}", attr(c, "node"), attr(c, "attempt"), at(c)))
         .collect();
-    assert!(early.is_empty(), "nothing of mesh2 is created before its recovery verdict (via-rebirth at {}): {early:?}", at(&rebirth));
+    assert!(early.is_empty(), "nothing of mesh2 is created before its recovery verdict (via-recovery at {}): {early:?}", at(&rebirth));
     let accepting = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("a fabric-primary before the loss");
     let takeover = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
