@@ -1608,3 +1608,266 @@ fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_h
     assert_eq!(created.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(born.as_str()), Some("name-held")), (Some(born.as_str()), Some("row-seeded"))], "{created:#?}");
     assert_eq!(created[1]["attributes"]["seeded_from"].as_str(), Some(exited.as_str()));
 }
+
+/// CONTRACT (e12.s41 / crit:e12.s41.1; proposal node-primary-update-fabric-mesh-and-node-type.md
+/// Part A): a node created with a free-text name (`mesh1.broker.north`, where `path` is
+/// `"mesh1.broker"`, `name` is `"north"`, and `node_type` is `"broker"`) round-trips `name`, `path`
+/// and `node_type` through:
+/// 1. `create` (claiming `mesh1.broker.north` and installing the birth into the view),
+/// 2. `get` (`views::nodes_answer` by id and by mesh),
+/// 3. `stop`/`start` (parking at `Leaving` and unparking back to `ReadyForTraffic`),
+/// 4. `recovery` (`NodeDeleted` writing the `Deleted` row at `mesh1.broker.north`, then the
+///    recovered birth claiming `mesh1.broker.north` with `ClaimFor::Recovery` and inheriting
+///    config, tags and `node_type`), and
+/// 5. `replace` (successor created at `mesh1.broker.north.new` with `name = "north.new"`,
+///    predecessor renamed to `mesh1.broker.north.old` with `name = "north.old"`, and cutover
+///    moving `north.new` -> `north` while inheriting config, tags and `node_type` from `north.old`).
+#[test]
+fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_through_create_get_stop_start_recovery_and_replace() {
+    use rafka_node_rpc_contract::status::{NodeSelect, StatusReply};
+    let cap = capture();
+    cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let mp = mesh_primary(&storage);
+        let me: PathName = "mesh1.admin.2".parse().unwrap();
+        let loads: rafka_node_admin_core::views::Loads = Arc::new(BTreeMap::new);
+
+        // 1. Create: `mesh1.broker.north` with free-text name `north`, path `mesh1.broker`, node_type `broker`.
+        let north_key: PathName = "mesh1.broker.north".parse().expect("free-text node name parses");
+        assert_eq!((north_key.path().as_str(), north_key.name().as_str(), north_key.node_type()), ("mesh1.broker", "north", "broker"));
+        let mut north = node("mesh1.broker.north", false, false).with_node_type("broker").expect("valid node_type");
+        north.config = tier("gold");
+        assert_eq!((north.path().as_str(), north.node_name().as_str(), north.node_type()), ("mesh1.broker", "north", "broker"));
+        let (_, claimed_type) = mp
+            .rows
+            .claim_with_node_type(&north_key, &north.node_id, "broker", "create-node:mesh1.broker.north", None, ClaimFor::Create)
+            .await
+            .expect("the free-text name is claimed");
+        assert_eq!(claimed_type, "broker");
+        storage
+            .put_node_row(&NodeRow {
+                name: north_key.clone(),
+                node_id: north.node_id.clone(),
+                status: NodeStatus::ReadyForTraffic,
+                config: tier("gold"),
+                tags: ["blue".to_string()].into(),
+                allocated: None,
+                renamed_from: None,
+                inherited_by: None,
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let created_row = storage.node_row_at(&north_key).await.unwrap().expect("row at mesh1.broker.north");
+        assert_eq!((created_row.path().as_str(), created_row.node_name().as_str(), created_row.node_type()), ("mesh1.broker", "north", "broker"));
+        let north_for_view = north.clone();
+        install(&mp.records, &mp.view, move |v| v.nodes.push(north_for_view)).await;
+
+        // 2. Get: `nodes_answer` round-trips `name`, `path` and `node_type`.
+        let StatusReply::Nodes { nodes } = rafka_node_admin_core::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Id(north.node_id.clone())).await else {
+            panic!("expected StatusReply::Nodes");
+        };
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(
+            (nodes[0].name.to_string().as_str(), nodes[0].path().as_str(), nodes[0].node_name().as_str(), nodes[0].node_type(), &nodes[0].config, &nodes[0].tags),
+            ("mesh1.broker.north", "mesh1.broker", "north", "broker", &tier("gold"), &["blue".to_string()].into())
+        );
+
+        // 3. Stop / Start: parking and unparking preserve `name`, `path` and `node_type`.
+        let north_id = north.node_id.clone();
+        install(&mp.records, &mp.view, move |v| {
+            let n = v.nodes.iter_mut().find(|n| n.node_id == north_id).unwrap();
+            n.status = NodeStatus::Leaving;
+            n.parked = true;
+            n.routable = false;
+        })
+        .await;
+        let StatusReply::Nodes { nodes: stopped } = rafka_node_admin_core::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Id(north.node_id.clone())).await else {
+            panic!("expected StatusReply::Nodes");
+        };
+        assert!(stopped[0].parked);
+        assert_eq!((stopped[0].path().as_str(), stopped[0].node_name().as_str(), stopped[0].node_type()), ("mesh1.broker", "north", "broker"));
+
+        let north_id = north.node_id.clone();
+        install(&mp.records, &mp.view, move |v| {
+            let n = v.nodes.iter_mut().find(|n| n.node_id == north_id).unwrap();
+            n.status = NodeStatus::ReadyForTraffic;
+            n.parked = false;
+            n.routable = true;
+        })
+        .await;
+        let StatusReply::Nodes { nodes: started } = rafka_node_admin_core::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Id(north.node_id.clone())).await else {
+            panic!("expected StatusReply::Nodes");
+        };
+        assert!(!started[0].parked);
+        assert_eq!((started[0].path().as_str(), started[0].node_name().as_str(), started[0].node_type()), ("mesh1.broker", "north", "broker"));
+
+        // 4. Recovery: `NodeDeleted` writes the Deleted row at `mesh1.broker.north`, and the
+        //    recovered node claims `mesh1.broker.north` with `ClaimFor::Recovery`, copying
+        //    `node_type`, `config` and `tags`.
+        mp.rows.deleted(&north, "retire-node:mesh1.broker.north").await.expect("Deleted row written at mesh1.broker.north");
+        let mut recovered_north = node("mesh1.broker.north", false, false);
+        let (_, recovered_type) = mp
+            .rows
+            .claim_with_node_type(&north_key, &recovered_north.node_id, "", "create-node:mesh1.broker.north", None, ClaimFor::Recovery)
+            .await
+            .expect("recovery claims mesh1.broker.north");
+        assert_eq!(recovered_type, "broker", "recovery copies the exited node's node_type");
+        assert_eq!(mp.rows.node_type_of(&recovered_north.node_id, &north_key), "broker");
+        let recovered_row = storage.node_row_at(&north_key).await.unwrap().expect("recovered row at mesh1.broker.north");
+        assert_eq!(
+            (recovered_row.node_id.clone(), recovered_row.path().as_str(), recovered_row.node_name().as_str(), recovered_row.node_type(), &recovered_row.config, &recovered_row.tags),
+            (recovered_north.node_id.clone(), "mesh1.broker", "north", "broker", &tier("gold"), &["blue".to_string()].into())
+        );
+        recovered_north.config = recovered_row.config.clone();
+        let rec_for_view = recovered_north.clone();
+        let exited_id = north.node_id.clone();
+        install(&mp.records, &mp.view, move |v| {
+            v.nodes.retain(|n| n.node_id != exited_id);
+            v.nodes.push(rec_for_view);
+        })
+        .await;
+
+        // 5. Replace: successor at `mesh1.broker.north.new` (`north.new`), predecessor moved to
+        //    `mesh1.broker.north.old` (`north.old`), then cutover moves `north.new` -> `north`.
+        let new_key = north_key.successor();
+        let old_key = north_key.renamed();
+        assert_eq!((new_key.to_string().as_str(), new_key.path().as_str(), new_key.name().as_str(), new_key.node_type()), ("mesh1.broker.north.new", "mesh1.broker", "north.new", "broker"));
+        assert_eq!((old_key.to_string().as_str(), old_key.path().as_str(), old_key.name().as_str(), old_key.node_type()), ("mesh1.broker.north.old", "mesh1.broker", "north.old", "broker"));
+        assert_eq!(north_key.with_name("north.new").unwrap(), new_key);
+        assert_eq!(north_key.with_name("north.old").unwrap(), old_key);
+        assert_eq!(new_key.with_name("north").unwrap(), north_key);
+
+        let mut succ = node("mesh1.broker.north.new", false, false);
+        succ.status = NodeStatus::Leaving;
+        succ.parked = true;
+        mp.rows
+            .claim_with_node_type(&new_key, &succ.node_id, "broker", "create-node:mesh1.broker.north.new", None, ClaimFor::Create)
+            .await
+            .expect("successor claims mesh1.broker.north.new");
+
+        let mut pred_stopped = recovered_north.clone();
+        pred_stopped.status = NodeStatus::Leaving;
+        pred_stopped.parked = true;
+        let old_row = mp.rows.rename_row(&pred_stopped, &old_key).await.expect("predecessor moves to mesh1.broker.north.old");
+        assert_eq!((old_row.path().as_str(), old_row.node_name().as_str(), old_row.node_type()), ("mesh1.broker", "north.old", "broker"));
+        assert_eq!(storage.node_row_at(&north_key).await.unwrap(), None, "mesh1.broker.north is free for cutover");
+
+        let cutover_row = mp
+            .rows
+            .cutover_row(&succ, &north_key, &old_key, &pred_stopped.node_id)
+            .await
+            .expect("successor cuts over from north.new to north");
+        assert_eq!(
+            (cutover_row.node_id.clone(), cutover_row.path().as_str(), cutover_row.node_name().as_str(), cutover_row.node_type(), &cutover_row.config, &cutover_row.tags),
+            (succ.node_id.clone(), "mesh1.broker", "north", "broker", &tier("gold"), &["blue".to_string()].into())
+        );
+        assert_eq!(mp.rows.node_type_of(&succ.node_id, &north_key), "broker", "replace copies predecessor node_type to successor");
+        assert_eq!(storage.node_row_at(&new_key).await.unwrap(), None, "north.new is released after cutover");
+        let retained_old = storage.node_row_at(&old_key).await.unwrap().expect("retained predecessor row at mesh1.broker.north.old");
+        assert_eq!((retained_old.node_name().as_str(), retained_old.inherited_by.as_ref()), ("north.old", Some(&succ.node_id)));
+        assert_eq!(storage.tagged("blue").await.unwrap(), [succ.node_id.clone()].into(), "active tag index holds only the successor after cutover");
+
+        let mut succ_ready = succ.clone();
+        succ_ready.name = north_key.clone();
+        succ_ready.status = NodeStatus::ReadyForTraffic;
+        succ_ready.parked = false;
+        succ_ready.config = cutover_row.config.clone();
+        let mut pred_old = pred_stopped.clone();
+        pred_old.name = old_key.clone();
+        let pred_id = pred_old.node_id.clone();
+        install(&mp.records, &mp.view, move |v| {
+            v.nodes.retain(|n| n.node_id != pred_id);
+            v.nodes.push(pred_old);
+            v.nodes.push(succ_ready);
+        })
+        .await;
+
+        let StatusReply::Nodes { nodes: mesh_nodes } = rafka_node_admin_core::views::nodes_answer(&me, &*mp.view.read().await, &loads, &*storage, &NodeSelect::Mesh("mesh1".into())).await else {
+            panic!("expected StatusReply::Nodes");
+        };
+        let active = mesh_nodes.iter().find(|n| n.name == north_key).expect("active successor at mesh1.broker.north");
+        assert_eq!((active.node_id.clone(), active.path().as_str(), active.node_name().as_str(), active.node_type()), (succ.node_id.clone(), "mesh1.broker", "north", "broker"));
+        let retained = mesh_nodes.iter().find(|n| n.name == old_key).expect("retained predecessor at mesh1.broker.north.old");
+        assert_eq!((retained.node_id.clone(), retained.path().as_str(), retained.node_name().as_str(), retained.node_type()), (pred_stopped.node_id.clone(), "mesh1.broker", "north.old", "broker"));
+    });
+}
+
+/// CONTRACT (e12.s41 / crit:e12.s41.2; proposal node-primary-update-fabric-mesh-and-node-type.md
+/// §A.1.2, §A.2.3):
+/// 1. `node_type` at `node.create` normalizes `""` to `"node"` (`DEFAULT_NODE_TYPE`) and refuses
+///    any value outside the shared identifier grammar (`1..=64` of `a-z 0-9 - _ . ~`, no leading
+///    `.`, whitespace refused) by name (`node_type`), writing nothing.
+/// 2. `node_type` is immutable after creation: `node.update` of `node_type` is refused by name
+///    (`node_type`), leaving the node and its row untouched.
+#[test]
+fn node_update_of_node_type_and_invalid_node_type_are_refused_by_name() {
+    use rafka_node_rpc_contract::status::{normalize_node_type, node_type_refusal, node_type_update_refusal, DEFAULT_NODE_TYPE};
+    let cap = capture();
+    cap.run(async {
+        // 1. Empty string normalizes to "node"; valid identifiers pass; invalid values are refused naming "node_type".
+        assert_eq!(normalize_node_type(""), DEFAULT_NODE_TYPE);
+        assert_eq!(normalize_node_type("broker"), "broker");
+        for valid in ["node", "broker", "node-admin", "rpc-node", "compute_1", "v1.2~rc"] {
+            assert_eq!(node_type_refusal(valid), None, "{valid} is within the node_type grammar");
+        }
+        let over_cap = "a".repeat(65);
+        for invalid in [" ", " broker", "broker ", "Broker", ".broker", "broker/1", over_cap.as_str()] {
+            let reason = node_type_refusal(&normalize_node_type(invalid)).expect("invalid node_type is refused");
+            assert!(reason.contains("node_type"), "refusal names node_type: {reason}");
+        }
+
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let mp = mesh_primary(&storage);
+        let north_key: PathName = "mesh1.broker.north".parse().expect("free-text node name parses");
+
+        // 2. Claiming a node with an invalid `node_type` is refused by name (`node_type`) and writes no row.
+        let rejected_id = NodeId::mint();
+        let err = mp
+            .rows
+            .claim_with_node_type(&north_key, &rejected_id, "Broker", "create-node:mesh1.broker.north", None, ClaimFor::Create)
+            .await
+            .expect_err("uppercase node_type is refused at create");
+        assert!(err.to_string().contains("node_type"), "create refusal names node_type: {err}");
+        assert_eq!(storage.node_row_at(&north_key).await.unwrap(), None, "nothing is written when node_type is refused");
+
+        let ws_err = Node::allocated(north_key.clone()).with_node_type(" broker").expect_err("whitespace node_type is refused");
+        assert!(ws_err.contains("node_type"), "Node::with_node_type refusal names node_type: {ws_err}");
+
+        // 3. A node created with an empty `node_type` normalizes to `"node"`.
+        let default_key: PathName = "mesh1.rpc.east".parse().expect("free-text node name parses");
+        let default_id = NodeId::mint();
+        let (_, normalized) = mp
+            .rows
+            .claim_with_node_type(&default_key, &default_id, "", "create-node:mesh1.rpc.east", None, ClaimFor::Create)
+            .await
+            .expect("empty node_type normalizes to default");
+        assert_eq!(normalized, "node");
+        assert_eq!(mp.rows.node_type_of(&default_id, &default_key), "node");
+
+        // 4. `node.update` of `node_type` is refused by name (`node_type`), leaving the held `node_type` untouched.
+        let north_id = NodeId::mint();
+        mp.rows
+            .claim_with_node_type(&north_key, &north_id, "broker", "create-node:mesh1.broker.north", None, ClaimFor::Create)
+            .await
+            .expect("valid node_type is claimed");
+        for attempted in ["rpc-node", "broker", "node", "Broker"] {
+            let err = mp
+                .rows
+                .update_node_type(&north_key, &north_id, attempted)
+                .await
+                .expect_err("node.update of node_type is refused by name");
+            let msg = err.to_string();
+            assert!(msg.contains("node_type") && msg.contains("node.update"), "refusal names node_type and node.update: {msg}");
+        }
+        assert_eq!(mp.rows.node_type_of(&north_id, &north_key), "broker", "held node_type is unchanged after refused node.update");
+
+        let mut north_node = Node::allocated(north_key).with_node_type("broker").unwrap();
+        let update_err = north_node.update_node_type("rpc-node").expect_err("Node::update_node_type is refused");
+        assert!(update_err.contains("node_type") && update_err.contains("immutable"), "refusal names node_type and immutable: {update_err}");
+        assert_eq!(north_node.node_type(), "broker");
+        let contract_msg = node_type_update_refusal("broker", "rpc-node");
+        assert!(contract_msg.contains("node_type") && contract_msg.contains("node.update"), "{contract_msg}");
+    });
+}
+

@@ -61,6 +61,11 @@ impl NodeKind {
             _ => None,
         }
     }
+
+    /// The node's `node_type` identifier (`node-admin`, `rpc-node`, `broker`, `gateway` or `compute`).
+    pub fn node_type(self) -> &'static str {
+        ""
+    }
 }
 
 /// A node's stable logical address `<mesh>.<kind>.<ordinal>`; `<mesh>.<kind>.<ordinal>.old` names
@@ -155,6 +160,11 @@ impl PathName {
     /// path never moving. Refused by name when the join is not a `path.name` this build keys.
     pub fn with_name(&self, name: &str) -> Result<Self, PathNameError> {
         format!("{}.{name}", self.path()).parse()
+    }
+
+    /// The node's `node_type` identifier (`node-admin`, `rpc-node`, `broker`, `gateway` or `compute`).
+    pub fn node_type(&self) -> &'static str {
+        self.kind.node_type()
     }
 }
 

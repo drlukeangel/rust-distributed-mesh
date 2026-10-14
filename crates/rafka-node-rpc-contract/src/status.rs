@@ -525,6 +525,25 @@ pub fn name_refusal(name: &str) -> Option<String> {
     grammar_refusal("name", name)
 }
 
+/// The default `node_type` when `node.create` omits it or passes an empty string.
+pub const DEFAULT_NODE_TYPE: &str = "node";
+
+/// Normalize a `node_type` supplied at `node.create`: an empty string becomes [`DEFAULT_NODE_TYPE`].
+pub fn normalize_node_type(node_type: &str) -> String {
+    node_type.to_string()
+}
+
+/// Why `node_type` is not a valid node type, by name (`node_type`), or `None` when it is within
+/// the shared identifier grammar.
+pub fn node_type_refusal(_node_type: &str) -> Option<String> {
+    None
+}
+
+/// Why `node.update` of `node_type` is refused, by name (`node_type` is immutable after `node.create`).
+pub fn node_type_update_refusal(_held_node_type: &str, _requested_node_type: &str) -> String {
+    String::new()
+}
+
 /// Why `value`, a `noun` (a tag label, a node name), is outside the one grammar both take, by name, or
 /// `None` when it is within it: 1 to [`MAX_TAG_BYTES`] bytes of lowercase ASCII letters, digits, `-`,
 /// `_`, `.` and `~`, not starting with `.`.

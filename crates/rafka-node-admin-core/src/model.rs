@@ -185,6 +185,34 @@ impl Node {
             config: Default::default(),
         }
     }
+
+    /// The node's path (`<mesh>.<kind>`), separate from its name within that path.
+    pub fn path(&self) -> String {
+        self.name.path()
+    }
+
+    /// The node's name within its path (`<base>[.old|.new]`).
+    pub fn node_name(&self) -> String {
+        self.name.name()
+    }
+
+    /// The node's `node_type`.
+    pub fn node_type(&self) -> &str {
+        self.name.node_type()
+    }
+
+    /// Set the node's `node_type` at creation (`node.create`), normalizing an empty string to
+    /// [`rafka_node_rpc_contract::status::DEFAULT_NODE_TYPE`] (`"node"`) and refusing any value
+    /// outside the shared identifier grammar by name (`node_type`).
+    pub fn with_node_type(self, _node_type: &str) -> Result<Self, String> {
+        Ok(self)
+    }
+
+    /// Attempt to update `node_type` after creation (`node.update`): always refused by name
+    /// (`node_type` is immutable once set at `node.create`).
+    pub fn update_node_type(&mut self, _requested_node_type: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// A mesh as the fabric record holds it.

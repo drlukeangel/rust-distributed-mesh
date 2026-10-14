@@ -327,6 +327,21 @@ pub struct Allocation {
 }
 
 impl NodeRow {
+    /// The node's path (`<mesh>.<kind>`), separate from its name within that path.
+    pub fn path(&self) -> String {
+        self.name.path()
+    }
+
+    /// The node's name within its path (`<base>[.old|.new]`).
+    pub fn node_name(&self) -> String {
+        self.name.name()
+    }
+
+    /// The node's `node_type`.
+    pub fn node_type(&self) -> &'static str {
+        self.name.node_type()
+    }
+
     /// The labels the tags index holds for this row's node once the row is written over `previous`,
     /// the row it replaces at its key, split into (leaving, arriving): a label the node's previous
     /// row carried and this one does not, or every label of a `Deleted` row or of a row a successor

@@ -120,6 +120,23 @@ pub struct NodeView {
     pub config: std::collections::BTreeMap<String, String>,
 }
 
+impl NodeView {
+    /// The node's path (`<mesh>.<kind>`), separate from its name within that path.
+    pub fn path(&self) -> String {
+        self.name.path()
+    }
+
+    /// The node's name within its path (`<base>[.old|.new]`).
+    pub fn node_name(&self) -> String {
+        self.name.name()
+    }
+
+    /// The node's `node_type`.
+    pub fn node_type(&self) -> &'static str {
+        self.name.node_type()
+    }
+}
+
 /// One mesh as the answering node-admin's view holds it (`mesh.get`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeshView {

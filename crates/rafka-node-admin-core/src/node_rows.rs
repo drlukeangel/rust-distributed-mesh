@@ -311,6 +311,37 @@ impl NodeRows {
         r
     }
 
+    /// `node.create`'s name claim with an explicit `node_type` (normalizing `""` to `"node"`,
+    /// refusing any value outside the shared identifier grammar by name `node_type`, and copying
+    /// the exited node's `node_type` on recovery).
+    pub async fn claim_with_node_type(&self, name: &PathName, node_id: &NodeId, _node_type: &str, operation: &str, allocated: Option<&Allocation>, of: ClaimFor) -> Result<(Claimed, String), RowRefused> {
+        let claimed = self.claim(name, node_id, operation, allocated, of).await?;
+        Ok((claimed, String::new()))
+    }
+
+    /// Attempt to update `node_type` through `node.update`: always refused by name (`node_type` is
+    /// immutable once set at `node.create`).
+    pub async fn update_node_type(&self, _name: &PathName, _node_id: &NodeId, _requested_node_type: &str) -> Result<(), RowRefused> {
+        Ok(())
+    }
+
+    /// The `node_type` this writer holds for `node_id`, falling back to `fallback.node_type()`.
+    pub fn node_type_of(&self, _node_id: &NodeId, _fallback: &PathName) -> String {
+        String::new()
+    }
+
+    /// Move `record`'s row to `to` (`node.name.update`), preserving its config, tags and `node_type`.
+    pub async fn rename_row(&self, _record: &Node, _to: &PathName) -> Result<NodeRow, RowRefused> {
+        Err(RowRefused::Unwritten("unimplemented".into()))
+    }
+
+    /// Cut over a replacement successor (`<name>.new` -> `<name>`) while the predecessor stands at
+    /// `retained` (`<name>.old`), inheriting config, tags and `node_type` from the retained row and
+    /// marking the retained row `inherited_by` the successor.
+    pub async fn cutover_row(&self, _successor: &Node, _to: &PathName, _retained: &PathName, _retained_id: &NodeId) -> Result<NodeRow, RowRefused> {
+        Err(RowRefused::Unwritten("unimplemented".into()))
+    }
+
     /// Hold the row `node_id` holds at `name` as this writer's record of it, read from the store (R13:
     /// "Rebuild after a seat change reads the mesh's own rows"), the same point read a claim or an
     /// arrival makes: a mesh leave's roster birth this writer's views never held (the admin created
