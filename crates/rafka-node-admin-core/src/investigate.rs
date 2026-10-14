@@ -915,7 +915,7 @@ mod tests {
     /// fenced; a decided rebirth is read from the ladder; a mesh the backbone never carried here is
     /// what the ladder holds of it. Must NOT happen: a node of a mesh unheard past the rung claimed or
     /// dispatched for because the ladder has not stepped it yet (mesh_recover at a fabric-primary seat
-    /// take ran create-node:mesh1.admin.1 0.25 s before its ladder first stepped mesh1).
+    /// take ran node.create:mesh1.admin.1 0.25 s before its ladder first stepped mesh1).
     #[test]
     fn the_fence_reads_t_from_the_last_direct_backbone_receipt_before_the_ladder_steps_the_mesh() {
         let mut l = Ladder::new(Rungs::at(Duration::from_secs(3), Duration::from_millis(500)));

@@ -1,7 +1,7 @@
 //! The mesh-delete workflow's shared parts (mesh-delete.md; node-rpc-envelope.md, "Mesh delete
 //! command pair").
 //!
-//! The fabric-primary owns the outer workflow `shutdown-mesh:<mesh_id>`. The deleting mesh's primary
+//! The fabric-primary owns the outer workflow `mesh.delete:<mesh_id>`. The deleting mesh's primary
 //! deletes every other member with the whole node.delete (ordinary nodes first, the other
 //! node-admins after, each tier a set of parallel member workflows), records one exit manifest, hands it to the
 //! fabric-primary (`MeshDeleted`, mesh.deleted) and keeps running. The fabric-primary validates the
@@ -48,7 +48,7 @@ pub const STEP_ROSTER_AMENDED: &str = "RosterAmended";
 
 /// The outer operation key of `mesh_id`'s shutdown.
 pub fn operation(mesh_id: &MeshId) -> String {
-    format!("shutdown-mesh:{mesh_id}")
+    format!("mesh.delete:{mesh_id}")
 }
 
 /// The operation key a member's drain and stop run under, correlated to the outer one.
@@ -205,7 +205,7 @@ pub async fn accepted_roster(builds: &dyn BuildStateAdapter, key: &MeshDeleteKey
 /// Where a birth's exact Exited receipt is recorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExitProof {
-    /// The `TerminateRuntime` step of the birth's own node.delete (`retire-node:<path>`): the delete
+    /// The `TerminateRuntime` step of the birth's own node.delete (`node.delete:<path>`): the delete
     /// has later steps (`NodeDeleted`, `RemoveTopologyMembership`, `Complete`) that this receipt does
     /// not prove.
     OwnDelete,
@@ -217,7 +217,7 @@ enum ExitProof {
 
 /// The exact Exited receipts the Build already holds for births of `roster`, each with where it is
 /// recorded: a member's node.delete `TerminateRuntime` step receipt under node.delete's own operation
-/// (`retire-node:<path>`, mesh-delete.md step 3), or a lost final primary's exact Exited recorded
+/// (`node.delete:<path>`, mesh-delete.md step 3), or a lost final primary's exact Exited recorded
 /// under `<operation>/<path>` ([`record_predecessor_exit`]), from any attempt, whose terminal receipt
 /// names that exact birth.
 fn exit_proofs(steps: &[BuildStepReceipt], operation: &str, roster: &[RosterBirth]) -> BTreeMap<(String, String), (TerminalReceipt, ExitProof)> {
@@ -1220,7 +1220,7 @@ pub struct MeshDeleteKey {
     pub build_id: BuildId,
     /// The Build attempt that holds it.
     pub attempt: u32,
-    /// `shutdown-mesh:<mesh_id>`.
+    /// `mesh.delete:<mesh_id>`.
     pub operation: String,
 }
 
@@ -1886,7 +1886,7 @@ mod tests {
     #[test]
     fn a_delete_mesh_from_a_successor_owner_takes_over_the_running_leaves_handoff() {
         let runs = MeshDeleteRuns::default();
-        let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "mesh.delete:m".into() };
         let (first, successor) = (owner(), owner());
         assert_eq!(runs.admit(&key, &first), MeshDeleteAdmission::Start);
         assert_eq!(runs.admit(&key, &successor), MeshDeleteAdmission::Running);
@@ -1911,7 +1911,7 @@ mod tests {
     #[test]
     fn a_delete_mesh_of_a_later_attempt_while_the_members_run_joins_the_run_under_way() {
         let runs = MeshDeleteRuns::default();
-        let first = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let first = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "mesh.delete:m".into() };
         let later = MeshDeleteKey { attempt: 2, ..first.clone() };
         let (owner1, owner2) = (owner(), owner());
         assert_eq!(runs.admit(&first, &owner1), MeshDeleteAdmission::Start, "the first delete-mesh starts the member workflows");
@@ -1935,7 +1935,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
 
         let runs = Arc::new(MeshDeleteRuns::default());
-        let first = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let first = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "mesh.delete:m".into() };
         let later = MeshDeleteKey { attempt: 2, ..first.clone() };
         let (owner1, owner2) = (owner(), owner());
         let last = birth("mesh2.admin.1", "i3");
@@ -1988,7 +1988,7 @@ mod tests {
     #[test]
     fn an_incomplete_report_ends_the_open_leave_at_once_with_its_reason() {
         let book = MeshDeleteBook::default();
-        let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "shutdown-mesh:m".into() };
+        let key = MeshDeleteKey { mesh_id: MeshId::mint(), build_id: BuildId::mint(), attempt: 1, operation: "mesh.delete:m".into() };
         let last = birth("mesh2.admin.1", "i3");
         let runtime = receipt(&last).runtime.unwrap();
         let rx = book.open(key.clone(), Admitted { roster: vec![last.clone()], final_primary: last.clone(), final_runtime: runtime, amendments: Vec::new() });

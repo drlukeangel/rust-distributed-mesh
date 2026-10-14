@@ -213,7 +213,7 @@ async fn the_build_fabric_build_id_names_is_the_one_accepted_topology() {
         .find(|sp| sp["attributes"]["build_id"] == r4.as_str() && sp["attributes"]["lane"] == "mesh1" && sp["attributes"]["reason"] == "recovery" && sp["attributes"]["outcome"] == "converged")
         .unwrap_or_else(|| panic!("the recovery attempt of mesh1's lane of {r4} converged: {ran:?}"));
     assert_eq!(repaired["attributes"]["attempt"], attempt.as_str());
-    assert_eq!(repaired["attributes"]["operations"], "retire-node:mesh1.rpc.2,create-node:mesh1.rpc.2", "the recovery's two operations, in order: {repaired}");
+    assert_eq!(repaired["attributes"]["operations"], "node.delete:mesh1.rpc.2,node.create:mesh1.rpc.2", "the recovery's two operations, in order: {repaired}");
     // The mesh-primary runs the attempt it opened under the submit: the recovery's reconcile is the
     // submit's child, in its trace.
     assert_eq!(repaired["parent_span_id"], submit["span_id"], "the recovery's reconcile runs under the submit that opened it: {repaired}");

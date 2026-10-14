@@ -240,7 +240,7 @@ fn prepare_storage_names_every_await_and_opens_the_claim_span_before_its_first_a
                 mesh: None,
                 build_id: build1.clone(),
                 attempt: 1,
-                operation: "create-node:mesh1.rpc.3".into(),
+                operation: "node.create:mesh1.rpc.3".into(),
                 step: "AllocateIdentity".into(),
                 outcome: rafka_node_admin_core::build_state::StepOutcome::Complete,
                 output: Some(serde_json::json!({

@@ -280,7 +280,7 @@ async fn a_cut_off_view_dispatches_nothing_and_the_drive_goes_on_once_it_authori
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty());
     r.switch.authorizes.store(true, Ordering::SeqCst);
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string()]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string()]);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "the node of mesh1 is run by mesh1's primary");
 }
 
@@ -330,7 +330,7 @@ async fn an_unreachable_executor_without_proof_keeps_its_attempt_and_blocks_once
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 2)], "attempt 2 went to the admin the view names, not to the lost one");
     assert_eq!(
         *r.ran.0.lock().unwrap(),
-        vec!["create-node:mesh1.admin.2".to_string(), "create-node:mesh1.rpc.2".to_string()],
+        vec!["node.create:mesh1.admin.2".to_string(), "node.create:mesh1.rpc.2".to_string()],
         "the lost admin's path is part of what is left, planned from the view as it is now"
     );
 }
@@ -400,7 +400,7 @@ struct Reborn {
 impl OperationRunner for Reborn {
     async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.ran.run(build, lane, attempt, op).await?;
-        if op.key() == "create-node:mesh2.admin.1" {
+        if op.key() == "node.create:mesh2.admin.1" {
             let mut v = self.topology.write().await;
             v.nodes.retain(|n| n.name.to_string() != "mesh2.admin.1");
             v.nodes.push(node("mesh2.admin.1", true, false));
@@ -454,10 +454,10 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     // the fabric-primary.
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.2") && why.contains("first recovering node-admin"), "the mesh's second admin waits for the mesh to be heard: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.2") && why.contains("first recovering node-admin"), "the mesh's second admin waits for the mesh to be heard: {why}"),
         other => panic!("mesh2's other nodes wait until the mesh is heard again: {other:?}"),
     }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "only the first recovering node-admin ran");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh2.admin.1".to_string()], "only the first recovering node-admin ran");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), before.attempt + 1)], "the restore ran on the fabric-primary");
     assert!(r.proofs.given.lock().unwrap().is_empty(), "a rebirth the ladder decided is told by the ladder, never by the proof of a fully crashed mesh");
     let second = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
@@ -468,7 +468,7 @@ async fn a_peer_mesh_held_unheard_is_never_claimed_for_until_its_rebirth_and_the
     // Heard again: mesh2's own primary runs the rest of the mesh.
     r.switch.peer.lock().unwrap().remove("mesh2");
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string(), "create-node:mesh2.admin.2".to_string(), "create-node:mesh2.rpc.2".to_string()]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh2.admin.1".to_string(), "node.create:mesh2.admin.2".to_string(), "node.create:mesh2.rpc.2".to_string()]);
     let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
     assert_eq!(dispatched.last().map(|(x, _)| x.as_str()), Some("mesh2.admin.1"), "the mesh reconciles its own nodes once heard: {dispatched:?}");
 }
@@ -508,7 +508,7 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
     // No decision: the fence stands for the first admin.
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(false));
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.1") && why.contains("no rebirth decided"), "{why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.1") && why.contains("no rebirth decided"), "{why}"),
         other => panic!("nothing is claimed for a held mesh with no decision: {other:?}"),
     }
     assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing dispatched, nothing run");
@@ -516,10 +516,10 @@ async fn the_create_of_a_fully_crashed_meshs_first_node_admin_runs_on_the_fabric
     // The 60 s decision came out unreachable: the create of the first node-admin, and only it, runs on the fabric-primary.
     r.switch.peer.lock().unwrap().insert("mesh2".into(), held(true));
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.2") && why.contains("unreachable"), "the second admin waits for the mesh to be heard, and the stall names the decision: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.2") && why.contains("unreachable"), "the second admin waits for the mesh to be heard, and the stall names the decision: {why}"),
         other => panic!("the mesh's other nodes wait until it is heard again: {other:?}"),
     }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "only the mesh's first node-admin ran");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh2.admin.1".to_string()], "only the mesh's first node-admin ran");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), before.attempt + 1)], "the create ran in process on the fabric-primary");
     // R-DG1 (mesh-investigation.md steps 5-6): the fabric-primary gave the mesh a node-admin when it claimed the create, once.
     assert_eq!(*r.proofs.given.lock().unwrap(), vec![("mesh2".to_string(), r.build.to_string(), before.attempt + 1)], "the claim of the fully crashed mesh's create told the proof the mesh was given a node-admin");
@@ -545,7 +545,7 @@ async fn an_unreachable_mesh_with_a_node_admin_the_provider_does_not_prove_exite
     let drive = Drive::detached(r.build.clone());
     let before = r.builds.read_build(&r.build).await.unwrap();
     match r.env.run(&drive).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.1") && why.contains("unreachable"), "the fence holds the mesh's first admin and names the decision: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.1") && why.contains("unreachable"), "the fence holds the mesh's first admin and names the decision: {why}"),
         other => panic!("nothing is claimed for an unreachable mesh with a node-admin not proven exited: {other:?}"),
     }
     assert!(r.ran.0.lock().unwrap().is_empty() && r.dispatch.dispatched.lock().unwrap().is_empty(), "nothing dispatched, nothing run");
@@ -590,24 +590,24 @@ async fn a_second_drive_over_the_same_build_admits_no_second_recovering_admin_of
     let (capture, _guard) = crate::receipt_refusal::Capture::new("i143-3016-second-drive");
     let first = Drive::detached(r.build.clone());
     match r.env.run(&first).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.2"), "the first drive stops at mesh2's second admin: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.2"), "the first drive stops at mesh2's second admin: {why}"),
         other => panic!("the first drive restores one admin and stops: {other:?}"),
     }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh2.admin.1".to_string()]);
     // A second drive instance (a drive replaced on the same fabric-primary) over the same Build.
     let second = Drive::detached(r.build.clone());
     match r.env.run(&second).await {
-        DriveEnd::Stalled(why) => assert!(why.contains("create-node:mesh2.admin.2") && why.contains("first recovering node-admin"), "a second drive admits no second admin: {why}"),
+        DriveEnd::Stalled(why) => assert!(why.contains("node.create:mesh2.admin.2") && why.contains("first recovering node-admin"), "a second drive admits no second admin: {why}"),
         other => panic!("a second drive over the same Build admits no second recovering admin: {other:?}"),
     }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "no second admin of mesh2 crossed the fence");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh2.admin.1".to_string()], "no second admin of mesh2 crossed the fence");
     // The next attempt already claimed for another admin outside mesh2 when a third drive finds it.
     let open = r.builds.read_build(&r.build).await.unwrap().attempt + 1;
     assert!(matches!(r.env.door.claim("mesh1.admin.2", &r.build, open).await, rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. }));
     let third = Drive::detached(r.build.clone());
     let end = r.env.run(&third).await;
-    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("create-node:mesh2.admin.2")), "a running attempt held by another admin admits no second admin either: {end:?}");
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string()], "no second admin of mesh2 crossed the fence");
+    assert!(matches!(&end, DriveEnd::Stalled(why) if why.contains("node.create:mesh2.admin.2")), "a running attempt held by another admin admits no second admin either: {end:?}");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh2.admin.1".to_string()], "no second admin of mesh2 crossed the fence");
     // Each drive names the fence on mesh2's second admin once, on its own span.
     let fenced = capture.spans("rdm.node_admin.build.reject.via-unheard-mesh-drive");
     assert_eq!(fenced.len(), 3, "{fenced:?}");
@@ -671,7 +671,7 @@ async fn a_run_is_cut_before_an_operation_of_a_mesh_whose_admin_is_held_and_the_
         DriveEnd::Stalled(why) => assert!(why.contains("mesh2") && why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "the stall names the held admin: {why}"),
         other => panic!("mesh2's work waits for its own seat: {other:?}"),
     }
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string()], "the run was cut before mesh2's admins");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string()], "the run was cut before mesh2's admins");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1)]);
 }
 
@@ -754,8 +754,8 @@ async fn a_remote_executors_completed_operation_is_never_dispatched_again_before
     let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
     let ran = r.ran.0.lock().unwrap().clone();
     assert_eq!((dispatched.len(), ran.len()), (1, 1), "the completed operation is dispatched once: dispatched {:?}, ran {:?}", &dispatched[..dispatched.len().min(4)], &ran[..ran.len().min(4)]);
-    assert!(remote.read_build(&r.build).await.unwrap().completed_in_run("create-node:mesh1.rpc.2"), "the receipt is durable on the executor");
-    assert!(!r.builds.read_build(&r.build).await.unwrap().completed_in_run("create-node:mesh1.rpc.2"), "the fabric-primary's log has not heard the receipt");
+    assert!(remote.read_build(&r.build).await.unwrap().completed_in_run("node.create:mesh1.rpc.2"), "the receipt is durable on the executor");
+    assert!(!r.builds.read_build(&r.build).await.unwrap().completed_in_run("node.create:mesh1.rpc.2"), "the fabric-primary's log has not heard the receipt");
     match end {
         Ok(DriveEnd::Stalled(why)) => assert!(why.contains("mesh2.admin.2") && why.contains("PendingReconnect"), "{why}"),
         other => panic!("the drive stalls naming mesh2's held admin: {other:?}"),
@@ -816,7 +816,7 @@ async fn a_run_handed_back_is_claimed_for_the_admin_the_view_names_for_what_is_l
     let r = rig_for(t, change, |ran, topology| Arc::new(LandsAndSeats { ran, topology })).await;
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string(), "create-node:mesh2.admin.1".to_string()]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string(), "node.create:mesh2.admin.1".to_string()]);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.2".to_string(), 2)], "the hand-back is claimed for mesh2's seated admin");
 }
 
@@ -832,7 +832,7 @@ async fn a_lost_executors_unreported_receipt_does_not_make_its_operation_done() 
     let change = TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)]) };
     let r = rig_for(view(), change, |ran, _| ran).await;
     assert!(matches!(r.env.door.claim("mesh1.admin.2", &r.build, 1).await, rafka_node_rpc_contract::build_claim::BuildClaimReply::Won { .. }));
-    let receipt = BuildStepReceipt { mesh: None, build_id: r.build.clone(), attempt: 1, operation: "create-node:mesh1.rpc.2".into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+    let receipt = BuildStepReceipt { mesh: None, build_id: r.build.clone(), attempt: 1, operation: "node.create:mesh1.rpc.2".into(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
     r.builds.append_step_receipt(&receipt).await.unwrap();
     r.dispatch.lose("mesh1.admin.2");
     r.proofs.exited.lock().unwrap().insert("mesh1.admin.2".into());
@@ -848,7 +848,7 @@ async fn a_lost_executors_unreported_receipt_does_not_make_its_operation_done() 
     }
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.admin.2".to_string(), "create-node:mesh1.rpc.2".to_string(), "create-node:mesh1.rpc.3".to_string()], "the lost run's node is created again");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.admin.2".to_string(), "node.create:mesh1.rpc.2".to_string(), "node.create:mesh1.rpc.3".to_string()], "the lost run's node is created again");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 2)]);
 }
 
@@ -868,7 +868,7 @@ async fn an_executor_whose_view_lags_runs_the_first_operation_it_was_claimed_for
     r.dispatch.sees("mesh1.admin.2", Arc::new(RwLock::new(theirs)));
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string()]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string()]);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)], "one attempt, on the admin the fabric-primary's view named");
     assert_eq!(r.builds.read_build(&r.build).await.unwrap().attempt, 1);
 }
@@ -942,7 +942,7 @@ async fn a_mesh_retire_whose_fabric_primary_sits_inside_moves_the_fabric_seat_al
     assert_eq!(moved.len(), 1, "one node.fabric-primary.update: {moved:?}");
     let (holder, mesh_seat, fabric_seat, operation) = &moved[0];
     assert_eq!((holder.as_str(), *mesh_seat, *fabric_seat), ("mesh1.admin.1", false, true), "the fabric seat alone moves from the fabric-primary: {moved:?}");
-    assert!(operation.starts_with("shutdown-mesh:"), "the update names the mesh retire it precedes: {operation}");
+    assert!(operation.starts_with("mesh.delete:"), "the update names the mesh retire it precedes: {operation}");
     assert!(r.dispatch.dispatched.lock().unwrap().is_empty(), "no operation was dispatched: {:?}", r.dispatch.dispatched.lock().unwrap());
     assert!(r.ran.0.lock().unwrap().is_empty(), "nothing ran at the leaving mesh's admin: {:?}", r.ran.0.lock().unwrap());
     let p = r.builds.read_build(&r.build).await.unwrap();
@@ -969,7 +969,7 @@ async fn an_executor_whose_view_lacks_a_just_launched_node_creates_only_what_the
     r.dispatch.sees("mesh1.admin.2", Arc::new(RwLock::new(view())));
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.3".to_string()], "only what the fabric-primary planned ran; mesh1.rpc.2 was launched already");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.3".to_string()], "only what the fabric-primary planned ran; mesh1.rpc.2 was launched already");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 1)]);
 }
 
@@ -984,7 +984,7 @@ struct MeshBirth {
 impl OperationRunner for MeshBirth {
     async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         self.ran.run(build, lane, attempt, op).await?;
-        if op.key() == "create-node:mesh2.admin.1" {
+        if op.key() == "node.create:mesh2.admin.1" {
             self.topology.write().await.nodes.push(node("mesh2.admin.1", true, false));
         }
         Ok(())
@@ -1003,7 +1003,7 @@ async fn a_run_that_seats_a_meshs_first_admin_hands_the_rest_of_the_mesh_to_it()
     let r = rig_for(t, change, |ran, topology| Arc::new(MeshBirth { ran, topology })).await;
     let drive = Drive::detached(r.build.clone());
     assert_eq!(r.env.run(&drive).await, DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh2.admin.1".to_string(), "create-node:mesh2.rpc.1".to_string()]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh2.admin.1".to_string(), "node.create:mesh2.rpc.1".to_string()]);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh2.admin.1".to_string(), 2)], "mesh2's own primary ran the members");
 }
 
@@ -1110,7 +1110,7 @@ async fn a_seat_row_naming_the_executor_ends_the_drive_on_the_executors_new_seat
     assert_eq!((p.attempt, p.executor.as_deref()), (1, Some("mesh1.admin.2")), "attempt 1 runs at the executor");
     // The executor's SeatTransfer step reached the holder, whose row is the fence.
     r.switch.fence_to(Some("mesh1.admin.2"));
-    let step = BuildReply::Step { build_id: r.build.to_string(), attempt: 1, operation: "stop-node:mesh1.admin.1".into(), step: "SeatTransfer".into() };
+    let step = BuildReply::Step { build_id: r.build.to_string(), attempt: 1, operation: "node.stop:mesh1.admin.1".into(), step: "SeatTransfer".into() };
     feed.send(InnerItem::Frame(step.clone())).unwrap();
     match next_within(&mut reader).await {
         Some(Read::Frame(f)) => assert_eq!(f, step, "the run's frame reaches the callers"),
@@ -1239,7 +1239,7 @@ async fn seeded_before(r: &Rig) -> rafka_node_admin_core::build_state::CurrentBu
     CurrentBuild::Completed(older.expect("the rig seeded a Build before the one under test"))
 }
 
-const LEAVE_INCOMPLETE: &str = "shutdown-mesh: mesh2.admin.1 sent no valid mesh-deleted; the workflow is incomplete and its receipts stand";
+const LEAVE_INCOMPLETE: &str = "mesh.delete: mesh2.admin.1 sent no valid mesh-deleted; the workflow is incomplete and its receipts stand";
 
 /// CONTRACT (R-BI4; mesh-delete.md, "Failure and receipts": "The next attempt resumes from the
 /// receipts"; "Resume after the primary's loss"): a mesh.delete whose leaving mesh's primary is lost
@@ -1300,7 +1300,7 @@ fn a_leave_that_ends_incomplete_on_a_lost_primary_leaves_the_build_in_progress_a
     assert_eq!(end, DriveEnd::Terminal, "the proven loss moved an input: attempt 2 is claimed and runs the shutdown to its end");
     assert_eq!((p.attempt, p.state), (2, BuildState::Complete));
     assert_eq!(current, CurrentBuild::Completed(after), "the resumed Build is the current one, completed");
-    assert_eq!(ran.iter().filter(|k| k.starts_with("shutdown-mesh:")).count(), 1, "the shutdown ran once, on the resumed attempt: {ran:?}");
+    assert_eq!(ran.iter().filter(|k| k.starts_with("mesh.delete:")).count(), 1, "the shutdown ran once, on the resumed attempt: {ran:?}");
     assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2)], "attempt 2 was claimed for the fabric-primary, once");
     // The executor's run is parented to the attempt's recorded context (the claim's), so it is read by name.
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name).cloned().collect::<Vec<_>>();
@@ -1321,7 +1321,7 @@ fn a_leave_that_ends_with_a_named_failure_fails_the_build_and_the_read_skips_it(
     let (end, p, current, seeded, dispatched) = cap.run(async {
         let root = tracing::info_span!("cell.leave-named-failure-fails-the-build");
         let _in_root = root.enter();
-        let (r, _leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Failed("shutdown-mesh: mesh2 is refused before it is dismantled: its handover is not confirmed".into()))).await;
+        let (r, _leaver) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Failed("mesh.delete: mesh2 is refused before it is dismantled: its handover is not confirmed".into()))).await;
         let seeded = seeded_before(&r).await;
         let end = r.env.run(&Drive::detached(r.build.clone())).await;
         let dispatched = r.dispatch.dispatched.lock().unwrap().clone();
@@ -1357,7 +1357,7 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
     let (first, second, third, current, dispatched, ran) = cap.run(async {
         let root = tracing::info_span!("cell.leave-unheard-unproven-primary");
         let _in_root = root.enter();
-        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: the final primary mesh2.admin.1 is silent but not proven exited, so no admin is created for it".into()))).await;
+        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("mesh.delete: the final primary mesh2.admin.1 is silent but not proven exited, so no admin is created for it".into()))).await;
         mesh2_primary_becomes(&r, NodeStatus::PendingReconnect).await;
         for n in r.env.topology.write().await.nodes.iter_mut().filter(|n| n.mesh == "mesh2") {
             n.status = NodeStatus::PendingReconnect;
@@ -1389,7 +1389,7 @@ fn a_leave_of_a_mesh_held_unheard_is_refused_by_name_while_the_primary_is_unprov
     assert_eq!((end, state), (DriveEnd::Terminal, BuildState::Complete), "the proven exit moved an input: attempt 2 runs the shutdown and completes the Build");
     let (ran, build) = ran;
     assert_eq!(current, CurrentBuild::Completed(build));
-    assert_eq!(ran.iter().filter(|k| k.starts_with("shutdown-mesh:")).count(), 1, "{ran:?}");
+    assert_eq!(ran.iter().filter(|k| k.starts_with("mesh.delete:")).count(), 1, "{ran:?}");
     assert_eq!(dispatched, vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.1".to_string(), 2)]);
     assert!(!spans.iter().any(|s| s["name"] == "rdm.node_admin.build.reject.via-unheard-mesh-drive"), "the unheard hold did not fence the shutdown's resume");
     assert!(spans.iter().any(|s| s["name"] == "rdm.node_admin.build.update.via-stalled"), "the refusal is spanned by name");
@@ -1409,7 +1409,7 @@ fn a_leave_that_ends_incomplete_with_nothing_changed_claims_one_attempt_per_chan
     let (passes, state, dispatched) = cap.run(async {
         let root = tracing::info_span!("cell.leave-one-attempt-per-change");
         let _in_root = root.enter();
-        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: mesh2 holds no node-admin primary to hand the workflow to".into()))).await;
+        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("mesh.delete: mesh2 holds no node-admin primary to hand the workflow to".into()))).await;
         let drive = Drive::detached(r.build.clone());
         let mut passes = Vec::new();
         for pass in 0..6 {
@@ -1448,7 +1448,7 @@ fn a_leave_that_recorded_the_exit_and_the_amendment_before_it_ended_incomplete_i
     let (end, state, attempt, dispatched, steps) = cap.run(async {
         let root = tracing::info_span!("cell.leave-recorded-then-incomplete");
         let _in_root = root.enter();
-        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("shutdown-mesh: mesh2.admin.3 was created for mesh2 and holds no mesh-primary seat yet; the next attempt amends the roster for it".into()))).await;
+        let (r, mesh_deleter) = removing_mesh2(Some(rafka_node_admin_core::executor::RunEnd::Incomplete("mesh.delete: mesh2.admin.3 was created for mesh2 and holds no mesh-primary seat yet; the next attempt amends the roster for it".into()))).await;
         mesh_deleter.progress.store(true, Ordering::SeqCst);
         mesh_deleter.once.store(true, Ordering::SeqCst);
         let end = r.env.run(&Drive::detached(r.build.clone())).await;
@@ -1514,7 +1514,7 @@ async fn a_drive_whose_attempt_is_running_when_its_admin_stops_is_a_turn_the_sto
     tokio::time::timeout(Duration::from_secs(5), quiesce).await.expect("the quiesce never resolved once the attempt ended").unwrap();
     assert!(drive.completed(), "the quiesce resolved before the drive recorded the Build's end");
     assert_eq!(tokio::time::timeout(Duration::from_secs(5), driving).await.expect("the drive ended with its turn").unwrap(), DriveEnd::Terminal);
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string()]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string()]);
 }
 
 /// CONTRACT (park_gate.rs: no turn begins while the gate is parked; node-stop.md step 4, R-ON1: a
@@ -1588,7 +1588,7 @@ impl Gate for Acknowledges {
 /// successor, through `Acknowledges` over that row (`refusal` set: the acknowledgement fails).
 async fn after_the_row(refusal: Option<&str>) -> (Rig, Arc<DriveEnv>, Arc<Acknowledges>, PrecedingUpdate) {
     let r = rig_for(view_after_the_row(), TopologyChange::RemoveNode { node: "mesh1.admin.2".parse().unwrap() }, |ran, _| ran).await;
-    let op = "retire-node:mesh1.admin.2";
+    let op = "node.delete:mesh1.admin.2";
     let row = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rafka_mesh_entity::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.2".parse().unwrap()) };
     let gate = Arc::new(Acknowledges { inner: r.switch.clone(), rows: vec![row.clone()], dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()), refusal: refusal.map(str::to_string) });
     let e = &r.env;
@@ -1767,7 +1767,7 @@ async fn a_successor_claims_and_dispatches_nothing_while_the_holders_update_has_
         _ => None,
     }).collect();
     assert_eq!(handed, vec![rafka_node_admin_core::build_state::AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }], "the holder's attempt ended handed off to the successor");
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["retire-node:mesh1.admin.1".to_string()], "the retire ran once, at the successor");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.delete:mesh1.admin.1".to_string()], "the retire ran once, at the successor");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.1".to_string(), 1), ("mesh1.admin.2".to_string(), 2)], "the successor reattached to the holder's attempt, then dispatched the next to itself");
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
 }
@@ -1934,7 +1934,7 @@ async fn a_successor_that_reads_the_holders_attempt_ended_claims_the_next_attemp
     let p = r.builds.read_build(&r.build).await.unwrap();
     assert_eq!((p.attempt_executors.get(&1).map(String::as_str), p.attempt_executors.get(&2).map(String::as_str)), (Some("mesh1.admin.1"), Some("mesh1.admin.2")), "the successor claimed the attempt after the holder's: {:?}", p.attempt_executors);
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh1.admin.2".to_string(), 2)], "the successor reattached to nothing and dispatched the next attempt to itself");
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["retire-node:mesh1.admin.1".to_string()], "the retire ran once, at the successor");
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.delete:mesh1.admin.1".to_string()], "the retire ran once, at the successor");
     assert_eq!(*events.lock().unwrap(), vec!["row attempt 1".to_string(), "primary updated".into()]);
 }
 
@@ -2017,7 +2017,7 @@ async fn a_holder_lost_after_its_row_is_proven_departed_before_its_successor_ack
     let n_name: PathName = "mesh1.admin.2".parse().unwrap();
     let n_id = r.env.topology.read().await.node(&n_name).unwrap().node_id.clone();
     let n_switch = Arc::new(Switch { authorizes: AtomicBool::new(true), fenced: AtomicBool::new(false), successor: Mutex::new(None), fence_tx: tokio::sync::watch::channel(false).0, record_holder: Mutex::new(None), peer: Mutex::new(Default::default()) });
-    let op = "retire-node:mesh1.admin.1";
+    let op = "node.delete:mesh1.admin.1";
     let update = PrecedingUpdate { mesh: "mesh1".into(), operation: rafka_node_admin_core::fabric_handover::update_operation(rafka_mesh_entity::Seat::MeshPrimary, r.build.as_str(), 1, op), holder: Some("mesh1.admin.1".parse().unwrap()) };
     let n_gate = Arc::new(AfterTheProof { inner: n_switch, rows: vec![update.clone()], proofs: r.proofs.clone(), dispatch: r.dispatch.clone(), asked: Mutex::new(Vec::new()) });
     let successor = Arc::new(DriveEnv {
@@ -2167,7 +2167,7 @@ async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fai
     assert_eq!(end2, DriveEnd::Terminal, "the resubmitted Build completes");
     assert_eq!(*calls.lock().unwrap(), vec![(1, 1, Some("mesh1.admin.1".into())), (2, 2, Some("mesh1.admin.1".into()))], "attempt 2 opened run 2 and was claimed before commanding");
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh2.admin.3".to_string(), 3)], "attempt 3 dispatched the remove to the new mesh2 primary");
-    assert_eq!(*r.ran.0.lock().unwrap(), vec!["retire-node:mesh2.admin.1".to_string()]);
+    assert_eq!(*r.ran.0.lock().unwrap(), vec!["node.delete:mesh2.admin.1".to_string()]);
 }
 
 /// CONTRACT (R12 / i143 e12.s47 #64): a node-admin born as `<path>.new` and renamed in place by
@@ -2218,7 +2218,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         rows.claim(
             &"mesh1.rpc.2".parse().unwrap(),
             &NodeId::mint(),
-            "create-node:mesh1.rpc.2",
+            "node.create:mesh1.rpc.2",
             None,
             rafka_node_admin_core::node_rows::ClaimFor::Create,
         )
@@ -2278,7 +2278,7 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
         let drive = Drive::detached(opened.build_id.clone());
         let end = env.run(&drive).await;
         assert_eq!(end, DriveEnd::Terminal, "the renamed admin drives and dispatches in-process under its held name");
-        assert_eq!(*ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string()]);
+        assert_eq!(*ran.0.lock().unwrap(), vec!["node.create:mesh1.rpc.2".to_string()]);
         let projected = builds.read_build(&opened.build_id).await.unwrap();
         assert_eq!(projected.state, rafka_node_admin_core::build_state::BuildState::Complete);
         assert_eq!(projected.executor.as_deref(), Some("mesh1.admin.1"), "the attempt was claimed for the held name");

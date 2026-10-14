@@ -1,6 +1,6 @@
 //! The restart hold an admin's book carries is the Build facts' truth from the moment a fact enters
 //! the admin's log (node-restart.md "Completion: node.restarted after the whole start completes"):
-//! the `NodeRestarting` pre-event opens it, and the `restart-node:<path>` `Complete` receipt or the
+//! the `NodeRestarting` pre-event opens it, and the `node.restart:<path>` `Complete` receipt or the
 //! attempt's `Converged` verdict (node-rpc-envelope.md: progress waits on no gossip) closes it, each
 //! inside the append that brings it, never at the next hierarchy round. A restart door reading the
 //! book after that fact must not refuse a live node as still `restarting`.
@@ -56,7 +56,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 /// CONTRACT (node-restart.md "Completion"; membership.rs `restarts_from_facts`: "each is open here
 /// until its operation's `Complete` is receipted"): a restart's `NodeRestarting` receipt entering an
 /// admin's Build log opens the hold on that birth in the admin's book, and the restart's
-/// `restart-node:<path>` `Complete` receipt entering the log closes it, each with no hierarchy round
+/// `node.restart:<path>` `Complete` receipt entering the log closes it, each with no hierarchy round
 /// between the receipt and the book's overlay watch ticking. The close is spanned
 /// `rdm.mesh.membership.update.via-restart-closed-by-facts` naming the birth, the Build and the attempt.
 /// Must NOT happen: the hold outliving its `Complete` until a round re-derives it (the restart door
@@ -84,7 +84,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
         let op = LifecycleOp {
             build_id: build_id.to_string(),
             attempt: 2,
-            operation: format!("restart-node:{path}"),
+            operation: format!("node.restart:{path}"),
             node_id: node_id.clone(),
             incarnation: incarnation.clone(),
             name: path.clone(),
@@ -125,7 +125,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
     assert_eq!(opened.len(), 1, "one hold opened: {opened:?}");
     assert_eq!(closed.len(), 1, "one hold closed, by its Complete: {closed:?}");
     let text = closed[0].to_string();
-    assert!(text.contains("mesh1.rpc.1") && text.contains("restart-node:mesh1.rpc.1"), "the close names the birth and the operation: {text}");
+    assert!(text.contains("mesh1.rpc.1") && text.contains("node.restart:mesh1.rpc.1"), "the close names the birth and the operation: {text}");
 }
 
 /// CONTRACT (node-restart.md: "node.restarted after the whole start completes; no event is inferred
@@ -133,7 +133,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
 /// `Complete` is receipted"): a restart hold the `NodeRestarting` frame opened before any of its
 /// receipts reached this admin's Build log stays open while an unrelated fact enters the log (here a
 /// `retire-node` pre-event of another node, which ticks the overlay watch as its own hold opens), and
-/// closes only when its own `restart-node:<path>` `Complete` is receipted, spanned
+/// closes only when its own `node.restart:<path>` `Complete` is receipted, spanned
 /// `rdm.mesh.membership.update.via-restart-closed-by-facts` once.
 /// Must NOT happen: the unrelated fact's recomputation closing the hold because the facts do not name
 /// it yet (the restarting birth then reads routable mid-restart).
@@ -167,8 +167,8 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
                 event_at_rafka_ms: 1,
             }
         };
-        let restart = op_at("mesh1.rpc.1", "restart-node");
-        let retire = op_at("mesh1.rpc.2", "retire-node");
+        let restart = op_at("mesh1.rpc.1", "node.restart");
+        let retire = op_at("mesh1.rpc.2", "node.delete");
         let receipt = |operation: String, step: &str, output: Option<&LifecycleOp>| BuildStepReceipt {
             mesh: None,
             build_id: build_id.clone(),
@@ -215,7 +215,7 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
     assert_eq!(opened.len(), 1, "one restart hold opened, by the frame: {opened:?}");
     assert_eq!(closed.len(), 1, "one restart hold closed, by its Complete: {closed:?}");
     let text = closed[0].to_string();
-    assert!(text.contains("mesh1.rpc.1") && text.contains("restart-node:mesh1.rpc.1"), "the close names the birth and the operation: {text}");
+    assert!(text.contains("mesh1.rpc.1") && text.contains("node.restart:mesh1.rpc.1"), "the close names the birth and the operation: {text}");
 }
 
 /// CONTRACT (node-rpc-envelope.md "Frames, durable receipts and reattachment": "Progress waits on no
@@ -223,7 +223,7 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
 /// "no event is inferred from gossip"; rafka-node-rpc-contract build.rs: a `Step` frame only after
 /// the step's `Complete` receipt is durable on its executor, then the terminal): an attempt's
 /// `Converged` verdict, which the fabric-primary records from the executor's stream terminal, ends
-/// every restart hold of that attempt in this admin's book, with no `restart-node:<path>`
+/// every restart hold of that attempt in this admin's book, with no `node.restart:<path>`
 /// `Complete` receipt in the log (that receipt reaches the fabric-primary only by Build-topic
 /// gossip). The hold is closed by the time the verdict's append returns: no reader of the log can
 /// see the attempt `Converged` while the book still holds the restart. The close is spanned
@@ -256,7 +256,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
             LifecycleOp {
                 build_id: build_id.to_string(),
                 attempt,
-                operation: format!("restart-node:{path}"),
+                operation: format!("node.restart:{path}"),
                 node_id: NodeId::mint(),
                 incarnation: IncarnationId::mint(),
                 name: path,
@@ -311,5 +311,5 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
     let closed: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-restart-closed-by-facts").cloned().collect();
     assert_eq!(closed.len(), 1, "one restart hold closed, by its attempt's Converged: {closed:?}");
     let text = closed[0].to_string();
-    assert!(text.contains("restart-node:mesh1.rpc.1") && text.contains("attempt-converged"), "the close names the operation and its cause: {text}");
+    assert!(text.contains("node.restart:mesh1.rpc.1") && text.contains("attempt-converged"), "the close names the operation and its cause: {text}");
 }

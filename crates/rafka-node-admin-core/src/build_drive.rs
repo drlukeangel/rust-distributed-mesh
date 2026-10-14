@@ -674,7 +674,7 @@ fn parse_path(s: &str) -> Option<PathName> {
     s.parse().ok()
 }
 
-/// The node an operation key names (`create-node:mesh2.admin.1`), when it names one.
+/// The node an operation key names (`node.create:mesh2.admin.1`), when it names one.
 fn node_of_key(key: &str) -> Option<PathName> {
     key.split_once(':').and_then(|(_, node)| parse_path(node))
 }
@@ -745,7 +745,7 @@ fn own_attempt(p: &BuildProjection, mesh: &str) -> u32 {
 /// work, and `first` (the mesh's first node-admin in path order) while the Build carried none.
 pub(crate) fn first_admin_owed(p: &BuildProjection, mesh: &str, first: &PathName) -> Option<PathName> {
     let Some(crossed) = crossed_admin(p, mesh) else { return Some(first.clone()) };
-    let (own, key) = (own_attempt(p, mesh), format!("create-node:{crossed}"));
+    let (own, key) = (own_attempt(p, mesh), format!("node.create:{crossed}"));
     let created = p.steps.iter().any(|s| s.attempt > own && s.operation == key && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete);
     (!created).then_some(crossed)
 }

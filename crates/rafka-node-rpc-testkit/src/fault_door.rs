@@ -370,7 +370,7 @@ mod tests {
     /// One cut of every kind the door arms.
     fn every_cut() -> Vec<CutSpec> {
         vec![
-            CutSpec::Receipt { step: "StopNode".into(), operation: Some("retire-node:mesh2.rpc.2".into()), node: None },
+            CutSpec::Receipt { step: "StopNode".into(), operation: Some("node.delete:mesh2.rpc.2".into()), node: None },
             CutSpec::Event { event: "deleting".into(), node: Some("mesh1.rpc.1".into()) },
             CutSpec::Hook { phase: "before_eligibility".into(), node: None },
             CutSpec::AcceptedBuild,

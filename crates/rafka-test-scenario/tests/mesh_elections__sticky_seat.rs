@@ -589,7 +589,7 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     let resume = rafka_node_admin_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the recipe's steps");
     let step_keys: Vec<String> = {
         let (p, succ) = (p.parse::<rafka_mesh_entity::PathName>().unwrap(), p.parse::<rafka_mesh_entity::PathName>().unwrap().successor());
-        vec![format!("create-node:{succ}"), format!("stop-node:{p}"), format!("update-node:{p}"), format!("stop-node:{succ}"), format!("update-node:{succ}"), format!("start-node:{p}"), format!("retire-node:{}", p.renamed())]
+        vec![format!("node.create:{succ}"), format!("node.stop:{p}"), format!("node.update:{p}"), format!("node.stop:{succ}"), format!("node.update:{succ}"), format!("node.start:{p}"), format!("node.delete:{}", p.renamed())]
     };
     for key in &step_keys {
         assert!(resume.completed.iter().any(|(op, step)| op == key && step == "Complete"), "build.get holds the Complete receipt of {key}: {resume:?}");

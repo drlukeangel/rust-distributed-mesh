@@ -44,10 +44,10 @@ const SOME: &str = "01 0d 6d657368322e61646d696e2e31";
 #[test]
 fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
     let fixtures = [
-        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, format!("12 {SUBJECT} {COMMIT} {PUBLISHER} {NONE}")),
-        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("13 {SUBJECT} {COMMIT} {PUBLISHER} {SOME}")),
-        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, format!("14 {SUBJECT} {OPEN} {PUBLISHER} {NONE}")),
-        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("15 {SUBJECT} {OPEN} {PUBLISHER} {SOME}")),
+        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, format!("0f {SUBJECT} {COMMIT} {PUBLISHER} {NONE}")),
+        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("10 {SUBJECT} {COMMIT} {PUBLISHER} {SOME}")),
+        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, format!("11 {SUBJECT} {OPEN} {PUBLISHER} {NONE}")),
+        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: Some("mesh2.admin.1".into()) }, format!("12 {SUBJECT} {OPEN} {PUBLISHER} {SOME}")),
     ];
     for (frame, hex) in fixtures {
         assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
@@ -55,7 +55,7 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
     }
     // The frames that existed keep their positions.
     assert_eq!(Frame::NodeConnectionsDeleted { op: rafka_mesh_entity::LifecycleOp {
-        build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 300 },
+        build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.connections.delete:mesh1.rpc.1".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 300 },
         forwarded_by: None }.encode()[0], 13);
 }
 
@@ -65,10 +65,10 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
 #[test]
 fn a_peer_mesh_primary_forwards_round_hooks_unchanged_and_the_authors_mesh_does_not() {
     for (original, kind) in [
-        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 18u8),
-        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 19),
-        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 20),
-        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 21),
+        (Frame::StateCommitting { hook: hook("commit-state:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 15u8),
+        (Frame::StateCommitted { hook: hook("commit-state:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 16),
+        (Frame::TrafficOpening { hook: hook("open-traffic:04raj09p3zp7", "mesh1.admin.1"), forwarded_by: None }, 17),
+        (Frame::TrafficOpened { hook: hook("open-traffic:04raj09p3zp7", "mesh1.rpc.1"), forwarded_by: Some("mesh1.admin.1".into()) }, 18),
     ] {
         let forwarded = forward_of(original.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
         assert_eq!(forwarded.encode()[0], kind);

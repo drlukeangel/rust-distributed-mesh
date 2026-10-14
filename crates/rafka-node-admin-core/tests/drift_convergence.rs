@@ -620,7 +620,7 @@ impl Estate {
 /// recover. The fabric-primary's drift opens nothing for it; the mesh-primary opens and claims the
 /// recovery at its own door as attempt 1 of its mesh's lane of the same Build (reason Recovery) and
 /// runs it itself, as two operations in order: node.delete of the exited instance
-/// (`retire-node:<path>`), then node.create at the same path.name (`create-node:<path>`); no
+/// (`node.delete:<path>`), then node.create at the same path.name (`node.create:<path>`); no
 /// node.update follows (proposal node-properties-own-commands.md §5 item 8). The fabric-primary
 /// dispatches nothing and the fabric lane is untouched.
 /// Exactly the lost path has a new node (new node.id), `fence::fence` probes nothing and nothing else is
@@ -642,7 +642,7 @@ async fn an_exited_rpc_node_is_recovered_once_by_its_mesh_primary_and_nothing_el
     assert!(matches!(&repeat, Ok(rafka_node_admin_core::control_plane::Recovery::AlreadyApplied(o)) if o.attempt == opened.attempt && o.mesh == opened.mesh), "{repeat:?}");
     assert_eq!((opened.build_id.clone(), opened.mesh.as_deref(), opened.attempt), (before.build_id.clone(), Some("mesh1"), 1), "the same Build, attempt 1 of mesh1's lane");
     e.recovered_by("mesh1.rpc.2", &mp).await;
-    assert_eq!(e.runner.recovering.lock().unwrap().clone(), ["retire-node:mesh1.rpc.2", "create-node:mesh1.rpc.2"].map(String::from).to_vec(), "node.delete, then node.create, once each, and nothing after");
+    assert_eq!(e.runner.recovering.lock().unwrap().clone(), ["node.delete:mesh1.rpc.2", "node.create:mesh1.rpc.2"].map(String::from).to_vec(), "node.delete, then node.create, once each, and nothing after");
     assert_eq!(e.born(), vec!["mesh1.rpc.2".to_string()], "exactly the lost path is recovered");
     assert_eq!(e.fence_of("mesh1.rpc.2"), vec![], "the exit proof fences the old birth: no probe");
     assert_ne!(e.node_id("mesh1.rpc.2").await, old, "a new node, not the old one");
@@ -683,12 +683,12 @@ async fn a_recovery_whose_create_failed_resumes_at_its_create_and_never_deletes_
     e.run_opened(&mp, resumed.clone()).await;
     assert_eq!(
         e.runner.recovering.lock().unwrap().clone(),
-        ["retire-node:mesh1.rpc.2", "create-node:mesh1.rpc.2", "create-node:mesh1.rpc.2"].map(String::from).to_vec(),
+        ["node.delete:mesh1.rpc.2", "node.create:mesh1.rpc.2", "node.create:mesh1.rpc.2"].map(String::from).to_vec(),
         "the delete once; the failed create, then only what was left"
     );
     use rafka_node_admin_core::build_state::BuildStateAdapter as _;
     let build = e.builds.read_build(&before.build_id).await.unwrap();
-    assert_eq!(build.lanes["mesh1"].steps.iter().filter(|s| s.operation == format!("retire-node:{path}") && s.step == "NodeDeleted").count(), 1, "one NodeDeleted of the exited birth");
+    assert_eq!(build.lanes["mesh1"].steps.iter().filter(|s| s.operation == format!("node.delete:{path}") && s.step == "NodeDeleted").count(), 1, "one NodeDeleted of the exited birth");
     assert_eq!(e.born(), vec![path.to_string()], "exactly the lost path is recovered");
     assert!(matches!(submit().await, Ok(rafka_node_admin_core::control_plane::Recovery::AlreadyApplied(o)) if o.attempt == resumed.attempt), "recovered by the resumed attempt");
     e.holds_the_shape().await;
@@ -1507,7 +1507,7 @@ async fn a_durable_runtime_row_of_a_departed_birth_opens_no_attempt() {
     for d in e.book.all().into_iter().filter(|d| d.node.name.to_string() != lost) {
         heard.record(d);
     }
-    heard.depart(rafka_mesh_entity::LifecycleOp { build_id: "b".into(), attempt: 1, operation: format!("retire-node:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1 });
+    heard.depart(rafka_mesh_entity::LifecycleOp { build_id: "b".into(), attempt: 1, operation: format!("node.delete:{lost}"), node_id: digest.node.node_id.clone(), incarnation: digest.node.incarnation.clone(), name: digest.node.name.clone(), event_at_rafka_ms: 1 });
     let mut t = e.view.read().await.clone();
     t.nodes.retain(|n| n.name.to_string() != lost);
     rafka_node_admin_core::election::resolve(&mut t.nodes);
@@ -1960,7 +1960,7 @@ mod decided_mesh {
         e.converge_under(Arc::new(HeldPeer { mesh: peer_mesh.clone(), held: decided })).await;
         assert_eq!(e.born(), vec![admins[0].clone()], "the verdict's create ran, and only it");
         // The create's Complete receipt, as the executor's pipeline writes it (the estate's runner writes none).
-        let receipt = rafka_node_admin_core::build_state::BuildStepReceipt { mesh: None, build_id: before.build_id.clone(), attempt: before.attempt + 1, operation: format!("create-node:{}", admins[0]), step: "Complete".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: None, executor: None };
+        let receipt = rafka_node_admin_core::build_state::BuildStepReceipt { mesh: None, build_id: before.build_id.clone(), attempt: before.attempt + 1, operation: format!("node.create:{}", admins[0]), step: "Complete".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: None, executor: None };
         rafka_node_admin_core::build_state::BuildStateAdapter::append_step_receipt(&*e.builds, &receipt).await.unwrap();
         let t = e.view.read().await.clone();
         assert!(t.holds_mesh_seat(&peer_mesh, &own_id(&t, &admins[0].parse().unwrap())), "the reborn first node-admin is the mesh's primary in the view");
@@ -2102,7 +2102,7 @@ mod unheard_mesh_hold {
         let fp = e.fabric_primary().await;
         assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: before.build_id.clone(), attempt: restore, executor: fp }).await.unwrap(), ClaimOutcome::Won);
         e.builds
-            .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: before.build_id.clone(), attempt: restore, operation: format!("create-node:{}", admins[0]), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None })
+            .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: before.build_id.clone(), attempt: restore, operation: format!("node.create:{}", admins[0]), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None })
             .await
             .unwrap();
         e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: restore, outcome: AttemptOutcome::Converged }).await.unwrap();
@@ -2139,7 +2139,7 @@ async fn a_birth_whose_retirement_the_build_receipted_is_not_surplus() {
             let op = rafka_mesh_entity::LifecycleOp {
                 build_id: current.build_id.to_string(),
                 attempt: current.attempt,
-                operation: "retire-node:mesh1.rpc.9".into(),
+                operation: "node.delete:mesh1.rpc.9".into(),
                 node_id: extra.node_id.clone(),
                 incarnation: extra.incarnation_id.clone().unwrap(),
                 name: extra.name.clone(),
@@ -2278,7 +2278,7 @@ async fn a_drift_pass_records_a_proven_exit_once_over_every_pass_that_finds_it()
     let failed = before.attempt + 1;
     let fp = e.fabric_primary().await;
     assert_eq!(e.builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: before.build_id.clone(), attempt: failed, executor: fp }).await.unwrap(), ClaimOutcome::Won);
-    e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: failed, outcome: AttemptOutcome::Failed { reason: format!("create-node:{lost}.admin.1 step PrepareStorage") } }).await.unwrap();
+    e.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: before.build_id.clone(), attempt: failed, outcome: AttemptOutcome::Failed { reason: format!("node.create:{lost}.admin.1 step PrepareStorage") } }).await.unwrap();
     for later in 1..=2 {
         assert_eq!(pass(&e, &t, &me, lost, &contexts, &exits, &mut started, &verdicts).await, None, "pass {later} after the Failed attempt: nothing moved, no next attempt");
     }

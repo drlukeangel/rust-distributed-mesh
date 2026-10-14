@@ -143,7 +143,7 @@ pub enum BuildOperation {
     },
     /// node.delete of the stopped exact birth `from_incarnation` at `node` (node-delete.md): its stop
     /// steps are done; `NodeDeleting`, the provider's exact Exited proof, `NodeDeleted`, and `Complete`
-    /// naming the birth. Storage is kept. Its key is node.delete's one key, `retire-node:<path>`.
+    /// naming the birth. Storage is kept. Its key is node.delete's one key, `node.delete:<path>`.
     DeleteNode {
         /// The parked node's `.old` path.
         node: PathName,
@@ -213,31 +213,31 @@ impl BuildOperation {
     pub fn key(&self) -> String {
         match self {
             Self::CreateMesh { mesh, .. } => format!("create-mesh:{mesh}"),
-            Self::CreateNode { node, .. } => format!("create-node:{node}"),
-            Self::RestartNode { node } => format!("restart-node:{node}"),
+            Self::CreateNode { node, .. } => format!("node.create:{node}"),
+            Self::RestartNode { node } => format!("node.restart:{node}"),
             Self::DeleteConnections { node, .. } => format!("node.connections.delete:{node}"),
-            Self::StopNode { node, .. } => format!("stop-node:{node}"),
-            Self::StartNode { node, .. } => format!("start-node:{node}"),
+            Self::StopNode { node, .. } => format!("node.stop:{node}"),
+            Self::StartNode { node, .. } => format!("node.start:{node}"),
             Self::RecipeStep { step, .. } => recipe_step_key(step),
             // node.delete has one key, whatever the node's name and whatever state the birth is
             // deleted from (a stopped birth's delete runs no stop steps, a live one's stops it first).
-            Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => format!("retire-node:{node}"),
-            Self::ShutdownMesh { mesh_id, .. } => format!("shutdown-mesh:{mesh_id}"),
+            Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => format!("node.delete:{node}"),
+            Self::ShutdownMesh { mesh_id, .. } => format!("mesh.delete:{mesh_id}"),
             Self::DeleteFabric { fabric_id } => format!("fabric.delete:{fabric_id}"),
         }
     }
 }
 
 /// The operation key of a recipe step: its op's own key, the one that op's workflow receipts under.
-/// One op has one key, whatever the node's name: node.delete's is `retire-node:<path>`.
+/// One op has one key, whatever the node's name: node.delete's is `node.delete:<path>`.
 pub fn recipe_step_key(step: &rafka_node_rpc_contract::build::RecipeStep) -> String {
     use rafka_node_rpc_contract::build::RecipeStep as S;
     match step {
-        S::Create { node } => format!("create-node:{node}"),
-        S::Stop { node } => format!("stop-node:{node}"),
-        S::Update { node, .. } => format!("update-node:{node}"),
-        S::Start { node } => format!("start-node:{node}"),
-        S::Delete { node } => format!("retire-node:{node}"),
+        S::Create { node } => format!("node.create:{node}"),
+        S::Stop { node } => format!("node.stop:{node}"),
+        S::Update { node, .. } => format!("node.update:{node}"),
+        S::Start { node } => format!("node.start:{node}"),
+        S::Delete { node } => format!("node.delete:{node}"),
     }
 }
 
@@ -292,7 +292,7 @@ pub enum BuildReject {
         mesh: String,
     },
     /// The mesh is held but no member has stated the id it carries, so its shutdown has no
-    /// operation key (`shutdown-mesh:<mesh_id>`).
+    /// operation key (`mesh.delete:<mesh_id>`).
     MeshIdUnknown {
         /// The mesh.
         mesh: String,

@@ -326,7 +326,7 @@ async fn a_lost_executor_ends_the_inner_call_indeterminate_and_the_successor_is_
     // answered, its receipt not durable.
     const EXECUTOR: &str = "mesh2.admin.1";
     let door = Door::at(&estate, EXECUTOR).await;
-    door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "restart-node", "node": node.to_string()})).await;
+    door.arm("lost", json!({"kind": "receipt", "step": "StartNode", "operation": "node.restart", "node": node.to_string()})).await;
     let mut stream = caller.nodes(&carrier).restart(&node).await.expect("the fabric-primary accepts the restart");
     let accepted = stream.accepted().clone();
     let held = door.wait_held("lost").await;
@@ -718,7 +718,7 @@ async fn a_successor_fabric_primary_reads_the_create_mesh_receipt_and_does_not_c
     let carrier = born(&estate, &caller, &SHAPE1).await;
     // The cut: mesh2's first admin has its identity allocated and that receipt is not durable; the
     // fabric-primary ran `create-mesh:mesh2` before it.
-    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "create-node", "node": "mesh2.admin.1"}), Some("create-mesh:mesh2")).await;
+    let lost = lose_the_fabric_primary_creating_mesh2(&mut estate, &caller, &carrier, json!({"kind": "receipt", "step": "AllocateIdentity", "operation": "node.create", "node": "mesh2.admin.1"}), Some("create-mesh:mesh2")).await;
     let receipts = create_mesh_receipts(&lost).await;
 
     estate.stop().await;

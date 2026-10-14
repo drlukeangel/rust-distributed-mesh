@@ -68,12 +68,11 @@ fn new_fabric_primary_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
     let frame = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:54474".parse().unwrap(), admin_api_base: Some("h".into()) };
     // 11 = variant 17; holder 016d {node} 0c79727a34396a333033796834 08; 0165 = "e"; 00 7f000001 caa903 = 127.0.0.1:54474; 01 0168 = Some("h").
-    let hex = format!("11 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 caa903 01 0168");
+    let hex = format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 caa903 01 0168");
     assert_eq!(frame.encode(), bytes(&hex));
     assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
     let none = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:80".parse().unwrap(), admin_api_base: None };
-    assert_eq!(none.encode(), bytes(&format!("11 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 50 00")));
-    assert_eq!(Frame::MeshLeft { mesh_id: rafka_mesh_entity::MeshId::parse("04raj09p3zp7").unwrap(), build_id: "b".into(), attempt: 1, operation: "o".into(), receipt_manifest: "m".into(), publisher: "p".into(), event_at_rafka_ms: 1, forwarded_by: None }.encode()[0], 16);
+    assert_eq!(none.encode(), bytes(&format!("0e 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 50 00")));
 }
 
 /// CONTRACT: the contacts an announcement carries attach to the held fabric holder's exact birth
@@ -119,7 +118,7 @@ fn primary_updated_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
     // 17 = variant 23; op: 0162 01 016f {node} 0c79727a34396a333033796834 09"m.admin.1" 01; seats: 02 | MeshPrimary=1 { 016d }
     // birth 016d {node} 0c79727a34396a333033796834 epoch 04 | FabricPrimary=0 birth 016d {node} 0c79727a34396a333033796834 epoch 09.
-    let hex = format!("17 0162 01 016f {node_hex} 0c79727a34396a333033796834 09 6d2e61646d696e2e31 01  02 01 016d 016d {node_hex} 0c79727a34396a333033796834 04 00 016d {node_hex} 0c79727a34396a333033796834 09");
+    let hex = format!("14 0162 01 016f {node_hex} 0c79727a34396a333033796834 09 6d2e61646d696e2e31 01  02 01 016d 016d {node_hex} 0c79727a34396a333033796834 04 00 016d {node_hex} 0c79727a34396a333033796834 09");
     assert_eq!(primary_updated(4, 9).encode(), bytes(&hex));
     assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
 }
@@ -132,10 +131,10 @@ fn primary_updated_matches_the_frozen_wire_schema() {
 fn primary_updating_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
     let frame = Frame::PrimaryUpdating { op: op(), seats: both(5, 9) };
-    let hex = format!("18 0162 01 016f {node_hex} 0c79727a34396a333033796834 09 6d2e61646d696e2e31 01  02 01 016d 016d {node_hex} 0c79727a34396a333033796834 05 00 016d {node_hex} 0c79727a34396a333033796834 09");
+    let hex = format!("15 0162 01 016f {node_hex} 0c79727a34396a333033796834 09 6d2e61646d696e2e31 01  02 01 016d 016d {node_hex} 0c79727a34396a333033796834 05 00 016d {node_hex} 0c79727a34396a333033796834 09");
     assert_eq!(frame.encode(), bytes(&hex));
     assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
-    assert_eq!(primary_updated(1, 1).encode()[0], 23, "PrimaryUpdated keeps its position");
+    assert_eq!(primary_updated(1, 1).encode()[0], 20, "PrimaryUpdated keeps its position");
 }
 
 /// CONTRACT (proposal Part C2, Q1: "the one row of C1 commits both seats to NA2 at their next epochs,

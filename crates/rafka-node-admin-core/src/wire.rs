@@ -454,7 +454,7 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
     // A standalone stop's `Complete` commits the stop's lifecycle op: the exact birth and its
     // rafka-time, the age of its stopped period (fabric-node-lifecycle.md §6.9 Age). Every other
     // operation's `Complete` commits none.
-    if ret_complete(step) && operation.starts_with("stop-node:") {
+    if ret_complete(step) && operation.starts_with("node.stop:") {
         return Some(Produces::LifecycleOp);
     }
     let ret = |r: RetireStep| r.name() == step;
@@ -883,13 +883,13 @@ mod tests {
     #[test]
     fn an_identity_output_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "node_id": crate::model::NodeId::mint(), "incarnation": crate::model::IncarnationId::mint(), "supersedes": null, "deployment_id": DeploymentId::mint() });
-        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::AllocateIdentity.name(), valid, "");
+        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::AllocateIdentity.name(), valid, "");
     }
 
     #[test]
     fn a_bound_output_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "transport": "127.0.0.1:4000", "listeners": [["http", "127.0.0.1:4001"]] });
-        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::WaitForBind.name(), valid, "");
+        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::WaitForBind.name(), valid, "");
     }
 
     /// An endpoint id is the endpoint's key as one string: it has no field to add, so what the reader
@@ -897,7 +897,7 @@ mod tests {
     #[test]
     fn an_endpoint_id_output_that_is_an_object_is_refused_by_name() {
         let step = CreateStep::PrepareStorage.name();
-        let operation = "create-node:mesh1.rpc.1";
+        let operation = "node.create:mesh1.rpc.1";
         if let Err(r) = fact_to_wire(&step_fact(operation, step, json!("endpoint-key"))) {
             panic!("the valid output of step {step} was refused: {r}");
         }
@@ -909,18 +909,18 @@ mod tests {
     #[test]
     fn a_deployment_handle_output_with_an_unknown_field_is_refused_by_name() {
         let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(7), start: Some(8), container: None, domain: Some("cd".into()) };
-        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::DeployRuntime.name(), serde_json::to_value(&handle).unwrap(), "");
+        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::DeployRuntime.name(), serde_json::to_value(&handle).unwrap(), "");
     }
 
     #[test]
     fn a_runtime_evidence_output_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "deployment_id": "d1", "provider": "process", "provider_control_domain_fingerprint": "cd", "runtime_locator_kind": "pid", "runtime_locator_fingerprint": "lf" });
-        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::RegisterExactRuntimeHandle.name(), valid, "");
+        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::RegisterExactRuntimeHandle.name(), valid, "");
     }
 
     #[test]
     fn a_mesh_pending_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::ApplyMeshPending.name(), json!({ "applied": "mesh1" }), "");
+        unknown_field_is_refused_by_name("node.create:mesh1.rpc.1", CreateStep::ApplyMeshPending.name(), json!({ "applied": "mesh1" }), "");
     }
 
     #[test]
@@ -928,47 +928,47 @@ mod tests {
         let op = rafka_mesh_entity::LifecycleOp {
             build_id: "b1".into(),
             attempt: 3,
-            operation: "retire-node:mesh1.rpc.1".into(),
+            operation: "node.delete:mesh1.rpc.1".into(),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),
             event_at_rafka_ms: 4_242,
         };
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::NodeDeleting.name(), serde_json::to_value(&op).unwrap(), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::NodeDeleting.name(), serde_json::to_value(&op).unwrap(), "");
     }
 
     #[test]
     fn a_command_admission_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::DeleteConnections.name(), json!({ "arm": "admitted" }), "");
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::StopNode.name(), json!({ "arm": "not-sent", "reason": "no route" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::DeleteConnections.name(), json!({ "arm": "admitted" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::StopNode.name(), json!({ "arm": "not-sent", "reason": "no route" }), "");
     }
 
     #[test]
     fn a_connections_receipt_in_an_admission_with_an_unknown_field_is_refused_by_name() {
         let valid = json!({ "arm": "connections-deleted", "receipt": { "Established": { "in_flight": 0, "closed": [] } } });
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::DeleteConnections.name(), valid, "/receipt/Established");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::DeleteConnections.name(), valid, "/receipt/Established");
     }
 
     #[test]
     fn a_completion_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "received" }), "");
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "not-awaited", "admission": "refused" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "received" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "not-awaited", "admission": "refused" }), "");
     }
 
     #[test]
     fn a_storage_disposition_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "preserved" }), "");
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "released", "locator": "dir" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "preserved" }), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "released", "locator": "dir" }), "");
     }
 
     #[test]
     fn a_terminal_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "");
     }
 
     #[test]
     fn a_runtime_proof_inside_a_terminal_output_with_an_unknown_field_is_refused_by_name() {
-        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "/runtime");
+        unknown_field_is_refused_by_name("node.delete:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "/runtime");
     }
 
     fn exit_manifest() -> Value {

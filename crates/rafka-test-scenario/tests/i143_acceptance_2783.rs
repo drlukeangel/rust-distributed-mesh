@@ -126,7 +126,7 @@ async fn attempt_of(estate: &Estate, id: &str) -> u64 {
 /// birth follows; the thaw returns the SAME birth, which serves the value stored before the hold
 /// (the semantic wedge detector judges it). A killed rpc node is recovered by its mesh-primary
 /// (node-recovery.md): on the provider's exact exit proof it submits one recovery as the next
-/// attempt of the SAME Build (reason recovery, operations `retire-node:<path>` then `create-node:<path>`,
+/// attempt of the SAME Build (reason recovery, operations `node.delete:<path>` then `node.create:<path>`,
 /// no Build minted); the exited instance is deleted before the new join, and a new
 /// NodeId/incarnation is created at the same path.name over the inherited data dir (same endpoint
 /// key, the stored value still served), every step of the create a child of the create pipeline. The exited birth's old NodeId resolves to nothing:
@@ -308,10 +308,10 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     };
     // The rpc node and the secondary node-admin: each its mesh-primary's recovery (node-recovery.md,
     // mesh-recovery.md:8-9).
-    let (rpc_rec, admin_rec) = (recovery_for(&kill, "recovery", "create-node"), recovery_for(&admin, "recovery", "create-node"));
+    let (rpc_rec, admin_rec) = (recovery_for(&kill, "recovery", "node.create"), recovery_for(&admin, "recovery", "node.create"));
     for rec in [&rpc_rec, &admin_rec] {
         let path = attr(rec, "operations").rsplit(':').next().unwrap_or_default().to_string();
-        assert_eq!(attr(rec, "operations"), format!("retire-node:{path},create-node:{path}"), "the recovery's two operations, in order: {rec}");
+        assert_eq!(attr(rec, "operations"), format!("node.delete:{path},node.create:{path}"), "the recovery's two operations, in order: {rec}");
     }
     for path in [&kill, &admin] {
         assert!(

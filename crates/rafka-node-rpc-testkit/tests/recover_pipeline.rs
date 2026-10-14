@@ -75,9 +75,6 @@ impl LifecycleEvents for Recorder {
     async fn joined(&self, _op: &LifecycleOp) {}
     async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
-    async fn mesh_leaving(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
-    async fn mesh_leave(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
-    async fn mesh_left(&self, _event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {}
     fn now_rafka_ms(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
     }
@@ -144,11 +141,11 @@ const CREATE_ORDER: [&str; 13] = [
 
 /// CONTRACT (node-recovery.md, Operation summary "Steps", "Retained", "New"; sequence steps 3-5;
 /// node-delete.md "Crashed target"; proposal node-properties-own-commands.md §5 item 8): node recovery
-/// runs the delete and create workflows, each as its own operation of the Build, in order. node.delete of the exited birth (`retire-node:<path>`):
+/// runs the delete and create workflows, each as its own operation of the Build, in order. node.delete of the exited birth (`node.delete:<path>`):
 /// NodeDeleting, the provider's exit proof (nothing sent to the dead process: no drain, no stop frames),
 /// NodeDeleted once for the exact exited birth, spanned with the mesh primary's exit proof it is
 /// published from, exactly that birth removed; the old birth is fenced before the new one is created;
-/// node.create at the same path.name (`create-node:<path>`): the same data dir (its storage still
+/// node.create at the same path.name (`node.create:<path>`): the same data dir (its storage still
 /// there) and the same endpoint key, a new node.id and incarnation, no supersedes, ready. No operation
 /// writes a receipt of another, and every receipt has a wire shape on the Build topic.
 /// Must NOT happen: one fused `recover-node:<path>` operation, a rename to `<path>.old`, a stop, a
@@ -196,7 +193,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
 
     // Two operations, each its own workflow's steps once, in order.
     let view = rig.builds.read_build(&recover_build).await.unwrap();
-    let (delete, create) = (format!("retire-node:{}", path()), format!("create-node:{}", path()));
+    let (delete, create) = (format!("node.delete:{}", path()), format!("node.create:{}", path()));
     assert_eq!(receipts(&view.steps, &delete), DELETE_ORDER.map(String::from).to_vec());
     assert_eq!(receipts(&view.steps, &create), CREATE_ORDER.map(String::from).to_vec());
     let operations: Vec<&str> = view.steps.iter().map(|r| r.operation.as_str()).collect();
@@ -226,7 +223,7 @@ async fn a_recovery_runs_node_delete_of_the_crashed_target_then_node_create_over
     // Delete, fence, then create: nothing sent to the exited process.
     let log = rig.log.lock().unwrap().clone();
     let (old, new) = (first.node.node_id.to_string(), second.node.node_id.to_string());
-    assert!(!log.iter().any(|l| l.starts_with("drain-node:") || l.starts_with("stop-node:")), "nothing is sent to the exited birth: {log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("node.connections.delete:") || l.starts_with("node.stop:")), "nothing is sent to the exited birth: {log:?}");
     let at = |what: &str| log.iter().position(|l| l.starts_with(what)).unwrap_or_else(|| panic!("{what} not in {log:?}"));
     assert!(at(&format!("NodeDeleting:{old}:{delete}")) < at(&format!("NodeDeleted:{old}:{delete}")), "{log:?}");
     assert!(at(&format!("NodeDeleted:{old}:{delete}")) < at(&format!("fenced:{old}")) && at(&format!("fenced:{old}")) < at(&format!("ready:{new}")), "node.deleted, the fence, then the new node: {log:?}");

@@ -680,8 +680,8 @@ impl ControlPlane {
     /// silent or absent by definition.
     ///
     /// In order: keyed on the exited birth, once a node workflow that deletes a birth completed for
-    /// that exact birth (its recovery, whose last operation `create-node:<path>` completed, or a
-    /// `retire-node:<path>` / `delete-node:<path>` the birth exited inside), a submit answers
+    /// that exact birth (its recovery, whose last operation `node.create:<path>` completed, or a
+    /// `node.delete:<path>` / `delete-node:<path>` the birth exited inside), a submit answers
     /// [`Recovery::AlreadyApplied`] naming that workflow's attempt, whoever asks, and nothing is
     /// opened. A node-admin is node-recovered only while its mesh holds another live admin to recover
     /// it (mesh-recovery.md:8-9); otherwise it is mesh recovery. The claimant is the member's
@@ -835,13 +835,13 @@ impl ControlPlane {
 /// What an attempt opened at a node route does to the exact birth it is fenced to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
-    /// `restart-node:<path>`.
+    /// `node.restart:<path>`.
     Restart,
     /// `node.connections.delete:<path>`.
     DeleteConnections,
-    /// `stop-node:<path>`.
+    /// `node.stop:<path>`.
     Stop,
-    /// `start-node:<path>`.
+    /// `node.start:<path>`.
     Start,
     /// `delete-node:<path>.old`.
     Delete,

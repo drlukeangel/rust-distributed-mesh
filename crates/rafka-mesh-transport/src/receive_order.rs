@@ -388,7 +388,7 @@ mod tests {
         );
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&b, "stop-node"), successor, 1)), Ok(()), "another publisher counts its own versions");
         assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&c, "stop-node"), acting.clone(), 9)), Ok(()));
-        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&a, "stop-node"), acting, 2)), Ok(()), "the same publisher's fact of another mesh is another source");
+        assert_eq!(order.admit(&StatusEvent::Stopped.frame(op(&a, "node.stop"), acting, 2)), Ok(()), "the same publisher's fact of another mesh is another source");
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part C1 step 7:
@@ -408,8 +408,8 @@ mod tests {
         let to = HandoverBirth { mesh: "mesh1".into(), node_id: successor.node.node_id.clone(), incarnation: successor.node.incarnation.clone() };
         let mesh_seat = |mesh: &str, revision: u64| CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: mesh.into() }, holder: to.clone(), revision };
         let fabric_seat = |revision: u64| CommittedSeat { seat: TransferSeat::FabricPrimary, holder: to.clone(), revision };
-        let updating = |seats: Vec<CommittedSeat>| Frame::PrimaryUpdating { op: op(&holder, "stop-node"), seats };
-        let updated = |seats: Vec<CommittedSeat>| Frame::PrimaryUpdated { op: op(&holder, "stop-node"), seats };
+        let updating = |seats: Vec<CommittedSeat>| Frame::PrimaryUpdating { op: op(&holder, "node.stop"), seats };
+        let updated = |seats: Vec<CommittedSeat>| Frame::PrimaryUpdated { op: op(&holder, "node.stop"), seats };
         assert_eq!(order.admit(&updating(vec![mesh_seat("mesh1", 4)])), Ok(()));
         assert_eq!(order.admit(&updated(vec![mesh_seat("mesh1", 4)])), Ok(()), "the updated of the same revision follows its updating");
         assert_eq!(

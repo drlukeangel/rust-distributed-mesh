@@ -187,13 +187,13 @@ impl HeldView {
     }
 
     /// The overlay the node holds for `node_id` whose operation starts with `prefix`
-    /// (`stop-node:`, `restart-node:`), if it holds one.
+    /// (`node.stop:`, `node.restart:`), if it holds one.
     pub fn overlay(&self, node_id: &NodeId, prefix: &str) -> Option<&rafka_mesh_entity::LifecycleOp> {
         self.in_flight.iter().find(|o| &o.node_id == node_id && o.operation.starts_with(prefix))
     }
 }
 
-/// The Build, attempt and node a `node.stop` belongs to. The operation key (`stop-node:<path.name>`)
+/// The Build, attempt and node a `node.stop` belongs to. The operation key (`node.stop:<path.name>`)
 /// is derived here and never written by a caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StopContext {
@@ -210,11 +210,11 @@ impl StopContext {
 
     /// The operation key the Build records the stop under.
     pub fn operation(&self) -> String {
-        format!("stop-node:{}", self.node)
+        format!("node.stop:{}", self.node)
     }
 }
 
-/// The Build, attempt and node a `node.start` belongs to. The operation key (`start-node:<path.name>`)
+/// The Build, attempt and node a `node.start` belongs to. The operation key (`node.start:<path.name>`)
 /// is derived here and never written by a caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartContext {
@@ -231,7 +231,7 @@ impl StartContext {
 
     /// The operation key the Build records the start under.
     pub fn operation(&self) -> String {
-        format!("start-node:{}", self.node)
+        format!("node.start:{}", self.node)
     }
 }
 

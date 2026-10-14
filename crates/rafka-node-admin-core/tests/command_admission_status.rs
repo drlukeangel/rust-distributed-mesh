@@ -72,7 +72,7 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     assert_eq!(status(&rpc), Some(MemberStatus::Draining), "the admission of node.connections.delete {{ All }} sets the member connections-deleting");
     assert_eq!(projected(&rpc), Some(MemberStatus::Draining), "the member projection carries it");
 
-    lifecycle.leaving(&op(&rpc, "stop-node:mesh1.rpc.1")).await;
+    lifecycle.leaving(&op(&rpc, "node.stop:mesh1.rpc.1")).await;
     assert_eq!(status(&rpc), Some(MemberStatus::Leaving), "the stop's admission sets the member stopping");
     assert_eq!(projected(&rpc), Some(MemberStatus::Leaving), "the member projection carries it");
 

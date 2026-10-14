@@ -128,7 +128,7 @@ impl Full {
 
     /// This full moved by `delta` (gossip.md §3.1, `MembersDelta` carries "overlay and departed
     /// changes"). A `changed` entry of a birth clears that exact birth's stop overlay
-    /// (`NodeStopped`, `stop-node:`): the source lists the birth again once its primary's
+    /// (`NodeStopped`, `node.stop:`): the source lists the birth again once its primary's
     /// `node.joined` ended the stop. It clears that exact birth's restart overlay too, which the
     /// delta carries again while the source holds it open ([`Full::delta_to`]): one node.started
     /// ended at the source ends here. A deleting overlay ends with its departure.
@@ -345,12 +345,6 @@ pub enum Refusal {
         held_version: u64,
         /// The version offered.
         offered_version: u64,
-    },
-    /// A chunk of a mesh this receiver applied mesh-left for, within its departed retention: the
-    /// mesh's removal is terminal (R-MD1 item 3), and nothing of that MeshId is installed again.
-    MeshLeft {
-        /// The MeshId the receiver applied mesh-left for.
-        mesh_id: rafka_mesh_entity::MeshId,
     },
     /// A chunk of a snapshot older than the one being assembled from the same source.
     /// The chunk belongs to a snapshot older than the one being assembled from the same source.
@@ -718,7 +712,7 @@ impl Forwarder {
             return Forward::Nothing("the version is older than the one last published");
         }
         let delta = basis.full.delta_to(&stripped);
-        if delta.is_empty() {
+        if delta.is_empty() && version == basis.version + 1 {
             // Nothing a Mesh member holds moved: no frame, and `base_version` stays what receivers hold.
             self.published.insert(mesh.to_string(), Published { publisher: publisher.clone(), version: basis.version, full: stripped });
             return Forward::Nothing("the move changes nothing a member of this Mesh holds");

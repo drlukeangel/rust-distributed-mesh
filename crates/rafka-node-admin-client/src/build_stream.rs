@@ -382,7 +382,7 @@ mod tests {
                     // The frames after `Started` are written once the caller holds only the stream.
                     g.notified().await;
                     for step in ["AllocateIdentity", "WaitForMeshJoin", "Complete"] {
-                        sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: "create-node:mesh1.admin.1.new".into(), step: step.into() }).await.map_err(gone)?;
+                        sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: "node.create:mesh1.admin.1.new".into(), step: step.into() }).await.map_err(gone)?;
                     }
                     Ok(BuildReply::SeatMoved { build_id: "cq2tyb03krac".into(), fabric_primary: Some("mesh1.admin.2".into()) })
                 }
@@ -410,7 +410,7 @@ mod tests {
             }
         })
         .await;
-        let step = |s: &str| Ok(BuildFrame::Step { attempt: 3, operation: "create-node:mesh1.admin.1.new".into(), step: s.into() });
+        let step = |s: &str| Ok(BuildFrame::Step { attempt: 3, operation: "node.create:mesh1.admin.1.new".into(), step: s.into() });
         assert!(read.is_ok(), "the stream delivered no terminal within 10 s; it delivered {got:?}");
         assert_eq!(got, vec![step("AllocateIdentity"), step("WaitForMeshJoin"), step("Complete"), Ok(BuildFrame::SeatMoved { fabric_primary: Some("mesh1.admin.2".into()) })]);
     }

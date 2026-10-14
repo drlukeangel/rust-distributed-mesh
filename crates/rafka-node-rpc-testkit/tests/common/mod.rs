@@ -393,7 +393,7 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     // Every step has exactly one Complete receipt, in pipeline order.
     let view = builds.read_build(&build_id).await.unwrap();
     let receipts: Vec<_> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, r.operation.as_str(), r.attempt)).collect();
-    let want: Vec<_> = CreateStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "create-node:mesh1.rpc.1", 1)).collect();
+    let want: Vec<_> = CreateStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "node.create:mesh1.rpc.1", 1)).collect();
     assert_eq!(receipts, want);
 
     // One child span per step under the pipeline span, each fully attributed.

@@ -102,7 +102,7 @@ async fn a_large_catch_up_arrives_in_messages_that_fit_and_keeps_the_connection(
             mesh: None,
             build_id: id.clone(),
             attempt: 1,
-            operation: format!("create-node:mesh1.rpc.{i}"),
+            operation: format!("node.create:mesh1.rpc.{i}"),
             step: "WaitForBind".into(),
             outcome: StepOutcome::Complete,
             output: Some(

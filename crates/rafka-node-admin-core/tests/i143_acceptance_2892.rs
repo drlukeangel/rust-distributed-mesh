@@ -324,7 +324,7 @@ async fn lost_attempt(fleet: &Fleet, lost: &Executor, builds: &MemoryBuildStateA
 }
 
 fn complete_attempts(view: &rafka_node_admin_core::build_state::BuildProjection, step: CreateStep, node: &PathName) -> Vec<u32> {
-    view.steps.iter().filter(|r| r.step == step.name() && r.operation == format!("create-node:{node}") && r.outcome == StepOutcome::Complete).map(|r| r.attempt).collect()
+    view.steps.iter().filter(|r| r.step == step.name() && r.operation == format!("node.create:{node}") && r.outcome == StepOutcome::Complete).map(|r| r.attempt).collect()
 }
 
 /// CONTRACT (#2892): a create re-run by a successor executor (the lost admin's recovery, at
@@ -392,7 +392,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
             mesh: None,
             build_id: build_unborn.clone(),
             attempt: 1,
-            operation: format!("create-node:{unborn}"),
+            operation: format!("node.create:{unborn}"),
             step: CreateStep::AllocateIdentity.name().into(),
             outcome: StepOutcome::Complete,
             output: Some(json!({"node_id": NodeId::mint(), "incarnation": IncarnationId::mint(), "supersedes": null, "deployment_id": DeploymentId::mint()})),

@@ -74,15 +74,15 @@ impl Frame {
 /// Which workflow a stream belongs to, and so which Build operations carry its steps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowKind {
-    /// `node.create`: the Build's `create-node:*` operation.
+    /// `node.create`: the Build's `node.create:*` operation.
     Create,
-    /// `node.stop` of this node: `stop-node:<path.name>`.
+    /// `node.stop` of this node: `node.stop:<path.name>`.
     Stop(PathName),
-    /// `node.start` of this parked node: `start-node:<path.name>`.
+    /// `node.start` of this parked node: `node.start:<path.name>`.
     Start(PathName),
-    /// `node.restart` of this node: `restart-node:<path.name>`, one operation.
+    /// `node.restart` of this node: `node.restart:<path.name>`, one operation.
     Restart(PathName),
-    /// `node.delete` of this node: `retire-node:<path.name>`.
+    /// `node.delete` of this node: `node.delete:<path.name>`.
     Delete(PathName),
     /// `node.connections.delete { All }` of this node: `node.connections.delete:<path.name>`. The
     /// process keeps running.
@@ -175,10 +175,10 @@ fn shutdown_rows(operation: &'static str) -> Vec<Row> {
 /// step is its op's own workflow: the same rows that op's call streams.
 fn recipe_step_rows(step: &RecipeStep) -> Vec<Row> {
     let mut rows: Vec<Row> = match step {
-        RecipeStep::Create { .. } => create_rows!("create-node", &[NodeEvent::Created]).into(),
+        RecipeStep::Create { .. } => create_rows!("node.create", &[NodeEvent::Created]).into(),
         RecipeStep::Stop { .. } => stop_rows(),
-        RecipeStep::Update { .. } => vec![row("update-node", "UpdateNode", NodeStep::Update, &[], false), row("update-node", "Complete", NodeStep::Update, &[NodeEvent::Updated], false)],
-        RecipeStep::Start { .. } => start_rows!("start-node", &[], NodeStep::Start).into(),
+        RecipeStep::Update { .. } => vec![row("node.update", "UpdateNode", NodeStep::Update, &[], false), row("node.update", "Complete", NodeStep::Update, &[NodeEvent::Updated], false)],
+        RecipeStep::Start { .. } => start_rows!("node.start", &[], NodeStep::Start).into(),
         // node.delete's own workflow, whatever the node's name: a stopped birth's runs no stop half.
         RecipeStep::Delete { .. } => delete_rows(),
     };
@@ -204,9 +204,9 @@ fn recipe_node_step(step: &RecipeStep) -> NodeStep {
 /// transport and answers `stopped`: its receipts announce both events, and no runtime exits.
 fn stop_rows() -> Vec<Row> {
     vec![
-        row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
-        row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
-        row("stop-node", "Complete", NodeStep::Stop, &[], true),
+        row("node.stop", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
+        row("node.stop", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
+        row("node.stop", "Complete", NodeStep::Stop, &[], true),
     ]
 }
 
@@ -214,13 +214,13 @@ fn stop_rows() -> Vec<Row> {
 /// already stopped or proven-exited birth's runs no stop half and leaves no membership to remove
 /// (`stop_half`), the same operation.
 fn delete_rows() -> Vec<Row> {
-    let mut rows = vec![row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false)];
-    rows.extend(shutdown_rows("retire-node").into_iter().map(|r| Row { stop_half: true, ..r }));
+    let mut rows = vec![row("node.delete", "NodeDeleting", NodeStep::Delete, &[], false)];
+    rows.extend(shutdown_rows("node.delete").into_iter().map(|r| Row { stop_half: true, ..r }));
     rows.extend([
-        row("retire-node", "TerminateRuntime", NodeStep::Stop, &[], false),
-        row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
-        Row { stop_half: true, ..row("retire-node", "RemoveTopologyMembership", NodeStep::Delete, &[], false) },
-        row("retire-node", "Complete", NodeStep::Delete, &[], true),
+        row("node.delete", "TerminateRuntime", NodeStep::Stop, &[], false),
+        row("node.delete", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
+        Row { stop_half: true, ..row("node.delete", "RemoveTopologyMembership", NodeStep::Delete, &[], false) },
+        row("node.delete", "Complete", NodeStep::Delete, &[], true),
     ]);
     rows
 }
@@ -265,15 +265,15 @@ impl WorkflowKind {
     /// The pipeline rows of the workflow in order.
     fn rows(&self) -> Vec<Row> {
         match self {
-            Self::Create => create_rows!("create-node", &[NodeEvent::Created]).into(),
+            Self::Create => create_rows!("node.create", &[NodeEvent::Created]).into(),
             Self::Stop(_) => stop_rows(),
-            Self::Start(_) => start_rows!("start-node", &[], NodeStep::Start).into(),
+            Self::Start(_) => start_rows!("node.start", &[], NodeStep::Start).into(),
             // A restart is one operation: the birth is held, drains and stops (it parks), then the
             // same process starts, and its one `Complete` ends it.
             Self::Restart(_) => {
-                let mut rows = vec![row("restart-node", "NodeRestarting", NodeStep::Restart, &[NodeEvent::Restarting], false)];
-                rows.extend(shutdown_rows("restart-node"));
-                rows.extend(start_rows!("restart-node", &[NodeEvent::Restarted], NodeStep::Restart));
+                let mut rows = vec![row("node.restart", "NodeRestarting", NodeStep::Restart, &[NodeEvent::Restarting], false)];
+                rows.extend(shutdown_rows("node.restart"));
+                rows.extend(start_rows!("node.restart", &[NodeEvent::Restarted], NodeStep::Restart));
                 rows
             }
             // A standalone node.connections.delete { All }: one call to the exact birth through its
@@ -302,7 +302,7 @@ impl WorkflowKind {
     /// The Build operation key a row's operation prefix names for this workflow.
     fn operation_matches(&self, prefix: &str, key: &str) -> bool {
         match self {
-            Self::Create => prefix == "create-node" && key.starts_with("create-node:"),
+            Self::Create => prefix == "node.create" && key.starts_with("node.create:"),
             Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) | Self::DeleteConnections(n) => key == format!("{prefix}:{n}"),
             Self::Recipe(steps) => steps.iter().any(|s| key == format!("{prefix}:{}", s.node())),
         }

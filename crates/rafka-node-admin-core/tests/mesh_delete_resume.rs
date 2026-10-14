@@ -12,7 +12,7 @@ use rafka_mesh_entity::{FabricId, IncarnationId, LifecycleOp, MeshId, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, MemoryBuildStateAdapter};
 use rafka_node_admin_core::fabric_builds::BuildMessage;
-use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, MeshLeaveEvent, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
+use rafka_node_admin_core::deployment::pipeline::{DeploymentPipeline, LaunchTemplate, LifecycleEvents, NodeObserver, NoLifecycleEvents, Publication, RuntimeProof, TerminalReceipt, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::join::Joins;
 use rafka_node_admin_core::mesh_delete::{await_mesh_deleted, MeshDeleteBook, MESH_DELETED_WAIT, birth_row_deleted, completion_of, mesh_left_proof, record_completion, replayed_handoff, roster_records, roster_rows_read, mesh_left_rows, accepted_roster, accepted_row, admission_roster, admitted_of, resume_after_loss, amend_roster, amended_roster, first_mismatch, handoff_verdict, handoff_verdict_from_read, manifest_reference, members_exited, operation, owner_resume, record_predecessor_exit, Admitted, Amended, ExitManifest, HandoffVerdict, MeshDeleteKey, OwnerResume, RosterAmended, RosterBirth, STEP_ACCEPTED_ROSTER, STEP_LEAVING_ROSTER, STEP_MESH_DELETED, STEP_OTHER_MEMBERS_EXITED, STEP_ROSTER_AMENDED};
@@ -636,7 +636,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
             .unwrap()
             .steps
             .into_iter()
-            .find(|r| r.operation == format!("retire-node:{FINAL}") && r.step == "TerminateRuntime")
+            .find(|r| r.operation == format!("node.delete:{FINAL}") && r.step == "TerminateRuntime")
             .and_then(|r| r.output)
             .map(|v| serde_json::from_value(v).unwrap())
             .expect("the node.delete proved the final birth's exit");
@@ -670,7 +670,7 @@ fn mesh_delete_ends_at_mesh_deleted_and_mesh_left_takes_the_final_birth_from_its
     assert!(recorded.iter().any(|s| s["attributes"]["receipts"] == "3" && s["attributes"]["roster"] == "4" && s["attributes"]["final_primary"] == FINAL), "{recorded:?}");
     let replayed = named("rdm.node_admin.mesh.resolve.via-handoff-replayed");
     assert!(replayed.iter().any(|s| s["attributes"]["outcome"] == "already-applied"), "{replayed:?}");
-    eprintln!("trace {trace_id}: via-mesh-deleted-receipt receipts=3 roster=4, via-handoff-replayed already-applied, retire-node:{FINAL} TerminateRuntime then the MeshLeft proof set over 4 births");
+    eprintln!("trace {trace_id}: via-mesh-deleted-receipt receipts=3 roster=4, via-handoff-replayed already-applied, node.delete:{FINAL} TerminateRuntime then the MeshLeft proof set over 4 births");
 }
 
 /// CONTRACT: R-MN1 with mesh-delete.md step 7 (the final primary's own node.delete, the
@@ -700,7 +700,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
     let rows = NodeRows::new(fp.name.clone(), fp.node_id.clone(), view.clone(), storage.clone());
     let mesh_id = MeshId::mint();
     let key = MeshDeleteKey { mesh_id: mesh_id.clone(), build_id: BuildId::mint(), attempt: 1, operation: operation(&mesh_id) };
-    let deleting = format!("retire-node:{FINAL}");
+    let deleting = format!("node.delete:{FINAL}");
     let (second, live, stopped, after, row, statuses, again, trace_id) = cap.run(async {
         let root = tracing::info_span!("cell.final-primary-row-deleted", operation = %key.operation);
         let trace_id = trace_id(&root);
@@ -709,7 +709,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         // mesh had a primary.
         rows_written(&storage, &rows, std::slice::from_ref(&last)).await;
         // A live mesh2.admin.1 holds its name: a second birth's claim is refused.
-        let second = rows.claim(&last.name, &NodeId::mint(), "create-node:mesh2.admin.1", None, ClaimFor::Create).await;
+        let second = rows.claim(&last.name, &NodeId::mint(), "node.create:mesh2.admin.1", None, ClaimFor::Create).await;
         // Seated and live: the fabric-primary is not the writer of mesh2's rows.
         view.write().await.nodes.iter_mut().filter(|n| n.name == last.name).for_each(|n| n.is_primary = true);
         let live = rows.deleted(&last, &deleting).await;
@@ -725,7 +725,7 @@ fn the_final_primarys_node_delete_writes_its_row_deleted_once_it_is_stopped_and_
         let statuses = status.mesh_statuses().await.unwrap();
         let dead_held = status.mesh_status_held_of("mesh2", &rafka_node_admin_core::status_storage::MeshStatusRow { mesh_id: mesh_id.clone(), state: MeshState::Dead }).await.unwrap();
         // mesh2 created again: its first admin's claim wins over the Deleted row.
-        let again = rows.claim(&last.name, &NodeId::mint(), "create-node:mesh2.admin.1", None, ClaimFor::Create).await;
+        let again = rows.claim(&last.name, &NodeId::mint(), "node.create:mesh2.admin.1", None, ClaimFor::Create).await;
         (second, live, stopped, after, row, (statuses, dead_held), again, trace_id)
     });
     let (statuses, dead_held) = statuses;
@@ -1029,7 +1029,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_published_deleted_by
     let ran = |attempt: u32| calls.iter().filter(|(a, _)| *a == attempt).map(|(_, n)| n.clone()).collect::<BTreeSet<_>>();
     assert_eq!(ran(1), BTreeSet::from([FAILING.to_string(), EXITING.to_string()]), "attempt 1 ran the ordinary tier");
     assert_eq!(ran(2), BTreeSet::from([FAILING.to_string()]), "the amended primary runs only rpc.1: rpc.2's delete has every step's receipt and is not run again");
-    let of = |node: &str, step: &str| steps.iter().filter(|r| r.operation == format!("retire-node:{node}") && r.step == step && r.outcome == rafka_node_admin_core::build_state::StepOutcome::Complete).map(|r| r.attempt).collect::<Vec<_>>();
+    let of = |node: &str, step: &str| steps.iter().filter(|r| r.operation == format!("node.delete:{node}") && r.step == step && r.outcome == rafka_node_admin_core::build_state::StepOutcome::Complete).map(|r| r.attempt).collect::<Vec<_>>();
     assert_eq!((of(EXITING, "NodeDeleted"), of(EXITING, "Complete")), (vec![1], vec![1]), "rpc.2's delete finished under the lost primary, each step receipted once");
     assert_eq!(fleet.terminated.lock().unwrap().iter().filter(|n| n.as_str() == EXITING).count(), 1, "rpc.2's runtime was terminated once, in attempt 1");
     let rows = rows.into_inner().unwrap();
@@ -1040,7 +1040,7 @@ fn a_member_whose_delete_finished_under_the_lost_primary_is_published_deleted_by
     assert_eq!(lost_ops.iter().map(|op| op.name.to_string()).collect::<Vec<_>>(), vec![EXITING.to_string()], "the lost primary published rpc.2's NodeDeleted, which the amended primary never heard");
     let receipted: LifecycleOp = steps
         .iter()
-        .find(|r| r.operation == format!("retire-node:{EXITING}") && r.step == "NodeDeleted")
+        .find(|r| r.operation == format!("node.delete:{EXITING}") && r.step == "NodeDeleted")
         .and_then(|r| r.output.clone())
         .map(|v| serde_json::from_value(v).expect("a NodeDeleted receipt holds its op"))
         .expect("rpc.2's NodeDeleted is receipted");
@@ -1738,9 +1738,6 @@ impl LifecycleEvents for Departures {
     async fn joined(&self, _: &LifecycleOp) {}
     async fn connections_deleting(&self, _: &LifecycleOp) {}
     async fn leaving(&self, _: &LifecycleOp) {}
-    async fn mesh_leaving(&self, _: &MeshLeaveEvent) {}
-    async fn mesh_leave(&self, _: &MeshLeaveEvent) {}
-    async fn mesh_left(&self, _: &MeshLeaveEvent) {}
     fn now_rafka_ms(&self) -> u64 {
         0
     }
@@ -1800,7 +1797,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
             mesh_issuer: None,
             connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
-        let cut = CutBuilds { inner: &builds, cut: Mutex::new(Some(("NodeDeleted", format!("retire-node:{FAILING}")))) };
+        let cut = CutBuilds { inner: &builds, cut: Mutex::new(Some(("NodeDeleted", format!("node.delete:{FAILING}")))) };
         let cut_pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &lost_departures, builds: &cut, template: &template, timeouts: Timeouts::default() };
         let pipeline = DeploymentPipeline { provider: &fleet, joins: &joins, observer: &NoRpc, sink: &view, lifecycle: &departures, builds: &builds, template: &template, timeouts: Timeouts::default() };
         let shutdown_1 = |n: Node| {
@@ -1843,7 +1840,7 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
     let calls = calls.into_inner().unwrap();
     let ran = |attempt: u32| calls.iter().filter(|(a, _)| *a == attempt).map(|(_, n)| n.clone()).collect::<BTreeSet<_>>();
     assert_eq!(ran(1), BTreeSet::from([FAILING.to_string(), EXITING.to_string()]), "attempt 1 ran the ordinary tier");
-    let of = |steps: &[BuildStepReceipt], node: &str, step: &str| steps.iter().filter(|r| r.operation == format!("retire-node:{node}") && r.step == step && r.outcome == rafka_node_admin_core::build_state::StepOutcome::Complete).map(|r| r.attempt).collect::<Vec<_>>();
+    let of = |steps: &[BuildStepReceipt], node: &str, step: &str| steps.iter().filter(|r| r.operation == format!("node.delete:{node}") && r.step == step && r.outcome == rafka_node_admin_core::build_state::StepOutcome::Complete).map(|r| r.attempt).collect::<Vec<_>>();
     // The cut left rpc.1's exit proof and no more; rpc.2's delete ran to its end.
     assert_eq!((of(&cut_steps, FAILING, "TerminateRuntime"), of(&cut_steps, FAILING, "NodeDeleted"), of(&cut_steps, FAILING, "Complete")), (vec![1], vec![], vec![]), "the cut left {FAILING}'s exit proof and no NodeDeleted: {cut_steps:#?}");
     assert_eq!(of(&cut_steps, EXITING, "Complete"), vec![1], "{EXITING}'s delete ran to its end");
@@ -1861,8 +1858,8 @@ fn a_delete_cut_after_its_exit_proof_is_finished_by_the_resumed_attempt_from_its
         ops.sort();
         ops
     };
-    assert_eq!(published(lost_departures), vec![format!("retire-node:{EXITING}")], "attempt 1's primary published the NodeDeleted of the one delete it finished");
-    let mut want: Vec<String> = [FAILING, EXITING, OTHER_ADMIN].iter().map(|n| format!("retire-node:{n}")).collect();
+    assert_eq!(published(lost_departures), vec![format!("node.delete:{EXITING}")], "attempt 1's primary published the NodeDeleted of the one delete it finished");
+    let mut want: Vec<String> = [FAILING, EXITING, OTHER_ADMIN].iter().map(|n| format!("node.delete:{n}")).collect();
     want.sort();
     assert_eq!(published(departures), want, "attempt 2's primary publishes every member's NodeDeleted once: {FAILING}'s and {OTHER_ADMIN}'s from the deletes it ran, {EXITING}'s from the receipt of the delete attempt 1 finished");
 

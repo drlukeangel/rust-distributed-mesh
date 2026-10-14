@@ -114,7 +114,7 @@ pub async fn restart_canary(owner: Owner) -> Value {
     // A span is exported once it ends, by each process's own exporter: the chain is exported when the
     // node's start (the rpc node's span), the restart call's request span and the restart's reconcile
     // (the executor's outermost span, ending after the node operation and every step under it) are.
-    let restart_op = format!("restart-node:{NODE}");
+    let restart_op = format!("node.restart:{NODE}");
     let spans = wait_for("restart span chain exported", SETTLE, || async {
         let spans = estate.spans();
         let served = named(&spans, "rdm.node_admin.status.update.via-start-node").into_iter().any(|s| s["attributes"]["node"] == NODE && s["attributes"]["outcome"] == "started");

@@ -194,7 +194,7 @@ pub fn stop_age(facts: &[BuildFact], node_id: &NodeId, incarnation: &Incarnation
         }
         let action = actions.get(&(s.build_id.clone(), s.attempt)).copied();
         let ours = action.is_some_and(|a| acts_on(a, incarnation));
-        if s.operation.starts_with("stop-node:") {
+        if s.operation.starts_with("node.stop:") {
             match s.output.as_ref().map(|v| serde_json::from_value::<LifecycleOp>(v.clone())) {
                 Some(Ok(op)) if op.node_id == *node_id && op.incarnation == *incarnation => current = Some(Age::StoppedAt(op.event_at_rafka_ms)),
                 Some(Ok(_)) => {}
@@ -202,7 +202,7 @@ pub fn stop_age(facts: &[BuildFact], node_id: &NodeId, incarnation: &Incarnation
                 None if ours => current = Some(Age::Unreadable(format!("the stop receipt of Build {} attempt {} commits no stop time", s.build_id, s.attempt))),
                 _ => {}
             }
-        } else if ours && (s.operation.starts_with("start-node:") || s.operation.starts_with("restart-node:")) && current.is_some() {
+        } else if ours && (s.operation.starts_with("node.start:") || s.operation.starts_with("node.restart:")) && current.is_some() {
             current = None;
             ended = Some(format!("its last stop receipt precedes its {} in Build {} attempt {}", s.operation, s.build_id, s.attempt));
         }

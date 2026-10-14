@@ -317,7 +317,7 @@ pub struct NodeRow {
 pub struct Allocation {
     /// The Build whose operation claimed the name.
     pub build_id: crate::build::BuildId,
-    /// The operation that claimed it (`create-node:<path>`).
+    /// The operation that claimed it (`node.create:<path>`).
     pub operation: String,
     /// The incarnation minted for the birth.
     pub incarnation: IncarnationId,
@@ -1476,10 +1476,10 @@ mod tests {
         // NameHeld by the adapter's claim before any write, and this cell is about the cut-off.
         let rows: BTreeMap<&str, NodeRow> = ["mesh2.rpc.1", "mesh3.rpc.1"].into_iter().map(|name| (name, row(name))).collect();
         n.put_node_row(&rows["mesh2.rpc.1"]).await.unwrap().unwrap();
-        n.cut_off_other_meshes("seat transfer drain-node:mesh1.admin.1").await;
+        n.cut_off_other_meshes("seat transfer node.connections.delete:mesh1.admin.1").await;
         for name in ["mesh2.rpc.1", "mesh3.rpc.1"] {
             match n.put_node_row(&rows[name]).await {
-                Err(StorageError::CutOff { reason, .. }) => assert!(reason.contains("drain-node:mesh1.admin.1"), "{reason}"),
+                Err(StorageError::CutOff { reason, .. }) => assert!(reason.contains("node.connections.delete:mesh1.admin.1"), "{reason}"),
                 other => panic!("{name}: a row write after the fabric seat's cut-off answered {other:?}"),
             }
             assert!(matches!(n.put_contact(&node(name)).await, Err(StorageError::CutOff { .. })), "{name}: a contact write after the cut-off");

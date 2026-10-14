@@ -137,7 +137,7 @@ fn a_snapshot_chunk_round_trips_with_its_digests_and_overlays() {
     let op = LifecycleOp {
         build_id: "b".into(),
         attempt: 1,
-        operation: "retire-node:mesh1.rpc.2".into(),
+        operation: "node.delete:mesh1.rpc.2".into(),
         node_id: rafka_mesh_entity::NodeId::mint(),
         incarnation: IncarnationId::mint(),
         name: "mesh1.rpc.2".parse().unwrap(),

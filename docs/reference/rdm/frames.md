@@ -7,7 +7,7 @@ The gossip `Frame` enum (`crates/rafka-mesh-transport/src/membership.rs`): what 
 
 ### `Frame`
 
-`crates/rafka-mesh-transport/src/membership.rs` · enum · 25 variants · rafka-mesh-transport
+`crates/rafka-mesh-transport/src/membership.rs` · enum · 22 variants · rafka-mesh-transport
 
 What travels on a mesh channel or the backbone: one postcard frame (`crate::wire`). A digest
 
@@ -45,7 +45,7 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 4 | **`NodeDeleted`** |  |  | The provider proved `op`'s exact birth terminal: it has left. Same |
 | 4.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The removal that completed. |
 | 4.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 5 | **`NodeRestarting`** |  |  | The mesh executor holding `op` (`restart-node:<path>`) is restarting its exact birth: |
+| 5 | **`NodeRestarting`** |  |  | The mesh executor holding `op` (`node.restart:<path>`) is restarting its exact birth: |
 | 5.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The restart being executed. |
 | 5.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
 | 5.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`, as on |
@@ -82,62 +82,34 @@ What travels on a mesh channel or the backbone: one postcard frame (`crate::wire
 | 13 | **`NodeConnectionsDeleted`** |  |  | Reserved position (R-CR4; gossip.md, node-connections-deleted): never sent on any channel. |
 | 13.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation and the exact birth whose connections were deleted. |
 | 13.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
-| 14 | **`MeshLeaving`** |  |  | The fabric-primary accepted `leave-mesh` for `mesh_id` (gossip.md, mesh-leaving): leave |
-| 14.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  | The mesh that leaves. |
-| 14.1 | `build_id` | `String` |  | The Build the operation belongs to. |
-| 14.2 | `attempt` | `u32` |  | The Build attempt that holds the operation. |
-| 14.3 | `operation` | `String` |  | `shutdown-mesh:<mesh_id>`. |
-| 14.4 | `publisher` | `String` |  | The fabric-primary that authored the frame. |
-| 14.5 | `event_at_rafka_ms` | `u64` |  | The Rafka-time of the event; evidence only. |
-| 14.6 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 15 | **`MeshLeave`** |  |  | The leaving mesh's still-running primary handed its member receipts to the fabric-primary |
-| 15.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  | The mesh that leaves. |
-| 15.1 | `build_id` | `String` |  | The Build the operation belongs to. |
-| 15.2 | `attempt` | `u32` |  | The Build attempt that holds the operation. |
-| 15.3 | `operation` | `String` |  | `shutdown-mesh:<mesh_id>`. |
-| 15.4 | `final_node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The final mesh-primary's node. |
-| 15.5 | `final_incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The final mesh-primary's incarnation. |
-| 15.6 | `receipt_manifest` | `String` |  | The reference to the other members' terminal receipts. |
-| 15.7 | `publisher` | `String` |  | The mesh-primary that authored the frame. |
-| 15.8 | `event_at_rafka_ms` | `u64` |  | The Rafka-time of the event; evidence only. |
-| 15.9 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 16 | **`MeshLeft`** |  |  | The fabric-primary recorded the completed mesh departure (gossip.md, mesh-left): every |
-| 16.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  | The mesh that left. |
-| 16.1 | `build_id` | `String` |  | The Build the operation belongs to. |
-| 16.2 | `attempt` | `u32` |  | The Build attempt that holds the operation. |
-| 16.3 | `operation` | `String` |  | `shutdown-mesh:<mesh_id>`. |
-| 16.4 | `receipt_manifest` | `String` |  | The reference to the complete terminal proof set. |
-| 16.5 | `publisher` | `String` |  | The fabric-primary that authored the frame. |
-| 16.6 | `event_at_rafka_ms` | `u64` |  | The Rafka-time of the event; evidence only. |
-| 16.7 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 17 | **`NewFabricPrimary`** |  |  | The committed fabric-primary announces itself and its contact addresses on the backbone |
-| 17.0 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rafka_mesh_entity-seat-SeatHolder) |  | The committed holder: mesh, node, incarnation and the seat's new epoch. |
-| 17.1 | `endpoint_id` | `String` |  | The holder's endpoint key. |
-| 17.2 | `transport_addr` | `std::net::SocketAddr` |  | The holder's bound QUIC UDP address. |
-| 17.3 | `admin_api_base` | `Option<String>` |  | The holder's control API base URL with its bound HTTP port, when it runs one. |
-| 18 | **`StateCommitting`** |  |  | The commanding authority sent `commit-state:<fabric_id>` to the exact birth in `hook` |
+| 14 | **`NewFabricPrimary`** |  |  | The committed fabric-primary announces itself and its contact addresses on the backbone |
+| 14.0 | `holder` | `SeatHolder` → [`SeatHolder`](#t-rafka_mesh_entity-seat-SeatHolder) |  | The committed holder: mesh, node, incarnation and the seat's new epoch. |
+| 14.1 | `endpoint_id` | `String` |  | The holder's endpoint key. |
+| 14.2 | `transport_addr` | `std::net::SocketAddr` |  | The holder's bound QUIC UDP address. |
+| 14.3 | `admin_api_base` | `Option<String>` |  | The holder's control API base URL with its bound HTTP port, when it runs one. |
+| 15 | **`StateCommitting`** |  |  | The commanding authority sent `commit-state:<fabric_id>` to the exact birth in `hook` |
+| 15.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 15.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
+| 16 | **`StateCommitted`** |  |  | The exact birth in `hook` sent its `state-committed` check-in after its scratchpad writes were |
+| 16.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 16.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
+| 17 | **`TrafficOpening`** |  |  | The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`; same |
+| 17.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
+| 17.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
+| 18 | **`TrafficOpened`** |  |  | The exact birth in `hook` sent its `traffic-opened` check-in; same channels and carrying as |
 | 18.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
-| 18.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
-| 19 | **`StateCommitted`** |  |  | The exact birth in `hook` sent its `state-committed` check-in after its scratchpad writes were |
-| 19.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
-| 19.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
-| 20 | **`TrafficOpening`** |  |  | The commanding authority sent `open-traffic:<fabric_id>` to the exact birth in `hook`; same |
-| 20.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
-| 20.1 | `forwarded_by` | `Option<String>` |  | The primary that forwards the frame onto its own channel. |
-| 21 | **`TrafficOpened`** |  |  | The exact birth in `hook` sent its `traffic-opened` check-in; same channels and carrying as |
-| 21.0 | `hook` | `RoundHook` → [`RoundHook`](#t-rafka_mesh_entity-lifecycle-RoundHook) |  | The round, the subject birth and the author. |
-| 21.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
-| 22 | **`NodeStopped`** |  |  | The mesh executor holding `op` (`stop-node:<path>`) received the exact birth's `left` on the |
-| 22.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The stop being executed. |
-| 22.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
-| 22.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`, as on |
-| 22.3 | `topology_version` | `u64` |  | The publisher's `topology_version` of the subject's mesh at which the subject changed: a |
-| 23 | **`PrimaryUpdated`** |  |  | "primary updated" (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part |
-| 23.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation the update precedes; its subject is the holder the seats moved from. |
-| 23.1 | `seats` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rafka_mesh_entity-seat-transfer-CommittedSeat) |  | Every seat the row moved: its cohort, the successor's exact birth and the committed epoch. |
-| 24 | **`PrimaryUpdating`** |  |  | "primary updating" (the same edit): the holder of a seat, its cohort's row writer, says the |
-| 24.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation the update precedes; its subject is the current holder. |
-| 24.1 | `seats` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rafka_mesh_entity-seat-transfer-CommittedSeat) |  | Every seat that is updating, each naming the successor's exact birth at the epoch it would take. |
+| 18.1 | `forwarded_by` | `Option<String>` |  | The admin or primary that forwards the frame. |
+| 19 | **`NodeStopped`** |  |  | The mesh executor holding `op` (`node.stop:<path>`) received the exact birth's `left` on the |
+| 19.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The stop being executed. |
+| 19.1 | `forwarded_by` | `Option<String>` |  | The local primary that forwards the frame onto its own channel. |
+| 19.2 | `publisher` | `PublisherId` → [`PublisherId`](#t-rafka_mesh_entity-publisher-PublisherId) |  | The exact birth that published the fact: the epoch of `topology_version`, as on |
+| 19.3 | `topology_version` | `u64` |  | The publisher's `topology_version` of the subject's mesh at which the subject changed: a |
+| 20 | **`PrimaryUpdated`** |  |  | "primary updated" (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part |
+| 20.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation the update precedes; its subject is the holder the seats moved from. |
+| 20.1 | `seats` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rafka_mesh_entity-seat-transfer-CommittedSeat) |  | Every seat the row moved: its cohort, the successor's exact birth and the committed epoch. |
+| 21 | **`PrimaryUpdating`** |  |  | "primary updating" (the same edit): the holder of a seat, its cohort's row writer, says the |
+| 21.0 | `op` | `LifecycleOp` → [`LifecycleOp`](#t-rafka_mesh_entity-lifecycle-LifecycleOp) |  | The operation the update precedes; its subject is the current holder. |
+| 21.1 | `seats` | `Vec<CommittedSeat>` → [`CommittedSeat`](#t-rafka_mesh_entity-seat-transfer-CommittedSeat) |  | Every seat that is updating, each naming the successor's exact birth at the epoch it would take. |
 
 ## Types the frames carry
 
@@ -201,19 +173,11 @@ serde: `deny_unknown_fields`
 |---|---|---|---|---|
 | 0 | `build_id` | `String` |  | The Build the operation belongs to. |
 | 1 | `attempt` | `u32` |  | The attempt of the Build. |
-| 2 | `operation` | `String` |  | The operation's idempotency key (`retire-node:mesh2.rpc.2`), never a pipeline step. |
+| 2 | `operation` | `String` |  | The operation's idempotency key (`node.delete:mesh2.rpc.2`), never a pipeline step. |
 | 3 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The logical node. |
 | 4 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The incarnation of the birth. |
 | 5 | `name` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node's `path.name`. |
 | 6 | `event_at_rafka_ms` | `u64` |  | When the event happened, in Rafka-time; evidence only, never liveness or order. One expiry |
-
-<a id="t-rafka_mesh_entity-ids-MeshId"></a>
-
-### `MeshId`
-
-`crates/rafka-mesh-entity/src/ids.rs` · declared by `product_id!` · rafka-mesh-entity
-
-A mesh's identity: recovery keeps it, an intentional replacement mints
 
 <a id="t-rafka_mesh_entity-ids-NodeId"></a>
 

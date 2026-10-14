@@ -209,23 +209,23 @@ A Status call.
 | 8.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 8.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 8.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
-| 8.4 | `operation` | `String` |  |  | The operation: `stop-node:<path>`. |
+| 8.4 | `operation` | `String` |  |  | The operation: `node.stop:<path>`. |
 | 9 | **`NodeLeft`** |  |  | `op() = "node-left"` | Reserved: a stopped birth reports `stopped` on the reply of its `StopNode` call, so this call is |
 | 9.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth that is leaving. |
 | 9.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 9.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 9.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
-| 9.4 | `operation` | `String` |  |  | The operation: `stop-node:<path>`. |
+| 9.4 | `operation` | `String` |  |  | The operation: `node.stop:<path>`. |
 | 10 | **`DeleteMesh`** |  |  | `op() = "delete-mesh"` | Downward: the fabric-primary tells the deleting mesh's primary to run its mesh.delete |
 | 10.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  |  | The mesh that leaves. |
 | 10.1 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 10.2 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
-| 10.3 | `operation` | `String` |  |  | The operation: `shutdown-mesh:<mesh_id>`. |
+| 10.3 | `operation` | `String` |  |  | The operation: `mesh.delete:<mesh_id>`. |
 | 11 | **`MeshDeleted`** |  |  | `op() = "mesh-deleted"` | Upward: the still-running mesh-primary hands the fabric-primary the proof that every other |
 | 11.0 | `mesh_id` | `MeshId` → [`MeshId`](#t-rafka_mesh_entity-ids-MeshId) |  |  | The mesh that leaves. |
 | 11.1 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 11.2 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
-| 11.3 | `operation` | `String` |  |  | The operation: `shutdown-mesh:<mesh_id>`. |
+| 11.3 | `operation` | `String` |  |  | The operation: `mesh.delete:<mesh_id>`. |
 | 11.4 | `final_node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The final mesh-primary's node. |
 | 11.5 | `final_incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The final mesh-primary's incarnation. |
 | 11.6 | `final_runtime` | `RuntimeFact` | `with = "rafka_mesh_entity::wire::runtime"` |  | The final mesh-primary's exact runtime, still running. |
@@ -263,7 +263,7 @@ A Status call.
 | 16.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 16.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 16.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
-| 16.4 | `operation` | `String` |  |  | The operation: `start-node:<path>`. |
+| 16.4 | `operation` | `String` |  |  | The operation: `node.start:<path>`. |
 | 17 | **`UpdateNodeConfig`** |  |  | `op() = "update-node-config"` | Upward: a caller asks the exact birth's mesh-primary, the writer of that mesh's rows, to put the |
 | 17.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth whose config is put. |
 | 17.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
@@ -305,13 +305,13 @@ A Status call.
 | 28.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 28.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 28.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
-| 28.4 | `operation` | `String` |  |  | The operation: `join-mesh:<path.name>` or `start-node:<path.name>`. |
+| 28.4 | `operation` | `String` |  |  | The operation: `join-mesh:<path.name>` or `node.start:<path.name>`. |
 | 29 | **`LeaveMesh`** |  |  | `op() = "node.mesh.leave"` | Downward: the commanding authority tells the exact birth to leave its mesh channel(s) |
 | 29.0 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  |  | The birth commanded. |
 | 29.1 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  |  | The incarnation of that birth. |
 | 29.2 | `build_id` | `String` |  |  | The Build the operation belongs to. |
 | 29.3 | `attempt` | `u32` |  |  | The Build attempt that holds the operation. |
-| 29.4 | `operation` | `String` |  |  | The operation: `leave-mesh:<path.name>` or `stop-node:<path.name>`. |
+| 29.4 | `operation` | `String` |  |  | The operation: `leave-mesh:<path.name>` or `node.stop:<path.name>`. |
 
 <a id="t-rafka_node_rpc_contract-status-StatusReply"></a>
 
@@ -1972,7 +1972,7 @@ serde: `deny_unknown_fields`
 |---|---|---|---|---|
 | 0 | `build_id` | `String` |  | The Build the operation belongs to. |
 | 1 | `attempt` | `u32` |  | The attempt of the Build. |
-| 2 | `operation` | `String` |  | The operation's idempotency key (`retire-node:mesh2.rpc.2`), never a pipeline step. |
+| 2 | `operation` | `String` |  | The operation's idempotency key (`node.delete:mesh2.rpc.2`), never a pipeline step. |
 | 3 | `node_id` | `NodeId` → [`NodeId`](#t-rafka_mesh_entity-ids-NodeId) |  | The logical node. |
 | 4 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The incarnation of the birth. |
 | 5 | `name` | `PathName` → [`PathName`](#t-rafka_mesh_entity-path-PathName) |  | The node's `path.name`. |

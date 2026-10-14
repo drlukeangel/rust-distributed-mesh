@@ -66,7 +66,7 @@ fn stop_op(d: &MeshDigest) -> LifecycleOp {
     LifecycleOp {
         build_id: "build-s52".into(),
         attempt: 1,
-        operation: format!("stop-node:{}", d.node.name),
+        operation: format!("node.stop:{}", d.node.name),
         node_id: d.node.node_id.clone(),
         incarnation: d.node.incarnation.clone(),
         name: d.node.name.clone(),
@@ -268,7 +268,7 @@ fn an_own_mesh_member_holding_node_stopped_learns_the_stop_ended_only_from_the_m
 
         // node.joined at the mesh-primary (its start workflow took `Started`): its own book ends the stop
         // and holds the birth Pending; v3, its next projection, lists the birth again.
-        let start = LifecycleOp { operation: "start-node:mesh1.rpc.1".into(), ..stop.clone() };
+        let start = LifecycleOp { operation: "node.start:mesh1.rpc.1".into(), ..stop.clone() };
         assert!(p.book.joined(&start), "the mesh-primary ends the stop at node.joined");
         assert_eq!(p.book.get(id.as_str()).map(|(d, _)| d.status), Some(MemberStatus::Pending), "the primary holds the birth Pending");
         round().await;
@@ -374,7 +374,7 @@ fn a_member_that_never_applied_a_projection_carrying_a_stop_ends_it_from_a_top_u
 
         // node.joined at the mesh-primary before its next round; the member is parked through the round,
         // so the projection listing the birth again reaches it only through its top-up.
-        let start = LifecycleOp { operation: "start-node:mesh1.rpc.1".into(), ..stop.clone() };
+        let start = LifecycleOp { operation: "node.start:mesh1.rpc.1".into(), ..stop.clone() };
         assert!(p.book.joined(&start), "the mesh-primary ends the stop at node.joined");
         m.park().await;
         round().await;

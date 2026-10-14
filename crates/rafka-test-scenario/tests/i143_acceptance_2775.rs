@@ -208,7 +208,7 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == build_id.as_str() && r["trace_id"] == recovery["trace_id"] && r["attributes"]["lane"] == "mesh1").collect();
     let replace = reconciles
         .iter()
-        .find(|r| r["attributes"]["reason"] == "recovery" && s(&r["attributes"]["operations"]) == format!("retire-node:{NODE},create-node:{NODE}"))
+        .find(|r| r["attributes"]["reason"] == "recovery" && s(&r["attributes"]["operations"]) == format!("node.delete:{NODE},node.create:{NODE}"))
         .cloned()
         .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting and creating {NODE}, and nothing else, in the recovery's trace: {reconciles:?}"));
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");

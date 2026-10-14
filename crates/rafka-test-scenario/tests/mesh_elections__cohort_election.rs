@@ -368,7 +368,7 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     assert!(announced(&spans, &rpc, &succ2_id, &removed_id), "the successor to the removed primary was announced");
     // The restart's node.primary.update moved the rpc seat to the next-lowest ready NodeId, and
     // the mesh-primary announced it (C1 step 7).
-    assert!(primary_updated(&spans, &rpc, &format!("restart-node:{rpc_p}"), &succ_r_id), "the mesh-primary announced the rpc seat updated to {succ_r} ({succ_r_id}) before the restart of {rpc_p}");
+    assert!(primary_updated(&spans, &rpc, &format!("node.restart:{rpc_p}"), &succ_r_id), "the mesh-primary announced the rpc seat updated to {succ_r} ({succ_r_id}) before the restart of {rpc_p}");
     // The restarted node never took its seat back while the holder lived.
     let back = named(&spans, "rdm.mesh.election.resolve.via-recompute").iter().any(|sp| {
         let a = &sp["attributes"];

@@ -179,7 +179,7 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `stop-node:<path>`.
+        /// The operation: `node.stop:<path>`.
         operation: String,
     },
     /// Reserved: a stopped birth reports `stopped` on the reply of its `StopNode` call, so this call is
@@ -193,7 +193,7 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `stop-node:<path>`.
+        /// The operation: `node.stop:<path>`.
         operation: String,
     },
     /// Downward: the fabric-primary tells the deleting mesh's primary to run its mesh.delete
@@ -206,7 +206,7 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `shutdown-mesh:<mesh_id>`.
+        /// The operation: `mesh.delete:<mesh_id>`.
         operation: String,
     },
     /// Upward: the still-running mesh-primary hands the fabric-primary the proof that every other
@@ -220,7 +220,7 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `shutdown-mesh:<mesh_id>`.
+        /// The operation: `mesh.delete:<mesh_id>`.
         operation: String,
         /// The final mesh-primary's node.
         final_node_id: NodeId,
@@ -308,7 +308,7 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `start-node:<path>`.
+        /// The operation: `node.start:<path>`.
         operation: String,
     },
     /// Upward: a caller asks the exact birth's mesh-primary, the writer of that mesh's rows, to put the
@@ -455,7 +455,7 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `join-mesh:<path.name>` or `start-node:<path.name>`.
+        /// The operation: `join-mesh:<path.name>` or `node.start:<path.name>`.
         operation: String,
     },
     /// Downward: the commanding authority tells the exact birth to leave its mesh channel(s)
@@ -472,7 +472,7 @@ pub enum StatusRequest {
         build_id: String,
         /// The Build attempt that holds the operation.
         attempt: u32,
-        /// The operation: `leave-mesh:<path.name>` or `stop-node:<path.name>`.
+        /// The operation: `leave-mesh:<path.name>` or `node.stop:<path.name>`.
         operation: String,
     },
 }
@@ -1643,8 +1643,8 @@ mod tests {
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedStaleRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedStaleRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "mesh.delete:m".into() }, offered: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() }, offered: MeshDeleteRound { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "mesh.delete:m".into() } }, ReplyKind::ProtocolRefusal),
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::ProtocolRefusal),
             (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts 66h8qrqvaajk", "unreached: no path"), ReplyKind::ProtocolRefusal),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::ProtocolRefusal),
@@ -1671,24 +1671,24 @@ mod tests {
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
             StatusRequest::Reserved6 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "reserved-6:mesh1.rpc.1".into() },
             StatusRequest::Reserved7 { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "reserved-7:mesh1.rpc.1".into() },
-            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
-            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
-            StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "shutdown-mesh:m".into() },
+            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() },
+            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() },
+            StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "mesh.delete:m".into() },
             StatusRequest::MeshDeleted {
                 mesh_id: MeshId::mint(),
                 build_id: "66h8qrqvaajk".into(),
                 attempt: 1,
-                operation: "shutdown-mesh:m".into(),
+                operation: "mesh.delete:m".into(),
                 final_node_id: NodeId::mint(),
                 final_incarnation: IncarnationId::mint(),
                 final_runtime: RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60("dep"), provider: rafka_mesh_entity::RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: rafka_mesh_entity::RuntimeLocator::Process { pid: 4321, start: 123456 } },
-                receipt_manifest: "66h8qrqvaajk/1/shutdown-mesh:m/other-members-exited".into(),
+                receipt_manifest: "66h8qrqvaajk/1/mesh.delete:m/other-members-exited".into(),
             },
             StatusRequest::CommitState { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
             StatusRequest::StateCommitted { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
             StatusRequest::OpenTraffic { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
             StatusRequest::TrafficOpened { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
-            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() },
+            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.start:mesh1.rpc.1".into() },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },

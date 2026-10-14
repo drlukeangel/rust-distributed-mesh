@@ -98,8 +98,7 @@ fn the_fabric_primary_executing_a_peer_meshs_stop_and_delete_publishes_nothing_f
         // The view a node-admin hands its backbone at each install: it names mesh2 live, for the
         // accepted Build names it (rafka-node-admin-core admin.rs `project_decided_at`); a live mesh
         // with no primary goes unheard (R-RX4).
-        fp_bb.set_view_meshes([("mesh1".to_string(), false), ("mesh2".to_string(), false)].into_iter().collect());
-        fp_bb.set_fabric_primary(true);
+            fp_bb.set_fabric_primary(true);
 
         let admin2 = digest("mesh2.admin.1", 42_001);
         let rpc = digest("mesh2.rpc.1", 42_101);

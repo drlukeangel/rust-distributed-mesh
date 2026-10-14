@@ -49,15 +49,6 @@ impl LifecycleEvents for Recorder {
     }
     // A member's node.delete publishes no mesh-level event: those are the owner's and the deleting
     // primary's (mesh-delete.md), recorded here so a stray one shows in the order.
-    async fn mesh_leaving(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
-        self.1.lock().unwrap().push(format!("MeshLeaving:{}", event.operation));
-    }
-    async fn mesh_leave(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
-        self.1.lock().unwrap().push(format!("MeshLeave:{}", event.operation));
-    }
-    async fn mesh_left(&self, event: &rafka_node_admin_core::deployment::pipeline::MeshLeaveEvent) {
-        self.1.lock().unwrap().push(format!("MeshLeft:{}", event.operation));
-    }
     fn now_rafka_ms(&self) -> u64 {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
     }
@@ -65,9 +56,9 @@ impl LifecycleEvents for Recorder {
 
 /// CONTRACT: a member's node.delete in a mesh delete publishes `NodeDeleting` first, then
 /// `NodeStopped` once, from its matching `stopped` reply after its `node-leaving` hook, naming the
-/// member's exact birth under its own `stop-node:<path>` operation of the mesh delete's Build and
+/// member's exact birth under its own `node.stop:<path>` operation of the mesh delete's Build and
 /// attempt, and `NodeDeleted` last, from the provider's exact exit proof, under node.delete's own
-/// `retire-node:<path>`. Without NodeStopped no peer mesh hears the member parked; without
+/// `node.delete:<path>`. Without NodeStopped no peer mesh hears the member parked; without
 /// NodeDeleted no peer holds it departed, and its own mesh-primary takes its exit for a member to
 /// recover.
 #[test]
@@ -108,10 +99,10 @@ fn a_mesh_delete_member_node_delete_publishes_node_stopped_then_node_deleted() {
         assert_eq!(
             events,
             vec![
-                "NodeDeleting:retire-node:mesh1.rpc.1".to_string(),
-                "NodeLeaving:stop-node:mesh1.rpc.1".into(),
-                "NodeStopped:stop-node:mesh1.rpc.1".into(),
-                "NodeDeleted:retire-node:mesh1.rpc.1".into()
+                "NodeDeleting:node.delete:mesh1.rpc.1".to_string(),
+                "NodeLeaving:node.stop:mesh1.rpc.1".into(),
+                "NodeStopped:node.stop:mesh1.rpc.1".into(),
+                "NodeDeleted:node.delete:mesh1.rpc.1".into()
             ],
             "the member's lifecycle events, in order"
         );

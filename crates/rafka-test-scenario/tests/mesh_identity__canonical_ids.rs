@@ -256,12 +256,12 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // the mesh.delete, the last admin's by its own node.delete, the fabric-primary its executor) and
     // wrote the mesh row Dead; mesh2 created again claimed mesh2.admin.1 over the Deleted row, its
     // config seeded from it, under a new MeshId.
-    let leave = format!("shutdown-mesh:{}", mesh_ids["mesh2"]);
+    let leave = format!("mesh.delete:{}", mesh_ids["mesh2"]);
     let deleted = named(&spans, "rdm.node_admin.node.delete.via-node-row");
     for n in regrown.iter().filter(|n| n["mesh"] == "mesh2") {
         let row = deleted.iter().find(|sp| {
             let a = &sp["attributes"];
-            (s(&a["operation"]) == leave || s(&a["operation"]) == format!("retire-node:{}", s(&n["name"]))) && a["subject"] == n["name"] && s(&a["node_id"]) == s(&n["node_id"]) && a["outcome"] == "row-deleted"
+            (s(&a["operation"]) == leave || s(&a["operation"]) == format!("node.delete:{}", s(&n["name"]))) && a["subject"] == n["name"] && s(&a["node_id"]) == s(&n["node_id"]) && a["outcome"] == "row-deleted"
         });
         assert!(row.is_some_and(|sp| sp["attributes"]["outcome"] == "row-deleted"), "{}'s row is written Deleted by mesh2's removal: {row:?}", n["name"]);
     }

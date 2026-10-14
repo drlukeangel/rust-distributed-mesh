@@ -65,7 +65,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
         let view = builds.read_build(&retire_build).await.unwrap();
         let got: Vec<(&str, &StepOutcome, &str)> = view.steps.iter().map(|r| (r.step.as_str(), &r.outcome, r.operation.as_str())).collect();
         let want: Vec<(&str, &StepOutcome, &str)> =
-            RetireStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "retire-node:mesh1.rpc.1")).collect();
+            RetireStep::ORDER.iter().map(|s| (s.name(), &StepOutcome::Complete, "node.delete:mesh1.rpc.1")).collect();
         assert_eq!(got, want);
         // StopNode is the directed command: its receipt carries what the call established;
         // AwaitNodeLeft carries the completion, the stop's own reply.
@@ -116,7 +116,7 @@ fn retire_runs_every_step_in_order_and_the_ports_it_held_are_released() {
             && f.get("pipeline").map(String::as_str) == Some("retire")));
         // Each command was sent under its own operation, and the birth's completion call for that
         // operation reached the commanding side (the server handler's own spans run on its tasks).
-        for (command, completion, operation, admission) in [("stop-node", "node-left", "stop-node:mesh1.rpc.1", "stopped")] {
+        for (command, completion, operation, admission) in [("stop-node", "node-left", "node.stop:mesh1.rpc.1", "stopped")] {
             assert!(
                 all.values().any(|(n, _, f)| n == "rdm.node_admin.node.update.via-command-sent" && f.get("operation").map(String::as_str) == Some(operation) && f.get("admission").map(String::as_str) == Some(admission) && f.get("command").map(String::as_str) == Some(command)),
                 "no {admission} {command} span"

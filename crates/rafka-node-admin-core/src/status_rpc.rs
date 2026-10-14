@@ -1513,7 +1513,7 @@ mod tests {
         let (reply, effect) = decide(&auth, &view, &Declared::default(), &declare);
         assert!(holding_me(&reply) && effect.is_none(), "the retired birth's seat is not this admin's: {reply:?}");
 
-        let stop = StatusRequest::StopNode { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.admin.1".into() };
+        let stop = StatusRequest::StopNode { node_id: successor.node_id.clone(), incarnation: successor.incarnation_id.clone().unwrap(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.admin.1".into() };
         let reply = auth.apply(Some(owner.clone()), &stop).await;
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node naming this admin's node id reaches the subject's own door: {reply:?}");
     }
@@ -1539,13 +1539,13 @@ mod tests {
         };
         let auth = authority_of(&me, view);
         let incarnation = me.incarnation_id.clone().unwrap();
-        let stop = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.admin.2".into() };
+        let stop = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: incarnation.clone(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.admin.2".into() };
         let reply = auth.apply(None, &stop).await;
         assert!(matches!(&reply, R::NotReady { reason } if reason.contains("has not yet joined its mesh")), "a stop-node from a stranger reaches the subject's own door: {reply:?}");
         let probe = StatusRequest::ProbeNodeState { node_id: me.node_id.clone(), incarnation: incarnation.clone() };
         let reply = auth.apply(None, &probe).await;
         assert!(matches!(&reply, R::Current { node_id, state: NodeState::ReadyForTraffic, .. } if *node_id == me.node_id), "a probe from a stranger is answered by the subject: {reply:?}");
-        let stale = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "stop-node:mesh1.admin.2".into() };
+        let stale = StatusRequest::StopNode { node_id: me.node_id.clone(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "node.stop:mesh1.admin.2".into() };
         assert_eq!(auth.apply(None, &stale).await, R::RejectedStaleIncarnation { held: incarnation });
     }
 
@@ -1695,7 +1695,7 @@ mod tests {
         book.depart(rafka_mesh_entity::LifecycleOp {
             build_id: "build1".into(),
             attempt: 1,
-            operation: "retire-node:mesh1.rpc.2".into(),
+            operation: "node.delete:mesh1.rpc.2".into(),
             node_id: deleted.node_id.clone(),
             incarnation: deleted.incarnation_id.clone().unwrap(),
             name: deleted.name.clone(),

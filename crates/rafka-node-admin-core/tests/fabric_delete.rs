@@ -319,7 +319,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         n.status = NodeStatus::Leaving;
         n.parked = true;
     });
-    rows_m1.deleted(&m2_a1, "retire-node:mesh2.admin.1").await.unwrap();
+    rows_m1.deleted(&m2_a1, "node.delete:mesh2.admin.1").await.unwrap();
     observed.write().await.nodes.retain(|n| n.name != m2_a1.name);
     let left_m2 = mesh_left_proof(&manifest_m2, &term_m2_a1).unwrap();
     mesh_left_rows(Some(&rows_m1), &status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left_m2.receipts).await.unwrap();
@@ -435,7 +435,7 @@ async fn fabric_delete_leaves_no_node_mesh_or_fabric_row_and_fabric_primary_awai
         n.status = NodeStatus::Leaving;
         n.parked = true;
     });
-    rows_m1.deleted(&m1_a1, "retire-node:mesh1.admin.1").await.unwrap();
+    rows_m1.deleted(&m1_a1, "node.delete:mesh1.admin.1").await.unwrap();
     let left_m1 = mesh_left_proof(&manifest_m1, &term_m1_a1).unwrap();
     mesh_left_rows(Some(&rows_m1), &status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m1, "mesh1", &left_m1.receipts).await.unwrap();
 
@@ -658,7 +658,7 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
             n.status = NodeStatus::Leaving;
             n.parked = true;
         });
-        rows_fp.deleted(&m2_a2, "retire-node:mesh2.admin.2").await.unwrap();
+        rows_fp.deleted(&m2_a2, "node.delete:mesh2.admin.2").await.unwrap();
         let left = mesh_left_proof(&manifest, &term_a2).unwrap();
         mesh_left_rows(Some(&rows_fp), &status_storage, &mesh_storage, &declared, "mesh1.admin.1", &key_m2, "mesh2", &left.receipts).await.unwrap();
 

@@ -97,7 +97,7 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
     door.arm("aggregate-in-flight", serde_json::json!({"kind": "announcement", "announcement": "aggregate-in-flight", "channel": "backbone"})).await;
     let mut restart = estate.nodes_obj().await.restart(&target.parse().unwrap_or_else(|e| panic!("{target} is not a path.name: {e:?}"))).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {target}: {e}"));
     Estate::complete(&mut restart).await;
-    let operation = format!("restart-node:{target}");
+    let operation = format!("node.restart:{target}");
     // The restart's outcome reaches the other mesh from its mesh primary's own later aggregate: every
     // ordinary node of the other mesh holds the target as the same birth, with no restart in flight.
     {
@@ -108,7 +108,7 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
         for peer in views.iter().filter(|n| n.mesh == home && n.kind == rafka_node_admin_client::LaunchKind::RpcNode) {
             peers
                 .fact(peer, &target_view.mesh, "it holds the restarted target as the same birth, live, with no restart in flight", |v| {
-                    v.birth(&target_view.node_id).is_some_and(|d| d.node.incarnation.as_str() == target_birth.1 && d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic) && v.overlay(&target_view.node_id, "restart-node:").is_none()
+                    v.birth(&target_view.node_id).is_some_and(|d| d.node.incarnation.as_str() == target_birth.1 && d.status == rafka_mesh_entity::MemberStatus::ReadyForTraffic) && v.overlay(&target_view.node_id, "node.restart:").is_none()
                 })
                 .await;
         }

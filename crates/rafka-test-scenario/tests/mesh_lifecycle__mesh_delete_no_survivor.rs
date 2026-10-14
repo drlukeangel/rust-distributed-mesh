@@ -40,7 +40,7 @@ async fn a_leave_whose_only_admin_is_lost_mid_tier_finishes_under_the_admin_the_
     assert!(pending.is_empty(), "the created admin is never handed Pending: {pending:?}");
     let amended = assert_resumed(&run, "mesh2.admin.2", 4);
     assert!(start_ns(created[0]) < start_ns(&amended), "the admin is created before the amendment admits it");
-    let outer = format!("shutdown-mesh:{}", run.mesh2_id);
+    let outer = format!("mesh.delete:{}", run.mesh2_id);
     // The created admin admits over the roster captured once plus the amendment that names it, and
     // captures none of its own: it reads the leaving roster recorded in the Build (gossiped Build
     // facts) with the amendment, from its own facts once they hold it (`via-own-build-facts`) or

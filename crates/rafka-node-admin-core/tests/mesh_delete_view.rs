@@ -111,7 +111,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
             records.install_read(&me, &view, &book, &fabric, rebuild).await;
             let after_receipt = status_of(&*view.read().await);
             // At once: the node.delete's stop of the last admin, from its matching stopped reply.
-            let stop = LifecycleOp { build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: format!("stop-node:{LAST}"), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100 };
+            let stop = LifecycleOp { build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: format!("node.stop:{LAST}"), node_id: last.node.node_id.clone(), incarnation: last.node.incarnation.clone(), name: last.node.name.clone(), event_at_rafka_ms: 1_000_100 };
             lifecycle.stopped(&stop).await;
             after_receipt
         }
@@ -132,13 +132,7 @@ fn the_fabric_primary_stopping_a_deleted_meshs_last_admin_right_after_its_mesh_d
     assert_eq!(after_receipt, Some(ScopeStatus::Dead), "the view installed at the receipt holds mesh1 deleted");
     let event = mine("rdm.mesh.membership.update.via-status-event").into_iter().find(|s| attr(s, "subject") == LAST && attr(s, "frame") == "node-stopped");
     let event = event.unwrap_or_else(|| panic!("the stop of {LAST} was published as a status event in the cell's trace {trace_id}"));
-    assert_eq!(attr(&event, "role"), "deleted-mesh-publisher", "the stop right after the receipt makes the fabric-primary mesh1's publisher of record: {event}");
-    let published: Vec<Value> = mine("rdm.mesh.backbone.update.via-deleted-mesh").into_iter().filter(|s| attr(s, "mesh") == "mesh1" && attr(s, "node") == FP).collect();
-    assert!(
-        published.iter().any(|s| (attr(s, "digests"), attr(s, "in_flight"), attr(s, "departed")) == ("0", "1", "0")),
-        "the fabric-primary published mesh1's aggregate from the stop's own event, no digests, the stopped admin in in_flight: {published:?}"
-    );
-    let moved: Vec<Value> = mine("rdm.mesh.backbone.update.via-view-meshes").into_iter().filter(|s| attr(s, "mesh") == "mesh1" && (attr(s, "was"), attr(s, "now")) == ("live", "deleted")).collect();
-    assert!(moved.iter().any(|s| start_ns(s) <= start_ns(&event)), "the backbone took mesh1 deleted from the receipt's install, before the stop's status event: {moved:?} (event {event})");
-    eprintln!("trace {trace_id}: via-view-meshes mesh1 live->deleted at the receipt's install, via-status-event NodeStopped role=deleted-mesh-publisher, via-deleted-mesh mesh1 digests=0 in_flight=1 departed=0");
+    assert_eq!(attr(&event, "role"), "executor", "the fabric-primary stops the deleted mesh's last admin as executor and never stamps a deleted-mesh aggregate: {event}");
+    let published: Vec<Value> = mine("rdm.mesh.backbone.update.via-deleted-mesh");
+    assert!(published.is_empty(), "the fabric-primary never publishes a deleted mesh's aggregate: {published:?}");
 }

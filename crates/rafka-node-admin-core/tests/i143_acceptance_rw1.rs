@@ -110,8 +110,8 @@ fn frames() -> Vec<Frame> {
             chunk_index: 1,
             chunk_count: 3,
             digests: vec![digest(1, None, false), digest(2, Some(process_runtime()), true)],
-            in_flight: vec![op("retire-node:mesh2.rpc.2")],
-            departed: vec![op("retire-node:mesh2.rpc.3")],
+            in_flight: vec![op("node.delete:mesh2.rpc.2")],
+            departed: vec![op("node.delete:mesh2.rpc.3")],
         },
         Frame::Members {
             mesh: "mesh2".into(),
@@ -134,17 +134,17 @@ fn frames() -> Vec<Frame> {
             published_at_rafka_ms: 12,
             changed: vec![digest(4, Some(container_runtime()), true)],
             removed: vec!["mesh2.rpc.9".into()],
-            in_flight: vec![op("restart-node:mesh2.rpc.4")],
+            in_flight: vec![op("node.restart:mesh2.rpc.4")],
             departed: vec![],
         },
-        Frame::NodeDeleting { op: op("retire-node:mesh2.rpc.2"), forwarded_by: None, publisher: p.clone(), topology_version: 10 },
-        Frame::NodeDeleted { op: op("retire-node:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()) },
-        Frame::NodeRestarting { op: op("restart-node:mesh2.rpc.2"), forwarded_by: None, publisher: p.clone(), topology_version: 11 },
-        Frame::NodeStopped { op: op("stop-node:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()), publisher: p.clone(), topology_version: 12 },
-        Frame::NodeConnectionsDeleting { op: op("drain-node:mesh2.rpc.2"), forwarded_by: None },
-        Frame::NodeLeaving { op: op("stop-node:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()) },
-        Frame::NodeLeft { op: op("stop-node:mesh2.rpc.2"), forwarded_by: Some("mesh2.admin.1".into()) },
-        Frame::NodeConnectionsDeleted { op: op("drain-node:mesh2.rpc.2"), forwarded_by: None },
+        Frame::NodeDeleting { op: op("node.delete:mesh2.rpc.2"), forwarded_by: None, publisher: p.clone(), topology_version: 10 },
+        Frame::NodeDeleted { op: op("node.delete:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()) },
+        Frame::NodeRestarting { op: op("node.restart:mesh2.rpc.2"), forwarded_by: None, publisher: p.clone(), topology_version: 11 },
+        Frame::NodeStopped { op: op("node.stop:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()), publisher: p.clone(), topology_version: 12 },
+        Frame::NodeConnectionsDeleting { op: op("node.connections.delete:mesh2.rpc.2"), forwarded_by: None },
+        Frame::NodeLeaving { op: op("node.stop:mesh2.rpc.2"), forwarded_by: Some("mesh1.admin.1".into()) },
+        Frame::NodeLeft { op: op("node.stop:mesh2.rpc.2"), forwarded_by: Some("mesh2.admin.1".into()) },
+        Frame::NodeConnectionsDeleted { op: op("node.connections.delete:mesh2.rpc.2"), forwarded_by: None },
         Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 77 },
         Frame::FabricStatus { fabric: fabric(), status: "ready-for-traffic".into(), publisher: "mesh1.admin.1".into(), forwarded_by: Some("mesh2.admin.1".into()), changed_at_rafka_ms: 78 },
         Frame::Seated { seat: rafka_mesh_entity::Seat::FabricPrimary, holder: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 } },
@@ -152,7 +152,7 @@ fn frames() -> Vec<Frame> {
         Frame::Concern { seat: rafka_mesh_entity::Seat::FabricPrimary, node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), observer: "mesh2.admin.1".into() },
         Frame::NewFabricPrimary { holder: rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 }, endpoint_id: "key2".into(), transport_addr: "127.0.0.1:41002".parse().unwrap(), admin_api_base: Some("http://127.0.0.1:41003".into()) },
         Frame::PrimaryUpdated {
-            op: op("stop-node:mesh2.admin.1"),
+            op: op("node.stop:mesh2.admin.1"),
             seats: [rafka_mesh_entity::Seat::MeshPrimary, rafka_mesh_entity::Seat::FabricPrimary].into_iter().map(|seat| rafka_mesh_entity::seat::transfer::CommittedSeat::of(seat, &rafka_mesh_entity::SeatHolder { mesh: "mesh2".into(), node_id: rafka_mesh_entity::NodeId::mint(), incarnation: IncarnationId::mint(), revision: 5 })).collect(),
         },
         Frame::StateCommitting { hook: round_hook("commit-state"), forwarded_by: None },
@@ -191,7 +191,7 @@ fn changes() -> Vec<Option<TopologyChange>> {
 }
 
 fn step(step: &str, output: Option<Value>) -> BuildFact {
-    BuildFact::Step(BuildStepReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: "create-node:mesh2.rpc.1".into(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("key@127.0.0.1:1".into()) })
+    BuildFact::Step(BuildStepReceipt { mesh: None, build_id: bid("3qcfk1kq47m9"), attempt: 2, operation: "node.create:mesh2.rpc.1".into(), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("key@127.0.0.1:1".into()) })
 }
 
 fn to_json<T: serde::Serialize>(v: &T) -> Value {
@@ -250,7 +250,7 @@ fn facts() -> Vec<BuildFact> {
         mesh: None,
         build_id: bid("3qcfk1kq47m9"),
         attempt: 2,
-        operation: "create-node:mesh2.rpc.1".into(),
+        operation: "node.create:mesh2.rpc.1".into(),
         step: "WaitForBind".into(),
         outcome: StepOutcome::Failed { reason: "runtime exited (code Some(1)) before binding".into() },
         output: None,
@@ -282,7 +282,7 @@ fn facts() -> Vec<BuildFact> {
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": "Pending" }))));
     out.push(step(CreateStep::ApplyMeshPending.name(), Some(json!({ "applied": null, "reason": "no Pending owed: not a new mesh's first admin" }))));
     for s in [RetireStep::NodeDeleting, RetireStep::NodeRestarting, RetireStep::NodeDeleted] {
-        out.push(step(s.name(), Some(to_json(&op("retire-node:mesh2.rpc.1")))));
+        out.push(step(s.name(), Some(to_json(&op("node.delete:mesh2.rpc.1")))));
     }
     for (command, completion) in [(RetireStep::StopNode, RetireStep::AwaitNodeLeft)] {
         for d in [
@@ -357,7 +357,7 @@ fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_c
     result.insert("build_messages".into(), json!({ "facts": many.len(), "messages": messages.len(), "largest_bytes": messages.iter().map(|m| m.len()).max(), "ceiling": MAX_MESSAGE_BYTES }));
 
     let members: Vec<MeshDigest> = (1..=150).map(|k| digest(k, (k % 2 == 0).then(process_runtime), k % 3 == 0)).collect();
-    let overlays: Vec<LifecycleOp> = (0..12).map(|_| op("retire-node:mesh1.rpc.1")).collect();
+    let overlays: Vec<LifecycleOp> = (0..12).map(|_| op("node.delete:mesh1.rpc.1")).collect();
     let full = Full::new(members.clone(), overlays.clone(), overlays.iter().take(5).cloned().collect());
     let p = publisher();
     let chunks = chunks_of(&full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {

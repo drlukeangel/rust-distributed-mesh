@@ -193,7 +193,7 @@ async fn a_recovery_submit_for_a_birth_a_delete_deleted_is_answered_already_appl
     let delete = cp.submit("build.create", TopologyChange::RemoveNode { node: path.clone() }).await.expect("the delete is admitted");
     let b1 = delete.build_id.clone();
     builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b1.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-    for r in deletion_receipts(None, "retire-node", &b1, 1, &path, &node_id, &birth, "mesh1.admin.1") {
+    for r in deletion_receipts(None, "node.delete", &b1, 1, &path, &node_id, &birth, "mesh1.admin.1") {
         builds.append_step_receipt(&r).await.unwrap();
     }
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b1.clone(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
@@ -212,7 +212,7 @@ async fn a_recovery_submit_for_a_birth_a_delete_deleted_is_answered_already_appl
     let applied = capture.spans("rdm.node_admin.build.reject.via-recovery-already-applied");
     assert_eq!(
         applied.iter().map(|(_, a)| a.get("operation").cloned().unwrap_or_default()).collect::<Vec<_>>(),
-        vec![format!("retire-node:{path}")],
+        vec![format!("node.delete:{path}")],
         "the answer names the workflow operation the birth's exit belongs to"
     );
     for name in ["rdm.node_admin.build.update.via-recovery", "rdm.node_admin.build.reject.via-recovery-already-applied"] {
@@ -263,13 +263,13 @@ async fn until(what: &str, builds: &dyn BuildStateAdapter, id: &rafka_node_admin
 }
 
 /// The step receipts a recovery attempt in `lane` writes for the exited birth (node-recovery.md "Steps"), as
-/// its two workflows write them: the delete's (`retire-node:<path>`: `NodeDeleting` and
+/// its two workflows write them: the delete's (`node.delete:<path>`: `NodeDeleting` and
 /// `NodeDeleted` carry the lifecycle operation naming the exited birth, `Complete` commits no
-/// output), then the create's `Complete` (`create-node:<path>`), the recovery's last; the create's
+/// output), then the create's `Complete` (`node.create:<path>`), the recovery's last; the create's
 /// steps before its `Complete` are elided (they name the new node, not the exited one).
 fn recovery_receipts(lane: Option<&str>, build: &rafka_node_admin_core::build::BuildId, attempt: u32, path: &PathName, node_id: &NodeId, birth: &IncarnationId, executor: &str) -> Vec<BuildStepReceipt> {
-    let mut receipts = deletion_receipts(lane, "retire-node", build, attempt, path, node_id, birth, executor);
-    receipts.push(BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build.clone(), attempt, operation: format!("create-node:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: Some(executor.into()) });
+    let mut receipts = deletion_receipts(lane, "node.delete", build, attempt, path, node_id, birth, executor);
+    receipts.push(BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build.clone(), attempt, operation: format!("node.create:{path}"), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: Some(executor.into()) });
     receipts
 }
 
@@ -341,7 +341,7 @@ async fn a_recovery_a_mesh_primary_opens_and_claims_on_its_own_log_is_heard_by_t
     }
     mp.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: first.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
     until("the fabric-primary hears the recovery attempt converge", &*fp, &b0, |p| p.lanes.get("mesh2").is_some_and(|l| l.state == rafka_node_admin_core::build_state::BuildState::Complete && l.attempt == 1)).await;
-    assert_eq!(fp.recovery_of(&path, &node_id, &birth).await.unwrap(), Some((b0.clone(), Some("mesh2".into()), first.attempt, format!("retire-node:{path}"))), "the fabric-primary's recovery index holds the exited birth from the heard facts");
+    assert_eq!(fp.recovery_of(&path, &node_id, &birth).await.unwrap(), Some((b0.clone(), Some("mesh2".into()), first.attempt, format!("node.delete:{path}"))), "the fabric-primary's recovery index holds the exited birth from the heard facts");
 
     // The repeat submit, at the fabric-primary.
     let before = opened(&fp.facts().await.unwrap());
@@ -505,7 +505,7 @@ impl rafka_node_admin_core::executor::OperationRunner for RecoveryReceipts {
     async fn run(&self, build_id: &rafka_node_admin_core::build::BuildId, lane: Option<&str>, attempt: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         use rafka_node_admin_core::build::BuildOperation;
         let receipts = match op {
-            BuildOperation::RetireNode { node, exited: Some(from) } => deletion_receipts(lane, "retire-node", build_id, attempt, node, &from.node_id, &from.incarnation, &self.executor),
+            BuildOperation::RetireNode { node, exited: Some(from) } => deletion_receipts(lane, "node.delete", build_id, attempt, node, &from.node_id, &from.incarnation, &self.executor),
             BuildOperation::CreateNode { .. } => {
                 vec![BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build_id.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: Some(self.executor.clone()) }]
             }
@@ -562,7 +562,7 @@ async fn a_mesh_primary_runs_its_members_recovery_to_complete_and_its_mesh_admit
     let lane = p.lanes.get("mesh2").expect("mesh2's lane");
     assert_eq!((lane.state, lane.attempt, lane.executor.as_deref(), lane.claimant.as_deref()), (BuildState::Complete, 1, Some("mesh2.admin.1"), Some("mesh2.admin.1")), "mesh2's lane: {lane:?}");
     let ran: Vec<&str> = lane.steps.iter().filter(|s| s.step == "Complete").map(|s| s.operation.as_str()).collect();
-    assert_eq!(ran, vec!["retire-node:mesh2.rpc.1", "create-node:mesh2.rpc.1"], "node.delete, then node.create, in mesh2's lane, and nothing after");
+    assert_eq!(ran, vec!["node.delete:mesh2.rpc.1", "node.create:mesh2.rpc.1"], "node.delete, then node.create, in mesh2's lane, and nothing after");
     assert_eq!((p.attempt, p.state, p.executor.clone(), p.steps.len()), (before.attempt, before.state, before.executor.clone(), before.steps.len()), "the fabric lane is untouched");
     assert_eq!(mp.claims.held("mesh2").await.unwrap(), None, "the attempt's verdict released mesh2's in-flight row");
 
@@ -961,10 +961,10 @@ async fn an_exit_whose_resubmit_a_lost_mesh_primary_opened_and_never_claimed_is_
     let lost = Arc::new(ControlPlane::new(builds.clone(), accepted.clone(), "mesh2.admin.1".parse().unwrap(), before.clone(), crate::adopted_time()).with_claims(claims.clone()));
     let Ok(Recovery::Opened(first)) = lost.open_recovery("node-recovery", member.clone(), exited.node_id.clone(), birth.clone()).await else { panic!("mesh2's primary opens its member's recovery") };
     assert_eq!((first.mesh.as_deref(), first.attempt), (Some("mesh2"), 1), "attempt 1 of mesh2's lane");
-    for r in deletion_receipts(Some("mesh2"), "retire-node", &b0, 1, &member, &exited.node_id, &birth, "mesh2.admin.1") {
+    for r in deletion_receipts(Some("mesh2"), "node.delete", &b0, 1, &member, &exited.node_id, &birth, "mesh2.admin.1") {
         builds.append_step_receipt(&r).await.unwrap();
     }
-    let failed = "create-node:mesh2.rpc.1 step PrepareStorage: node-key is missing in the inherited data dir";
+    let failed = "node.create:mesh2.rpc.1 step PrepareStorage: node-key is missing in the inherited data dir";
     builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: Some("mesh2".into()), build_id: b0.clone(), attempt: 1, outcome: AttemptOutcome::Failed { reason: failed.into() } }).await.unwrap();
     claims.release("mesh2", &InFlight { build_id: b0.clone(), lane: Some("mesh2".into()), attempt: 1, claimant: "mesh2.admin.1".into() }).await.unwrap();
     assert_eq!(builds.exits_owed(&b0, "mesh2").await.unwrap().iter().map(|o| (o.path.clone(), o.attempt)).collect::<Vec<_>>(), vec![(member.clone(), 1)], "after attempt 1's Failed verdict the member is owed a submit");

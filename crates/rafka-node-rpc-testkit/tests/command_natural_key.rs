@@ -162,11 +162,11 @@ impl Birth {
     }
 
     fn stop(&self, attempt: u32) -> StatusRequest {
-        StatusRequest::StopNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: format!("stop-node:{NODE}") }
+        StatusRequest::StopNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: format!("node.stop:{NODE}") }
     }
 
     fn start(&self, attempt: u32) -> StatusRequest {
-        StatusRequest::StartNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: format!("start-node:{NODE}") }
+        StatusRequest::StartNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: format!("node.start:{NODE}") }
     }
 }
 

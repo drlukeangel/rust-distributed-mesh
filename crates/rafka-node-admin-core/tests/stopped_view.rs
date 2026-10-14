@@ -108,7 +108,7 @@ fn a_stop_the_executor_applied_is_in_its_view_before_the_cutover_rename_decides_
         let trace_id = trace_id(&root);
         let (admitted_before, reply) = async {
             // The stop's admission: the successor Leaving, and a view installed from it.
-            let stop = LifecycleOp { build_id: "3vzt99cnx0xe".into(), attempt: 3, operation: format!("stop-node:{SUCCESSOR}"), node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation.clone(), name: succ.node.name.clone(), event_at_rafka_ms: 1_000_100 };
+            let stop = LifecycleOp { build_id: "3vzt99cnx0xe".into(), attempt: 3, operation: format!("node.stop:{SUCCESSOR}"), node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation.clone(), name: succ.node.name.clone(), event_at_rafka_ms: 1_000_100 };
             lifecycle.leaving(&stop).await;
             install().await;
             let admitted_before = view.read().await.own(&succ.node.node_id).map(|n| (n.status, n.parked));

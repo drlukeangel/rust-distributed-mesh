@@ -1914,16 +1914,16 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
         let (rig, b) = rig().await;
         let rpc1 = &b["rpc1"];
         let incarnation = rpc1.node.incarnation_id.clone().unwrap();
-        let key = rafka_node_admin_core::node_commands::CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into(), node_id: rpc1.node.node_id.clone(), incarnation: incarnation.clone() };
+        let key = rafka_node_admin_core::node_commands::CommandKey { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into(), node_id: rpc1.node.node_id.clone(), incarnation: incarnation.clone() };
         let completed = rig.authority.commands.open(key);
-        let left = StatusRequest::NodeLeft { node_id: rpc1.node.node_id.clone(), incarnation, build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let left = StatusRequest::NodeLeft { node_id: rpc1.node.node_id.clone(), incarnation, build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() };
         let reply = reply(&call(&rig, rpc1, &left).await);
         let stop_open = !*completed.borrow();
         (stop_open, reply)
     });
     assert_eq!(
         reply,
-        StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_EXPECTED.into(), reported: "node-left stop-node:mesh1.rpc.1 (build 66h8qrqvaajk, attempt 1)".into() },
+        StatusReply::RejectedUnmatchedCompletion { field: "command".into(), expected: NODE_LEFT_EXPECTED.into(), reported: "node-left node.stop:mesh1.rpc.1 (build 66h8qrqvaajk, attempt 1)".into() },
         "a node-left call is refused by name"
     );
     assert!(stop_open, "the open stop-node of the birth is not completed by a node-left call");
@@ -1933,11 +1933,11 @@ fn a_node_left_call_is_refused_by_name_and_completes_no_open_stop() {
     let a = |k: &str| attrs.get(k).cloned().unwrap_or_default();
     assert_eq!(
         (a("node"), a("op"), a("field"), a("expected"), a("reported"), a("name"), a("caller"), a("operation"), a("build_id"), a("attempt")),
-        ("mesh1.admin.1".to_string(), "node-left".to_string(), "command".to_string(), NODE_LEFT_EXPECTED.to_string(), "node-left stop-node:mesh1.rpc.1 (build 66h8qrqvaajk, attempt 1)".to_string(), "mesh1.rpc.1".to_string(), "mesh1.rpc.1".to_string(), "stop-node:mesh1.rpc.1".to_string(), "66h8qrqvaajk".to_string(), "1".to_string()),
+        ("mesh1.admin.1".to_string(), "node-left".to_string(), "command".to_string(), NODE_LEFT_EXPECTED.to_string(), "node-left node.stop:mesh1.rpc.1 (build 66h8qrqvaajk, attempt 1)".to_string(), "mesh1.rpc.1".to_string(), "mesh1.rpc.1".to_string(), "node.stop:mesh1.rpc.1".to_string(), "66h8qrqvaajk".to_string(), "1".to_string()),
         "{attrs:?}"
     );
     assert!(cap.spans("rdm.node_admin.status.update.via-completion-accepted").is_empty(), "no completion is accepted");
-    eprintln!("trace {trace_id}: rdm.node_admin.status.reject.via-node-left field=command reported=node-left stop-node:mesh1.rpc.1 (build 66h8qrqvaajk, attempt 1)");
+    eprintln!("trace {trace_id}: rdm.node_admin.status.reject.via-node-left field=command reported=node-left node.stop:mesh1.rpc.1 (build 66h8qrqvaajk, attempt 1)");
 }
 
 /// CONTRACT (build.md §4: the current Build is the first in progress or completed, read last in,
@@ -2004,7 +2004,7 @@ async fn fabric_get_answers_the_current_build_its_builds_store_returns_and_skips
     builds.publish_accepted(&BuildAccepted { build_id: newer.clone(), topology: FabricTopology::of_observed(&view), submitted_change: None, submitted_at_ms: u64::MAX - 1 }).await.unwrap();
     builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: newer.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     assert_eq!(answer(builds.clone()).await.build_id, Some(newer.to_string()), "the newer Build in progress is the current Build");
-    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "create-node: PrepareStorage".into() } }).await.unwrap();
+    builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: newer, attempt: 1, outcome: AttemptOutcome::Failed { reason: "node.create: PrepareStorage".into() } }).await.unwrap();
     assert_eq!(answer(builds).await.build_id, Some(held.to_string()), "a failed Build is skipped: fabric.get answers the Build before it");
     assert_eq!(answer(empty).await.build_id, None, "an admin whose builds store holds no Build in progress or completed answers none");
 }

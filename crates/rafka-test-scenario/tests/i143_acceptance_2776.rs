@@ -299,7 +299,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     for r in &restarts {
         let node = r["node"].as_str().unwrap();
         let rest = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|s| s["attributes"]["node"] == node).cloned().unwrap_or_else(|| panic!("{node}: no build.update.via-node-rpc span for the restart call"));
-        let op = format!("restart-node:{node}");
+        let op = format!("node.restart:{node}");
         let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|s| s["attributes"]["operations"].as_str().is_some_and(|o| o.split(',').any(|x| x == op))).cloned().unwrap_or_else(|| panic!("{node}: no reconcile executed {op}"));
         let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|s| s["attributes"]["node"] == node && descends_from(&spans, s, &reconcile)).cloned().unwrap_or_else(|| panic!("{node}: no node.update.via-build under the reconcile"));
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| descends_from(&spans, s, &update)).collect();

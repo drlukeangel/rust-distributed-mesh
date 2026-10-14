@@ -19,7 +19,7 @@ pub struct LifecycleOp {
     pub build_id: String,
     /// The attempt of the Build.
     pub attempt: u32,
-    /// The operation's idempotency key (`retire-node:mesh2.rpc.2`), never a pipeline step.
+    /// The operation's idempotency key (`node.delete:mesh2.rpc.2`), never a pipeline step.
     pub operation: String,
     /// The logical node.
     pub node_id: NodeId,
@@ -66,16 +66,16 @@ impl RoundHook {
 }
 
 impl LifecycleOp {
-    /// A restart operation (`restart-node:<path>`): the logical node is kept, a later birth
+    /// A restart operation (`node.restart:<path>`): the logical node is kept, a later birth
     /// follows; every other operation here removes the node.
     pub fn is_restart(&self) -> bool {
-        self.operation.starts_with("restart-node:")
+        self.operation.starts_with("node.restart:")
     }
 
-    /// A stop operation (`stop-node:<path>`): the birth is parked and rejoins as itself; its
+    /// A stop operation (`node.stop:<path>`): the birth is parked and rejoins as itself; its
     /// departure is `NodeStopped`, never `NodeDeleted`.
     pub fn is_stop(&self) -> bool {
-        self.operation.starts_with("stop-node:")
+        self.operation.starts_with("node.stop:")
     }
 
     /// The operation's identity: the same for its `NodeDeleting` and `NodeDeleted`.
@@ -99,7 +99,7 @@ mod tests {
         let op = LifecycleOp {
             build_id: "b1".into(),
             attempt: 2,
-            operation: "retire-node:mesh2.rpc.2".into(),
+            operation: "node.delete:mesh2.rpc.2".into(),
             node_id: NodeId::mint(),
             incarnation: IncarnationId::mint(),
             name: "mesh2.rpc.2".parse().unwrap(),
@@ -107,6 +107,6 @@ mod tests {
         };
         let back: LifecycleOp = serde_json::from_str(&serde_json::to_string(&op).unwrap()).unwrap();
         assert_eq!(back, op);
-        assert_eq!(op.key(), ("b1".to_string(), 2, "retire-node:mesh2.rpc.2".to_string()));
+        assert_eq!(op.key(), ("b1".to_string(), 2, "node.delete:mesh2.rpc.2".to_string()));
     }
 }

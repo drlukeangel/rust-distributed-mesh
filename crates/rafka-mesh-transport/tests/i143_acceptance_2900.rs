@@ -212,7 +212,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         reborn[0].node.supersedes = Some(reborn[0].node.incarnation.clone());
         reborn[0].node.incarnation = next_birth;
         bumps.push(("a birth's incarnation changed", v.observe(&Full::new(reborn.clone(), vec![], vec![]))));
-        let deleting = op(&reborn[1], "retire-node:mesh2.rpc.2");
+        let deleting = op(&reborn[1], "node.delete:mesh2.rpc.2");
         bumps.push(("an in_flight overlay added", v.observe(&Full::new(reborn.clone(), vec![deleting.clone()], vec![]))));
         bumps.push(("an in_flight overlay cleared with the departure", v.observe(&Full::new(vec![reborn[0].clone(), reborn[2].clone()], vec![], vec![deleting.clone()]))));
         bumps.push(("a departed identity expired", v.observe(&Full::new(vec![reborn[0].clone(), reborn[2].clone()], vec![], vec![]))));
@@ -224,7 +224,7 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         // ---- 2. a snapshot is chunked under one snapshot_id, every chunk fits one message ------
         // Sixty members with overlays: the number of chunks postcard needs is recorded as evidence.
         let sixty = Mesh::new("mesh2", 60);
-        let overlays_of = |m: &Mesh| -> Vec<LifecycleOp> { m.digests(3).iter().take(12).map(|d| op(d, "retire-node:mesh2.rpc.1")).collect() };
+        let overlays_of = |m: &Mesh| -> Vec<LifecycleOp> { m.digests(3).iter().take(12).map(|d| op(d, "node.delete:mesh2.rpc.1")).collect() };
         let sixty_overlays = overlays_of(&sixty);
         let sixty_full = Full::new(sixty.digests(3), sixty_overlays.clone(), sixty_overlays.iter().take(5).cloned().collect());
         let p = publisher("mesh2.admin.1");

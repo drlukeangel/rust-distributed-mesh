@@ -134,7 +134,7 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record_and_config() {
         let mp = mesh_primary(&storage);
         let victim = held(&mp, "mesh1.rpc.1").await;
         storage.put_node_row(&row_of(&victim)).await.unwrap().unwrap();
-        mp.rows.deleted(&victim, "retire-node:mesh1.rpc.1").await.expect("the mesh primary writes the Deleted row");
+        mp.rows.deleted(&victim, "node.delete:mesh1.rpc.1").await.expect("the mesh primary writes the Deleted row");
         (storage.node_row_at(&victim.name).await.unwrap(), victim.node_id)
     });
     assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }), "the row says Deleted and keeps the record and the config");
@@ -164,11 +164,11 @@ fn a_deleted_nodes_row_keeps_its_tags_and_a_plain_create_at_its_name_inherits_no
         let tags: std::collections::BTreeSet<String> = ["rabbit".to_string(), "red".to_string()].into();
         storage.put_node_row(&NodeRow { tags: tags.clone(), ..row_of(&victim) }).await.unwrap().unwrap();
         assert_eq!(storage.tagged("rabbit").await.unwrap(), [victim.node_id.clone()].into(), "the store keeps the tags index with the row it writes");
-        mp.rows.deleted(&victim, "retire-node:mesh1.rpc.1").await.expect("the mesh primary writes the Deleted row");
+        mp.rows.deleted(&victim, "node.delete:mesh1.rpc.1").await.expect("the mesh primary writes the Deleted row");
         let row = storage.node_row_at(&victim.name).await.unwrap();
         let (rabbit, red) = (storage.tagged("rabbit").await.unwrap(), storage.tagged("red").await.unwrap());
         let born = NodeId::mint();
-        mp.rows.claim(&victim.name, &born, "create-node:mesh1.rpc.1", None, ClaimFor::Create).await.expect("a node created at the Deleted row's path.name claims it");
+        mp.rows.claim(&victim.name, &born, "node.create:mesh1.rpc.1", None, ClaimFor::Create).await.expect("a node created at the Deleted row's path.name claims it");
         let after = (storage.tagged("rabbit").await.unwrap(), storage.tagged("red").await.unwrap());
         (row, storage.node_row_at(&victim.name).await.unwrap(), victim.node_id, rabbit, red, born, after)
     });
@@ -202,7 +202,7 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
         storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
-        mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "create-node:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
+        mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "node.create:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
         (storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
     assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }), "the new birth holds the row and the Deleted row's config");
@@ -228,15 +228,15 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
         storage.put_node_row(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
-        mp.rows.claim(&name, &born, "create-node:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
+        mp.rows.claim(&name, &born, "node.create:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
         // The executor's record of the birth it created: no config on it.
         let mut record = Node::allocated(name.clone());
         record.node_id = born.clone();
         assert!(record.config.is_empty());
-        mp.rows.deleted(&record, "retire-node:mesh1.rpc.2").await.expect("the Deleted row is written");
+        mp.rows.deleted(&record, "node.delete:mesh1.rpc.2").await.expect("the Deleted row is written");
         let deleted = storage.node_row_at(&name).await.unwrap();
         let next = NodeId::mint();
-        mp.rows.claim(&name, &next, "create-node:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the Deleted row holds no name");
+        mp.rows.claim(&name, &next, "node.create:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the Deleted row holds no name");
         (deleted, storage.node_row_at(&name).await.unwrap(), born)
     });
     assert_eq!(deleted.map(|r| (r.node_id, r.status, r.config)), Some((born.clone(), NodeStatus::Deleted, tier("silver"))), "the Deleted row keeps the config the writer holds for the birth");
@@ -743,7 +743,7 @@ mod writer {
         }
     }
 
-    /// `create-node:<name>` run by the executor whose rows writer `records` feeds, over `provider`:
+    /// `node.create:<name>` run by the executor whose rows writer `records` feeds, over `provider`:
     /// its error, if it failed.
     async fn create(records: &Records, provider: &Counted, name: &str) -> Result<(), String> {
         let data_root = std::env::temp_dir().join(format!("node-rows-create-{}", NodeId::mint()));
@@ -885,7 +885,7 @@ mod writer {
         }
     }
 
-    /// Attempt `attempt` of `create-node:<name>` in the Build `build`, its receipts in `builds`, run
+    /// Attempt `attempt` of `node.create:<name>` in the Build `build`, its receipts in `builds`, run
     /// by the executor whose rows writer `records` feeds, over `provider`: its error.
     async fn create_attempt(records: &Records, provider: &Counted, builds: &dyn rafka_node_admin_core::build_state::BuildStateAdapter, build: &BuildId, name: &str, attempt: u32) -> Result<(), String> {
         let data_root = std::env::temp_dir().join(format!("node-rows-create-{}", NodeId::mint()));
@@ -943,7 +943,7 @@ mod writer {
             let identity = serde_json::json!({ "node_id": x, "incarnation": IncarnationId::mint(), "supersedes": null, "deployment_id": rafka_node_admin_core::model::DeploymentId::mint() });
             rafka_node_admin_core::build_state::BuildStateAdapter::append_step_receipt(
                 &builds,
-                &rafka_node_admin_core::build_state::BuildStepReceipt { mesh: None, build_id: other.clone(), attempt: 1, operation: "create-node:mesh1.rpc.6".into(), step: "AllocateIdentity".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: Some(identity), executor: None },
+                &rafka_node_admin_core::build_state::BuildStepReceipt { mesh: None, build_id: other.clone(), attempt: 1, operation: "node.create:mesh1.rpc.6".into(), step: "AllocateIdentity".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: Some(identity), executor: None },
             )
             .await
             .unwrap();
@@ -1036,7 +1036,7 @@ mod writer {
         }
     }
 
-    /// Attempt `attempt` of `create-node:<name>` in the Build `build`, its receipts in `builds`, run by
+    /// Attempt `attempt` of `node.create:<name>` in the Build `build`, its receipts in `builds`, run by
     /// the executor whose rows writer `records` feeds, over `provider`, its births' data dirs under
     /// `data_root`: its error.
     async fn create_attempt_over(records: &Records, provider: &dyn DeploymentProvider, observer: &dyn NodeObserver, builds: &dyn rafka_node_admin_core::build_state::BuildStateAdapter, build: &BuildId, name: &str, attempt: u32, data_root: &std::path::Path) -> Result<(), String> {
@@ -1068,7 +1068,7 @@ mod writer {
     /// survives the loss of the admin that wrote it; node-rpc-envelope.md Build carrier: "Completed steps are not rerun", an
     /// idempotent uncertain step is settled by its natural key; lifecycles/node-create.md step 1: the
     /// claim precedes the launch, and "Runtime exit requires independent exact provider proof, even for
-    /// a deployment that never joined"): attempt 1 of `create-node:mesh1.rpc.7` runs on executor A
+    /// a deployment that never joined"): attempt 1 of `node.create:mesh1.rpc.7` runs on executor A
     /// through its name claim and A is lost inside `DeployRuntime`, before anything is launched. A's
     /// receipts never reach B's. B runs attempt 2 holding only what
     /// the shared store holds: A's claim row. B's create takes the identity A's claim was made with
@@ -1137,7 +1137,7 @@ mod writer {
         let a = &settled[0]["attributes"];
         assert_eq!(
             (a["node_id"].as_str(), a["deployment_id"].as_str(), a["operation"].as_str(), a["attempt"].as_str(), a["outcome"].as_str()),
-            (Some(x.as_str()), Some(deployment.as_str()), Some("create-node:mesh1.rpc.7"), Some("2"), Some("never-launched")),
+            (Some(x.as_str()), Some(deployment.as_str()), Some("node.create:mesh1.rpc.7"), Some("2"), Some("never-launched")),
             "the claim names the birth A allocated and the provider proves no runtime of its deployment exists: {a:#?}"
         );
         let withdrawn = cap.spans_named("rdm.node_admin.node.remove.via-claim-withdrawn");
@@ -1269,7 +1269,7 @@ mod writer {
         }
     }
 
-    /// Executor A runs attempt 1 of `create-node:<name>` in `build` through its claim and is lost inside
+    /// Executor A runs attempt 1 of `node.create:<name>` in `build` through its claim and is lost inside
     /// `DeployRuntime` before it launches anything; its births' data dirs under `data_root`. Returns
     /// the identity A's AllocateIdentity receipt names.
     async fn lost_after_claim(storage: &Arc<MemoryNodesStorage>, build: &BuildId, name: &str, data_root: &std::path::Path) -> Value {
@@ -1550,14 +1550,14 @@ mod writer {
 }
 
 /// The recovery of `mesh1.rpc.1` (node-recovery.md steps 3-4) as its executor, `mesh1`'s primary
-/// `mesh1.admin.2`, writes it (R13): its node.delete of the exited birth (`retire-node:<path>`)
+/// `mesh1.admin.2`, writes it (R13): its node.delete of the exited birth (`node.delete:<path>`)
 /// writes the row `Deleted` inside its `NodeDeleted` step, and its node.create at the same
-/// `path.name` (`create-node:<path>`, over the exited birth: a recovery's claim) claims it, `before`
+/// `path.name` (`node.create:<path>`, over the exited birth: a recovery's claim) claims it, `before`
 /// or after that `Deleted` row. Returns the
 /// row at `mesh1.rpc.1`, the exited node, the new one, and the nodes the tags index names under the
 /// exited row's label `blue` once the claim is written (nothing runs after it).
 async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId, std::collections::BTreeSet<NodeId>) {
-    let (delete, create) = ("retire-node:mesh1.rpc.1", "create-node:mesh1.rpc.1");
+    let (delete, create) = ("node.delete:mesh1.rpc.1", "node.create:mesh1.rpc.1");
     let storage = Arc::new(MemoryNodesStorage::default());
     let mp = mesh_primary(&storage);
     let exited = held(&mp, "mesh1.rpc.1").await;
@@ -1640,7 +1640,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         assert_eq!((north.path().as_str(), north.node_name().as_str(), north.node_type()), ("mesh1.broker", "north", "broker"));
         let (_, claimed_type) = mp
             .rows
-            .claim_with_node_type(&north_key, &north.node_id, "broker", "create-node:mesh1.broker.north", None, ClaimFor::Create)
+            .claim_with_node_type(&north_key, &north.node_id, "broker", "node.create:mesh1.broker.north", None, ClaimFor::Create)
             .await
             .expect("the free-text name is claimed");
         assert_eq!(claimed_type, "broker");
@@ -1705,11 +1705,11 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         // 4. Recovery: `NodeDeleted` writes the Deleted row at `mesh1.broker.north`, and the
         //    recovered node claims `mesh1.broker.north` with `ClaimFor::Recovery`, copying
         //    `node_type`, `config` and `tags`.
-        mp.rows.deleted(&north, "retire-node:mesh1.broker.north").await.expect("Deleted row written at mesh1.broker.north");
+        mp.rows.deleted(&north, "node.delete:mesh1.broker.north").await.expect("Deleted row written at mesh1.broker.north");
         let mut recovered_north = node("mesh1.broker.north", false, false);
         let (_, recovered_type) = mp
             .rows
-            .claim_with_node_type(&north_key, &recovered_north.node_id, "", "create-node:mesh1.broker.north", None, ClaimFor::Recovery)
+            .claim_with_node_type(&north_key, &recovered_north.node_id, "", "node.create:mesh1.broker.north", None, ClaimFor::Recovery)
             .await
             .expect("recovery claims mesh1.broker.north");
         assert_eq!(recovered_type, "broker", "recovery copies the exited node's node_type");
@@ -1742,7 +1742,7 @@ fn a_node_created_with_a_free_text_name_round_trips_name_path_and_node_type_thro
         succ.status = NodeStatus::Leaving;
         succ.parked = true;
         mp.rows
-            .claim_with_node_type(&new_key, &succ.node_id, "broker", "create-node:mesh1.broker.north.new", None, ClaimFor::Create)
+            .claim_with_node_type(&new_key, &succ.node_id, "broker", "node.create:mesh1.broker.north.new", None, ClaimFor::Create)
             .await
             .expect("successor claims mesh1.broker.north.new");
 
@@ -1825,7 +1825,7 @@ fn node_update_of_node_type_and_invalid_node_type_are_refused_by_name() {
         let rejected_id = NodeId::mint();
         let err = mp
             .rows
-            .claim_with_node_type(&north_key, &rejected_id, "Broker", "create-node:mesh1.broker.north", None, ClaimFor::Create)
+            .claim_with_node_type(&north_key, &rejected_id, "Broker", "node.create:mesh1.broker.north", None, ClaimFor::Create)
             .await
             .expect_err("uppercase node_type is refused at create");
         assert!(err.to_string().contains("node_type"), "create refusal names node_type: {err}");
@@ -1839,7 +1839,7 @@ fn node_update_of_node_type_and_invalid_node_type_are_refused_by_name() {
         let default_id = NodeId::mint();
         let (_, normalized) = mp
             .rows
-            .claim_with_node_type(&default_key, &default_id, "", "create-node:mesh1.rpc.east", None, ClaimFor::Create)
+            .claim_with_node_type(&default_key, &default_id, "", "node.create:mesh1.rpc.east", None, ClaimFor::Create)
             .await
             .expect("empty node_type normalizes to default");
         assert_eq!(normalized, "node");
@@ -1848,7 +1848,7 @@ fn node_update_of_node_type_and_invalid_node_type_are_refused_by_name() {
         // 4. `node.update` of `node_type` is refused by name (`node_type`), leaving the held `node_type` untouched.
         let north_id = NodeId::mint();
         mp.rows
-            .claim_with_node_type(&north_key, &north_id, "broker", "create-node:mesh1.broker.north", None, ClaimFor::Create)
+            .claim_with_node_type(&north_key, &north_id, "broker", "node.create:mesh1.broker.north", None, ClaimFor::Create)
             .await
             .expect("valid node_type is claimed");
         for attempted in ["rpc-node", "broker", "node", "Broker"] {

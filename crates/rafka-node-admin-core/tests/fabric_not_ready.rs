@@ -111,10 +111,10 @@ async fn a_caller_node_workflow_before_the_fabric_first_reaches_ready_for_traffi
     }
     let recipe_step = rafka_node_rpc_contract::build::RecipeStep::Create { node: "mesh1.rpc.1.new".parse().unwrap() };
     let (named, status) = refused(r.cp.open_recipe_in(tracing::Span::current(), "test", vec![recipe_step]).await);
-    assert_eq!((named.as_str(), status.as_str()), ("recipe (create-node:mesh1.rpc.1.new)", "state-sync"));
+    assert_eq!((named.as_str(), status.as_str()), ("recipe (node.create:mesh1.rpc.1.new)", "state-sync"));
     assert_eq!(r.facts().await, before, "no attempt is opened and nothing is accepted by a refused workflow");
     let spans = capture.spans("rdm.node_admin.build.reject.via-fabric-not-ready");
-    let workflows = ["node.stop mesh1.rpc.1", "node.start mesh1.rpc.1", "node.restart mesh1.rpc.1", "node.delete mesh1.rpc.1.old", "recipe (create-node:mesh1.rpc.1.new)"];
+    let workflows = ["node.stop mesh1.rpc.1", "node.start mesh1.rpc.1", "node.restart mesh1.rpc.1", "node.delete mesh1.rpc.1.old", "recipe (node.create:mesh1.rpc.1.new)"];
     assert_eq!(spans.len(), workflows.len(), "one refusal span per workflow: {spans:?}");
     for ((_, a), workflow) in spans.iter().zip(workflows) {
         assert_eq!((a.get("workflow").map(String::as_str), a.get("status").map(String::as_str)), (Some(workflow), Some("state-sync")), "{a:?}");

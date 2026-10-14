@@ -657,7 +657,7 @@ mod tests {
         let op = rafka_mesh_entity::LifecycleOp {
             build_id: "b1".into(),
             attempt: 2,
-            operation: "stop-node:mesh1.rpc.1".into(),
+            operation: "node.stop:mesh1.rpc.1".into(),
             node_id: crate::model::NodeId::mint(),
             incarnation: crate::model::IncarnationId::mint(),
             name: "mesh1.rpc.1".parse().unwrap(),
@@ -673,11 +673,11 @@ mod tests {
             output: Some(serde_json::to_value(&op).unwrap()),
             executor: Some("mesh1.admin.1".into()),
         };
-        let stop = BuildFact::Step(receipt("stop-node:mesh1.rpc.1"));
+        let stop = BuildFact::Step(receipt("node.stop:mesh1.rpc.1"));
         let (messages, refused) = encode_chunks(vec![stop.clone()]);
         assert!(refused.is_empty(), "{refused:?}");
         assert_eq!(BuildMessage::from_bytes(&messages[0]).unwrap().facts, vec![stop]);
-        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt("create-node:mesh1.rpc.1"))]);
+        let (_, refused) = encode_chunks(vec![BuildFact::Step(receipt("node.create:mesh1.rpc.1"))]);
         assert_eq!(refused.len(), 1, "another operation's Complete commits no output");
     }
 

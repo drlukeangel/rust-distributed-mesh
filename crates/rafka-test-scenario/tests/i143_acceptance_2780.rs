@@ -279,7 +279,7 @@ impl Run {
         let b = self.build_complete(door, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
         assert_eq!(b["attempt"], 1, "no other attempt was opened: {b}");
-        let op = format!("create-node:{node}");
+        let op = format!("node.create:{node}");
         assert_eq!(done_steps(&b, &op, Some(1)), order, "release completes every documented step once, in order: {b}");
         let counts = step_counts(&b, &op, 1);
         assert!(counts.values().all(|n| *n == 1) && counts.len() == order.len(), "no step receipt is recorded twice: {counts:?}");
@@ -296,7 +296,7 @@ impl Run {
         let b = self.build_complete(door, build_id).await;
         assert_eq!(b["state"], "complete", "{b}");
         assert_eq!(b["attempt"], 1, "no other attempt was opened: {b}");
-        let op = format!("retire-node:{node}");
+        let op = format!("node.delete:{node}");
         assert_eq!(done_steps(&b, &op, Some(1)), order, "release completes every documented retire step once, in order: {b}");
         let counts = step_counts(&b, &op, 1);
         assert!(counts.values().all(|n| *n == 1) && counts.len() == order.len(), "no step receipt is recorded twice: {counts:?}");
@@ -315,8 +315,8 @@ fn index_of(order: &[String], step: &str) -> usize {
 async fn create_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     let step = &order[i];
     let id = format!("create:{step}");
-    let spec = json!({"kind": "receipt", "step": step, "operation": "create-node", "node": node});
-    let op = format!("create-node:{node}");
+    let spec = json!({"kind": "receipt", "step": step, "operation": "node.create", "node": node});
+    let op = format!("node.create:{node}");
     let door = run.member_door("mesh1").await;
     let ack = door.arm(&id, spec.clone()).await;
     let mut stream = run.spawn("mesh1", NodeKind::RpcNode).await;
@@ -336,8 +336,8 @@ async fn create_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
 async fn retire_step_cut(run: &Run, order: &[String], i: usize, node: &str) {
     let step = &order[i];
     let id = format!("retire:{step}");
-    let spec = json!({"kind": "receipt", "step": step, "operation": "retire-node", "node": node});
-    let op = format!("retire-node:{node}");
+    let spec = json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": node});
+    let op = format!("node.delete:{node}");
     let door = run.member_door("mesh1").await;
     let ack = door.arm(&id, spec.clone()).await;
     let mut stream = run.delete(node).await;
@@ -394,10 +394,10 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // documented orders, taken from the product's own lists; every released cut must reproduce them.
     let control_create = run.plain_create(NodeKind::RpcNode, node).await;
     let b = run.build(&run.member_door("mesh1").await, &control_create).await;
-    assert_eq!(done_steps(&b, &format!("create-node:{node}"), Some(1)), create_order, "the healthy create runs every documented step once, in order: {b}");
+    assert_eq!(done_steps(&b, &format!("node.create:{node}"), Some(1)), create_order, "the healthy create runs every documented step once, in order: {b}");
     let control_delete = run.plain_delete(node).await;
     let b = run.build(&run.member_door("mesh1").await, &control_delete).await;
-    assert_eq!(done_steps(&b, &format!("retire-node:{node}"), Some(1)), retire_order, "the healthy removal runs every documented step once, in order: {b}");
+    assert_eq!(done_steps(&b, &format!("node.delete:{node}"), Some(1)), retire_order, "the healthy removal runs every documented step once, in order: {b}");
     run.push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "retire_build_id": control_delete, "retire_steps": retire_order}));
 
     // Every create step, each at its own receipt; the node it leaves is removed with the matching
@@ -420,7 +420,7 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     // A restart is an attempt of the accepted Build: stalled at its pre-event receipt, then at the
     // pre-event's publish.
     run.plain_create(NodeKind::RpcNode, node).await;
-    let receipt = json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "restart-node", "node": node});
+    let receipt = json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "node.restart", "node": node});
     restart_cut(&run, &retire_order, "restart:NodeRestarting", receipt, "restart-step", 0, node, 2).await;
     let event = json!({"kind": "event", "event": "restarting", "node": node});
     restart_cut(&run, &retire_order, "event:restarting", event, "lifecycle-event", 1, node, 3).await;
@@ -629,7 +629,7 @@ fn event_span(event: &str) -> &'static str {
 async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node: &str) {
     let id = format!("event:{event}");
     let spec = json!({"kind": "event", "event": event, "node": node});
-    let op = format!("retire-node:{node}");
+    let op = format!("node.delete:{node}");
     let door = run.member_door("mesh1").await;
     let ack = door.arm(&id, spec.clone()).await;
     let mut stream = run.delete(node).await;
@@ -657,7 +657,7 @@ async fn event_cut(run: &Run, retire_order: &[String], event: &'static str, node
     run.push(row(h, "lifecycle-event", &id, &spec, rel, after));
 }
 
-/// A restart's steps, in order, all of its one operation `restart-node:<path>` (node-restart.md):
+/// A restart's steps, in order, all of its one operation `node.restart:<path>` (node-restart.md):
 /// the pre-event and the stop, so the birth stops with its process alive (no runtime is
 /// terminated and no membership is removed), then `start-node` to the parked birth, its ready, and
 /// one `Complete`.
@@ -682,7 +682,7 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     let build_id = Run::id_of(&stream);
     assert_eq!(build_id, current_before, "a restart opens an attempt of the accepted Build; it makes no Build");
     assert_eq!(u64::from(stream.accepted().attempt), attempt, "the call opened attempt {attempt} of the Build");
-    let op = format!("restart-node:{node}");
+    let op = format!("node.restart:{node}");
     let mut h = run.hold(&door, id, ack, &build_id, &op, Some(order[..receipts_before].to_vec()), Some((node, 1))).await;
     assert_eq!(h.attempt, attempt, "the restart is attempt {attempt} of the Build");
     h.during["attempt_is_a_restart_of_the_accepted_build"] = json!(true);
@@ -690,7 +690,7 @@ async fn restart_cut(run: &Run, retire_order: &[String], id: &str, spec: Value, 
     run.complete(&mut stream).await;
     let b = run.attempt_complete(&door, &build_id, attempt).await;
     assert_eq!(done_steps(&b, &op, Some(attempt)), order, "the restart runs every step once, in order, under its one operation: {b}");
-    assert_eq!(done_steps(&b, &format!("retire-node:{node}"), Some(attempt)), Vec::<String>::new(), "no step of the restart is a retire-node receipt: {b}");
+    assert_eq!(done_steps(&b, &format!("node.delete:{node}"), Some(attempt)), Vec::<String>::new(), "no step of the restart is a retire-node receipt: {b}");
     let counts = step_counts(&b, &op, attempt);
     assert!(counts.values().all(|c| *c == 1) && counts.len() == order.len(), "no step receipt twice in {op}: {counts:?}");
     let after_node = run.estate.until_node(node, &format!("{node} ready again and no longer parked"), Duration::from_secs(60), |v| v.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).cloned()).await;
@@ -721,10 +721,10 @@ async fn hook_cut(run: &Run, create_order: &[String], phase: &str, node: &str) {
     let ack = door.arm(&id, spec.clone()).await;
     let mut stream = run.spawn("mesh1", NodeKind::RpcNode).await;
     let build_id = Run::id_of(&stream);
-    let h = run.hold(&door, &id, ack, &build_id, &format!("create-node:{node}"), Some(create_order.to_vec()), Some((node, 1))).await;
+    let h = run.hold(&door, &id, ack, &build_id, &format!("node.create:{node}"), Some(create_order.to_vec()), Some((node, 1))).await;
     // A hook receipt belongs to one birth: the held transition is the one of the incarnation this Build decided.
     let b = run.build(&door, &build_id).await;
-    let incarnation = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == format!("create-node:{node}").as_str() && r["step"] == "AllocateIdentity").map(|r| r["output"]["incarnation"].clone()).unwrap();
+    let incarnation = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == format!("node.create:{node}").as_str() && r["step"] == "AllocateIdentity").map(|r| r["output"]["incarnation"].clone()).unwrap();
     assert!(h.held["hit"]["transition_id"].as_str().unwrap().ends_with(&format!("@{}", incarnation.as_str().unwrap())), "the held hook belongs to the birth this Build made: {}", h.held);
     let rel = door.release(&id).await;
     run.complete(&mut stream).await;
@@ -795,18 +795,18 @@ async fn mesh_pending_cut(run: &Run, create_order: &[String]) -> String {
     let admin = "mesh2.admin.1";
     let id = "pending:mesh-first-admin";
     let step = CreateStep::PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata.name();
-    let spec = json!({"kind": "receipt", "step": step, "operation": "create-node", "node": admin});
+    let spec = json!({"kind": "receipt", "step": step, "operation": "node.create", "node": admin});
     let door = run.fabric_door().await;
     let ack = door.arm(id, spec.clone()).await;
     let stream = run.estate.submit(&BuildSpec::CreateMesh(MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 1)]))).await;
     let build_id = stream.build_id().to_string();
     let at = index_of(create_order, step);
-    let h = run.hold(&door, id, ack, &build_id, &format!("create-node:{admin}"), Some(create_order[..at].to_vec()), Some((admin, 1))).await;
+    let h = run.hold(&door, id, ack, &build_id, &format!("node.create:{admin}"), Some(create_order[..at].to_vec()), Some((admin, 1))).await;
     let rel = door.release(id).await;
     run.estate.follow(stream).await;
     let after = run.after_create(&door, &build_id, admin, create_order).await;
     let b = run.build(&door, &build_id).await;
-    let pending = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == format!("create-node:{admin}").as_str() && r["step"] == "ApplyMeshPending").map(|r| r["output"].clone()).unwrap();
+    let pending = b["steps"].as_array().unwrap().iter().find(|r| r["operation"] == format!("node.create:{admin}").as_str() && r["step"] == "ApplyMeshPending").map(|r| r["output"].clone()).unwrap();
     assert_eq!(pending["applied"], "Pending", "after the release the fabric primary applied the mesh's Pending at its first admin: {pending}");
     run.note_build(&build_id, 1);
     run.span_check(json!({"kind": "step", "cut": id, "build_id": build_id, "node": admin, "pipeline": "create", "attempt": 1, "steps": create_order, "held_step": step}));
@@ -832,7 +832,7 @@ async fn joining_admin_cut(run: &Run, create_order: &[String], id: &str, boot: V
     let held = door.wait_held(id).await;
     // The pipeline goes on while the admin boots, and stops at the step that needs the admin Ready,
     // which only the release lets complete: it must settle at `receipts_before` receipts.
-    let op = format!("create-node:{admin}");
+    let op = format!("node.create:{admin}");
     let want = create_order[..receipts_before].to_vec();
     let receipts = |b: &rafka_node_admin_core::build_state::BuildProjection| done_steps(&serde_json::to_value(b).expect("a Build view serializes"), &op, Some(1));
     let b = run.build_fact(&exec, &build_id, &format!("`{id}`: the Build holds a receipt for every step before WaitForNodeReady (through {}) and waits on the held admin", want.last().unwrap()), |b| receipts(b) == want).await;

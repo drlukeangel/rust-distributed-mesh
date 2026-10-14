@@ -457,7 +457,7 @@ fn a_read_while_a_birth_of_the_mesh_is_being_retired_carries_the_retirement_over
         let op = rafka_mesh_entity::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
-            operation: "retire-node:mesh3.rpc.2".into(),
+            operation: "node.delete:mesh3.rpc.2".into(),
             node_id: retiring.node.node_id.clone(),
             incarnation: retiring.node.incarnation.clone(),
             name: retiring.node.name.clone(),
@@ -495,7 +495,7 @@ fn a_late_reader_lists_a_stopped_node_parked_from_the_stop_overlay_a_read_carrie
         let op = rafka_mesh_entity::LifecycleOp {
             build_id: "b1".into(),
             attempt: 1,
-            operation: "stop-node:mesh3.rpc.2".into(),
+            operation: "node.stop:mesh3.rpc.2".into(),
             node_id: stopped.node.node_id.clone(),
             incarnation: stopped.node.incarnation.clone(),
             name: stopped.node.name.clone(),

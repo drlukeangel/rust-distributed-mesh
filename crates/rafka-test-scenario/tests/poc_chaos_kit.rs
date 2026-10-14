@@ -113,7 +113,7 @@ async fn poc_admin_fault_door_holds_a_create_at_its_receipt_and_releases_it() {
         doors.push(Door::at(&estate, &n.name.to_string()).await);
     }
     let id = "poc:deploy-runtime";
-    let spec = json!({"kind": "receipt", "step": "DeployRuntime", "operation": "create-node", "node": "mesh1.rpc.1"});
+    let spec = json!({"kind": "receipt", "step": "DeployRuntime", "operation": "node.create", "node": "mesh1.rpc.1"});
     for d in &doors {
         d.arm(id, spec.clone()).await;
     }

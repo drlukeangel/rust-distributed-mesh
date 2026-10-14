@@ -227,7 +227,7 @@ pub enum RetireStep {
     /// The departure (a removal only): the provider proved the runtime terminal; the
     /// node has left.
     NodeDeleted,
-    /// The pre-event of a restart: the executor holds `restart-node:<path>`; the birth is held
+    /// The pre-event of a restart: the executor holds `node.restart:<path>`; the birth is held
     /// through its Leaving until its later birth is heard.
     NodeRestarting,
     /// Remove the node from the local topology.
@@ -726,27 +726,8 @@ pub struct CommandContext {
     pub build_id: String,
     /// The Build attempt that holds it.
     pub attempt: u32,
-    /// `drain-node:<path>` or `stop-node:<path>`.
+    /// `node.connections.delete:<path>` or `node.stop:<path>`.
     pub operation: String,
-}
-
-/// The identity a mesh-leave gossip hook carries: the mesh, the Build, the attempt and the outer
-/// operation `shutdown-mesh:<mesh_id>`, with the receipt manifest reference and the final primary
-/// where the event has them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MeshLeaveEvent {
-    /// The mesh that leaves.
-    pub mesh_id: rafka_mesh_entity::MeshId,
-    /// The Build the operation belongs to.
-    pub build_id: String,
-    /// The Build attempt that holds it.
-    pub attempt: u32,
-    /// `shutdown-mesh:<mesh_id>`.
-    pub operation: String,
-    /// The reference to the terminal receipts, when the event carries one.
-    pub receipt_manifest: Option<String>,
-    /// The final mesh-primary, when the event names it.
-    pub final_primary: Option<(NodeId, IncarnationId)>,
 }
 
 /// Publishes the lifecycle events of a removal or a restart.
@@ -779,15 +760,6 @@ pub trait LifecycleEvents: Send + Sync {
     /// The accepted `stop-node` command's hook: `node-leaving`, on the executor's own mesh channel
     /// and the backbone.
     async fn leaving(&self, op: &LifecycleOp);
-    /// The accepted `delete-mesh` command's hook: `mesh-leaving`, authored by the fabric-primary on
-    /// the backbone and its own mesh channel.
-    async fn mesh_leaving(&self, event: &MeshLeaveEvent);
-    /// The `mesh-deleted` handoff call's hook: authored by the still-running mesh-primary on the
-    /// backbone and its own mesh channel.
-    async fn mesh_leave(&self, event: &MeshLeaveEvent);
-    /// The completed workflow's hook: `mesh-left`, authored by the fabric-primary after every exact
-    /// exit is proven.
-    async fn mesh_left(&self, event: &MeshLeaveEvent);
     /// The Rafka-time the events are stamped with (`event_at_rafka_ms`): the clock the process
     /// composed for its membership, never a clock of the pipeline's own.
     fn now_rafka_ms(&self) -> u64;
@@ -806,9 +778,6 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn joined(&self, _op: &LifecycleOp) {}
     async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
-    async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
-    async fn mesh_leave(&self, _event: &MeshLeaveEvent) {}
-    async fn mesh_left(&self, _event: &MeshLeaveEvent) {}
     /// A pipeline with no membership holds no rafka-time: its events carry zero, and no OS clock
     /// stands in for one.
     fn now_rafka_ms(&self) -> u64 {
@@ -1086,7 +1055,7 @@ pub(crate) fn load_transport_key(data_dir: &std::path::Path) -> Result<EndpointI
     Ok(EndpointId(iroh::SecretKey::from_bytes(&bytes).public().to_string()))
 }
 
-/// One run of one operation (`create-node:<path>`, `retire-node:<path>`).
+/// One run of one operation (`node.create:<path>`, `node.delete:<path>`).
 pub(crate) struct Run<'r> {
     build_id: &'r BuildId,
     attempt: u32,
@@ -1267,7 +1236,7 @@ impl DeploymentPipeline<'_> {
     }
 
     async fn create_steps(&self, req: &CreateRequest, before_ready: Option<BeforeReady>, before_launch: Option<BeforeLaunch<'_>>) -> Result<Created, PipelineError> {
-        let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("create-node:{}", req.node)).await?;
+        let mut run = self.begin(&req.build_id, req.attempt, &req.node, format!("node.create:{}", req.node)).await?;
         let mut created = self.create_to_ready(&mut run, req, before_ready, before_launch).await?;
         created.node.status = NodeStatus::ReadyForTraffic;
         self.step(&mut run, CreateStep::Complete.name(), async {
@@ -1775,7 +1744,7 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// A standalone stop (node-stop.md): `stop-node:<path>` is the stop-node command, whose reply is the
+    /// A standalone stop (node-stop.md): `node.stop:<path>` is the stop-node command, whose reply is the
     /// exact birth's `stopped`: it drained, cut its mesh connections and is parked, its process alive.
     /// The mesh primary publishes `NodeStopped` from that reply, and `Complete` names the birth and the
     /// rafka-time it stopped at. No
@@ -1785,7 +1754,7 @@ impl DeploymentPipeline<'_> {
         let span = self.pipeline_span("stop", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await?;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.stop:{name}")).await?;
             let mut node = req.node.clone();
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
             // The `Complete` receipt opens the birth's stopped period: it commits the stop's
@@ -1800,14 +1769,14 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// A standalone start (node-start.md): `start-node:<path>` is the start-node command to the parked
+    /// A standalone start (node-start.md): `node.start:<path>` is the start-node command to the parked
     /// birth, whose reply is `Started` once it rejoined, then the wait for it to report ready.
     pub async fn start(&self, req: &StartRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
         let span = self.pipeline_span("start", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("start-node:{name}")).await?;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.start:{name}")).await?;
             let mut node = req.node.clone();
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
             self.complete(&mut run).await?;
@@ -1817,7 +1786,7 @@ impl DeploymentPipeline<'_> {
         .await
     }
 
-    /// A restart (node-restart.md): ONE operation, `restart-node:<path>`, on the live process, which
+    /// A restart (node-restart.md): ONE operation, `node.restart:<path>`, on the live process, which
     /// never exits. Its `NodeRestarting` pre-event holds the birth through the stop that follows; the
     /// birth's seats move (a node-admin), it drains and stops and parks, its process alive; the same
     /// process starts again, the same node id, incarnation, endpoint key and port. The stop and the
@@ -1828,7 +1797,7 @@ impl DeploymentPipeline<'_> {
         let span = self.pipeline_span("restart", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("restart-node:{name}")).await?;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.restart:{name}")).await?;
             let mut node = req.node.clone();
             // The pre-event: the receipt first, then the publish, so the Build facts carry the hold
             // from the moment it is announced and a successor derives it from the same facts.
@@ -1966,7 +1935,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// `node.delete` of the stopped birth `req.node` (node-decommission.md), as ONE operation under
-    /// node.delete's one key, `retire-node:<path>`:
+    /// node.delete's one key, `node.delete:<path>`:
     ///
     /// ```text
     /// NodeDeleting -> TerminateRuntime (the provider's exact Exited) -> NodeDeleted -> Complete (the birth)
@@ -1982,7 +1951,7 @@ impl DeploymentPipeline<'_> {
         let span = self.pipeline_span("delete", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await?;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
             let birth = req.node.incarnation_id.clone().ok_or_else(|| PipelineError { step: RetireStep::NodeDeleting.name(), reason: format!("{name} has no known birth") })?;
             let op = LifecycleOp {
                 build_id: req.build_id.to_string(),
@@ -2015,7 +1984,7 @@ impl DeploymentPipeline<'_> {
 
     async fn retire_steps(&self, req: &RetireRequest) -> Result<TerminalReceipt, PipelineError> {
         let name = &req.node.name;
-        let mut run = self.begin(&req.build_id, req.attempt, name, format!("retire-node:{name}")).await?;
+        let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.delete:{name}")).await?;
         let mut node = req.node.clone();
         let handle = &req.handle;
         // A crashed target is deleted only on the exit proof of exactly its birth: a proof of
@@ -2106,7 +2075,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
-    /// operation (`drain-node:<path>` / `stop-node:<path>`).
+    /// operation (`node.connections.delete:<path>` / `node.stop:<path>`).
     fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {
         let operation = match cmd {
             crate::node_commands::NodeCommand::DeleteConnections => format!("node.connections.delete:{}", node.name),
@@ -2300,7 +2269,7 @@ impl DeploymentPipeline<'_> {
     }
 
     /// node.name.update of the name of `node` as a recipe's step (node-name-update.md;
-    /// lifecycles/node-replace.md 3-4), as ONE operation `update-node:<path>`: `UpdateNode`, the
+    /// lifecycles/node-replace.md 3-4), as ONE operation `node.update:<path>`: `UpdateNode`, the
     /// update `put` (node.name.update's own core at the node's mesh-primary, answered `NameUpdated`
     /// or refused by name), then `Complete`.
     pub async fn update_name<F>(&self, build_id: &BuildId, attempt: u32, node: &PathName, put: F) -> Result<(), PipelineError>
@@ -2310,7 +2279,7 @@ impl DeploymentPipeline<'_> {
         use tracing::Instrument;
         let span = self.pipeline_span("update", build_id, node, attempt);
         async {
-            let mut run = self.begin(build_id, attempt, node, format!("update-node:{node}")).await?;
+            let mut run = self.begin(build_id, attempt, node, format!("node.update:{node}")).await?;
             self.step(&mut run, UpdateStep::UpdateNode.name(), put).await?;
             self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
         }
@@ -2371,12 +2340,12 @@ mod tests {
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { mesh: None, build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
+        BuildStepReceipt { mesh: None, build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: "node.create:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
     }
 
     #[test]
     fn ready_requires_a_complete_receipt_for_each_runtime_prerequisite_of_this_run() {
-        let op = "create-node:mesh1.rpc.1";
+        let op = "node.create:mesh1.rpc.1";
         let all: Vec<BuildStepReceipt> = READY_PREREQUISITES.iter().map(|s| receipt(1, s.name(), StepOutcome::Complete)).collect();
         assert!(ready_prerequisites_missing(&all, op, 1).is_empty());
         // One lost receipt is named.
@@ -2384,7 +2353,7 @@ mod tests {
         assert_eq!(ready_prerequisites_missing(&lost, op, 1), vec!["MakeRuntimeFactAvailableToBirth"]);
         // Another operation's receipts are not this run's.
         let other: Vec<_> = all.iter().cloned().map(|mut r| {
-            r.operation = "create-node:mesh1.rpc.2".into();
+            r.operation = "node.create:mesh1.rpc.2".into();
             r
         }).collect();
         assert_eq!(ready_prerequisites_missing(&other, op, 1).len(), 4);

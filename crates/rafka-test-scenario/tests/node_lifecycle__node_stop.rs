@@ -104,7 +104,7 @@ async fn stop_then_start(test: &str, node: &str) {
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
     // Every other node reports that it dropped the parked birth and holds the stop overlay.
     for peer in &others {
-        peers.fact(peer, "mesh1", "NodeStopped: the parked birth is dropped and its stop overlay is held", |v| v.birth(&before.node_id).is_none() && v.overlay(&before.node_id, "stop-node:").is_some()).await;
+        peers.fact(peer, "mesh1", "NodeStopped: the parked birth is dropped and its stop overlay is held", |v| v.birth(&before.node_id).is_none() && v.overlay(&before.node_id, "node.stop:").is_some()).await;
     }
     // node.get shows it parked: the same birth, the same process, alive.
     let parked = view_of(&nodes, &path).await;
@@ -121,7 +121,7 @@ async fn stop_then_start(test: &str, node: &str) {
     for peer in &others {
         peers
             .fact(peer, "mesh1", "the rejoined birth is held again as the same incarnation and the stop overlay is gone", |v| {
-                v.birth(&before.node_id).is_some_and(|d| d.node.incarnation == *before.incarnation_id.as_ref().unwrap()) && v.overlay(&before.node_id, "stop-node:").is_none()
+                v.birth(&before.node_id).is_some_and(|d| d.node.incarnation == *before.incarnation_id.as_ref().unwrap()) && v.overlay(&before.node_id, "node.stop:").is_none()
             })
             .await;
     }
@@ -374,7 +374,7 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
 
 /// CONTRACT: `node.stop` opens the next attempt of the accepted Build (reason
 /// stop, action stop fenced to the live birth, no Build minted). The operation is exactly
-/// `stop-node:<path>`: stop-node to the birth, whose reply is `left`, then Complete. The runtime is
+/// `node.stop:<path>`: stop-node to the birth, whose reply is `left`, then Complete. The runtime is
 /// not terminated and no NodeDeleted is published; the accepted topology still names the path and no
 /// repair attempt follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -413,7 +413,7 @@ async fn a_standalone_stop_ends_on_the_births_left_reply_with_no_exit_and_no_nod
     estate.stop().await;
     let spans = estate.spans();
     let reconcile = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().find(|sp| s(&sp["attributes"]["build_id"]) == birth_build && s(&sp["attributes"]["attempt"]) == attempt).unwrap();
-    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("stop-node:{NODE}"), "one stop operation and nothing else: {reconcile}");
+    assert_eq!(s(&reconcile["attributes"]["operations"]), format!("node.stop:{NODE}"), "one stop operation and nothing else: {reconcile}");
     let mut last = 0u64;
     for step in ["StopNode", "AwaitNodeLeft", "Complete"] {
         let sp = step_span(&spans, &birth_build, &attempt, NODE, step).unwrap_or_else(|| panic!("step {step} ran"));

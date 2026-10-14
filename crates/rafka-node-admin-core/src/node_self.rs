@@ -905,6 +905,15 @@ impl NodeSelf {
         // Leaving." It follows the hold, so no gated turn publishes after it; after the cut it
         // publishes nothing (node-stop.md step 4, R-ON1).
         if let Some(backbone) = self.backbone.as_ref().filter(|b| b.is_mesh_primary()) {
+            let mesh_deleted = self.membership.book.statuses.mesh(&self.held_name().mesh).is_some_and(|h| h.status == "deleted" || h.status == "dead");
+            if (!op.is_restart() && !op.is_stop()) || mesh_deleted {
+                let del_op = if op.is_stop() {
+                    LifecycleOp { operation: format!("node.delete:{}", self.held_name()), ..op.clone() }
+                } else {
+                    op.clone()
+                };
+                self.membership.book.deleting(del_op);
+            }
             let me = (self.set_status)(MemberStatus::Leaving);
             let mut members: Vec<MeshDigest> = backbone.own_members(&self.membership);
             match members.iter_mut().find(|d| d.node.node_id == me.node.node_id) {
@@ -915,6 +924,9 @@ impl NodeSelf {
             // Best-effort dissemination (R-NS2): the stop does not wait for its delivery, and the cut
             // below follows its send at once.
             let published = if backbone.withholds("stopping-aggregate", "backbone") { "withheld" } else if backbone.publish(&self.membership, members).await { "true" } else { "false" };
+            if published == "true" && mesh_deleted {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
             tracing::info_span!("rdm.node_admin.node.update.via-leaving-aggregate", node = %self.held_name(), mesh = %self.held_name().mesh, operation = %op.operation, status = "Leaving", members = count, published)
                 .in_scope(|| tracing::info!("the last aggregate before the stop carries this node Leaving"));
         }

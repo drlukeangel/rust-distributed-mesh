@@ -19,7 +19,7 @@
 use crate::build_log;
 use rafka_node_admin_client::{BuildSpec, FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes};
 use rafka_node_admin_core::build_state::BuildState;
-use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
+use rafka_test_scenario::estate::{claim_decider, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;

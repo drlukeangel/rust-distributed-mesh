@@ -442,7 +442,7 @@ mod tests {
         let birth = |node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap() };
         let n = |revision: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse("200000000000").unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n")).unwrap(), revision };
         let row = SeatTransferRow {
-            operation: "drain-node:mesh1.admin.1".into(),
+            operation: "node.connections.delete:mesh1.admin.1".into(),
             fabric: "fabric1".into(),
             build_id: "b1".into(),
             attempt: 2,
@@ -457,13 +457,13 @@ mod tests {
         let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(reopened.seat_transfers().await.unwrap(), vec![row.clone()]);
         // The holder's mesh holds the row (R-SR1=A): a point read of its key there, none elsewhere.
-        assert_eq!(reopened.seat_transfer("mesh1", "drain-node:mesh1.admin.1").await.unwrap(), Some(row.clone()));
-        assert_eq!(reopened.seat_transfer("mesh2", "drain-node:mesh1.admin.1").await.unwrap(), None);
-        assert_eq!(reopened.seat_transfer("mesh1", "stop-node:mesh1.admin.1").await.unwrap(), None);
+        assert_eq!(reopened.seat_transfer("mesh1", "node.connections.delete:mesh1.admin.1").await.unwrap(), Some(row.clone()));
+        assert_eq!(reopened.seat_transfer("mesh2", "node.connections.delete:mesh1.admin.1").await.unwrap(), None);
+        assert_eq!(reopened.seat_transfer("mesh1", "node.stop:mesh1.admin.1").await.unwrap(), None);
         assert!(!d.join(FABRIC_DIR).join("seat-transfers").exists(), "a seat-transfer row under fabric/");
-        let file = d.join("meshes").join("mesh1").join("seat-transfers").join("drain-node_mesh1_admin_1.json");
+        let file = d.join("meshes").join("mesh1").join("seat-transfers").join("node_connections_delete_mesh1_admin_1.json");
         let text = std::fs::read_to_string(&file).unwrap();
-        assert!(text.starts_with(r#"{"format":"fabric-seat-transfer/1","record":{"operation":"drain-node:mesh1.admin.1""#), "{text}");
+        assert!(text.starts_with(r#"{"format":"fabric-seat-transfer/1","record":{"operation":"node.connections.delete:mesh1.admin.1""#), "{text}");
         std::fs::write(&file, br#"{"format":"fabric-seat-transfer/9","record":{}}"#).unwrap();
         assert!(matches!(reopened.seat_transfers().await, Err(FabricStorageError::Unrecognised { .. })));
     }

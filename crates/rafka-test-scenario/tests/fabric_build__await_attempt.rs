@@ -50,7 +50,7 @@ async fn await_attempt_waits_for_the_opened_attempt_while_it_is_held() {
     let door = Door::at(&estate, &primary.name.to_string()).await;
 
     let cut = "restart:NodeRestarting";
-    door.arm(cut, json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "restart-node", "node": node})).await;
+    door.arm(cut, json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "node.restart", "node": node})).await;
     // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mut restart = estate.nodes_obj().await.restart(&node.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {node}: {e}"));

@@ -55,7 +55,7 @@ pub struct CommandKey {
     pub build_id: String,
     /// The Build attempt that holds it.
     pub attempt: u32,
-    /// `stop-node:<path>` or `start-node:<path>`.
+    /// `node.stop:<path>` or `node.start:<path>`.
     pub operation: String,
     /// The exact birth commanded.
     pub node_id: NodeId,
@@ -148,7 +148,7 @@ impl CommandBook {
 
     /// Whether any stop command is open for this exact birth.
     pub fn stop_open_for(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
-        self.open.lock().unwrap().keys().any(|k| &k.node_id == node_id && &k.incarnation == incarnation && k.operation.starts_with("stop-node:"))
+        self.open.lock().unwrap().keys().any(|k| &k.node_id == node_id && &k.incarnation == incarnation && k.operation.starts_with("node.stop:"))
     }
 
     /// Forget the command: its step receipt is the record.
@@ -322,14 +322,14 @@ mod tests {
     #[tokio::test]
     async fn a_completion_resolves_only_its_open_command() {
         let book = CommandBook::default();
-        let k = key("start-node:mesh1.rpc.1");
+        let k = key("node.start:mesh1.rpc.1");
         let mut rx = book.open(k.clone());
         assert!(!*rx.borrow());
         assert_eq!(book.complete(&k), Accepted::First);
         rx.wait_for(|v| *v).await.unwrap();
         assert_eq!(book.complete(&k), Accepted::Again);
-        let other = CommandKey { operation: "stop-node:mesh1.rpc.1".into(), ..k.clone() };
-        assert_eq!(book.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: "start-node:mesh1.rpc.1".into(), reported: "stop-node:mesh1.rpc.1".into() });
+        let other = CommandKey { operation: "node.stop:mesh1.rpc.1".into(), ..k.clone() };
+        assert_eq!(book.complete(&other), Accepted::NoOpenCommand { field: "operation".into(), expected: "node.start:mesh1.rpc.1".into(), reported: "node.stop:mesh1.rpc.1".into() });
         let attempt = CommandKey { attempt: 2, ..k.clone() };
         assert_eq!(book.complete(&attempt), Accepted::NoOpenCommand { field: "attempt".into(), expected: "1".into(), reported: "2".into() });
         let stranger = CommandKey { node_id: NodeId::mint(), ..k.clone() };

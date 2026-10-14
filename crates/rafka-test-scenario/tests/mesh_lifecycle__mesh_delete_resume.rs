@@ -1,7 +1,7 @@
 //! i143.e12.s39 (#3066) process E2E: a mesh leave resumed after the leaving mesh's primary is lost
 //! mid-leave (R11; mesh-delete.md, "Resume after the primary's loss").
 //!
-//! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 owns `shutdown-mesh:<mesh2 id>`.
+//! desired {mesh1, mesh2} -> {mesh1}: the fabric-primary in mesh1 owns `mesh.delete:<mesh2 id>`.
 //! mesh2's primary is held by its fault door in tier 1 (rpc.2's node.delete StopNode receipt) and
 //! SIGKILLed there by exact pid; the door dies with it. The owner's attempt ends the moment its view
 //! holds the lost primary proven exited (`via-final-primary-exited`), never on the hand-off bound,
@@ -116,20 +116,20 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     // admin (form a) is still ready for traffic.
     let cut = "leave:rpc2-StopNode";
     // A member's end is its node.delete, under node.delete's own operation (mesh-delete.md step 3).
-    door.arm(cut, json!({"kind": "receipt", "step": "StopNode", "operation": "retire-node:mesh2.rpc.2"})).await;
+    door.arm(cut, json!({"kind": "receipt", "step": "StopNode", "operation": "node.delete:mesh2.rpc.2"})).await;
     // rpc.1's stop completed (its stop-node answered stopped: its connections deleted, its transport
     // cut, its process alive) and its workflow held at that receipt: its NodeStopped, published at the
     // next step, is never published, and it has no Exited receipt. Nothing any admin holds names it.
     let stopped = "leave:rpc1-StopNode";
     if rpc1 == Rpc1::Stopped {
-        door.arm(stopped, json!({"kind": "receipt", "step": "StopNode", "operation": "retire-node:mesh2.rpc.1"})).await;
+        door.arm(stopped, json!({"kind": "receipt", "step": "StopNode", "operation": "node.delete:mesh2.rpc.1"})).await;
     }
     // rpc.1's whole delete ran to its exit proof: the runtime is terminated, the provider's exact
     // Exited is receipted, and the executor is held in NodeDeleted before its receipt: the Build
     // holds the exit proof and no NodeDeleted receipt, and `NodeDeleted` is never published.
     let exit_proven = "leave:rpc1-NodeDeleted";
     if rpc1 == Rpc1::ExitProven {
-        door.arm(exit_proven, json!({"kind": "receipt", "step": "NodeDeleted", "operation": "retire-node:mesh2.rpc.1"})).await;
+        door.arm(exit_proven, json!({"kind": "receipt", "step": "NodeDeleted", "operation": "node.delete:mesh2.rpc.1"})).await;
     }
     // The leave's stream is held to the end of the run: the Build is read as the admin the estate asks
     // holds it, and the stream's attempt ends when the primary is lost.
@@ -143,7 +143,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
     }
     if rpc1 == Rpc1::ExitProven {
         let held = door.wait_held(exit_proven).await;
-        assert_eq!((&held["hit"]["build_id"], &held["hit"]["step"], &held["hit"]["operation"]), (&json!(b), &json!("NodeDeleted"), &json!("retire-node:mesh2.rpc.1")), "the held receipt is rpc.1's NodeDeleted of the leave: {held}");
+        assert_eq!((&held["hit"]["build_id"], &held["hit"]["step"], &held["hit"]["operation"]), (&json!(b), &json!("NodeDeleted"), &json!("node.delete:mesh2.rpc.1")), "the held receipt is rpc.1's NodeDeleted of the leave: {held}");
     }
     // The door dies with the process: it is never released.
     let pid = estate.pid_of(&lost.0).await;
@@ -238,7 +238,7 @@ pub(crate) async fn primary_lost_mid_leave(test: &str, mesh2_admins: u32, rpc1: 
 pub(crate) fn assert_resumed(run: &Run, next: &str, roster: usize) -> Value {
     let Run { build, spans, mesh2_id, lost, b, last } = run;
     assert_eq!(last, next, "mesh2's final primary alive after mesh.deleted is the amended one");
-    let outer = format!("shutdown-mesh:{mesh2_id}");
+    let outer = format!("mesh.delete:{mesh2_id}");
     let steps: Vec<Value> = build["steps"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r["operation"] == outer.as_str()).collect();
     let step = |name: &str| -> Vec<&Value> { steps.iter().filter(|r| r["step"] == name).collect() };
     let amended = step("RosterAmended");
@@ -301,7 +301,7 @@ async fn a_leave_whose_primary_is_lost_mid_tier_finishes_under_the_surviving_adm
     assert_resumed(&run, survivor, 4);
     // The survivor admits the leave from the accepted roster plus the amendment, from its own
     // facts or the owner's, and runs only what has no terminal receipt.
-    let outer = format!("shutdown-mesh:{}", run.mesh2_id);
+    let outer = format!("mesh.delete:{}", run.mesh2_id);
     let resumed: Vec<&Value> = named(&run.spans, "rdm.node_admin.mesh.resolve.via-retained-receipts").into_iter().filter(|sp| sp["attributes"]["operation"] == outer.as_str() && attr_u(sp, "attempt") >= 2).collect();
     assert!(!resumed.is_empty(), "the survivor resumed the leave's tiers on a later attempt");
     assert!(named(&run.spans, "rdm.node_admin.node.create.via-leaving-mesh").is_empty(), "a surviving admin needs no created one");
@@ -324,7 +324,7 @@ async fn a_leave_whose_primary_is_lost_after_a_members_exit_proof_finishes_that_
     let run = primary_lost_mid_leave("a_leave_whose_primary_is_lost_after_a_members_exit_proof_finishes_that_members_delete_under_the_surviving_admin", 2, Rpc1::ExitProven).await;
     let survivor = if run.lost.0 == "mesh2.admin.1" { "mesh2.admin.2" } else { "mesh2.admin.1" };
     let eprint_trace = assert_resumed(&run, survivor, 4);
-    let outer = format!("shutdown-mesh:{}", run.mesh2_id);
+    let outer = format!("mesh.delete:{}", run.mesh2_id);
     let rpc1 = "mesh2.rpc.1";
     // The survivor's resumed attempt keeps the lost primary's exit as its only finished delete and
     // runs the two ordinary members: rpc.1 holds an exit proof and is still owed its delete.

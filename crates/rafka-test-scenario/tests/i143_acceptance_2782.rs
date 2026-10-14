@@ -589,8 +589,8 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         assert_eq!(held["hit"]["build_id"], build_id.as_str(), "`{id}` holds a call of the Build that triggered it: {held}");
     }
     let op = match &shape {
-        Shape::Create { node: Some(n) } => Some(format!("create-node:{n}")),
-        Shape::Retire { node } => Some(format!("retire-node:{node}")),
+        Shape::Create { node: Some(n) } => Some(format!("node.create:{n}")),
+        Shape::Retire { node } => Some(format!("node.delete:{node}")),
         Shape::Create { node: None } => None,
     };
 
@@ -667,7 +667,7 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
         Shape::Create { .. } => create_checks(run, &mut rec, &done).await,
         Shape::Retire { node } => {
             let order: Vec<String> = RetireStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-            let op = format!("retire-node:{node}");
+            let op = format!("node.delete:{node}");
             let counts = step_counts(&done, &op, 1);
             rec.check("every documented retire step has one receipt, in order", done_steps(&done, &op, 1) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
             run.node_gone(node).await;
@@ -684,9 +684,9 @@ async fn door_case(run: &Run, family: Family, id: &str, spec: Value, door: &Door
 
 /// The reconciled final state of a create: every documented step once, the node serving, one runtime.
 async fn create_checks(run: &Run, rec: &mut Reconciliation, done: &Value) {
-    let node = s(&done["steps"].as_array().and_then(|a| a.iter().find(|r| r["step"] == "AllocateIdentity")).map(|r| r["operation"].clone()).unwrap_or(Value::Null)).trim_start_matches("create-node:").to_string();
+    let node = s(&done["steps"].as_array().and_then(|a| a.iter().find(|r| r["step"] == "AllocateIdentity")).map(|r| r["operation"].clone()).unwrap_or(Value::Null)).trim_start_matches("node.create:").to_string();
     let order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    let op = format!("create-node:{node}");
+    let op = format!("node.create:{node}");
     let counts = step_counts(done, &op, 1);
     rec.check("every documented create step has one receipt, in order", done_steps(done, &op, 1) == order && counts.values().all(|n| *n == 1), format!("{counts:?}"));
     let view = run.node_ready(&node).await;
@@ -717,7 +717,7 @@ async fn join_case(run: &Run, family: Family, id: &str, boot: Value, admin: &str
     let build_id = Run::id_of(&stream);
     let door = Door::at(&run.estate, admin).await;
     let held = door.wait_held(id).await;
-    let op = format!("create-node:{admin}");
+    let op = format!("node.create:{admin}");
     let want = create_order[..CreateStep::ORDER.iter().position(|s| *s == stops_at).expect("stops_at is a create step")].to_vec();
     // The pipeline goes on while the admin boots, and stops where it needs the admin Ready.
     let carrier = run.estate.carrier_at(&path(&exec.name)).await;
@@ -919,13 +919,13 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
     let control_door = run.member_door("mesh1").await;
     let b = run.complete(&mut control_stream).await;
     let create_order: Vec<String> = CreateStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    assert_eq!(done_steps(&b, &format!("create-node:{node}"), 1), create_order, "the healthy create runs every documented step once: {b}");
+    assert_eq!(done_steps(&b, &format!("node.create:{node}"), 1), create_order, "the healthy create runs every documented step once: {b}");
     run.node_ready(node).await;
     let mut control_stream = run.delete(node).await;
     let control_delete = Run::id_of(&control_stream);
     let b = run.complete(&mut control_stream).await;
     let retire_order: Vec<String> = RetireStep::ORDER.iter().map(|x| x.name().to_string()).collect();
-    assert_eq!(done_steps(&b, &format!("retire-node:{node}"), 1), retire_order, "the healthy removal runs every documented step once: {b}");
+    assert_eq!(done_steps(&b, &format!("node.delete:{node}"), 1), retire_order, "the healthy removal runs every documented step once: {b}");
     run.node_gone(node).await;
     run.rows.lock().unwrap().push(json!({"cut": "control", "group": "healthy-control", "create_build_id": control_create, "create_steps": create_order, "retire_build_id": control_delete, "retire_steps": retire_order, "door_admin": control_door.name}));
 
@@ -938,7 +938,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         &run,
         Family::DeploymentStep,
         &format!("create:{step}"),
-        json!({"kind": "receipt", "step": step, "operation": "create-node", "node": node}),
+        json!({"kind": "receipt", "step": step, "operation": "node.create", "node": node}),
         &door,
         Trigger::Spawn,
         Shape::Create { node: Some(node.into()) },
@@ -952,7 +952,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         &run,
         Family::BuildStep,
         &format!("retire:{step}"),
-        json!({"kind": "receipt", "step": step, "operation": "retire-node", "node": node}),
+        json!({"kind": "receipt", "step": step, "operation": "node.delete", "node": node}),
         &door,
         Trigger::Delete(node.into()),
         Shape::Retire { node: node.into() },
@@ -1007,7 +1007,7 @@ async fn wedge_detector_proves_stall_and_stateful_recovery() {
         &run,
         Family::PendingBeforeBuild,
         "pending:mesh-first-admin",
-        json!({"kind": "receipt", "step": step, "operation": "create-node", "node": admin}),
+        json!({"kind": "receipt", "step": step, "operation": "node.create", "node": admin}),
         &fdoor,
         Trigger::CreateMesh("mesh2".into()),
         Shape::Create { node: Some(admin.into()) },

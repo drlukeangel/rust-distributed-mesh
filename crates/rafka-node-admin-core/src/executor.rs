@@ -789,7 +789,7 @@ mod tests {
     /// CONTRACT (R-ST2; the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1
     /// "The last node-admin of a mesh": "If the mesh holds the fabric seat, that seat moves first by
     /// `node.fabric-primary.update` with the departing mesh excluded (mesh-delete.md step 1); nothing
-    /// else moves"): `shutdown-mesh:<mesh_id>` is the fabric primary's. When the fabric primary is
+    /// else moves"): `mesh.delete:<mesh_id>` is the fabric primary's. When the fabric primary is
     /// inside the leaving mesh, its fabric seat alone moves first ([`seat_move`]: the mesh seat stays),
     /// no admin executes the retire until it has, and the executor is then the new fabric primary.
     /// Must NOT happen: the leaving mesh's admin named the executor of its own mesh's retire.
@@ -948,7 +948,7 @@ mod tests {
         let runner = Arc::new(RecipeRunner { view: view.clone(), ran: Default::default() });
         let exec = BuildExecutor { executor: "mesh1.admin.1.new".into(), builds: builds.clone(), topology: view.clone(), runner: runner.clone() };
         let r = exec.run_attempt(&id, None, 5, &rafka_node_rpc_contract::context::CallContext::default(), &plan).await;
-        assert_eq!(*runner.ran.lock().unwrap(), vec!["stop-node:mesh1.admin.1".to_string(), "update-node:mesh1.admin.1".to_string()], "the run ran P's stop and rename");
+        assert_eq!(*runner.ran.lock().unwrap(), vec!["node.stop:mesh1.admin.1".to_string(), "node.update:mesh1.admin.1".to_string()], "the run ran P's stop and rename");
         let Reconciled::HandedOff { attempt: 5, to, .. } = &r else { panic!("the run hands off: {r:?}") };
         assert_ne!(to, "mesh1.admin.1", "the run handed off to P, which it stopped and renamed: {r:?}");
         assert_eq!(to, "mesh1.admin.1.new", "the run hands back to the fabric primary its ending view seats: {r:?}");

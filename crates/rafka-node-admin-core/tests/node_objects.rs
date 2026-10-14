@@ -396,7 +396,7 @@ impl Rig {
     /// The birth reports where it bound once the create has made its runtime fact available: the
     /// node's own `JoinNode`, as the pipeline's `WaitForBind` waits for it.
     async fn report_bind(&self, build: &BuildId, name: &str) {
-        let op = format!("create-node:{name}");
+        let op = format!("node.create:{name}");
         let name: rafka_node_admin_core::model::PathName = name.parse().unwrap();
         loop {
             // The executor's own log holds the Build once the call that carries it has arrived.
@@ -580,7 +580,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
     assert_eq!(
         blocked,
         Frame::Blocked {
-            operation: "create-node:mesh1.rpc.3".into(),
+            operation: "node.create:mesh1.rpc.3".into(),
             step: "WaitForNodeReady".into(),
             reason: "mesh1.rpc.3: hydrate_before_ready is blocked (attempt 1): pulling the accepting authority; it runs again on authority-ready".into()
         }
@@ -680,7 +680,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     };
     assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
     assert_eq!(completed_steps(&receipts_after_cut, 1), ATTEMPT_ONE_STEPS);
-    assert_eq!(resume.from, Some(("create-node".to_string(), "WaitForMeshJoin".to_string())), "the resume starts at the first step without a Complete receipt");
+    assert_eq!(resume.from, Some(("node.create".to_string(), "WaitForMeshJoin".to_string())), "the resume starts at the first step without a Complete receipt");
     assert_eq!(resume.completed.len(), ATTEMPT_ONE_STEPS.len());
     assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::Attached, "the re-submit attached to the Build the cut left running");
 
@@ -821,8 +821,8 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         // The recovery's receipts as its two workflows write them, in the lane its door opened it in
         // (R-BI7: the member's mesh's lane): the delete's NodeDeleted names the exited birth, and
         // each operation's Complete commits no output; the create is the last.
-        let deleted = rafka_mesh_entity::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("retire-node:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
-        for (operation, step, output) in [("retire-node", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("retire-node", "Complete", None), ("create-node", "Complete", None)] {
+        let deleted = rafka_mesh_entity::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("node.delete:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
+        for (operation, step, output) in [("node.delete", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("node.delete", "Complete", None), ("node.create", "Complete", None)] {
             rig.builds
                 .append_step_receipt(&BuildStepReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
                 .await
@@ -931,7 +931,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
 /// CONTRACT: every step the create and retire pipelines record is one the client names. The
 /// receipts of a whole create fold to `node.joined`, `node.started`, `node.created`
 /// and `Complete`; the receipts of a whole delete fold to the connections-deleted, stopped and
-/// deleted events and `Complete`; the receipts of a whole restart, one `restart-node:<path>` operation,
+/// deleted events and `Complete`; the receipts of a whole restart, one `node.restart:<path>` operation,
 /// fold to `node.restarting`, the stop's events, `node.joined`, `node.started`, `node.restarted` and
 /// `Complete`. A step the client does not name is refused by name, never skipped.
 #[test]
@@ -946,19 +946,19 @@ fn every_pipeline_step_is_named_by_the_client() {
         .unwrap()
     };
     let create: Vec<&str> = CreateStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Create, &view("create-node:mesh1.rpc.3", create), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Create, &view("node.create:mesh1.rpc.3", create), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
     let name: rafka_mesh_entity::PathName = "mesh1.rpc.3".parse().unwrap();
     let retire: Vec<&str> = RetireStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(name.clone()), &view("retire-node:mesh1.rpc.3", retire.clone()), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(name.clone()), &view("node.delete:mesh1.rpc.3", retire.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
     // A restart is one operation: its pre-event, the stop of the live process and the start of the
-    // same process are all `restart-node:<path>` receipts, and its one `Complete` ends it.
+    // same process are all `node.restart:<path>` receipts, and its one `Complete` ends it.
     let restart = vec!["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"];
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart.clone()), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.restart:mesh1.rpc.3", restart.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [
@@ -973,43 +973,43 @@ fn every_pipeline_step_is_named_by_the_client() {
     );
     // A `retire-node` receipt is the delete's, never a step of the restart: the restart folds nothing
     // from it and stands at its own pre-event.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap();
-    assert_eq!((f.frames.len(), f.next), (0, Some(("restart-node".to_string(), "NodeRestarting".to_string()))));
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.delete:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap();
+    assert_eq!((f.frames.len(), f.next), (0, Some(("node.restart".to_string(), "NodeRestarting".to_string()))));
     // Its stop half done, the restart is not over: the fold stands at the start.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart[..3].to_vec()), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.restart:mesh1.rpc.3", restart[..3].to_vec()), 1).unwrap();
     assert_eq!((f.frames.last(), f.next.as_ref().map(|(_, s)| s.as_str())), (Some(&Frame::Event(NodeEvent::Stopped)), Some("StartNode")));
     // A node-admin's workflow is any node's: its seats move by node.primary.update before the operation
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
     // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
     let admin: rafka_mesh_entity::PathName = "mesh1.admin.2".parse().unwrap();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", retire.clone()), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", retire.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(admin.clone()), &view("stop-node:mesh1.admin.2", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(admin.clone()), &view("node.stop:mesh1.admin.2", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(name.clone()), &view("stop-node:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(name.clone()), &view("node.stop:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
     // A standalone node.connections.delete { All } ends on the birth's node.connections.deleted: the
     // process is not stopped and nothing is deleted.
     let f = rafka_node_admin_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view("node.connections.delete:mesh1.rpc.3", vec!["DeleteConnections", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
     // A node-admin's delete with only NodeDeleting held resumes at StopNode, as any node's does.
-    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!(r.from, Some(("retire-node".to_string(), "StopNode".to_string())));
+    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
+    assert_eq!(r.from, Some(("node.delete".to_string(), "StopNode".to_string())));
     // A SeatTransfer receipt is a retired step: refused by name under any target, never folded.
     for (kind, op, steps) in [
-        (WorkflowKind::Delete(name.clone()), "retire-node:mesh1.rpc.3", vec!["NodeDeleting", "SeatTransfer"]),
-        (WorkflowKind::Stop(name.clone()), "stop-node:mesh1.rpc.3", vec!["SeatTransfer"]),
-        (WorkflowKind::Stop(admin.clone()), "stop-node:mesh1.admin.2", vec!["SeatTransfer"]),
+        (WorkflowKind::Delete(name.clone()), "node.delete:mesh1.rpc.3", vec!["NodeDeleting", "SeatTransfer"]),
+        (WorkflowKind::Stop(name.clone()), "node.stop:mesh1.rpc.3", vec!["SeatTransfer"]),
+        (WorkflowKind::Stop(admin.clone()), "node.stop:mesh1.admin.2", vec!["SeatTransfer"]),
     ] {
         assert_eq!(rafka_node_admin_client::fold(&kind, &view(op, steps), 1).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.into(), step: "SeatTransfer".into() }, "{kind:?}");
     }
-    let unknown = view("create-node:mesh1.rpc.3", vec!["AllocateIdentity", "InventedStep"]);
+    let unknown = view("node.create:mesh1.rpc.3", vec!["AllocateIdentity", "InventedStep"]);
     assert_eq!(
         rafka_node_admin_client::fold(&WorkflowKind::Create, &unknown, 1).unwrap_err(),
-        CallEnd::UnrecognisedReceipt { operation: "create-node:mesh1.rpc.3".into(), step: "InventedStep".into() }
+        CallEnd::UnrecognisedReceipt { operation: "node.create:mesh1.rpc.3".into(), step: "InventedStep".into() }
     );
 }
 
@@ -1031,17 +1031,17 @@ fn a_dot_old_delete_resumes_after_node_deleting_at_terminate_runtime() {
         .unwrap()
     };
     let old: rafka_mesh_entity::PathName = "mesh1.rpc.3.old".parse().unwrap();
-    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(old.clone()), &view("retire-node:mesh1.rpc.3.old", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!(r.from, Some(("retire-node".to_string(), "TerminateRuntime".to_string())), "the stopped predecessor's delete stands at TerminateRuntime");
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("retire-node:mesh1.rpc.3.old", vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]), 1).unwrap();
+    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting"]), 1).unwrap();
+    assert_eq!(r.from, Some(("node.delete".to_string(), "TerminateRuntime".to_string())), "the stopped predecessor's delete stands at TerminateRuntime");
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Deleted), Frame::Complete]);
     assert_eq!(
-        rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("retire-node:mesh1.rpc.3.old", vec!["NodeDeleting", "StopNode"]), 1).unwrap_err(),
-        CallEnd::UnrecognisedReceipt { operation: "retire-node:mesh1.rpc.3.old".into(), step: "StopNode".into() }
+        rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting", "StopNode"]), 1).unwrap_err(),
+        CallEnd::UnrecognisedReceipt { operation: "node.delete:mesh1.rpc.3.old".into(), step: "StopNode".into() }
     );
     let bare: rafka_mesh_entity::PathName = "mesh1.rpc.3".parse().unwrap();
-    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(bare), &view("retire-node:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!(r.from, Some(("retire-node".to_string(), "StopNode".to_string())), "a bare path's delete keeps its stop half");
+    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(bare), &view("node.delete:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
+    assert_eq!(r.from, Some(("node.delete".to_string(), "StopNode".to_string())), "a bare path's delete keeps its stop half");
 }
 
 /// One attempt's run as an executor streams it to the fabric-primary: its frames, then its end.
@@ -1077,14 +1077,14 @@ impl Dispatcher for LostAfterStopNode {
         };
         let items = if run == 1 {
             self.proofs.exited.lock().unwrap().insert(executor.to_string());
-            vec![step("restart-node", "NodeRestarting"), step("restart-node", "StopNode"), InnerItem::Broke(format!("{executor} was lost after its StopNode receipt"))]
+            vec![step("node.restart", "NodeRestarting"), step("node.restart", "StopNode"), InnerItem::Broke(format!("{executor} was lost after its StopNode receipt"))]
         } else {
             vec![
-                step("restart-node", "StopNode"),
-                step("restart-node", "AwaitNodeLeft"),
-                step("restart-node", "StartNode"),
-                step("restart-node", "WaitForNodeReady"),
-                step("restart-node", "Complete"),
+                step("node.restart", "StopNode"),
+                step("node.restart", "AwaitNodeLeft"),
+                step("node.restart", "StartNode"),
+                step("node.restart", "WaitForNodeReady"),
+                step("node.restart", "Complete"),
                 InnerItem::Frame(BuildReply::Complete { build_id: build_id.to_string(), attempt }),
             ]
         };

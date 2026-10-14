@@ -141,7 +141,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     assert_eq!((s(&a["outcome"]), s(&a["seeded_from"])), ("row-seeded".to_string(), victim_id.clone()), "{a}");
     estate.artifact("node-rows.json", &json!({"deleted": row_deleted[0], "seeded": row_seeded[0]}));
     assert_eq!(deleting[0]["attributes"]["build_id"], build_id);
-    assert_eq!(deleted[0]["attributes"]["operation"], format!("retire-node:{VICTIM}"));
+    assert_eq!(deleted[0]["attributes"]["operation"], format!("node.delete:{VICTIM}"));
     assert_eq!(deleted[0]["attributes"]["incarnation_id"], victim_inc, "the departure names the exact birth");
     let executor_claim = named(&spans, "rdm.node_admin.build.update.via-reconcile")
         .into_iter()
@@ -176,7 +176,7 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
         .cloned()
         .collect::<Vec<Value>>();
     assert_eq!(all.len(), 1, "the victim's stop ran its node.connections.delete {{ All }} once: {all:#?}");
-    assert_eq!(all[0]["parent_span_id"], stop_span["span_id"], "the All is the stop's own step, inside its via-stop-node: {}", all[0]);
+    assert_eq!(all[0]["parent_span_id"], stop_span["span_id"], "the All is the stop's own step, inside its via-node.stop: {}", all[0]);
     let all_at = start(&all[0]);
     let all_end = all[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX);
     assert!(all_at > start(deleting[0]) && all_at < terminal, "the All lands between the pre-notice and the terminal proof");
@@ -290,14 +290,14 @@ async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publi
     let mut removal = estate.nodes_obj().await.delete(&VICTIM.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {VICTIM}: {e}"));
     let held = door.wait_held("deleted-unpublished").await;
     let (build, attempt) = (s(&held["hit"]["build_id"]), held["hit"]["attempt"].as_u64().expect("the held event names its attempt"));
-    assert_eq!((s(&held["hit"]["operation"]), s(&held["hit"]["incarnation_id"])), (format!("retire-node:{VICTIM}"), victim_inc.clone()), "P holds the victim's NodeDeleted publish: {held}");
+    assert_eq!((s(&held["hit"]["operation"]), s(&held["hit"]["incarnation_id"])), (format!("node.delete:{VICTIM}"), victim_inc.clone()), "P holds the victim's NodeDeleted publish: {held}");
     // NA2 heard the NodeDeleted receipt on the Build topic: in its own log the receipt is durable.
     let deleted_receipt = |b: &Value| {
         let mut steps = b["steps"].as_array().cloned().unwrap_or_default();
         for lane in b["lanes"].as_object().map(|l| l.values().cloned().collect::<Vec<_>>()).unwrap_or_default() {
             steps.extend(lane["steps"].as_array().cloned().unwrap_or_default());
         }
-        steps.iter().any(|r| r["operation"] == format!("retire-node:{VICTIM}").as_str() && r["step"] == "NodeDeleted" && r["attempt"] == json!(attempt) && r["outcome"] == "complete")
+        steps.iter().any(|r| r["operation"] == format!("node.delete:{VICTIM}").as_str() && r["step"] == "NodeDeleted" && r["attempt"] == json!(attempt) && r["outcome"] == "complete")
     };
     crate::build_log::build_fact(&estate.carrier_at(&Estate::path(&na2)).await, &build, &format!("the NodeDeleted receipt of {VICTIM} at attempt {attempt}"), SETTLE, |pr| deleted_receipt(&serde_json::to_value(pr).expect("a Build view serializes")))
         .await

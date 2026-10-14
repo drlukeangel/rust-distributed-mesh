@@ -1,7 +1,7 @@
-//! node.restart is one operation (node-restart.md): `restart-node:<path>` holds every step of the
+//! node.restart is one operation (node-restart.md): `node.restart:<path>` holds every step of the
 //! restart, its `NodeRestarting` pre-event, the stop of the live process (its connections deleted,
 //! it stops, its process alive) and the start of that same process, and ends with one `Complete`. No step of it
-//! is receipted under `retire-node:` (the delete's operation), nothing is deployed, nothing exits.
+//! is receipted under `node.delete:` (the delete's operation), nothing is deployed, nothing exits.
 //! The cell drives the restart pipeline over a recording provider, observer and lifecycle: nothing
 //! here depends on timing.
 
@@ -9,7 +9,7 @@ use rafka_mesh_entity::{IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::{BuildAccepted, BuildAttemptClaim, BuildStateAdapter, MemoryBuildStateAdapter};
 use rafka_node_admin_core::deployment::pipeline::{
-    CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, LifecycleEvents, MeshLeaveEvent, NodeObserver, Publication, StartRequest, Timeouts, TopologySink,
+    CommandAdmission, CommandContext, Completion, DeploymentPipeline, LaunchTemplate, LifecycleEvents, NodeObserver, Publication, StartRequest, Timeouts, TopologySink,
 };
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::model::{DeploymentId, EndpointId, Node, NodeStatus, PathName, ProviderKind};
@@ -131,15 +131,6 @@ impl LifecycleEvents for Events {
     async fn leaving(&self, op: &LifecycleOp) {
         self.note("leaving", op);
     }
-    async fn mesh_leaving(&self, _: &MeshLeaveEvent) {
-        self.published.lock().unwrap().push(("mesh-leaving", String::new()));
-    }
-    async fn mesh_leave(&self, _: &MeshLeaveEvent) {
-        self.published.lock().unwrap().push(("mesh-leave", String::new()));
-    }
-    async fn mesh_left(&self, _: &MeshLeaveEvent) {
-        self.published.lock().unwrap().push(("mesh-left", String::new()));
-    }
     fn now_rafka_ms(&self) -> u64 {
         1_000_000
     }
@@ -155,12 +146,12 @@ impl TopologySink for Discard {
 /// CONTRACT (node-restart.md "node.restart is a composed workflow: NodeRestarting + the entire
 /// node.stop + the entire node.start + node.restarted. It runs on the stopped process, which never
 /// exits"; "No supersedes lineage or new incarnation is introduced"): the restart of a live rpc node
-/// is ONE Build operation, `restart-node:<path>`. Its receipts, in order: `NodeRestarting`, the stop
+/// is ONE Build operation, `node.restart:<path>`. Its receipts, in order: `NodeRestarting`, the stop
 /// of the live process (`StopNode`, `AwaitNodeLeft`: it stays, stopped), the
 /// start of the same process (`StartNode`, `WaitForNodeReady`), and one `Complete`, last. The
 /// `NodeRestarting` pre-event carries that same operation, published once; the stop's `stopped` is
 /// not published as `NodeStopped`; nothing is deleted. Must NOT happen: any receipt under
-/// `retire-node:` (the delete's operation) or any other operation, a `Complete` before the start
+/// `node.delete:` (the delete's operation) or any other operation, a `Complete` before the start
 /// (it would end the restart's hold while the birth is still stopped), a `TerminateRuntime` or a
 /// provider terminate, a `NodeDeleting`/`NodeDeleted`.
 #[tokio::test]
@@ -224,7 +215,7 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
 
     let view = builds.read_build(&build_id).await.unwrap();
     let receipts: Vec<(String, String)> = view.steps.iter().map(|s| (s.operation.clone(), s.step.clone())).collect();
-    let restart_op = format!("restart-node:{NODE}");
+    let restart_op = format!("node.restart:{NODE}");
     let foreign: Vec<&(String, String)> = receipts.iter().filter(|(op, _)| *op != restart_op).collect();
     assert!(foreign.is_empty(), "every receipt of the restart is under {restart_op}; these are not: {foreign:?} (all: {receipts:?})");
     let order: Vec<&str> = receipts.iter().map(|(_, s)| s.as_str()).collect();
@@ -237,9 +228,9 @@ async fn a_restart_is_one_operation_whose_steps_stop_and_start_the_same_process(
     assert_eq!(
         *observer.sent.lock().unwrap(),
         [
-            format!("Stop stop-node:{NODE} to {NODE}"),
-            format!("await Stop stop-node:{NODE} from {NODE}"),
-            format!("Start start-node:{NODE} to {NODE}"),
+            format!("Stop node.stop:{NODE} to {NODE}"),
+            format!("await Stop node.stop:{NODE} from {NODE}"),
+            format!("Start node.start:{NODE} to {NODE}"),
         ],
         "the restart calls the stop and the start of the same birth, once each"
     );
@@ -399,7 +390,7 @@ async fn a_restart_takes_its_stops_stopped_reply_as_the_left_reply() {
     assert_eq!(order, ["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"], "{out:?}");
     assert_eq!(
         *observer.sent.lock().unwrap(),
-        [format!("Stop stop-node:{NODE} to {NODE}"), format!("Start start-node:{NODE} to {NODE}")],
+        [format!("Stop node.stop:{NODE} to {NODE}"), format!("Start node.start:{NODE} to {NODE}")],
         "the Stopped reply is the completion: nothing waits for another"
     );
 }

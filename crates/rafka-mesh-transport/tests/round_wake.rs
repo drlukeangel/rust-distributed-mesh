@@ -126,7 +126,7 @@ fn a_member_stop_overlay_between_two_rounds_reaches_the_backbone_at_once() {
         let op = LifecycleOp {
             build_id: "b-s40".into(),
             attempt: 1,
-            operation: format!("stop-node:{}", stopped.node.name),
+            operation: format!("node.stop:{}", stopped.node.name),
             node_id: stopped.node.node_id.clone(),
             incarnation: stopped.node.incarnation.clone(),
             name: stopped.node.name.clone(),

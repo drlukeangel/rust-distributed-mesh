@@ -79,6 +79,7 @@ impl ForwardPath {
 
     /// Decide what `source_mesh` moving to `version` puts into the mesh, and queue it behind every
     /// frame queued before it.
+    #[cfg(test)]
     pub(crate) fn source(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) {
         let _ = self.source_with_clock(me, source_mesh, publisher, version, full, || now_ms);
     }
@@ -100,6 +101,7 @@ impl ForwardPath {
 
     /// The first publication of every source in `held` (taking the seat, or owing a full): one
     /// decision, queued behind every frame queued before it.
+    #[cfg(test)]
     pub(crate) fn fulls(&self, me: &str, node_mesh: &str, reason: &'static str, held: &[(String, PublisherId, u64, Full)], now_ms: u64) {
         let _ = self.fulls_with_clock(me, node_mesh, reason, held, || now_ms);
     }
