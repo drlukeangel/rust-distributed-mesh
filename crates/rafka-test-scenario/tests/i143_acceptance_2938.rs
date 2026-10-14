@@ -135,8 +135,9 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
     let mut estate = born(cell).await;
     let (dest, carrier, source) = (view(&estate, DEST).await, view(&estate, CARRIER).await, view(&estate, SOURCE).await);
 
-    // 1. The facts a proven carried path leaves: Direct Failed(E1,1) and Proxy Connected via the carrier.
-    let seeded = seed_proxy(&estate, 1);
+    // 1. The facts a proven carried path leaves: Direct Failed(E1,6) (due_ms beyond the cell's
+    // restart window: seeded backoff is the row, not a switch, Q7) and Proxy Connected via the carrier.
+    let seeded = seed_proxy(&estate, 6);
     assert_eq!((s(&seeded["destination_node_id"]), s(&seeded["destination_incarnation"])), (s(&dest["node_id"]), s(&dest["incarnation_id"])));
     assert_eq!((s(&seeded["carrier_node_id"]), s(&seeded["carrier_incarnation"])), (s(&carrier["node_id"]), s(&carrier["incarnation_id"])));
     let before = snapshot(&estate, SOURCE);
@@ -341,7 +342,7 @@ async fn source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutb
         .collect();
     assert_eq!(wakes.len(), 1, "one accept from the destination, one wake: {wakes:?}");
     let wake = wakes[0];
-    assert_eq!(wake["attributes"]["outcome"], "pending", "the accept armed the source's attempt: {wake}");
+    assert_eq!(wake["attributes"]["outcome"], "coalesced", "the accept coalesced into the pending attempt the Direct Failed row armed: {wake}");
     assert_eq!(s(&wake["attributes"]["destination_incarnation"]), s(&dest["incarnation_id"]), "the attempt is toward the exact birth the Proxy names: {wake}");
     assert!(start(wake) >= t_inbound0 && start(wake) <= t_inbound1 + 5_000_000_000, "the wake belongs to the destination's call");
     let accept = named(&spans, "rdm.node_rpc.connection.create.via-accept").into_iter().find(|sp| sp["span_id"] == wake["parent_span_id"]).expect("the wake runs under the accept span");

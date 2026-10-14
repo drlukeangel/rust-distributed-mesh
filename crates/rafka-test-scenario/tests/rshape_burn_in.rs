@@ -4750,7 +4750,7 @@ async fn proxy_run(cell: &str, shape: Shape) {
         let observed: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
         assert!(!observed.iter().any(|sp| sp["attributes"]["origin"] == "accept"), "the accept is no fact (R-CN1): {observed:?}");
         let wakes: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
-        assert_eq!(wakes.iter().filter(|sp| sp["attributes"]["outcome"] == "pending").count(), 1, "the destination's accept armed one attempt of the source's own: {wakes:?}");
+        assert_eq!(wakes.iter().filter(|sp| matches!(sp["attributes"]["outcome"].as_str(), Some("pending" | "coalesced"))).count(), 1, "the destination's accept woke one attempt of the source's own: {wakes:?}");
         let dials: Vec<&Value> = named(spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str()).collect();
         assert_eq!(dials.len(), 1, "one dial of the source's own: {dials:?}");
         assert_eq!(dials[0]["attributes"]["fact"], "connected", "{:?}", dials[0]);
@@ -6493,7 +6493,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     let carrier_edge0 = dial(&f, &car, &other);
     f.actions.push(action_row(&carrier_edge0));
     await_direct(&f.estate, &car, &other, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == on["incarnation_id"]).await;
-    let seeded0 = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{other}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
+    let seeded0 = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{other}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "6", "--key", "x"]);
     assert_eq!((seeded0.out["proxy_recorded"].as_bool(), seeded0.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded0.out);
     f.actions.push(action_row(&seeded0));
     let healthy = orig_get(&f, &src, &other, "carried-control");
@@ -6509,7 +6509,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     assert_eq!(probe_edge.out["dialed"], "NotSent", "the carrier's dial to {dst} over the cut finds no path: {}", probe_edge.out);
     let edge_down = await_direct(&f.estate, &car, &dst, "Failed", Duration::from_secs(30), |d| d["state"] == "Failed").await;
     // The source records the Proxy via the carrier toward the destination it cannot reach Direct either.
-    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
+    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "6", "--key", "x"]);
     assert_eq!((seeded.out["proxy_recorded"].as_bool(), seeded.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded.out);
     f.actions.push(action_row(&seeded));
     let rows0 = proxy_retirements(&durable_history(&f, &src).await).len();

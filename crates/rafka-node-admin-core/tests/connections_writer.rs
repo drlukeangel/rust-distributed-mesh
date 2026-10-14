@@ -171,7 +171,7 @@ fn now_ms() -> u64 {
 
 /// Wait (bounded) until `cond` holds; `what` names it when it never does.
 async fn until(what: &str, cond: impl Fn() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while !cond() {
         assert!(std::time::Instant::now() < deadline, "never: {what}");
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -294,8 +294,8 @@ async fn an_accept_from_another_birth_arms_nothing_and_an_attempt_for_a_gone_bir
     let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(50), Some(dial.dial()));
     let next = end("mesh1.rpc.3");
     writer.accepted(&resolved(&next));
-    assert!(writer.recovery_pending().is_empty(), "the next birth is not the birth the Proxy names");
-    // The Proxy's own birth arms an attempt (due when its backoff ends, seconds away); then it is gone.
+    assert_eq!(writer.recovery_pending().into_iter().map(|p| p.destination).collect::<Vec<_>>(), vec![dest.clone()], "the next birth is not the birth the Proxy names; only the Failed row's birth is pending");
+    // The Proxy's own birth coalesces into its pending attempt (due when its backoff ends, seconds away); then it is gone.
     writer.accepted(&resolved(&dest));
     assert_eq!(writer.recovery_pending().len(), 1);
     membership.depart(dest.node_id.clone(), dest.name.clone());
@@ -645,4 +645,119 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
     assert_eq!(history.iter().map(|r| r.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal))).collect::<Vec<_>>(), vec![Some((1, 1)), Some((1, 2)), Some((2, 1))], "the next birth's failure is a new incident: {history:#?}");
     assert_eq!(history[2].destination, next, "the row names the birth that was dialled: {:?}", history[2]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// CONTRACT (connections.md §9.3, §9.4, §9.5, Q7 ruled Luke 2026-10-13): one reconciler, two
+/// arming paths, one pending item per (destination, destination_incarnation). A latest Direct
+/// Failed row arms the reconciler on its own without any inbound accept trigger. When `due_ms` is
+/// reached, the reconciler makes one direct dial toward that exact destination birth: on failure it
+/// appends the next Direct Failed row (same epoch, ordinal + 1) and reschedules from that durable
+/// row's `next_due`; an inbound accept arriving while the item is pending coalesces into it
+/// (`outcome = "coalesced"`), never creating a second attempt and never skipping the backoff the
+/// durable rows set; when the rescheduled `due_ms` arrives, the reconciler dials again, and on
+/// success its Direct Connected retires the Proxy (`Proxy Disconnected(direct-restored)`), cuts
+/// the route back to Direct, and spends the pending item.
+#[test]
+fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_failure_and_coalesces_with_accepts() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (capture, layer) = rafka_mesh_telemetry::span_capture("connections-writer", exporter.clone());
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+    let d = dispatch.clone();
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d))).build().unwrap();
+    let _g = tracing::dispatcher::set_default(&dispatch);
+    let trace_id = rt.block_on(async {
+        let root = tracing::info_span!("rdm.test.connections_writer", cell = "due_time_reconnect");
+        let tp = rafka_mesh_telemetry::traceparent_of(&root).expect("root traceparent");
+        let trace_id = tp.split('-').nth(1).unwrap().to_string();
+        tracing::Instrument::instrument(
+            async {
+                let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
+                let jitter1 = rafka_mesh_entity::reconnect::deterministic_jitter(&me.name, &dest.name, 1);
+                let failed_at = now_ms() - rafka_mesh_entity::reconnect::reconnect_backoff(1) - jitter1 + 250;
+                let dir = data_dir("due-time-reconnect");
+                let storage: Arc<dyn ConnectionsStorage> = Arc::new(FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &me.name, &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap());
+                let held = Arc::new(Mutex::new(ConnectionsHeld::new()));
+                let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
+                writer.hydrate().await.unwrap();
+                let mut failed1 = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
+                failed1.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
+                writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, failed_at)).await.unwrap();
+                writer.record(failed1.clone()).await.unwrap();
+                writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), failed_at + 1)).await.unwrap();
+                let due1 = rafka_mesh_entity::reconnect::next_due(&failed1).unwrap();
+
+                // 1. Armed by the Direct Failed row alone, with no inbound accept trigger.
+                let pending = writer.recovery_pending();
+                assert_eq!(pending.len(), 1, "the Direct Failed row armed one pending attempt with no accept: {pending:?}");
+                assert_eq!((pending[0].destination.clone(), pending[0].due_ms), (dest.clone(), due1));
+
+                let dial = CellDial::new(&writer, resolved(&dest), vec![Err("due-time attempt 1 refused".to_string()), Ok(())]);
+                let _reconciler = writer.spawn_reconciler(std::time::Duration::from_millis(25), Some(dial.dial()));
+                assert!(dial.calls().is_empty(), "no dial before due1");
+
+                // 2. When due1 arrives, the reconciler dials attempt 1 without any accept.
+                until("the due-time reconciler dials attempt 1", || dial.calls().len() == 1).await;
+                let (dial1_dest, dial1_at) = dial.calls()[0].clone();
+                assert_eq!(dial1_dest, dest, "attempt 1 dials the exact destination birth");
+                assert!(dial1_at >= due1, "attempt 1 waited for due1: dialled at {dial1_at} ms, due at {due1} ms");
+                dial.go.add_permits(1);
+
+                // 3. Attempt 1 fails -> writes Direct Failed (E1, 2) and reschedules from that durable row.
+                until("attempt 1's Direct Failed (E1, 2) row is held", || held.lock().unwrap().own_latest_directs().iter().any(|d| d.recovery.map(|r| r.attempt_ordinal) == Some(2))).await;
+                let failed2 = storage.history().await.unwrap().into_iter().last().unwrap();
+                assert_eq!((failed2.kind, failed2.state, failed2.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))));
+                let due2 = rafka_mesh_entity::reconnect::next_due(&failed2).unwrap();
+                assert!(due2 > due1, "rescheduled from the new Failed row: due2={due2} > due1={due1}");
+                assert_eq!(writer.recovery_pending(), vec![rafka_node_admin_core::connections_writer::RecoveryAttempt { destination: dest.clone(), due_ms: due2 }]);
+
+                // 4. An inbound accept arriving while the due-time item is pending coalesces into it and never skips due2.
+                writer.accepted(&resolved(&dest));
+                assert_eq!(writer.recovery_pending(), vec![rafka_node_admin_core::connections_writer::RecoveryAttempt { destination: dest.clone(), due_ms: due2 }], "the accept coalesced into the single pending attempt without changing due2");
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                assert_eq!(dial.calls().len(), 1, "the accept did not skip the backoff the durable rows set");
+
+                // 5. When due2 arrives, the reconciler dials attempt 2, which connects, retires the Proxy, and spends the item.
+                until("the reconciler dials attempt 2 at due2", || dial.calls().len() == 2).await;
+                let (dial2_dest, dial2_at) = dial.calls()[1].clone();
+                assert_eq!(dial2_dest, dest);
+                assert!(dial2_at >= due2, "attempt 2 waited for due2: dialled at {dial2_at} ms, due at {due2} ms");
+                dial.go.add_permits(1);
+                until("the route cuts back to Direct after Proxy retirement", || matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::Direct { known: true })).await;
+                until("the pending item is spent once Direct is Connected", || writer.recovery_pending().is_empty()).await;
+                let _ = std::fs::remove_dir_all(&dir);
+            },
+            root,
+        )
+        .await;
+        trace_id
+    });
+    capture.flush(std::time::Duration::from_secs(10)).unwrap();
+    let spans: Vec<serde_json::Value> = exporter
+        .get_finished_spans()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| {
+            let attrs: serde_json::Map<String, serde_json::Value> = s.attributes.iter().map(|kv| (kv.key.to_string(), serde_json::Value::String(kv.value.to_string()))).collect();
+            serde_json::json!({"name": s.name, "trace_id": s.span_context.trace_id().to_string(), "span_id": s.span_context.span_id().to_string(), "parent_span_id": s.parent_span_id.to_string(), "attributes": attrs})
+        })
+        .collect();
+    let out_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit/connections_writer");
+    let _ = std::fs::create_dir_all(&out_dir).and_then(|_| std::fs::write(out_dir.join(format!("due_time_reconnect.{}.spans.json", std::process::id())), serde_json::to_vec_pretty(&spans).unwrap()));
+    crate::assert_own_story(spans.iter().filter_map(|s| s["name"].as_str()));
+    let named = |n: &str| -> Vec<&serde_json::Value> { spans.iter().filter(|s| s["name"] == n).collect() };
+    let dials = named("rdm.node_admin.connection.create.via-recovery-dial");
+    assert_eq!(dials.len(), 2, "two recovery dials in the flame (failed attempt 1, connected attempt 2): {dials:?}");
+    assert_eq!((dials[0]["attributes"]["outcome"].as_str(), dials[0]["attributes"]["fact"].as_str()), (Some("NotSent"), Some("failed")));
+    assert_eq!((dials[1]["attributes"]["outcome"].as_str(), dials[1]["attributes"]["fact"].as_str()), (Some("Reply"), Some("connected")));
+    let triggers = named("rdm.node_admin.connection.update.via-accept-trigger");
+    assert_eq!(triggers.len(), 1);
+    assert_eq!(triggers[0]["attributes"]["outcome"], "coalesced", "the accept while pending coalesced into the due-time item: {:?}", triggers[0]);
+    let retirements = named("rdm.node_admin.connection.update.via-retirement");
+    assert_eq!(retirements.len(), 1);
+    assert_eq!(retirements[0]["attributes"]["outcome"], "landed");
+    let spent = named("rdm.node_admin.connection.remove.via-recovery-attempt");
+    assert_eq!(spent.len(), 1);
+    assert_eq!(spent[0]["attributes"]["reason"], "direct-connected");
+    println!("cell=due_time_reconnect trace_id={trace_id}");
 }
