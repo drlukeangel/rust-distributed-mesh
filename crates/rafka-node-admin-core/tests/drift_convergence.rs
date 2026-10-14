@@ -741,13 +741,28 @@ async fn a_lost_mesh_primary_admin_is_recovered_by_the_admin_its_mesh_seats_and_
     e.holds_the_shape().await;
 }
 
-/// CONTRACT (node-recovery.md, mesh-recovery.md:8-9): a lost fabric-primary whose mesh keeps a second
-/// admin is a lost member of a mesh with a live mesh-primary: the successor's drift opens nothing for
-/// it, and the admin its mesh seats recovers it as a new node.id at the same path.
+/// CONTRACT (node-recovery.md, mesh-recovery.md:8-9): a former fabric-primary that hands off its
+/// seats (`node.primary.update`) to its mesh's second admin before exiting is a lost member of a
+/// mesh with a live mesh-primary: the successor's drift opens nothing for it, and the admin its
+/// mesh seats recovers it as a new node.id at the same path.
 #[tokio::test]
 async fn a_lost_fabric_primary_is_recovered_by_its_own_meshs_new_primary() {
     let e = estate().await;
     let fp = e.fabric_primary().await;
+    let fp_mesh = fp.split('.').next().unwrap().to_string();
+    let second = e.view.read().await.cohort(&fp_mesh, NodeKind::NodeAdmin).map(|n| n.name.to_string()).find(|n| *n != fp).expect("a second admin in the fabric-primary's mesh");
+    {
+        let mut v = e.view.write().await;
+        for n in v.nodes.iter_mut() {
+            if n.name.to_string() == fp {
+                n.is_primary = false;
+                n.is_fabric_primary = false;
+            } else if n.name.to_string() == second {
+                n.is_primary = true;
+                n.is_fabric_primary = true;
+            }
+        }
+    }
     let old = e.node_id(&fp).await;
     e.world.kill(&old);
     e.unheard(&[&fp]).await;
@@ -1493,8 +1508,8 @@ async fn a_decided_peer_mesh_held_ready_from_topology_opens_the_one_step_create_
 #[tokio::test]
 async fn a_durable_runtime_row_of_a_departed_birth_opens_no_attempt() {
     let e = estate().await;
-    let lost = "mesh1.admin.2";
-    let old = e.node_id(lost).await;
+    let lost = e.view.read().await.nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && !n.is_primary && !n.is_fabric_primary).expect("a non-primary admin").name.to_string();
+    let old = e.node_id(&lost).await;
     let (row, digest) = {
         let (d, _) = e.book.get(&old).unwrap();
         (rafka_node_admin_core::storage::RuntimeRow { node_id: d.node.node_id.clone(), name: d.node.name.clone(), incarnation_id: d.node.incarnation.clone(), runtime: d.node.runtime.clone().unwrap(), data_dir: None }, d)

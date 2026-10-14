@@ -102,10 +102,16 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     }
     // A is history on the admin that ran it, and leaves; the late admin never held it.
     estate.builds_obj().await.delete(&a).await.unwrap_or_else(|e| panic!("A leaves history on the admin that ran it: {e}"));
-    // The holder is lost (R-P1 permits killing the fabric primary): the mesh's lowest ready NodeId
-    // fills both seats, and the late admin is it.
-    estate.kill_bootstrap();
+    // The holder yields (`node.stop` runs `node.primary.update` first): the mesh's lowest ready
+    // NodeId fills both seats, and the late admin is it.
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter(&late_name).await;
+    let mut stop = estate.nodes_obj().await.stop(&incumbent_admin).await.expect("node.stop of incumbent_admin");
+    let accepted = stop.accepted().clone();
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rafka_node_admin_client::Frame::SeatMoved { .. })) {
+        estate.resume(&accepted.build_id, accepted.attempt).await;
+    }
+    estate.kill_bootstrap();
     estate.until_node(&late_name.to_string(), "the late admin fills the mesh and the fabric seats", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
     let unknown = estate.builds_obj().await.get(&a).await;
     assert!(matches!(&unknown, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-build"), "A's history is nowhere: {unknown:?}");

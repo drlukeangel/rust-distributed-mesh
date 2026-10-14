@@ -339,22 +339,18 @@ async fn three_mesh_primaries_keep_the_day0_holder_and_elect_the_lowest_remainin
         assert_eq!(advertised_fabric_primaries(&view), vec![winner.clone()], "{} resolves the same fabric primary", mp["name"]);
     }
 
-    // Lose every node-admin of the holder's mesh: the seat leaves it for the lowest remaining mesh primary.
+    // Retire the holder's mesh (`mesh.delete` runs `node.fabric-primary.update` first and takes
+    // `mesh1` down only after the confirmed transfer): the seat leaves it for the lowest remaining mesh primary.
     let survivors: Vec<&Value> = mesh_primaries.iter().filter(|m| m["mesh"] != "mesh1").collect();
     let survivor_admin = Estate::path(&s(&survivors[0]["name"]));
-    let mut pids = Vec::new();
-    for n in nodes.iter().filter(|n| n["mesh"] == "mesh1" && n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1") {
-        pids.push(estate.pid_of(&s(&n["name"])).await);
-    }
-    for pid in pids {
-        kill(pid);
-    }
-    estate.kill_bootstrap();
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter(&survivor_admin).await;
+    estate.reconcile_shape("fabric1", &[("mesh3", 2, 1), ("mesh2", 2, 1)]).await;
+    estate.kill_bootstrap();
     let next_id = survivors.iter().map(|m| s(&m["node_id"])).min().unwrap();
     let winner_id = s(&winner_node["node_id"]);
     let after = estate
-        .until_view_at(&survivor_admin, "the fabric seat moves to the lowest remaining mesh primary", (rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2) + Duration::from_secs(30), |views| {
+        .until_view_at(&survivor_admin, "the fabric seat moves to the lowest remaining mesh primary", Duration::from_secs(30), |views| {
             let v = Estate::values(views);
             let fp: Vec<&Value> = v.iter().filter(|n| n["is_fabric_primary"] == true).collect();
             (fp.len() == 1 && s(&fp[0]["node_id"]) != winner_id).then(|| v.clone())

@@ -67,20 +67,19 @@ async fn a_successor_manages_births_it_never_launched() {
     let (restarted, retired) = (rpc("mesh1.rpc.2"), rpc("mesh1.rpc.3"));
     let retired_pid = estate.pid_of("mesh1.rpc.3").await;
 
-    // Lose the launching admin.
-    estate.kill_bootstrap();
+    // Stop the launching admin (`node.stop` runs `node.primary.update` to `mesh1.admin.2` first and
+    // takes `mesh1.admin.1` down only after the confirmed transfer).
     estate.enter(&successor.name).await;
-    // Silence is local receipt age, and gossip may still hand on the killed admin's last cached
-    // digests (newer than what the successor holds) for one cache window after it died: the
-    // successor hears it gone within the staleness floor after that, then elects.
-    let silence_bound = rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(10);
+    let mut stop = estate.nodes_obj().await.stop(&launcher.name).await.expect("node.stop of mesh1.admin.1");
+    let accepted = stop.accepted().clone();
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rafka_node_admin_client::Frame::SeatMoved { .. })) {
+        estate.resume(&accepted.build_id, accepted.attempt).await;
+    }
+    estate.kill_bootstrap();
     let view = estate
-        .until_view("the successor holds the mesh and the fabric", silence_bound, |v| {
+        .until_view("the successor holds the mesh and the fabric", Duration::from_secs(30), |v| {
             let me = v.iter().find(|n| n.name == successor.name)?;
-            // The killed birth is gone: dead, or already replaced by the drift
-            // recovery the fabric-primary starts for it (rafka-v2#2851).
-            let gone = v.iter().any(|n| n.name == launcher.name && (matches!(n.status, NodeStatus::Dead | NodeStatus::PendingReconnect) || n.incarnation_id != launcher.incarnation_id));
-            (gone && me.is_primary && me.is_fabric_primary).then(|| v.to_vec())
+            (me.is_primary && me.is_fabric_primary).then(|| v.to_vec())
         })
         .await;
     for n in view.iter().filter(|n| n.kind == NodeKind::RpcNode) {

@@ -78,7 +78,8 @@ fn observed() -> Topology {
     }
 }
 
-/// The view once A is lost: its admin is dead and B holds mesh1 and the fabric.
+/// The view once A hands off its seats (`node.primary.update`) to B and exits: B holds mesh1 and
+/// the fabric while A's runtime is unreachable until its exit proof is read.
 async fn lose_a(topology: &RwLock<Topology>) {
     let mut t = topology.write().await;
     for n in t.nodes.iter_mut() {
