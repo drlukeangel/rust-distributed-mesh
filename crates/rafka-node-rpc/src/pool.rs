@@ -119,11 +119,18 @@ type Outcome = Option<Result<Connection, DialError>>;
 struct Dial {
     cancel: watch::Sender<bool>,
     outcome: watch::Receiver<Outcome>,
+    addr: SocketAddr,
+}
+
+struct Pooled {
+    conn: Connection,
+    addr: SocketAddr,
+    reported: bool,
 }
 
 #[derive(Default)]
 struct Inner {
-    conns: Mutex<HashMap<PoolKey, Connection>>,
+    conns: Mutex<HashMap<PoolKey, Pooled>>,
     dials: Mutex<HashMap<PoolKey, Dial>>,
 }
 
@@ -202,22 +209,49 @@ impl Pool {
     }
 
     /// Evict every pooled connection and cancel every dial of `node`'s peer
-    /// whose target `node` no longer names.
+    /// whose target `node` no longer names; adopt any birthless endpoint
+    /// connection at `node.transport_addr` under `node`'s birth.
     pub(crate) fn purge_stale(&self, node: &ResolvedNode) {
-        let stale = |k: &PoolKey| k.peer == node.endpoint_id && !k.is_current(Some(node));
         let gone: Vec<PoolKey> = {
             let mut conns = self.inner.conns.lock().unwrap();
-            let gone: Vec<PoolKey> = conns.keys().filter(|k| stale(k)).cloned().collect();
-            for k in &gone {
-                conns.remove(k);
+            let peer_keys: Vec<PoolKey> = conns.keys().filter(|k| k.peer == node.endpoint_id).cloned().collect();
+            let mut gone = Vec::new();
+            for k in peer_keys {
+                match &k.incarnation {
+                    None => {
+                        let Some(p) = conns.remove(&k) else { continue };
+                        if p.addr == node.transport_addr {
+                            if p.conn.close_reason().is_none() {
+                                let promoted = PoolKey { scope: k.scope, peer: k.peer, incarnation: Some(node.incarnation.clone()) };
+                                conns.entry(promoted).or_insert(p);
+                            }
+                        } else {
+                            gone.push(k);
+                        }
+                    }
+                    Some(held) if held != &node.incarnation => {
+                        conns.remove(&k);
+                        gone.push(k);
+                    }
+                    Some(_) => {}
+                }
             }
             gone
         };
         for k in gone {
             evict_span(k.superseded_by(Some(node)), &k, "evicted", 0);
         }
-        for (_, d) in self.inner.dials.lock().unwrap().iter().filter(|(k, _)| stale(k)) {
-            let _ = d.cancel.send(true);
+        for (k, d) in self.inner.dials.lock().unwrap().iter() {
+            if k.peer != node.endpoint_id {
+                continue;
+            }
+            let stale = match &k.incarnation {
+                None => d.addr != node.transport_addr,
+                Some(held) => held != &node.incarnation,
+            };
+            if stale {
+                let _ = d.cancel.send(true);
+            }
         }
     }
 
@@ -228,9 +262,9 @@ impl Pool {
         for (_, d) in self.inner.dials.lock().unwrap().iter() {
             let _ = d.cancel.send(true);
         }
-        let closed: Vec<(PoolKey, Connection)> = self.inner.conns.lock().unwrap().drain().collect();
-        for (key, conn) in &closed {
-            conn.close(0u32.into(), reason);
+        let closed: Vec<(PoolKey, Pooled)> = self.inner.conns.lock().unwrap().drain().collect();
+        for (key, p) in &closed {
+            p.conn.close(0u32.into(), reason);
             tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %key.peer.fmt_short(), incarnation_id = %key.birth())
                 .in_scope(|| tracing::info!("a pooled connection was closed"));
         }
@@ -257,16 +291,16 @@ impl Pool {
                 let _ = d.cancel.send(true);
             }
         }
-        let closed: Vec<(PoolKey, Connection)> = {
+        let closed: Vec<(PoolKey, Pooled)> = {
             let mut conns = self.inner.conns.lock().unwrap();
             let keys: Vec<PoolKey> = conns.keys().filter(|k| &k.peer == peer).cloned().collect();
-            keys.into_iter().filter_map(|k| conns.remove(&k).map(|c| (k, c))).collect()
+            keys.into_iter().filter_map(|k| conns.remove(&k).map(|p| (k, p))).collect()
         };
         closed
             .into_iter()
-            .map(|(key, conn)| {
-                conn.close(0u32.into(), reason);
-                ClosedConnection { connection: conn.stable_id(), key }
+            .map(|(key, p)| {
+                p.conn.close(0u32.into(), reason);
+                ClosedConnection { connection: p.conn.stable_id(), key }
             })
             .collect()
     }
@@ -275,7 +309,7 @@ impl Pool {
     pub fn pooled(&self, key: &PoolKey) -> Option<Connection> {
         let mut conns = self.inner.conns.lock().unwrap();
         match conns.get(key) {
-            Some(c) if c.close_reason().is_none() => Some(c.clone()),
+            Some(p) if p.conn.close_reason().is_none() => Some(p.conn.clone()),
             Some(_) => {
                 conns.remove(key);
                 None
@@ -287,7 +321,29 @@ impl Pool {
     /// The pooled connection for `key`, or the outcome of the one dial for
     /// it (started here or already in flight). `true` when reused.
     pub(crate) async fn get_or_dial(&self, key: &PoolKey, spec: DialSpec, deadline: Instant) -> Result<(Connection, bool), DialError> {
-        if let Some(c) = self.pooled(key) {
+        let existing = {
+            let mut conns = self.inner.conns.lock().unwrap();
+            match conns.get_mut(key) {
+                Some(p) if p.conn.close_reason().is_none() => {
+                    let report = !p.reported && spec.opened.is_some();
+                    if report {
+                        p.reported = true;
+                    }
+                    Some((p.conn.clone(), report))
+                }
+                Some(_) => {
+                    conns.remove(key);
+                    None
+                }
+                None => None,
+            }
+        };
+        if let Some((c, report)) = existing {
+            if report {
+                if let Some(opened) = &spec.opened {
+                    opened();
+                }
+            }
             return Ok((c, true));
         }
         // No new connection while the source admits none: neither a dial of its own nor one
@@ -302,7 +358,7 @@ impl Pool {
                 None => {
                     let (cancel, cancelled) = watch::channel(false);
                     let (tx, rx) = watch::channel(None);
-                    dials.insert(key.clone(), Dial { cancel, outcome: rx.clone() });
+                    dials.insert(key.clone(), Dial { cancel, outcome: rx.clone(), addr: spec.addr });
                     let (pool, key) = (self.clone(), key.clone());
                     // The one dial for `key`, under the call that started it: its steps (the superseded
                     // paths retired, the connect) and how it ended, however many callers wait on it. It is
@@ -409,13 +465,16 @@ impl Pool {
         }
         // A connection to a target the resolver no longer names is evidence
         // about nothing current: it is never pooled.
-        let now = target.as_ref().and_then(|t| resolver.resolve(t).ok());
-        if !key.is_current(now.as_ref()) {
-            conn.close(0u32.into(), b"superseded");
-            span.in_scope(|| evict_span(key.superseded_by(now.as_ref()), key, "late-connect-dropped", started.elapsed().as_millis()));
-            return Err(DialError::Superseded);
+        if let Some(t) = &target {
+            let now = resolver.resolve(t).ok();
+            if !key.is_current(now.as_ref()) {
+                conn.close(0u32.into(), b"superseded");
+                span.in_scope(|| evict_span(key.superseded_by(now.as_ref()), key, "late-connect-dropped", started.elapsed().as_millis()));
+                return Err(DialError::Superseded);
+            }
         }
-        self.inner.conns.lock().unwrap().insert(key.clone(), conn.clone());
+        let reported = spec.opened.is_some();
+        self.inner.conns.lock().unwrap().insert(key.clone(), Pooled { conn: conn.clone(), addr: spec.addr, reported });
         if let Some(opened) = &spec.opened {
             opened();
         }
@@ -426,7 +485,7 @@ impl Pool {
     /// call removed the pooled connection.
     pub fn broken(&self, key: &PoolKey, conn: &Connection) -> bool {
         let mut conns = self.inner.conns.lock().unwrap();
-        if conns.get(key).is_some_and(|c| c.stable_id() == conn.stable_id()) {
+        if conns.get(key).is_some_and(|p| p.conn.stable_id() == conn.stable_id()) {
             conns.remove(key);
             return true;
         }

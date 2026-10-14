@@ -514,7 +514,8 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     let h_dispatch = one("rdm.node_admin.build.update.via-dispatch", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt + 1));
     assert!(sp_end(&p_said) <= at_ns(&h_dispatch), "H dispatched the replace only after P said primary updated: {h_dispatch:#?}");
     // The replace's steps on P, its stop first, run from H's attempt, after P's "primary updated".
-    let p_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p && num(sp, "attempt").is_some_and(|a| a >= transfer_attempt)).collect();
+    let mut p_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p && num(sp, "attempt").is_some_and(|a| a >= transfer_attempt)).collect();
+    p_steps.sort_by_key(|sp| at_ns(sp));
     assert!(!p_steps.is_empty() && num(p_steps[0], "attempt") == Some(transfer_attempt + 1), "the replace's steps on P ran from attempt {}: {p_steps:#?}", transfer_attempt + 1);
     assert!(p_steps.iter().all(|sp| num(sp, "attempt").is_some_and(|a| a > transfer_attempt) && at_ns(sp) >= sp_end(&p_said)), "no step on P ran before P said primary updated, nor in P's own attempt: {p_steps:#?}");
     // No seatless window: from the replace until the fabric is ready again (the fabric's own

@@ -326,7 +326,11 @@ impl NodeRpcClient {
             // naming no node.
             NodeTarget::Endpoint { endpoint_id, addr } => {
                 tracing::info!(step = "endpoint", peer = %endpoint_id.fmt_short(), addr = %addr, "the target is the process at an endpoint, dialled as named");
-                Reach { node: None, observed: self.resolver.by_endpoint(endpoint_id), peer: *endpoint_id, addr: *addr }
+                let observed = self.resolver.by_endpoint(endpoint_id).filter(|n| n.transport_addr == *addr);
+                if let Some(n) = &observed {
+                    self.pool.purge_stale(n);
+                }
+                Reach { node: None, observed, peer: *endpoint_id, addr: *addr }
             }
             _ => match self.resolver.resolve(target) {
                 Ok(n) => {
@@ -349,7 +353,7 @@ impl NodeRpcClient {
             reused: false,
             dial_failure: None,
         };
-        let key = PoolKey { scope: opts.scope.clone(), peer: node.peer, incarnation: node.node.as_ref().map(|n| n.incarnation.clone()) };
+        let key = PoolKey { scope: opts.scope.clone(), peer: node.peer, incarnation: node.observed.as_ref().map(|n| n.incarnation.clone()) };
         let spec = DialSpec {
             endpoint: self.endpoint.clone(),
             resolver: self.resolver.clone(),
