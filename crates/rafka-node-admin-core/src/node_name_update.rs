@@ -209,9 +209,12 @@ async fn rename(
         let Some(moved) = doors.moved.get() else {
             return StatusReply::NotReady { reason: format!("{me}: its view does not take a moved row yet; the rename of {} to {to} is refused and nothing is written", held.name) };
         };
-        // A cutover's row carries the retained predecessor row's config and tags; any other carries its own.
+        // A cutover's row carries the retained predecessor row's config and tags once; a repeated
+        // cutover after the retained row already named this successor preserves the successor's own.
+        let own = || known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (held.config.clone(), Default::default()));
         let (config, tags) = match cutover {
             Some(c) => match retained_row(storage, me, c).await {
+                Ok(r) if r.inherited_by.as_ref() == Some(node_id) => own(),
                 Ok(r) => {
                     span.record("inherited_from", c.retained_id.as_str());
                     (r.config, r.tags)
@@ -222,7 +225,7 @@ async fn rename(
                     return StatusReply::node_row_refused(&to.to_string(), &why);
                 }
             },
-            None => known.map(|r| (r.config, r.tags)).unwrap_or_else(|| (held.config.clone(), Default::default())),
+            None => own(),
         };
         span.record("keys", config.len() as u64).record("tags", crate::node_rows::labels(&tags).as_str());
         let pending = match crate::node_rows::move_row(storage, me, &held, config, tags, &from, &to).await {

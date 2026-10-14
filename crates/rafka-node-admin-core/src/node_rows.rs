@@ -744,11 +744,12 @@ pub(crate) async fn move_row(storage: &dyn NodesStorage, me: &PathName, record: 
     if held_there {
         // A move made before: its destination row names the key it came from (a row written before
         // `renamed_from` existed names none, and the key is this move's own `from`).
-        let source = storage.node_row_at(to).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row of {} at {to} could not be read for the rename from {from}: {e}", record.node_id)))?.and_then(|r| r.renamed_from).unwrap_or_else(|| from.clone());
+        let held = storage.node_row_at(to).await.map_err(|e| RenameRefused::Unwritten(format!("{me}: the row of {} at {to} could not be read for the rename from {from}: {e}", record.node_id)))?;
+        let source = held.as_ref().and_then(|r| r.renamed_from.clone()).unwrap_or_else(|| from.clone());
         return Ok(match release_source(storage, me, &record.node_id, to, &source, "retry").await {
-            Ok(true) => (Moved::Renamed, None),
-            Ok(false) => (Moved::AlreadyMoved, None),
-            Err(why) => (Moved::ReleasePending { why }, None),
+            Ok(true) => (Moved::Renamed, held),
+            Ok(false) => (Moved::AlreadyMoved, held),
+            Err(why) => (Moved::ReleasePending { why }, held),
         });
     }
     let row = NodeRow { name: to.clone(), node_id: record.node_id.clone(), status: record.status, config, tags, allocated: None, renamed_from: Some(from.clone()), inherited_by: None };
