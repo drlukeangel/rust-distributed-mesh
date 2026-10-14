@@ -442,6 +442,6 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         "spans_read": spans.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
-    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
+    estate.enter_fabric_primary().await;
     estate.stop().await;
 }

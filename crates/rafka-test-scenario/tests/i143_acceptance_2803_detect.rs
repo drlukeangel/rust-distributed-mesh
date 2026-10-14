@@ -96,7 +96,7 @@ async fn fixture(cell: &str) -> Fixture {
     let lost_mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let attempt_before = estate.attempt_of_build(&accepted).await;
     // Control goes through the fabric primary's advertised API, which no fault here touches.
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_primary).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary names its application contact");
+    estate.enter(&Estate::path(&fabric_primary)).await;
     // The fault falls on an established fabric: a cut that falls while the commit-state or
     // open-traffic round runs holds that round on the planned birth it cuts (states.md, "The round
     // checklist"), so the cells that assert the fabric stays ready start from ready-for-traffic.
@@ -315,8 +315,6 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     }
 
     let fp = f.fabric_primary.clone();
-    let fabric_admin = f.estate.admin.clone();
-    f.estate.admin = fabric_admin;
     let story_end = f.stop().await;
     let spans = f.estate.spans();
     let last_heard_ms = f.unheard_since_ms(&spans).unwrap_or_else(|| panic!("{fp} tracked {} as unheard (via-unheard names the last backbone receipt)", f.lost));
@@ -673,7 +671,7 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     for m in &lost {
         mesh_ids.insert(m.clone(), estate.mesh_view(m).await.id.expect("the mesh has its id").to_string());
     }
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fp).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary names its application contact");
+    estate.enter(&Estate::path(&fp)).await;
     let old = births(&before);
     for (path, pid) in estate.live_runtimes() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -697,8 +695,6 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
         assert_eq!(estate.mesh_view(m).await.id.expect("the mesh still has its id").to_string(), mesh_ids[m], "{m} is reborn under its own MeshId");
     }
     let _ = after;
-    let fabric_admin = estate.admin.clone();
-    estate.admin = fabric_admin;
     estate.stop().await;
     let spans = estate.spans();
     for m in &lost {

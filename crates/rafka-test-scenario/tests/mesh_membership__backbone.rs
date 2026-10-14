@@ -239,8 +239,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         .await
         .iter()
         .filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic" && s(&n["node_id"]) != fp_id)
-        .map(|n| s(&n["admin_api_base"]))
-        .filter(|b| !b.is_empty())
+        .map(|n| s(&n["name"]))
         .collect();
     assert!(!survivors.is_empty(), "a live admin other than the fabric primary {fp_name}");
     let lost_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
@@ -251,7 +250,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     }
     let mut dead = dead;
     dead.insert(fp_name.clone(), now_ns());
-    estate.admin = survivors[0].clone();
+    estate.enter(&Estate::path(&survivors[0])).await;
     // The winner is read with the publisher, in one poll: until the lost
     // primary's mesh is heard again through its successor's aggregate, a
     // peer mesh's admin may briefly name itself in its own view (and, gated,

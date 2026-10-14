@@ -92,11 +92,8 @@ async fn retire_mesh1(test: &str) -> Retired {
     // ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
     estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Control moves to mesh2 before mesh1 goes.
-    estate.admin = before
-        .iter()
-        .find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic)
-        .and_then(|n| n.admin_api_base.clone())
-        .expect("a ready mesh2 admin");
+    let mesh2_admin = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic).map(|n| n.name.clone()).expect("a ready mesh2 admin");
+    estate.enter(&mesh2_admin).await;
     let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.to_string();
     // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
     let left: Vec<NodeView> = estate
@@ -107,7 +104,7 @@ async fn retire_mesh1(test: &str) -> Retired {
         .await;
     let last = left[0].name.to_string();
     let last_id = before.iter().find(|n| n.name.to_string() == last).map(|n| n.node_id.to_string()).unwrap();
-    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
+    estate.enter_fabric_primary().await;
     let mut delete = estate.nodes_obj().await.delete(&last.parse().unwrap()).await.unwrap_or_else(|e| panic!("the node.delete of mesh1's last admin {last} was refused: {e}"));
     let c = Estate::complete(&mut delete).await.build_id.to_string();
     estate.settled_views(&[mesh("mesh2")]).await;

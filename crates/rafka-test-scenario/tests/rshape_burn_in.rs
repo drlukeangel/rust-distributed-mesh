@@ -1592,9 +1592,9 @@ struct Run {
     probes: Vec<Value>,
     events: Vec<Value>,
     actions: Vec<Value>,
-    /// Every node-admin seen, by path.name, with the control base it advertises: the entry (the admin the
-    /// estate asks) is the one whose base the estate holds.
-    known: BTreeMap<String, String>,
+    /// Every node-admin seen, by path.name: the entry (the admin the estate asks) is the one `Estate::admin`
+    /// names.
+    known: BTreeSet<String>,
     probe_round: u64,
     /// The Build projection as the fabric folds it, each time it changed: attempt, executor, state, reason.
     build_obs: Vec<Value>,
@@ -1672,25 +1672,25 @@ fn progress(msg: &str) {
 
 impl Run {
     fn new(seed: u64, nodes: &[Value]) -> Self {
-        let known = nodes.iter().filter(|n| n["kind"] == "node_admin").filter_map(|n| n["admin_api_base"].as_str().map(|b| (s(&n["name"]), b.to_string()))).collect();
+        let known = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| s(&n["name"])).collect();
         Self { traffic: Traffic::new(seed, nodes), history: Vec::new(), births: Vec::new(), writes: Vec::new(), probes: Vec::new(), events: Vec::new(), actions: Vec::new(), known, probe_round: 0, build_obs: Vec::new(), roles: None, refused_writes: Vec::new(), attempts: BTreeMap::new() }
     }
 
-    /// The admins a read is asked of, each by path.name with its control base: the entry first, then every
-    /// other admin ever seen. Each is asked over Node RPC at its own path.name, so a dead entry is passed
-    /// over, never handed over to.
-    fn candidates(&self, f: &Formed) -> Vec<(String, String)> {
-        let entry = self.known.iter().filter(|(_, b)| **b == f.estate.admin);
-        let others = self.known.iter().filter(|(_, b)| **b != f.estate.admin);
-        entry.chain(others).map(|(n, b)| (n.clone(), b.clone())).collect()
+    /// The admins a read is asked of, each by path.name: the entry first, then every other admin ever seen.
+    /// Each is asked over Node RPC at its own path.name, so a dead entry is passed over, never handed over to.
+    fn candidates(&self, f: &Formed) -> Vec<String> {
+        let entry = f.estate.admin.to_string();
+        let first = self.known.iter().filter(|n| **n == entry);
+        let others = self.known.iter().filter(|n| **n != entry);
+        first.chain(others).cloned().collect()
     }
 
     /// `fabric.get` at the first live admin of this run that answers for this Fabric, the entry first. The
     /// entry follows the admin that answered.
     async fn fabric(&mut self, f: &mut Formed) -> Option<Value> {
-        for (name, base) in self.candidates(f) {
+        for name in self.candidates(f) {
             if let Some(v) = fabric_at(&f.estate, &name).await {
-                f.estate.admin = base;
+                follow(f, &name).await;
                 return Some(v);
             }
         }
@@ -1700,10 +1700,10 @@ impl Run {
     /// Build `id` as the Build log of the first live admin of this run that answers for this Fabric folds it,
     /// the entry first. The entry follows the admin that answered.
     async fn build(&mut self, f: &mut Formed, id: &str) -> Option<Value> {
-        for (name, base) in self.candidates(f) {
+        for name in self.candidates(f) {
             if fabric_at(&f.estate, &name).await.is_some() {
                 if let Some(v) = build_at(&f.estate, &name, id).await {
-                    f.estate.admin = base;
+                    follow(f, &name).await;
                     return Some(v);
                 }
             }
@@ -1725,7 +1725,7 @@ impl Run {
     /// `node.get` of every node at the first live admin of this run that answers, the entry first; the entry
     /// stays where it is.
     async fn nodes_now(&mut self, f: &Formed) -> Vec<Value> {
-        for (name, _) in self.candidates(f) {
+        for name in self.candidates(f) {
             if let Some(v) = nodes_at(&f.estate, &name).await {
                 return v;
             }
@@ -1736,9 +1736,9 @@ impl Run {
     /// `node.get` of every node at the first live admin of this run that answers for this Fabric, the entry
     /// first. The entry follows the admin that answered.
     async fn nodes(&mut self, f: &mut Formed) -> Option<Vec<Value>> {
-        for (name, base) in self.candidates(f) {
+        for name in self.candidates(f) {
             if let Some(v) = nodes_at(&f.estate, &name).await {
-                f.estate.admin = base;
+                follow(f, &name).await;
                 return Some(v);
             }
         }
@@ -1776,7 +1776,7 @@ impl Run {
         let entry_key = key(&nodes);
         for a in &admins {
             let name = s(&a["name"]);
-            self.known.insert(name.clone(), s(&a["admin_api_base"]));
+            self.known.insert(name.clone());
             let Some(own_fabric) = fabric_at(&f.estate, &name).await else { return Err(format!("{name} does not answer fabric.get for this Fabric")) };
             let Some(own_nodes) = nodes_at(&f.estate, &name).await else { return Err(format!("{name} does not answer node.get")) };
             if let Err(e) = seats_as_expected(&own_nodes) {
@@ -1934,9 +1934,17 @@ impl Run {
 /// Point the estate's entry (the admin the controller and its probes ask) at an admin that is not
 /// about to stop: the node a Build restarts or retires, or a process about to be killed, is never the
 /// entry while it does.
-fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &str) {
+async fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &str) {
     let keep = st.admins.iter().find(|n| n["name"] != avoid && n["is_fabric_primary"] == true).or_else(|| st.admins.iter().find(|n| n["name"] != avoid)).expect("a second admin to ask");
-    f.estate.admin = s(&keep["admin_api_base"]);
+    follow(f, &s(&keep["name"])).await;
+}
+
+/// Point the estate's entry at the admin `name` when it is not the entry already.
+async fn follow(f: &mut Formed, name: &str) {
+    let admin = Estate::path(name);
+    if f.estate.admin != admin {
+        f.estate.enter(&admin).await;
+    }
 }
 
 /// SIGKILL a non-fabric-primary node-admin (a death the story names), recording the host's view of
@@ -1944,7 +1952,7 @@ fn point_entry_away(f: &mut Formed, st: &Stable, avoid: &str) {
 async fn kill_admin(f: &mut Formed, a: &mut Run, st: &Stable, node: &str) -> Value {
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never killed; it leaves only through a Build");
     let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
-    point_entry_away(f, st, node);
+    point_entry_away(f, st, node).await;
     let pid = node_pid(f, node).await;
     let t = now_ns();
     f.estate.kill_pid(pid as u32);
@@ -2019,7 +2027,7 @@ async fn restart_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str,
     assert_ne!(node, st.fp_name(), "REFUSED: the fabric-primary is never restarted; it leaves only through a retiring Build");
     let n = st.admins.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not a ready admin")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
-    point_entry_away(f, st, node);
+    point_entry_away(f, st, node).await;
     let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
     let build_id = a.write(f, st, &format!("{scenario}: node.restart"), Write::Restart(node.to_string())).await;
@@ -2089,7 +2097,7 @@ async fn hand_off(f: &mut Formed, a: &mut Run, st: &Stable, scenario: &str, inv:
     let old = st.fp.clone();
     let old_name = st.fp_name();
     let mesh = st.mesh_of_fp();
-    point_entry_away(f, st, &old_name);
+    point_entry_away(f, st, &old_name).await;
     let old_pid = node_pid(f, &old_name).await;
     let watcher = tokio::spawn(async move {
         loop {
@@ -2652,7 +2660,7 @@ async fn recovery_run(cell: &str, shape: Shape) {
     let broker = format!("{om}.broker.1");
     let broker_before = f.estate.node_value(&broker).await;
     let fabric_build = s(&st.fabric["build_id"]);
-    point_entry_away(&mut f, &st, &executor_name);
+    point_entry_away(&mut f, &st, &executor_name).await;
     let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].as_u64().unwrap()).unwrap();
     a.traffic.aim = Some(broker.clone());
     let req_ns = now_ns();
@@ -3021,7 +3029,7 @@ async fn restart_node(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, scen
     let n = st.nodes.iter().find(|n| n["name"] == node).unwrap_or_else(|| panic!("{node} is not in the settled view")).clone();
     let fabric_build = s(&st.fabric["build_id"]);
     if n["kind"] == "node_admin" {
-        point_entry_away(f, st, node);
+        point_entry_away(f, st, node).await;
     }
     let attempt_before = build_at(&f.estate, &st.fp_name(), &fabric_build).await.map(|b| b["attempt"].clone()).unwrap_or(Value::Null);
     let t0 = now_ns();
@@ -3400,7 +3408,7 @@ async fn mock_role_restarts_preserve_identity_and_birth() {
 /// Every live admin's view of `name`: whether it lists the path, and under which NodeId.
 async fn admin_views_of(a: &mut Run, f: &Formed, name: &str) -> Vec<Value> {
     let mut out = Vec::new();
-    for (admin, _) in a.candidates(f) {
+    for admin in a.candidates(f) {
         if let Some(ns) = nodes_at(&f.estate, &admin).await {
             let n = ns.iter().find(|n| n["name"] == name);
             out.push(json!({"admin": admin, "lists_path": n.is_some(), "node_id": n.map(|n| n["node_id"].clone()), "status": n.map(|n| n["status"].clone()), "nodes_listed": ns.len()}));
@@ -3934,7 +3942,7 @@ async fn replacement_run(cell: &str, shape: Shape) {
     assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{victim2}: the canary was stored before the kill");
     let rt2 = exact_runtime(&f, &victim2).await;
     let attempt_before = build_at(&f.estate, &st_new.fp_name(), &drift_build).await.map(|b| b["attempt"].as_u64().unwrap()).unwrap();
-    point_entry_away(&mut f, &st_new, &victim2);
+    point_entry_away(&mut f, &st_new, &victim2).await;
     let kill = kill_exact_runtime(&victim2, &rt2);
     let kill_ns = now_ns();
     progress(&format!("{victim2} exact runtime killed: {kill}"));
@@ -4527,7 +4535,8 @@ async fn supersession_run(cell: &str, shape: Shape) {
     f.actions.push(json!({"t_ms": now_ms(), "action": "fault.udp-drop.release"}));
     events.push(json!({"event": "established-connection-lost", "ack": ack1, "call_outcome": out1, "source_fact_after": fact_after, "other_source_op": still, "t_cut_ns": t_cut1}));
 
-    // Inbound acceptance: a compute dials the source gateway; the source accepts and records the same Connected evidence.
+    // Inbound acceptance: a compute dials the source gateway; the source accepts and writes nothing (R-CN1: an accept
+    // is never Direct evidence, and the gateway reaches the compute by no Proxy, so it is no recovery trigger either).
     let t_in0 = now_ns();
     let inbound_from = "mesh1.compute.1".to_string();
     let inbound = probe_call(&f.estate, &["dial", "--target", &format!("path:{inbound_from}"), "--destination", &format!("path:{src}"), "--key", "x"]);
@@ -4595,9 +4604,11 @@ async fn supersession_run(cell: &str, shape: Shape) {
             .into_iter()
             .filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == comp.as_str() && sp["attributes"]["origin"] == "accept" && start_ns(sp) >= marks.2)
             .count();
-        assert!(accepted >= 1, "{s0} recorded the accepted inbound connection from {comp} as a fact of origin accept");
+        assert_eq!(accepted, 0, "{s0} wrote no fact for the accepted inbound connection from {comp} (R-CN1)");
+        let woken = named(spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == comp.as_str()).count();
+        assert_eq!(woken, 0, "{s0} reaches {comp} by no Proxy: the accept arms no recovery attempt");
         inv.holds(
-            "C11: a dial lost under an acknowledged cut is a Failed fact toward the exact new birth and sends nothing; the Failed Direct is no route; a redial after the release is a Connected fact and the route recovers on the new birth; an inbound connection is an accepted fact; the superseded birth leaves the pool",
+            "C11: a dial lost under an acknowledged cut is a Failed fact toward the exact new birth and sends nothing; the Failed Direct is no route; a redial after the release is a Connected fact and the route recovers on the new birth; an inbound connection writes no fact; the superseded birth leaves the pool",
             true,
             json!({"facts": seq, "new_incarnation": inc1}),
         );
@@ -4611,8 +4622,8 @@ async fn supersession_run(cell: &str, shape: Shape) {
 /// two nodes' sockets is then dropped (acknowledged by the host's rule install): the gateway's call to the
 /// broker does not reply, its latest Direct fact toward the broker is no longer Connected, and the other
 /// gateway still reaches the broker (the cut is selected, not global). Released, the gateway redials and its
-/// next call is answered by the same birth, the fact Connected again. The broker dialling the gateway is an
-/// accepted fact at the gateway. The broker's exact runtime is then killed (acknowledged by the provider) and
+/// next call is answered by the same birth, the fact Connected again. A compute dialling the gateway writes no
+/// fact at the gateway (R-CN1). The broker's exact runtime is then killed (acknowledged by the provider) and
 /// its mesh-primary recovers it (node-recovery.md): a new node.id and incarnation at the same path.name, the
 /// endpoint key and data dir retained, on a new socket in a new runtime. Another mesh's compute dials the new
 /// birth under a cut and its dial is a Failed fact that sent nothing; once released, the dial is Connected on
@@ -4668,7 +4679,8 @@ async fn proxy_run(cell: &str, shape: Shape) {
     assert!(!pooled.iter().any(|k| k.contains(&s(&dn["incarnation_id"]))), "the source holds no connection to the destination while carried: {pooled:?}");
     events.push(json!({"event": "carried", "seeded": seeded.out, "call": carried.out, "t0_ns": t_car0, "t1_ns": t_car1}));
 
-    // C13: Direct returns while the Proxy is proven. The retirement write is refused (the accepted Direct's own
+    // C13: the destination dials the source while the Proxy is proven: the accept wakes the source's own dial
+    // (R-CN1), and only that dial's Direct Connected owes the retirement. The retirement write is refused (the dial's own
     // history append goes through): the Proxy stays the route; the retirement lands once the write can, and only
     // then is Direct effective.
     let armed = probe_call(&f.estate, &["fault", "--target", &format!("path:{src}"), "--refuse-history", "100000", "--pass-history", "1", "--key", "x"]);
@@ -4743,9 +4755,16 @@ async fn proxy_run(cell: &str, shape: Shape) {
         assert!(refused.iter().all(|sp| start_ns(sp) <= start_ns(lands[0])), "every refusal precedes the landing");
         assert!(start_ns(&during_route) < start_ns(lands[0]), "the call during the refusal chose its route before the landing");
         assert!(start_ns(&cut_route) >= lands[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX), "the first Direct route is chosen after the retirement landed");
-        let accepted = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && sp["attributes"]["origin"] == "accept" && start_ns(sp) >= w.6).count();
-        assert_eq!(accepted, 1, "one accepted connection, one fact");
-        inv.holds("C12/C13: a call is carried by the gateway in one hop to the destination's exact birth; Direct returning does not cut back while the retirement write is refused; the retirement lands durably before the first Direct route", true, json!({"carried_route": carried_route["span_id"], "inner_calls": inner, "refused_retirements": refused.len()}));
+        let observed: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-observed").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
+        assert!(!observed.iter().any(|sp| sp["attributes"]["origin"] == "accept"), "the accept is no fact (R-CN1): {observed:?}");
+        let wakes: Vec<&Value> = named(spans, "rdm.node_admin.connection.update.via-accept-trigger").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str() && start_ns(sp) >= w.6).collect();
+        assert_eq!(wakes.iter().filter(|sp| matches!(sp["attributes"]["outcome"].as_str(), Some("pending" | "coalesced"))).count(), 1, "the destination's accept woke one attempt of the source's own: {wakes:?}");
+        let dials: Vec<&Value> = named(spans, "rdm.node_admin.connection.create.via-recovery-dial").into_iter().filter(|sp| sp["attributes"]["source"] == s0.as_str() && sp["attributes"]["destination"] == d0.as_str()).collect();
+        assert_eq!(dials.len(), 1, "one dial of the source's own: {dials:?}");
+        assert_eq!(dials[0]["attributes"]["fact"], "connected", "{:?}", dials[0]);
+        let entry = observed.iter().find(|sp| sp["attributes"]["origin"] == "dial" && sp["attributes"]["state"] == "connected" && sp["attributes"]["entry"] == dials[0]["attributes"]["entry"]).unwrap_or_else(|| panic!("the dial's own Direct Connected entry: {observed:?}"));
+        assert!(refused.iter().all(|sp| start_ns(sp) >= start_ns(entry)), "every retirement attempt follows the dial's entry");
+        inv.holds("C12/C13: a call is carried by the gateway in one hop to the destination's exact birth; the destination's accept wakes the source's own dial, whose Direct does not cut back while the retirement write is refused; the retirement lands durably before the first Direct route", true, json!({"carried_route": carried_route["span_id"], "inner_calls": inner, "refused_retirements": refused.len()}));
         json!({"carried_route_span": carried_route["span_id"], "route_while_refused": during_route["span_id"], "route_after_retirement": cut_route["span_id"], "landed_retirement": lands[0]["span_id"], "refused": refused.len()})
     })
     .await;
@@ -4756,7 +4775,8 @@ async fn proxy_run(cell: &str, shape: Shape) {
 /// carried: the route is via-peer through that gateway, the gateway makes exactly one inner call (it never
 /// forwards again), the other mesh's gateway executes it as its exact birth, and the compute holds no
 /// connection to it. The destination then dials the compute while the compute's retirement write is refused
-/// (the accepted Direct's own append goes through): the retirement is owed, refused by name, the Proxy
+/// (the accept wakes the compute's own dial once its backoff ends, R-CN1, and that dial's Direct Connected append
+/// goes through): the retirement is owed, refused by name, the Proxy
 /// stays the route, nothing durable says it retired; released, the retirement lands durably once, and only
 /// then does a call go Direct. What must NOT happen: a Direct leg while the Proxy is owed, a second
 /// forward, a Direct route chosen before the durable retirement, a retirement without a durable row.
@@ -6481,7 +6501,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     let carrier_edge0 = dial(&f, &car, &other);
     f.actions.push(action_row(&carrier_edge0));
     await_direct(&f.estate, &car, &other, "Connected", Duration::from_secs(30), |d| d["state"] == "Connected" && d["destination"]["incarnation"] == on["incarnation_id"]).await;
-    let seeded0 = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{other}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
+    let seeded0 = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{other}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "6", "--key", "x"]);
     assert_eq!((seeded0.out["proxy_recorded"].as_bool(), seeded0.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded0.out);
     f.actions.push(action_row(&seeded0));
     let healthy = orig_get(&f, &src, &other, "carried-control");
@@ -6497,7 +6517,7 @@ async fn carrier_edge_run(cell: &str, shape: Shape) {
     assert_eq!(probe_edge.out["dialed"], "NotSent", "the carrier's dial to {dst} over the cut finds no path: {}", probe_edge.out);
     let edge_down = await_direct(&f.estate, &car, &dst, "Failed", Duration::from_secs(30), |d| d["state"] == "Failed").await;
     // The source records the Proxy via the carrier toward the destination it cannot reach Direct either.
-    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "1", "--key", "x"]);
+    let seeded = probe_call(&f.estate, &["record-proxy", "--target", &format!("path:{src}"), "--destination", &format!("path:{dst}"), "--carrier", &format!("path:{car}"), "--failed-attempts", "6", "--key", "x"]);
     assert_eq!((seeded.out["proxy_recorded"].as_bool(), seeded.out["carrier_node_id"].as_str()), (Some(true), cn["node_id"].as_str()), "{}", seeded.out);
     f.actions.push(action_row(&seeded));
     let rows0 = proxy_retirements(&durable_history(&f, &src).await).len();
@@ -6585,7 +6605,7 @@ async fn cutback_restart_run(cell: &str, shape: Shape) {
         })
     };
     let t_restart = now_ns();
-    point_entry_away(&mut f, &st, &car);
+    point_entry_away(&mut f, &st, &car).await;
     let build = a.write(&mut f, &st, "C12 cutback owed: restart of the carrier", Write::Restart(car.to_string())).await;
     assert_eq!(build, formation, "a restart opens the next attempt of the formation's Build");
     let attempt_c = a.attempts[&build];

@@ -251,19 +251,19 @@ pub struct ServerBuilder {
     pub(crate) carried: HashMap<u8, usize>,
     /// Filled at seal for the forward handler, when this node serves it.
     pub(crate) carried_table: Option<Arc<std::sync::OnceLock<HashMap<u8, usize>>>>,
-    /// The source-owned connections observer and the resolver that names an accepted peer,
-    /// when the process writes its own connection facts (connections.md §10).
+    /// The accept trigger and the resolver that names an accepted peer, when the process runs
+    /// direct recovery (R-CN1).
     inbound: Option<Inbound>,
     /// Test seam: withholds the next reply after the handler has applied it.
     withhold: Option<Arc<ReplyWithhold>>,
 }
 
-/// An accepted connection reported to the process's connections observer as Direct Connected
-/// from this node to the peer, once the resolver names the peer's live birth.
+/// An accepted connection handed to the process's accept trigger once the resolver names the
+/// peer's live birth: a recovery trigger, never Direct evidence (R-CN1).
 #[derive(Clone)]
 struct Inbound {
     resolver: Arc<crate::LiveNodeResolver>,
-    observer: Arc<dyn crate::ConnectionObserver>,
+    trigger: Arc<dyn crate::AcceptTrigger>,
 }
 
 impl ServerBuilder {
@@ -288,12 +288,12 @@ impl ServerBuilder {
         self
     }
 
-    /// Report every accepted connection whose peer `resolver` names as a live node to
-    /// `observer` as `direct_accepted` (connections.md §10: a connection accepted from the
-    /// destination is Direct Connected evidence like a dial of this node's own). A peer the
-    /// resolver does not hold (a probe's ephemeral key) is reported to nothing.
-    pub fn with_connection_observer(mut self, resolver: Arc<crate::LiveNodeResolver>, observer: Arc<dyn crate::ConnectionObserver>) -> Self {
-        self.inbound = Some(Inbound { resolver, observer });
+    /// Hand every accepted connection whose peer `resolver` names as a live node to `trigger`
+    /// (R-CN1: an accept is a recovery trigger for this node's own direct dial toward that birth,
+    /// never Direct evidence; the acceptor writes nothing). A peer the resolver does not hold (a
+    /// probe's ephemeral key) is handed to nothing.
+    pub fn with_accept_trigger(mut self, resolver: Arc<crate::LiveNodeResolver>, trigger: Arc<dyn crate::AcceptTrigger>) -> Self {
+        self.inbound = Some(Inbound { resolver, trigger });
         self
     }
 
@@ -723,10 +723,10 @@ impl ProtocolHandler for NodeRpcServer {
         tracing::info_span!("rdm.node_rpc.connection.create.via-accept", peer = %peer.fmt_short(), connection = id).in_scope(|| {
             tracing::info!(step = "accepted", "a node rpc connection was accepted");
             // Once per accepted connection, never per stream: the peer's live birth, as this
-            // process resolves it now, is Direct Connected from this node (connections.md §10).
+            // process resolves it now, is a recovery trigger (R-CN1), never a Direct fact.
             if let Some(inbound) = &self.inner.inbound {
                 if let Some(node) = inbound.resolver.by_endpoint(&peer) {
-                    inbound.observer.direct_accepted(&node);
+                    inbound.trigger.accepted(&node);
                 }
             }
             self.inner.connections.lock().unwrap().insert(id, connection.clone());

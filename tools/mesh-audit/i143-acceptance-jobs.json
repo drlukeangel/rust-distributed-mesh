@@ -12,10 +12,10 @@
           "dir": "target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery"
         },
         {
-          "name": "source_accepts_inbound_direct_retires_proxy_before_cutback",
+          "name": "source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2938.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accepts_inbound_direct_retires_proxy_before_cutback/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2938::source_accepts_inbound_direct_retires_proxy_before_cutback -- --exact",
-          "dir": "target/i143-acceptance/2938/process/source_accepts_inbound_direct_retires_proxy_before_cutback"
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2938::source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback -- --exact",
+          "dir": "target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback"
         }
       ]
     },

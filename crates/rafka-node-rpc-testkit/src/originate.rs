@@ -432,7 +432,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier
     for _ in 0..failed_attempts {
         seams.connections.direct_failed(&dest, "testkit seed: the direct dial ended NotSent");
     }
-    seams.connections.drain().await;
+    seams.connections.observations_landed().await;
     let end = |n: &rafka_node_rpc::ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let row = NodeConnection {
         id: rafka_mesh_entity::ConnectionId::mint(),

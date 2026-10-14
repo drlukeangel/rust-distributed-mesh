@@ -368,15 +368,28 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     connections.held().lock().unwrap().set_membership(resolver.clone());
     connections.hydrate().await.map_err(|e| anyhow!("connections hydrate: {e}"))?;
     drop(step);
-    // An owed Proxy retirement whose write was refused is attempted again while owed
-    // (connections.md §10); the task ends with the process.
-    let _retirements = connections.spawn_retirement_reconciler(rafka_node_admin_core::connections_writer::RETIREMENT_RETRY);
     // The control plane: Node RPC is no connection (connections.md "Two planes, two words"), so its
     // dials and accepts write nothing to the connections log.
     let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm"));
     // The data plane of RDM standalone: the originate door's own client, whose dials are the
     // connections this node originates for traffic, each a Direct entry of its log.
     let data_plane = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
+    // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy retirement
+    // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
+    // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
+    // observation. The task ends with the process.
+    let recovery_dial: rafka_node_admin_core::connections_writer::RecoveryDial = {
+        let data_plane = data_plane.clone();
+        Arc::new(move |destination: rafka_mesh_entity::connections::ConnectionEnd| {
+            let data_plane = data_plane.clone();
+            Box::pin(async move {
+                use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+                let (out, _) = data_plane.call::<Ping>(&rafka_node_rpc::NodeTarget::ExactNode(destination.node_id), &PingRequest::Ping { payload: b"recovery".to_vec() }, &rafka_node_rpc::CallOptions::default()).await;
+                out.name().to_string()
+            })
+        })
+    };
+    let _reconciler = connections.spawn_reconciler(rafka_node_admin_core::connections_writer::RECONCILER_TICK, Some(recovery_dial));
     // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
     // The name this birth holds, read per call by every door that names it: its launch's until it joins.
@@ -390,7 +403,9 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // included, is a typed NotReady before then.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
-    let server = serve_kick(register(rafka_node_admin_core::fabric_handover::serve_member(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new(), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone())
+    // Every connection this node accepts from a live peer is a recovery trigger for its own dial
+    // toward that birth, never a Direct entry (R-CN1).
+    let server = serve_kick(register(rafka_node_admin_core::fabric_handover::serve_member(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
         .with_ready_gate(ready.clone())

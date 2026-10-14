@@ -81,7 +81,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let victim_id = before.iter().find(|n| s(&n["name"]) == window_victim).map(|n| s(&n["node_id"])).expect("the member's node id");
 
     // Control goes through the fabric primary's advertised API, which the fault never touches.
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_holder).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary names its application contact");
+    estate.enter(&Estate::path(&fabric_holder)).await;
 
     // The fault: both admins at once, then, with the mesh admin-less, one ordinary member.
     let mut killed = Vec::new();
@@ -132,7 +132,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         }
     }
 
-    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
+    estate.enter_fabric_primary().await;
     estate.stop().await;
     let spans = estate.spans();
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
@@ -296,8 +296,8 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     assert_eq!(killed.len(), 5, "the member died with no admin running: {killed:?}");
 
     // The person starts one node-admin on the former fabric primary's data dir.
-    let base = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
-    estate.admin = base;
+    let restarted = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.enter(&restarted).await;
     let after = values(&estate.settles_to(&shape, Duration::from_secs(240)).await);
 
     assert_eq!(estate.accepted_build_id().await, accepted, "no new Build: the current build_id is unchanged");
@@ -398,8 +398,8 @@ async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
     estate.kill_bootstrap();
     assert!(estate.live_runtimes().is_empty(), "no runtime of the fabric is left: {:?}", estate.live_runtimes());
 
-    let base = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
-    estate.admin = base;
+    let restarted = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.enter(&restarted).await;
     let after = estate.settles_to(&shape, Duration::from_secs(240)).await;
     assert_eq!(after.len(), 6);
 

@@ -123,7 +123,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
                 other => panic!("{what}: the ping did not end in a reply: {other:?}"),
             }
         }
-        cut_seams.connections.drain().await;
+        cut_seams.connections.observations_landed().await;
         let before = kept_log(&store, &fabric, &born);
         for dest in ["mesh1.admin.1", "mesh1.rpc.2"] {
             assert!(before.iter().any(|e| e.source.name == born && e.destination.name.to_string() == dest), "the node holds a route to {dest}: {before:#?}");

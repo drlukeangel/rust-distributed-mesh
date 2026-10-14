@@ -231,7 +231,7 @@ async fn run_isolation(cell: &'static str, cut: Cut) {
     let cut_mesh = if kept_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
     let kept = nodes.iter().find(|n| n["mesh"] == kept_mesh.as_str() && n["kind"] == "node_admin" && n["status"] == "ready-for-traffic" && n["admin_api_base"].is_string()).expect("a kept admin answers").clone();
     let kept_admin = s(&kept["name"]);
-    estate.admin = s(&kept["admin_api_base"]);
+    estate.enter(&Estate::path(&kept_admin)).await;
     let nodes = estate.node_values().await;
     let mesh_members: Vec<String> = nodes.iter().filter(|n| n["mesh"] == cut_mesh.as_str() && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
     assert_eq!(mesh_members.len(), 4, "{cut_mesh} holds its four members ready: {mesh_members:?}");
@@ -530,12 +530,11 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let holder = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let kept_mesh = holder.split('.').next().unwrap().to_string();
     let lost_mesh = if kept_mesh == "mesh1" { "mesh2" } else { "mesh1" }.to_string();
-    let admin_base = |nodes: &[Value], name: &str| nodes.iter().find(|n| n["name"] == name).and_then(|n| n["admin_api_base"].as_str()).map(String::from).unwrap_or_default();
     let (lost_mesh_id, kept_mesh_id) = (mesh_id_of(&estate, &lost_mesh).await, mesh_id_of(&estate, &kept_mesh).await);
 
     // The mesh to lose holds no seat; control goes through the fabric primary, which the fault never touches.
     
-    estate.admin = admin_base(&before, &holder);
+    estate.enter(&Estate::path(&holder)).await;
 
     // The mesh to lose: its containers, by exact id, before the fault.
     let lost_names: Vec<String> = all.iter().filter(|n| n.starts_with(&format!("{lost_mesh}."))).cloned().collect();
@@ -709,7 +708,7 @@ async fn container_primary_mesh_retired_hands_off_authority_before_its_container
     assert_eq!(run_bases.len(), 4, "four admins, four control endpoints: {run_bases:?}");
     let survivors: Vec<String> = admin_bases.keys().filter(|n| n.starts_with(&format!("{survivor_mesh}."))).cloned().collect();
     let survivor_bases: BTreeSet<String> = survivors.iter().map(|n| admin_bases[n].clone()).collect();
-    estate.admin = admin_bases[&survivors[0]].clone();
+    estate.enter(&Estate::path(&survivors[0])).await;
     let fabric_id = estate.fabric_id.clone();
     let peers = estate.peers().await;
 
@@ -803,7 +802,7 @@ async fn container_primary_mesh_retired_hands_off_authority_before_its_container
         survivors_inspected.insert(name.clone(), json!({"id": id, "pid": now.pid, "started_at": now.started_at}));
     }
 
-    estate.admin = new_base.clone();
+    estate.enter(&Estate::path(&new_holder)).await;
     estate.stop().await;
     let spans = estate.spans();
     let rows = samples.lock().unwrap().clone();
