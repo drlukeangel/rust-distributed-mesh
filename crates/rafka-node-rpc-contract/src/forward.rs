@@ -52,7 +52,7 @@ pub enum ForwardRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForwardReply {
     /// The inner call reached the target, which answered: its reply payload, verbatim.
-    Relayed {
+    Forwarded {
         /// The inner reply payload.
         inner: Vec<u8>,
     },
@@ -97,8 +97,8 @@ pub enum ForwardReply {
         /// Which bound the carrier is at.
         reason: String,
     },
-    /// The carrier is draining and takes no new work.
-    Draining {
+    /// The carrier is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why the carrier refuses new work.
         reason: String,
     },
@@ -144,7 +144,7 @@ impl NodeProtocol for Forward {
 
     fn classify_reply(reply: &ForwardReply) -> ReplyKind {
         match reply {
-            ForwardReply::Relayed { .. } => ReplyKind::Success,
+            ForwardReply::Forwarded { .. } => ReplyKind::Success,
             ForwardReply::InnerNotSent { .. }
             | ForwardReply::InnerUnserved { .. }
             | ForwardReply::InnerRejectedStale { .. }
@@ -155,7 +155,7 @@ impl NodeProtocol for Forward {
             ForwardReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             ForwardReply::NotReady { .. } => ReplyKind::NotReady,
             ForwardReply::Busy { .. } => ReplyKind::Busy,
-            ForwardReply::Draining { .. } => ReplyKind::Draining,
+            ForwardReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             ForwardReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             ForwardReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -170,8 +170,8 @@ impl NodeProtocol for Forward {
     fn busy(reason: String) -> ForwardReply {
         ForwardReply::Busy { reason }
     }
-    fn draining(reason: String) -> ForwardReply {
-        ForwardReply::Draining { reason }
+    fn connections_deleting(reason: String) -> ForwardReply {
+        ForwardReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> ForwardReply {
         ForwardReply::Malformed { kind }
@@ -194,7 +194,7 @@ mod tests {
     #[test]
     fn every_reply_variant_round_trips() {
         let replies = [
-            ForwardReply::Relayed { inner: vec![1] },
+            ForwardReply::Forwarded { inner: vec![1] },
             ForwardReply::InnerNotSent { reason: "r".into() },
             ForwardReply::InnerUnserved { op: 7 },
             ForwardReply::InnerRejectedStale { target_node_id: NodeId::mint() },
@@ -203,7 +203,7 @@ mod tests {
             ForwardReply::PeerUnresolved { reason: "p".into() },
             ForwardReply::NotReady { reason: "n".into() },
             ForwardReply::Busy { reason: "b".into() },
-            ForwardReply::Draining { reason: "d".into() },
+            ForwardReply::ConnectionsDeleting { reason: "d".into() },
             ForwardReply::Malformed { kind: MalformedKind::Corrupt },
             ForwardReply::Unauthorized { reason: "u".into() },
             ForwardReply::CarrierEdgeLost { reason: "e".into() },

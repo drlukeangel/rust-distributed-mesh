@@ -35,8 +35,8 @@ pub enum ReplyKind {
     NotReady,
     /// The reply says the node is at its admission bound.
     Busy,
-    /// The reply says the node is draining.
-    Draining,
+    /// The reply says the node is connections-deleting.
+    ConnectionsDeleting,
     /// The reply says the request frame was malformed, and how.
     Malformed(MalformedKind),
     /// The reply says the caller is not allowed the call.
@@ -305,7 +305,7 @@ impl PreCommit {
 
     /// The server stopped the request direction (`422 REQUEST_STOP`) before
     /// this caller finished it: an early typed refusal (TooLarge, Busy,
-    /// Draining, ...). The request never had its FIN, so it was never
+    /// ConnectionsDeleting, ...). The request never had its FIN, so it was never
     /// dispatched; a valid typed reply is that refusal (node-rpc.md §27).
     pub fn stopped_before_finish(self) -> EarlyRefusal {
         EarlyRefusal { op: self.op }
@@ -337,7 +337,7 @@ impl EarlyRefusal {
     }
 
     /// The early refusal's payload undecoded, for a carrier handing it across verbatim.
-    pub fn relayed(self, reply_payload: Option<&[u8]>) -> RpcOutcome<Vec<u8>> {
+    pub fn forwarded(self, reply_payload: Option<&[u8]>) -> RpcOutcome<Vec<u8>> {
         match reply_payload {
             Some(b) => RpcOutcome::Reply(Replied { value: b.to_vec(), class: ReplyKind::Unclassified }),
             None => RpcOutcome::NotSent(NotSent { reason: NotSentReason::FrameNotSent }),
@@ -390,7 +390,7 @@ impl Committed {
     }
 
     /// The reply payload undecoded, for a carrier handing an inner reply across verbatim.
-    pub fn relayed(self, reply_payload: &[u8]) -> RpcOutcome<Vec<u8>> {
+    pub fn forwarded(self, reply_payload: &[u8]) -> RpcOutcome<Vec<u8>> {
         RpcOutcome::Reply(Replied { value: reply_payload.to_vec(), class: ReplyKind::Unclassified })
     }
 }
@@ -411,7 +411,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
     let not_sent = |reason: NotSentReason| RpcOutcome::NotSent(NotSent { reason });
     let indeterminate = |reason: IndeterminateReason| RpcOutcome::Indeterminate(Indeterminate { reason });
     match reply {
-        ForwardReply::Relayed { inner } => match P::decode_reply(&inner) {
+        ForwardReply::Forwarded { inner } => match P::decode_reply(&inner) {
             Ok(value) => {
                 let class = P::classify_reply(&value);
                 RpcOutcome::Reply(Replied { value, class })
@@ -430,7 +430,7 @@ pub fn carried<P: NodeProtocol>(outer: RpcOutcome<crate::forward::ForwardReply>)
         ForwardReply::PeerUnresolved { reason }
         | ForwardReply::NotReady { reason }
         | ForwardReply::Busy { reason }
-        | ForwardReply::Draining { reason }
+        | ForwardReply::ConnectionsDeleting { reason }
         | ForwardReply::Unauthorized { reason } => not_sent(NotSentReason::Carried(reason)),
         ForwardReply::Malformed { kind } => {
             not_sent(NotSentReason::Carried(format!("the carrier refused the forward as malformed: {kind:?}")))

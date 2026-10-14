@@ -119,8 +119,8 @@ impl std::fmt::Display for Key {
             Key::DigestSeq(seq) => write!(f, "digest_seq={seq}"),
             Key::Publication { published_at_rafka_ms, topology_version } => write!(f, "published_at_rafka_ms={published_at_rafka_ms} topology_version={topology_version}"),
             Key::TopologyVersion(v) => write!(f, "topology_version={v}"),
-            Key::Seat { revision, stage: SeatStage::Updating } => write!(f, "epoch={revision} updating"),
-            Key::Seat { revision, stage: SeatStage::Updated } => write!(f, "epoch={revision} updated"),
+            Key::Seat { revision, stage: SeatStage::Updating } => write!(f, "revision={revision} updating"),
+            Key::Seat { revision, stage: SeatStage::Updated } => write!(f, "revision={revision} updated"),
             Key::Seat { revision, stage: SeatStage::Seated } => write!(f, "revision={revision}"),
         }
     }
@@ -129,7 +129,7 @@ impl std::fmt::Display for Key {
 /// The frame's name in spans and each source with its order key; empty for a frame with no order key.
 fn orders_of(f: &Frame) -> (&'static str, Vec<(Source, Key)>) {
     let seats = |name: &'static str, seats: &[rafka_mesh_entity::seat::transfer::CommittedSeat], stage: SeatStage| {
-        (name, seats.iter().map(|c| (Source::Cohort { seat: c.seat.name(), mesh: c.mesh_key().unwrap_or_default().to_string() }, Key::Seat { revision: c.epoch, stage })).collect())
+        (name, seats.iter().map(|c| (Source::Cohort { seat: c.seat.name(), mesh: c.mesh_key().unwrap_or_default().to_string() }, Key::Seat { revision: c.revision, stage })).collect())
     };
     match f {
         Frame::PrimaryUpdating { seats: s, .. } => seats("primary-updating", s, SeatStage::Updating),
@@ -157,7 +157,7 @@ fn order_of(f: &Frame) -> Option<(&'static str, Source, Key)> {
         Frame::Seated { seat, holder } => Some((
             "seated",
             Source::Cohort { seat: seat.name(), mesh: if *seat == rafka_mesh_entity::Seat::FabricPrimary { String::new() } else { holder.mesh.clone() } },
-            Key::Seat { revision: holder.epoch, stage: SeatStage::Seated },
+            Key::Seat { revision: holder.revision, stage: SeatStage::Seated },
         )),
         _ => None,
     }
@@ -406,24 +406,24 @@ mod tests {
         let mut order = ReceiveOrder::default();
         let (holder, successor) = (birth("mesh1.admin.1"), birth("mesh1.admin.2"));
         let to = HandoverBirth { mesh: "mesh1".into(), node_id: successor.node.node_id.clone(), incarnation: successor.node.incarnation.clone() };
-        let mesh_seat = |mesh: &str, epoch: u64| CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: mesh.into() }, holder: to.clone(), epoch };
-        let fabric_seat = |epoch: u64| CommittedSeat { seat: TransferSeat::FabricPrimary, holder: to.clone(), epoch };
+        let mesh_seat = |mesh: &str, revision: u64| CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: mesh.into() }, holder: to.clone(), revision };
+        let fabric_seat = |revision: u64| CommittedSeat { seat: TransferSeat::FabricPrimary, holder: to.clone(), revision };
         let updating = |seats: Vec<CommittedSeat>| Frame::PrimaryUpdating { op: op(&holder, "stop-node"), seats };
         let updated = |seats: Vec<CommittedSeat>| Frame::PrimaryUpdated { op: op(&holder, "stop-node"), seats };
         assert_eq!(order.admit(&updating(vec![mesh_seat("mesh1", 4)])), Ok(()));
-        assert_eq!(order.admit(&updated(vec![mesh_seat("mesh1", 4)])), Ok(()), "the updated of the same epoch follows its updating");
+        assert_eq!(order.admit(&updated(vec![mesh_seat("mesh1", 4)])), Ok(()), "the updated of the same revision follows its updating");
         assert_eq!(
             order.admit(&updating(vec![mesh_seat("mesh1", 4)])),
-            Err(Earlier { frame: "primary-updating", source: "mesh-primary mesh1".into(), held: "epoch=4 updated".into(), offered: "epoch=4 updating".into() }),
+            Err(Earlier { frame: "primary-updating", source: "mesh-primary mesh1".into(), held: "revision=4 updated".into(), offered: "revision=4 updating".into() }),
             "a late updating never undoes an updated"
         );
         assert_eq!(order.admit(&updated(vec![mesh_seat("mesh1", 4)])), Ok(()), "a copy of the held updated is the handler's to absorb");
         assert_eq!(order.admit(&updating(vec![mesh_seat("mesh1", 5)])), Ok(()), "the next update is newer");
-        assert_eq!(order.admit(&updated(vec![mesh_seat("mesh1", 3)])).map_err(|e| (e.frame, e.offered)), Err(("primary-updated", "epoch=3 updated".to_string())), "an earlier committed epoch is ignored");
+        assert_eq!(order.admit(&updated(vec![mesh_seat("mesh1", 3)])).map_err(|e| (e.frame, e.offered)), Err(("primary-updated", "revision=3 updated".to_string())), "an earlier committed revision is ignored");
         // Both seats in one frame (Q1): the fabric cohort's newer key ignores the whole frame.
         assert_eq!(order.admit(&updated(vec![fabric_seat(8)])), Ok(()));
         let both = order.admit(&updating(vec![mesh_seat("mesh1", 6), fabric_seat(8)])).unwrap_err();
-        assert_eq!((both.frame, both.source.as_str(), both.held.as_str(), both.offered.as_str()), ("primary-updating", "fabric-primary", "epoch=8 updated", "epoch=8 updating"));
+        assert_eq!((both.frame, both.source.as_str(), both.held.as_str(), both.offered.as_str()), ("primary-updating", "fabric-primary", "revision=8 updated", "revision=8 updating"));
         assert_eq!(order.admit(&updating(vec![mesh_seat("mesh2", 1)])), Ok(()), "another mesh's cohort is another source");
     }
 
@@ -441,7 +441,7 @@ mod tests {
         let mut order = ReceiveOrder::default();
         let seated = |seat: Seat, mesh: &str, revision: u64| Frame::Seated {
             seat,
-            holder: SeatHolder { mesh: mesh.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: revision },
+            holder: SeatHolder { mesh: mesh.into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision },
         };
         assert_eq!(order.admit(&seated(Seat::MeshPrimary, "mesh1", 5)), Ok(()));
         assert_eq!(order.admit(&seated(Seat::Cohort(NodeKind::RpcNode), "mesh1", 2)), Ok(()), "mesh1's rpc cohort is its own seat key, never suppressed by mesh1's admin revision 5");

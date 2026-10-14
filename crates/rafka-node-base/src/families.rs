@@ -68,8 +68,8 @@ pub enum BrokerDataReply {
         /// Which bound the node is at.
         reason: String,
     },
-    /// The node is draining and takes no new work.
-    Draining {
+    /// The node is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why the node refuses new work.
         reason: String,
     },
@@ -102,7 +102,7 @@ impl NodeProtocol for BrokerData {
             BrokerDataReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             BrokerDataReply::NotReady { .. } => ReplyKind::NotReady,
             BrokerDataReply::Busy { .. } => ReplyKind::Busy,
-            BrokerDataReply::Draining { .. } => ReplyKind::Draining,
+            BrokerDataReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             BrokerDataReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BrokerDataReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -116,8 +116,8 @@ impl NodeProtocol for BrokerData {
     fn busy(reason: String) -> Self::Reply {
         BrokerDataReply::Busy { reason }
     }
-    fn draining(reason: String) -> Self::Reply {
-        BrokerDataReply::Draining { reason }
+    fn connections_deleting(reason: String) -> Self::Reply {
+        BrokerDataReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> Self::Reply {
         BrokerDataReply::Malformed { kind }

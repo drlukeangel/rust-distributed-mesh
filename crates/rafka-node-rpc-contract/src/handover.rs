@@ -11,7 +11,7 @@
 //! holder makes the call on the successor below. The holder, its cohort's row writer,
 //! pre-checks its successor, writes the ONE committed row for one or both seats, then calls
 //! [`NodePrimaryUpdateRequest::PrimaryUpdate`] on the successor carrying the row's content: every seat
-//! with its cohort, both exact births (never a name) and the committed epoch. The successor installs
+//! with its cohort, both exact births (never a name) and the committed revision. The successor installs
 //! from the row and answers [`NodePrimaryUpdateReply::PrimaryUpdated`] (node.primary.updated), which the
 //! holder hands back up as its own answer. The fabric seat is a second entry in `seats`, cohort
 //! `fabric`. An identical repeat replays the committed result; a call naming the operation with
@@ -23,7 +23,7 @@
 //! [`Seat`], [`CommittedSeat`] and [`HandoverBirth`] are the doc's shapes
 //! (`rafka_mesh_entity::seat::transfer`, which the "primary updating" and "primary updated" gossip
 //! frames carry too). The family's outcomes sit on the framework's six: `NotReady`, `Malformed`,
-//! `PeerUnresolved`, `Busy`, `Draining` and `Unauthorized` follow the family's own replies.
+//! `PeerUnresolved`, `Busy`, `ConnectionsDeleting` and `Unauthorized` follow the family's own replies.
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
@@ -33,14 +33,14 @@ use serde::{Deserialize, Serialize};
 /// The node-primary-update protocol: node.primary.update and node.fabric-primary.update.
 pub struct NodePrimaryUpdate;
 
-/// A seat the commander names in [`NodePrimaryUpdateRequest::UpdatePrimary`], with the epoch it holds
+/// A seat the commander names in [`NodePrimaryUpdateRequest::UpdatePrimary`], with the revision it holds
 /// the seat at.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SeatEpoch {
+pub struct SeatRevision {
     /// The seat.
     pub seat: Seat,
-    /// The seat's current epoch as the caller holds it.
-    pub expected_epoch: u64,
+    /// The seat's current revision as the caller holds it.
+    pub expected_revision: u64,
 }
 
 /// One seat the committed row moves, as [`NodePrimaryUpdateRequest::PrimaryUpdate`] carries it.
@@ -52,14 +52,14 @@ pub struct SeatUpdate {
     pub holder: HandoverBirth,
     /// The exact birth the row commits the seat to.
     pub successor: HandoverBirth,
-    /// The epoch the row commits.
-    pub epoch: u64,
+    /// The revision the row commits.
+    pub revision: u64,
 }
 
 impl SeatUpdate {
     /// The committed seat it names.
     pub fn committed(&self) -> CommittedSeat {
-        CommittedSeat { seat: self.seat.clone(), holder: self.successor.clone(), epoch: self.epoch }
+        CommittedSeat { seat: self.seat.clone(), holder: self.successor.clone(), revision: self.revision }
     }
 }
 
@@ -79,14 +79,14 @@ pub enum NodePrimaryUpdateRequest {
         operation: String,
     },
     /// node.primary.update commanded from above: the commander to the holder of the seats named.
-    /// The holder judges it by the seats it holds and their epochs, never by the birth it names.
+    /// The holder judges it by the seats it holds and their revisions, never by the birth it names.
     UpdatePrimary {
         /// The fabric.
         fabric: String,
         /// The exact birth the commander holds as the seats' holder.
         holder: HandoverBirth,
-        /// Every seat that moves, each with the epoch the commander holds it at.
-        seats: Vec<SeatEpoch>,
+        /// Every seat that moves, each with the revision the commander holds it at.
+        seats: Vec<SeatRevision>,
         /// The Build whose stop, delete, restart, replace or node.connections.delete moves the seats.
         build_id: String,
         /// That Build's attempt.
@@ -102,7 +102,7 @@ pub enum NodePrimaryUpdateRequest {
     UpdatePrimaryFromRow {
         /// The fabric.
         fabric: String,
-        /// The seat the row moves, its holder and successor births and its committed epoch.
+        /// The seat the row moves, its holder and successor births and its committed revision.
         seats: Vec<SeatUpdate>,
         /// The Build whose stop, delete, restart, replace or node.connections.delete the update precedes.
         build_id: String,
@@ -127,10 +127,10 @@ impl NodePrimaryUpdateRequest {
 /// The answer to a node.primary.update call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NodePrimaryUpdateReply {
-    /// node.primary.updated: the successor installed the committed row, every seat at its epoch.
+    /// node.primary.updated: the successor installed the committed row, every seat at its revision.
     PrimaryUpdated {
-        /// The committed seats: each seat, its committed holder's exact birth and its epoch.
-        epochs: Vec<CommittedSeat>,
+        /// The committed seats: each seat, its committed holder's exact birth and its revision.
+        revisions: Vec<CommittedSeat>,
     },
     /// The operation's committed row names another payload: the row decides.
     RejectedConflict {
@@ -153,23 +153,23 @@ pub enum NodePrimaryUpdateReply {
         /// What the receiver holds instead.
         reason: String,
     },
-    /// A seat's epoch is not the one the command named: the holder's pre-check of the call's epoch.
+    /// A seat's revision is not the one the command named: the holder's pre-check of the call's revision.
     RejectedStaleSeat {
         /// The seat.
         seat: Seat,
-        /// The epoch the call named.
+        /// The revision the call named.
         expected: u64,
-        /// The epoch the holder holds.
+        /// The revision the holder holds.
         current: u64,
     },
-    /// A seat's epoch cannot advance: it is at `u64::MAX`, so no row can commit at its next epoch
-    /// (node-rpc-envelope.md: "Epoch overflow cannot commit and is refused by name with a typed
+    /// A seat's revision cannot advance: it is at `u64::MAX`, so no row can commit at its next revision
+    /// (node-rpc-envelope.md: "Revision overflow cannot commit and is refused by name with a typed
     /// refusal"). Nothing is written.
-    RejectedEpochOverflow {
-        /// The seat whose epoch cannot advance.
+    RejectedRevisionOverflow {
+        /// The seat whose revision cannot advance.
         seat: Seat,
-        /// The epoch it is at.
-        epoch: u64,
+        /// The revision it is at.
+        revision: u64,
     },
     /// What the receiver had to read or write to decide or commit the call failed: its `fabric.storage`
     /// refused a put or could not be read. A runtime fact of the receiver, never a readiness answer.
@@ -219,8 +219,8 @@ pub enum NodePrimaryUpdateReply {
         /// Which bound.
         reason: String,
     },
-    /// The receiver is draining and takes no new work.
-    Draining {
+    /// The receiver is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why.
         reason: String,
     },
@@ -310,7 +310,7 @@ impl NodePrimaryUpdateReply {
             Self::RejectedNoSuccessor { .. } => "rejected-no-successor",
             Self::RejectedNotAuthority { .. } => "rejected-not-authority",
             Self::RejectedStaleSeat { .. } => "rejected-stale-seat",
-            Self::RejectedEpochOverflow { .. } => "rejected-epoch-overflow",
+            Self::RejectedRevisionOverflow { .. } => "rejected-revision-overflow",
             Self::RejectedSourceFailed { .. } => "rejected-source-failed",
             Self::RejectedRecordAbsent { .. } => "rejected-record-absent",
             Self::Incomplete { .. } => "incomplete",
@@ -318,7 +318,7 @@ impl NodePrimaryUpdateReply {
             Self::Malformed { .. } => "malformed",
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::Busy { .. } => "busy",
-            Self::Draining { .. } => "draining",
+            Self::ConnectionsDeleting { .. } => "connections-deleting",
             Self::Unauthorized { .. } => "unauthorized",
             Self::Failed { .. } => "failed",
         }
@@ -328,11 +328,11 @@ impl NodePrimaryUpdateReply {
 impl NodeProtocol for NodePrimaryUpdate {
     const OP: u8 = 0x21;
     const NAME: &'static str = "node-primary-update";
-    /// Two seats, each with two exact births and an epoch, a fabric name, a Build id and an operation
+    /// Two seats, each with two exact births and a revision, a fabric name, a Build id and an operation
     /// identity.
     const MAX_REQUEST_FRAME_BYTES: usize = 2048;
     /// One reply: an enum tag and at most one reason string, two committed seats (a seat, an exact
-    /// birth and an epoch each), a source failure's three fields or an absent record's two, within
+    /// birth and a revision each), a source failure's three fields or an absent record's two, within
     /// their budgets.
     const MAX_REPLY_FRAME_BYTES: usize = 1024;
     /// An update is decided by the receiver's own seats and the committed row; a carried call is
@@ -341,7 +341,7 @@ impl NodeProtocol for NodePrimaryUpdate {
     /// A successor keeps serving PrimaryUpdate after the row, and a former holder UpdatePrimary or
     /// UpdatePrimaryFromRow, while it refuses new calls (node.connections.delete): a lost reply's
     /// identical retry is answered from the row.
-    const SERVED_WHILE_DRAINING: bool = true;
+    const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
     const REQUEST_VARIANTS: u32 = 3;
     const REPLY_VARIANTS: u32 = 17;
 
@@ -352,12 +352,12 @@ impl NodeProtocol for NodePrimaryUpdate {
         use NodePrimaryUpdateReply::*;
         match reply {
             PrimaryUpdated { .. } => ReplyKind::Success,
-            RejectedConflict { .. } | RejectedFabricNotReady { .. } | RejectedNoSuccessor { .. } | RejectedNotAuthority { .. } | RejectedStaleSeat { .. } | RejectedEpochOverflow { .. } | RejectedSourceFailed { .. } | RejectedRecordAbsent { .. } | Incomplete { .. } | Failed { .. } => ReplyKind::ProtocolRefusal,
+            RejectedConflict { .. } | RejectedFabricNotReady { .. } | RejectedNoSuccessor { .. } | RejectedNotAuthority { .. } | RejectedStaleSeat { .. } | RejectedRevisionOverflow { .. } | RejectedSourceFailed { .. } | RejectedRecordAbsent { .. } | Incomplete { .. } | Failed { .. } => ReplyKind::ProtocolRefusal,
             NotReady { .. } => ReplyKind::NotReady,
             Malformed { kind } => ReplyKind::Malformed(*kind),
             PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             Busy { .. } => ReplyKind::Busy,
-            Draining { .. } => ReplyKind::Draining,
+            ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             Unauthorized { .. } => ReplyKind::Unauthorized,
         }
     }
@@ -370,8 +370,8 @@ impl NodeProtocol for NodePrimaryUpdate {
     fn busy(reason: String) -> NodePrimaryUpdateReply {
         NodePrimaryUpdateReply::Busy { reason }
     }
-    fn draining(reason: String) -> NodePrimaryUpdateReply {
-        NodePrimaryUpdateReply::Draining { reason }
+    fn connections_deleting(reason: String) -> NodePrimaryUpdateReply {
+        NodePrimaryUpdateReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> NodePrimaryUpdateReply {
         NodePrimaryUpdateReply::Malformed { kind }

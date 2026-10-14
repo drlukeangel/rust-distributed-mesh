@@ -30,7 +30,7 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
     assert_eq!(Forward::REPLY_VARIANTS, 14);
     use ForwardReply::*;
     let fixtures = [
-        (Relayed { inner: vec![1] }, "00 01 01".to_string()),
+        (Forwarded { inner: vec![1] }, "00 01 01".to_string()),
         (InnerNotSent { reason: "r".into() }, "01 01 72".into()),
         (InnerUnserved { op: 7 }, "02 07".into()),
         (InnerRejectedStale { target_node_id: NodeId::parse(NODE).unwrap() }, format!("03 0c {NODE_HEX}")),
@@ -39,7 +39,7 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
         (PeerUnresolved { reason: "p".into() }, "06 01 70".into()),
         (NotReady { reason: "n".into() }, "07 01 6e".into()),
         (Busy { reason: "b".into() }, "08 01 62".into()),
-        (Draining { reason: "d".into() }, "09 01 64".into()),
+        (ConnectionsDeleting { reason: "d".into() }, "09 01 64".into()),
         (Malformed { kind: MalformedKind::Corrupt }, "0a 02".into()),
         (Unauthorized { reason: "u".into() }, "0b 01 75".into()),
         (CarrierEdgeLost { reason: "e".into() }, "0c 01 65".into()),

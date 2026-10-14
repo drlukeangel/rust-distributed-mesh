@@ -107,9 +107,9 @@ pub struct SeatTransferRow {
     pub holder: rafka_node_rpc_contract::handover::HandoverBirth,
     /// The successor the holder's pre-check named, which installs from the row.
     pub successor: rafka_node_rpc_contract::handover::HandoverBirth,
-    /// The seats and the epochs the holder held them at.
-    pub expected: Vec<rafka_node_rpc_contract::handover::SeatEpoch>,
-    /// Every seat moved, at its committed epoch.
+    /// The seats and the revisions the holder held them at.
+    pub expected: Vec<rafka_node_rpc_contract::handover::SeatRevision>,
+    /// Every seat moved, at its committed revision.
     pub seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat>,
 }
 
@@ -497,7 +497,7 @@ mod tests {
     async fn a_seat_transfer_is_one_row_under_its_holders_mesh() {
         use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
         let birth = |node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap() };
-        let n = |epoch: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse("200000000000").unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n")).unwrap(), epoch };
+        let n = |revision: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse("200000000000").unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n")).unwrap(), revision };
         let row = SeatTransferRow {
             operation: "drain-node:mesh1.admin.1".into(),
             fabric: "fabric1".into(),
@@ -505,7 +505,7 @@ mod tests {
             attempt: 2,
             holder: birth("100000000000", "p"),
             successor: birth("200000000000", "n"),
-            expected: vec![rafka_node_rpc_contract::handover::SeatEpoch { seat: rafka_node_rpc_contract::handover::Seat::MeshPrimary { mesh: "mesh1".into() }, expected_epoch: 3 }],
+            expected: vec![rafka_node_rpc_contract::handover::SeatRevision { seat: rafka_node_rpc_contract::handover::Seat::MeshPrimary { mesh: "mesh1".into() }, expected_revision: 3 }],
             seats: vec![rafka_mesh_entity::seat::transfer::CommittedSeat::of(MeshPrimary, &n(4)), rafka_mesh_entity::seat::transfer::CommittedSeat::of(FabricPrimary, &n(8))],
         };
         let d = tempdir();

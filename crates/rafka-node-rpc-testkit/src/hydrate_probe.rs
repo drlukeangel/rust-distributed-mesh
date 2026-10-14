@@ -59,8 +59,8 @@ pub enum PullReply {
         /// Which bound.
         reason: String,
     },
-    /// Draining.
-    Draining {
+    /// Connections-deleting.
+    ConnectionsDeleting {
         /// Why.
         reason: String,
     },
@@ -91,7 +91,7 @@ impl NodeProtocol for HydratePull {
             PullReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             PullReply::NotReady { .. } => ReplyKind::NotReady,
             PullReply::Busy { .. } => ReplyKind::Busy,
-            PullReply::Draining { .. } => ReplyKind::Draining,
+            PullReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             PullReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             PullReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -105,8 +105,8 @@ impl NodeProtocol for HydratePull {
     fn busy(reason: String) -> PullReply {
         PullReply::Busy { reason }
     }
-    fn draining(reason: String) -> PullReply {
-        PullReply::Draining { reason }
+    fn connections_deleting(reason: String) -> PullReply {
+        PullReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> PullReply {
         PullReply::Malformed { kind }

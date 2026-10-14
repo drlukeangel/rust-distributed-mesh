@@ -90,8 +90,8 @@ pub enum JoinReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// The receiver is draining and takes no new work.
-    Draining {
+    /// The receiver is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
@@ -141,7 +141,7 @@ impl JoinReply {
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::NotReady { .. } => "not-ready",
             Self::Busy { .. } => "busy",
-            Self::Draining { .. } => "draining",
+            Self::ConnectionsDeleting { .. } => "connections-deleting",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
         }
@@ -169,7 +169,7 @@ impl NodeProtocol for Join {
             JoinReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             JoinReply::NotReady { .. } => ReplyKind::NotReady,
             JoinReply::Busy { .. } => ReplyKind::Busy,
-            JoinReply::Draining { .. } => ReplyKind::Draining,
+            JoinReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             JoinReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             JoinReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -183,8 +183,8 @@ impl NodeProtocol for Join {
     fn busy(reason: String) -> JoinReply {
         JoinReply::Busy { reason }
     }
-    fn draining(reason: String) -> JoinReply {
-        JoinReply::Draining { reason }
+    fn connections_deleting(reason: String) -> JoinReply {
+        JoinReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> JoinReply {
         JoinReply::Malformed { kind }
@@ -209,7 +209,7 @@ mod tests {
             (Join::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Join::not_ready("n".into()), ReplyKind::NotReady),
             (Join::busy("b".into()), ReplyKind::Busy),
-            (Join::draining("d".into()), ReplyKind::Draining),
+            (Join::connections_deleting("d".into()), ReplyKind::ConnectionsDeleting),
             (Join::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Join::unauthorized("u".into()), ReplyKind::Unauthorized),
         ];

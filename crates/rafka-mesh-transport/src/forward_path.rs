@@ -197,9 +197,9 @@ async fn send_in_order(mut rx: mpsc::UnboundedReceiver<Job>, sink: Sink, owes_fu
     }
 }
 
-/// An entry decided in term `epoch` of the forwarder role reached the sender in `current` (none:
+/// An entry decided in term `revision` of the forwarder role reached the sender in `current` (none:
 /// the node no longer holds the role). It is not sent; the span names what was dropped.
-fn role_dropped(job: Job, epoch: u64, current: Option<u64>) {
+fn role_dropped(job: Job, revision: u64, current: Option<u64>) {
     let (me, kind, frames) = match job {
         Job::Forwarded { me, out, .. } => (me, "forwarded", frames_of(out)),
         Job::Carried { me, frame, .. } => (me, "carried", vec![frame]),
@@ -210,8 +210,8 @@ fn role_dropped(job: Job, epoch: u64, current: Option<u64>) {
         "rdm.mesh.membership.reject.via-forwarder-role-dropped",
         node = %me,
         kind = %kind,
-        decided_in_epoch = epoch,
-        current_epoch = %current,
+        decided_in_revision = revision,
+        current_revision = %current,
         frames = frames.len(),
         sources = %sources.into_iter().collect::<Vec<_>>().join(","),
     )
@@ -523,7 +523,7 @@ mod tests {
         }
         assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 10), (0, 12)], "nothing queued before the role dropped reaches the channel");
         let dropped = spans.named("rdm.mesh.membership.reject.via-forwarder-role-dropped").await;
-        let named: Vec<(String, String, String, String)> = dropped.iter().map(|f| (f["kind"].clone(), f["decided_in_epoch"].clone(), f["current_epoch"].clone(), f["sources"].clone())).collect();
+        let named: Vec<(String, String, String, String)> = dropped.iter().map(|f| (f["kind"].clone(), f["decided_in_revision"].clone(), f["current_revision"].clone(), f["sources"].clone())).collect();
         assert_eq!(
             named,
             vec![("forwarded".to_string(), "1".to_string(), "3".to_string(), format!("mesh1:{p}@11")), ("carried".to_string(), "1".to_string(), "3".to_string(), String::new())],

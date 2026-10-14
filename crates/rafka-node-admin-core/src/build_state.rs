@@ -603,9 +603,9 @@ pub enum BuildStateError {
         wanted: String,
     },
     /// The committed fabric seat record names another live birth: this admin's Build log decides
-    /// nothing from that record's epoch (the fence is sticky for this birth).
-    Fenced {
-        /// The admin whose Build log is fenced.
+    /// nothing from that record's revision (the fence is sticky for this birth).
+    SeatYielded {
+        /// The admin whose Build log yielded the seat.
         node: String,
         /// The record that moved the seat, in words.
         by: String,
@@ -622,7 +622,7 @@ impl std::fmt::Display for BuildStateError {
             Self::Io(e) => write!(f, "build journal I/O: {e}"),
             Self::Unencodable(e) => write!(f, "Build fact cannot be sent: {e}"),
             Self::CorruptJournal { line, reason } => write!(f, "build journal line {line} does not decode: {reason}"),
-            Self::Fenced { node, by, .. } => write!(f, "{node} no longer holds the fabric-primary seat: the committed seat row moved it ({by}); its Build log decides nothing any more"),
+            Self::SeatYielded { node, by, .. } => write!(f, "{node} no longer holds the fabric-primary seat: the committed seat row moved it ({by}); its Build log decides nothing any more"),
             Self::AttemptTaken { build_id, attempt, held, wanted } => {
                 write!(f, "attempt {attempt} of Build {build_id} is already open for {held}; this open asked for {wanted} and lost the number")
             }

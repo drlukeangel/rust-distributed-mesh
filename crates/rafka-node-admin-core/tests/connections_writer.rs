@@ -46,7 +46,7 @@ async fn a_restart_hydrates_the_latest_proxy_row_and_the_first_resolution_uses_i
     {
         let storage = FileConnectionsStorage::open(&rafka_node_admin_core::store_root::StoreRoot::at(&dir), &"mesh1.rpc.1".parse().unwrap(), &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
-        failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 1, attempt_ordinal: 2 });
+        failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 2 });
         for r in [failed, row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 11), row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), 12)] {
             storage.append_history(&r).await.unwrap();
             storage.put_connection(&r).await.unwrap();
@@ -68,7 +68,7 @@ async fn a_restart_hydrates_the_latest_proxy_row_and_the_first_resolution_uses_i
 }
 
 /// §13 D: many failed attempts for one pair leave the raw log growing while the index holds one
-/// Direct member for the pair; the ordinal counts up in one epoch.
+/// Direct member for the pair; the ordinal counts up in one round.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pair() {
     let dir = data_dir("bounded");
@@ -86,7 +86,7 @@ async fn many_failures_grow_the_raw_log_and_keep_the_index_at_one_direct_per_pai
     assert_eq!(history.len(), 7, "every failure joins the raw log");
     let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1, "one Direct member for the pair: {index:?}");
-    assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((1, 7)), "the ordinal counts up in one epoch");
+    assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_round, r.attempt_ordinal)), Some((1, 7)), "the ordinal counts up in one round");
     assert_eq!(held.lock().unwrap().own_latest_directs().len(), 1);
     // A Direct Connected ends the series and is the pair's one Direct member now.
     writer.direct_connected(&target);
@@ -179,7 +179,7 @@ async fn until(what: &str, cond: impl Fn() -> bool) {
 }
 
 /// A source holding a Proxy to `dest` through `carrier`, its latest Direct to `dest` Failed
-/// (epoch 1, ordinal 1) at `failed_at`: what a proven carried path leaves (connections.md §7).
+/// (round 1, ordinal 1) at `failed_at`: what a proven carried path leaves (connections.md §7).
 async fn proxied(tag: &str, failed_at: u64) -> (std::path::PathBuf, ConnectionEnd, ConnectionEnd, Arc<dyn ConnectionsStorage>, Arc<Mutex<ConnectionsHeld>>, ConnectionsWriter, NodeConnection) {
     let dir = data_dir(tag);
     let (me, carrier, dest) = (end("mesh1.rpc.1"), end("mesh1.rpc.2"), end("mesh1.rpc.3"));
@@ -188,7 +188,7 @@ async fn proxied(tag: &str, failed_at: u64) -> (std::path::PathBuf, ConnectionEn
     let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
     writer.hydrate().await.unwrap();
     let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
-    failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
+    failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
     writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, failed_at)).await.unwrap();
     writer.record(failed.clone()).await.unwrap();
     writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), failed_at + 1)).await.unwrap();
@@ -255,7 +255,7 @@ async fn repeated_accepts_coalesce_into_one_attempt_that_waits_for_the_series_ba
 }
 
 /// CONTRACT (connections.md §9.3, §9.5 step 4, R-CN1 (5)): when the dial an accept woke fails, the
-/// Proxy stays the route, the failure is the series' next Failed row (same epoch, next ordinal),
+/// Proxy stays the route, the failure is the series' next Failed row (same round, next ordinal),
 /// and the pending attempt is rescheduled from that row's backoff. What must NOT happen: the Proxy
 /// retired, a second dial before the new backoff ends, or the attempt forgotten.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -268,7 +268,7 @@ async fn a_failed_dial_after_an_accept_keeps_the_proxy_and_reschedules_from_its_
     dial.go.add_permits(1);
     until("the failed dial's row is held", || held.lock().unwrap().own_latest_directs().iter().any(|d| d.recovery.map(|r| r.attempt_ordinal) == Some(2))).await;
     let latest = storage.history().await.unwrap().into_iter().last().unwrap();
-    assert_eq!((latest.kind, latest.state, latest.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))), "the series' next Failed row: {latest:?}");
+    assert_eq!((latest.kind, latest.state, latest.recovery.map(|r| (r.recovery_round, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))), "the series' next Failed row: {latest:?}");
     assert!(matches!(resolve(&held.lock().unwrap(), &me.name, &dest.name, POLICY).route, EffectiveRoute::ViaPeer { .. }), "the Proxy stays the route");
     assert!(writer.owed().is_empty(), "no retirement is owed");
     let due = rafka_mesh_entity::reconnect::next_due(&latest).unwrap();
@@ -390,7 +390,7 @@ async fn a_carrier_names_its_own_edge_only_when_its_latest_direct_is_not_connect
     writer.record(row(&me, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, 10)).await.unwrap();
     assert_eq!(writer.edge_not_active(&dest.node_id).await, None, "a Connected edge is Active");
     let mut failed = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 20);
-    failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
+    failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
     failed.reason = Some("dial failed".into());
     writer.record(failed).await.unwrap();
     let why = writer.edge_not_active(&dest.node_id).await.expect("a Failed edge is not Active");
@@ -547,7 +547,7 @@ async fn slow_earlier_index_write_never_overwrites_a_later_observation() {
     writer.observations_landed().await;
     let index = storage.connections().await.unwrap();
     assert_eq!(index.len(), 1);
-    assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((1, 3)), "the index holds the latest observation: {index:?}");
+    assert_eq!(index[0].recovery.as_ref().map(|r| (r.recovery_round, r.attempt_ordinal)), Some((1, 3)), "the index holds the latest observation: {index:?}");
 }
 
 /// CONTRACT (fabric-node-lifecycle.md §8: `source` is the end's path.name and `source_node_id` the
@@ -594,7 +594,7 @@ async fn a_writer_names_the_name_its_node_took_on_the_next_row_and_keeps_the_row
 /// CONTRACT (fabric-node-lifecycle.md §8: `source_node_id` is the instance at each end when the
 /// entry was written; connections.md §13 C, the backoff survives a restart): a restarted birth of
 /// `mesh1.rpc.1` (same node id, next incarnation) hydrates the previous birth's failing Direct and
-/// its next failure continues the series one ordinal up in the same epoch, naming its OWN birth as
+/// its next failure continues the series one ordinal up in the same round, naming its OWN birth as
 /// the source. What must NOT happen: the continued row naming the previous birth's incarnation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
@@ -605,7 +605,7 @@ async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
     {
         let storage = open().await;
         let mut failed = row(&previous, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, 10);
-        failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 4, attempt_ordinal: 2 });
+        failed.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_round: 4, attempt_ordinal: 2 });
         storage.append_history(&failed).await.unwrap();
         storage.put_connection(&failed).await.unwrap();
     }
@@ -616,7 +616,7 @@ async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
     writer.observations_landed().await;
     let history = storage.history().await.unwrap();
     let next = history.last().unwrap();
-    assert_eq!(next.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((4, 3)), "the series continues: {next:?}");
+    assert_eq!(next.recovery.map(|r| (r.recovery_round, r.attempt_ordinal)), Some((4, 3)), "the series continues: {next:?}");
     assert_eq!(next.source, me, "the continued row names the birth that wrote it: {next:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -624,7 +624,7 @@ async fn a_restarted_birth_continues_the_failing_series_naming_its_own_birth() {
 /// CONTRACT (fabric-node-lifecycle.md §8: `destination_node_id` is the instance at that end when the
 /// entry was written; connections.md §9.1 and §9.4: a reconnect series is for the current destination
 /// incarnation): a failing series against `mesh1.rpc.3`'s birth, then a failed dial to its next
-/// birth (same node id, next incarnation), is a new incident: a new epoch at ordinal one, naming the
+/// birth (same node id, next incarnation), is a new incident: a new round at ordinal one, naming the
 /// birth that was dialled. What must NOT happen: the series of the gone birth continued one ordinal
 /// up, or a row naming the gone birth as the destination of a dial to its successor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -642,7 +642,7 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
     writer.direct_failed(&resolved(&next), "refused by the next birth");
     writer.observations_landed().await;
     let history = storage.history().await.unwrap();
-    assert_eq!(history.iter().map(|r| r.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal))).collect::<Vec<_>>(), vec![Some((1, 1)), Some((1, 2)), Some((2, 1))], "the next birth's failure is a new incident: {history:#?}");
+    assert_eq!(history.iter().map(|r| r.recovery.map(|r| (r.recovery_round, r.attempt_ordinal))).collect::<Vec<_>>(), vec![Some((1, 1)), Some((1, 2)), Some((2, 1))], "the next birth's failure is a new incident: {history:#?}");
     assert_eq!(history[2].destination, next, "the row names the birth that was dialled: {:?}", history[2]);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -651,7 +651,7 @@ async fn a_failed_dial_to_the_destinations_next_birth_starts_a_new_series_naming
 /// arming paths, one pending item per (destination, destination_incarnation). A latest Direct
 /// Failed row arms the reconciler on its own without any inbound accept trigger. When `due_ms` is
 /// reached, the reconciler makes one direct dial toward that exact destination birth: on failure it
-/// appends the next Direct Failed row (same epoch, ordinal + 1) and reschedules from that durable
+/// appends the next Direct Failed row (same round, ordinal + 1) and reschedules from that durable
 /// row's `next_due`; an inbound accept arriving while the item is pending coalesces into it
 /// (`outcome = "coalesced"`), never creating a second attempt and never skipping the backoff the
 /// durable rows set; when the rescheduled `due_ms` arrives, the reconciler dials again, and on
@@ -681,7 +681,7 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
                 let writer = ConnectionsWriter::new(me.clone(), storage.clone(), held.clone());
                 writer.hydrate().await.unwrap();
                 let mut failed1 = row(&me, &dest, ConnectionKind::Direct, ConnectionState::Failed, None, failed_at);
-                failed1.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
+                failed1.recovery = Some(rafka_mesh_entity::connections::DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
                 writer.record(row(&carrier, &dest, ConnectionKind::Direct, ConnectionState::Connected, None, failed_at)).await.unwrap();
                 writer.record(failed1.clone()).await.unwrap();
                 writer.record(row(&me, &dest, ConnectionKind::Proxy, ConnectionState::Connected, Some(&carrier), failed_at + 1)).await.unwrap();
@@ -706,7 +706,7 @@ fn a_failed_row_arms_the_due_time_reconciler_without_an_accept_reschedules_on_fa
                 // 3. Attempt 1 fails -> writes Direct Failed (E1, 2) and reschedules from that durable row.
                 until("attempt 1's Direct Failed (E1, 2) row is held", || held.lock().unwrap().own_latest_directs().iter().any(|d| d.recovery.map(|r| r.attempt_ordinal) == Some(2))).await;
                 let failed2 = storage.history().await.unwrap().into_iter().last().unwrap();
-                assert_eq!((failed2.kind, failed2.state, failed2.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))));
+                assert_eq!((failed2.kind, failed2.state, failed2.recovery.map(|r| (r.recovery_round, r.attempt_ordinal))), (ConnectionKind::Direct, ConnectionState::Failed, Some((1, 2))));
                 let due2 = rafka_mesh_entity::reconnect::next_due(&failed2).unwrap();
                 assert!(due2 > due1, "rescheduled from the new Failed row: due2={due2} > due1={due1}");
                 assert_eq!(writer.recovery_pending(), vec![rafka_node_admin_core::connections_writer::RecoveryAttempt { destination: dest.clone(), due_ms: due2 }]);

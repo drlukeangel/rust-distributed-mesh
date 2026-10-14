@@ -257,10 +257,10 @@ impl rafka_node_admin_core::fabric_rounds::RoundActions for HeldActions {
 }
 
 impl Birth {
-    /// `admin` announces itself holder of `mesh1`'s primary seat at `epoch`; resolves once this
+    /// `admin` announces itself holder of `mesh1`'s primary seat at `revision`; resolves once this
     /// birth holds that record.
-    async fn seat(&self, admin: &crate::common::AdminSide, epoch: u64) {
-        let holder = rafka_mesh_entity::seat::SeatHolder { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), epoch };
+    async fn seat(&self, admin: &crate::common::AdminSide, revision: u64) {
+        let holder = rafka_mesh_entity::seat::SeatHolder { mesh: "mesh1".into(), node_id: admin.launcher.node_id.clone(), incarnation: admin.launcher.incarnation.clone(), revision };
         admin.observer.membership.publish_lifecycle(&rafka_mesh_transport::membership::Frame::Seated { seat: rafka_mesh_entity::seat::Seat::MeshPrimary, holder: holder.clone() }).await.expect("the seat record publishes");
         let seats = self.running.membership.seats();
         let mut changed = seats.subscribe();
@@ -270,7 +270,7 @@ impl Birth {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("{NODE} never held {} as mesh1's primary at epoch {epoch}", admin.launcher.name));
+        .unwrap_or_else(|_| panic!("{NODE} never held {} as mesh1's primary at revision {revision}", admin.launcher.name));
     }
 
     /// The round command `kind` of `attempt` from `admin`, the birth resolved by it.

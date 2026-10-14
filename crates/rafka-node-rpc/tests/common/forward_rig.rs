@@ -29,7 +29,7 @@ pub enum ProbeReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
 }
@@ -50,7 +50,7 @@ impl NodeProtocol for Probe {
             ProbeReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             ProbeReply::NotReady { .. } => ReplyKind::NotReady,
             ProbeReply::Busy { .. } => ReplyKind::Busy,
-            ProbeReply::Draining { .. } => ReplyKind::Draining,
+            ProbeReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             ProbeReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             ProbeReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -64,8 +64,8 @@ impl NodeProtocol for Probe {
     fn busy(reason: String) -> ProbeReply {
         ProbeReply::Busy { reason }
     }
-    fn draining(reason: String) -> ProbeReply {
-        ProbeReply::Draining { reason }
+    fn connections_deleting(reason: String) -> ProbeReply {
+        ProbeReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> ProbeReply {
         ProbeReply::Malformed { kind }

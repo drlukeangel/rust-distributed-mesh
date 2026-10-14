@@ -15,17 +15,17 @@ fn node() -> NodeId {
     NodeId::parse("04raj09p3zp7").unwrap()
 }
 
-fn holder(epoch: u64) -> SeatHolder {
-    SeatHolder { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), epoch }
+fn holder(revision: u64) -> SeatHolder {
+    SeatHolder { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), revision }
 }
 
 /// CONTRACT: `Seated` is variant 8 and `Concern` variant 9 of the membership frame, appended after
 /// `FabricStatus` (7); a seat is its own enum (`MeshPrimary` 0, `FabricPrimary` 1); a holder is its
-/// mesh, NodeId, incarnation and epoch, in that order. What must NOT happen: a field moved, a
+/// mesh, NodeId, incarnation and revision, in that order. What must NOT happen: a field moved, a
 /// variant inserted before the end, or a self-describing encoding.
 #[test]
 fn seat_frames_match_the_frozen_wire_schema() {
-    // 08 = Seated; 01 = FabricPrimary; 01 6d = "m"; 0c + 12 ASCII bytes = the NodeId; 0c <fixture("i")> = the incarnation; 02 = epoch.
+    // 08 = Seated; 01 = FabricPrimary; 01 6d = "m"; 0c + 12 ASCII bytes = the NodeId; 0c <fixture("i")> = the incarnation; 02 = revision.
     let node_hex = "0c 303472616a303970337a7037";
     let fixtures = [
         (Frame::Seated { seat: Seat::FabricPrimary, holder: holder(2) }, format!("08 01 016d {node_hex} 0c79727a34396a333033796834 02")),
@@ -51,7 +51,7 @@ fn a_seat_book_holds_the_superseding_record_and_replays_what_it_holds() {
     assert_eq!(book.take(Seat::FabricPrimary, &holder(1)), SeatTaken::Held { previous: None });
     assert_eq!(book.take(Seat::FabricPrimary, &holder(1)), SeatTaken::Same);
     assert_eq!(book.take(Seat::FabricPrimary, &holder(3)), SeatTaken::Held { previous: Some(holder(1)) });
-    assert_eq!(book.take(Seat::FabricPrimary, &holder(2)), SeatTaken::Refused { held: holder(3) }, "an older epoch never replaces");
+    assert_eq!(book.take(Seat::FabricPrimary, &holder(2)), SeatTaken::Refused { held: holder(3) }, "an older revision never replaces");
     assert_eq!(book.take(Seat::MeshPrimary, &holder(1)), SeatTaken::Held { previous: None }, "a mesh's seat is its own record");
     assert_eq!(book.fabric(), Some(holder(3)));
     assert_eq!(book.mesh("m"), Some(holder(1)));
@@ -60,7 +60,7 @@ fn a_seat_book_holds_the_superseding_record_and_replays_what_it_holds() {
 }
 
 /// CONTRACT: `NewFabricPrimary` is variant 17, appended after `MeshLeft` (16): the committed
-/// holder (mesh, NodeId, incarnation, epoch), the endpoint key, the bound QUIC UDP address
+/// holder (mesh, NodeId, incarnation, revision), the endpoint key, the bound QUIC UDP address
 /// (socket-address variant 0 is IPv4: four octets then the port as a varint) and the optional HTTP
 /// API base. The two addresses are separate fields: neither is derived from the other.
 #[test]
@@ -77,7 +77,7 @@ fn new_fabric_primary_matches_the_frozen_wire_schema() {
 }
 
 /// CONTRACT: the contacts an announcement carries attach to the held fabric holder's exact birth
-/// and epoch only; a delayed announcement of an earlier holder attaches to nothing.
+/// and revision only; a delayed announcement of an earlier holder attaches to nothing.
 #[test]
 fn a_new_fabric_primarys_contacts_attach_only_to_the_holder_the_book_holds() {
     use rafka_mesh_transport::membership::FabricContacts;
@@ -87,24 +87,24 @@ fn a_new_fabric_primarys_contacts_attach_only_to_the_holder_the_book_holds() {
     book.take(Seat::FabricPrimary, &holder(8));
     assert!(book.attach_fabric_contacts(&holder(8), contacts(10)));
     assert_eq!(book.fabric_contacts(), Some(contacts(10)));
-    assert!(!book.attach_fabric_contacts(&holder(7), contacts(20)), "a delayed announcement of an earlier epoch attaches to nothing");
+    assert!(!book.attach_fabric_contacts(&holder(7), contacts(20)), "a delayed announcement of an earlier revision attaches to nothing");
     book.take(Seat::FabricPrimary, &holder(9));
-    assert_eq!(book.fabric_contacts(), None, "the contacts belonged to the epoch-8 holder, not the one that replaced it");
+    assert_eq!(book.fabric_contacts(), None, "the contacts belonged to the revision-8 holder, not the one that replaced it");
 }
 
 fn op() -> rafka_mesh_entity::LifecycleOp {
     rafka_mesh_entity::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 }
 }
 
-/// Both seats of mesh `m`, committed to the birth `m`/`node()`/`i` at their epochs.
-fn both(mesh_epoch: u64, fabric_epoch: u64) -> Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> {
+/// Both seats of mesh `m`, committed to the birth `m`/`node()`/`i` at their revisions.
+fn both(mesh_revision: u64, fabric_revision: u64) -> Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> {
     use rafka_mesh_entity::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
     let birth = HandoverBirth { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() };
-    vec![CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: "m".into() }, holder: birth.clone(), epoch: mesh_epoch }, CommittedSeat { seat: TransferSeat::FabricPrimary, holder: birth, epoch: fabric_epoch }]
+    vec![CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: "m".into() }, holder: birth.clone(), revision: mesh_revision }, CommittedSeat { seat: TransferSeat::FabricPrimary, holder: birth, revision: fabric_revision }]
 }
 
-fn primary_updated(mesh_epoch: u64, fabric_epoch: u64) -> Frame {
-    Frame::PrimaryUpdated { op: op(), seats: both(mesh_epoch, fabric_epoch) }
+fn primary_updated(mesh_revision: u64, fabric_revision: u64) -> Frame {
+    Frame::PrimaryUpdated { op: op(), seats: both(mesh_revision, fabric_revision) }
 }
 
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part C3 edit 6:

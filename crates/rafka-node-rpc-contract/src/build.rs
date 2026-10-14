@@ -465,8 +465,8 @@ pub enum BuildReply {
     },
     /// Refusal: the committed fabric seat record moved the seat off the receiver, which dispatches
     /// nothing.
-    Fenced {
-        /// The admin whose Build log is fenced.
+    SeatYielded {
+        /// The admin whose Build log yielded the seat.
         node: String,
         /// The record that moved the seat, in words.
         by: String,
@@ -493,8 +493,8 @@ pub enum BuildReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// Refusal: the receiver is draining and takes no new work.
-    Draining {
+    /// Refusal: the receiver is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
@@ -550,12 +550,12 @@ impl BuildReply {
             Self::Rejected { .. } => "rejected",
             Self::BuildInProgress { .. } => "build-in-progress",
             Self::AttemptTaken { .. } => "attempt-taken",
-            Self::Fenced { .. } => "fenced",
+            Self::SeatYielded { .. } => "seat-yielded",
             Self::CannotDelete { .. } => "cannot-delete",
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::NotReady { .. } => "not-ready",
             Self::Busy { .. } => "busy",
-            Self::Draining { .. } => "draining",
+            Self::ConnectionsDeleting { .. } => "connections-deleting",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::SeatMoved { .. } => "seat-moved",
@@ -609,12 +609,12 @@ impl NodeProtocol for Build {
             | BuildReply::BuildInProgress { .. }
             | BuildReply::NotClaimant { .. }
             | BuildReply::AttemptTaken { .. }
-            | BuildReply::Fenced { .. }
+            | BuildReply::SeatYielded { .. }
             | BuildReply::CannotDelete { .. } => ReplyKind::ProtocolRefusal,
             BuildReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             BuildReply::NotReady { .. } => ReplyKind::NotReady,
             BuildReply::Busy { .. } => ReplyKind::Busy,
-            BuildReply::Draining { .. } => ReplyKind::Draining,
+            BuildReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             BuildReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BuildReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -628,8 +628,8 @@ impl NodeProtocol for Build {
     fn busy(reason: String) -> BuildReply {
         BuildReply::Busy { reason }
     }
-    fn draining(reason: String) -> BuildReply {
-        BuildReply::Draining { reason }
+    fn connections_deleting(reason: String) -> BuildReply {
+        BuildReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> BuildReply {
         BuildReply::Malformed { kind }

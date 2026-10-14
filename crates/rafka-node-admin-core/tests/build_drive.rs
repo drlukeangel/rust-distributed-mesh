@@ -68,7 +68,7 @@ impl Gate for Switch {
     }
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         if self.fenced.load(Ordering::SeqCst) {
-            Err(BuildStateError::Fenced { node: "mesh1.admin.1".into(), by: "leaving".into(), to: self.successor.lock().unwrap().clone() })
+            Err(BuildStateError::SeatYielded { node: "mesh1.admin.1".into(), by: "leaving".into(), to: self.successor.lock().unwrap().clone() })
         } else {
             Ok(self.record_holder.lock().unwrap().clone())
         }

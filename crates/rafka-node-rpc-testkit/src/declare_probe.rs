@@ -81,8 +81,8 @@ pub enum DeclareReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// The node is draining and takes no new work.
-    Draining {
+    /// The node is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
@@ -116,7 +116,7 @@ impl NodeProtocol for DeclareProbe {
             DeclareReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             DeclareReply::NotReady { .. } => ReplyKind::NotReady,
             DeclareReply::Busy { .. } => ReplyKind::Busy,
-            DeclareReply::Draining { .. } => ReplyKind::Draining,
+            DeclareReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             DeclareReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             DeclareReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -130,8 +130,8 @@ impl NodeProtocol for DeclareProbe {
     fn busy(reason: String) -> DeclareReply {
         DeclareReply::Busy { reason }
     }
-    fn draining(reason: String) -> DeclareReply {
-        DeclareReply::Draining { reason }
+    fn connections_deleting(reason: String) -> DeclareReply {
+        DeclareReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> DeclareReply {
         DeclareReply::Malformed { kind }
@@ -194,7 +194,7 @@ mod tests {
             DeclareReply::PeerUnresolved { reason: "r".into() },
             DeclareReply::NotReady { reason: "r".into() },
             DeclareReply::Busy { reason: "r".into() },
-            DeclareReply::Draining { reason: "r".into() },
+            DeclareReply::ConnectionsDeleting { reason: "r".into() },
             DeclareReply::Malformed { kind: MalformedKind::Corrupt },
             DeclareReply::Unauthorized { reason: "r".into() },
         ];

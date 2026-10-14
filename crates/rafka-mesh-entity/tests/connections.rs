@@ -18,7 +18,7 @@ fn end(kind: NodeKind, ordinal: u32, incarnation: Option<&str>) -> ConnectionEnd
 }
 
 fn direct(source: ConnectionEnd, destination: ConnectionEnd, state: ConnectionState, at: u64) -> NodeConnection {
-    let recovery = (state == ConnectionState::Failed).then_some(DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
+    let recovery = (state == ConnectionState::Failed).then_some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
     NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source, destination, kind: ConnectionKind::Direct, state, carrier: None, recovery, reason: None, logged_at_ms: at }
 }
 

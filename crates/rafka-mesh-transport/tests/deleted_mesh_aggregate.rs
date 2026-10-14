@@ -631,8 +631,8 @@ fn a_fabric_seat_move_during_the_deleted_retention_keeps_the_deleted_mesh_publis
         let peer_stopped = installed(&fp2_publisher, 1, 0);
         // The receiver's rule for a successor publisher: a later publication of the mesh is taken
         // whatever its version (receive_order.rs, R-RX3), and a publisher other than the held one's
-        // installs as a new epoch (snapshot.rs `SnapshotReceiver::install`), so its own counter from 1 is installed.
-        assert_eq!(peer_stopped["attributes"]["new_epoch"], "true", "the peer installed the new fabric-primary's aggregate as a new publisher of mesh3: {peer_stopped}");
+        // installs as a new revision (snapshot.rs `SnapshotReceiver::install`), so its own counter from 1 is installed.
+        assert_eq!(peer_stopped["attributes"]["new_revision"], "true", "the peer installed the new fabric-primary's aggregate as a new publisher of mesh3: {peer_stopped}");
         let peer_deleted = installed(&fp2_publisher, 0, 1);
         let fp1_publisher = format!("mesh1.admin.1@{}", fp1_own.node.incarnation.as_str());
         let peer_back = installed(&fp1_publisher, 0, 1);

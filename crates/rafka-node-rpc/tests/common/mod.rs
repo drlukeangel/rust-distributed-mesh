@@ -32,7 +32,7 @@ pub enum ProbeReply {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
 }
@@ -53,7 +53,7 @@ impl NodeProtocol for Probe {
             ProbeReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             ProbeReply::NotReady { .. } => ReplyKind::NotReady,
             ProbeReply::Busy { .. } => ReplyKind::Busy,
-            ProbeReply::Draining { .. } => ReplyKind::Draining,
+            ProbeReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             ProbeReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             ProbeReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -67,8 +67,8 @@ impl NodeProtocol for Probe {
     fn busy(reason: String) -> ProbeReply {
         ProbeReply::Busy { reason }
     }
-    fn draining(reason: String) -> ProbeReply {
-        ProbeReply::Draining { reason }
+    fn connections_deleting(reason: String) -> ProbeReply {
+        ProbeReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> ProbeReply {
         ProbeReply::Malformed { kind }
@@ -187,7 +187,7 @@ pub fn own_end(own: &PathName) -> ConnectionEnd {
 
 /// A connections fact at stamp `at`, in the shape the writer records it.
 pub fn edge(from: ConnectionEnd, to: ConnectionEnd, kind: ConnectionKind, state: ConnectionState, carrier: Option<ConnectionEnd>, at: u64) -> NodeConnection {
-    let recovery = (kind == ConnectionKind::Direct && state == ConnectionState::Failed).then_some(DirectRecovery { recovery_epoch: 1, attempt_ordinal: 1 });
+    let recovery = (kind == ConnectionKind::Direct && state == ConnectionState::Failed).then_some(DirectRecovery { recovery_round: 1, attempt_ordinal: 1 });
     NodeConnection { id: rafka_mesh_entity::ConnectionId::mint(), source: from, destination: to, kind, state, carrier, recovery, reason: None, logged_at_ms: at }
 }
 

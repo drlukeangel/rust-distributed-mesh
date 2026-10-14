@@ -1055,10 +1055,10 @@ mod tests {
         let v = view_of(vec![admin("mesh2.admin.1", false), admin("mesh2.admin.3", false), admin("mesh2.admin.2", true), admin("mesh1.admin.1", true)]);
         let a3 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.3").unwrap().clone();
         let names = |order: Vec<Node>| order.iter().map(|a| a.name.to_string()).collect::<Vec<_>>();
-        let record = SeatHolder { mesh: "mesh2".into(), node_id: a3.node_id.clone(), incarnation: a3.incarnation_id.clone().unwrap(), epoch: 4 };
+        let record = SeatHolder { mesh: "mesh2".into(), node_id: a3.node_id.clone(), incarnation: a3.incarnation_id.clone().unwrap(), revision: 4 };
         assert_eq!(names(admins_in_probe_order(&v, "mesh2", Some(&record))), vec!["mesh2.admin.3", "mesh2.admin.1", "mesh2.admin.2"], "the seat record's holder first, then the others in path order, and nothing of another mesh; never the view's is_primary");
         assert_eq!(names(admins_in_probe_order(&v, "mesh2", None)), vec!["mesh2.admin.1", "mesh2.admin.2", "mesh2.admin.3"], "no record held: path order, the view's is_primary choosing nothing");
-        let newer = SeatHolder { incarnation: crate::model::IncarnationId::mint(), epoch: 5, ..record };
+        let newer = SeatHolder { incarnation: crate::model::IncarnationId::mint(), revision: 5, ..record };
         let order = admins_in_probe_order(&v, "mesh2", Some(&newer));
         assert_eq!((order[0].name.to_string(), order[0].incarnation_id.clone()), ("mesh2.admin.3".to_string(), Some(newer.incarnation.clone())), "the record's exact birth is asked, not the older birth the view holds");
     }
@@ -1359,7 +1359,7 @@ mod tests {
     fn mesh2() -> (Arc<Topology>, rafka_mesh_entity::seat::SeatHolder) {
         let v = view_of(vec![admin("mesh1.admin.1", true), member("mesh1.rpc.1"), admin("mesh2.admin.1", true), admin("mesh2.admin.2", false), member("mesh2.rpc.1"), member("mesh2.rpc.2"), member("mesh2.rpc.3")]);
         let a2 = v.nodes.iter().find(|n| n.name.to_string() == "mesh2.admin.2").unwrap().clone();
-        let record = rafka_mesh_entity::seat::SeatHolder { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), epoch: 3 };
+        let record = rafka_mesh_entity::seat::SeatHolder { mesh: "mesh2".into(), node_id: a2.node_id.clone(), incarnation: a2.incarnation_id.clone().unwrap(), revision: 3 };
         (Arc::new(v), record)
     }
 

@@ -338,18 +338,18 @@ fn members_receiver_commits_complete_snapshot_before_advancing_version() {
         f10[0].status = MemberStatus::Pending;
         let d9_11 = Full::new(f8.digests(), vec![], vec![]).delta_to(&Full::new(f10, vec![], vec![]));
         assert!(matches!(rx.take_delta("mesh2", &p, 9, 11, &d9_11), Moved::Applied { topology_version: 11, .. }), "the primary's next delta continues from the baseline");
-        // A new source primary is a new epoch: its delta before its full is a gap, its full resumes.
+        // A new source primary is a new revision: its delta before its full is a gap, its full resumes.
         let successor = publisher("mesh2.admin.2");
-        assert!(matches!(rx.take_delta("mesh2", &successor, 1, 2, &d78), Moved::Desynced { gap: Gap::OtherEpoch { .. }, .. }));
+        assert!(matches!(rx.take_delta("mesh2", &successor, 1, 2, &d78), Moved::Desynced { gap: Gap::OtherRevision { .. }, .. }));
         let first_of_successor = members_chunks(&f8, &successor, 1, 1, None);
-        let mut epoch = None;
+        let mut revision = None;
         for c in &first_of_successor {
             if let Taken::Installed(i) = rx.take_chunk(chunk_of(c)) {
-                epoch = Some(*i);
+                revision = Some(*i);
             }
         }
-        let epoch = epoch.expect("the successor's full installs");
-        assert!(epoch.new_epoch && epoch.resumed);
+        let revision = revision.expect("the successor's full installs");
+        assert!(revision.new_revision && revision.resumed);
         assert_eq!(rx.held_version("mesh2"), Some((successor.clone(), 1)), "its versions start again, never compared with the previous birth's");
 
         // A chunk lost for good: the incomplete snapshot is never applied, and the top-up from the

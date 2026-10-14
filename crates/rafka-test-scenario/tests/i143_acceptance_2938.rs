@@ -143,7 +143,7 @@ async fn source_restart_hydrates_proxy_routes_first_call_without_rediscovery() {
     let before = snapshot(&estate, SOURCE);
     assert_eq!(before["own_active_proxies"].as_array().map(Vec::len), Some(1), "{before}");
     let durable_before: Vec<Value> = history(&estate, SOURCE).await;
-    assert!(durable_before.iter().any(|r| r["kind"] == "Direct" && r["state"] == "Failed" && r["recovery"]["recovery_epoch"] == 1), "the Direct Failed row is durable: {durable_before:?}");
+    assert!(durable_before.iter().any(|r| r["kind"] == "Direct" && r["state"] == "Failed" && r["recovery"]["recovery_round"] == 1), "the Direct Failed row is durable: {durable_before:?}");
     assert!(durable_before.iter().any(|r| r["kind"] == "Proxy" && r["state"] == "Connected" && r["carrier"]["name"] == CARRIER), "the Proxy row is durable: {durable_before:?}");
 
     // 2. The source's runtime is killed; its mesh-primary recovers it: a new node at the same

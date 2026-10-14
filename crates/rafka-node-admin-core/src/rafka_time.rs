@@ -207,17 +207,17 @@ pub async fn run_seat_move_pull(
 ) {
     let seats = membership.seats().clone();
     let mut changed = seats.subscribe();
-    let mut last = seats.fabric().map(|h| (h.node_id, h.epoch));
+    let mut last = seats.fabric().map(|h| (h.node_id, h.revision));
     loop {
         if changed.changed().await.is_err() {
             return;
         }
         let Some(holder) = seats.fabric() else { continue };
-        let now = Some((holder.node_id.clone(), holder.epoch));
+        let now = Some((holder.node_id.clone(), holder.revision));
         if now == last {
             continue;
         }
-        let from = last.replace((holder.node_id.clone(), holder.epoch));
+        let from = last.replace((holder.node_id.clone(), holder.revision));
         // The first record heard is not a move; and the fabric-primary pulls from no one.
         let Some((from_node, _)) = from else { continue };
         if holder.node_id == me_id || from_node == holder.node_id {
@@ -226,14 +226,14 @@ pub async fn run_seat_move_pull(
         if Puller::of(&seats, &me.mesh, &me_id) != Puller::MeshPrimary {
             continue;
         }
-        let span = tracing::info_span!("rdm.mesh.entry.resolve.via-fabric-seat-moved", node = %me, from = %from_node, to = %holder.node_id, to_mesh = %holder.mesh, epoch = holder.epoch, outcome = tracing::field::Empty, attempts = tracing::field::Empty, adopted_from_epoch = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.mesh.entry.resolve.via-fabric-seat-moved", node = %me, from = %from_node, to = %holder.node_id, to_mesh = %holder.mesh, revision = holder.revision, outcome = tracing::field::Empty, attempts = tracing::field::Empty, adopted_from_revision = tracing::field::Empty);
         let (outcome, attempts, adopted_from) = pull_from_fabric_primary(&time, &me, &me_id, &client, &membership, holder).instrument(span.clone()).await;
         span.record("outcome", outcome.as_str());
         span.record("attempts", attempts);
         if let Some(h) = adopted_from {
-            span.record("adopted_from_epoch", h.epoch);
+            span.record("adopted_from_revision", h.revision);
             // The record adopted from is the last move answered: a newer record is a newer move.
-            last = Some((h.node_id, h.epoch));
+            last = Some((h.node_id, h.revision));
         }
         span.in_scope(|| tracing::info!("the fabric seat moved: this mesh primary pulled rafka-time once from the new fabric-primary"));
     }

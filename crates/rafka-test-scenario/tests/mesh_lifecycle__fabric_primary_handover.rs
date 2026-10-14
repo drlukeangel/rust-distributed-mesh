@@ -610,17 +610,17 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     assert_eq!((attr_s(&cut_off, "mesh_seat").as_str(), attr_s(&cut_off, "fabric_seat").as_str()), ("false", "true"), "the holder cut off the fabric seat's writes and none of its mesh's (Part C1 step 4): {cut_off}");
     let row = one("rdm.node_admin.seat.update.via-seat-row-written");
     assert_eq!(attr_s(&row, "node"), final_name, "the holder, mesh1's row writer, wrote the row: {row}");
-    assert!(!attr_s(&row, "fabric_epoch").is_empty() && attr_s(&row, "mesh_epoch").is_empty(), "the row moves the fabric seat alone; mesh1's seat stays with its primary: {row}");
+    assert!(!attr_s(&row, "fabric_revision").is_empty() && attr_s(&row, "mesh_revision").is_empty(), "the row moves the fabric seat alone; mesh1's seat stays with its primary: {row}");
     assert_eq!(attr_s(&row, "successor").split(':').next(), Some(fabric_primary.split('.').next().unwrap()), "the committed successor's mesh holds the seat afterwards: {row}");
     let installed: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| attr_s(sp, "operation") == operation && attr_s(sp, "node") == fabric_primary && attr_s(sp, "replay") == "false").collect();
     assert_eq!(installed.len(), 1, "the outside successor installed the row once and answered node.primary.updated: {installed:?}");
     let installed = installed[0].clone();
-    assert_eq!(attr_s(&installed, "fabric_epoch"), attr_s(&row, "fabric_epoch"), "{installed}");
+    assert_eq!(attr_s(&installed, "fabric_revision"), attr_s(&row, "fabric_revision"), "{installed}");
     assert!(descends_from(&spans, &installed, &updating), "the successor installed under the holder's call: {installed}");
     let said_updated = one("rdm.mesh.seat.update.via-announce-primary-updated");
     assert_eq!((attr_s(&said_updated, "node"), attr_s(&said_updated, "backbone"), attr_s(&said_updated, "mesh_channel")), (final_name.clone(), "sent".to_string(), "sent".to_string()), "the holder said primary updated: {said_updated}");
     let seat_updated = one("rdm.node_admin.seat.update.via-fabric-seat-updated");
-    assert_eq!((attr_s(&seat_updated, "departing"), attr_s(&seat_updated, "fabric_epoch")), ("mesh1".to_string(), attr_s(&row, "fabric_epoch")), "the leave's owner installed the fabric seat's row: {seat_updated}");
+    assert_eq!((attr_s(&seat_updated, "departing"), attr_s(&seat_updated, "fabric_revision")), ("mesh1".to_string(), attr_s(&row, "fabric_revision")), "the leave's owner installed the fabric seat's row: {seat_updated}");
     assert!(start_ns(&said_updating) <= start_ns(&cut_off) && end_ns(&cut_off) <= start_ns(&row), "primary updating, the cut-off, then the row");
     assert!(end_ns(&row) <= start_ns(&installed) && end_ns(&installed) <= start_ns(&said_updated), "the row, the successor's install, then primary updated");
     assert!(end_ns(&row) <= start_ns(&seat_updated) && end_ns(&seat_updated) < published_leaving, "the row is installed by the leave's owner before mesh-leaving, DeleteMesh and every stop");
@@ -653,17 +653,17 @@ async fn deleting_the_fabric_primarys_mesh_hands_the_seat_over_first_then_delete
     );
 
     // Part C3 edit 6 (gossip.md): "primary updated" rides the backbone, and every surviving mesh hears
-    // it naming the exact committed holder birth at the committed epoch.
+    // it naming the exact committed holder birth at the committed revision.
     let h = after.iter().find(|n| s(&n["name"]) == holder).unwrap();
     let (succ_mesh, succ_rest) = attr_s(&row, "successor").split_once(':').map(|(m, r)| (m.to_string(), r.to_string())).unwrap();
     let (succ_id, succ_inc) = succ_rest.split_once(':').map(|(i, c)| (i.to_string(), c.to_string())).unwrap();
     assert_eq!((succ_id.as_str(), succ_inc.as_str()), (s(&h["node_id"]).as_str(), s(&h["incarnation_id"]).as_str()), "the committed successor is the holder's exact birth: {h}");
-    let exact = format!("{succ_mesh}:{succ_id}@{succ_inc} (epoch {})", attr_s(&row, "fabric_epoch"));
+    let exact = format!("{succ_mesh}:{succ_id}@{succ_inc} (revision {})", attr_s(&row, "fabric_revision"));
     for m in ["mesh2", "mesh3"] {
         let heard: Vec<&Value> = named(&spans, "rdm.mesh.seat.update.via-primary-updated").into_iter().filter(|sp| attr_s(sp, "operation") == operation && attr_s(sp, "node").starts_with(&format!("{m}.admin.")) && attr_s(sp, "node") != holder).collect();
         assert!(heard.iter().any(|sp| attr_s(sp, "via") == "backbone"), "{m}: an admin other than the holder heard primary updated on the backbone: {heard:?}");
         for sp in &heard {
-            assert_eq!(attr_s(sp, "successor"), exact, "{m}: the frame names the exact holder birth and epoch: {sp}");
+            assert_eq!(attr_s(sp, "successor"), exact, "{m}: the frame names the exact holder birth and revision: {sp}");
             assert_ne!(attr_s(sp, "outcome"), "refused-not-newer", "{m}: the committed holder is taken: {sp}");
         }
     }

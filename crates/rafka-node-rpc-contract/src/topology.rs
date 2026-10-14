@@ -134,8 +134,8 @@ pub enum TopologyReply {
         /// Which bound the node is at.
         reason: String,
     },
-    /// The node is draining and takes no new work.
-    Draining {
+    /// The node is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why the node refuses new work.
         reason: String,
     },
@@ -201,7 +201,7 @@ impl TopologyReply {
             Self::UnknownMesh { .. } => "unknown-mesh",
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::Busy { .. } => "busy",
-            Self::Draining { .. } => "draining",
+            Self::ConnectionsDeleting { .. } => "connections-deleting",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::Started => "started",
@@ -233,7 +233,7 @@ impl NodeProtocol for Topology {
             TopologyReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             TopologyReply::NotReady { .. } => ReplyKind::NotReady,
             TopologyReply::Busy { .. } => ReplyKind::Busy,
-            TopologyReply::Draining { .. } => ReplyKind::Draining,
+            TopologyReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             TopologyReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             TopologyReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -247,8 +247,8 @@ impl NodeProtocol for Topology {
     fn busy(reason: String) -> TopologyReply {
         TopologyReply::Busy { reason }
     }
-    fn draining(reason: String) -> TopologyReply {
-        TopologyReply::Draining { reason }
+    fn connections_deleting(reason: String) -> TopologyReply {
+        TopologyReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> TopologyReply {
         TopologyReply::Malformed { kind }

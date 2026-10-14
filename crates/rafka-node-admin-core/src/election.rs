@@ -626,8 +626,8 @@ mod tests {
         n
     }
 
-    fn holder(mesh: &str, node_id: &str, inc: &str, epoch: u64) -> SeatHolder {
-        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap(), epoch }
+    fn holder(mesh: &str, node_id: &str, inc: &str, revision: u64) -> SeatHolder {
+        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap(), revision }
     }
 
     fn incumbency(fabric: SeatHolder, meshes: &[SeatHolder]) -> Incumbency {

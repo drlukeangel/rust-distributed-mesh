@@ -69,13 +69,13 @@ fn replies_match_the_frozen_fourteen_variant_wire_schema() {
         (UnknownMesh { mesh: "m".into() }, "04016d"),
         (PeerUnresolved { reason: "p".into() }, "050170"),
         (Busy { reason: "b".into() }, "060162"),
-        (Draining { reason: "d".into() }, "070164"),
+        (ConnectionsDeleting { reason: "d".into() }, "070164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0802"),
         (Unauthorized { reason: "u".into() }, "090175"),
         (Started, "0a"),
         (Stored { mesh: "m".into(), mesh_id: None, nodes: vec![StoredNode { node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), name: "m.rpc.1".into(), endpoint_id: rafka_mesh_entity::EndpointId("k".into()), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 00 01 0c 303472616a303970337a7037 07 6d2e7270632e31 016b 0c79727a34396a333033796834 00 7f000001 50"),
-        (Seats { seat: Seat::FabricPrimary, holder: SeatHolder { mesh: "m".into(), node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), epoch: 2 }, gone: false }, "0c 01 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02 00"),
-        (Seats { seat: Seat::MeshPrimary, holder: SeatHolder { mesh: "m".into(), node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), epoch: 300 }, gone: true }, "0c 00 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 ac02 01"),
+        (Seats { seat: Seat::FabricPrimary, holder: SeatHolder { mesh: "m".into(), node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), revision: 2 }, gone: false }, "0c 01 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02 00"),
+        (Seats { seat: Seat::MeshPrimary, holder: SeatHolder { mesh: "m".into(), node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), revision: 300 }, gone: true }, "0c 00 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 ac02 01"),
         (Stored { mesh: "m".into(), mesh_id: Some(rafka_mesh_entity::MeshId::parse("04raj09p3zp7").unwrap()), nodes: vec![StoredNode { node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), name: "m.rpc.1".into(), endpoint_id: rafka_mesh_entity::EndpointId("k".into()), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), transport_addr: "127.0.0.1:80".parse().unwrap() }] }, "0b 016d 01 0c 303472616a303970337a7037 01 0c 303472616a303970337a7037 07 6d2e7270632e31 016b 0c79727a34396a333033796834 00 7f000001 50"),
         (RafkaTime { ms: 1_000, seat: None }, "0d e807 00"),
         (RafkaTime { ms: 300, seat: Some(Seat::FabricPrimary) }, "0d ac02 01 01"),
@@ -168,7 +168,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
     assert_eq!(Topology::frame_kind(&Started), FrameKind::Started);
     assert_eq!(Topology::frame_kind(&Unchanged { mesh: "m".into(), publisher: publisher(), topology_version: 1 }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&End { meshes: 0 }), FrameKind::Terminal);
-    let holder = SeatHolder { mesh: "m".into(), node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), epoch: 1 };
+    let holder = SeatHolder { mesh: "m".into(), node_id: rafka_mesh_entity::NodeId::parse("04raj09p3zp7").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), revision: 1 };
     assert_eq!(Topology::frame_kind(&Seats { seat: Seat::FabricPrimary, holder, gone: false }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&RafkaTime { ms: 1, seat: None }), FrameKind::Data);
     assert_eq!(Topology::frame_kind(&NotReady { reason: "n".into() }), FrameKind::Refusal(ReplyKind::NotReady));

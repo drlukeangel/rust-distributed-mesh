@@ -5,7 +5,7 @@
 //! an rpc, broker, gateway or compute cohort; the approved proposal
 //! node-primary-update-fabric-mesh-and-node-type.md Part B1, "Every (mesh, node_type) cohort elects
 //! its primary by the one rule ... a living holder keeps its seat"). The holder of a seat is an EXACT birth, `(node_id, incarnation)`, in
-//! a mesh, with an `epoch`: the number of times the seat changed hands as the announcer saw it.
+//! a mesh, with a `revision`: the number of times the seat changed hands as the announcer saw it.
 //! A seat does not change hands while its holder lives, so the record a node holds is an input to
 //! every election (`rafka-node-admin-core` `election.rs`), never a result recomputed from
 //! statuses alone.
@@ -50,7 +50,7 @@ impl Seat {
     }
 }
 
-/// The holder of a seat: the exact birth, the mesh it belongs to, and the epoch of the record.
+/// The holder of a seat: the exact birth, the mesh it belongs to, and the revision of the record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SeatHolder {
     /// The mesh the holder belongs to.
@@ -59,23 +59,23 @@ pub struct SeatHolder {
     pub node_id: NodeId,
     /// The holder's exact birth.
     pub incarnation: IncarnationId,
-    /// The record's epoch: a later epoch supersedes an earlier one.
-    pub epoch: u64,
+    /// The record's revision: a later revision supersedes an earlier one.
+    pub revision: u64,
 }
 
 impl SeatHolder {
-    /// Whether this record replaces `held`: a later epoch, or the same epoch announced by a
+    /// Whether this record replaces `held`: a later revision, or the same revision announced by a
     /// different birth with the lower NodeId (two births that took the same vacancy at once; the
     /// order is the one every election uses, so every observer settles on the same one). The same
     /// record again, or an older one, replaces nothing.
     pub fn supersedes(&self, held: &SeatHolder) -> bool {
-        if self.epoch != held.epoch {
-            return self.epoch > held.epoch;
+        if self.revision != held.revision {
+            return self.revision > held.revision;
         }
         (self.node_id != held.node_id || self.incarnation != held.incarnation) && self.node_id < held.node_id
     }
 
-    /// The same exact birth, whatever the epoch.
+    /// The same exact birth, whatever the revision.
     pub fn is_birth(&self, node_id: &NodeId, incarnation: &IncarnationId) -> bool {
         &self.node_id == node_id && &self.incarnation == incarnation
     }
@@ -83,7 +83,7 @@ impl SeatHolder {
 
 impl std::fmt::Display for SeatHolder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}@{} (epoch {})", self.mesh, self.node_id, self.incarnation, self.epoch)
+        write!(f, "{}:{}@{} (revision {})", self.mesh, self.node_id, self.incarnation, self.revision)
     }
 }
 
@@ -150,25 +150,25 @@ pub mod transfer {
         }
     }
 
-    /// One seat a transfer committed: the seat, its committed holder's exact birth and the epoch.
+    /// One seat a transfer committed: the seat, its committed holder's exact birth and the revision.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct CommittedSeat {
         /// The seat that moved.
         pub seat: Seat,
         /// Its committed holder.
         pub holder: HandoverBirth,
-        /// The epoch the transfer committed.
-        pub epoch: u64,
+        /// The revision the transfer committed.
+        pub revision: u64,
     }
 
     impl CommittedSeat {
         /// The committed seat of the record `holder` holds for `seat`.
         pub fn of(seat: super::Seat, holder: &SeatHolder) -> Self {
-            Self { seat: Seat::of(seat, &holder.mesh), holder: HandoverBirth { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation.clone() }, epoch: holder.epoch }
+            Self { seat: Seat::of(seat, &holder.mesh), holder: HandoverBirth { mesh: holder.mesh.clone(), node_id: holder.node_id.clone(), incarnation: holder.incarnation.clone() }, revision: holder.revision }
         }
         /// The seat record it commits.
         pub fn record(&self) -> SeatHolder {
-            SeatHolder { mesh: self.holder.mesh.clone(), node_id: self.holder.node_id.clone(), incarnation: self.holder.incarnation.clone(), epoch: self.epoch }
+            SeatHolder { mesh: self.holder.mesh.clone(), node_id: self.holder.node_id.clone(), incarnation: self.holder.incarnation.clone(), revision: self.revision }
         }
         /// The mesh the record is keyed by: the seat's mesh for a mesh primary or a cohort's, none for
         /// the fabric's.
@@ -185,15 +185,15 @@ pub mod transfer {
 mod tests {
     use super::*;
 
-    fn holder(node: &str, inc: &str, epoch: u64) -> SeatHolder {
-        SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse(node).unwrap(), incarnation: IncarnationId::parse(&crate::ids::fixture_crockford60(inc)).unwrap(), epoch }
+    fn holder(node: &str, inc: &str, revision: u64) -> SeatHolder {
+        SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse(node).unwrap(), incarnation: IncarnationId::parse(&crate::ids::fixture_crockford60(inc)).unwrap(), revision }
     }
 
     #[test]
-    fn a_later_epoch_supersedes_and_the_same_record_or_an_older_one_does_not() {
+    fn a_later_revision_supersedes_and_the_same_record_or_an_older_one_does_not() {
         let held = holder("200000000000", "a", 3);
-        assert!(holder("900000000000", "b", 4).supersedes(&held), "a later epoch wins whatever the ids");
-        assert!(!holder("100000000000", "b", 2).supersedes(&held), "an older epoch never replaces");
+        assert!(holder("900000000000", "b", 4).supersedes(&held), "a later revision wins whatever the ids");
+        assert!(!holder("100000000000", "b", 2).supersedes(&held), "an older revision never replaces");
         assert!(!held.clone().supersedes(&held), "the same record changes nothing");
     }
 

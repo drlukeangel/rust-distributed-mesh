@@ -102,7 +102,7 @@ fn replies_match_the_frozen_forty_nine_variant_wire_schema() {
         (PeerUnresolved { reason: "p".into() }, "0a0170"),
         (NotReady { reason: "n".into() }, "0b016e"),
         (Busy { reason: "b".into() }, "0c0162"),
-        (Draining { reason: "d".into() }, "0d0164"),
+        (ConnectionsDeleting { reason: "d".into() }, "0d0164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0e02"),
         (Unauthorized { reason: "u".into() }, "0f0175"),
         (RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, "1007617474656d707401310132"),

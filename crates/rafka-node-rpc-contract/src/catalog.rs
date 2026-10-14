@@ -136,8 +136,8 @@ pub struct CatalogEntry {
     pub max_reply_frame_bytes: usize,
     /// Whether the op may be carried through a peer.
     pub forwardable: bool,
-    /// Served while the node drains (lifecycle control), never refused `Draining`.
-    pub served_while_draining: bool,
+    /// Served while the node is connections-deleting (lifecycle control), never refused `ConnectionsDeleting`.
+    pub served_while_connections_deleting: bool,
 }
 
 impl CatalogEntry {
@@ -152,7 +152,7 @@ impl CatalogEntry {
             max_request_frame_bytes: P::MAX_REQUEST_FRAME_BYTES,
             max_reply_frame_bytes: P::MAX_REPLY_FRAME_BYTES,
             forwardable: P::FORWARDABLE,
-            served_while_draining: P::SERVED_WHILE_DRAINING,
+            served_while_connections_deleting: P::SERVED_WHILE_CONNECTIONS_DELETING,
         }
     }
 
@@ -167,7 +167,7 @@ impl CatalogEntry {
             max_request_frame_bytes,
             max_reply_frame_bytes: max_request_frame_bytes,
             forwardable: false,
-            served_while_draining: false,
+            served_while_connections_deleting: false,
         }
     }
 }

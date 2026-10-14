@@ -4179,12 +4179,12 @@ fn rt_alive(rt: &Rt) -> bool {
     }
 }
 
-/// The typed refusal a draining node gives ordinary work: a proof-store reply of `Draining`, or a
-/// carrier that will not carry (`node is draining`). `None` for any other outcome.
+/// The typed refusal a node whose connections are being deleted gives ordinary work: a proof-store reply of
+/// `ConnectionsDeleting`, or a carrier that will not carry (`node is connections-deleting`). `None` for any other outcome.
 fn draining_refusal(out: &Value) -> Option<String> {
     match out["outcome"].as_str() {
-        Some("Reply") => out["reply"]["result"]["refused"].as_str().filter(|r| r.to_lowercase().contains("draining")).map(|r| format!("Reply:{r}")),
-        Some("NotSent") => out["reason"].as_str().filter(|r| r.contains("draining")).map(|r| format!("NotSent:{r}")),
+        Some("Reply") => out["reply"]["result"]["refused"].as_str().filter(|r| r.to_lowercase().contains("connectionsdeleting") || r.to_lowercase().contains("connections-deleting")).map(|r| format!("Reply:{r}")),
+        Some("NotSent") => out["reason"].as_str().filter(|r| r.contains("connections-deleting")).map(|r| format!("NotSent:{r}")),
         _ => None,
     }
 }

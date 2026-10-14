@@ -996,7 +996,7 @@ pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&Nod
         if held.as_ref().is_some_and(|h| h.is_birth(me.0, me.1)) {
             continue;
         }
-        said.push((seat, rafka_mesh_entity::SeatHolder { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), epoch: held.map(|h| h.epoch + 1).unwrap_or(1) }));
+        said.push((seat, rafka_mesh_entity::SeatHolder { mesh: mesh.to_string(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
     }
     // The mesh-primary is its mesh's one row writer and sole author of member status (R-MT1 Q3): it
     // says each other cohort's seat the election filled with a birth the record does not name.
@@ -1007,7 +1007,7 @@ pub(crate) fn seat_announcements(t: &Topology, live: bool, mesh: &str, me: (&Nod
             if held.is_some_and(|h| h.is_birth(&node_id, &incarnation)) {
                 continue;
             }
-            said.push((rafka_mesh_entity::Seat::Cohort(kind), rafka_mesh_entity::SeatHolder { mesh: mesh.to_string(), node_id, incarnation, epoch: held.map(|h| h.epoch + 1).unwrap_or(1) }));
+            said.push((rafka_mesh_entity::Seat::Cohort(kind), rafka_mesh_entity::SeatHolder { mesh: mesh.to_string(), node_id, incarnation, revision: held.map(|h| h.revision + 1).unwrap_or(1) }));
         }
     }
     said
@@ -8180,7 +8180,7 @@ mod tests {
     async fn a_fabric_primarys_refused_fabric_claim_writes_nothing_of_the_fabric() {
         let storage: Arc<dyn crate::fabric_storage::FabricStorage> = Arc::new(crate::fabric_storage::MemoryFabricStorage::new());
         let (holder, ours) = (crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() }, crate::fabric_storage::FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() });
-        let birth = |epoch: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch };
+        let birth = |revision: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision };
         let (h_birth, o_birth) = (birth(1), birth(2));
         let capture = crate::span_capture::Capture::new("i143-3089-fabric-name-held");
         let _g = tracing::dispatcher::set_default(&capture.dispatch);
@@ -9483,8 +9483,8 @@ mod tests {
         assert!(recovery_due(true, true, "mesh2", &watched, &offline).is_empty(), "a held fabric shutdown froze drift recovery: nothing is due");
     }
 
-    fn holder_of(d: &MeshDigest, epoch: u64) -> rafka_mesh_entity::SeatHolder {
-        rafka_mesh_entity::SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), epoch }
+    fn holder_of(d: &MeshDigest, revision: u64) -> rafka_mesh_entity::SeatHolder {
+        rafka_mesh_entity::SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
     }
 
     /// CONTRACT (R-A2, the dw33-1 shape): the seat records an admin holds decide its projection. A
@@ -9833,7 +9833,7 @@ mod tests {
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &own, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(primary(&t).as_deref(), Some("mesh2.admin.2"), "mesh2.admin.2 reads itself seated");
         let said = seat_announcements(&t, true, "mesh2", (&live.node.node_id, &live.node.incarnation), &decided);
-        assert!(said.iter().any(|(seat, h)| *seat == MeshPrimary && h.mesh == "mesh2" && h.is_birth(&live.node.node_id, &live.node.incarnation) && h.epoch == 2), "mesh2.admin.2 announces mesh2's seat at the next epoch: {said:?}");
+        assert!(said.iter().any(|(seat, h)| *seat == MeshPrimary && h.mesh == "mesh2" && h.is_birth(&live.node.node_id, &live.node.incarnation) && h.revision == 2), "mesh2.admin.2 announces mesh2's seat at the next revision: {said:?}");
     }
 
     /// CONTRACT (R-EL1, fabric-node-lifecycle-elections.md §5 "a living holder keeps its seat";
@@ -9841,7 +9841,7 @@ mod tests {
     /// updated" only announces it): the view's seat readers name the holder the
     /// seat records give, whatever its status. A holder that is Leaving (drained and stopped by its
     /// Build) whose yield this observer has not heard yet keeps both seats; once the yield is held
-    /// (PrimaryUpdated: both records at the next epoch naming the successor), the readers name the
+    /// (PrimaryUpdated: both records at the next revision naming the successor), the readers name the
     /// successor. Must NOT happen: an observer reading a Leaving holder's seats as vacant (the
     /// sticky_seat hand-over cell's via-fabric-recompute with winner "" while the record names P).
     #[test]
@@ -9867,7 +9867,7 @@ mod tests {
         assert!(t.holds_fabric_seat(&holder.node.node_id) && t.holds_mesh_seat("mesh1", &holder.node.node_id));
         assert_eq!(t.mesh_view("mesh1").and_then(|m| m.primary_admin).map(|p| p.to_string()).as_deref(), Some("mesh1.admin.1"));
 
-        // The yield is held: PrimaryUpdated's records name the successor at the next epochs.
+        // The yield is held: PrimaryUpdated's records name the successor at the next revisions.
         book.seats.take(MeshPrimary, &holder_of(&successor, 2));
         book.seats.take(FabricPrimary, &holder_of(&successor, 2));
         let t = project("fabric1", &fabric1(), ProviderKind::Process, &book, &records);
@@ -9876,10 +9876,10 @@ mod tests {
     }
 
     /// CONTRACT (fabric-node-lifecycle-elections.md §4.4, fabric-primary-handover.md step 3): the
-    /// committed next-epoch seat record is the resolver's input and the incumbent yields fabric
+    /// committed next-revision seat record is the resolver's input and the incumbent yields fabric
     /// authority. A hierarchy-loop decision is announced against the seat record it was decided
     /// from: a committed handover that lands while the loop awaits (its round climb) is not
-    /// answered by the incumbent taking the seat back at the next epoch. Must NOT happen: the
+    /// answered by the incumbent taking the seat back at the next revision. Must NOT happen: the
     /// yielded incumbent announcing itself over the committed successor (the e3..e12 seat flap of
     /// the fabric-primary handover stem on f06c8197).
     #[tokio::test]
@@ -9902,13 +9902,13 @@ mod tests {
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(t.fabric_primary().map(|n| n.name.to_string()).as_deref(), Some("mesh1.admin.1"));
-        // While the loop awaits its climb, the committed transfer lands: mesh2.admin.1 at epoch 2.
+        // While the loop awaits its climb, the committed transfer lands: mesh2.admin.1 at revision 2.
         book.seats.take(FabricPrimary, &holder_of(&successor, 2));
         let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
         assert!(said.is_empty(), "the yielded incumbent announces nothing over the committed successor: {said:?} (decided against {:?})", decided.fabric);
 
         // A legitimate succession is still announced: the recorded holder's birth proven exited,
-        // the election seats its own mesh's next admin, at the next epoch over that record.
+        // the election seats its own mesh's next admin, at the next revision over that record.
         let book = DigestBook::default();
         let records = Records::default();
         let gone = with_id(digest("mesh1.admin.2", ReadyForTraffic), "100000000000");
@@ -9921,15 +9921,15 @@ mod tests {
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
-        let epochs: Vec<_> = said.iter().map(|(s, h)| (*s, h.node_id.clone(), h.epoch)).collect();
-        assert_eq!(epochs, vec![(MeshPrimary, me.node.node_id.clone(), 6), (FabricPrimary, me.node.node_id.clone(), 6)], "the successor of a proven-gone holder takes both seats at the next epoch (decided against {:?})", decided.fabric);
+        let revisions: Vec<_> = said.iter().map(|(s, h)| (*s, h.node_id.clone(), h.revision)).collect();
+        assert_eq!(revisions, vec![(MeshPrimary, me.node.node_id.clone(), 6), (FabricPrimary, me.node.node_id.clone(), 6)], "the successor of a proven-gone holder takes both seats at the next revision (decided against {:?})", decided.fabric);
     }
 
     /// CONTRACT (R-MT1 Q3: the mesh-primary "writes the cohort's seat row as the mesh's one row writer"
     /// and is the sole author of member status; proposal Part B1, every cohort keeps its seat by the one
     /// rule): a mesh-primary announces the seat of each other cohort of its mesh the election fills
     /// with a birth its record does not name (a first election, a holder proven gone), at the next
-    /// epoch over that record, and nothing while the record names the living holder. No other admin
+    /// revision over that record, and nothing while the record names the living holder. No other admin
     /// announces a cohort seat. Must NOT happen: an rpc cohort's seat that no record holds, so a
     /// lower NodeId that later becomes Ready displaces the living holder.
     #[tokio::test]
@@ -9948,8 +9948,8 @@ mod tests {
         book.seats.take(MeshPrimary, &holder_of(&me, 1));
         book.seats.take(FabricPrimary, &holder_of(&me, 1));
         let me_birth = (&me.node.node_id, &me.node.incarnation);
-        let cohort_said = |said: &[(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)]| said.iter().filter(|(s, _)| matches!(s, Cohort(_))).map(|(s, h)| (*s, h.node_id.to_string(), h.epoch)).collect::<Vec<_>>();
-        // A first election: no record of the rpc cohort, the lowest Ready fills it at epoch 1.
+        let cohort_said = |said: &[(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)]| said.iter().filter(|(s, _)| matches!(s, Cohort(_))).map(|(s, h)| (*s, h.node_id.to_string(), h.revision)).collect::<Vec<_>>();
+        // A first election: no record of the rpc cohort, the lowest Ready fills it at revision 1.
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         let said = seat_announcements(&t, true, "mesh1", me_birth, &decided);
@@ -9962,7 +9962,7 @@ mod tests {
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));
         assert_eq!(t.cohort_primary("mesh1", NodeKind::RpcNode).map(|n| n.name.to_string()).as_deref(), Some("mesh1.rpc.2"));
         assert!(cohort_said(&seat_announcements(&t, true, "mesh1", me_birth, &decided)).is_empty(), "a living recorded holder is not announced again");
-        // mesh1.rpc.2 proven exited: the seat goes to the lowest Ready, announced at the next epoch.
+        // mesh1.rpc.2 proven exited: the seat goes to the lowest Ready, announced at the next revision.
         prove_exit(&book, &records, &rpc2).await;
         let decided = incumbency_of(&book, &records);
         let t = project_decided("fabric1", &fabric1(), ProviderKind::Process, &book, &records, &decided, &ViewReads::none_at(std::time::Instant::now()));

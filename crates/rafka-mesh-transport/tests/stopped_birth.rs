@@ -87,7 +87,7 @@ async fn publish_stopped(_p: &Membership, bb: &Backbone, stop: &LifecycleOp) {
 
 /// `m` holds `holder` as its mesh's seat record, as its entry read named it.
 fn learn_primary_seat(m: &Membership, mesh: &str, node_id: &NodeId, incarnation: &IncarnationId) {
-    m.learn_seats(&[(Seat::MeshPrimary, SeatHolder { mesh: mesh.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), epoch: 1 }, false)], "entry");
+    m.learn_seats(&[(Seat::MeshPrimary, SeatHolder { mesh: mesh.into(), node_id: node_id.clone(), incarnation: incarnation.clone(), revision: 1 }, false)], "entry");
 }
 
 /// CONTRACT (gossip.md "Node-stopped lifecycle overlay"; node-start.md step 2): the mesh-primary's

@@ -276,8 +276,8 @@ async fn the_forward_frame_carries_the_budget_that_remains_never_the_default() {
     assert_eq!(seen[1], 700, "split: the reply budget, not the 10 s send bound or the default: {seen:?}");
 }
 
-/// CONTRACT: a forward naming Forward is refused `NotForwardable` and a draining carrier refuses
-/// a forward `Draining`, each before any inner call.
+/// CONTRACT: a forward naming Forward is refused `NotForwardable` and a connections-deleting carrier refuses
+/// a forward `ConnectionsDeleting`, each before any inner call.
 #[tokio::test]
 async fn a_nested_forward_and_a_draining_carrier_are_still_refused_by_name() {
     let r = rig().await;
@@ -286,6 +286,6 @@ async fn a_nested_forward_and_a_draining_carrier_are_still_refused_by_name() {
     assert_eq!(out.reply().map(|x| x.value().clone()), Some(ForwardReply::NotForwardable { op: Forward::OP }));
     r.carrier_server.drain();
     let (out, _) = r.origin.call_via::<Probe>(&carrier_of(&r), &r.target.resolved.node_id, &probe(b"ping"), &CallOptions::default()).await;
-    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Carried(why) if why.contains("draining"))), "{out:?}");
+    assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Carried(why) if why.contains("connections-deleting"))), "{out:?}");
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }

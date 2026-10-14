@@ -57,7 +57,7 @@ pub(crate) type BoxFut<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 pub(crate) enum Refusal {
     NotReady(String),
     Busy(String),
-    Draining(String),
+    ConnectionsDeleting(String),
     Malformed(MalformedKind),
 }
 
@@ -127,7 +127,7 @@ where
         let reply = match r {
             Refusal::NotReady(s) => P::not_ready(s),
             Refusal::Busy(s) => P::busy(s),
-            Refusal::Draining(s) => P::draining(s),
+            Refusal::ConnectionsDeleting(s) => P::connections_deleting(s),
             Refusal::Malformed(k) => P::malformed(k),
         };
         P::encode_reply(&reply).unwrap_or_default()
@@ -578,11 +578,11 @@ impl NodeRpcServer {
                             .in_scope(|| tracing::info!(op, "the node's ready gate is closed: typed NotReady"));
                         return self.refuse(op, Refusal::NotReady("this node is not ready: its authority is not filled yet".into()), send, recv).await;
                     }
-                    // Draining refuses every new call except the lifecycle control the catalog
-                    // marks served while draining: the authority's probe and apply still land.
-                    if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_draining) {
+                    // Connections-deleting refuses every new call except the lifecycle control the catalog
+                    // marks served while connections-deleting: the authority's probe and apply still land.
+                    if self.inner.draining.load(Ordering::SeqCst) && !self.catalog().lookup(op).is_some_and(|e| e.served_while_connections_deleting) {
                         stats.draining.fetch_add(1, Ordering::SeqCst);
-                        return self.refuse(op, Refusal::Draining("node is draining".into()), send, recv).await;
+                        return self.refuse(op, Refusal::ConnectionsDeleting("node is connections-deleting".into()), send, recv).await;
                     }
                     match self.inner.admission.try_admit(op, &peer.to_string()) {
                         Ok(p) => permit = Some(p),

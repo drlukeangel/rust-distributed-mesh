@@ -187,18 +187,18 @@ async fn a_forward_naming_forward_is_refused_not_forwardable_by_the_admin() {
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
 }
 
-/// A draining admin refuses Forward like every op: the origin is told `Draining`, and no inner
-/// call is made.
+/// An admin whose connections are being deleted refuses Forward like every op: the origin is told
+/// `ConnectionsDeleting`, and no inner call is made.
 ///
-/// CONTRACT: Forward is not served while draining.
+/// CONTRACT: Forward is not served while connections are being deleted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_draining_admin_refuses_forward_by_name() {
     let r = rig().await;
     r.admin_server.drain();
     let (out, _) = r.origin.call_via::<Status>(&admin_target(&r), &r.target.node_id, &probe(&r.target), &CallOptions::default()).await;
     match &out {
-        RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::Carried(why) if why.contains("draining")), "{out:?}"),
-        other => panic!("the draining admin refuses the forward by name: {other:?}"),
+        RpcOutcome::NotSent(n) => assert!(matches!(n.reason(), NotSentReason::Carried(why) if why.contains("connections-deleting")), "{out:?}"),
+        other => panic!("the connections-deleting admin refuses the forward by name: {other:?}"),
     }
     assert_eq!(r.handled.load(Ordering::SeqCst), 0);
     let _ = &r.target_resolved;

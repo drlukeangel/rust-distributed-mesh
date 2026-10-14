@@ -102,12 +102,12 @@ pub struct ConnectionEnd {
     pub incarnation: Option<IncarnationId>,
 }
 
-/// Where a Direct `Failed` entry sits in its reconnect series. `recovery_epoch` names one failure
+/// Where a Direct `Failed` entry sits in its reconnect series. `recovery_round` names one failure
 /// incident and is compared for equality only; `attempt_ordinal` counts its attempts from 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectRecovery {
     /// The incident the recovery series belongs to, compared for equality only.
-    pub recovery_epoch: u64,
+    pub recovery_round: u64,
     /// This attempt's ordinal within the series, from 1.
     pub attempt_ordinal: u32,
 }
@@ -171,7 +171,7 @@ impl NodeConnection {
         match (self.kind, self.state, self.carrier.is_some(), self.recovery.is_some()) {
             (ConnectionKind::Proxy, ConnectionState::Failed, _, _) => Some(format!("{}: Failed is a Direct state only", at())),
             (ConnectionKind::Direct, ConnectionState::Failed, _, false) => {
-                Some(format!("{}: a Direct Failed entry carries its recovery epoch and attempt ordinal", at()))
+                Some(format!("{}: a Direct Failed entry carries its recovery round and attempt ordinal", at()))
             }
             (_, ConnectionState::Connected | ConnectionState::Disconnected, _, true) => {
                 Some(format!("{}: only a Direct Failed entry carries a recovery", at()))

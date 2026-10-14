@@ -351,7 +351,7 @@ async fn mesh_member_recovers_delta_gap_from_own_primary() {
         spans_of(&spans, "rdm.mesh.membership.update.via-snapshot-installed", MEMBER, healed_at).into_iter().find(|sp| attr(sp, "mesh") == "mesh2" && num(sp, "topology_version") >= delta_e.2).cloned()
     })
     .await;
-    assert_eq!(attr(&full_after_heal, "new_epoch"), "false", "the same source publisher: the member resumes inside its epoch");
+    assert_eq!(attr(&full_after_heal, "new_revision"), "false", "the same source publisher: the member resumes inside its revision");
     assert_eq!(attr(&full_after_heal, "channel"), "mesh-channel");
     let version_now = num(&full_after_heal, "topology_version");
     // Heard again after the cut, the member needed no top-up and saw no gap: mesh1's primary said

@@ -277,7 +277,7 @@ impl Authority {
         let held = self.decisions.lock().await;
         match (self.seat.read)() {
             SeatRecord::Open { holder } => Ok((held, holder)),
-            SeatRecord::Moved { by, to } => Err(BuildStateError::Fenced { node: self.node.clone(), by, to }),
+            SeatRecord::Moved { by, to } => Err(BuildStateError::SeatYielded { node: self.node.clone(), by, to }),
         }
     }
 
@@ -761,7 +761,7 @@ mod tests {
     }
 
     /// CONTRACT (proposal node-primary-update Part C1 step 5: "This is the commit. From this write the
-    /// holder is no longer primary"; Build dispatch from the old seat is refused `Fenced`, and nothing
+    /// holder is no longer primary"; Build dispatch from the old seat is refused `SeatYielded`, and nothing
     /// else is written): the Build log reads its authority from the committed
     /// fabric seat record. Once the record names another live birth, every decision is refused by
     /// name, naming that birth's path.name from the digest book even when the projected view does not
@@ -775,7 +775,7 @@ mod tests {
         use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
         let seats = rafka_mesh_transport::membership::SeatBook::default();
         let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p1")).unwrap());
-        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), epoch: 2 };
+        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), revision: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
         let source = {
             let changed = Some(seats.subscribe());
@@ -785,7 +785,7 @@ mod tests {
             SeatSource { read, changed }
         };
         let authority = Authority::new("mesh2.admin.2".into(), source);
-        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), epoch: 1 });
+        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
         assert!(authority.enter().await.is_ok(), "the record names this birth: it decides");
         assert!(authority.fence_set().now_or_never().is_none(), "no fence while the record names this birth");
         seats.take(Seat::FabricPrimary, &next);
@@ -793,9 +793,9 @@ mod tests {
         assert!(authority.enter().await.is_ok(), "a record naming a birth proven gone ends nothing");
         lost.lock().unwrap().clear();
         match authority.enter().await {
-            Err(BuildStateError::Fenced { to, by, .. }) => {
+            Err(BuildStateError::SeatYielded { to, by, .. }) => {
                 assert_eq!(to.as_deref(), Some("mesh2.admin.1"), "the refusal names the holder the record names");
-                assert!(by.contains("100000000000") && by.contains("epoch 2"), "the reason names the record: {by}");
+                assert!(by.contains("100000000000") && by.contains("revision 2"), "the reason names the record: {by}");
             }
             other => panic!("the moved record must refuse the old seat's decision by name, got {:?}", other.map(|_| ())),
         }
@@ -815,14 +815,14 @@ mod tests {
             let (seats, me) = (seats.clone(), me.clone());
             SeatSource { read: std::sync::Arc::new(move || crate::seat_watch::fabric_seat_record(seats.fabric().as_ref(), &me, &Default::default(), |_| None)), changed }
         };
-        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: me.0.clone(), incarnation: me.1.clone(), epoch: 1 });
+        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: me.0.clone(), incarnation: me.1.clone(), revision: 1 });
         let authority = std::sync::Arc::new(Authority::new("mesh1.admin.1".into(), source));
         let committed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let gate = authority.enter().await.unwrap();
         let (decisions, c, book) = (authority.decisions(), committed.clone(), seats.clone());
         let moving = tokio::spawn(async move {
             let _held = decisions.lock_owned().await;
-            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), epoch: 2 });
+            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), revision: 2 });
             c.load(std::sync::atomic::Ordering::SeqCst)
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -832,7 +832,7 @@ mod tests {
         assert!(moving.await.unwrap(), "the record moved after the decision committed");
         let later = authority.enter().await.map(|_| ());
         match later {
-            Err(BuildStateError::Fenced { node, by, to }) => {
+            Err(BuildStateError::SeatYielded { node, by, to }) => {
                 assert_eq!(node, "mesh1.admin.1");
                 assert!(by.contains("400000000000") && by.contains("no digest of that birth is held"), "the reason names the record and why no path.name is named: {by}");
                 assert_eq!(to, None);

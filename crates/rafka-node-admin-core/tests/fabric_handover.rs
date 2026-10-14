@@ -25,7 +25,7 @@ use rafka_node_admin_core::topology::Topology;
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
-use rafka_node_rpc_contract::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatEpoch, SeatUpdate};
+use rafka_node_rpc_contract::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply as Reply, NodePrimaryUpdateRequest as Request, Seat as WireSeat, SeatRevision, SeatUpdate};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -412,8 +412,8 @@ fn birth(a: &Admin) -> HandoverBirth {
     HandoverBirth { mesh: a.resolved.name.mesh.clone(), node_id: a.resolved.node_id.clone(), incarnation: a.resolved.incarnation.clone() }
 }
 
-fn holder_of(a: &Admin, epoch: u64) -> SeatHolder {
-    SeatHolder { mesh: a.resolved.name.mesh.clone(), node_id: a.resolved.node_id.clone(), incarnation: a.resolved.incarnation.clone(), epoch }
+fn holder_of(a: &Admin, revision: u64) -> SeatHolder {
+    SeatHolder { mesh: a.resolved.name.mesh.clone(), node_id: a.resolved.node_id.clone(), incarnation: a.resolved.incarnation.clone(), revision }
 }
 
 /// [`Pair`], each admin born over the `fabric.storage` `storage` gives it (one store shared by every
@@ -797,32 +797,32 @@ async fn seats_fabric_shaped<F: std::future::Future<Output = Arc<dyn FabricStora
     Seats { p, n, m, x }
 }
 
-/// The fabric-primary's command (UpdatePrimary) to `holder`: update mesh1's primary seat held at `mesh_epoch`.
-fn update_mesh_seat(holder: &Admin, mesh_epoch: u64, build: &str, operation: &str) -> Request {
-    Request::UpdatePrimary { fabric: "fabric1".into(), holder: birth(holder), seats: vec![SeatEpoch { seat: WireSeat::MeshPrimary { mesh: "mesh1".into() }, expected_epoch: mesh_epoch }], build_id: build.into(), attempt: 1, operation: operation.into() }
+/// The fabric-primary's command (UpdatePrimary) to `holder`: update mesh1's primary seat held at `mesh_revision`.
+fn update_mesh_seat(holder: &Admin, mesh_revision: u64, build: &str, operation: &str) -> Request {
+    Request::UpdatePrimary { fabric: "fabric1".into(), holder: birth(holder), seats: vec![SeatRevision { seat: WireSeat::MeshPrimary { mesh: "mesh1".into() }, expected_revision: mesh_revision }], build_id: build.into(), attempt: 1, operation: operation.into() }
 }
 
 /// The holder's node.primary.update call on `successor` moving mesh1's primary seat from `holder` to
-/// `epoch`: the content of the committed row.
-fn primary_update(holder: &Admin, successor: &Admin, epoch: u64, build: &str, attempt: u32, operation: &str) -> Request {
-    Request::PrimaryUpdate { seats: vec![SeatUpdate { seat: WireSeat::MeshPrimary { mesh: "mesh1".into() }, holder: birth(holder), successor: birth(successor), epoch }], build_id: build.into(), attempt, operation: operation.into() }
+/// `revision`: the content of the committed row.
+fn primary_update(holder: &Admin, successor: &Admin, revision: u64, build: &str, attempt: u32, operation: &str) -> Request {
+    Request::PrimaryUpdate { seats: vec![SeatUpdate { seat: WireSeat::MeshPrimary { mesh: "mesh1".into() }, holder: birth(holder), successor: birth(successor), revision }], build_id: build.into(), attempt, operation: operation.into() }
 }
 
-fn committed_mesh(a: &Admin, mesh_epoch: u64) -> Vec<CommittedSeat> {
-    vec![CommittedSeat::of(Seat::MeshPrimary, &holder_of(a, mesh_epoch))]
+fn committed_mesh(a: &Admin, mesh_revision: u64) -> Vec<CommittedSeat> {
+    vec![CommittedSeat::of(Seat::MeshPrimary, &holder_of(a, mesh_revision))]
 }
 
-fn committed_fabric(a: &Admin, fabric_epoch: u64) -> Vec<CommittedSeat> {
-    vec![CommittedSeat::of(Seat::FabricPrimary, &holder_of(a, fabric_epoch))]
+fn committed_fabric(a: &Admin, fabric_revision: u64) -> Vec<CommittedSeat> {
+    vec![CommittedSeat::of(Seat::FabricPrimary, &holder_of(a, fabric_revision))]
 }
 
-fn committed_both(a: &Admin, mesh_epoch: u64, fabric_epoch: u64) -> Vec<CommittedSeat> {
-    vec![CommittedSeat::of(Seat::MeshPrimary, &holder_of(a, mesh_epoch)), CommittedSeat::of(Seat::FabricPrimary, &holder_of(a, fabric_epoch))]
+fn committed_both(a: &Admin, mesh_revision: u64, fabric_revision: u64) -> Vec<CommittedSeat> {
+    vec![CommittedSeat::of(Seat::MeshPrimary, &holder_of(a, mesh_revision)), CommittedSeat::of(Seat::FabricPrimary, &holder_of(a, fabric_revision))]
 }
 
-/// The node.primary.updated reply carrying `epochs`.
-fn updated(epochs: Vec<CommittedSeat>) -> Reply {
-    Reply::PrimaryUpdated { epochs }
+/// The node.primary.updated reply carrying `revisions`.
+fn updated(revisions: Vec<CommittedSeat>) -> Reply {
+    Reply::PrimaryUpdated { revisions }
 }
 
 /// The (side, reason, detail) of every refusal span of the primitive.
@@ -831,7 +831,7 @@ fn refusals(spans: &Spans) -> Vec<(String, String, String)> {
 }
 
 /// CONTRACT (proposal Part C1 steps 2-7 and C2 Q1: "when the mesh-seat successor is in the same mesh
-/// (search step 1), the one row of C1 commits both seats to NA2 at their next epochs, which makes NA2
+/// (search step 1), the one row of C1 commits both seats to NA2 at their next revisions, which makes NA2
 /// mesh-primary and fabric-primary at the same boundary"): P, the fabric-primary, holds both seats and
 /// moves them by one node.primary.update to N, its pre-check's successor. In order: P says "primary
 /// updating", P cuts off its writes, P writes ONE row moving both seats to N (mesh1 4, fabric 8), N
@@ -875,7 +875,7 @@ fn a_seat_holder_moves_both_seats_to_its_successor_in_one_row() {
         assert_eq!(said, vec!["mesh1.admin.1".to_string()], "the holder P, never the successor, says the primary updated");
         let written = spans.named(ROW_WRITTEN);
         assert_eq!(written.len(), 1, "{written:?}");
-        assert_eq!((written[0]["node"].as_str(), written[0]["mesh_epoch"].as_str(), written[0]["fabric_epoch"].as_str()), ("mesh1.admin.1", "4", "8"), "P, the cohort's row writer, writes the one row: {written:?}");
+        assert_eq!((written[0]["node"].as_str(), written[0]["mesh_revision"].as_str(), written[0]["fabric_revision"].as_str()), ("mesh1.admin.1", "4", "8"), "P, the cohort's row writer, writes the one row: {written:?}");
         let installed = spans.named(UPDATED);
         assert_eq!(installed.len(), 1, "{installed:?}");
         assert_eq!((installed[0]["node"].as_str(), installed[0]["replay"].as_str(), installed[0].get("holder_exit").map(String::as_str)), ("mesh1.admin.2", "false", Some("none")), "N found no exit-proof row of P, alive: {installed:?}");
@@ -1022,11 +1022,11 @@ async fn the_holder_cuts_off(op: &'static str) {
 }
 
 /// CONTRACT (proposal Part C1 failure contract: "An identical retry of the call replays the committed
-/// result before any epoch check; a call with a conflicting payload for the same operation is refused
+/// result before any revision check; a call with a conflicting payload for the same operation is refused
 /// by name"; C3 edit 5): a lost reply is retried with the identical call and answered with the same
 /// committed seat before any stale-seat check (mesh1's seat is already at 4): the fabric-primary's
 /// identical command to P, its own command door, and P's identical node.primary.update to N each
-/// replay the row. The same operation with a conflicting payload (another epoch) is RejectedConflict
+/// replay the row. The same operation with a conflicting payload (another revision) is RejectedConflict
 /// at N. Nothing commits twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_identical_retry_answers_the_same_seat_and_another_payload_is_refused() {
@@ -1041,7 +1041,7 @@ async fn an_identical_retry_answers_the_same_seat_and_another_payload_is_refused
     assert_eq!(send(&f.p, &f.n, primary_update(&f.p, &f.n, 4, "b1", 1, op)).await, first, "P's identical call to N replays the row");
     assert_eq!(send(&f.p, &f.n, primary_update(&f.p, &f.n, 5, "b1", 1, op)).await, Reply::RejectedConflict { operation: op.into() }, "a conflicting payload for the committed operation");
     assert_eq!(f.n.storage.seat_transfers().await.unwrap().len(), 1);
-    assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "one epoch committed");
+    assert_eq!(f.n.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "one revision committed");
     assert_eq!(f.x.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.n, 4)), "the fabric-primary installed the committed seat");
 }
 
@@ -1069,7 +1069,7 @@ async fn a_retry_after_the_holder_stopped_taking_new_calls_is_answered_from_the_
 /// row commits mesh1's seat to N. The same call reaching M, a process that is not N's birth, is
 /// answered node.primary.updated from the row: M installs the committed view naming N and refuses
 /// nothing. N stays the committed holder, and the call against N's own birth completes. A command
-/// naming another birth of P is judged by the seat P holds and its epoch, never by the birth it names:
+/// naming another birth of P is judged by the seat P holds and its revision, never by the birth it names:
 /// it moves the seat. What must NOT happen: a wrong-birth, stale-seat or not-eligible refusal at a
 /// receiver of the call.
 #[test]
@@ -1116,7 +1116,7 @@ fn a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_move
         let mesh2 = "cannot transfer: no secondary of type node-admin in mesh mesh2";
         let lone_text = "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic";
         let f = seats_fabric().await;
-        let only = Request::UpdatePrimary { fabric: "fabric1".into(), holder: birth(&f.x), seats: vec![SeatEpoch { seat: WireSeat::MeshPrimary { mesh: "mesh2".into() }, expected_epoch: 1 }], build_id: "b2".into(), attempt: 1, operation: "node.primary.update:b2:restart-node:mesh2.admin.1".into() };
+        let only = Request::UpdatePrimary { fabric: "fabric1".into(), holder: birth(&f.x), seats: vec![SeatRevision { seat: WireSeat::MeshPrimary { mesh: "mesh2".into() }, expected_revision: 1 }], build_id: "b2".into(), attempt: 1, operation: "node.primary.update:b2:restart-node:mesh2.admin.1".into() };
         assert_eq!(send(&f.p, &f.x, only).await, Reply::RejectedNoSuccessor { reason: mesh2.into() });
         assert!(f.x.cut_offs.lock().unwrap().is_empty(), "nothing is cut off: {:?}", f.x.cut_offs.lock().unwrap());
         assert_eq!(f.x.door.membership.seats().mesh("mesh2"), Some(holder_of(&f.x, 1)), "X keeps mesh2's seat");
@@ -1151,7 +1151,7 @@ fn a_transfer_with_no_successor_is_refused_with_q7s_exact_texts_and_nothing_move
 /// the fabric seat to the outside mesh-primary and the incumbent stays mesh-primary until its own
 /// node.delete"; search step 2: "the lowest NodeId among the other ReadyForTraffic mesh-primaries"): P,
 /// the fabric-primary, moves the fabric seat outside mesh1. Its one row commits the fabric seat to X,
-/// mesh2's primary, at epoch 8 and moves no mesh seat; X installs and answers; P keeps mesh1's seat at
+/// mesh2's primary, at revision 8 and moves no mesh seat; X installs and answers; P keeps mesh1's seat at
 /// 3; both views name X the fabric-primary and P mesh1's primary. What must NOT happen: the fabric seat
 /// going to N inside the departing mesh, or P's mesh seat moving.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1334,7 +1334,7 @@ fn a_holder_lost_after_the_row_leaves_the_command_incomplete_and_the_next_attemp
 /// answer, so P asks the provider, which proves N's runtime exited. P puts N's exit-proof row (proof
 /// `provider`) and retries nothing: N's seat vacates and P's view seats the ordinary rule's choice,
 /// the lowest ReadyForTraffic NodeId of mesh1's node-admins not proven gone (P itself, in this
-/// fabric). Seated again, P installs mesh1's seat at the next revision over the row's (epoch 5) and
+/// fabric). Seated again, P installs mesh1's seat at the next revision over the row's (revision 5) and
 /// restores that seat's writes (ruling R-PU2 recovery order 2-3). P's update ends naming the failure,
 /// `Incomplete` on the wire, and X's command is answered by P with it, X installing nothing. X's next
 /// attempt sends the identical command: P reads its row, finds N's exit proven and calls N no more: no
@@ -1775,10 +1775,10 @@ async fn a_later_attempt_of_the_same_update_is_answered_from_the_row() {
 /// CONTRACT (proposal Part C1: one row per update, keyed by its operation; node-rpc-envelope.md op
 /// 0x21: "operation identifies one" update): a seat update's operation names its Build, so a later
 /// Build's update of the same seat before the same node operation is a new update, never the replay
-/// of an earlier one. Build b1's stop of P moves mesh1's seat to N at epoch 4; the seat comes back to
-/// P at epoch 5 (as a later update leaves it in every book); Build b2's stop of P moves it again: P
-/// writes a second row at epoch 6 and P and N hold N at 6. What must NOT happen: b2's update answered
-/// from b1's row (epoch 4), so the seat never moves.
+/// of an earlier one. Build b1's stop of P moves mesh1's seat to N at revision 4; the seat comes back to
+/// P at revision 5 (as a later update leaves it in every book); Build b2's stop of P moves it again: P
+/// writes a second row at revision 6 and P and N hold N at 6. What must NOT happen: b2's update answered
+/// from b1's row (revision 4), so the seat never moves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_later_builds_update_of_the_same_seat_is_a_new_update() {
     let f = commanded_fabric().await;
@@ -2342,11 +2342,11 @@ fn a_primary_update_command_from_an_endpoint_no_view_holds_is_decided_on_the_sea
     });
 }
 
-/// CONTRACT (node-rpc-envelope.md, op 0x21: "Epoch overflow cannot commit and is refused by name with
+/// CONTRACT (node-rpc-envelope.md, op 0x21: "Revision overflow cannot commit and is refused by name with
 /// a typed refusal"; proposal Part C1 "Refused before the row ... the writer's own pre-check of the
-/// call's epoch"): a seat whose epoch is `u64::MAX` cannot advance. The fabric-primary's command naming
-/// mesh1's seat at `u64::MAX` is refused `RejectedEpochOverflow { seat, epoch: u64::MAX }` by the
-/// holder, its reject span naming the reason `epoch-overflow`, the seat and the epoch. Nothing commits:
+/// call's revision"): a seat whose revision is `u64::MAX` cannot advance. The fabric-primary's command naming
+/// mesh1's seat at `u64::MAX` is refused `RejectedRevisionOverflow { seat, revision: u64::MAX }` by the
+/// holder, its reject span naming the reason `revision-overflow`, the seat and the revision. Nothing commits:
 /// no row, no cut-off, the seat where it was.
 #[test]
 fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
@@ -2373,10 +2373,10 @@ fn a_seat_epoch_at_its_maximum_is_refused_by_name_and_nothing_commits() {
     });
     let spans = cap.spans();
     keep_cell("epoch_overflow", &trace_id, &spans);
-    assert_eq!(reply, Reply::RejectedEpochOverflow { seat: WireSeat::MeshPrimary { mesh: "mesh1".into() }, epoch: u64::MAX });
+    assert_eq!(reply, Reply::RejectedRevisionOverflow { seat: WireSeat::MeshPrimary { mesh: "mesh1".into() }, revision: u64::MAX });
     let refused = in_trace(&spans, &trace_id, REJECTED);
     assert_eq!(refused.len(), 1, "one refusal of the seat update: {refused:?}");
-    assert_eq!(refused[0]["attributes"]["reason"], "epoch-overflow");
+    assert_eq!(refused[0]["attributes"]["reason"], "revision-overflow");
     assert!(refused[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains("mesh-primary") && d.contains("18446744073709551615")), "{refused:?}");
     for name in [ROW_WRITTEN, CUT_OFF, UPDATED] {
         assert!(in_trace(&spans, &trace_id, name).is_empty(), "nothing commits: {name}");
@@ -2457,14 +2457,14 @@ fn member_birth(m: &Member) -> HandoverBirth {
     HandoverBirth { mesh: m.resolved.name.mesh.clone(), node_id: m.resolved.node_id.clone(), incarnation: m.resolved.incarnation.clone() }
 }
 
-fn member_holder(m: &Member, epoch: u64) -> SeatHolder {
-    SeatHolder { mesh: m.resolved.name.mesh.clone(), node_id: m.resolved.node_id.clone(), incarnation: m.resolved.incarnation.clone(), epoch }
+fn member_holder(m: &Member, revision: u64) -> SeatHolder {
+    SeatHolder { mesh: m.resolved.name.mesh.clone(), node_id: m.resolved.node_id.clone(), incarnation: m.resolved.incarnation.clone(), revision }
 }
 
 const RPC: rafka_node_admin_core::model::NodeKind = rafka_node_admin_core::model::NodeKind::RpcNode;
 
-/// P is mesh1's primary (epoch 3), X is mesh2's primary and the fabric-primary (epoch 7). B1
-/// (`mesh1.rpc.1`, the lowest rpc NodeId) holds mesh1's rpc seat at epoch 2; B2 (`mesh1.rpc.2`) is the
+/// P is mesh1's primary (revision 3), X is mesh2's primary and the fabric-primary (revision 7). B1
+/// (`mesh1.rpc.1`, the lowest rpc NodeId) holds mesh1's rpc seat at revision 2; B2 (`mesh1.rpc.2`) is the
 /// cohort's other node, born only when `with_b2`. One store root (R14).
 struct CohortFabric {
     p: Admin,
@@ -2510,9 +2510,9 @@ async fn cohort_fabric(with_b2: bool) -> CohortFabric {
     CohortFabric { p, x, b1, b2 }
 }
 
-/// The rpc seat of mesh1 committed to `m` at `epoch`.
-fn committed_rpc(m: &Member, epoch: u64) -> Vec<CommittedSeat> {
-    vec![CommittedSeat::of(Seat::Cohort(RPC), &member_holder(m, epoch))]
+/// The rpc seat of mesh1 committed to `m` at `revision`.
+fn committed_rpc(m: &Member, revision: u64) -> Vec<CommittedSeat> {
+    vec![CommittedSeat::of(Seat::Cohort(RPC), &member_holder(m, revision))]
 }
 
 /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1: "For a
@@ -2524,7 +2524,7 @@ fn committed_rpc(m: &Member, epoch: u64) -> Vec<CommittedSeat> {
 /// `node.primary.updated { revisions }` on that call. A non-admin holder then answers its commander's
 /// command"; step 7: "The writer publishes 'primary updated'"; B1: "a living holder keeps its seat"):
 /// P, mesh1's primary, moves mesh1's rpc seat from B1 to B2. In order: P says "primary updating", P
-/// writes ONE row (holder B1, successor B2, the rpc seat at epoch 3), P commands B1 carrying the row,
+/// writes ONE row (holder B1, successor B2, the rpc seat at revision 3), P commands B1 carrying the row,
 /// B1 calls node.primary.update on B2, B2 installs and answers node.primary.updated, P says "primary
 /// updated". P and B2 hold the committed record; P's view names B2 and keeps naming it on a later
 /// round although B1, the lowest rpc NodeId, is alive and ready. An identical retry replays from the
@@ -2547,7 +2547,7 @@ fn a_mesh_primary_moves_its_rpc_cohorts_primary_by_commanding_the_holder_with_it
         assert_eq!(rows.len(), 1, "one row: {rows:?}");
         assert_eq!(
             (&rows[0].holder, &rows[0].successor, &rows[0].seats, rows[0].operation.as_str(), &rows[0].expected),
-            (&member_birth(&f.b1), &member_birth(f.b2()), &committed_rpc(f.b2(), 3), op.as_str(), &vec![SeatEpoch { seat: WireSeat::Cohort { mesh: "mesh1".into(), kind: RPC }, expected_epoch: 2 }])
+            (&member_birth(&f.b1), &member_birth(f.b2()), &committed_rpc(f.b2(), 3), op.as_str(), &vec![SeatRevision { seat: WireSeat::Cohort { mesh: "mesh1".into(), kind: RPC }, expected_revision: 2 }])
         );
         let primary = |t: &Topology| t.cohort_primary("mesh1", RPC).map(|n| n.name.to_string());
         assert_eq!(primary(&*f.p.door.topology.read().await).as_deref(), Some("mesh1.rpc.2"), "P's view names B2 mesh1's rpc primary");

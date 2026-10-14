@@ -105,8 +105,8 @@ pub enum BuildClaimReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// The receiver is draining and takes no new work.
-    Draining {
+    /// The receiver is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
@@ -143,7 +143,7 @@ impl BuildClaimReply {
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::NotReady { .. } => "not-ready",
             Self::Busy { .. } => "busy",
-            Self::Draining { .. } => "draining",
+            Self::ConnectionsDeleting { .. } => "connections-deleting",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::BuildInProgress { .. } => "build-in-progress",
@@ -174,7 +174,7 @@ impl NodeProtocol for BuildClaim {
             BuildClaimReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             BuildClaimReply::NotReady { .. } => ReplyKind::NotReady,
             BuildClaimReply::Busy { .. } => ReplyKind::Busy,
-            BuildClaimReply::Draining { .. } => ReplyKind::Draining,
+            BuildClaimReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             BuildClaimReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BuildClaimReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -188,8 +188,8 @@ impl NodeProtocol for BuildClaim {
     fn busy(reason: String) -> BuildClaimReply {
         BuildClaimReply::Busy { reason }
     }
-    fn draining(reason: String) -> BuildClaimReply {
-        BuildClaimReply::Draining { reason }
+    fn connections_deleting(reason: String) -> BuildClaimReply {
+        BuildClaimReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> BuildClaimReply {
         BuildClaimReply::Malformed { kind }
@@ -213,7 +213,7 @@ mod tests {
             (BuildClaim::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (BuildClaim::not_ready("n".into()), ReplyKind::NotReady),
             (BuildClaim::busy("b".into()), ReplyKind::Busy),
-            (BuildClaim::draining("d".into()), ReplyKind::Draining),
+            (BuildClaim::connections_deleting("d".into()), ReplyKind::ConnectionsDeleting),
             (BuildClaim::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (BuildClaim::unauthorized("u".into()), ReplyKind::Unauthorized),
             (BuildClaimReply::BuildInProgress { current_build_id: "b7swg3jj790z".into(), mesh: "mesh2".into(), held_by: Some("mesh1.admin.1".into()) }, ReplyKind::ProtocolRefusal),

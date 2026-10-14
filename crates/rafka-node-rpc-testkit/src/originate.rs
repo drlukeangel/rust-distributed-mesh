@@ -185,8 +185,8 @@ pub enum OriginateReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// The node is draining and takes no new work.
-    Draining {
+    /// The node is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
@@ -256,7 +256,7 @@ impl NodeProtocol for Originate {
             OriginateReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             OriginateReply::NotReady { .. } => ReplyKind::NotReady,
             OriginateReply::Busy { .. } => ReplyKind::Busy,
-            OriginateReply::Draining { .. } => ReplyKind::Draining,
+            OriginateReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             OriginateReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             OriginateReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -270,8 +270,8 @@ impl NodeProtocol for Originate {
     fn busy(reason: String) -> OriginateReply {
         OriginateReply::Busy { reason }
     }
-    fn draining(reason: String) -> OriginateReply {
-        OriginateReply::Draining { reason }
+    fn connections_deleting(reason: String) -> OriginateReply {
+        OriginateReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> OriginateReply {
         OriginateReply::Malformed { kind }

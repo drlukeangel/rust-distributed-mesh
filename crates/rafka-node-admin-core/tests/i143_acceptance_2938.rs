@@ -36,7 +36,7 @@ fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind
 }
 
 /// CONN-D (connections.md §13 D, §3, §9): many completed NotSent dial attempts from this source
-/// to one exact destination birth advance the Direct Failed epoch/ordinal durably, grow the raw
+/// to one exact destination birth advance the Direct Failed round/ordinal durably, grow the raw
 /// log by one row each, and leave the current index holding one Direct and one Proxy for the
 /// pair; superseded evidence never revives.
 #[test]
@@ -92,7 +92,7 @@ fn source_reconnect_failures_grow_log_keep_two_current_members() {
             };
             let history_len = storage.history().await.unwrap().len();
             assert_eq!(indexed.state, ConnectionState::Failed);
-            assert_eq!(indexed.recovery.unwrap().recovery_epoch, 1, "one incident, one epoch");
+            assert_eq!(indexed.recovery.unwrap().recovery_round, 1, "one incident, one round");
             assert_eq!(history_len, seeded + ordinal as usize, "the raw log grows by one row per attempt");
             attempts.push(json!({ "ordinal": ordinal, "outcome": out.name(), "reason": reason, "indexed_row": indexed, "history_len": history_len }));
         }

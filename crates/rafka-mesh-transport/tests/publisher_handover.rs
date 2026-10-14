@@ -56,8 +56,8 @@ fn digest(name: &str, port: u16) -> MeshDigest {
     }
 }
 
-fn seat_of(d: &MeshDigest, epoch: u64) -> SeatHolder {
-    SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), epoch }
+fn seat_of(d: &MeshDigest, revision: u64) -> SeatHolder {
+    SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
 }
 
 struct Node {

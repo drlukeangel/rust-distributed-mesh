@@ -42,8 +42,8 @@ pub enum PingReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// The node is draining and takes no new work.
-    Draining {
+    /// The node is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
@@ -76,7 +76,7 @@ impl NodeProtocol for Ping {
             PingReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             PingReply::NotReady { .. } => ReplyKind::NotReady,
             PingReply::Busy { .. } => ReplyKind::Busy,
-            PingReply::Draining { .. } => ReplyKind::Draining,
+            PingReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             PingReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             PingReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -91,8 +91,8 @@ impl NodeProtocol for Ping {
     fn busy(reason: String) -> PingReply {
         PingReply::Busy { reason }
     }
-    fn draining(reason: String) -> PingReply {
-        PingReply::Draining { reason }
+    fn connections_deleting(reason: String) -> PingReply {
+        PingReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> PingReply {
         PingReply::Malformed { kind }
@@ -127,7 +127,7 @@ mod tests {
             (Ping::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Ping::not_ready("n".into()), ReplyKind::NotReady),
             (Ping::busy("b".into()), ReplyKind::Busy),
-            (Ping::draining("d".into()), ReplyKind::Draining),
+            (Ping::connections_deleting("d".into()), ReplyKind::ConnectionsDeleting),
             (Ping::malformed(MalformedKind::TooLarge), ReplyKind::Malformed(MalformedKind::TooLarge)),
             (Ping::malformed(MalformedKind::UnknownVariant), ReplyKind::Malformed(MalformedKind::UnknownVariant)),
             (Ping::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),

@@ -590,7 +590,7 @@ async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_hold
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
     let t = target_of(&caller, &server);
-    let held = |seat| (seat, SeatHolder { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), epoch: 1 });
+    let held = |seat| (seat, SeatHolder { mesh: "mesh1".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
 
     let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     let served = read.rafka_time.expect("every accepted read carries rafka-time");
@@ -599,8 +599,8 @@ async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_hold
 
     let (seat, holder) = held(Seat::MeshPrimary);
     server.membership.seats().take(seat, &holder);
-    let rpc_holder = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 2 };
-    let broker_holder = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 3 };
+    let rpc_holder = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
+    let broker_holder = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 3 };
     server.membership.seats().take(Seat::Cohort(NodeKind::RpcNode), &rpc_holder);
     server.membership.seats().take(Seat::Cohort(NodeKind::Broker), &broker_holder);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
@@ -653,7 +653,7 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
         let t = target_of(&caller, &server);
         let caller_id = NodeId::mint();
         // The caller holds its mesh's primary seat in its own records.
-        caller.membership.seats().take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: caller_id.clone(), incarnation: IncarnationId::mint(), epoch: 1 });
+        caller.membership.seats().take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: caller_id.clone(), incarnation: IncarnationId::mint(), revision: 1 });
         let pull = || async {
             let read = get_topology(&caller.client, &t, "mesh2", &caller.membership, None, None).await.unwrap();
             read.adopt_rafka_time(&caller.time, &caller.membership, "mesh1.admin.2", "mesh1", &caller_id, "mesh2.rpc.1")
@@ -661,10 +661,10 @@ fn a_mesh_primary_refuses_the_time_of_a_replica_and_a_mesh_primary_and_adopts_a_
         assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::ServedByAReplica));
         assert!(caller.time.now_ms() >= 9_000_000 && caller.time.now_ms() < 9_060_000, "the replica's 5 000 000 was not taken");
 
-        server.membership.seats().take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), epoch: 1 });
+        server.membership.seats().take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
         assert_eq!(pull().await.unwrap_err(), TimeNotAdopted::Refused(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary));
 
-        server.membership.seats().take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), epoch: 1 });
+        server.membership.seats().take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh2".into(), node_id: server.resolved.node_id.clone(), incarnation: server.resolved.incarnation.clone(), revision: 1 });
         let adopted = pull().await.unwrap();
         assert_eq!(adopted.previous_ms.map(|p| p >= 9_000_000), Some(true));
         assert!(adopted.stalls_ms > 3_000_000, "the fabric-primary's earlier time is behind: the reader stalls, it never steps back: {adopted:?}");

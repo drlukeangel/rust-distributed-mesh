@@ -10,7 +10,7 @@
 //! A birth is `mesh | node_id | incarnation`.
 
 use rafka_mesh_entity::{IncarnationId, NodeId};
-use rafka_node_rpc_contract::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest, Seat, SeatEpoch, SeatUpdate};
+use rafka_node_rpc_contract::handover::{CommittedSeat, HandoverBirth, NodePrimaryUpdate, NodePrimaryUpdateReply, NodePrimaryUpdateRequest, Seat, SeatRevision, SeatUpdate};
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
 use rafka_node_rpc_contract::protocol::{DecodeFailure, NodeProtocol};
 
@@ -28,19 +28,19 @@ fn successor() -> HandoverBirth {
 }
 
 /// The holder's call on its successor moving both seats in one row (Q1): the mesh seat of `m` to
-/// epoch 4 and the fabric seat to epoch 8.
+/// revision 4 and the fabric seat to revision 8.
 fn primary_update() -> NodePrimaryUpdateRequest {
     NodePrimaryUpdateRequest::PrimaryUpdate {
-        seats: vec![SeatUpdate { seat: Seat::MeshPrimary { mesh: "m".into() }, holder: holder(), successor: successor(), epoch: 4 }, SeatUpdate { seat: Seat::FabricPrimary, holder: holder(), successor: successor(), epoch: 8 }],
+        seats: vec![SeatUpdate { seat: Seat::MeshPrimary { mesh: "m".into() }, holder: holder(), successor: successor(), revision: 4 }, SeatUpdate { seat: Seat::FabricPrimary, holder: holder(), successor: successor(), revision: 8 }],
         build_id: "b".into(),
         attempt: 2,
         operation: "o".into(),
     }
 }
 
-/// The successor holding the fabric seat at epoch 8.
+/// The successor holding the fabric seat at revision 8.
 fn committed() -> CommittedSeat {
-    CommittedSeat { seat: Seat::FabricPrimary, holder: successor(), epoch: 8 }
+    CommittedSeat { seat: Seat::FabricPrimary, holder: successor(), revision: 8 }
 }
 
 /// `m`, `0123456789ab`, `i`.
@@ -50,7 +50,7 @@ const SUCCESSOR: &str = "01 6d  0c 303132333435363738396364  0c 79727a37396a3330
 
 /// CONTRACT: the family's three requests. `PrimaryUpdate` (variant 0) is the holder's call on its
 /// successor carrying the committed row's content: every seat with its cohort, both exact births and
-/// the committed epoch, then the Build, its attempt and the operation. `UpdatePrimary` (variant 1) is
+/// the committed revision, then the Build, its attempt and the operation. `UpdatePrimary` (variant 1) is
 /// the commander's command to the holder of a node-admin seat, or to the mesh-primary of any other
 /// cohort. `UpdatePrimaryFromRow` (variant 2) is a mesh-primary's command to the holder of a cohort
 /// that is not node-admin, after its row and carrying the row's content (proposal Part C1: "its
@@ -59,19 +59,19 @@ const SUCCESSOR: &str = "01 6d  0c 303132333435363738396364  0c 79727a37396a3330
 #[test]
 fn requests_match_the_frozen_three_variant_wire_schema() {
     let fixtures = [
-        // variant 0 | seats (len 2: MeshPrimary=1 { mesh "m" } holder successor epoch 4, FabricPrimary=0
-        // holder successor epoch 8) | build_id | attempt | operation
+        // variant 0 | seats (len 2: MeshPrimary=1 { mesh "m" } holder successor revision 4, FabricPrimary=0
+        // holder successor revision 8) | build_id | attempt | operation
         (primary_update(), format!("00 02 01 016d {HOLDER} {SUCCESSOR} 04 00 {HOLDER} {SUCCESSOR} 08 0162 02 016f")),
-        // variant 1 | fabric | holder | seats (len 1: MeshPrimary=1 { mesh "m" } epoch 3) | build_id | attempt | operation
+        // variant 1 | fabric | holder | seats (len 1: MeshPrimary=1 { mesh "m" } revision 3) | build_id | attempt | operation
         (
-            NodePrimaryUpdateRequest::UpdatePrimary { fabric: "f".into(), holder: holder(), seats: vec![SeatEpoch { seat: Seat::MeshPrimary { mesh: "m".into() }, expected_epoch: 3 }], build_id: "b".into(), attempt: 2, operation: "o".into() },
+            NodePrimaryUpdateRequest::UpdatePrimary { fabric: "f".into(), holder: holder(), seats: vec![SeatRevision { seat: Seat::MeshPrimary { mesh: "m".into() }, expected_revision: 3 }], build_id: "b".into(), attempt: 2, operation: "o".into() },
             format!("01 0166 {HOLDER} 01 01 016d 03 0162 02 016f"),
         ),
-        // variant 2 | fabric | seats (len 1: Cohort=2 { mesh "m", kind RpcNode=1 } holder successor epoch 3) | build_id | attempt | operation
+        // variant 2 | fabric | seats (len 1: Cohort=2 { mesh "m", kind RpcNode=1 } holder successor revision 3) | build_id | attempt | operation
         (
             NodePrimaryUpdateRequest::UpdatePrimaryFromRow {
                 fabric: "f".into(),
-                seats: vec![SeatUpdate { seat: Seat::Cohort { mesh: "m".into(), kind: rafka_mesh_entity::NodeKind::RpcNode }, holder: holder(), successor: successor(), epoch: 3 }],
+                seats: vec![SeatUpdate { seat: Seat::Cohort { mesh: "m".into(), kind: rafka_mesh_entity::NodeKind::RpcNode }, holder: holder(), successor: successor(), revision: 3 }],
                 build_id: "b".into(),
                 attempt: 2,
                 operation: "o".into(),
@@ -96,16 +96,16 @@ fn requests_match_the_frozen_three_variant_wire_schema() {
 fn replies_match_the_frozen_seventeen_variant_wire_schema() {
     use NodePrimaryUpdateReply::*;
     let fixtures = [
-        // epochs (len 1) | seat FabricPrimary=0 | holder birth | epoch 8
-        (PrimaryUpdated { epochs: vec![committed()] }, format!("00 01 00 {SUCCESSOR} 08")),
+        // revisions (len 1) | seat FabricPrimary=0 | holder birth | revision 8
+        (PrimaryUpdated { revisions: vec![committed()] }, format!("00 01 00 {SUCCESSOR} 08")),
         (RejectedConflict { operation: "o".into() }, "01 01 6f".to_string()),
         (RejectedFabricNotReady { reason: "r".into() }, "02 01 72".to_string()),
         (RejectedNoSuccessor { reason: "n".into() }, "03 01 6e".to_string()),
         (RejectedNotAuthority { reason: "a".into() }, "04 01 61".to_string()),
         // seat MeshPrimary=1 { mesh "m" } | expected | current
         (RejectedStaleSeat { seat: Seat::MeshPrimary { mesh: "m".into() }, expected: 3, current: 4 }, "05 01 016d 03 04".to_string()),
-        // seat MeshPrimary=1 { mesh "m" } | epoch u64::MAX, the ten-byte varint ff×9 01
-        (RejectedEpochOverflow { seat: Seat::MeshPrimary { mesh: "m".into() }, epoch: u64::MAX }, "06 01 016d ffffffffffffffffff01".to_string()),
+        // seat MeshPrimary=1 { mesh "m" } | revision u64::MAX, the ten-byte varint ff×9 01
+        (RejectedRevisionOverflow { seat: Seat::MeshPrimary { mesh: "m".into() }, revision: u64::MAX }, "06 01 016d ffffffffffffffffff01".to_string()),
         // source "s" | op "o" | cause "c"
         (RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() }, "07 0173 016f 0163".to_string()),
         // record "r" | holder "h"
@@ -115,7 +115,7 @@ fn replies_match_the_frozen_seventeen_variant_wire_schema() {
         (Malformed { kind: MalformedKind::Corrupt }, "0b 02".to_string()),
         (PeerUnresolved { reason: "p".into() }, "0c 01 70".to_string()),
         (Busy { reason: "b".into() }, "0d 01 62".to_string()),
-        (Draining { reason: "d".into() }, "0e 01 64".to_string()),
+        (ConnectionsDeleting { reason: "d".into() }, "0e 01 64".to_string()),
         (Unauthorized { reason: "u".into() }, "0f 01 75".to_string()),
         // step "s" | reason "r"
         (Failed { step: "s".into(), reason: "r".into() }, "10 0173 0172".to_string()),
@@ -134,14 +134,14 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
     assert_eq!(NodePrimaryUpdate::OP, 0x21);
     assert_eq!(NodePrimaryUpdate::NAME, "node-primary-update");
     assert!(!NodePrimaryUpdate::FORWARDABLE);
-    assert_eq!(NodePrimaryUpdate::classify_reply(&PrimaryUpdated { epochs: vec![committed()] }), ReplyKind::Success);
+    assert_eq!(NodePrimaryUpdate::classify_reply(&PrimaryUpdated { revisions: vec![committed()] }), ReplyKind::Success);
     for r in [
         RejectedConflict { operation: "o".into() },
         RejectedFabricNotReady { reason: "r".into() },
         RejectedNoSuccessor { reason: "n".into() },
         RejectedNotAuthority { reason: "a".into() },
         RejectedStaleSeat { seat: Seat::MeshPrimary { mesh: "m".into() }, expected: 1, current: 2 },
-        RejectedEpochOverflow { seat: Seat::FabricPrimary, epoch: u64::MAX },
+        RejectedRevisionOverflow { seat: Seat::FabricPrimary, revision: u64::MAX },
         RejectedSourceFailed { source: "s".into(), op: "o".into(), cause: "c".into() },
         RejectedRecordAbsent { record: "r".into(), holder: "h".into() },
         Incomplete { reason: "i".into() },
@@ -155,13 +155,13 @@ fn the_family_is_op_0x21_unary_and_not_forwardable_and_every_refusal_is_classifi
 fn the_largest_request_fits_the_frame_ceiling() {
     let long = "x".repeat(128);
     let b = || HandoverBirth { mesh: long.clone(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&"z".repeat(12)).unwrap() };
-    let seats = vec![SeatUpdate { seat: Seat::MeshPrimary { mesh: long.clone() }, holder: b(), successor: b(), epoch: u64::MAX }, SeatUpdate { seat: Seat::FabricPrimary, holder: b(), successor: b(), epoch: u64::MAX }];
+    let seats = vec![SeatUpdate { seat: Seat::MeshPrimary { mesh: long.clone() }, holder: b(), successor: b(), revision: u64::MAX }, SeatUpdate { seat: Seat::FabricPrimary, holder: b(), successor: b(), revision: u64::MAX }];
     let q = NodePrimaryUpdateRequest::PrimaryUpdate { seats, build_id: long.clone(), attempt: u32::MAX, operation: long.clone() };
     assert!(NodePrimaryUpdate::encode_request(&q).unwrap().len() <= NodePrimaryUpdate::MAX_REQUEST_FRAME_BYTES);
-    let seats = vec![SeatEpoch { seat: Seat::MeshPrimary { mesh: long.clone() }, expected_epoch: u64::MAX }, SeatEpoch { seat: Seat::FabricPrimary, expected_epoch: u64::MAX }];
+    let seats = vec![SeatRevision { seat: Seat::MeshPrimary { mesh: long.clone() }, expected_revision: u64::MAX }, SeatRevision { seat: Seat::FabricPrimary, expected_revision: u64::MAX }];
     let q = NodePrimaryUpdateRequest::UpdatePrimary { fabric: long.clone(), holder: b(), seats, build_id: long.clone(), attempt: u32::MAX, operation: long.clone() };
     assert!(NodePrimaryUpdate::encode_request(&q).unwrap().len() <= NodePrimaryUpdate::MAX_REQUEST_FRAME_BYTES);
-    let r = NodePrimaryUpdateReply::PrimaryUpdated { epochs: vec![CommittedSeat { seat: Seat::MeshPrimary { mesh: long.clone() }, holder: b(), epoch: u64::MAX }, CommittedSeat { seat: Seat::FabricPrimary, holder: b(), epoch: u64::MAX }] };
+    let r = NodePrimaryUpdateReply::PrimaryUpdated { revisions: vec![CommittedSeat { seat: Seat::MeshPrimary { mesh: long.clone() }, holder: b(), revision: u64::MAX }, CommittedSeat { seat: Seat::FabricPrimary, holder: b(), revision: u64::MAX }] };
     assert!(NodePrimaryUpdate::encode_reply(&r).unwrap().len() <= NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);
     // A source failure whose fields are each longer than the bound is cut to its budgets, never reset.
     let huge = "x".repeat(4 * NodePrimaryUpdate::MAX_REPLY_FRAME_BYTES);

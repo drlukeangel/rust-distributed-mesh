@@ -44,7 +44,7 @@ enum CountFrame {
     PeerUnresolved { reason: String },
     NotReady { reason: String },
     Busy { reason: String },
-    Draining { reason: String },
+    ConnectionsDeleting { reason: String },
     Malformed { kind: MalformedKind },
     Unauthorized { reason: String },
 }
@@ -64,7 +64,7 @@ impl NodeProtocol for Count {
             CountFrame::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             CountFrame::NotReady { .. } => ReplyKind::NotReady,
             CountFrame::Busy { .. } => ReplyKind::Busy,
-            CountFrame::Draining { .. } => ReplyKind::Draining,
+            CountFrame::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             CountFrame::Malformed { kind } => ReplyKind::Malformed(*kind),
             CountFrame::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -78,8 +78,8 @@ impl NodeProtocol for Count {
     fn busy(reason: String) -> CountFrame {
         CountFrame::Busy { reason }
     }
-    fn draining(reason: String) -> CountFrame {
-        CountFrame::Draining { reason }
+    fn connections_deleting(reason: String) -> CountFrame {
+        CountFrame::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> CountFrame {
         CountFrame::Malformed { kind }

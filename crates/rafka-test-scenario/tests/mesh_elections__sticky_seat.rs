@@ -468,13 +468,13 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     assert_eq!(attr(&cut_off, "fabric_seat"), "true", "the fabric seat's writes were cut off too: {cut_off:#?}");
     let row = one("rdm.node_admin.seat.update.via-seat-row-written", &|sp| attr(sp, "build_id") == build && attr(sp, "node") == p);
     assert!(attr(&row, "holder").contains(&p_id) && attr(&row, "successor").contains(&h_id), "the row moves P's seats to H ({h_name}, {h_id}): {row:#?}");
-    assert_eq!((num(&row, "mesh_epoch").is_some(), num(&row, "fabric_epoch").is_some()), (true, true), "both seats moved in the one row: {row:#?}");
+    assert_eq!((num(&row, "mesh_revision").is_some(), num(&row, "fabric_revision").is_some()), (true, true), "both seats moved in the one row: {row:#?}");
     let row_at = at_ns(&row);
     let transfer_attempt = num(&row, "attempt").unwrap();
     // C1 step 6: H installs from the row and answers node.primary.updated, under P's update call.
-    let installed = one("rdm.node_admin.seat.update.via-primary-updated", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && attr(sp, "mesh_epoch") == attr(&row, "mesh_epoch") && attr(sp, "replay") == "false");
+    let installed = one("rdm.node_admin.seat.update.via-primary-updated", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && attr(sp, "mesh_revision") == attr(&row, "mesh_revision") && attr(sp, "replay") == "false");
     assert_eq!(attr(&installed, "outcome"), "held", "H installed P's row: {installed:#?}");
-    assert_eq!((attr(&installed, "mesh_epoch"), attr(&installed, "fabric_epoch")), (attr(&row, "mesh_epoch"), attr(&row, "fabric_epoch")), "H installed the row's epochs: {installed:#?}");
+    assert_eq!((attr(&installed, "mesh_revision"), attr(&installed, "fabric_revision")), (attr(&row, "mesh_revision"), attr(&row, "fabric_revision")), "H installed the row's revisions: {installed:#?}");
     assert!(descends_from(&spans, &installed, &updating), "H installs under P's node.primary.update call: {installed:#?}");
     // C1 step 1: the update is a step of the attempt P claimed for itself before its row: the row's attempt.
     let p_claim = one("rdm.node_admin.build.update.via-claim-decision", &|sp| attr(sp, "node") == p && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt));
@@ -639,7 +639,7 @@ async fn a_claim_in_flight_commits_before_the_old_holders_seat_row_and_none_is_d
     let row: Vec<&Value> = named(&spans, "rdm.node_admin.seat.update.via-seat-row-written").into_iter().filter(|sp| attr(sp, "build_id") == replace_id && attr(sp, "node") == p && attr(sp, "holder").contains(&p_id)).collect();
     assert_eq!(row.len(), 1, "P wrote one seat row for the replace: {row:#?}");
     assert_eq!(attr(row[0], "node"), p, "the holder P wrote the row: {:#?}", row[0]);
-    let installed = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "build_id") == replace_id && attr(sp, "replay") == "false" && attr(sp, "mesh_epoch") == attr(row[0], "mesh_epoch")).map(at_ns).min().expect("the successor installed the committed row");
+    let installed = named(&spans, "rdm.node_admin.seat.update.via-primary-updated").into_iter().filter(|sp| attr(sp, "build_id") == replace_id && attr(sp, "replay") == "false" && attr(sp, "mesh_revision") == attr(row[0], "mesh_revision")).map(at_ns).min().expect("the successor installed the committed row");
     assert!(sp_end(row[0]) <= installed, "P's row was written before the successor installed it");
     // A decision P won committed wholly before the row moved its record; none after it.
     let row_at = at_ns(row[0]);

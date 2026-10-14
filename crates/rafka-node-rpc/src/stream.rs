@@ -214,7 +214,7 @@ where
         let reply = match r {
             Refusal::NotReady(s) => P::not_ready(s),
             Refusal::Busy(s) => P::busy(s),
-            Refusal::Draining(s) => P::draining(s),
+            Refusal::ConnectionsDeleting(s) => P::connections_deleting(s),
             Refusal::Malformed(k) => P::malformed(k),
         };
         P::encode_reply(&reply).unwrap_or_default()

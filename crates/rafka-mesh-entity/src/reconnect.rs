@@ -2,7 +2,7 @@
 //!
 //! A reconnect series exists while this source's latest Direct entry to a destination is `Failed`
 //! for the destination's current process. Its schedule is reconstructed from that one entry —
-//! `recovery_epoch`, `attempt_ordinal` and when it was written — so a restart neither resets the
+//! `recovery_round`, `attempt_ordinal` and when it was written — so a restart neither resets the
 //! backoff nor attempts early. One item per `(destination, destination incarnation)`; nothing here
 //! is driven by request traffic.
 //!
@@ -98,13 +98,13 @@ pub fn due(plan: &[ReconnectItem], now_ms: u64) -> Vec<&ReconnectItem> {
 }
 
 /// The Direct `Failed` entry an attempt that failed at `now_ms` appends: the next ordinal of the
-/// same epoch. The caller writes it and reschedules from it.
+/// same round. The caller writes it and reschedules from it.
 pub fn next_failure(item: &ReconnectItem, reason: impl Into<String>, now_ms: u64) -> NodeConnection {
     NodeConnection {
         id: crate::ConnectionId::mint(),
         state: ConnectionState::Failed,
         recovery: Some(DirectRecovery {
-            recovery_epoch: item.recovery.recovery_epoch,
+            recovery_round: item.recovery.recovery_round,
             attempt_ordinal: item.recovery.attempt_ordinal.saturating_add(1),
         }),
         reason: Some(reason.into()),
@@ -113,7 +113,7 @@ pub fn next_failure(item: &ReconnectItem, reason: impl Into<String>, now_ms: u64
     }
 }
 
-/// The first Direct `Failed` entry of a new incident: a new epoch, ordinal 1. `previous` is the
+/// The first Direct `Failed` entry of a new incident: a new round, ordinal 1. `previous` is the
 /// source's latest Direct entry to this destination, if any.
 pub fn first_failure(
     source: ConnectionEnd,
@@ -122,7 +122,7 @@ pub fn first_failure(
     reason: impl Into<String>,
     now_ms: u64,
 ) -> NodeConnection {
-    let epoch = previous.and_then(|p| p.recovery).map_or(1, |r| r.recovery_epoch.saturating_add(1));
+    let round = previous.and_then(|p| p.recovery).map_or(1, |r| r.recovery_round.saturating_add(1));
     NodeConnection {
         id: crate::ConnectionId::mint(),
         source,
@@ -130,7 +130,7 @@ pub fn first_failure(
         kind: ConnectionKind::Direct,
         state: ConnectionState::Failed,
         carrier: None,
-        recovery: Some(DirectRecovery { recovery_epoch: epoch, attempt_ordinal: 1 }),
+        recovery: Some(DirectRecovery { recovery_round: round, attempt_ordinal: 1 }),
         reason: Some(reason.into()),
         logged_at_ms: now_ms,
     }

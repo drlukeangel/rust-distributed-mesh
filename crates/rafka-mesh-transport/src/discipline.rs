@@ -145,9 +145,9 @@ mod tests {
         }
     }
 
-    fn seated(seat: Seat, mesh: &str, id: &NodeId, inc: &IncarnationId, epoch: u64) -> SeatBook {
+    fn seated(seat: Seat, mesh: &str, id: &NodeId, inc: &IncarnationId, revision: u64) -> SeatBook {
         let b = SeatBook::default();
-        b.take(seat, &SeatHolder { mesh: mesh.into(), node_id: id.clone(), incarnation: inc.clone(), epoch });
+        b.take(seat, &SeatHolder { mesh: mesh.into(), node_id: id.clone(), incarnation: inc.clone(), revision });
         b
     }
 
@@ -197,7 +197,7 @@ mod tests {
         assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &SeatBook::default(), &d, true), Verdict::NotTheAuthority, "no seat record");
         // The authority retargets with the seat record: the superseded holder offers nothing.
         let (id2, inc2) = (NodeId::mint(), IncarnationId::mint());
-        seats.take(Seat::MeshPrimary, &SeatHolder { mesh: MESH.into(), node_id: id2.clone(), incarnation: inc2.clone(), epoch: 2 });
+        seats.take(Seat::MeshPrimary, &SeatHolder { mesh: MESH.into(), node_id: id2.clone(), incarnation: inc2.clone(), revision: 2 });
         assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &d, true), Verdict::NotTheAuthority);
         let heir = digest("mesh1.admin.2", &id2, &inc2, MemberStatus::ReadyForTraffic, 9_000);
         assert_eq!(from_mesh_primary_digest(MESH, "mesh1.rpc.1", false, &seats, &heir, true), Verdict::Sample { authority: "mesh1.admin.2".into(), stamp_ms: 9_000 });
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(from_fabric_primary_members("mesh1.admin.2", false, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);
         // A superseded fabric-primary's aggregate once the seat moved.
         let (id2, inc2) = (NodeId::mint(), IncarnationId::mint());
-        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh3".into(), node_id: id2, incarnation: inc2, epoch: 4 });
+        seats.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh3".into(), node_id: id2, incarnation: inc2, revision: 4 });
         assert_eq!(from_fabric_primary_members("mesh1.admin.1", true, &seats, &p, Some(&auth), 5), Verdict::NotTheAuthority);
     }
 }

@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const TITLE: &str = "Node RPC wire bodies";
 
 /// The `NodeProtocol` constants each op section lists, in this order.
-const CONSTS: [&str; 8] = ["OP", "NAME", "FORWARDABLE", "SERVED_WHILE_DRAINING", "REQUEST_VARIANTS", "REPLY_VARIANTS", "MAX_REQUEST_FRAME_BYTES", "MAX_REPLY_FRAME_BYTES"];
+const CONSTS: [&str; 8] = ["OP", "NAME", "FORWARDABLE", "SERVED_WHILE_CONNECTIONS_DELETING", "REQUEST_VARIANTS", "REPLY_VARIANTS", "MAX_REQUEST_FRAME_BYTES", "MAX_REPLY_FRAME_BYTES"];
 
 struct Op<'w> {
     code: u64,

@@ -34,7 +34,7 @@ fn connected(source: &ConnectionEnd, destination: &ConnectionEnd, at: u64) -> No
     }
 }
 
-/// own (rpc.1) failed to reach dest (rpc.3, process d1) three times in epoch 1, the last at 1000.
+/// own (rpc.1) failed to reach dest (rpc.3, process d1) three times in round 1, the last at 1000.
 fn failing_series(own: &ConnectionEnd, dest: &ConnectionEnd) -> NodeConnection {
     let f1 = first_failure(own.clone(), dest.clone(), None, "connect refused", 100);
     let mut item = reconnect_plan(&single(own, &f1), |_| None).remove(0);
@@ -55,7 +55,7 @@ fn single(own: &ConnectionEnd, row: &NodeConnection) -> ConnectionsHeld {
 fn after_a_restart_the_backoff_is_reconstructed_from_the_latest_failed_row_not_reset() {
     let (own, dest) = (end(1, "o1"), end(3, "d1"));
     let latest = failing_series(&own, &dest);
-    assert_eq!(latest.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((1, 3)), "one epoch, ordinal counted from 1");
+    assert_eq!(latest.recovery.map(|r| (r.recovery_round, r.attempt_ordinal)), Some((1, 3)), "one round, ordinal counted from 1");
 
     let before = reconnect_plan(&single(&own, &latest), |_| Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("d1")).unwrap()));
     // A restart: a fresh projection handed the same latest row.
@@ -69,11 +69,11 @@ fn after_a_restart_the_backoff_is_reconstructed_from_the_latest_failed_row_not_r
 }
 
 #[test]
-fn a_new_incident_starts_a_new_epoch_at_ordinal_one() {
+fn a_new_incident_starts_a_new_round_at_ordinal_one() {
     let (own, dest) = (end(1, "o1"), end(3, "d1"));
     let latest = failing_series(&own, &dest);
     let again = first_failure(own.clone(), dest.clone(), Some(&latest), "connect refused", 9000);
-    assert_eq!(again.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((2, 1)));
+    assert_eq!(again.recovery.map(|r| (r.recovery_round, r.attempt_ordinal)), Some((2, 1)));
 }
 
 #[test]

@@ -835,8 +835,8 @@ pub enum StatusReply {
         /// Which bound the node is at.
         reason: String,
     },
-    /// The node is draining and takes no new work.
-    Draining {
+    /// The node is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why the node refuses new work.
         reason: String,
     },
@@ -1331,7 +1331,7 @@ impl StatusReply {
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::NotReady { .. } => "not-ready",
             Self::Busy { .. } => "busy",
-            Self::Draining { .. } => "draining",
+            Self::ConnectionsDeleting { .. } => "connections-deleting",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::RejectedUnmatchedCompletion { .. } => "rejected-unmatched-completion",
@@ -1382,8 +1382,8 @@ impl NodeProtocol for Status {
     const MAX_REPLY_FRAME_BYTES: usize = 64 * 1024;
     /// A declaration travels the ordinary Direct/ViaPeer route like any other call.
     const FORWARDABLE: bool = true;
-    /// A draining node still answers its authority's probe and apply.
-    const SERVED_WHILE_DRAINING: bool = true;
+    /// A connections-deleting node still answers its authority's probe and apply.
+    const SERVED_WHILE_CONNECTIONS_DELETING: bool = true;
     const REQUEST_VARIANTS: u32 = 28;
     const REPLY_VARIANTS: u32 = 49;
 
@@ -1438,7 +1438,7 @@ impl NodeProtocol for Status {
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
-            StatusReply::Draining { .. } => ReplyKind::Draining,
+            StatusReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             StatusReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             StatusReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -1452,8 +1452,8 @@ impl NodeProtocol for Status {
     fn busy(reason: String) -> StatusReply {
         StatusReply::Busy { reason }
     }
-    fn draining(reason: String) -> StatusReply {
-        StatusReply::Draining { reason }
+    fn connections_deleting(reason: String) -> StatusReply {
+        StatusReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> StatusReply {
         StatusReply::Malformed { kind }
@@ -1508,7 +1508,7 @@ mod tests {
             (Status::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Status::not_ready("n".into()), ReplyKind::NotReady),
             (Status::busy("b".into()), ReplyKind::Busy),
-            (Status::draining("d".into()), ReplyKind::Draining),
+            (Status::connections_deleting("d".into()), ReplyKind::ConnectionsDeleting),
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
             (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::ProtocolRefusal),

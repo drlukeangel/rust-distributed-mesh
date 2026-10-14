@@ -548,7 +548,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, RETIRE_CELLS, &["StopNode"], ratchet, &mut out);
         }
         Ratchet::ConnectionsDeletedIsNotRefusal => {
-            require(root, STATUS, &["Draining { reason: String }", "ConnectionsDeleted {", "receipt: Option<ConnectionsReceipt>"], ratchet, &mut out);
+            require(root, STATUS, &["ConnectionsDeleting { reason: String }", "ConnectionsDeleted {", "receipt: Option<ConnectionsReceipt>"], ratchet, &mut out);
             require(root, PROBE_APPLY_CELLS, &["fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_status_family"], ratchet, &mut out);
         }
         Ratchet::ForwardPreservesContext => {

@@ -2489,7 +2489,7 @@ impl View {
                         drop(rx);
                         let (held_version, held_publisher) = match &gap {
                             Gap::Version { held, .. } => (*held as i64, String::new()),
-                            Gap::OtherEpoch { held } => (-1, held.to_string()),
+                            Gap::OtherRevision { held } => (-1, held.to_string()),
                             _ => (-1, String::new()),
                         };
                         tracing::info_span!(
@@ -2655,7 +2655,7 @@ impl View {
             members = i.full.member_count(),
             in_flight = i.full.in_flight().len(),
             departed = i.full.departed().len(),
-            new_epoch = i.new_epoch,
+            new_revision = i.new_revision,
             resumed = i.resumed,
             refreshed = i.refreshed,
         )
@@ -6555,7 +6555,7 @@ mod tests {
         assert_eq!(status(), Some(MemberStatus::ReadyForTraffic), "a heartbeat moves no status");
 
         // The event from the seated primary, carrying the version its stop changed the birth at (v2).
-        view.book.seats.take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), epoch: 1 });
+        view.book.seats.take(Seat::MeshPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: publisher.incarnation.clone(), revision: 1 });
         view.take(&StatusEvent::Stopped.frame(stop.clone(), publisher.clone(), 2), &fabric, "mesh-channel");
         assert!(view.book.get(id.as_str()).is_none() && view.book.in_flight() == vec![stop.clone()]);
         hear(&mut view.order.lock().unwrap(), &view, &members(1, vec![b(MemberStatus::ReadyForTraffic, 1)], vec![]), &fabric, Side::Backbone);
@@ -7689,8 +7689,8 @@ mod tests {
         (lower, higher)
     }
 
-    fn seat_of(d: &MeshDigest, epoch: u64) -> SeatHolder {
-        SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), epoch }
+    fn seat_of(d: &MeshDigest, revision: u64) -> SeatHolder {
+        SeatHolder { mesh: d.node.name.mesh.clone(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), revision }
     }
 
     /// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1: "Every
@@ -7703,20 +7703,20 @@ mod tests {
     fn a_cohort_seat_record_is_held_apart_from_its_meshs_primary_seat() {
         use rafka_mesh_entity::NodeKind;
         let seats = SeatBook::default();
-        let admin = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 4 };
-        let rpc = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 1 };
+        let admin = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 4 };
+        let rpc = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
         assert!(matches!(seats.take(Seat::MeshPrimary, &admin), SeatTaken::Held { .. }));
         assert!(matches!(seats.take(Seat::Cohort(NodeKind::RpcNode), &rpc), SeatTaken::Held { previous: None }));
         assert_eq!(seats.mesh("mesh1"), Some(admin.clone()), "the mesh-primary record stays its own");
         assert_eq!(seats.cohort("mesh1", NodeKind::RpcNode), Some(rpc.clone()));
         assert_eq!(seats.cohort("mesh1", NodeKind::NodeAdmin), Some(admin.clone()), "the node-admin cohort's seat is the mesh-primary seat");
         assert_eq!(seats.cohort("mesh1", NodeKind::Broker), None);
-        let older = SeatHolder { epoch: 0, ..rpc.clone() };
+        let older = SeatHolder { revision: 0, ..rpc.clone() };
         assert!(matches!(seats.take(Seat::Cohort(NodeKind::RpcNode), &older), SeatTaken::Refused { .. }), "an older record is refused by the one supersede rule");
         let frames = seats.held_frames();
         assert!(frames.iter().any(|f| matches!(f, Frame::Seated { seat: Seat::Cohort(NodeKind::RpcNode), holder } if *holder == rpc)), "replayed as its own Seated frame: {frames:?}");
         // A committed update of the cohort seat is held under the cohort.
-        let next = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 2 };
+        let next = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 2 };
         let op = LifecycleOp { name: "mesh1.rpc.1".parse().unwrap(), node_id: rpc.node_id.clone(), incarnation: rpc.incarnation.clone(), operation: "node.primary.update:b:stop".into(), build_id: "b".into(), attempt: 1, event_at_rafka_ms: 0 };
         let taken = seats.take_together(&op, &[CommittedSeat::of(Seat::Cohort(NodeKind::RpcNode), &next)]);
         assert!(matches!(taken.as_slice(), [SeatTaken::Held { .. }]), "{taken:?}");
@@ -7825,7 +7825,7 @@ mod tests {
     fn a_mesh_primary_that_cannot_be_addressed_names_why() {
         let book = DigestBook::default();
         assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::NoSeatRecord { mesh: "mesh1".into() });
-        let unheard = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 1 };
+        let unheard = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), revision: 1 };
         book.seats.take(Seat::MeshPrimary, &unheard);
         assert_eq!(book.mesh_primary("mesh1").unwrap_err(), NoMeshPrimary::HolderNotHeld { holder: unheard, held_incarnation: None, departed: false });
 

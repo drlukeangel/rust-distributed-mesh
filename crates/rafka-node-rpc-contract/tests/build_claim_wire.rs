@@ -48,7 +48,7 @@ fn replies_match_the_frozen_eleven_variant_wire_schema() {
         (PeerUnresolved { reason: "p".into() }, "040170"),
         (NotReady { reason: "n".into() }, "05016e"),
         (Busy { reason: "b".into() }, "060162"),
-        (Draining { reason: "d".into() }, "070164"),
+        (ConnectionsDeleting { reason: "d".into() }, "070164"),
         (Malformed { kind: MalformedKind::Corrupt }, "0802"),
         (Unauthorized { reason: "u".into() }, "090175"),
         (BuildInProgress { current_build_id: "c".into(), mesh: "x".into(), held_by: Some("h".into()) }, "0a01630178010168"),

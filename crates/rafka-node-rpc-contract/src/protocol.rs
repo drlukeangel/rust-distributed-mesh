@@ -60,9 +60,10 @@ pub trait NodeProtocol: 'static + Send + Sync {
     const MAX_REPLY_FRAME_BYTES: usize;
     /// Carried execution through a peer is opt-in (node-rpc.md §36).
     const FORWARDABLE: bool = false;
-    /// Served while the node drains: a draining node refuses every new call except the
-    /// lifecycle control its authority sends it (the status family), which must still reach it.
-    const SERVED_WHILE_DRAINING: bool = false;
+    /// Served while the node is connections-deleting: a connections-deleting node refuses every new
+    /// call except the lifecycle control its authority sends it (the status family), which must
+    /// still reach it.
+    const SERVED_WHILE_CONNECTIONS_DELETING: bool = false;
     /// Number of `Request` / `Reply` enum variants this build knows.
     const REQUEST_VARIANTS: u32;
     /// Number of reply enum variants this build knows.
@@ -82,8 +83,8 @@ pub trait NodeProtocol: 'static + Send + Sync {
     fn not_ready(reason: String) -> Self::Reply;
     /// The reply for a node at its admission bound.
     fn busy(reason: String) -> Self::Reply;
-    /// The reply for a draining node.
-    fn draining(reason: String) -> Self::Reply;
+    /// The reply for a connections-deleting node.
+    fn connections_deleting(reason: String) -> Self::Reply;
     /// The reply for a malformed request frame.
     fn malformed(kind: MalformedKind) -> Self::Reply;
     /// The reply for an unauthorized caller.

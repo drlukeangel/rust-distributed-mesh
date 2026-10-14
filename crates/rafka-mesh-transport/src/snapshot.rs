@@ -317,8 +317,8 @@ pub struct Install {
     pub snapshot_id: u64,
     /// The installed topology.
     pub full: Full,
-    /// The held publisher was another (or none): this snapshot is a new epoch.
-    pub new_epoch: bool,
+    /// The held publisher was another (or none): this snapshot is a new revision.
+    pub new_revision: bool,
     /// This source was desynchronized and is resumed by this snapshot.
     pub resumed: bool,
     /// The same publisher and version were already held: nothing moved, the members were heard again.
@@ -388,9 +388,9 @@ pub enum Taken {
 pub enum Gap {
     /// No snapshot of this source is held.
     NoBaseline,
-    /// The held snapshot is of another publisher (a new epoch): its full comes first.
+    /// The held snapshot is of another publisher (a new revision): its full comes first.
     /// The held snapshot is of another publisher.
-    OtherEpoch {
+    OtherRevision {
         /// The publisher held.
         held: PublisherId,
     },
@@ -410,7 +410,7 @@ impl std::fmt::Display for Gap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Gap::NoBaseline => f.write_str("no-baseline"),
-            Gap::OtherEpoch { .. } => f.write_str("other-epoch"),
+            Gap::OtherRevision { .. } => f.write_str("other-revision"),
             Gap::Version { .. } => f.write_str("version-gap"),
             Gap::AlreadyDesynced => f.write_str("already-desynced"),
         }
@@ -531,7 +531,7 @@ impl SnapshotReceiver {
 
     fn install(&mut self, mesh: String, publisher: PublisherId, version: u64, snapshot_id: u64, full: Full) -> Taken {
         let unbased = self.unbased.contains_key(&mesh);
-        let (new_epoch, resumed, refreshed) = match self.held.get(&mesh) {
+        let (new_revision, resumed, refreshed) = match self.held.get(&mesh) {
             None => (true, unbased, false),
             Some(h) if h.publisher != publisher => (true, h.desynced.is_some() || unbased, false),
             Some(h) => (false, h.desynced.is_some(), version == h.version),
@@ -540,7 +540,7 @@ impl SnapshotReceiver {
         // An incomplete snapshot this one supersedes is dropped, never completed later.
         self.pending.retain(|k, p| !(k.mesh == mesh && k.publisher == publisher && p.version <= version));
         self.held.insert(mesh.clone(), Held { publisher: publisher.clone(), version, full: full.clone(), desynced: None });
-        Taken::Installed(Box::new(Install { mesh, publisher, topology_version: version, snapshot_id, full, new_epoch, resumed, refreshed }))
+        Taken::Installed(Box::new(Install { mesh, publisher, topology_version: version, snapshot_id, full, new_revision, resumed, refreshed }))
     }
 
     /// A delta: applied only at exactly its base.
@@ -551,7 +551,7 @@ impl SnapshotReceiver {
             return Moved::Desynced { mesh: mesh.to_string(), gap: if already { Gap::AlreadyDesynced } else { Gap::NoBaseline } };
         };
         if &h.publisher != source {
-            let gap = Gap::OtherEpoch { held: h.publisher.clone() };
+            let gap = Gap::OtherRevision { held: h.publisher.clone() };
             return Self::desync(mesh, h, gap);
         }
         // A copy of the delta held: gossip can deliver one delta twice, and a top-up may have brought
@@ -632,7 +632,7 @@ struct Published {
 /// What the forwarding primary puts on its own Mesh's channel for a source it holds.
 #[derive(Debug)]
 pub enum Forward {
-    /// The first publication of this source (or of a new epoch): a stripped full, chunked.
+    /// The first publication of this source (or of a new revision): a stripped full, chunked.
     Full(Vec<Frame>),
     /// The source moved from the version last published into this Mesh to a newer one.
     Delta(Box<Frame>),
@@ -653,7 +653,7 @@ pub struct Forwarder {
     role_on: bool,
     /// The term of the role: bumped on every take and every loss, so a decision made in one term
     /// is recognisably not of the next.
-    role_epoch: u64,
+    role_revision: u64,
 }
 
 impl Forwarder {
@@ -672,13 +672,13 @@ impl Forwarder {
         }
         self.reset();
         self.role_on = on;
-        self.role_epoch += 1;
+        self.role_revision += 1;
         true
     }
 
     /// The current term of the forwarder role, while this node holds it.
     pub fn role(&self) -> Option<u64> {
-        self.role_on.then_some(self.role_epoch)
+        self.role_on.then_some(self.role_revision)
     }
 
     fn full_frames(&mut self, me: &str, mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) -> Vec<Frame> {
@@ -817,7 +817,7 @@ mod tests {
         let gap = rx.take_delta("mesh1", &p, 6, 7, &Delta::default());
         assert!(matches!(gap, Moved::Desynced { gap: Gap::Version { held: 8, base: 6 }, .. }), "a delta whose base is not held is a gap, not a copy: {gap:?}");
         let taken = rx.take_chunk(chunk(&p, 6));
-        assert!(matches!(&taken, Taken::Installed(i) if i.topology_version == 6 && !i.new_epoch), "the receiver installs what it is handed: {taken:?}");
+        assert!(matches!(&taken, Taken::Installed(i) if i.topology_version == 6 && !i.new_revision), "the receiver installs what it is handed: {taken:?}");
         assert_eq!(rx.held_version("mesh1"), Some((p, 6)));
         assert!(rx.desynced().is_empty(), "the complete snapshot resumed the source");
     }

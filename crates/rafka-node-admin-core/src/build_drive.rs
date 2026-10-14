@@ -760,7 +760,7 @@ enum Inner {
     /// The Build log's seat fence was set while the executor's run was open: this admin's authority
     /// ended at the fence. The drive ends there without waiting for the run's stream, except for
     /// the executor the row seated, whose stream ends with its new-seat frame once it holds the seat.
-    Fenced,
+    SeatYielded,
 }
 
 impl DriveEnv {
@@ -796,7 +796,7 @@ impl DriveEnv {
                 // The record names the holder (its path.name from the digest book); none only when no
                 // digest of that birth is held, and the reason says so.
                 let to = match e {
-                    BuildStateError::Fenced { to, .. } => to,
+                    BuildStateError::SeatYielded { to, .. } => to,
                     _ => None,
                 };
                 tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %self.me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
@@ -1166,8 +1166,8 @@ impl DriveEnv {
                     self.blocked(drive, attempt, "", "dispatch", &why);
                     return self.stalled(drive, why);
                 }
-                Inner::Fenced => {
-                    dspan.record("outcome", "fenced");
+                Inner::SeatYielded => {
+                    dspan.record("outcome", "seat-yielded");
                     // The fence is sticky: `may_act` ends the drive SeatLost naming the new holder.
                     return match self.may_act(drive).await {
                         Some(end) => end,
@@ -1439,8 +1439,8 @@ impl DriveEnv {
                 span.record("outcome", "complete");
                 return None;
             }
-            Inner::Fenced => {
-                span.record("outcome", "fenced");
+            Inner::SeatYielded => {
+                span.record("outcome", "seat-yielded");
                 return Some(match self.may_act(drive).await {
                     Some(end) => end,
                     None => self.stalled(drive, format!("{}: the replay of Build {id} stopped at a seat fence that the gate no longer reports", self.me)),
@@ -1495,11 +1495,11 @@ impl DriveEnv {
                     // then: before, its door would answer them as an admin that is not the
                     // fabric-primary. Any other holder ends the drive at the fence at once.
                     match self.gate.fence().await {
-                        Err(BuildStateError::Fenced { to: Some(to), .. }) if parse_path(&to).as_ref() == Some(executor) => {
+                        Err(BuildStateError::SeatYielded { to: Some(to), .. }) if parse_path(&to).as_ref() == Some(executor) => {
                             seated_executor = true;
                             continue;
                         }
-                        _ => return Inner::Fenced,
+                        _ => return Inner::SeatYielded,
                     }
                 }
                 item = stream.next() => item,
@@ -1512,15 +1512,15 @@ impl DriveEnv {
                     }
                     // Past the fence this admin decides nothing of the attempt: the executor, now the
                     // fabric-primary, reports its end to its own callers.
-                    _ if seated_executor => return Inner::Fenced,
+                    _ if seated_executor => return Inner::SeatYielded,
                     t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. }) => return Inner::Terminal(t),
                     // The executor took the fabric-primary seat during the run: this admin's seat row
                     // fenced it, and the drive ends at that fence.
-                    BuildReply::SeatMoved { .. } => return Inner::Fenced,
+                    BuildReply::SeatMoved { .. } => return Inner::SeatYielded,
                     other => return Inner::Refused(other),
                 },
                 // The row is the answer whatever became of the stream.
-                InnerItem::Ended | InnerItem::Broke(_) if seated_executor => return Inner::Fenced,
+                InnerItem::Ended | InnerItem::Broke(_) if seated_executor => return Inner::SeatYielded,
                 InnerItem::Ended => return Inner::Broke("the inner stream ended without its terminal".into()),
                 InnerItem::Broke(why) => return Inner::Broke(why),
             }
@@ -1553,7 +1553,7 @@ pub fn describe(r: &BuildReply) -> String {
             format!("stale-claim (the recipient holds attempt {held_attempt} for {}, the call carried attempt {carried_attempt})", held_executor.as_deref().unwrap_or("no executor"))
         }
         BuildReply::UnknownBuild { build_id } => format!("unknown-build ({build_id})"),
-        BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::Draining { reason } | BuildReply::PeerUnresolved { reason } | BuildReply::Unauthorized { reason } => format!("{} ({reason})", r.name()),
+        BuildReply::NotReady { reason } | BuildReply::Busy { reason } | BuildReply::ConnectionsDeleting { reason } | BuildReply::PeerUnresolved { reason } | BuildReply::Unauthorized { reason } => format!("{} ({reason})", r.name()),
         other => other.name().to_string(),
     }
 }

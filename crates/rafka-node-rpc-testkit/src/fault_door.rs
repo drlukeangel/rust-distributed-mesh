@@ -305,7 +305,7 @@ impl NodeProtocol for FaultDoor {
             FaultReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             FaultReply::NotReady { .. } => ReplyKind::NotReady,
             FaultReply::Busy { .. } => ReplyKind::Busy,
-            FaultReply::ConnectionsDeleting { .. } => ReplyKind::Draining,
+            FaultReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             FaultReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             FaultReply::CallerRefused { .. } => ReplyKind::Unauthorized,
         }
@@ -320,7 +320,7 @@ impl NodeProtocol for FaultDoor {
     fn busy(reason: String) -> FaultReply {
         FaultReply::Busy { reason }
     }
-    fn draining(reason: String) -> FaultReply {
+    fn connections_deleting(reason: String) -> FaultReply {
         FaultReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> FaultReply {

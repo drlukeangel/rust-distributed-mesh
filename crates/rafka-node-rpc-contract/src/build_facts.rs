@@ -98,8 +98,8 @@ pub enum BuildFactsReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// The target is draining and takes no new work.
-    Draining {
+    /// The target is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
@@ -127,7 +127,7 @@ impl BuildFactsReply {
             Self::UnknownBuild { .. } => "unknown-build",
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::Busy { .. } => "busy",
-            Self::Draining { .. } => "draining",
+            Self::ConnectionsDeleting { .. } => "connections-deleting",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::Started => "started",
@@ -156,7 +156,7 @@ impl NodeProtocol for BuildFacts {
             BuildFactsReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             BuildFactsReply::NotReady { .. } => ReplyKind::NotReady,
             BuildFactsReply::Busy { .. } => ReplyKind::Busy,
-            BuildFactsReply::Draining { .. } => ReplyKind::Draining,
+            BuildFactsReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             BuildFactsReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             BuildFactsReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -170,8 +170,8 @@ impl NodeProtocol for BuildFacts {
     fn busy(reason: String) -> BuildFactsReply {
         BuildFactsReply::Busy { reason }
     }
-    fn draining(reason: String) -> BuildFactsReply {
-        BuildFactsReply::Draining { reason }
+    fn connections_deleting(reason: String) -> BuildFactsReply {
+        BuildFactsReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> BuildFactsReply {
         BuildFactsReply::Malformed { kind }

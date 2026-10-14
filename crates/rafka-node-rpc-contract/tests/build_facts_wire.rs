@@ -36,7 +36,7 @@ fn replies_match_the_frozen_ten_variant_wire_schema() {
         (UnknownBuild { build_id: "b".into() }, "03 01 62"),
         (PeerUnresolved { reason: "p".into() }, "04 01 70"),
         (Busy { reason: "b".into() }, "05 01 62"),
-        (Draining { reason: "d".into() }, "06 01 64"),
+        (ConnectionsDeleting { reason: "d".into() }, "06 01 64"),
         (Malformed { kind: MalformedKind::Corrupt }, "07 02"),
         (Unauthorized { reason: "u".into() }, "08 01 75"),
         (Started, "09"),

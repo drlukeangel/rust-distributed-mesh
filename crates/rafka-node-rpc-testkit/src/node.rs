@@ -1225,8 +1225,8 @@ mod authority_tests {
     use super::*;
     use rafka_mesh_entity::SeatHolder;
 
-    fn holder(node: &NodeId, incarnation: &IncarnationId, epoch: u64) -> SeatHolder {
-        SeatHolder { mesh: "mesh1".into(), node_id: node.clone(), incarnation: incarnation.clone(), epoch }
+    fn holder(node: &NodeId, incarnation: &IncarnationId, revision: u64) -> SeatHolder {
+        SeatHolder { mesh: "mesh1".into(), node_id: node.clone(), incarnation: incarnation.clone(), revision }
     }
 
     /// CONTRACT (R-S2): a birth owes its state again when its mesh's primary seat names another birth than the

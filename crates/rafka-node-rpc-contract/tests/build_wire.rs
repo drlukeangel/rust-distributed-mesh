@@ -75,12 +75,12 @@ fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
         (BuildInProgress { current_build_id: s("c"), mesh: Some(s("m")), held_by: Some(s("h")) }, "0e 01 63 01 01 6d 01 01 68"),
         (BuildInProgress { current_build_id: s("c"), mesh: None, held_by: None }, "0e 01 63 00 00"),
         (AttemptTaken { detail: s("d") }, "0f 01 64"),
-        (Fenced { node: s("n"), by: s("b") }, "10 01 6e 01 62"),
+        (SeatYielded { node: s("n"), by: s("b") }, "10 01 6e 01 62"),
         (CannotDelete { build_id: b(), reason: s("r") }, "11 01 62 01 72"),
         (PeerUnresolved { reason: s("p") }, "12 01 70"),
         (NotReady { reason: s("n") }, "13 01 6e"),
         (Busy { reason: s("b") }, "14 01 62"),
-        (Draining { reason: s("d") }, "15 01 64"),
+        (ConnectionsDeleting { reason: s("d") }, "15 01 64"),
         (Malformed { kind: MalformedKind::Corrupt }, "16 02"),
         (Unauthorized { reason: s("u") }, "17 01 75"),
         (SeatMoved { build_id: b(), fabric_primary: Some(s("p")) }, "18 01 62 01 01 70"),
@@ -127,7 +127,7 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         BuildInProgress { current_build_id: "c".into(), mesh: None, held_by: None },
         NotClaimant { mesh: Some("m".into()), fabric_primary: None, mesh_primary: None },
         AttemptTaken { detail: "d".into() },
-        Fenced { node: "n".into(), by: "b".into() },
+        SeatYielded { node: "n".into(), by: "b".into() },
         CannotDelete { build_id: "b".into(), reason: "r".into() },
     ] {
         assert_eq!(Build::frame_kind(&refusal), FrameKind::Refusal(ReplyKind::ProtocolRefusal), "{refusal:?}");

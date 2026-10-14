@@ -195,8 +195,8 @@ pub enum ProofReply {
         /// Which bound it is at.
         reason: String,
     },
-    /// The node is draining and takes no new work.
-    Draining {
+    /// The node is connections-deleting and takes no new work.
+    ConnectionsDeleting {
         /// Why it refuses new work.
         reason: String,
     },
@@ -255,7 +255,7 @@ impl NodeProtocol for ProofStore {
             ProofReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             ProofReply::NotReady { .. } => ReplyKind::NotReady,
             ProofReply::Busy { .. } => ReplyKind::Busy,
-            ProofReply::Draining { .. } => ReplyKind::Draining,
+            ProofReply::ConnectionsDeleting { .. } => ReplyKind::ConnectionsDeleting,
             ProofReply::Malformed { kind } => ReplyKind::Malformed(*kind),
             ProofReply::Unauthorized { .. } => ReplyKind::Unauthorized,
         }
@@ -270,8 +270,8 @@ impl NodeProtocol for ProofStore {
     fn busy(reason: String) -> ProofReply {
         ProofReply::Busy { reason }
     }
-    fn draining(reason: String) -> ProofReply {
-        ProofReply::Draining { reason }
+    fn connections_deleting(reason: String) -> ProofReply {
+        ProofReply::ConnectionsDeleting { reason }
     }
     fn malformed(kind: MalformedKind) -> ProofReply {
         ProofReply::Malformed { kind }
@@ -660,7 +660,7 @@ mod tests {
             ProofReply::PeerUnresolved { reason: "p".into() },
             ProofReply::NotReady { reason: "n".into() },
             ProofReply::Busy { reason: "b".into() },
-            ProofReply::Draining { reason: "d".into() },
+            ProofReply::ConnectionsDeleting { reason: "d".into() },
             ProofReply::Malformed { kind: MalformedKind::Corrupt },
             ProofReply::Unauthorized { reason: "u".into() },
         ];

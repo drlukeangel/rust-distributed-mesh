@@ -115,7 +115,7 @@ fn seat_record(which: &str, record: Option<&SeatHolder>, me: &Birth, lost: &Hash
     match record {
         Some(h) if !h.is_birth(&me.0, &me.1) && !lost.contains(&h.incarnation) => {
             let to = name_of(&h.node_id);
-            let by = format!("{which} names {} {} (birth {}) at epoch {}{}", h.mesh, h.node_id, h.incarnation.as_str(), h.epoch, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
+            let by = format!("{which} names {} {} (birth {}) at revision {}{}", h.mesh, h.node_id, h.incarnation.as_str(), h.revision, if to.is_none() { "; no digest of that birth is held, so its path.name is not known here" } else { "" });
             crate::fabric_builds::SeatRecord::Moved { by, to }
         }
         Some(h) if h.is_birth(&me.0, &me.1) => crate::fabric_builds::SeatRecord::Open { holder: name_of(&h.node_id) },
@@ -517,7 +517,7 @@ mod tests {
     #[test]
     fn a_held_fabric_seat_record_that_moves_owes_one_hand_over_naming_the_new_holder() {
         let (t, holder, standby, outsider) = world();
-        let record = |n: &Node, epoch: u64| SeatHolder { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), epoch };
+        let record = |n: &Node, revision: u64| SeatHolder { mesh: n.mesh.clone(), node_id: n.node_id.clone(), incarnation: n.incarnation_id.clone().unwrap(), revision };
         let (me, mut held) = (me_of(&holder), false);
         assert_eq!(seat_yield(Some(&record(&holder, 1)), &me, &mut held, &t), None, "the record names this birth: nothing yields");
         assert_eq!(seat_yield(Some(&record(&outsider, 2)), &me, &mut held, &t), Some(("the seat is now mesh2 100000000000".to_string(), Some("mesh2.admin.1".to_string()))), "the fence names the holder the record names");
