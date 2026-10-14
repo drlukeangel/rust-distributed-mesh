@@ -504,6 +504,20 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     let join_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForMeshJoin").collect();
     assert_eq!(join_step.len(), 1, "the pipeline ran the join step once");
     assert_eq!(join_step[0]["attributes"]["outcome"], "failed", "and it failed there");
+    let prepare: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "PrepareStorage").collect();
+    assert_eq!(prepare.len(), 1, "PrepareStorage ran once: {spans:?}");
+    assert_eq!(prepare[0]["attributes"]["awaited"], "claim,transport-key", "PrepareStorage names every await it ran: {}", prepare[0]);
+    assert_eq!(prepare[0]["attributes"]["awaiting"], "done", "PrepareStorage completed every await: {}", prepare[0]);
+    let claim_row: Vec<&Value> = spans_named(&spans, "rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["moment"] == "claim").collect();
+    assert_eq!(claim_row.len(), 1, "PrepareStorage opened the claim via-node-row span: {spans:?}");
+    assert_eq!(claim_row[0]["attributes"]["outcome"], "row-written", "the claim row was written: {}", claim_row[0]);
+    assert_eq!(
+        claim_row[0]["attributes"]["awaited"],
+        "writer-check,read-previous-row,read-old-row,put-node-row",
+        "the claim span names every await of the claim: {}",
+        claim_row[0]
+    );
+    assert_eq!(claim_row[0]["attributes"]["awaiting"], "done", "the claim completed every await: {}", claim_row[0]);
     // Each step's wall and, for one that ran blocking calls, their wait for a thread and their run.
     let walls: Vec<String> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
