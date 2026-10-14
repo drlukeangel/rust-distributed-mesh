@@ -249,3 +249,75 @@ async fn a_drive_pass_dispatching_to_its_own_admin_after_its_stop_began_runs_und
     let reconcile = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile").expect("the run's reconcile span was exported");
     println!("trace {} reconcile {} turn {}", reconcile["trace_id"], reconcile["attributes"], turn["attributes"]);
 }
+
+/// CONTRACT (node-identity-and-state.md §8; node-update.md; R12; crit:e12.s47.1): an admin born as
+/// `mesh1.admin.1.new` and renamed to `mesh1.admin.1` answers `build.attempt.run` and runs the
+/// attempt claimed for its new name `mesh1.admin.1` to completion, recording `mesh1.admin.1` on the
+/// claim, the turn and reconcile spans; a call naming its birth name `mesh1.admin.1.new` is refused
+/// `NotExecutor` naming `recipient: mesh1.admin.1`. Must NOT happen: `RunDoor` refusing the claim
+/// for `mesh1.admin.1` with `NotExecutor`, or `BuildExecutor` recording or handing off against the
+/// birth name `mesh1.admin.1.new`.
+#[tokio::test(start_paused = true)]
+async fn a_renamed_admin_runs_a_claimed_attempt_under_its_new_name() {
+    let (capture, _guard) = capture("mesh1.admin.1");
+    let calls = Arc::new(Calls::default());
+    let memory = Arc::new(MemoryBuildStateAdapter::new());
+    let runs = Arc::new(AttemptRuns::default());
+    let builds: Arc<dyn BuildStateAdapter> = Arc::new(FramedBuilds::new(memory.clone(), runs.clone()));
+    let mut admin = Node::allocated("mesh1.admin.1.new".parse().unwrap());
+    admin.status = NodeStatus::ReadyForTraffic;
+    admin.is_primary = true;
+    admin.is_fabric_primary = true;
+    let topology = Arc::new(tokio::sync::RwLock::new(rafka_node_admin_core::topology::Topology {
+        fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+        meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+        nodes: vec![admin],
+    }));
+    let gate = ParkGate::new();
+    let runner = Arc::new(CallingOut { calls: calls.clone(), gate: gate.clone(), hold_first: false });
+    let exec = Arc::new(BuildExecutor { executor: "mesh1.admin.1.new".into(), builds: builds.clone(), topology: topology.clone(), runner });
+    let door = RunDoor { me: "mesh1.admin.1.new".parse().unwrap(), builds, exec, runs, local: memory.clone(), gate };
+    let plan = RunPlan { operations: vec![BuildOperation::CreateMesh { mesh: "mesh2".into(), mesh_id: MeshId::mint() }, BuildOperation::CreateMesh { mesh: "mesh3".into(), mesh_id: MeshId::mint() }], hand_off_to: None };
+
+    // The admin is renamed to `mesh1.admin.1` in its view, and attempt 1 is claimed for its new name.
+    topology.write().await.nodes[0].name = "mesh1.admin.1".parse().unwrap();
+    memory
+        .publish_accepted(&BuildAccepted { build_id: build_id(), topology: FabricTopology::root("fabric1", "mesh1", MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
+        .await
+        .unwrap();
+    memory.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+
+    let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&build_id(), 1, "mesh1.admin.1", &CallContext::default(), &[], &plan).await else {
+        panic!("the renamed admin accepts and starts the attempt claimed for its new name")
+    };
+    assert_eq!(disposition, Disposition::Started);
+    let mut terminal = None;
+    while let Some(f) = reader.next().await {
+        terminal = Some(f);
+    }
+    assert!(matches!(terminal, Some(BuildReply::Complete { attempt: 1, .. })), "the renamed admin ran both operations to Complete without handing off to itself: {terminal:?}");
+    assert_eq!(calls.log(), vec!["call create-mesh:mesh2".to_string(), "call create-mesh:mesh3".into()]);
+    let folded = memory.read_build(&build_id()).await.unwrap();
+    assert_eq!(folded.executor.as_deref(), Some("mesh1.admin.1"), "the folded claim names the held name");
+
+    // A call naming the old birth name is refused NotExecutor with the new held name as recipient.
+    let Attached::Refused(refused) = door.attempt_run(&build_id(), 1, "mesh1.admin.1.new", &CallContext::default(), &[], &plan).await else {
+        panic!("a call for the birth name must be refused")
+    };
+    assert!(
+        matches!(&refused, BuildReply::NotExecutor { named, recipient } if named == "mesh1.admin.1.new" && recipient == "mesh1.admin.1"),
+        "a call for the birth name is refused NotExecutor naming the held name as recipient: {refused:?}"
+    );
+
+    let spans = capture.spans();
+    crate::assert_own_story(spans.iter().map(|s| s["name"].as_str().unwrap()));
+    for name in ["rdm.node_admin.build.serve.via-attempt-run", "rdm.node_admin.build.serve.via-run-turn", "rdm.node_admin.build.reject.via-not-executor"] {
+        for s in spans.iter().filter(|s| s["name"] == name) {
+            assert_eq!(s["attributes"]["node"], "mesh1.admin.1", "{name} names the admin's held name: {s}");
+        }
+    }
+    let reconcile = spans.iter().find(|s| s["name"] == "rdm.node_admin.build.update.via-reconcile").expect("the run's reconcile span was exported");
+    assert_eq!(reconcile["attributes"]["executor"], "mesh1.admin.1", "via-reconcile names the admin's held name: {reconcile}");
+    println!("trace {} reconcile {}", reconcile["trace_id"], reconcile["attributes"]);
+}
+

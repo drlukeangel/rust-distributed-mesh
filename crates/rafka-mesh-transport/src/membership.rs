@@ -95,6 +95,7 @@ pub struct LocationBook {
     marks: Arc<LocationMarks>,
     /// The node this book belongs to: the observer every location span names.
     observer: String,
+    held_name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>,
 }
 
 impl LocationBook {
@@ -102,12 +103,26 @@ impl LocationBook {
     pub fn new(endpoint: &Endpoint, observer: &str) -> Result<Self> {
         let lookup = MemoryLookup::new();
         endpoint.address_lookup().map_err(|e| anyhow::anyhow!("address_lookup: {e}"))?.add(lookup.clone());
-        Ok(Self { lookup, endpoint: endpoint.clone(), marks: Arc::default(), observer: observer.to_string() })
+        Ok(Self { lookup, endpoint: endpoint.clone(), marks: Arc::default(), observer: observer.to_string(), held_name: Arc::default() })
+    }
+
+    fn with_held_name(mut self, held_name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>) -> Self {
+        self.held_name = held_name;
+        self
+    }
+
+    fn observer_name(&self) -> String {
+        self.held_name.lock().unwrap().as_ref().map(ToString::to_string).unwrap_or_else(|| self.observer.clone())
+    }
+
+    /// The path name the endpoint's membership view holds (`Some` once installed or renamed).
+    pub fn held_path_name(&self) -> Option<rafka_mesh_entity::PathName> {
+        self.held_name.lock().unwrap().clone()
     }
 
     /// Register where the birth `d` names is, and retire the paths a moved key leaves behind.
     pub fn register(&self, d: &MeshDigest) {
-        retire_superseded(&self.endpoint, &self.observer, register_location(&self.marks, &self.lookup, d));
+        retire_superseded(&self.endpoint, &self.observer_name(), register_location(&self.marks, &self.lookup, d));
     }
 
     /// Fill `addr` for its key when the book holds no address for that key; an address the book
@@ -1588,7 +1603,7 @@ impl Channel {
         }
         let peers: BTreeSet<iroh::EndpointId> = seeds.iter().map(|s| s.id).collect();
         let sub = gossip.subscribe(topic, peers.iter().copied().collect()).await?;
-        tracing::info_span!("rdm.mesh.membership.update.via-subscribe", node, channel, fabric, peers = peers.len())
+        tracing::info_span!("rdm.mesh.membership.update.via-subscribe", node = %book.observer_name(), channel, fabric, peers = peers.len())
             .in_scope(|| tracing::info!("subscribed"));
         let (sender, receiver) = sub.split();
         let joined = Arc::new(Mutex::new(peers.clone()));
@@ -1596,9 +1611,10 @@ impl Channel {
         let neighbors = me.neighbors.clone();
         let neighbors_changed = me.neighbors_changed.clone();
         let (sent, received) = (me.frames_sent.clone(), me.frames_received.clone());
-        me.refeed(node.to_string(), channel.to_string(), neighbors.clone(), targets);
-        let (shared, known, gossip, fabric, channel, node) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string(), node.to_string());
+        me.refeed(channel.to_string(), neighbors.clone(), targets);
+        let (shared, known, gossip, fabric, channel, book) = (me.sender.clone(), me.peers.clone(), gossip.clone(), fabric.to_string(), channel.to_string(), me.book.clone());
         let (parked, left) = (me.parked.clone(), me.left.clone());
+        let _ = node;
         tokio::spawn(async move {
             let mut receiver = Some(receiver);
             loop {
@@ -1608,6 +1624,7 @@ impl Channel {
                         ev = receiver.as_mut().expect("the receiver is held while the channel is open").next() => ev,
                         _ = parked_rx.wait_for(|p| *p) => break "parked".to_string(),
                     };
+                    let node = book.observer_name();
                     match &ev {
                         Some(Ok(Event::Received(m))) => {
                             match Frame::decode(&m.content) {
@@ -1689,7 +1706,7 @@ impl Channel {
                     *shared.write().await = None;
                     drop(receiver.take());
                     left.send_modify(|n| *n += 1);
-                    tracing::info_span!("rdm.mesh.connection.delete.via-channel-parked", node = %node, channel = %channel)
+                    tracing::info_span!("rdm.mesh.connection.delete.via-channel-parked", node = %book.observer_name(), channel = %channel)
                         .in_scope(|| tracing::info!("the topic is left: the channel is parked"));
                     let _ = parked_rx.wait_for(|p| !*p).await;
                 }
@@ -1769,7 +1786,7 @@ impl Channel {
     /// most one staleness floor apart) while that holds (PRD §6.2). A neighbour coming up resets
     /// it. A node whose connections all timed out (a wedge, a network gap longer than the idle
     /// timeout) is otherwise heard again only a whole floor later.
-    fn refeed(&self, node: String, channel: String, neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>, targets: Arc<dyn Fn() -> Held + Send + Sync>) {
+    fn refeed(&self, channel: String, neighbors: Arc<Mutex<BTreeSet<iroh::EndpointId>>>, targets: Arc<dyn Fn() -> Held + Send + Sync>) {
         let me = self.clone();
         tokio::spawn(async move {
             let mut alone_since: Option<Instant> = None;
@@ -1778,6 +1795,7 @@ impl Channel {
             let mut retired: BTreeSet<iroh::EndpointId> = BTreeSet::new();
             loop {
                 tokio::time::sleep(backbone_gossip_interval()).await;
+                let node = me.book.observer_name();
                 // Held-member repair (gossip.md §6): every held member whose coverage has gone stale
                 // for the repair window gets a bounded join attempt, whatever this channel's
                 // neighbours; a failed attempt decides nothing about the member.
@@ -2033,6 +2051,11 @@ impl View {
         view
     }
 
+    /// The name this birth currently holds: the name its row gave it (`held_name`), else its launch name.
+    pub(crate) fn current_name(&self) -> String {
+        self.held_name.lock().unwrap().as_ref().map(ToString::to_string).unwrap_or_else(|| self.node.clone())
+    }
+
     /// Hold a status frame if it is newer than the one held: the one door for a status heard on a
     /// channel, replayed or answered by an entry pull. Whoever published it, a status is taken for what
     /// it carries (R-RX1); the held status orders it by its `changed_at_rafka_ms`. Every mesh status
@@ -2047,7 +2070,7 @@ impl View {
         };
         let span = tracing::info_span!(
             "rdm.mesh.membership.update.via-mesh-status",
-            node = %self.node,
+            node = %self.current_name(),
             mesh = %mesh,
             status = %status,
             publisher = %publisher,
@@ -2121,7 +2144,7 @@ impl View {
                 };
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-lifecycle-frame",
-                    node = %self.node,
+                    node = %self.current_name(),
                     kind,
                     subject = %op.name,
                     subject_id = %op.node_id,
@@ -2147,7 +2170,7 @@ impl View {
                 // member's own Draining and Leaving, carried in what it installs (R4).
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-mesh-leaving",
-                    node = %self.node,
+                    node = %self.current_name(),
                     mesh_id = %mesh_id,
                     build_id = %build_id,
                     attempt = *attempt,
@@ -2163,7 +2186,7 @@ impl View {
             Frame::MeshLeave { mesh_id, build_id, attempt, operation, final_node_id, receipt_manifest, publisher, forwarded_by, .. } => {
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-mesh-leave",
-                    node = %self.node,
+                    node = %self.current_name(),
                     mesh_id = %mesh_id,
                     build_id = %build_id,
                     attempt = *attempt,
@@ -2208,7 +2231,7 @@ impl View {
                 }
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-mesh-left",
-                    node = %self.node,
+                    node = %self.current_name(),
                     mesh_id = %mesh_id,
                     build_id = %build_id,
                     attempt = *attempt,
@@ -2233,7 +2256,7 @@ impl View {
                 };
                 tracing::info_span!(
                     "rdm.mesh.membership.update.via-round-frame",
-                    node = %self.node,
+                    node = %self.current_name(),
                     kind,
                     subject_id = %hook.node_id,
                     incarnation_id = %hook.incarnation.as_str(),
@@ -2268,7 +2291,7 @@ impl View {
                 Vec::new()
             }
             Frame::PrimaryUpdating { op, seats } => {
-                tracing::info_span!("rdm.mesh.seat.update.via-primary-updating", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, seats = %seats_named(seats), via)
+                tracing::info_span!("rdm.mesh.seat.update.via-primary-updating", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, seats = %seats_named(seats), via)
                     .in_scope(|| tracing::info!("a seat holder said its seats are updating: receivers keep the current holder until the committed row names the next epoch"));
                 Vec::new()
             }
@@ -2312,7 +2335,7 @@ impl View {
             drop(rx);
             tracing::info_span!(
                 "rdm.mesh.membership.reject.via-stop-older-than-projection",
-                node = %self.node,
+                node = %self.current_name(),
                 subject = %op.name,
                 subject_id = %op.node_id,
                 incarnation_id = %op.incarnation.as_str(),
@@ -2360,7 +2383,7 @@ impl View {
                 if forwarded_by.is_some() == (side == Side::Backbone) {
                     tracing::info_span!(
                         "rdm.mesh.membership.reject.via-members-on-wrong-channel",
-                        node = %self.node,
+                        node = %self.current_name(),
                         channel = side.name(),
                         mesh = %mesh,
                         publisher = %publisher,
@@ -2398,7 +2421,7 @@ impl View {
                         drop(rx);
                         tracing::info_span!(
                             "rdm.mesh.membership.reject.via-snapshot",
-                            node = %self.node,
+                            node = %self.current_name(),
                             channel = side.name(),
                             mesh = %mesh,
                             publisher = %publisher,
@@ -2419,7 +2442,7 @@ impl View {
             }
             Frame::MembersDelta { mesh, source_publisher, base_version, topology_version, published_at_rafka_ms, changed, removed, in_flight, departed } => {
                 if side == Side::Backbone {
-                    tracing::info_span!("rdm.mesh.membership.reject.via-members-on-wrong-channel", node = %self.node, channel = side.name(), mesh = %mesh, publisher = %source_publisher, forwarded_by = "")
+                    tracing::info_span!("rdm.mesh.membership.reject.via-members-on-wrong-channel", node = %self.current_name(), channel = side.name(), mesh = %mesh, publisher = %source_publisher, forwarded_by = "")
                         .in_scope(|| tracing::warn!("a MembersDelta on the backbone, where only complete snapshots travel: refused"));
                     return SnapshotTaken::default();
                 }
@@ -2437,7 +2460,7 @@ impl View {
                     Moved::Applied { delta, .. } => {
                         tracing::info_span!(
                             "rdm.mesh.membership.update.via-delta",
-                            node = %self.node,
+                            node = %self.current_name(),
                             mesh = %mesh,
                             source_publisher = %source_publisher,
                             base_version = *base_version,
@@ -2458,7 +2481,7 @@ impl View {
                     }
                     Moved::Duplicate { held_version } => {
                         drop(rx);
-                        tracing::info_span!("rdm.mesh.membership.update.via-delta-already-held", node = %self.node, mesh = %mesh, held_version, topology_version = *topology_version)
+                        tracing::info_span!("rdm.mesh.membership.update.via-delta-already-held", node = %self.current_name(), mesh = %mesh, held_version, topology_version = *topology_version)
                             .in_scope(|| tracing::info!("a delta at or below the held version: a copy already applied"));
                         SnapshotTaken::default()
                     }
@@ -2471,7 +2494,7 @@ impl View {
                         };
                         tracing::info_span!(
                             "rdm.mesh.membership.update.via-version-gap",
-                            node = %self.node,
+                            node = %self.current_name(),
                             mesh = %mesh,
                             source_publisher = %source_publisher,
                             gap = %gap,
@@ -2523,7 +2546,7 @@ impl View {
         let (mesh_id, l) = self.left_mesh_of(mesh, digests, overlays)?;
         tracing::info_span!(
             "rdm.mesh.membership.reject.via-mesh-left",
-            node = %self.node,
+            node = %self.current_name(),
             channel = side.name(),
             frame,
             mesh = %mesh,
@@ -2551,7 +2574,7 @@ impl View {
         if self.receiver(side).lock().unwrap().held_version(mesh).is_some() {
             return false;
         }
-        tracing::info_span!("rdm.mesh.membership.reject.via-mesh-not-in-build", node = %self.node, channel = side.name(), mesh)
+        tracing::info_span!("rdm.mesh.membership.reject.via-mesh-not-in-build", node = %self.current_name(), channel = side.name(), mesh)
             .in_scope(|| tracing::info!("a topology of a mesh the accepted Build does not name, of which this node holds no source: installs nothing"));
         true
     }
@@ -2577,7 +2600,7 @@ impl View {
         if let Err(e) = order.admit_read(&chunk.mesh, &chunk.publisher, chunk.topology_version) {
             tracing::info_span!(
                 "rdm.mesh.membership.reject.via-earlier-version",
-                node = %self.node,
+                node = %self.current_name(),
                 channel = side.name(),
                 frame = e.frame,
                 source = %e.source,
@@ -2623,7 +2646,7 @@ impl View {
         self.learn_mesh_ids(&i.full.digests());
         tracing::info_span!(
             "rdm.mesh.membership.update.via-snapshot-installed",
-            node = %self.node,
+            node = %self.current_name(),
             channel = side.name(),
             mesh = %i.mesh,
             publisher = %i.publisher,
@@ -2681,11 +2704,12 @@ impl View {
         if !(mesh == self.mesh && authors) {
             self.book.restarts_moved_past(mesh, fence);
         }
+        let me_name = self.current_name();
         let mut carried = Vec::new();
         for d in full.digests().into_iter().filter(|d| &d.fabric_id == fabric) {
             // A read carries this node's own digest as the node read holds it: this node's own
             // book is the authority on itself.
-            if matches!(side, Side::Read | Side::ReadPeer) && d.node.name.to_string() == self.node {
+            if matches!(side, Side::Read | Side::ReadPeer) && d.node.name.to_string() == me_name {
                 continue;
             }
             let own = d.node.name.mesh == self.mesh;
@@ -2733,7 +2757,7 @@ impl View {
         }
         tracing::info_span!(
             "rdm.mesh.membership.update.via-member-state",
-            node = %self.node,
+            node = %self.current_name(),
             member = %d.node.name,
             member_id = %d.node.node_id,
             incarnation_id = %d.node.incarnation.as_str(),
@@ -2754,7 +2778,7 @@ impl View {
         }
         tracing::info_span!(
             "rdm.mesh.membership.update.via-member-state",
-            node = %self.node,
+            node = %self.current_name(),
             member = %op.name,
             member_id = %op.node_id,
             incarnation_id = %op.incarnation.as_str(),
@@ -2779,7 +2803,7 @@ impl View {
         let taken = self.book.seats.take(seat, holder);
         if let SeatTaken::Held { previous } = &taken {
             let previous = previous.as_ref().map(ToString::to_string).unwrap_or_default();
-            tracing::info_span!("rdm.mesh.seat.update.via-announcement", node = %self.node, seat = seat.name(), holder = %holder, via, outcome = "held", previous = %previous)
+            tracing::info_span!("rdm.mesh.seat.update.via-announcement", node = %self.current_name(), seat = seat.name(), holder = %holder, via, outcome = "held", previous = %previous)
                 .in_scope(|| tracing::info!("a seat record was heard"));
         }
         taken
@@ -2797,7 +2821,7 @@ impl View {
             "held"
         };
         let successor = seats.first().map(|c| c.record().to_string()).unwrap_or_default();
-        tracing::info_span!("rdm.mesh.seat.update.via-primary-updated", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, successor = %successor, seats = %seats_named(seats), via, outcome)
+        tracing::info_span!("rdm.mesh.seat.update.via-primary-updated", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, former = %op.name, successor = %successor, seats = %seats_named(seats), via, outcome)
             .in_scope(|| tracing::info!("primary updated was heard: the seats one committed row moved"));
     }
 
@@ -2815,7 +2839,7 @@ impl View {
         let attached = !has_digest && !matches!(taken, SeatTaken::Refused { .. }) && self.book.seats.attach_fabric_contacts(holder, FabricContacts { endpoint_id: endpoint_id.to_string(), transport_addr, admin_api_base: admin_api_base.map(String::from) });
         tracing::info_span!(
             "rdm.mesh.seat.update.via-new-fabric-primary",
-            node = %self.node,
+            node = %self.current_name(),
             holder = %holder,
             endpoint_id,
             transport_addr = %transport_addr,
@@ -2873,12 +2897,13 @@ impl Membership {
     /// frame reads it.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, seeds: Vec<EndpointAddr>) -> Result<Self> {
         let view = View::new(mesh, node);
-        let (replay_view, replay_fabric, replay_me, replay_clock) = (view.clone(), fabric.clone(), node.to_string(), clock.clone());
+        let (replay_view, replay_fabric, replay_clock) = (view.clone(), fabric.clone(), clock.clone());
         // A neighbour coming up on this channel (a join, a heal, a refeed) hears what the primary
         // holds: the statuses, and the forwarded full of every source it has published (gossip.md
         // §3.1, §3.3).
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
+                let replay_me = replay_view.current_name();
                 let mut frames = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
                 frames.extend(replay_view.book.seats.held_frames());
                 frames.extend(replay_view.forwarder.lock().unwrap().replay(&replay_me, replay_clock.now_rafka_ms()));
@@ -2887,7 +2912,7 @@ impl Membership {
                 Vec::new()
             }
         });
-        let location = LocationBook::new(endpoint, node)?;
+        let location = LocationBook::new(endpoint, node)?.with_held_name(view.held_name.clone());
         let (v, f, ls, observing) = (view.clone(), fabric.clone(), location.clone(), clock.clone());
         let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
             let carried = match &frame {
@@ -2898,8 +2923,9 @@ impl Membership {
                     // digest as its book holds it: the primary's status is its own word, in its
                     // projection, never on its heartbeat.
                     if let (Frame::Digest { .. }, Some(held)) = (&frame, carried.first()) {
-                        let verdict = crate::discipline::from_mesh_primary_digest(&v.mesh, &v.node, v.primary.load(Ordering::Relaxed), &v.book.seats, held, fresh);
-                        crate::discipline::offer(&observing, &v.node, "mesh-primary-digest", verdict);
+                        let me_now = v.current_name();
+                        let verdict = crate::discipline::from_mesh_primary_digest(&v.mesh, &me_now, v.primary.load(Ordering::Relaxed), &v.book.seats, held, fresh);
+                        crate::discipline::offer(&observing, &me_now, "mesh-primary-digest", verdict);
                     }
                     carried
                 }
@@ -2908,9 +2934,12 @@ impl Membership {
                 ls.register(d);
             }
         });
-        let (book, own_mesh, me_name) = (view.book.clone(), mesh.to_string(), node.to_string());
+        let (book, own_mesh, target_view) = (view.book.clone(), mesh.to_string(), view.clone());
         let targets: Arc<dyn Fn() -> Held + Send + Sync> =
-            Arc::new(move || held_view(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name));
+            Arc::new(move || {
+                let me_name = target_view.current_name();
+                held_view(&book, |d| d.node.name.mesh == own_mesh && d.node.name.to_string() != me_name)
+            });
         let channel = Channel::join(gossip, endpoint, mesh_topic(fabric, mesh_id), fabric.as_str(), node, &format!("mesh:{mesh}"), seeds, location, view.order.clone(), on_frame, targets, replay).await?;
         let sink_channel = channel.clone();
         let sink: crate::forward_path::Sink = Arc::new(move |f: Frame| {
@@ -2920,20 +2949,21 @@ impl Membership {
         let forward_path = ForwardPath::new(view.forwarder.clone(), Arc::default(), sink);
         let name = view.held_name.clone();
         let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
-        me.watch_meshes(node.to_string());
+        me.watch_meshes();
         Ok(me)
     }
 
     /// Evidence of what this node holds: a mesh it first hears, or hears
     /// again, and a mesh none of whose members it still hears. And whether it
     /// is cut off: it has heard other members, and now hears none.
-    fn watch_meshes(&self, node: String) {
-        let (book, via, cut_off) = (self.book.clone(), self.view.via.clone(), self.cut_off.clone());
+    fn watch_meshes(&self) {
+        let (book, via, cut_off, view) = (self.book.clone(), self.view.via.clone(), self.cut_off.clone(), self.view.clone());
         tokio::spawn(async move {
             let mut held: BTreeSet<String> = BTreeSet::new();
             let mut heard_others = false;
             let mut heard: BTreeMap<String, (String, bool)> = BTreeMap::new();
             loop {
+                let node = view.current_name();
                 let current = book.current(book.staleness_floor());
                 let now_heard: BTreeMap<String, (String, bool)> = current.iter().map(|d| (d.node.node_id.to_string(), (d.node.name.to_string(), d.status == rafka_mesh_entity::MemberStatus::Leaving))).collect();
                 for (id, (name, leaving)) in heard.iter().filter(|(id, _)| !now_heard.contains_key(*id)) {
@@ -2988,9 +3018,14 @@ impl Membership {
         }
     }
 
-    /// This node's path name, as it publishes itself.
+    /// This node's launch path name.
     pub fn node(&self) -> &str {
         &self.view.node
+    }
+
+    /// This node's current path name, as it publishes itself: the name its row gave it, else its launch name.
+    pub fn node_name(&self) -> String {
+        self.view.current_name()
     }
 
     /// Hold (or drop) this node as its mesh's primary: while it is, it authors its own mesh's member
@@ -3100,6 +3135,7 @@ impl Membership {
     /// Hold `name` as this birth's name: every digest this membership publishes from now on carries
     /// it (R12: the node publishes only the name its row holds).
     pub fn set_name(&self, name: rafka_mesh_entity::PathName) {
+        *self.view.book.holder.lock().unwrap() = name.to_string();
         *self.name.lock().unwrap() = Some(name);
     }
 
@@ -3291,7 +3327,7 @@ impl Membership {
     async fn top_up(&self, fetch: &TopUpFetch, gaps: Vec<(String, Gap)>) {
         let meshes = gaps.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>().join(",");
         let reasons = gaps.iter().map(|(m, g)| format!("{m}:{g}")).collect::<Vec<_>>().join(",");
-        let node = self.view.node.clone();
+        let node = self.view.current_name();
         let primary = match self.mesh_primary() {
             Ok(primary) => primary,
             Err(no) => {
@@ -3353,15 +3389,16 @@ impl Membership {
     /// One heartbeat span, a root of its own: this node is alive and publishing, how many other
     /// members its book holds as heard, and what its clock reads against the host's wall clock.
     fn heartbeat(&self, d: &MeshDigest) {
+        let name = self.held_name(&d.node.name);
         let peer_count = self.book.current(self.book.staleness_floor()).iter().filter(|m| m.node.node_id != d.node.node_id).count() as u64;
         let wall_time_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_millis() as i64).unwrap_or(0);
         let rafka_time_ms = self.clock.now_rafka_ms() as i64;
         tracing::info_span!(
             parent: None,
             "rdm.mesh.node.update.via-heartbeat",
-            node = %d.node.name,
+            node = %name,
             node_id = %d.node.node_id,
-            mesh = %d.node.name.mesh,
+            mesh = %name.mesh,
             peer_count,
             wall_time_ms,
             rafka_time_ms,
@@ -3519,6 +3556,14 @@ pub struct Backbone {
 pub type Withhold = Arc<dyn Fn(&'static str, &'static str) -> bool + Send + Sync>;
 
 impl Backbone {
+    fn current_name(&self) -> String {
+        self.membership.node_name()
+    }
+
+    fn current_publisher(&self) -> PublisherId {
+        PublisherId { node: self.current_name(), incarnation: self.publisher.incarnation.clone() }
+    }
+
     /// Test seam: hand this backbone the [`Withhold`] it asks before each announcement it covers
     /// (set once; the product never calls it).
     pub fn withhold_announcements(&self, withhold: Withhold) {
@@ -3530,7 +3575,7 @@ impl Backbone {
     pub fn withholds(&self, announcement: &'static str, channel: &'static str) -> bool {
         let withheld = self.withhold.get().is_some_and(|w| w(announcement, channel));
         if withheld {
-            tracing::info_span!("rdm.mesh.backbone.update.via-announcement-withheld", node = %self.node, mesh = %self.mesh, announcement, channel)
+            tracing::info_span!("rdm.mesh.backbone.update.via-announcement-withheld", node = %self.current_name(), mesh = %self.mesh, announcement, channel)
                 .in_scope(|| tracing::info!("the test seam withholds this announcement from the channel: nothing is sent on it"));
         }
         withheld
@@ -3550,14 +3595,15 @@ impl Backbone {
     /// Join the backbone as `node`, whose current birth is `incarnation`: the exact identity every
     /// aggregate this admin publishes names as its publisher.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, membership: &Membership, mesh: &str, node: &str, incarnation: IncarnationId, seeds: Vec<EndpointAddr>) -> Result<Self> {
-        let (m, me, own) = (membership.clone(), node.to_string(), mesh.to_string());
+        let (m, own) = (membership.clone(), mesh.to_string());
         let on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync> = Arc::new(move |frame: Frame, order: &mut crate::receive_order::ReceiveOrder| {
+            let me = m.view.current_name();
             if matches!(frame, Frame::Members { .. } | Frame::MembersDelta { .. }) {
                 let taken = m.view.take_snapshot(&frame, &m.fabric, Side::Backbone, order);
                 // A mesh primary's clock follows its current fabric-primary's aggregate.
                 if let Some(p) = &taken.publication {
-                    let verdict = crate::discipline::from_fabric_primary_members(&m.view.node, m.view.primary.load(Ordering::Relaxed), &m.view.book.seats, &p.publisher, p.publisher_digest.as_ref(), p.published_at_rafka_ms);
-                    crate::discipline::offer(&m.clock, &m.view.node, "fabric-primary-members", verdict);
+                    let verdict = crate::discipline::from_fabric_primary_members(&me, m.view.primary.load(Ordering::Relaxed), &m.view.book.seats, &p.publisher, p.publisher_digest.as_ref(), p.published_at_rafka_ms);
+                    crate::discipline::offer(&m.clock, &me, "fabric-primary-members", verdict);
                 }
                 for d in &taken.carried {
                     m.mesh.register(d);
@@ -3577,9 +3623,10 @@ impl Backbone {
                 m.forward_path.carry(&me, f);
             }
         });
-        let (replay_view, replay_fabric, replay_me) = (membership.view.clone(), membership.fabric.clone(), node.to_string());
+        let (replay_view, replay_fabric) = (membership.view.clone(), membership.fabric.clone());
         let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
+                let replay_me = replay_view.current_name();
                 let mut frames = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
                 frames.extend(replay_view.book.seats.held_frames());
                 frames
@@ -3648,7 +3695,7 @@ impl Backbone {
             Frame::FabricStatus { fabric, status, changed_at_rafka_ms, .. } => (format!("fabric:{fabric}"), status.as_str(), *changed_at_rafka_ms),
             _ => return,
         };
-        tracing::info_span!("rdm.mesh.fabric.update.via-status-send", node = %self.node, scope = %scope, status, changed_at_rafka_ms = changed_at)
+        tracing::info_span!("rdm.mesh.fabric.update.via-status-send", node = %self.current_name(), scope = %scope, status, changed_at_rafka_ms = changed_at)
             .in_scope(|| tracing::info!("status sent"));
         let _ = self.channel.broadcast(f).await;
         let _ = self.membership.forward(f).await;
@@ -3704,12 +3751,12 @@ impl Backbone {
         let forwarder_changed = self.membership.forward_path.set_role(primary);
         self.mesh_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.publishing, primary) {
-            tracing::info_span!("rdm.mesh.backbone.update.via-aggregate-publisher", node = %self.node, mesh = %self.mesh, role)
+            tracing::info_span!("rdm.mesh.backbone.update.via-aggregate-publisher", node = %self.current_name(), mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("mesh aggregate publication"));
         }
         if forwarder_changed {
             let role = if primary { "start" } else { "stop" };
-            tracing::info_span!("rdm.mesh.backbone.update.via-forwarder", node = %self.node, mesh = %self.mesh, role)
+            tracing::info_span!("rdm.mesh.backbone.update.via-forwarder", node = %self.current_name(), mesh = %self.mesh, role)
                 .in_scope(|| tracing::info!("peer meshes forwarded onto this mesh's channel"));
         }
     }
@@ -3723,7 +3770,7 @@ impl Backbone {
     pub fn set_fabric_primary(&self, primary: bool) {
         self.fabric_status.lock().unwrap().set_role(primary);
         if let Some(role) = Self::role(&self.status_publishing, primary) {
-            tracing::info_span!("rdm.mesh.fabric.update.via-status-publisher", node = %self.node, fabric = %self.fabric, role)
+            tracing::info_span!("rdm.mesh.fabric.update.via-status-publisher", node = %self.current_name(), fabric = %self.fabric, role)
                 .in_scope(|| tracing::info!("fabric status publication"));
         }
     }
@@ -3740,6 +3787,8 @@ impl Backbone {
         if !self.publishing.load(Ordering::Relaxed) {
             return false;
         }
+        let me_name = self.current_name();
+        let publisher = self.current_publisher();
         // The projection is read, versioned, stamped and queued onto this mesh's own channel under
         // one hold of the version (gossip.md §3.1: "the publisher reads `published_at_rafka_ms` in
         // the same critical section that assigns `topology_version` and `snapshot_id`, so a
@@ -3756,15 +3805,14 @@ impl Backbone {
             let sent = if self.full_due.swap(false, Ordering::Relaxed) {
                 self.forward_fulls_now()
             } else {
-                self.membership.forward_path.source_with_clock(&self.node, &self.mesh, &self.publisher, version, &full, || membership.clock.now_rafka_ms())
+                self.membership.forward_path.source_with_clock(&me_name, &self.mesh, &publisher, version, &full, || membership.clock.now_rafka_ms())
             };
             (full, version, snapshot_id, sent, version != before)
         };
         if bumped {
-            tracing::info_span!("rdm.mesh.backbone.update.via-topology-version", node = %self.node, mesh = %self.mesh, publisher = %self.publisher, topology_version = version, members = full.member_count())
+            tracing::info_span!("rdm.mesh.backbone.update.via-topology-version", node = %me_name, mesh = %self.mesh, publisher = %publisher, topology_version = version, members = full.member_count())
                 .in_scope(|| tracing::info!("the normalized projection of this mesh changed: its topology_version bumped"));
         }
-        let publisher = self.publisher.clone();
         let mesh = self.mesh.clone();
         let withheld = !full.in_flight().is_empty() && self.withholds("aggregate-in-flight", "backbone");
         for frame in crate::snapshot::chunks_of(&full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
@@ -3809,6 +3857,7 @@ impl Backbone {
         // Said once per change, while this admin is the fabric-primary: what its deleted-mesh
         // publication reads.
         if self.status_publishing.load(Ordering::Relaxed) {
+            let me_name = self.current_name();
             for mesh in before.keys().chain(meshes.keys()).collect::<BTreeSet<_>>() {
                 let (was, now) = (before.get(mesh), meshes.get(mesh));
                 if was != now {
@@ -3817,7 +3866,7 @@ impl Backbone {
                         Some(false) => "live",
                         None => "absent",
                     };
-                    tracing::info_span!("rdm.mesh.backbone.update.via-view-meshes", node = %self.node, mesh = %mesh, was = state(was), now = state(now))
+                    tracing::info_span!("rdm.mesh.backbone.update.via-view-meshes", node = %me_name, mesh = %mesh, was = state(was), now = state(now))
                         .in_scope(|| tracing::info!("this fabric-primary's view of a mesh moved: deleted, live or absent"));
                 }
             }
@@ -3860,6 +3909,8 @@ impl Backbone {
             self.deleted_seen.lock().unwrap().clear();
             return Vec::new();
         }
+        let me_name = self.current_name();
+        let publisher = self.current_publisher();
         let listed = self.deleted_listing(membership);
         let live: Vec<(String, (Vec<LifecycleOp>, Vec<LifecycleOp>))> = {
             let view = self.view_meshes.lock().unwrap();
@@ -3867,7 +3918,7 @@ impl Backbone {
         };
         for (mesh, (in_flight, departed)) in live {
             self.deleted_versions.lock().unwrap().remove(&mesh);
-            tracing::info_span!("rdm.mesh.backbone.reject.via-mesh-live", node = %self.node, mesh = %mesh, publisher = %self.publisher, in_flight = in_flight.len(), departed = departed.len())
+            tracing::info_span!("rdm.mesh.backbone.reject.via-mesh-live", node = %me_name, mesh = %mesh, publisher = %publisher, in_flight = in_flight.len(), departed = departed.len())
                 .in_scope(|| tracing::info!("this admin's view names a live mesh of that name, created again with its own primary: the deleted mesh's aggregate is published no more"));
         }
         *self.deleted_seen.lock().unwrap() = listed.clone();
@@ -3877,7 +3928,7 @@ impl Backbone {
             let stamp = {
                 let mut versions = self.deleted_versions.lock().unwrap();
                 let stamp = Self::stamp_deleted_mesh(&mut versions, &mesh, &full, membership.clock.now_rafka_ms());
-                membership.forward_path.source(&self.node, &mesh, &self.publisher, stamp.version, &full, stamp.sent);
+                membership.forward_path.source(&me_name, &mesh, &publisher, stamp.version, &full, stamp.sent);
                 stamp
             };
             self.send_deleted_mesh(&mesh, &full, stamp).await;
@@ -3902,13 +3953,14 @@ impl Backbone {
     /// send of a version is spanned.
     async fn send_deleted_mesh(&self, mesh: &str, full: &Full, stamp: DeletedMeshStamp) {
         let DeletedMeshStamp { version, snapshot_id, sent, first } = stamp;
+        let publisher = self.current_publisher();
         if first {
-            tracing::info_span!("rdm.mesh.backbone.update.via-deleted-mesh", node = %self.node, mesh = %mesh, publisher = %self.publisher, topology_version = version, digests = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
+            tracing::info_span!("rdm.mesh.backbone.update.via-deleted-mesh", node = %self.current_name(), mesh = %mesh, publisher = %publisher, topology_version = version, digests = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
                 .in_scope(|| tracing::info!("a deleted mesh whose last admin this fabric-primary stopped or deleted: it publishes the mesh's own aggregate, no digests, the stop in in_flight, the delete in deleted"));
         }
         for frame in crate::snapshot::chunks_of(full, |digests, in_flight, departed, chunk_index, chunk_count| Frame::Members {
             mesh: mesh.to_string(),
-            publisher: self.publisher.clone(),
+            publisher: publisher.clone(),
             forwarded_by: None,
             topology_version: version,
             published_at_rafka_ms: sent,
@@ -3954,7 +4006,7 @@ impl Backbone {
                     (v.would_bump(&full) || published != v.version(), v.version())
                 };
                 if moved {
-                    tracing::info_span!("rdm.mesh.backbone.update.via-material-change", node = %self.node, mesh = %self.mesh, held_topology_version = held, members = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
+                    tracing::info_span!("rdm.mesh.backbone.update.via-material-change", node = %self.current_name(), mesh = %self.mesh, held_topology_version = held, members = full.member_count(), in_flight = full.in_flight().len(), departed = full.departed().len())
                         .in_scope(|| tracing::info!("this mesh's normalized projection moved since its last publication: the round publishes at once"));
                     return;
                 }
@@ -3981,11 +4033,13 @@ impl Backbone {
     }
 
     fn forward_fulls_now(&self) -> u64 {
+        let me_name = self.current_name();
+        let publisher = self.current_publisher();
         let mut held: Vec<(String, PublisherId, u64, Full)> = self.membership.view.backbone_rx.lock().unwrap().sources().into_iter().filter(|(m, ..)| m != &self.mesh).collect();
         if let Some((version, full)) = self.own.lock().unwrap().clone() {
-            held.push((self.mesh.clone(), self.publisher.clone(), version, full));
+            held.push((self.mesh.clone(), publisher, version, full));
         }
-        self.membership.forward_path.fulls_with_clock(&self.node, &self.mesh, "full-due", &held, || self.membership.clock.now_rafka_ms())
+        self.membership.forward_path.fulls_with_clock(&me_name, &self.mesh, "full-due", &held, || self.membership.clock.now_rafka_ms())
     }
 
     /// Publish the status event `kind` of `op`'s birth, which this admin executed (R-HB1 "The version
@@ -4011,6 +4065,8 @@ impl Backbone {
     /// Returns the publisher and version stamped.
     pub async fn publish_status_event(&self, kind: StatusEvent, op: &LifecycleOp) -> (PublisherId, u64) {
         let membership = &self.membership;
+        let me_name = self.current_name();
+        let publisher = self.current_publisher();
         let (role, version, deleted_mesh) = if op.name.mesh == self.mesh && self.publishing.load(Ordering::Relaxed) {
             let mut v = self.version.lock().unwrap();
             membership.view.apply_status_event(kind, op, None, "executed");
@@ -4025,7 +4081,7 @@ impl Backbone {
                     self.deleted_seen.lock().unwrap().insert(op.name.mesh.clone(), (in_flight.clone(), departed.clone()));
                     let full = Full::new(Vec::new(), in_flight, departed);
                     let stamp = Self::stamp_deleted_mesh(&mut versions, &op.name.mesh, &full, membership.clock.now_rafka_ms());
-                    membership.forward_path.source(&self.node, &op.name.mesh, &self.publisher, stamp.version, &full, stamp.sent);
+                    membership.forward_path.source(&me_name, &op.name.mesh, &publisher, stamp.version, &full, stamp.sent);
                     ("deleted-mesh-publisher", stamp.version, Some((full, stamp)))
                 }
                 // Another birth of the mesh is held neither stopped nor departed: its aggregate is
@@ -4038,7 +4094,7 @@ impl Backbone {
         };
         tracing::info_span!(
             "rdm.mesh.membership.update.via-status-event",
-            node = %self.node,
+            node = %me_name,
             frame = kind.name(),
             subject = %op.name,
             subject_id = %op.node_id,
@@ -4046,18 +4102,18 @@ impl Backbone {
             build_id = %op.build_id,
             attempt = op.attempt,
             operation = %op.operation,
-            publisher = %self.publisher,
+            publisher = %publisher,
             topology_version = version,
             role,
         )
         .in_scope(|| tracing::info!("a status event this admin executed: applied to its own book, stamped with the version at which its subject changed, broadcast on its mesh channel"));
-        if let Err(e) = membership.mesh.broadcast(&kind.frame(op.clone(), self.publisher.clone(), version)).await {
+        if let Err(e) = membership.mesh.broadcast(&kind.frame(op.clone(), publisher.clone(), version)).await {
             tracing::info!(error = %e, frame = kind.name(), "the status event was not sent on the mesh channel");
         }
         if let Some((full, stamp)) = deleted_mesh {
             self.send_deleted_mesh(&op.name.mesh, &full, stamp).await;
         }
-        (self.publisher.clone(), version)
+        (publisher, version)
     }
 
     /// Publish a hook (`node-draining`, `node-leaving`, or a fabric round hook) this admin authored: the backbone,
@@ -4071,18 +4127,19 @@ impl Backbone {
         if failed.is_empty() {
             Ok(())
         } else {
-            Err(anyhow::anyhow!("{} not handed to {}", self.node, failed.join("; ")))
+            Err(anyhow::anyhow!("{} not handed to {}", self.current_name(), failed.join("; ")))
         }
     }
 
     /// Carry a node's own completion frame (`node-drained`, `node-left`) onto the backbone,
     /// preserving `op` and naming this admin in `forwarded_by`.
     pub async fn carry_completion(&self, frame: Frame) {
+        let me_name = self.current_name();
         let carried = match frame {
-            Frame::NodeLeft { op, .. } => Frame::NodeLeft { op, forwarded_by: Some(self.node.clone()) },
-            Frame::NodeDrained { op, .. } => Frame::NodeDrained { op, forwarded_by: Some(self.node.clone()) },
-            Frame::StateCommitted { hook, .. } => Frame::StateCommitted { hook, forwarded_by: Some(self.node.clone()) },
-            Frame::TrafficOpened { hook, .. } => Frame::TrafficOpened { hook, forwarded_by: Some(self.node.clone()) },
+            Frame::NodeLeft { op, .. } => Frame::NodeLeft { op, forwarded_by: Some(me_name) },
+            Frame::NodeDrained { op, .. } => Frame::NodeDrained { op, forwarded_by: Some(me_name) },
+            Frame::StateCommitted { hook, .. } => Frame::StateCommitted { hook, forwarded_by: Some(me_name) },
+            Frame::TrafficOpened { hook, .. } => Frame::TrafficOpened { hook, forwarded_by: Some(me_name) },
             _ => return,
         };
         let _ = self.channel.broadcast(&carried).await;
@@ -4095,7 +4152,7 @@ impl Backbone {
     pub async fn announce_seat(&self, seat: Seat, holder: SeatHolder) {
         let frame = Frame::Seated { seat, holder: holder.clone() };
         self.membership.view.note_seat(seat, &holder, "own");
-        tracing::info_span!("rdm.mesh.seat.update.via-announce", node = %self.node, seat = seat.name(), holder = %holder).in_scope(|| tracing::info!("seat taken, announced"));
+        tracing::info_span!("rdm.mesh.seat.update.via-announce", node = %self.current_name(), seat = seat.name(), holder = %holder).in_scope(|| tracing::info!("seat taken, announced"));
         let _ = self.channel.broadcast(&frame).await;
         if seat != Seat::FabricPrimary {
             let _ = self.membership.forward(&frame).await;
@@ -4107,7 +4164,7 @@ impl Backbone {
     /// the holder lost after the row, by the next writer to read the row (C1 failure contract): the
     /// backbone, its own mesh channel and its own view.
     pub async fn announce_primary_updated(&self, op: LifecycleOp, seats: Vec<CommittedSeat>) {
-        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-primary-updated", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, seats = %seats_named(&seats), backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-primary-updated", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, seats = %seats_named(&seats), backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
         let frame = Frame::PrimaryUpdated { op, seats };
         let send = async {
             self.announce_on_both("PrimaryUpdated", &frame).await;
@@ -4138,7 +4195,7 @@ impl Backbone {
         if !self.said_after_stop.lock().unwrap().insert(update.operation.clone()) {
             return false;
         }
-        let span = tracing::info_span!("rdm.mesh.seat.update.via-holder-stopped", node = %self.node, holder = %op.name, holder_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), stop = %op.operation, operation = %update.operation, build_id = %update.build_id, attempt = update.attempt, seats = %seats_named(&seats));
+        let span = tracing::info_span!("rdm.mesh.seat.update.via-holder-stopped", node = %self.current_name(), holder = %op.name, holder_id = %op.node_id, incarnation_id = %op.incarnation.as_str(), stop = %op.operation, operation = %update.operation, build_id = %update.build_id, attempt = update.attempt, seats = %seats_named(&seats));
         span.in_scope(|| tracing::info!("the former holder's stop completed: this mesh's primary, its next writer, says the committed update as primary updated"));
         tracing::Instrument::instrument(self.announce_primary_updated(update, seats), span).await;
         true
@@ -4148,7 +4205,7 @@ impl Backbone {
     /// before its write cut-off and its row (proposal Part C1 step 3): the backbone and its own mesh
     /// channel. It moves no seat.
     pub async fn announce_primary_updating(&self, op: LifecycleOp, seats: Vec<CommittedSeat>) {
-        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-primary-updating", node = %self.node, operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, seats = %seats_named(&seats), backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-primary-updating", node = %self.current_name(), operation = %op.operation, build_id = %op.build_id, attempt = op.attempt, seats = %seats_named(&seats), backbone = tracing::field::Empty, mesh_channel = tracing::field::Empty);
         let frame = Frame::PrimaryUpdating { op, seats };
         tracing::Instrument::instrument(self.announce_on_both("PrimaryUpdating", &frame), span).await
     }
@@ -4179,7 +4236,7 @@ impl Backbone {
     /// its seat record is committed locally. Nothing repeats it: a joiner is replayed the seat
     /// record by a primary, like any seat.
     pub async fn announce_new_fabric_primary(&self, holder: SeatHolder, endpoint_id: String, transport_addr: std::net::SocketAddr, admin_api_base: Option<String>) {
-        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-new-fabric-primary", node = %self.node, holder = %holder, endpoint_id = %endpoint_id, transport_addr = %transport_addr, admin_api_base = admin_api_base.as_deref().unwrap_or(""));
+        let span = tracing::info_span!("rdm.mesh.seat.update.via-announce-new-fabric-primary", node = %self.current_name(), holder = %holder, endpoint_id = %endpoint_id, transport_addr = %transport_addr, admin_api_base = admin_api_base.as_deref().unwrap_or(""));
         let frame = Frame::NewFabricPrimary { holder, endpoint_id, transport_addr, admin_api_base };
         let _ = tracing::Instrument::instrument(self.channel.broadcast(&frame), span).await;
     }
@@ -4191,9 +4248,10 @@ impl Backbone {
     /// it (`crate::iroh_obs`), read once; it decides nothing.
     pub async fn concern(&self, seat: Seat, node_id: NodeId, incarnation: IncarnationId, holder_key: Option<iroh::EndpointId>) {
         let seen = crate::iroh_obs::observe_remote(&self.channel.endpoint, holder_key).await;
+        let me_name = self.current_name();
         tracing::info_span!(
             "rdm.mesh.seat.update.via-concern",
-            node = %self.node,
+            node = %me_name,
             seat = seat.name(),
             holder_node_id = %node_id,
             holder_incarnation = %incarnation.as_str(),
@@ -4201,14 +4259,14 @@ impl Backbone {
             iroh_active_addrs = %seen.active_addrs,
         )
         .in_scope(|| tracing::info!("a seat holder looks silent: Concern published"));
-        let _ = self.channel.broadcast(&Frame::Concern { seat, node_id, incarnation, observer: self.node.clone() }).await;
+        let _ = self.channel.broadcast(&Frame::Concern { seat, node_id, incarnation, observer: me_name }).await;
     }
 
     /// Join the backbone through every node-admin known, once each.
     pub async fn join_admins(&self, admins: Vec<EndpointAddr>) {
         if let Ok(n) = self.channel.join_peers(admins).await {
             if n > 0 {
-                tracing::info_span!("rdm.mesh.connection.update.via-backbone-peers-joined", node = %self.node, peers = n)
+                tracing::info_span!("rdm.mesh.connection.update.via-backbone-peers-joined", node = %self.current_name(), peers = n)
                     .in_scope(|| tracing::info!("backbone peers joined"));
             }
         }
@@ -4538,6 +4596,12 @@ fn runtime_changed(held: &MeshDigest, d: &MeshDigest) -> bool {
 }
 
 impl DigestBook {
+    /// The path name of the node holding this book, when set by its membership.
+    pub fn holder_name(&self) -> Option<String> {
+        let holder = self.holder.lock().unwrap();
+        (!holder.is_empty()).then(|| holder.clone())
+    }
+
     pub(crate) fn with_retention(retention: Duration) -> Self {
         Self::with_floor(retention, staleness_floor())
     }

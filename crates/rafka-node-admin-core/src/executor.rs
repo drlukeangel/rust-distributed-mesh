@@ -354,6 +354,30 @@ pub struct BuildExecutor {
 }
 
 impl BuildExecutor {
+    /// The path name this admin holds now (`builds.held_name()` when joined to the fabric Build
+    /// topic, else the name its topology view holds for this admin, or its birth `executor`).
+    pub async fn held_name(&self) -> String {
+        if let Some(held) = self.builds.held_name() {
+            return held.to_string();
+        }
+        if let Ok(birth) = self.executor.parse::<PathName>() {
+            let t = self.topology.read().await;
+            if t.node(&birth).is_none() {
+                if birth.new && t.node(&birth.base()).is_some() {
+                    return birth.base().to_string();
+                }
+                if let Some(p) = t.cohort_primary(&birth.mesh, NodeKind::NodeAdmin) {
+                    return p.name.to_string();
+                }
+                let mut admins = t.nodes.iter().filter(|n| n.name.mesh == birth.mesh && n.name.kind == NodeKind::NodeAdmin);
+                if let (Some(only), None) = (admins.next(), admins.next()) {
+                    return only.name.to_string();
+                }
+            }
+        }
+        self.executor.clone()
+    }
+
     /// Run attempt `attempt` of `build_id`, which the fabric-primary won for this admin. The span is
     /// parented to the attempt's context the claim returned, so a restart reads under its request
     /// and a drift repair under the span that proved it.
@@ -365,6 +389,7 @@ impl BuildExecutor {
         use tracing::Instrument;
         let builds = crate::build_run::LaneBuilds::of(&self.builds, lane);
         let previous = builds.read_build(build_id).await.ok();
+        let me = self.held_name().await;
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-reconcile",
             build_id = %build_id,
@@ -372,7 +397,7 @@ impl BuildExecutor {
             // an attempt is `(build_id, lane, attempt)`, so the number alone names two attempts).
             lane = lane.unwrap_or(""),
             attempt,
-            executor = %self.executor,
+            executor = %me,
             // The admin that held the attempt before this one. The fabric-primary's claim of this
             // attempt is already folded (the executor absorbs its intent first), so `executor` here
             // names this admin.
@@ -386,7 +411,7 @@ impl BuildExecutor {
         if let Some(tp) = &context.traceparent {
             rafka_mesh_telemetry::set_remote_parent(&span, tp, context.tracestate.as_deref());
         }
-        let r = self.run_claimed(&*builds, build_id, lane, attempt, plan, &span).instrument(span.clone()).await;
+        let r = self.run_claimed(&*builds, build_id, lane, attempt, &me, plan, &span).instrument(span.clone()).await;
         span.record(
             "outcome",
             match &r {
@@ -398,10 +423,11 @@ impl BuildExecutor {
         r
     }
 
-    async fn run_claimed(&self, builds: &dyn BuildStateAdapter, build_id: &BuildId, lane: Option<&str>, attempt: u32, plan: &RunPlan, span: &tracing::Span) -> Reconciled {
+    #[allow(clippy::too_many_arguments)]
+    async fn run_claimed(&self, builds: &dyn BuildStateAdapter, build_id: &BuildId, lane: Option<&str>, attempt: u32, me: &str, plan: &RunPlan, span: &tracing::Span) -> Reconciled {
         // The claim was decided (by the fabric-primary for the fabric lane, by this mesh-primary for
         // its mesh's drift lane); this admin's own log takes the fact with it.
-        let claim = BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: self.executor.clone() };
+        let claim = BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt, executor: me.to_string() };
         if let Err(e) = builds.adopt_claim(&claim).await {
             return Reconciled::Failed { attempt, operation: String::new(), reason: format!("recording the claim of attempt {attempt}: {e}") };
         }
@@ -418,7 +444,8 @@ impl BuildExecutor {
             // an operation a view does not place stays with this admin. The operations themselves are
             // always the fabric-primary's plan.
             if i > 0 {
-                if let Some(to) = executor_for(op, &*self.topology.read().await).filter(|to| to.to_string() != self.executor) {
+                let now = self.held_name().await;
+                if let Some(to) = executor_for(op, &*self.topology.read().await).filter(|to| to.to_string() != now) {
                     return self.hand_off(builds, &build, attempt, operations[..i].to_vec(), to.to_string()).await;
                 }
             }
@@ -442,7 +469,8 @@ impl BuildExecutor {
     #[allow(clippy::too_many_arguments)]
     async fn hand_back(&self, builds: &dyn BuildStateAdapter, build: &BuildProjection, attempt: u32, ran: Vec<BuildOperation>, op: &BuildOperation, reason: String, span: &tracing::Span) -> Reconciled {
         span.record("incomplete", reason.as_str());
-        let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or_else(|| self.executor.clone());
+        let me = self.held_name().await;
+        let to = self.topology.read().await.fabric_primary().map(|n| n.name.to_string()).unwrap_or(me);
         builds.note_blocked(&build.build_id, None, attempt, &op.key(), "incomplete", &reason).await;
         tracing::info!(operation = %op.key(), reason = %reason, to = %to, "the operation ended incomplete: its receipts stand, the attempt is handed to the fabric-primary and the Build stays in progress");
         self.hand_off(builds, build, attempt, ran, to).await
