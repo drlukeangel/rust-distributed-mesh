@@ -101,7 +101,7 @@ struct WireBuilds(MemoryBuildStateAdapter);
 
 impl WireBuilds {
     fn wire(fact: BuildFact) -> Result<BuildFact, BuildStateError> {
-        let bytes = BuildMessage { nonce: 1, facts: vec![fact], fabric: None, shutdown: None }.to_bytes()?;
+        let bytes = BuildMessage { nonce: 1, facts: vec![fact], fabric: None }.to_bytes()?;
         let mut back = BuildMessage::from_bytes(&bytes).map_err(|e| BuildStateError::Unencodable(e.to_string()))?;
         Ok(back.facts.pop().expect("one fact sent, one fact read"))
     }

@@ -1491,7 +1491,7 @@ Who answered.
 
 ### `BuildChange`
 
-`crates/rafka-node-rpc-contract/src/build.rs` · enum · 12 variants · rafka-node-rpc-contract
+`crates/rafka-node-rpc-contract/src/build.rs` · enum · 13 variants · rafka-node-rpc-contract
 
 What a caller submits. The fabric-primary compiles it once against the accepted topology (a
 
@@ -1525,6 +1525,7 @@ What a caller submits. The fabric-primary compiles it once against the accepted 
 | 10.2 | `incarnation` | `IncarnationId` → [`IncarnationId`](#t-rafka_mesh_entity-ids-IncarnationId) |  | The exited instance's incarnation. |
 | 11 | **`Recipe`** |  |  | A recipe: one Build whose steps are node primitives, run in order (build.md §1: "Rafka's |
 | 11.0 | `steps` | `Vec<RecipeStep>` → [`RecipeStep`](#t-rafka_node_rpc_contract-build-RecipeStep) |  | The steps, in the order they run. |
+| 12 | **`DeleteFabric`** |  |  | Delete the fabric (`fabric.delete`, lifecycles/fabric-delete.md): run `mesh.delete` on each |
 
 <a id="t-rafka_node_rpc_contract-build-BuildPhase"></a>
 

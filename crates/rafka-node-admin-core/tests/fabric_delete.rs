@@ -595,10 +595,10 @@ async fn unanswered_mesh_during_fabric_delete_creates_one_admin_when_members_liv
         fleet.pids.insert(53_003, "mesh2.admin.2".into());
         let rt_a2 = RuntimeProof::of(&h_a2.fact().unwrap());
         let me_a2 = RosterBirth::of(&m2_a2).unwrap();
-        let rows_a2 = NodeRows::new(m2_a2.name.clone(), m2_a2.node_id.clone(), view.clone(), nodes_storage.clone());
-        rows_written(&nodes_storage, &rows_a2, std::slice::from_ref(&m2_a2)).await;
         view.write().await.nodes.retain(|n| n.name != m2_a1.name);
         view.write().await.nodes.push(m2_a2.clone());
+        let rows_a2 = NodeRows::new(m2_a2.name.clone(), m2_a2.node_id.clone(), view.clone(), nodes_storage.clone());
+        rows_written(&nodes_storage, &rows_a2, std::slice::from_ref(&m2_a2)).await;
 
         amend_roster(&builds, &key_m2, "mesh1.admin.1", &RosterAmended { predecessor: predecessor.clone(), final_primary: me_a2.clone(), final_runtime: rt_a2.clone() })
             .await

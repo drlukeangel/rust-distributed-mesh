@@ -49,9 +49,6 @@ pub struct BuildMessage {
     pub facts: Vec<BuildFact>,
     /// The Fabric record the message carries: the Fabric's identity.
     pub fabric: Option<FabricIdentity>,
-    /// A fabric shutdown in force: Fabric control state, sent alone when initiated and to a new
-    /// neighbour first (fabric-mesh-lifecycle.md §11.1). Never a Build fact.
-    pub shutdown: Option<crate::fabric_storage::FabricShutdown>,
 }
 
 impl BuildMessage {
@@ -68,20 +65,16 @@ impl BuildMessage {
     }
 }
 
-fn encode_shutdown(s: &crate::fabric_storage::FabricShutdown) -> Result<bytes::Bytes, BuildStateError> {
-    BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: None, shutdown: Some(s.clone()) }.to_bytes()
-}
-
 /// The Fabric record a Build-topic message carries: the Fabric's identity. A receiver reads its own
 /// current Build from its own Build entities (R-BI3); the record names none.
 fn encode_fabric(identity: &FabricIdentity) -> Result<bytes::Bytes, BuildStateError> {
-    BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: Some(identity.clone()), shutdown: None }.to_bytes()
+    BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: Some(identity.clone()) }.to_bytes()
 }
 
 pub use rafka_mesh_transport::chunking::{GOSSIP_FRAME_LIMIT, MAX_MESSAGE_BYTES};
 
 fn encode(facts: Vec<BuildFact>) -> Result<bytes::Bytes, BuildStateError> {
-    let bytes = BuildMessage { nonce: rand::random(), facts, fabric: None, shutdown: None }.to_bytes()?;
+    let bytes = BuildMessage { nonce: rand::random(), facts, fabric: None }.to_bytes()?;
     if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(BuildStateError::Io(format!(
             "a Build message of {} bytes exceeds the gossip payload limit of {MAX_MESSAGE_BYTES} (frame limit {GOSSIP_FRAME_LIMIT})",
@@ -309,7 +302,6 @@ impl FabricBuildStateAdapter {
         peers: Vec<EndpointAddr>,
         local: Arc<dyn LocalBuildLog>,
         accepted: Arc<AcceptedStore>,
-        shutdown: Arc<crate::shutdown::ShutdownControl>,
         node: String,
         seat: SeatSource,
         catch_up_seam: Option<Arc<dyn crate::wiring::CatchUpSeam>>,
@@ -327,7 +319,7 @@ impl FabricBuildStateAdapter {
         let topic = gossip.subscribe(build_topic(fabric), ids).await.map_err(|e| io(e.to_string()))?;
         let (sender, mut receiver) = topic.split();
         let sender = Arc::new(tokio::sync::RwLock::new(sender));
-        let (absorb, shared, store, held_shutdown) = (local.clone(), sender.clone(), accepted.clone(), shutdown.clone());
+        let (absorb, shared, store) = (local.clone(), sender.clone(), accepted.clone());
         let (fabric_name, gossip, topic_id) = (fabric.to_string(), gossip.clone(), build_topic(fabric));
         let seed_ids: Vec<iroh::EndpointId> = peers.iter().map(|p| p.id).collect();
         let known_peers: Arc<std::sync::Mutex<Vec<iroh::EndpointId>>> = Arc::new(std::sync::Mutex::new(seed_ids.clone()));
@@ -344,12 +336,6 @@ impl FabricBuildStateAdapter {
                         Some(Ok(Event::Received(m))) => match BuildMessage::from_bytes(&m.content) {
                             Ok(w) => {
                                 let heard_fabric = w.fabric;
-                                if let Some(sd) = w.shutdown {
-                                    if let Err(e) = held_shutdown.learn(sd, "gossip", &m.delivered_from.to_string()).await {
-                                        tracing::info_span!("rdm.node_admin.fabric.reject.via-shutdown-unpersisted", node = %node, error = %e)
-                                            .in_scope(|| tracing::info!("a fabric shutdown could not be persisted"));
-                                    }
-                                }
                                 absorb.absorb_facts(&w.facts).await;
                                 if let Some(r) = heard_fabric {
                                     tracing::info_span!("rdm.node_admin.fabric.update.via-build-topic-record", node = %node, sender = %m.delivered_from.fmt_short(), bytes = m.content.len(), fabric_id = %r.fabric_id, name = %r.name)
@@ -386,7 +372,6 @@ impl FabricBuildStateAdapter {
                                     None
                                 }
                             };
-                            let in_force = held_shutdown.held();
                             let sent_by = node.clone();
                             tokio::spawn(async move {
                                 let catch_up = format!("neighbour-up catch-up of fabric {fabric_name} by {sent_by} for {peer}");
@@ -395,12 +380,6 @@ impl FabricBuildStateAdapter {
                                         span_broadcast_refused(&sent_by, "neighbour-up", format!("sending {what} in the {catch_up}: {e}"));
                                     }
                                 };
-                                // A shutdown in force first: the neighbour comes up frozen.
-                                match in_force.as_ref().map(encode_shutdown) {
-                                    Some(Ok(sd)) => send(sd, "the fabric shutdown in force").await,
-                                    Some(Err(e)) => span_refused(&catch_up, &[e]),
-                                    None => {}
-                                }
                                 // The Fabric record first, as its own message; then the facts of the
                                 // current Build and of every active Build.
                                 match record.as_ref().map(encode_fabric) {
@@ -521,12 +500,6 @@ impl FabricBuildStateAdapter {
         }
         .instrument(span)
         .await
-    }
-
-    /// Broadcast a fabric shutdown on the control channel (fabric-mesh-lifecycle.md §11.1).
-    pub(crate) async fn publish_shutdown(&self, shutdown: &crate::fabric_storage::FabricShutdown) -> Result<(), BuildStateError> {
-        let sender = self.sender.read().await.clone();
-        sender.broadcast(encode_shutdown(shutdown)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting fabric shutdown: {e}")))
     }
 
     /// Broadcast `fact` (encoded as `bytes`), already committed to this admin's own log. A send

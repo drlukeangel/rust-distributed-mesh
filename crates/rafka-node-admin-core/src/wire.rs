@@ -21,7 +21,7 @@ use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Iden
 use crate::mesh_delete::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
-use crate::fabric_storage::{FabricIdentity, FabricShutdown};
+use crate::fabric_storage::FabricIdentity;
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
 use rafka_mesh_entity::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rafka_mesh_entity::LifecycleOp;
@@ -683,7 +683,6 @@ pub(crate) struct WireMessage {
     nonce: u64,
     facts: Vec<WireFact>,
     fabric: Option<WireFabricIdentity>,
-    shutdown: Option<FabricShutdown>,
 }
 
 impl WireMessage {
@@ -693,7 +692,6 @@ impl WireMessage {
             nonce: m.nonce,
             facts: m.facts.iter().map(fact_to_wire).collect::<Result<_, _>>()?,
             fabric: m.fabric.as_ref().map(|r| WireFabricIdentity { fabric_id: r.fabric_id.clone(), name: r.name.clone() }),
-            shutdown: m.shutdown.clone(),
         })
     }
 
@@ -702,7 +700,6 @@ impl WireMessage {
             nonce: self.nonce,
             facts: self.facts.into_iter().map(fact_from_wire).collect::<Result<_, _>>()?,
             fabric: self.fabric.map(|r| FabricIdentity { fabric_id: r.fabric_id, name: r.name }),
-            shutdown: self.shutdown,
         })
     }
 }
@@ -729,8 +726,6 @@ pub struct JoinControl {
     pub provider: crate::model::ProviderKind,
     /// The Fabric identity the admin holds.
     pub fabric: Option<FabricIdentity>,
-    /// The shutdown the admin holds.
-    pub shutdown: Option<FabricShutdown>,
     /// The answering admin's current Build and its attempt: the joiner's copy of that Build's facts
     /// must reach the attempt before Ready.
     pub build: Option<BuildFloor>,
@@ -770,7 +765,6 @@ struct WireJoinAnswer {
 struct WireControl {
     provider: crate::model::ProviderKind,
     fabric: Option<WireFabricIdentity>,
-    shutdown: Option<FabricShutdown>,
     build: Option<WireBuildFloor>,
     rafka_time_ms: u64,
     member_cert: Vec<u8>,
@@ -792,7 +786,6 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
         control: WireControl {
             provider: c.provider,
             fabric: c.fabric.as_ref().map(|r| WireFabricIdentity { fabric_id: r.fabric_id.clone(), name: r.name.clone() }),
-            shutdown: c.shutdown.clone(),
             build: c.build.as_ref().map(|b| WireBuildFloor { build_id: b.build_id.clone(), attempt: b.attempt }),
             rafka_time_ms: c.rafka_time_ms,
             member_cert: c.member_cert.clone(),
@@ -812,7 +805,6 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
         control: JoinControl {
             provider: w.control.provider,
             fabric: w.control.fabric.map(|r| FabricIdentity { fabric_id: r.fabric_id, name: r.name }),
-            shutdown: w.control.shutdown,
             build: w.control.build.map(|b| BuildFloor { build_id: b.build_id, attempt: b.attempt }),
             rafka_time_ms: w.control.rafka_time_ms,
             member_cert: w.control.member_cert,

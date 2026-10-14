@@ -53,7 +53,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
                 // telemetry drain (the guard drops as this returns).
                 boot.in_scope(|| tracing::info!("stopped by signal before the node-admin booted"));
                 drop(boot);
-                tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown = false, booted = false).in_scope(|| tracing::info!("stopping"));
+                tracing::info_span!("rdm.mesh.node.delete.via-signal", booted = false).in_scope(|| tracing::info!("stopping"));
                 return;
             }
         };
@@ -73,15 +73,9 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     drop(boot);
     running.announce();
 
-    // Leave when this admin's part of a fabric shutdown is done (the fabric-primary, after it has
-    // stopped the mesh-primary spine; fabric-mesh-lifecycle.md §11.1), or on a signal. A signal is a
-    // local stop: this admin leaves and nothing Fabric-wide follows.
-    let shutdown = running.control.shutdown.clone();
-    let by_route = shutdown.notified();
-    tokio::pin!(by_route);
-    let fabric_shutdown = tokio::select! {
-        _ = &mut by_route => true,
-        () = stop_requested() => false,
+    // Leave on a signal. A signal is a local stop: this admin leaves and nothing Fabric-wide follows.
+    tokio::select! {
+        () = stop_requested() => {}
         // A hook that failed ends the node by name, as an unaccepted join does.
         why = running.hydration_failed() => {
             let node = running.digest.lock().unwrap().node.name.to_string();
@@ -100,16 +94,16 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
             rafka_mesh_telemetry::flush_before_exit();
             rafka_mesh_entity::runtime::exit_transport_stopped(&reason);
         }
-    };
+    }
     // A parked admin (stopped, its process alive) that is told to end has nothing to drain and no
     // departure to announce: it closes at once.
     if crate::node_self::parking().is_parked() {
-        let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown = false, parked = true);
+        let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", parked = true);
         running.leave_after_stop().instrument(span).await;
         return;
     }
     // Instrumented, never entered across the await: the span's busy and idle time are real.
-    let span = tracing::info_span!("rdm.mesh.node.delete.via-signal", fabric_shutdown);
+    let span = tracing::info_span!("rdm.mesh.node.delete.via-signal");
     running.leave().instrument(span).await;
 }
 

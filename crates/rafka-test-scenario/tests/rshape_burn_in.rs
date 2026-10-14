@@ -720,17 +720,14 @@ impl Views<'_> {
 
 /// After the estate was told to stop: every host process of a bound executable is gone, observed
 /// from the process table. `Estate::stop` returns at its own 30 s bound whether or not the last
-/// admin has exited; the exit is awaited here, from observed state, up to the three drain bounds
-/// the architecture gives a fabric shutdown (members, admins, spine: `shutdown::drain_bound`,
-/// RDM_SHUTDOWN_DRAIN_BOUND_MS, 60 s each). The wall from the stop request to the last exit is
-/// recorded: it is a measurement of the shutdown, not a tolerance.
+/// admin has exited; the exit is awaited here, from observed state. The wall from the stop request
+/// to the last exit is recorded: it is a measurement of the stop, not a tolerance.
 async fn provider_left(f: &Formed, stop_started: Instant, inv: &mut Invariants) -> Value {
     provider_left_of(&f.bound, stop_started, inv).await
 }
 
 async fn provider_left_of(bound: &[PathBuf], stop_started: Instant, inv: &mut Invariants) -> Value {
-    let drain_bound = std::env::var("RDM_SHUTDOWN_DRAIN_BOUND_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(60_000);
-    let deadline = Instant::now() + Duration::from_millis(drain_bound * 3);
+    let deadline = Instant::now() + Duration::from_secs(180);
     let (left, stop_returned_ms) = (|| async {
         let returned = stop_started.elapsed().as_millis() as u64;
         loop {
@@ -746,7 +743,7 @@ async fn provider_left_of(bound: &[PathBuf], stop_started: Instant, inv: &mut In
     inv.holds(
         "after the shutdown, no host process still runs a bound executable",
         left["processes"].as_array().is_some_and(|p| p.is_empty()),
-        json!({"left": left, "estate_stop_returned_after_ms": stop_returned_ms, "last_exit_observed_after_ms": wall, "three_drain_bounds_ms": drain_bound * 3}),
+        json!({"left": left, "estate_stop_returned_after_ms": stop_returned_ms, "last_exit_observed_after_ms": wall}),
     );
     json!({"left": left, "estate_stop_returned_after_ms": stop_returned_ms, "last_exit_observed_after_ms": wall})
 }

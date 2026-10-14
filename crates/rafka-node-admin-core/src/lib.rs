@@ -55,7 +55,6 @@ pub(crate) mod reenter;
 pub mod round;
 pub mod seat_watch;
 pub mod record_store;
-pub mod shutdown;
 pub mod stopped_gc;
 pub(crate) mod status_declare;
 pub mod status_rpc;

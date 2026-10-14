@@ -16,7 +16,7 @@ use rafka_node_admin_core::election::{resolve_with, Incumbency};
 use rafka_node_admin_core::build_facts_read::{BuildFactsDoor, BuildFactsSlot};
 use rafka_node_admin_core::build_op::{BuildDoor, BuildSlot};
 use rafka_node_admin_core::fabric_handover::{update_operation, HandoverDoor, HandoverSlot, Moving, ProjectView, WriteCutOff};
-use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricShutdown, FabricStorage, FabricStorageError, FileFabricStorage, MemoryFabricStorage, SeatTransferRow};
+use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricStorage, FabricStorageError, FileFabricStorage, MemoryFabricStorage, SeatTransferRow};
 use rafka_node_admin_core::model::{EndpointId, Fabric, Node, NodeStatus, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, Found, ResolvedNodeLaunch, TerminationMode};
 use rafka_node_admin_core::status_storage::MemoryStatusStorage;
@@ -224,14 +224,6 @@ impl FabricStorage for FailingStorage {
     }
     async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
         self.inner.release_name(identity).await
-    }
-    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
-        self.check("shutdown")?;
-        self.inner.shutdown().await
-    }
-    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
-        self.check("put_shutdown")?;
-        self.inner.put_shutdown(shutdown).await
     }
     async fn put_seat_transfer(&self, row: &SeatTransferRow) -> Result<(), FabricStorageError> {
         self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

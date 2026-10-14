@@ -457,7 +457,8 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
             next.meshes.remove(mesh);
         }
         TopologyChange::DeleteFabric => {
-            return Err(BuildReject::EmptyFabric);
+            next.meshes.clear();
+            return Ok(next);
         }
     }
     next.validate()?;
@@ -468,7 +469,7 @@ pub fn compile(current: &FabricTopology, change: &TopologyChange, observed: &Top
 /// what observed reality already satisfies is not planned. Creates come before retirements, meshes
 /// in name order, nodes in path order.
 pub fn plan(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>) -> BuildPlan {
-    plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new())
+    plan_with(topology, observed, action, ActionProgress::default(), &BTreeSet::new(), &[])
 }
 
 /// How far an attempt's action got, from the Build's receipts. The view alone cannot say: a stopped
@@ -588,7 +589,7 @@ pub fn recovered_at(build: &crate::build_state::BuildProjection, path: &PathName
 
 /// [`plan`] for `build`'s current attempt, given what its receipts say already ran.
 pub fn plan_for_build(build: &crate::build_state::BuildProjection, observed: &Topology) -> BuildPlan {
-    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed))
+    plan_with(&build.topology, observed, build.action.as_ref(), ActionProgress::of(build), &open_mesh_deletes(build, observed), &build.steps)
 }
 
 /// The meshes, by name, whose mesh.delete `build` admitted (its `AcceptedRoster` receipt) and has not
@@ -606,7 +607,14 @@ fn open_mesh_deletes(build: &crate::build_state::BuildProjection, observed: &Top
         .collect()
 }
 
-fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&AttemptAction>, progress: ActionProgress, open_deletes: &BTreeSet<String>) -> BuildPlan {
+fn plan_with(
+    topology: &FabricTopology,
+    observed: &Topology,
+    action: Option<&AttemptAction>,
+    progress: ActionProgress,
+    open_deletes: &BTreeSet<String>,
+    steps: &[crate::build_state::BuildStepReceipt],
+) -> BuildPlan {
     let mut ops = Vec::new();
     // A standalone drain or stop is its one operation and nothing else: the topology is unchanged,
     // and the path it acts on is neither created nor repaired by this attempt. It is planned while
@@ -667,6 +675,49 @@ fn plan_with(topology: &FabricTopology, observed: &Topology, action: Option<&Att
                 }
             }
             Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-recipe-node-unknown", reason = %e).in_scope(|| tracing::info!("the recipe's steps name a node no step can act on: nothing is planned")),
+        }
+        return BuildPlan { operations: ops };
+    }
+    // fabric.delete (lifecycles/fabric-delete.md): run mesh.delete on each mesh leaf-inward (every
+    // other mesh in name order first, the fabric-primary's own mesh last), run node.delete of each
+    // other mesh's final primary after its mesh.deleted, then release the fabric name and report
+    // fabric.deleted while the fabric-primary stays alive for its separate node.delete.
+    if topology.meshes.is_empty() && action.is_none() {
+        let fp_mesh = observed.fabric_primary().map(|n| n.mesh.as_str());
+        let mut meshes: Vec<&crate::model::Mesh> = observed.meshes.iter().collect();
+        meshes.sort_by(|a, b| (Some(a.name.as_str()) == fp_mesh).cmp(&(Some(b.name.as_str()) == fp_mesh)).then_with(|| a.name.cmp(&b.name)));
+        for m in meshes {
+            let is_fp_mesh = Some(m.name.as_str()) == fp_mesh;
+            let Some(mesh_id) = m.id.clone() else {
+                tracing::info_span!("rdm.node_admin.build.reject.via-mesh-id-unknown", mesh = %m.name).in_scope(|| tracing::info!("the mesh's shutdown is not planned"));
+                continue;
+            };
+            let op_key = crate::mesh_delete::operation(&mesh_id);
+            match crate::mesh_delete::owner_resume(steps, &op_key) {
+                Ok(crate::mesh_delete::OwnerResume::Left) => {}
+                Ok(crate::mesh_delete::OwnerResume::Deleted(manifest)) => {
+                    if !is_fp_mesh {
+                        if let Ok(node) = manifest.final_primary.node.parse::<PathName>() {
+                            let retire_key = BuildOperation::RetireNode { node: node.clone(), exited: None }.key();
+                            let completed = steps.iter().any(|r| r.operation == retire_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete);
+                            let held = observed.nodes.iter().any(|n| n.node_id.as_str() == manifest.final_primary.node_id && !n.exit_proven);
+                            if !completed && held {
+                                ops.push(BuildOperation::RetireNode { node, exited: None });
+                            }
+                        }
+                    }
+                }
+                Ok(crate::mesh_delete::OwnerResume::Lead) | Err(_) => {
+                    if m.status != crate::model::ScopeStatus::Dead || open_deletes.contains(&m.name) {
+                        ops.push(BuildOperation::ShutdownMesh { mesh: m.name.clone(), mesh_id });
+                    }
+                }
+            }
+        }
+        let del_op = BuildOperation::DeleteFabric { fabric_id: observed.fabric.id.clone() };
+        let del_key = del_op.key();
+        if !steps.iter().any(|r| r.operation == del_key && r.step == "Complete" && r.outcome == crate::build_state::StepOutcome::Complete) {
+            ops.push(del_op);
         }
         return BuildPlan { operations: ops };
     }
@@ -968,7 +1019,7 @@ mod tests {
         assert_eq!(plan(&cur, &o, None).operations, vec![], "a deleted mesh with its last admin alive is planned by no Build");
         let open: BTreeSet<String> = ["mesh2".to_string()].into();
         assert_eq!(
-            plan_with(&cur, &o, None, ActionProgress::default(), &open).operations,
+            plan_with(&cur, &o, None, ActionProgress::default(), &open, &[]).operations,
             vec![BuildOperation::ShutdownMesh { mesh: "mesh2".into(), mesh_id: id2.clone() }],
             "the Build that admitted its mesh.delete and holds no completion resumes it"
         );
@@ -994,7 +1045,7 @@ mod tests {
         let delete = AttemptAction::Delete { path: path.clone(), from_incarnation: birth.clone() };
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![BuildOperation::RetireNode { node: path.clone(), exited: None }]);
         let finished = ActionProgress { started: true, finished: true, ..ActionProgress::default() };
-        assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new()).operations, vec![], "nothing once its Complete names the birth");
+        assert_eq!(plan_with(&cur, &o, Some(&delete), finished, &BTreeSet::new(), &[]).operations, vec![], "nothing once its Complete names the birth");
         o.nodes.retain(|n| n.name != path);
         assert_eq!(plan(&cur, &o, Some(&delete)).operations, vec![], "nothing once the view no longer holds it");
         let old: PathName = "mesh1.rpc.3.old".parse().unwrap();

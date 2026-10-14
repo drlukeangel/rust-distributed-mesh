@@ -56,16 +56,12 @@ pub struct ControlPlane {
     /// roll puts the fabric back to pending inside the acceptance (states.md, Resize and roll), and the
     /// view this admin answers from holds it. Set once by the admin that owns the climb.
     pub resize: std::sync::OnceLock<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
-    /// Woken when this admin's part of a fabric shutdown is done and it should leave.
-    pub shutdown: Arc<Notify>,
-    /// This admin's fabric shutdown seat, set once at start.
-    pub fabric_shutdown: std::sync::OnceLock<Arc<ShutdownSeat>>,
     /// Where each attempt this admin brings into being keeps its context, for the claim to return.
     pub contexts: Arc<crate::build_claim::AttemptContexts>,
     /// Each mesh's in-flight row (R-BI7 caveat 3, `crate::mesh_claims`): what a drift attempt this
     /// admin opens as its mesh's primary takes before any fact of it is written.
     pub claims: Arc<crate::mesh_claims::MeshClaims>,
-    /// The rafka-time this admin stamps its Builds, attempts and shutdown with.
+    /// The rafka-time this admin stamps its Builds and attempts with.
     pub time: rafka_mesh_transport::clock::RafkaTime,
     /// Where this fabric-primary admits a Build or an attempt: held from the check that no Build is
     /// reconciling to the durable write that makes the next one, by every path that starts work
@@ -84,20 +80,10 @@ pub struct ControlPlane {
     pub ready_rows: Arc<dyn crate::status_storage::StatusStorage>,
 }
 
-/// What `/api/shutdown` and `/api/fabric` need of this admin's fabric shutdown state.
-pub struct ShutdownSeat {
-    /// The shutdown control.
-    pub control: Arc<crate::shutdown::ShutdownControl>,
-    /// This admin's `path.name`.
-    pub me: crate::model::PathName,
-    /// This admin's node id.
-    pub node_id: crate::model::NodeId,
-}
-
 impl ControlPlane {
     /// A control plane for the admin `me` over its Build state, its accepted-Build store and an
     /// initial `topology`, stamping with `time`: the rafka-time its process adopted. A control
-    /// plane is never built without one, because every Build, attempt and shutdown it opens is
+    /// plane is never built without one, because every Build and attempt it opens is
     /// stamped from it.
     pub fn new(builds: Arc<dyn BuildStateAdapter>, accepted: Arc<AcceptedStore>, me: PathName, topology: Topology, time: rafka_mesh_transport::clock::RafkaTime) -> Self {
         Self {
@@ -107,8 +93,6 @@ impl ControlPlane {
             topology: Arc::new(RwLock::new(topology)),
             build_submitted: Arc::new(Notify::new()),
             resize: std::sync::OnceLock::new(),
-            shutdown: Arc::new(Notify::new()),
-            fabric_shutdown: std::sync::OnceLock::new(),
             absence: std::sync::OnceLock::new(),
             view_now: std::sync::OnceLock::new(),
             connections: std::sync::OnceLock::new(),
@@ -380,6 +364,7 @@ impl ControlPlane {
             if let Some(workflow) = operations.iter().find_map(|op| match op {
                 crate::build::BuildOperation::RetireNode { node, exited: None } => Some(format!("node.delete {node}")),
                 crate::build::BuildOperation::ShutdownMesh { mesh, .. } => Some(format!("mesh.delete {mesh}")),
+                crate::build::BuildOperation::DeleteFabric { fabric_id } => Some(format!("fabric.delete {fabric_id}")),
                 _ => None,
             }) {
                 self.admit_once_ready(route, workflow, &outer).await?;
@@ -911,7 +896,7 @@ fn last_admin(node: &PathName, action: &str, t: &Topology) -> Option<BuildReject
     // it still moves, out of its mesh (C2 search step 2), and is refused with C2 step 3's text when no
     // other mesh-primary can take it.
     let moving = if matches!(action, "retire" | "delete") && t.only_node(&node.mesh, &target.node_id) {
-        if !fabric_seat {
+        if !fabric_seat || (!t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead)) {
             return None;
         }
         crate::election::Moving::FabricSeatOutside

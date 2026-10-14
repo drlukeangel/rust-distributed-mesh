@@ -104,15 +104,40 @@ impl AdminRunner {
         // moved first by node.fabric-primary.update with the mesh excluded: the leave opens only once
         // that committed row is installed here, its node.primary.updated (the approved proposal
         // node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 2: "`node.primary.updated`
-        // confirms the committed transfer before any member is deleted").
-        let fabric_update = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, build_id.as_str(), run, outer);
-        self.handover.fabric_seat_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric seat's committed row is not installed: {e}"))?;
+        // confirms the committed transfer before any member is deleted"). During fabric.delete, on
+        // the fabric-primary's own mesh, the fabric-primary seat stays put so mesh.delete skips its
+        // node.fabric-primary.update step (lifecycles/fabric-delete.md step 1).
+        if !build.topology.meshes.is_empty() || mesh != self.me.mesh.as_str() {
+            let fabric_update = crate::fabric_handover::update_operation(rafka_mesh_entity::Seat::FabricPrimary, build_id.as_str(), run, outer);
+            self.handover.fabric_seat_updated(mesh, &fabric_update).await.map_err(|e| format!("{outer} is refused before {mesh} is dismantled: the fabric seat's committed row is not installed: {e}"))?;
+        }
         // The workflow is handed to a live holder. A holder that is not live keeps its seat (R-EL1)
         // but cannot take the workflow: it goes to the lost-final-primary path below, which proves
-        // its exit before anything is amended (R11).
+        // its exit before anything is amended (R11). During fabric.delete, an unanswered mesh with
+        // no prior AcceptedRoster resolves by provider exit proof of its births (R-FS1 revised).
+        let mut steps = steps;
         let primary = match view.cohort_primary(mesh, NodeKind::NodeAdmin).filter(|p| p.status.is_live()).cloned() {
             Some(p) => p,
-            None => self.admin_for_leaving_mesh(build_id, attempt, mesh, &key, &steps, &view).await?,
+            None => {
+                if build.topology.meshes.is_empty() && crate::mesh_delete::admitted_of(&steps, outer).transpose().map_err(|e| format!("{outer}: {e}"))?.is_none() {
+                    let runtime_store = self.records.contacts.get().ok_or_else(|| format!("{outer}: {} holds no durable runtime rows for unanswered mesh {mesh}", self.me))?;
+                    let node_rows = self.records.node_rows();
+                    let held_paths: Vec<crate::model::PathName> = view.nodes.iter().map(|n| n.name.clone()).collect();
+                    match crate::mesh_delete::unanswered_mesh_delete(&*self.builds, &*self.provider, &self.records, node_rows.as_deref(), &*self.status_storage, &*self.mesh_storage, &**runtime_store, &key, &self.me.to_string(), mesh, &view.nodes, &held_paths).await? {
+                        crate::mesh_delete::UnansweredMeshOutcome::FullyCrashed(_) => {
+                            self.records.hold_mesh_deleted(&key.mesh_id);
+                            self.forget_mesh_id(mesh);
+                            self.refresh_view().await;
+                            return Ok(());
+                        }
+                        crate::mesh_delete::UnansweredMeshOutcome::CreateAdmin { .. } => {
+                            self.records.declared.lock().unwrap().meshes.entry(key.mesh_id.clone()).or_insert(rafka_node_rpc_contract::status::MeshState::ReadyForTraffic);
+                            steps = self.builds.read_build(build_id).await.map_err(|e| format!("{outer}: the Build {build_id} could not be read for its receipts: {e}"))?.steps;
+                        }
+                    }
+                }
+                self.admin_for_leaving_mesh(build_id, attempt, mesh, &key, &steps, &view).await?
+            }
         };
         // A resumed attempt hands the workflow only to the final primary admitted, or to the one the
         // last roster amendment names. A different primary is the leaving mesh's primary lost

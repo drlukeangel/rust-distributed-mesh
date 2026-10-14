@@ -55,11 +55,6 @@ pub trait Gate: Send + Sync {
     async fn fence(&self) -> Result<Option<String>, BuildStateError> {
         Ok(None)
     }
-    /// Why reconciliation is frozen (a fabric shutdown is in force), when it is: no claim and no
-    /// dispatch from here on.
-    fn frozen(&self) -> Option<String> {
-        None
-    }
     /// Resolves once the seat record ends this admin's authority (never, for a gate with no seat):
     /// a drive waiting on an executor's run ends there, not when that run's stream does.
     async fn fence_set(&self) {
@@ -831,9 +826,6 @@ impl DriveEnv {
             drive.lose_seat(SeatLoss { why: why.clone(), to: record_holder });
             return Some(DriveEnd::SeatLost(why));
         }
-        if let Some(why) = self.gate.frozen() {
-            return Some(DriveEnd::Paused(why));
-        }
         if !self.gate.authorizes() {
             let why = format!("{me}: its view is cut off or within one silence window of healing, and authorizes nothing");
             if drive.stall_is_new(&why) {
@@ -934,7 +926,7 @@ impl DriveEnv {
     /// once the provider proves the mesh fully crashed ([`Self::rebirth_admits`]). `Some` names the
     /// fence.
     fn fenced(&self, p: &BuildProjection, op: &BuildOperation, crashed: &HashSet<String>) -> Option<(PathName, u64, bool)> {
-        if self.rebirth_admits(p, op, crashed) {
+        if p.topology.meshes.is_empty() || self.rebirth_admits(p, op, crashed) {
             return None;
         }
         self.unheard_peer(op)
@@ -988,8 +980,12 @@ impl DriveEnv {
                 cut = Some(i);
                 break;
             }
-            if i > 0 && (self.unheard_peer(op).is_some() || crate::executor::executor_for(op, t).is_none()) {
+            if i > 0 && ((self.unheard_peer(op).is_some() && !p.topology.meshes.is_empty()) || crate::executor::executor_for(op, t).is_none()) {
                 cut = Some(i);
+                break;
+            }
+            if p.topology.meshes.is_empty() && matches!(op, BuildOperation::ShutdownMesh { .. }) && plan.operations.len() > i + 1 {
+                cut = Some(i + 1);
                 break;
             }
         }

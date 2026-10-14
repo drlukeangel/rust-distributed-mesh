@@ -121,7 +121,8 @@ fn node_op_executor(node: &PathName, op: &BuildOperation, t: &Topology) -> Optio
     if seat_move(op, t).is_some() {
         None
     } else if holds_seat(node, t) {
-        held_admins(&node.mesh, Some(node), t).is_empty().then(fabric).flatten().filter(|fp| fp != node)
+        let last_mesh_gone = !t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead) && t.node(node).is_some_and(|n| t.only_node(&node.mesh, &n.node_id));
+        held_admins(&node.mesh, Some(node), t).is_empty().then(fabric).flatten().filter(|fp| fp != node || last_mesh_gone)
     } else {
         mesh_executor(&node.mesh, Some(node), t)
     }
@@ -226,6 +227,9 @@ fn holds_seat(node: &PathName, t: &Topology) -> bool {
 pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
     use rafka_node_rpc_contract::build::RecipeStep;
     if let BuildOperation::ShutdownMesh { mesh, .. } = op {
+        if !t.meshes.iter().any(|m| m.name != *mesh && m.status != crate::model::ScopeStatus::Dead) {
+            return None;
+        }
         let holder = t.fabric_primary().filter(|fp| fp.mesh == *mesh)?.clone();
         return Some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false });
     }
@@ -257,8 +261,12 @@ pub fn seat_move(op: &BuildOperation, t: &Topology) -> Option<SeatMove> {
         return None;
     }
     // The delete of a mesh's only node skips node.primary.update; a fabric seat on it still moves, out
-    // of its mesh, which has no other node-admin to take it (C2 search step 2).
+    // of its mesh, which has no other node-admin to take it (C2 search step 2), unless every mesh of
+    // the fabric is already Dead (fabric-delete.md step 4: the separate node.delete of the fabric-primary).
     if delete && t.only_node(&node.mesh, &holder.node_id) {
+        if !t.meshes.is_empty() && t.meshes.iter().all(|m| m.status == crate::model::ScopeStatus::Dead) {
+            return None;
+        }
         return fabric_seat.then_some(SeatMove { holder, mesh_seat: false, fabric_seat: true, cohort_seat: false });
     }
     Some(SeatMove { holder, mesh_seat, fabric_seat, cohort_seat: false })

@@ -1680,34 +1680,180 @@ pub enum UnansweredMeshOutcome {
 /// Resolve an unanswered mesh `mesh` during `fabric.delete` (R-FS1 revised).
 #[allow(clippy::too_many_arguments)]
 pub async fn unanswered_mesh_delete(
-    _builds: &dyn BuildStateAdapter,
-    _provider: &dyn crate::deployment::provider::DeploymentProvider,
-    _records: &crate::admin::Records,
-    _rows: Option<&crate::node_rows::NodeRows>,
-    _status: &dyn crate::status_storage::StatusStorage,
-    _meshes: &dyn crate::storage::MeshStorage,
-    _runtime_store: &dyn crate::storage::NodesStorage,
-    _key: &MeshDeleteKey,
-    _executor: &str,
-    _mesh: &str,
-    _mesh_nodes: &[Node],
-    _held_paths: &[crate::model::PathName],
+    builds: &dyn BuildStateAdapter,
+    provider: &dyn crate::deployment::provider::DeploymentProvider,
+    records: &crate::admin::Records,
+    rows: Option<&crate::node_rows::NodeRows>,
+    status: &dyn crate::status_storage::StatusStorage,
+    meshes: &dyn crate::storage::MeshStorage,
+    runtime_store: &dyn crate::storage::NodesStorage,
+    key: &MeshDeleteKey,
+    executor: &str,
+    mesh: &str,
+    mesh_nodes: &[Node],
+    held_paths: &[crate::model::PathName],
 ) -> Result<UnansweredMeshOutcome, String> {
-    Err("unanswered_mesh_delete not implemented".into())
+    let outer = key.operation.as_str();
+    let admins: Vec<&Node> = mesh_nodes.iter().filter(|n| n.mesh == mesh && n.kind == NodeKind::NodeAdmin).collect();
+    let ordinary: Vec<&Node> = mesh_nodes.iter().filter(|n| n.mesh == mesh && n.kind != NodeKind::NodeAdmin).collect();
+    if admins.is_empty() {
+        return Err(format!("{outer}: {mesh} holds no node-admin birth to prove exited"));
+    }
+    async fn put_exit(status: &dyn crate::status_storage::StatusStorage, t: &TerminalReceipt) -> Result<(), String> {
+        let name: crate::model::PathName = t.node.parse().map_err(|e| format!("the Exited receipt of {} {} names no path.name: {e:?}", t.node, t.incarnation_id))?;
+        let node_id = NodeId::parse(&t.node_id).map_err(|e| format!("the Exited receipt of {} {} names no node id ({:?}): {e}", t.node, t.incarnation_id, t.node_id))?;
+        let incarnation_id = crate::model::IncarnationId::parse(&t.incarnation_id).map_err(|e| format!("the Exited receipt of {} {} names no incarnation: {e}", t.node, t.incarnation_id))?;
+        let row = crate::status_storage::NodeExitRow { node_id, name: name.clone(), incarnation_id, exit_code: t.exit_code, proof: "terminal-receipt".into(), observed_at_ms: 0 };
+        status.put_node_exit_of(&name.mesh, &row).await.map_err(|e| format!("status.storage put of {} exit-proof row among {}'s status rows: {e}", name, name.mesh))
+    }
+    let mut admin_exits: Vec<(RosterBirth, RuntimeProof, TerminalReceipt)> = Vec::new();
+    for admin in &admins {
+        let birth = RosterBirth::of(admin)?;
+        let inc = birth.birth().map_err(|e| format!("{outer}: {e}"))?;
+        let row = runtime_store.runtime(&admin.node_id, &inc).await.map_err(|e| format!("{outer}: the runtime row of {} {} could not be read: {e}", birth.node, birth.incarnation_id))?;
+        let runtime = row.as_ref().map(|r| RuntimeProof::of(&r.runtime)).ok_or_else(|| {
+            let reason = format!("no durable runtime row of {} {} was ever written here", birth.node, birth.incarnation_id);
+            span_unproven(key, &birth, &reason);
+            format!("{outer}: {mesh} is unanswered and its node-admin {} {} is not proven exited ({reason})", birth.node, birth.incarnation_id)
+        })?;
+        let terminal = prove_predecessor_exit(provider, row.as_ref(), &birth, &runtime).await.map_err(|reason| {
+            span_unproven(key, &birth, &reason);
+            format!("{outer}: {mesh} is unanswered and its node-admin {} {} is not proven exited ({reason})", birth.node, birth.incarnation_id)
+        })?;
+        put_exit(status, &terminal).await.map_err(|e| format!("{outer}: the proven exit of {} {} could not be recorded: {e}", birth.node, birth.incarnation_id))?;
+        admin_exits.push((birth, runtime, terminal));
+    }
+    let mut ordinary_exits: Vec<TerminalReceipt> = Vec::new();
+    let mut live_ordinary: Vec<RosterBirth> = Vec::new();
+    for ord in &ordinary {
+        let birth = RosterBirth::of(ord)?;
+        let inc = birth.birth().map_err(|e| format!("{outer}: {e}"))?;
+        let row = runtime_store.runtime(&ord.node_id, &inc).await.map_err(|e| format!("{outer}: the runtime row of {} {} could not be read: {e}", birth.node, birth.incarnation_id))?;
+        match row.as_ref() {
+            Some(r) => {
+                let runtime = RuntimeProof::of(&r.runtime);
+                match prove_predecessor_exit(provider, row.as_ref(), &birth, &runtime).await {
+                    Ok(terminal) => {
+                        put_exit(status, &terminal).await.map_err(|e| format!("{outer}: the proven exit of {} {} could not be recorded: {e}", birth.node, birth.incarnation_id))?;
+                        ordinary_exits.push(terminal);
+                    }
+                    Err(reason) => {
+                        if ord.status.is_live() {
+                            live_ordinary.push(birth);
+                        } else {
+                            span_unproven(key, &birth, &reason);
+                            return Err(format!("{outer}: {mesh} is unanswered and its member {} {} is silent and not proven exited ({reason})", birth.node, birth.incarnation_id));
+                        }
+                    }
+                }
+            }
+            None => {
+                if ord.status.is_live() {
+                    live_ordinary.push(birth);
+                } else {
+                    return Err(format!("{outer}: {mesh} is unanswered and its member {} {} has no durable runtime row to prove exited", birth.node, birth.incarnation_id));
+                }
+            }
+        }
+    }
+    let roster: Vec<RosterBirth> = mesh_nodes.iter().filter(|n| n.mesh == mesh).map(RosterBirth::of).collect::<Result<Vec<_>, _>>()?;
+    let (first_admin, first_runtime, first_terminal) = &admin_exits[0];
+    if live_ordinary.is_empty() {
+        let mut all_receipts: Vec<TerminalReceipt> = ordinary_exits;
+        all_receipts.extend(admin_exits.iter().map(|(_, _, t)| t.clone()));
+        let other_receipts: Vec<TerminalReceipt> = all_receipts
+            .iter()
+            .filter(|r| r.node_id != first_admin.node_id || r.incarnation_id != first_admin.incarnation_id)
+            .cloned()
+            .collect();
+        for b in &roster {
+            birth_row_deleted(rows, executor, outer, mesh_nodes, b).await?;
+        }
+        mesh_left_rows(rows, status, meshes, &records.declared, executor, key, mesh, &all_receipts).await?;
+        let deleted_manifest = ExitManifest {
+            mesh_id: key.mesh_id.to_string(),
+            roster: roster.clone(),
+            final_primary: first_admin.clone(),
+            final_runtime: Some(first_runtime.clone()),
+            receipts: other_receipts,
+        };
+        record_completion(builds, key, executor, &deleted_manifest).await?;
+        let left_manifest = ExitManifest {
+            mesh_id: key.mesh_id.to_string(),
+            roster,
+            final_primary: first_admin.clone(),
+            final_runtime: None,
+            receipts: all_receipts,
+        };
+        builds
+            .append_step_receipt(&BuildStepReceipt {
+                mesh: None,
+                build_id: key.build_id.clone(),
+                attempt: key.attempt,
+                operation: key.operation.clone(),
+                step: STEP_MESH_LEFT.into(),
+                outcome: StepOutcome::Complete,
+                output: serde_json::to_value(&left_manifest).ok(),
+                executor: Some(executor.to_string()),
+            })
+            .await
+            .map_err(|e| format!("{outer}: the {STEP_MESH_LEFT} receipt could not be recorded: {e}"))?;
+        return Ok(UnansweredMeshOutcome::FullyCrashed(left_manifest));
+    }
+    accepted_roster(builds, key, STEP_ACCEPTED_ROSTER, executor, first_admin, first_runtime, || Ok(roster.clone())).await?;
+    record_predecessor_exit(builds, key, executor, first_terminal).await?;
+    for (b, _, term) in admin_exits.iter().skip(1) {
+        builds
+            .append_step_receipt(&BuildStepReceipt {
+                mesh: None,
+                build_id: key.build_id.clone(),
+                attempt: key.attempt,
+                operation: member_operation(outer, &b.node),
+                step: crate::deployment::pipeline::RetireStep::TerminateRuntime.name().to_string(),
+                outcome: StepOutcome::Complete,
+                output: serde_json::to_value(term).ok(),
+                executor: Some(executor.to_string()),
+            })
+            .await
+            .map_err(|e| format!("{outer}: the Exited receipt of {} {} could not be recorded: {e}", b.node, b.incarnation_id))?;
+    }
+    let path = leaving_mesh_admin_path(mesh, &roster, held_paths)?;
+    Ok(UnansweredMeshOutcome::CreateAdmin { path, predecessor: first_admin.clone() })
 }
 
 /// Release the fabric's name on `storage` (`FabricStorage::release_name`) and record the
 /// `fabric.delete:<fabric_id>` `Complete` receipt on `builds` (lifecycles/fabric-delete.md step 3:
 /// "The fabric-primary, still alive, releases the fabric name and reports `fabric.deleted`").
 pub async fn complete_fabric_delete(
-    _builds: &dyn BuildStateAdapter,
-    _storage: &dyn crate::fabric_storage::FabricStorage,
-    _build_id: &BuildId,
-    _attempt: u32,
-    _fabric_id: &rafka_mesh_entity::FabricId,
-    _executor: &str,
+    builds: &dyn BuildStateAdapter,
+    storage: &dyn crate::fabric_storage::FabricStorage,
+    build_id: &BuildId,
+    attempt: u32,
+    fabric_id: &rafka_mesh_entity::FabricId,
+    executor: &str,
 ) -> Result<(), String> {
-    Err("complete_fabric_delete not implemented".into())
+    let operation = format!("fabric.delete:{fabric_id}");
+    if let Some(identity) = storage.fabric().await.map_err(|e| format!("{operation}: fabric.storage could not read the fabric identity: {e}"))? {
+        if identity.fabric_id == *fabric_id {
+            storage.release_name(&identity).await.map_err(|e| format!("{operation}: fabric.storage could not release the fabric name {}: {e}", identity.name))?;
+        }
+    }
+    builds
+        .append_step_receipt(&BuildStepReceipt {
+            mesh: None,
+            build_id: build_id.clone(),
+            attempt,
+            operation: operation.clone(),
+            step: "Complete".into(),
+            outcome: StepOutcome::Complete,
+            output: None,
+            executor: Some(executor.to_string()),
+        })
+        .await
+        .map_err(|e| format!("{operation}: the Complete receipt could not be recorded: {e}"))?;
+    tracing::info_span!("rdm.node_admin.fabric.delete.via-build", node = %executor, fabric_id = %fabric_id, build_id = %build_id, attempt, operation = %operation, outcome = "fabric-deleted")
+        .in_scope(|| tracing::info!("fabric.deleted: the fabric name is released and the fabric-primary awaits its separate node.delete"));
+    Ok(())
 }
 
 #[cfg(test)]

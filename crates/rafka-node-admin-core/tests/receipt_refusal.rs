@@ -345,7 +345,6 @@ async fn fabric_builds(name: &str, local: std::sync::Arc<dyn rafka_node_admin_co
         vec![],
         local,
         std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), name)),
-        rafka_node_admin_core::shutdown::ShutdownControl::memory(name).await,
         name.into(),
         rafka_node_admin_core::fabric_builds::SeatSource::unrecorded(),
         None,

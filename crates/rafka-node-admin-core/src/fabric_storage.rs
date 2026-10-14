@@ -1,16 +1,13 @@
 //! `fabric.storage`: node-admin's Fabric control state behind a storage boundary
 //! (fabric-mesh-lifecycle.md §11.1, §13).
 //!
-//! It holds the Fabric's identity row and, once a fabric shutdown begins, the [`FabricShutdown`]
-//! record. The Fabric row carries no pointer to the newest Build (R-BI3): the
+//! It holds the Fabric's identity row. The Fabric row carries no pointer to the newest Build (R-BI3): the
 //! current Build is read from the Build entities themselves
 //! ([`crate::build_state::BuildStateAdapter::current_build`]). `fabric/` on the fabric's store root
 //! has one writer, the fabric-primary (R14 item 2: "Fabric-primary: `fabric/`. ... Keys never
-//! overlap across writers"): it writes the identity and the shutdown it initiates.
-//! Every other admin reads them there, and holds the identity it learns before the fabric's first
-//! state-commit (its join answer, the Build topic) as its own runtime state, never as a row here. A
-//! shutdown is never deleted while its Fabric lives, and an admin that starts on a store root holding
-//! one comes up frozen.
+//! overlap across writers"): it writes the identity.
+//! Every other admin reads it there, and holds the identity it learns before the fabric's first
+//! state-commit (its join answer, the Build topic) as its own runtime state, never as a row here.
 //!
 //! node.primary.update and node.fabric-primary.update leave ONE [`SeatTransferRow`], written by the
 //! holder of the seats as its mesh's row writer (the approved proposal
@@ -24,10 +21,8 @@
 //! handover stages of the retired fabric.primary.update (`fabric/handovers/`, `fabric-handover/1`) are
 //! retired: a store root holding one is refused by name.
 //!
-//! The Fabric's own state is two kinds of row, each its own fact written on its own and never read
-//! back to be written again: the [`FabricIdentity`] (written once) and the [`FabricShutdown`] (first
-//! one kept). The pointer rows an older build wrote (`fabric/pointers/`, `fabric-pointer/1`) are
-//! retired: a store root holding one is refused by name.
+//! The Fabric's own state is its [`FabricIdentity`] row (written once). The pointer rows an older build
+//! wrote (`fabric/pointers/`, `fabric-pointer/1`) are retired: a store root holding one is refused by name.
 //!
 //! Two implementations: [`MemoryFabricStorage`] for runs that need no restart survival, and
 //! [`FileFabricStorage`], one record per file on the fabric's store root, each write a temp file,
@@ -124,20 +119,6 @@ impl SeatTransferRow {
     }
 }
 
-/// A fabric shutdown in progress. `initiated_by` names the fabric-primary that began it;
-/// `initiated_at_ms` is a diagnostic and takes no part in authority or ordering. The record holds no
-/// drain progress: every admin derives the freeze barrier (every live admin `Draining`) and runtime
-/// disappearance from its own view.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FabricShutdown {
-    /// The admin that initiated the shutdown.
-    pub initiated_by: String,
-    /// The node id of that admin.
-    pub initiated_by_node_id: String,
-    /// When the shutdown was initiated, in milliseconds since the Unix epoch.
-    pub initiated_at_ms: u64,
-}
-
 /// Why a `fabric.storage` read or write failed.
 pub use crate::record_store::StorageError as FabricStorageError;
 
@@ -160,11 +141,6 @@ pub trait FabricStorage: Send + Sync {
     /// it is. Returns whether it went. The hook s59's fabric.delete calls; nothing else releases a
     /// fabric's name.
     async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError>;
-    /// The shutdown held, when one is.
-    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError>;
-    /// Hold `shutdown` if none is held (insert-and-fail on its key): the first shutdown held is
-    /// kept, a later one never replaces it, and it is never removed. Returns the record now held.
-    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError>;
     /// Put the one row of a node.primary.update this admin committed as the holder, under its own mesh
     /// (the row's holder's): a blind put of its own key (the operation). The caller refuses another
     /// payload for the operation before it writes.
@@ -180,7 +156,6 @@ pub trait FabricStorage: Send + Sync {
 #[derive(Debug, Default)]
 pub struct MemoryFabricStorage {
     identity: Mutex<Option<FabricIdentity>>,
-    shutdown: Mutex<Option<FabricShutdown>>,
     transfers: Mutex<Vec<SeatTransferRow>>,
 }
 
@@ -214,12 +189,6 @@ impl FabricStorage for MemoryFabricStorage {
         }
         Ok(ours)
     }
-    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
-        Ok(self.shutdown.lock().unwrap().clone())
-    }
-    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
-        Ok(self.shutdown.lock().unwrap().get_or_insert_with(|| shutdown.clone()).clone())
-    }
     async fn put_seat_transfer(&self, row: &SeatTransferRow) -> Result<(), FabricStorageError> {
         let mut rows = self.transfers.lock().unwrap();
         rows.retain(|r| (r.holder.mesh.as_str(), r.key()) != (row.holder.mesh.as_str(), row.key()));
@@ -252,17 +221,15 @@ const RETIRED_HANDOVER_FORMAT: &str = "fabric-handover/1";
 const TRANSFERS_DIR: &str = "seat-transfers";
 const TRANSFER_FORMAT: &str = "fabric-seat-transfer/1";
 const IDENTITY_KEY: &str = "identity";
-const SHUTDOWN_KEY: &str = "shutdown";
 /// The retired whole-record file (`fabric.json`, format `fabric-record/1`): identity and a Build in
 /// one row. A data dir holding it is refused by name.
 const RETIRED_RECORD_KEY: &str = "fabric";
 const IDENTITY_FORMAT: &str = "fabric-identity/1";
 /// A fabric's claim of its name at `<store_dir>/fabrics/<name>` (R-FN1): the claiming Fabric's identity.
 const NAME_FORMAT: &str = "fabric-name/1";
-const SHUTDOWN_FORMAT: &str = "fabric-shutdown/1";
 
-/// One row per file under `<store root>/fabric/` (`crate::store_root`): `identity.json` and
-/// `shutdown.json` (`crate::record_store`); the seat-transfer rows under
+/// One row per file under `<store root>/fabric/` (`crate::store_root`): `identity.json`
+/// (`crate::record_store`); the seat-transfer rows under
 /// `<store root>/meshes/<holder mesh>/seat-transfers/`.
 #[derive(Debug)]
 pub struct FileFabricStorage {
@@ -407,13 +374,6 @@ impl FabricStorage for FileFabricStorage {
         }
         Ok(ours)
     }
-    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
-        self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT).await
-    }
-    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
-        self.records.insert(SHUTDOWN_KEY, SHUTDOWN_FORMAT, shutdown).await?;
-        self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT).await?.ok_or_else(|| FabricStorageError::Io { file: "shutdown.json".into(), reason: "the shutdown row vanished after its insert".into() })
-    }
     async fn put_seat_transfer(&self, row: &SeatTransferRow) -> Result<(), FabricStorageError> {
         self.transfers_of(&row.holder.mesh).await?.write(&row.key(), TRANSFER_FORMAT, row).await
     }
@@ -471,23 +431,6 @@ async fn claimed_insert(records: &crate::record_store::FileRecords, key: &str, f
 mod tests {
     use super::*;
 
-    fn shutdown() -> FabricShutdown {
-        FabricShutdown { initiated_by: "mesh1.admin.1".into(), initiated_by_node_id: "n1".into(), initiated_at_ms: 10 }
-    }
-
-    #[tokio::test]
-    async fn a_held_shutdown_is_never_replaced_or_removed() {
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, {
-            let d = tempdir();
-            Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())
-        }] {
-            assert_eq!(s.shutdown().await.unwrap(), None);
-            assert_eq!(s.put_shutdown(&shutdown()).await.unwrap(), shutdown());
-            let other = FabricShutdown { initiated_by: "mesh2.admin.1".into(), ..shutdown() };
-            assert_eq!(s.put_shutdown(&other).await.unwrap(), shutdown(), "the first initiation is kept");
-        }
-    }
-
     /// CONTRACT (proposal Part C2: "The one committed row is the holder's transfer row under its own
     /// mesh on the fabric's shared store root, `meshes/<holder mesh>/seat-transfers/<operation>` ...
     /// whether one seat or both move"): a node.primary.update moving both seats is ONE row in the
@@ -533,14 +476,12 @@ mod tests {
         s.set_seat_source(crate::fabric_builds::SeatSource::unrecorded());
         let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
         assert_eq!(s.claim_identity(&fabric).await.unwrap(), Ok(FabricClaim::Written));
-        s.put_shutdown(&shutdown()).await.unwrap();
         let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(reopened.fabric().await.unwrap(), Some(fabric));
-        assert_eq!(reopened.shutdown().await.unwrap(), Some(shutdown()));
-        std::fs::write(d.join(FABRIC_DIR).join("shutdown.json"), br#"{"format":"fabric-shutdown/9","record":{}}"#).unwrap();
-        assert!(matches!(reopened.shutdown().await, Err(FabricStorageError::Unrecognised { .. })));
-        std::fs::write(d.join(FABRIC_DIR).join("shutdown.json"), b"not json").unwrap();
-        assert!(matches!(reopened.shutdown().await, Err(FabricStorageError::Unrecognised { .. })));
+        std::fs::write(d.join(FABRIC_DIR).join("identity.json"), br#"{"format":"fabric-identity/9","record":{}}"#).unwrap();
+        assert!(matches!(reopened.fabric().await, Err(FabricStorageError::Unrecognised { .. })));
+        std::fs::write(d.join(FABRIC_DIR).join("identity.json"), b"not json").unwrap();
+        assert!(matches!(reopened.fabric().await, Err(FabricStorageError::Unrecognised { .. })));
     }
 
     #[tokio::test]
