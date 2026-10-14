@@ -72,7 +72,7 @@ DeploymentId
 endpoint slot/freshness
 RuntimeFact
 provider locator/control domain
-Fabric.build_id
+current Build
 Build attempt
 ~~~
 
@@ -117,7 +117,7 @@ survive the seat waits. It leaves that mesh only when every node-admin birth of 
 proven gone or has left; then the lowest NodeId among the remaining mesh primaries wins and its
 mesh holds the seat. Nothing reclaims the seat for the mesh that lost it.
 
-Only the resolved fabric-primary may accept a Fabric topology change. The election chooses **who may write topology**; [Fabric.build_id -> Build](build.md) defines **what topology is accepted**.
+Only the resolved fabric-primary may accept a Fabric topology change. The election chooses **who may write topology**; [the current Build](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build) defines **what topology is accepted**.
 
 ---
 
@@ -149,7 +149,7 @@ For every seat:
 - restart preserves NodeId; a restarted node is a candidate for a later vacancy and never displaces the holder;
 - replacement mints a new NodeId and may or may not win.
 
-Election movement never changes Fabric.build_id, never changes accepted topology, and never mints a Build.
+Election movement never changes the current Build, never changes accepted topology, and never mints a Build: the current accepted Build is read LIFO from `builds.storage` (R-BI3, R-BI4).
 
 ---
 

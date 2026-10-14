@@ -857,7 +857,7 @@ mesh-primary's exit; a separate node.delete, with the fabric-primary as executor
 
 Contract source: RDM `planned:rust-distributed-mesh/crates/rafka-node-rpc-contract/src/build_claim.rs::BuildClaimRequest`.
 
-Direction: the claimant's own claim door: the fabric-primary for a topology Build's attempts, the mesh's mesh-primary for a drift attempt inside its mesh. The claimant takes the mesh's in-flight row (`meshes/<mesh>/claims/in-flight` on the shared store root, insert-and-fail) and claims by insert-and-fail on `(build_id, mesh, attempt)`; the fabric-primary hands a topology attempt's Won claim to the executor `executor_for` names through [build.attempt.run](#build-op-0x20-rdm), and a mesh-primary runs its drift attempt itself. Request ceiling 512 bytes; reply ceiling 9216 bytes. Not forwardable. Lost, NotOpen, NotClaimant and BuildInProgress are typed refusals; runtime refusals are enumerated below. The returned CallContext is attempt observability context, not a Build fact. Caller/server emit the runtime spans above with op=0x1C; the claim decision emits `rdm.node_admin.build.update.via-claim-decision`.
+Direction: the claimant's own claim door: the fabric-primary for a topology Build's attempts, the mesh's mesh-primary for a drift attempt inside its mesh. The claimant takes the mesh's in-flight row (`meshes/<mesh>/claims/in-flight` on the shared store root, insert-and-fail) and claims by insert-and-fail on `(build_id, mesh, attempt)`; the fabric-primary hands a topology attempt's Won claim to the executor `executor_for` names through [build.attempt.run](#build-op-0x20-rdm), and a mesh-primary runs its drift attempt itself. Request ceiling 512 bytes; reply ceiling 9216 bytes. Not forwardable. Lost, NotOpen, NotClaimant, RejectedNotAuthority and BuildInProgress are typed refusals; runtime refusals are enumerated below. The returned CallContext is attempt observability context, not a Build fact. Caller/server emit the runtime spans above with op=0x1C; the claim decision emits `rdm.node_admin.build.update.via-claim-decision`.
 
 ```rust
 pub enum BuildClaimRequest {
@@ -869,6 +869,7 @@ pub enum BuildClaimReply {
     Lost { holder: String },
     NotOpen { next: Option<u32> },
     NotClaimant { mesh: Option<String>, fabric_primary: Option<String>, mesh_primary: Option<String> },
+    RejectedNotAuthority { reason: String },
     BuildInProgress { current_build_id: String, mesh: String, held_by: Option<String> },
     PeerUnresolved { reason: String },
     NotReady { reason: String },
@@ -1157,7 +1158,7 @@ REPLY_VARIANTS is 25. The [schema](#build-schema) gives both enums.
 | build.create | upward, caller → fabric-primary | submitted Build intent or node.create/stop/start/restart/delete workflow; a preset is a Build input; existing build_id for resubmission | Started { build_id }, step frames, Complete or Failed { step, reason }; seat movement ends with SeatMoved, the typed new-seat frame |
 | build.attempt.run | downward, fabric-primary → executor named by executor_for | (build_id, attempt) and the Won claim | replay held Complete receipts, current Blocked if still blocked, then live step frames; a run that stops at another executor's operation ends HandedOff { to }; executor loss ends Indeterminate |
 | build.get | caller → fabric-primary | build_id | read accepted Build and receipts for reattachment after a cut; never progress polling |
-| build.delete | caller → fabric-primary | build_id | named deletion result or refusal; the Build named by Fabric.build_id cannot be deleted |
+| build.delete | caller → fabric-primary | build_id | named deletion result or refusal; the current Build ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)) cannot be deleted |
 
 The fabric-primary accepts **every** Build and drives every topology Build: it claims each topology attempt through its claim door, then calls the executor named by
 `executor_for`. A drift attempt of the current Build inside a mesh (a node recovery) is opened, claimed and run by that mesh's primary, with no call to the fabric-primary, which learns it from the Build topic. The executor validates and records the won claim through

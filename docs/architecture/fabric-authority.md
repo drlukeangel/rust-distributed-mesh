@@ -73,7 +73,7 @@ Fabric/Mesh control has four distinct planes.
 
 ```text
 ACCEPTED TOPOLOGY
-    Fabric.build_id -> the current accepted topology Build
+    the current Build (the Builds read newest first) -> the accepted topology
     Fabric -> Mesh -> exact logical node path.names
 
 DURABLE LIFECYCLE TRUTH
@@ -93,7 +93,7 @@ A bug that substitutes one plane for another is an architecture bug, even if the
 
 ### 2.1 Accepted topology
 
-The Fabric's topology is the Build `Fabric.build_id` names: the complete explicit topology the current fabric-primary accepted, compiled once from a submitted change and never replayed ([build.md §1](build.md#1-build-is-the-only-topology-mutation-engine), [§4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)). A mesh comes into being through the `node.create` of its first node-admin ([node.create](lifecycles/node-create.md#mesh-absent)). This plane answers which meshes the Fabric contains (§5).
+The Fabric's topology is the current Build's: the complete explicit topology the current fabric-primary accepted, compiled once from a submitted change and never replayed ([build.md §1](build.md#1-build-is-the-only-topology-mutation-engine), [§4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)). A mesh comes into being through the `node.create` of its first node-admin ([node.create](lifecycles/node-create.md#mesh-absent)). This plane answers which meshes the Fabric contains (§5).
 
 ### 2.2 Durable lifecycle truth
 
@@ -144,19 +144,19 @@ The creation sequence (mint the fabric, create each mesh's first node-admin, the
 
 ## 5. The Fabric's mesh roster comes from the accepted Build
 
-The authoritative answer to **which meshes the Fabric is supposed to contain now** comes from the accepted topology Build that `Fabric.build_id` names, not by reconstructing membership from `system.ops.meshes`.
+The authoritative answer to **which meshes the Fabric is supposed to contain now** comes from the current Build's accepted topology, not by reconstructing membership from `system.ops.meshes`.
 
 This distinction matters during topology change:
 
 ```text
 Create Mesh M3
     the fabric-primary accepts Build B19 with M3 as a mesh of F
-    Fabric.build_id = B19
+    B19 is the current Build
     BEFORE M3 necessarily has a durable Mesh row
 
 Remove Mesh M2
     the fabric-primary accepts Build B20 without M2
-    Fabric.build_id = B20
+    B20 is the current Build
     mesh.delete may still be deleting M2's members
 ```
 
@@ -207,14 +207,14 @@ lifecycle fact changed
 
 A newly resolved fabric-primary must already be able to assume authority immediately; readiness prerequisites are lifecycle policy, and leadership semantics live only in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). It hydrates the fabric's current round and completion evidence and the **complete** Mesh view. Mesh observations alone cannot declare fabric readiness ([States](lifecycles/states.md#states)).
 
-A successor holds `Fabric.build_id` and loads that Build from `builds.storage` ([build.md §4.2](build.md#42-hydration-of-the-accepted-topology)). Therefore it knows which meshes are required independently of which Mesh-status projections have arrived at that instant.
+A successor reads the current Build from `builds.storage` ([build.md §4.2](build.md#42-hydration-of-the-accepted-topology)). Therefore it knows which meshes are required independently of which Mesh-status projections have arrived at that instant.
 
 ### 8.1 Expected Mesh set
 
 The expected set comes from the accepted topology Build:
 
 ```text
-expected = required meshes of the Build that Fabric.build_id names
+expected = required meshes of the current Build
 ```
 
 The expected set does **not** come from:
@@ -279,13 +279,13 @@ Fabric identity and Fabric status have different succession rules.
 
 The first Day-0 admin mints the Fabric identity **before** minting its Meshes. Each Mesh is minted with that `FabricId`; each Node is then minted with its `MeshId` (§1.1).
 
-Ordinary node-admins hydrate/hold the immutable Fabric identity and `Fabric.build_id` before committing authority-capable Ready. Fabric identity may be disseminated before the durable Fabric row exists; otherwise creation would deadlock on a row that cannot be written until the Fabric reaches its durable publication phase.
+Ordinary node-admins hydrate/hold the immutable Fabric identity and the current Build before committing authority-capable Ready. Fabric identity may be disseminated before the durable Fabric row exists; otherwise creation would deadlock on a row that cannot be written until the Fabric reaches its durable publication phase.
 
 On fabric-primary succession:
 
 ```text
 held Fabric identity
-    + Fabric.build_id -> accepted Build's meshes (from builds.storage)
+    + the current Build's meshes (from builds.storage)
     + complete current Mesh-status view
     + current-round completion evidence
     -> publish the held fabric lifecycle fact as current fabric-primary
@@ -305,7 +305,7 @@ A Mesh topology change is accepted by the fabric-primary as a Build, not an auth
 
 ```text
 fabric-primary accepts Build B21 naming mesh M
-    Fabric.build_id = B21
+    B21 is the current Build
 ```
 
 M comes into being with the `node.create` of its first node-admin ([node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent)). The joining Mesh counts toward Fabric completeness from the moment the accepted Build names it, before its Mesh row exists. A mesh join is a resize: the fabric returns to pending and climbs through state-sync, state-commit and ready-for-traffic again ([States](lifecycles/states.md#states)), and what a serving mesh does meanwhile is [States: Resize and roll](lifecycles/states.md#resize-and-roll).
@@ -348,7 +348,7 @@ Node RPC does not own a second Fabric/Mesh state machine or a second topology au
 
 ## 13. Node-admin storage, restart, and recovery
 
-The node-admin storage interfaces, `fabric.storage` and `builds.storage`, Build retention and crash-safe acceptance are [build.md §5.2](build.md#52-rafka-adapter) and [§5.3](build.md#53-node-admin-storage-boundaries); persisted copies are recovery copies, never topology writers ([§4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)). A fabric-primary change mid-Build continues the same Build. Each workflow is its own Build with its own `build_id`; one that keeps the accepted topology leaves `Fabric.build_id` where it is, and the node.create of a node-admin into a live mesh and fabric recovery run as the next attempt of the Build `Fabric.build_id` names ([§1](build.md#1-build-is-the-only-topology-mutation-engine), [§4.1](build.md#41-build-identity-is-active-reconciliation-state)). Runtime loss after a Build completed is [node recovery](lifecycles/node-recovery.md), which the lost node's mesh-primary starts. Inside Rafka, the [storage and relaunch policy](node-admin-lifecycle.md#7-rafka-storage-and-relaunch) owns when records leave the scratchpad and the on-disk last-ready snapshot.
+The node-admin storage interfaces, `fabric.storage` and `builds.storage`, Build retention and crash-safe acceptance are [build.md §5.2](build.md#52-rafka-adapter) and [§5.3](build.md#53-node-admin-storage-boundaries); persisted copies are recovery copies, never topology writers ([§4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)). A fabric-primary change mid-Build continues the same Build. Each topology change is its own Build with its own `build_id`; a workflow that keeps the accepted topology, the node.create of a node-admin into a live mesh and fabric recovery each run as the next attempt of the current Build ([§1](build.md#1-build-is-the-only-topology-mutation-engine), [§4.1](build.md#41-build-identity-is-active-reconciliation-state)). Runtime loss after a Build completed is [node recovery](lifecycles/node-recovery.md), which the lost node's mesh-primary starts. Inside Rafka, the [storage and relaunch policy](node-admin-lifecycle.md#7-rafka-storage-and-relaunch) owns when records leave the scratchpad and the on-disk last-ready snapshot.
 
 ### 13.1 Required recovery proofs
 

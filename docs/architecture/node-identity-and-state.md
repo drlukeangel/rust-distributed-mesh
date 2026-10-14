@@ -406,8 +406,8 @@ membership channel derived from its MeshId, and its `status`, one virtual topic 
 `<system_org>.ops.fabrics`, the same shape as `Mesh` on `ops.meshes` (§2.7). A fabric exists from the first node: one
 node in one mesh is a fabric of one mesh.
 
-- **Its fields** are `id`, `name`, `path`, `state`, `status` and `build_id`. `build_id` is `Fabric.build_id`, moved only by
-  the fabric-primary (`crates/rafka-entity-topology/src/record.rs::Fabric`).
+- **Its fields** are `id`, `name`, `path`, `state` and `status` (`crates/rafka-entity-topology/src/record.rs::Fabric`). It carries no
+  pointer to a Build: the current Build is read from the Builds newest first ([build.md §4](build.md#4-the-accepted-topology-is-the-fabric-primarys-current-build)).
 - **Its id is minted** (bare Crockford internally, displayed `fab_xxxx-xxxx-xxxx`). Its path is `""`, the root every
   mesh and node sits under, so its path.name is its name. A row that names the fabric it belongs to carries that id in
   a field named `fabric`; `endpoint_id` is a node's routing key (§2) and never names a fabric.

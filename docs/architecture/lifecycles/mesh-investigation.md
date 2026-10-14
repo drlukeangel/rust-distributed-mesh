@@ -56,15 +56,16 @@ diagnostic spans that open no node.create.
    and mesh-x's own MeshId: a node-admin joining a live mesh. The node.create carries mesh-x's
    MeshId, a seed and the mesh-primary launch mode, and the node-admin never mints a MeshId. It joins
    through its maker and reads topology as [a node-admin joins the live mesh](#a-node-admin-joins-the-live-mesh)
-   states. At that same moment, the fabric-primary authors FabricStatus degraded,
-   sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy).
+   states. At that same moment, both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded)
+   are marked degraded (R-DG1), on either arm: the 60 s carrier-edge-lost verdict and the fully crashed arm on
+   exact provider exit proof, sent under [gossip §3.2](../gossip.md#32-cadence-timers-only-for-heartbeat-and-anti-entropy).
    Probing itself sends no FabricStatus or MeshStatus.
 7. The joined node-admin, as mesh-x's successor primary, adopts the mesh's held state
    ([fabric authority §7](../fabric-authority.md#7-mesh-primary-takeover-is-hydration-not-transition)) and
    republishes its held MeshStatus, preserving changed_at, only after the
    fresh planned-birth round in [event-driven declarations](node-status.md#node-status-declaration).
-   Only on that report, the fabric-primary clears the degraded health observation. The
-   fabric-primary never authors mesh-x's MeshStatus. Fabric readiness is
+   Only on that report, the fabric-primary clears the degraded health observation on both the mesh and the fabric.
+   The fabric-primary never authors mesh-x's MeshStatus outside the investigation arms (R-DG1). Fabric readiness is
    [States](states.md#states)'s. Routing uses admitted births, lifecycle and connection
    facts; it never keys off FabricStatus; a mesh's status reaches routing only through the
    [one routing rule](states.md#routing-stop).
@@ -82,7 +83,7 @@ an unreachable node-admin. node.delete still requires exact provider exit proof.
 | 40 s | Fabric-primary → mesh-x's exact mesh-primary, then its other node-admins | as probe 1 | probe 2, prefer a different carrier member | `rdm.node_admin.mesh.update.via-probe` (`mesh`, `probe=2`, `member`, `carrier`, `outcome`); RPC call/serve chain below |
 | any time | Fabric-primary / answering admin | admin answer or direct backbone receipt | stop / cancel | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome`, `at`) |
 | 60 s | Fabric-primary | the decision step opens (no death proof); outstanding probes finish first | carrier-edge-lost: node.create of a node-admin; unreachable: hold, or node.create in process on exact provider exit proof (step 5) | `rdm.node_admin.mesh.update.via-probe-verdict` (`mesh`, `outcome=carrier-edge-lost or unreachable`, `at`) |
-| 60 s, carrier-edge-lost verdict | Fabric-primary / provider | same-Build node.create of a node-admin into mesh-x; FabricStatus degraded | mesh-x's MeshId; one status change | the span the code emits today is `rdm.node_admin.mesh.create.via-rebirth` (`mesh`, `at`) |
+| 60 s, carrier-edge-lost verdict | Fabric-primary / provider | same-Build node.create of a node-admin into mesh-x; MeshStatus and FabricStatus degraded (both arms, R-DG1) | mesh-x's MeshId; health marker | the span the code emits today is `rdm.node_admin.mesh.create.via-rebirth` (`mesh`, `at`) |
 | new primary ready-for-traffic | Mesh-x primary; fabric-primary | MeshStatus ready-for-traffic; FabricStatus ready-for-traffic | fabric ready-for-traffic requires [States](states.md#states) completion | readiness evidence and status dissemination below |
 
 The RPC chain uses `rdm.node_rpc.request.update.via-call` and
@@ -159,10 +160,11 @@ A pong proves the candidate answered, not that its node-admin is reachable. No r
 carrier-edge-lost and a Current answer are distinct evidence.
 
 No status or lifecycle gossip is sent at the 20 s/40 s probes or the 30 s silent mark.
-FabricStatus degraded is authored at the 60 s carrier-edge-lost verdict and travels as the
+At the 60 s carrier-edge-lost verdict, or on the fully crashed arm upon exact provider exit proof (both arms, R-DG1),
+both the mesh (`MeshStatus` degraded) and the fabric (`FabricStatus` degraded) are marked degraded, and travel as the
 [frame catalog](../gossip.md#31-frame-catalog) states. The joined node-admin, as mesh-primary, later
-authors its MeshStatus readiness after its fresh planned-birth round. Neither a probe nor degraded
-means the mesh is deleted.
+authors its MeshStatus readiness after its fresh planned-birth round, which clears the degraded marker on both the
+mesh and the fabric. Neither a probe nor degraded means the mesh is deleted.
 
 Trace propagation and correlation follow the
 [runtime spans](../node-rpc-envelope.md#runtime-spans).

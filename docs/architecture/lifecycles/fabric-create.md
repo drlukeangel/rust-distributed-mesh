@@ -26,7 +26,7 @@ page that owns each step is linked at the step.
 2. [node.create](node-create.md) for each mesh's first node-admin. A mesh comes into being with
    its first node-admin ([mesh absent](node-create.md#mesh-absent)).
 3. The first mesh's first node-admin is the first fabric-primary. It holds both seats, accepts the
-   first Build that `Fabric.build_id` names ([ready root](../build.md#101-ready-root--deadlock-guard)),
+   first Build ([ready root](../build.md#101-ready-root--deadlock-guard)),
    and creates the fabric row and its own mesh's row. Every other mesh's row is created by that
    mesh's primary.
 4. The fabric leaves pending for state-sync when every mesh the accepted Build names is
