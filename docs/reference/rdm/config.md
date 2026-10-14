@@ -18,7 +18,7 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (54 names)
 | `RDM_BACKBONE_INTERVAL_MS` | `crates/rafka-node-admin-core/src/admin.rs` | 160 | fn `AdminConfig::from_env` | literal |
 | `RDM_BACKBONE_INTERVAL_MS` | `tools/test-runner/src/lib.rs` | 41 | const `CADENCE` | literal |
 | `RDM_BIN_DIR` | `crates/rafka-node-admin-core/src/admin.rs` | 134 | fn `AdminConfig::from_env` | argument to `get` |
-| `RDM_BIN_DIR` | `crates/rafka-node-admin-core/src/admin.rs` | 6015 | fn `start_booted` | argument to `.insert` |
+| `RDM_BIN_DIR` | `crates/rafka-node-admin-core/src/admin.rs` | 6014 | fn `start_booted` | argument to `.insert` |
 | `RDM_BIN_DIR` | `crates/rafka-node-admin-core/src/deployment/container.rs` | 228 | fn `launch_disk` | argument to `.get` |
 | `RDM_BIN_DIR` | `crates/rafka-test-scenario/src/estate.rs` | 48 | fn `bin_dir` | argument to `std::env::var` |
 | `RDM_BIN_DIR` | `crates/rafka-test-scenario/src/estate.rs` | 464 | fn `ExternalLaunch::env` | in `vec!` |
@@ -83,8 +83,8 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (54 names)
 | `RDM_FABRIC_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 113 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
 | `RDM_FABRIC_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 114 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, in `format!` |
 | `RDM_FABRIC_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 194 | fn `AdminConfig::from_env` | `ENV_FABRIC_ID`, argument to `get` |
-| `RDM_FABRIC_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 3097 | fn `refuse_contradictory_start` | `ENV_FABRIC_ID`, argument to `.push` |
-| `RDM_FABRIC_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 5241 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
+| `RDM_FABRIC_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 3120 | fn `refuse_contradictory_start` | `ENV_FABRIC_ID`, argument to `.push` |
+| `RDM_FABRIC_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 5264 | fn `start_booted` | `ENV_FABRIC_ID`, in `format!` |
 | `RDM_FABRIC_ID` | `crates/rafka-test-scenario/src/estate.rs` | 227 | fn `spawn_admin_in_container_within` | argument to `.push` |
 | `RDM_FABRIC_PRIMARY` | `crates/rafka-mesh-entity/src/launch.rs` | 44 | const `ENV_FABRIC_PRIMARY` | literal |
 | `RDM_FABRIC_PRIMARY` | `crates/rafka-node-admin-core/src/admin.rs` | 168 | fn `AdminConfig::from_env` | `ENV_FABRIC_PRIMARY`, argument to `get` |
@@ -112,9 +112,9 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (54 names)
 | `RDM_MESH_ID` | `crates/rafka-mesh-entity/src/launch.rs` | 206 | fn `Launch::to_env` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rafka-mesh-entity/src/launch.rs` | 232 | fn `Launch::from_env` | `ENV_MESH_ID`, argument to `get` |
 | `RDM_MESH_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 200 | fn `AdminConfig::from_env` | argument to `get` |
-| `RDM_MESH_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 3094 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, argument to `.push` |
-| `RDM_MESH_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 3108 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, in `format!` |
-| `RDM_MESH_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 4040 | fn `AdminRunner::template_for` | `ENV_MESH_ID`, argument to `.insert` |
+| `RDM_MESH_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 3117 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, argument to `.push` |
+| `RDM_MESH_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 3131 | fn `refuse_contradictory_start` | `ENV_MESH_ID`, in `format!` |
+| `RDM_MESH_ID` | `crates/rafka-node-admin-core/src/admin.rs` | 4063 | fn `AdminRunner::template_for` | `ENV_MESH_ID`, argument to `.insert` |
 | `RDM_MESH_ID` | `crates/rafka-node-admin-core/src/deployment/pipeline.rs` | 1527 | fn `DeploymentPipeline<'_>::create_to_ready_claimed` | `ENV_MESH_ID`, argument to `.get` |
 | `RDM_MESH_ISSUER` | `crates/rafka-mesh-entity/src/launch.rs` | 40 | const `ENV_MESH_ISSUER` | literal |
 | `RDM_MESH_ISSUER` | `crates/rafka-mesh-entity/src/launch.rs` | 209 | fn `Launch::to_env` | `ENV_MESH_ISSUER`, argument to `.insert` |
@@ -153,8 +153,8 @@ Every `RDM_*` and `RAFKA_*` environment name in RDM's non-test source (54 names)
 | `RDM_SEEDS` | `crates/rafka-mesh-entity/src/launch.rs` | 202 | fn `Launch::to_env` | `ENV_SEEDS`, argument to `.insert` |
 | `RDM_SEEDS` | `crates/rafka-mesh-entity/src/launch.rs` | 229 | fn `Launch::from_env` | `ENV_SEEDS`, argument to `get` |
 | `RDM_SEEDS` | `crates/rafka-node-admin-core/src/admin.rs` | 192 | fn `AdminConfig::from_env` | `ENV_SEEDS`, argument to `get` |
-| `RDM_SEEDS` | `crates/rafka-node-admin-core/src/admin.rs` | 3100 | fn `refuse_contradictory_start` | `ENV_SEEDS`, argument to `.push` |
-| `RDM_SEEDS` | `crates/rafka-node-admin-core/src/admin.rs` | 3108 | fn `refuse_contradictory_start` | `ENV_SEEDS`, in `format!` |
+| `RDM_SEEDS` | `crates/rafka-node-admin-core/src/admin.rs` | 3123 | fn `refuse_contradictory_start` | `ENV_SEEDS`, argument to `.push` |
+| `RDM_SEEDS` | `crates/rafka-node-admin-core/src/admin.rs` | 3131 | fn `refuse_contradictory_start` | `ENV_SEEDS`, in `format!` |
 | `RDM_STALENESS_MS` | `crates/rafka-mesh-entity/src/cadence.rs` | 35 | fn `Cadences::from_env` | argument to `ms` |
 | `RDM_STALENESS_MS` | `crates/rafka-node-admin-core/src/admin.rs` | 160 | fn `AdminConfig::from_env` | literal |
 | `RDM_STALENESS_MS` | `tools/test-runner/src/lib.rs` | 39 | const `CADENCE` | literal |

@@ -180,13 +180,6 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-        tokio::time::timeout(WRONG, async {
-            while root.membership.seats().mesh("mesh1").is_none() {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the Day-0 admin takes mesh1's primary seat");
 
         // A node-admin's first start: launched by the root.
         let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);

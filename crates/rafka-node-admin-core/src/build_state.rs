@@ -3114,5 +3114,62 @@ mod tests {
         let view_succ = serde_json::to_value(j_successor.read_build(&id).await.unwrap()).unwrap();
         assert_eq!(view_succ["state"], "complete");
         assert_eq!(view_succ["lanes"]["mesh2"]["state"], "complete", "fresh successor reads both fabric/builds and meshes/mesh2/builds: {view_succ}");
+
+        // 3. One fact gets one source (R-BI6): `holds_fabric` and `holds_mesh` read only the seat
+        // record in `book.seats` (`SeatRecord::Open { holder: Some(_) }`), never `!launched` or the
+        // backbone publisher flag. An admin booting on an inherited root while a primary lives
+        // elsewhere (`sole_node_root == false`) has no seat record naming its birth in `book.seats`
+        // (or the seat record names the primary living elsewhere), so it does NOT sync a journal it
+        // does not own. Once the seat record in `book.seats` names its birth, it syncs the journal
+        // it owns.
+        let book = rafka_mesh_transport::membership::DigestBook::default();
+        let elsewhere_node = crate::model::NodeId::mint();
+        let elsewhere_inc = crate::model::IncarnationId::mint();
+        book.seats.take(
+            rafka_mesh_entity::Seat::FabricPrimary,
+            &rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: elsewhere_node.clone(), incarnation: elsewhere_inc.clone(), revision: 1 },
+        );
+        book.seats.take(
+            rafka_mesh_entity::Seat::MeshPrimary,
+            &rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: elsewhere_node, incarnation: elsewhere_inc, revision: 1 },
+        );
+        let booting_me = (crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
+        let booting_name: crate::model::PathName = "mesh1.admin.2".parse().unwrap();
+        let records = std::sync::Arc::new(crate::admin::Records::default());
+        records.set_me(booting_me.0.clone());
+        records.set_book(book.clone());
+        let f_seat = crate::admin::fabric_seat_source(&book, &records, booting_me.clone(), &booting_name);
+        let m_seat = crate::admin::mesh_seat_source(&book, &records, booting_me.clone(), &booting_name, "mesh1");
+        let j_unseated = FileJournal::open_on_root(&crate::store_root::StoreRoot::at(root_pre.dir()), "mesh1").await.unwrap();
+        j_unseated.set_fabric_seat(
+            std::sync::Arc::new(|| Ok(())),
+            std::sync::Arc::new(move || matches!((f_seat.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })),
+            std::sync::Arc::new(move || matches!((m_seat.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) })),
+        );
+        assert_eq!(
+            j_unseated.current_build().await.unwrap(),
+            CurrentBuild::None,
+            "an admin booting on an inherited root while a primary lives elsewhere holds no seat record in book.seats and does not sync fabric/builds or meshes/mesh1/builds"
+        );
+        assert!(
+            j_unseated.facts().await.unwrap().is_empty(),
+            "no journal lines synced when book.seats names another primary"
+        );
+        // Once this birth holds the seat record in `book.seats` (at revision 2), the same single
+        // source reports `holds_fabric == true` and `holds_mesh == true`, and `j_unseated` syncs the
+        // journal it now owns.
+        book.seats.take(
+            rafka_mesh_entity::Seat::FabricPrimary,
+            &rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: booting_me.0.clone(), incarnation: booting_me.1.clone(), revision: 2 },
+        );
+        book.seats.take(
+            rafka_mesh_entity::Seat::MeshPrimary,
+            &rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: booting_me.0, incarnation: booting_me.1, revision: 2 },
+        );
+        assert_eq!(
+            j_unseated.current_build().await.unwrap(),
+            CurrentBuild::Completed(id),
+            "once book.seats records this birth as holder, it syncs the journal from the shared store root"
+        );
     }
 }

@@ -5011,7 +5011,7 @@ impl DigestBook {
         if self.own.lock().unwrap().as_deref() == Some(op.node_id.as_str()) {
             return false;
         }
-        let held_digest = self.get(op.node_id.as_str()).map(|(d, _)| d);
+        let held_digest = self.get(op.node_id.as_str()).map(|(d, _)| d).or_else(|| self.projected.lock().unwrap().get(op.node_id.as_str()).map(|(d, _)| d.clone()));
         let held = held_digest.as_ref().map(|d| (d.node.incarnation.clone(), d.digest_seq, d.status));
         if held.as_ref().is_some_and(|(inc, _, _)| *inc != op.incarnation) {
             return false;
@@ -5021,6 +5021,13 @@ impl DigestBook {
         }
         let new = self.in_flight.lock().unwrap().insert(op.key(), op.clone()).is_none();
         if !new {
+            if carried.is_some() {
+                if let Some(m) = self.stopped_marks.lock().unwrap().get_mut(op.node_id.as_str()) {
+                    if m.incarnation == op.incarnation && m.carried.is_none() {
+                        m.carried = carried;
+                    }
+                }
+            }
             return false;
         }
         self.overlays_moved();

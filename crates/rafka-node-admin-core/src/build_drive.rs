@@ -91,6 +91,9 @@ pub trait Gate: Send + Sync {
     async fn seats_acknowledged(&self, _updates: &[PrecedingUpdate], _build_id: &BuildId, _attempt: u32) -> Result<(), String> {
         Ok(())
     }
+    /// Refresh the fabric-primary's book and view from any completed stop-node receipt of `build_id`
+    /// before `BuildReply::Complete` goes out on the caller's stream.
+    async fn attempt_completed(&self, _build_id: &BuildId, _attempt: u32) {}
 }
 
 /// The seat update that precedes an operation on a seat holder (R-MT1), named as its committed row
@@ -1123,6 +1126,7 @@ impl DriveEnv {
                     dspan.record("outcome", "complete");
                     self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::Converged }).await;
                     self.release_mesh(&id, attempt, &executor).await;
+                    self.gate.attempt_completed(&id, attempt).await;
                     drive.finish(t);
                     return DriveEnd::Terminal;
                 }

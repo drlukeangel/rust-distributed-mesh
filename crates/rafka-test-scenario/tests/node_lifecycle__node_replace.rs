@@ -983,12 +983,8 @@ async fn stop_and_rename(estate: &Estate, nodes: &Nodes, node: &str) -> Parked {
     let fabric_primary = s(&estate.node_values().await.into_iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
     let stopped = frames(nodes.stop(&path).await.expect("the stop was accepted")).await;
     assert_eq!(stopped.last(), Some(&Frame::Complete), "{stopped:?}");
-    let (mesh, parked) = wait_for(&format!("node.get lists the stopped {node} parked"), Duration::from_secs(30), || async {
-        let mesh = nodes.get(&NodeSelector::Mesh(path.mesh.clone())).await.ok()?;
-        let parked = mesh.iter().find(|n| n.name == path && n.parked).cloned()?;
-        Some((mesh, parked))
-    })
-    .await;
+    let mesh = nodes.get(&NodeSelector::Mesh(path.mesh.clone())).await.expect("node.get");
+    let parked = mesh.iter().find(|n| n.name == path && n.parked).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node} parked at once after Complete: {mesh:#?}"));
     let primary = mesh.iter().find(|n| n.kind == rafka_mesh_entity::NodeKind::NodeAdmin && n.is_primary).cloned().expect("the node's mesh-primary");
     let birth = rafka_node_admin_client::ExactBirth {
         target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()),

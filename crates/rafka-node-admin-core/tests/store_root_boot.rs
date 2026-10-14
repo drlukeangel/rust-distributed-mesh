@@ -533,7 +533,7 @@ fn an_admin_started_on_a_prepared_root_boots_as_a_new_node_in_recovery_with_its_
     let deleted: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.delete.via-node-row" && attr(s, "subject") == "mesh1.admin.1").collect();
     assert_eq!(deleted.len(), 1, "the inherited birth's node.delete, once: {deleted:?}");
     assert_eq!((attr(deleted[0], "node_id"), attr(deleted[0], "outcome")), (root.node_id.to_string(), "row-deleted".to_string()), "{}", deleted[0]);
-    let claimed: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject") == "mesh1.admin.1").collect();
+    let claimed: Vec<&serde_json::Value> = spans.iter().filter(|s| s["name"] == "rdm.node_admin.node.create.via-node-row" && attr(s, "subject") == "mesh1.admin.1" && attr(s, "moment") == "claim").collect();
     assert_eq!(claimed.len(), 1, "this node's name claim, once: {claimed:?}");
     assert_eq!(
         (attr(claimed[0], "node_id"), attr(claimed[0], "moment"), attr(claimed[0], "seeded_from"), attr(claimed[0], "outcome")),

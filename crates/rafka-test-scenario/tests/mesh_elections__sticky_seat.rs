@@ -520,11 +520,26 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     assert!(sp_end(&p_said) <= at_ns(&h_claim), "H claimed only after P said primary updated: {h_claim:#?}");
     let h_dispatch = one("rdm.node_admin.build.update.via-dispatch", &|sp| attr(sp, "node") == h_name && attr(sp, "build_id") == build && num(sp, "attempt") == Some(transfer_attempt + 1));
     assert!(sp_end(&p_said) <= at_ns(&h_dispatch), "H dispatched the replace only after P said primary updated: {h_dispatch:#?}");
-    // The replace's steps on P, its stop first, run from H's attempt, after P's "primary updated".
+    // The replace's steps on P (lifecycles/node-replace.md steps 2 and 6): P's own stop (step 2) runs in
+    // H's attempt `transfer_attempt + 1`, after P's "primary updated". Step 6 (`node[2].start` of `<P>.new`
+    // after step 5 renamed it to P) runs in `transfer_attempt + 1` when H is N, or in `transfer_attempt + 3`
+    // when H is `<P>.new` (elections.md §3: lowest Ready NodeId of P's mesh): H stops and renames P in
+    // `transfer_attempt + 1`, claims `transfer_attempt + 2` for its own `node.primary.update` to N before
+    // step 4 (`node[2].stop` of `<P>.new`, node-stop.md "Seat holder", node-primary-update.md steps 1 & 8),
+    // and N stops, renames and starts `<P>.new` as P in `transfer_attempt + 3`.
     let mut p_steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| attr(sp, "build_id") == build && attr(sp, "node") == p && num(sp, "attempt").is_some_and(|a| a >= transfer_attempt)).collect();
     p_steps.sort_by_key(|sp| at_ns(sp));
-    assert!(!p_steps.is_empty() && num(p_steps[0], "attempt") == Some(transfer_attempt + 1), "the replace's steps on P ran from attempt {}: {p_steps:#?}", transfer_attempt + 1);
-    assert!(p_steps.iter().all(|sp| num(sp, "attempt").is_some_and(|a| a > transfer_attempt) && at_ns(sp) >= sp_end(&p_said)), "no step on P ran before P said primary updated, nor in P's own attempt: {p_steps:#?}");
+    let start_attempt = if h_id == successor_id { transfer_attempt + 3 } else { transfer_attempt + 1 };
+    assert!(!p_steps.is_empty() && num(p_steps[0], "attempt") == Some(transfer_attempt + 1), "P's stop began in attempt {}: {p_steps:#?}", transfer_attempt + 1);
+    for sp in &p_steps {
+        let expected = if attr(sp, "step").starts_with("Start") || attr(sp, "step") == "AwaitNodeJoined" {
+            start_attempt
+        } else {
+            transfer_attempt + 1
+        };
+        assert_eq!(num(sp, "attempt"), Some(expected), "step {} on P ran in its exact attempt: {sp:#?}", attr(sp, "step"));
+        assert!(at_ns(sp) >= sp_end(&p_said), "no step on P ran before P said primary updated: {sp:#?}");
+    }
     // No seatless window: from the replace until the fabric is ready again (the fabric's own
     // shutdown after that is not this cell's story), no observer resolves P's mesh or the fabric
     // with nobody.

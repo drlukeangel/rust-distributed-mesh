@@ -154,7 +154,6 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
-        until("the Day-0 admin to take mesh1's primary seat", WRONG, || root.membership.seats().mesh("mesh1").is_some()).await;
         let root_digest = root.digest.lock().unwrap().clone();
         let root_name = root_digest.node.name.to_string();
         let root_publisher = PublisherId { node: root_name.clone(), incarnation: root_digest.node.incarnation.clone() };

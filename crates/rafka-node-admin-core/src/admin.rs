@@ -470,7 +470,10 @@ impl Records {
         };
         let ready = crate::status_rpc::event_key(&rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic);
         match crate::status_rpc::commit_fabric_event(&**fold.storage(), &self.declared, fabric_id, &ready).await {
-            r @ (rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) => Ok(r),
+            r @ (rafka_node_rpc_contract::status::StatusReply::Applied | rafka_node_rpc_contract::status::StatusReply::AlreadyApplied) => {
+                self.first_ready.reach("ready-for-traffic");
+                Ok(r)
+            }
             rafka_node_rpc_contract::status::StatusReply::NotReady { reason } => Err(format!("the status rows of mesh {} on the store root: {reason}", fold.mesh())),
             other => Err(format!("the status rows of mesh {} on the store root answered {}", fold.mesh(), other.name())),
         }
@@ -2348,6 +2351,9 @@ struct SeatGate {
     /// The 0x21 door node.primary.update is commanded and run through, which holds what each update
     /// was answered and said (`HandoverDoor::memo`).
     handover: Arc<crate::fabric_handover::HandoverDoor>,
+    /// Projects the book into the view now, so a completed stop-node lists the stopped birth parked
+    /// before `BuildReply::Complete` goes out on the caller's stream.
+    project: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>,
 }
 
 #[async_trait::async_trait]
@@ -2407,6 +2413,23 @@ impl crate::build_drive::Gate for SeatGate {
             self.handover.row_acknowledged(&u.mesh, &u.operation, u.holder.as_ref(), build_id.as_str(), attempt).await?;
         }
         Ok(())
+    }
+
+    async fn attempt_completed(&self, build_id: &crate::build::BuildId, _attempt: u32) {
+        if let Ok(p) = self.builds.read_build(build_id).await {
+            let mut stopped = false;
+            for s in &p.steps {
+                if s.operation.starts_with("stop-node:") && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete {
+                    stopped = true;
+                    if let Some(op) = s.output.as_ref().and_then(|v| serde_json::from_value::<rafka_mesh_entity::LifecycleOp>(v.clone()).ok()) {
+                        let _ = self.membership.book.stopped(op);
+                    }
+                }
+            }
+            if stopped {
+                (self.project)().await;
+            }
+        }
     }
 }
 
@@ -5590,8 +5613,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 let member_cert: Option<Vec<u8>> = joined.as_ref().map(|a| a.control.member_cert.clone());
                 // The fabric's Day-0 root has no authority above it: it adopts its own OS clock as rafka-time,
                 // once, here. A recovery start (a flag or an inherited root) takes it from the nodes it reaches below.
+                let mut sole_node_root = false;
                 if cfg.launch.is_none() && inherited.is_none() && !cfg.mesh_primary && !cfg.fabric_primary {
                     crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_DAY0_ROOT);
+                    sole_node_root = true;
                 }
                 let mesh_id = match (&cfg.mesh_id, &joined) {
                     (Some(id), _) => id.clone(),
@@ -5643,6 +5668,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                     }
                     if contacts.is_empty() && (inherited.is_some() || seed_addrs.is_empty()) {
                         crate::rafka_time::adopt_own_clock(&boot, &rafka_time, &name.to_string(), crate::rafka_time::OWN_CLOCK_NOTHING_ALIVE);
+                        sole_node_root = true;
                     } else {
                         crate::rafka_time::adopt_from_reachable(&rafka_time, &name, &node_rpc.client, &node_rpc_resolver, &membership, contacts, &boot)
                             .await
@@ -5688,6 +5714,12 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // file store reads the committed fabric seat record, as the Build gate does.
                 fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
                 {
+                    if sole_node_root && inherited.is_some() {
+                        // Nothing-Alive recovery on an inherited root (fabric-recovery.md "Nothing alive"): every
+                        // node the store names is confirmed gone by the provider, so no primary lives elsewhere; load
+                        // the existing Build journal once before locking `journal` to `membership.book.seats`.
+                        let _ = journal.current_build().await;
+                    }
                     let seat = fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name);
                     let seat_for_holds = seat.clone();
                     let gate = Arc::new(move || match (seat.read)() {
@@ -5697,43 +5729,10 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                         )),
                         crate::fabric_builds::SeatRecord::Open { .. } => Ok(()),
                     });
-                    let launched = cfg.launch.is_some();
-                    let (book, records_f, fabric_name, fabric_id, me_id, bb) = (
-                        membership.book.clone(),
-                        records.clone(),
-                        cfg.fabric.clone(),
-                        cfg.fabric_id.clone(),
-                        node_id.clone(),
-                        backbone.clone(),
-                    );
-                    let holds_fabric = Arc::new(move || match (seat_for_holds.read)() {
-                        crate::fabric_builds::SeatRecord::Open { holder: Some(_) } => true,
-                        crate::fabric_builds::SeatRecord::Moved { .. } => false,
-                        crate::fabric_builds::SeatRecord::Open { holder: None } => {
-                            !launched
-                                || bb.is_fabric_primary()
-                                || project(&fabric_name, &fabric_id, ProviderKind::Process, &book, &records_f).holds_fabric_seat(&me_id)
-                        }
-                    });
+                    // One fact gets one source (R-BI6): the seat record held in `membership.book.seats`.
+                    let holds_fabric = Arc::new(move || matches!((seat_for_holds.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) }));
                     let mesh_seat_for_holds = mesh_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name, &own_mesh);
-                    let (book_m, records_m, fabric_name_m, fabric_id_m, me_id_m, mesh_m, bb_m) = (
-                        membership.book.clone(),
-                        records.clone(),
-                        cfg.fabric.clone(),
-                        cfg.fabric_id.clone(),
-                        node_id.clone(),
-                        own_mesh.clone(),
-                        backbone.clone(),
-                    );
-                    let holds_mesh = Arc::new(move || match (mesh_seat_for_holds.read)() {
-                        crate::fabric_builds::SeatRecord::Open { holder: Some(_) } => true,
-                        crate::fabric_builds::SeatRecord::Moved { .. } => false,
-                        crate::fabric_builds::SeatRecord::Open { holder: None } => {
-                            !launched
-                                || bb_m.is_mesh_primary()
-                                || project(&fabric_name_m, &fabric_id_m, ProviderKind::Process, &book_m, &records_m).holds_mesh_seat(&mesh_m, &me_id_m)
-                        }
-                    });
+                    let holds_mesh = Arc::new(move || matches!((mesh_seat_for_holds.read)(), crate::fabric_builds::SeatRecord::Open { holder: Some(_) }));
                     journal.set_fabric_seat(gate, holds_fabric, holds_mesh);
                 }
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
@@ -5807,11 +5806,11 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                 None => {
                                     // Day 0: no Fabric authority exists before this admin. It accepts the first Build, its
                                     // own mesh with one node-admin; it is the current Build once written.
-                                    if inherited.is_some() {
+                                    if sole_node_root && inherited.is_some() {
                                         let build_id = builds.current_build().await.map_err(|e| format!("refusing to start: the builds store cannot be read for the current Build: {e}"))?.into_build_id().map(|b| b.to_string()).unwrap_or_default();
                                         tracing::info_span!(parent: &boot, "rdm.node_admin.fabric.update.via-inherited-root", node = %name, build_id = %build_id)
                                             .in_scope(|| tracing::info!("the current Build reloaded from the inherited data dir's builds store"));
-                                    } else if cfg.fabric_primary {
+                                    } else if cfg.fabric_primary || inherited.is_some() {
                                         tracing::info_span!("rdm.node_admin.fabric.update.via-recovery", node = %name, fabric_id = %cfg.fabric_id, mesh_id = %mesh_id)
                                             .in_scope(|| tracing::info!("a fabric recovery accepts no Build of its own: the current Build is taken from the nodes it reaches"));
                                     } else if matches!(builds.current_build().await, Ok(crate::build_state::CurrentBuild::None)) {
@@ -6112,25 +6111,18 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     local: journal.clone(),
                                     gate: park_gate.clone(),
                                 });
+                                let refresh_view = view_projector(name.clone(), control.topology.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider, book.clone(), records.clone());
                                 let env = Arc::new(crate::build_drive::DriveEnv {
                                     me: name.clone(),
                                     topology: control.topology.clone(),
                                     builds: builds_dyn.clone(),
                                     door: claim_door.clone(),
                                     dispatcher: Arc::new(crate::build_op::RpcDispatcher { me: name.clone(), local: run_door.clone(), client: node_rpc.client.clone(), topology: control.topology.clone() }),
-                                    gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), control: control.clone(), handover: handover.clone() }),
+                                    gate: Arc::new(SeatGate { membership: membership.clone(), builds: builds.clone(), control: control.clone(), handover: handover.clone(), project: refresh_view.clone() }),
                                     departure: Arc::new(ProviderDeparture {
                                         me: name.clone(),
                                         topology: control.topology.clone(),
-                                        refresh: {
-                                            let (me, topology, records, book, fabric, fabric_id, provider) = (name.clone(), control.topology.clone(), records.clone(), book.clone(), cfg.fabric.clone(), cfg.fabric_id.clone(), policy.provider);
-                                            Arc::new(move || {
-                                                let (me, topology, records, book, fabric, fabric_id) = (me.clone(), topology.clone(), records.clone(), book.clone(), fabric.clone(), fabric_id.clone());
-                                                Box::pin(async move {
-                                                    records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
-                                                })
-                                            })
-                                        },
+                                        refresh: refresh_view,
                                         book: book.clone(), provider: runner.provider.clone(), nodes: nodes_storage.clone(), records: records.clone() }),
                                     verdicts: Arc::new(crate::build_op::LocalVerdicts { local: journal.clone() }),
                                     turns: park_gate.clone(),
@@ -6506,7 +6498,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                         let (incarnation, node_id, mesh_id, fabric_id) = (incarnation.clone(), node_id.clone(), mesh_id.clone(), cfg.fabric_id.clone());
                                         let runtime = runtime.clone();
                                         let boot = boot.clone();
-                                        let (records, topology, authority, mesh_name) = (records.clone(), control.topology.clone(), authority.clone(), cfg.mesh.clone());
+                                         let (records, topology, authority, mesh_name, fabric_name, view_provider, backbone_ready) =
+                                            (records.clone(), control.topology.clone(), authority.clone(), cfg.mesh.clone(), cfg.fabric.clone(), policy.provider, backbone.clone());
                                         let park = park_gate.clone();
                                         tasks.push(tokio::spawn(async move {
                                             let mut reported = None;
@@ -6554,18 +6547,36 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                     },
                                                 }
                                                 if blocked.is_empty() {
+                                                    let d_ready = {
+                                                        let d = digest.lock().unwrap();
+                                                        if d.status != MemberStatus::Pending {
+                                                            break;
+                                                        }
+                                                        let mut d_ready = d.clone();
+                                                        d_ready.status = MemberStatus::ReadyForTraffic;
+                                                        d_ready
+                                                    };
+                                                    let _ = membership.publish(&d_ready).await;
+                                                    let reads = ViewReads::read(&me, &book, &records, &fabric_id).await;
+                                                    let decided = incumbency_of(&book, &records);
+                                                    let t = project_decided(&fabric_name, &fabric_id, view_provider, &book, &records, &decided, &reads);
+                                                    let live = membership.authorizes();
+                                                    for (seat, holder) in seat_announcements(&t, live, &mesh_name, (&node_id, &incarnation), &decided) {
+                                                        backbone_ready.announce_seat(seat, holder).await;
+                                                    }
                                                     // The current Build the hydration gate above found held: the Ready span names it,
                                                     // so "it held the current Build before Ready" is read off the Ready itself.
                                                     let held_build = match hydrated.current_build().await {
                                                         Ok(c) => c.into_build_id().map(|b| b.to_string()).unwrap_or_default(),
                                                         Err(e) => format!("unreadable: {e}"),
                                                     };
-                                                    let mut d = digest.lock().unwrap();
-                                                    if d.status != MemberStatus::Pending {
-                                                        break;
+                                                    {
+                                                        let mut d = digest.lock().unwrap();
+                                                        if d.status != MemberStatus::Pending {
+                                                            break;
+                                                        }
+                                                        d.status = MemberStatus::ReadyForTraffic;
                                                     }
-                                                    d.status = MemberStatus::ReadyForTraffic;
-                                                    drop(d);
                                                     records.wake.poke();
                                                     tracing::info_span!(
                                                         parent: &boot,
