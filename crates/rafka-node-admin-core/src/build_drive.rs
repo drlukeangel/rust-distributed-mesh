@@ -475,17 +475,22 @@ pub enum SeatMoveEnd {
     /// Not answered by node.primary.updated: after the row the seats are the successor's whatever the
     /// call returned, or the end is uncertain; the row, where one was written, stands.
     Incomplete(String),
-    /// After the row the successor the row names was proven exited (ruling R-PU2): the step fails by
-    /// name, [`crate::fabric_handover::SUCCESSOR_EXITED`], and the Build is Failed (R-BI4); the
-    /// ordinary rule seats whoever it seats and the workflow never goes on to the holder's operation.
-    SuccessorExited(String),
+    /// After the row the new holder's process is gone, provider-confirmed (ruling R-PU2, Q10): the
+    /// step ends `Failed { step, reason }`, the Build is Failed (R-BI4), the ordinary rule seats
+    /// whoever it seats, and the workflow never goes on to the holder's operation.
+    Failed {
+        /// The step that failed (`primary-update`).
+        step: String,
+        /// The failure reason recording the five facts.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for SeatMoveEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(why) | Self::Incomplete(why) => f.write_str(why),
-            Self::SuccessorExited(why) => write!(f, "{}: {why}", crate::fabric_handover::SUCCESSOR_EXITED),
+            Self::Failed { step, reason } => write!(f, "{step}: {reason}"),
         }
     }
 }
@@ -1074,50 +1079,30 @@ impl DriveEnv {
         Some(self.stalled(drive, why))
     }
 
-    /// The seats the first operation left moves before it runs (R-MT1, [`crate::executor::seat_move`]):
-    /// node.primary.update through the gate. A mesh-primary's seat is commanded from here, and the
-    /// fabric-primary keeps its own. `Ok(true)` once a seat moved (the loop passes the gates again: a
-    /// moved fabric seat ends this drive there), `Ok(false)` when no seat is owed, and the end, named,
-    /// when the seat did not move.
+    /// The seats the first operation left moves before it runs (R-MT1, [`crate::executor::seat_move`],
+    /// proposal Part C1 step 1: "The holder is commanded from above, as a step of the Build", Q10:
+    /// "The FP claims the attempt at the claim door BEFORE it commands"): attempt `attempt` is claimed
+    /// for this fabric-primary first and its run is held here while node.primary.update runs (whether
+    /// this admin moves its own seats or commands another mesh-primary's), so a successor that holds the
+    /// seats from the row reattaches to this attempt and goes on only once it ends, after the holder
+    /// said "primary updated" (step 8: "Only then does the commanding Build continue"; build.md: "A live
+    /// run is reattached, never re-claimed"). Refused before the row or ended `Failed { step, reason }`
+    /// after the row (ruling R-PU2, Q10): the attempt ends `Failed` and the Build is Failed (R-BI4).
+    /// Every other end hands the attempt to the view's fabric-primary, and when the seat moved
+    /// (`Ok(true)`) the loop passes the gates again.
     async fn seats_first(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Result<bool, DriveEnd> {
         let t = self.topology.read().await.clone();
         let Some(op) = left(drive, p, &t).into_iter().next() else { return Ok(false) };
         let Some(m) = crate::executor::seat_move(&op, &t) else { return Ok(false) };
         let attempt = p.attempt + 1;
         // The update's transfer key: the first attempt of the run this attempt belongs to, so the
-        // next run a resubmit opens makes a new transfer (ruling R-PU2).
+        // next run a resubmit opens makes a new transfer (ruling R-PU2, Q9).
         let run = p.run_of(attempt);
-        if m.holder.node_id == self.door.node_id {
-            return self.own_seats_first(drive, &op, &m, attempt, run).await;
-        }
-        if let Err(why) = self.gate.move_seats(&m, &drive.build_id, attempt, run, &op.key()).await {
-            let why = format!("{}: the seat of {} did not move before {}: {why}", self.me, m.holder.name, op.key());
-            self.blocked(drive, attempt, &op.key(), "primary-update", &why);
-            return Err(self.stalled(drive, why));
-        }
-        if still_holds(&op, &m, &self.topology.read().await.clone()) {
-            let why = format!("{}: node.primary.update of {} answered, and this view still names it the holder of the seat {} moves", self.me, m.holder.name, op.key());
-            self.blocked(drive, attempt, &op.key(), "primary-update", &why);
-            return Err(self.stalled(drive, why));
-        }
-        Ok(true)
-    }
-
-    /// This admin's own seats move before `op`, as a step of the Build (the approved proposal
-    /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 1: "The holder is commanded from
-    /// above, as a step of the Build"): attempt `attempt` is claimed for this admin first and its run is
-    /// held here while node.primary.update runs, so a successor that holds the seats from the row
-    /// reattaches to this attempt and goes on only once it ends, after this holder said "primary
-    /// updated" (step 8: "Only then does the commanding Build continue"; build.md: "A live run is
-    /// reattached, never re-claimed"). The attempt ends `HandedOff` to the fabric-primary of the view the
-    /// update ends with: the successor once the row moved the seats, this admin when nothing moved, and
-    /// then the drive waits for what its next attempt decides on to move ([`world`], R-BI4).
-    async fn own_seats_first(&self, drive: &Arc<Drive>, op: &BuildOperation, m: &crate::executor::SeatMove, attempt: u32, run: u32) -> Result<bool, DriveEnd> {
         let id = &drive.build_id;
         let context = match self.door.claim(&self.me.to_string(), id, attempt).await {
             BuildClaimReply::Won { context } => context,
             other => {
-                let why = format!("{}: its seats move before {} as a step of attempt {attempt} of Build {id}, and that attempt was not claimed for it: {}", self.me, op.key(), claim_refusal(&other));
+                let why = format!("{}: the seats of {} move before {} as a step of attempt {attempt} of Build {id}, and that attempt was not claimed for {}: {}", self.me, m.holder.name, op.key(), self.me, claim_refusal(&other));
                 self.blocked(drive, attempt, &op.key(), "primary-update", &why);
                 return Err(self.stalled(drive, why));
             }
@@ -1127,25 +1112,20 @@ impl DriveEnv {
         if let Some(tp) = &context.traceparent {
             rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
         }
-        let moved = self.gate.move_seats(m, id, attempt, run, &op.key()).instrument(dspan.clone()).await;
+        let moved = self.gate.move_seats(&m, id, attempt, run, &op.key()).instrument(dspan.clone()).await;
         let after = self.topology.read().await.clone();
-        let still = still_holds(op, m, &after);
+        let still = still_holds(&op, &m, &after);
         let to = match after.fabric_primary() {
             Some(fp) if !still => fp.name.clone(),
             _ => self.me.clone(),
         };
-        // Refused before the row: nothing changed and the Build's step fails by name (C1 failure
-        // contract; R-BI4: only a named terminal failure makes the Build failed). The successor proven
-        // exited after the row: the step fails by name whoever the ordinary rule seats, this admin
-        // included, and the workflow never goes on to the operation (ruling R-PU2 recovery order 4).
-        // Every other end hands the attempt to the view's fabric-primary.
-        let refused = match &moved {
-            Err(SeatMoveEnd::Refused(why)) => Some(format!("{}: its seats did not move before {}: node.primary.update was refused before its row: {why}", self.me, op.key())),
-            Err(exited @ SeatMoveEnd::SuccessorExited(_)) => Some(format!("{exited}; {} does not run {}", self.me, op.key())),
+        let failed = match &moved {
+            Err(SeatMoveEnd::Refused(why)) => Some(("primary-update".to_string(), format!("{}: the seats of {} did not move before {}: node.primary.update was refused before its row: {why}", self.me, m.holder.name, op.key()))),
+            Err(SeatMoveEnd::Failed { step, reason }) => Some((step.clone(), reason.clone())),
             _ => None,
         };
-        let terminal = match &refused {
-            Some(why) => BuildReply::Failed { build_id: id.to_string(), attempt, operation: op.key(), step: "primary-update".into(), reason: crate::build_run::bounded_reason(why.clone()) },
+        let terminal = match &failed {
+            Some((step, why)) => BuildReply::Failed { build_id: id.to_string(), attempt, operation: op.key(), step: step.clone(), reason: crate::build_run::bounded_reason(why.clone()) },
             None => BuildReply::HandedOff { build_id: id.to_string(), attempt, to: to.to_string() },
         };
         // The verdict's writer releases the mesh's in-flight row the claim took (R-BI7 caveat 3), at
@@ -1164,7 +1144,7 @@ impl DriveEnv {
                 }
             },
         }
-        if let Some(why) = refused {
+        if let Some((_, why)) = failed {
             dspan.record("outcome", "failed").record("reason", why.as_str());
             drive.finish(terminal);
             return Err(DriveEnd::Terminal);
