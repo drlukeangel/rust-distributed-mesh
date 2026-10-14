@@ -1889,8 +1889,8 @@ landed this session: R-ML3 (fabric-recovery, mesh-investigation), R-PB1/R-PC1 (f
 
 ### Remaining
 
-- [ ] build.md for R-BI1 (each topology change is its own Build) and R-BI3 (no Fabric pointer, LIFO read); mesh-investigation step 6 and :162 for R-DG1 (degraded on mesh and fabric, both arms); gossip.md ~:118 and ~:154 for R-RX4; the envelope 0x1C RejectedNotAuthority line (Luke's yes); the lifecycle index node.tags row; the consolidation's page renames; regenerate docs/reference/rdm after each RDM landing
-- [ ] fabric-node-lifecycle-elections.md §5 ("Election movement never changes Fabric.build_id") and every architecture line naming Fabric.build_id as a pointer: the current Build is read LIFO (R-BI3, R-BI4); build.md for R-BI4 (an attempt lost with its executor leaves the Build in progress)
+- [x] build.md for R-BI1 (each topology change is its own Build) and R-BI3 (no Fabric pointer, LIFO read); mesh-investigation step 6 and :162 for R-DG1 (degraded on mesh and fabric, both arms); gossip.md ~:118 and ~:154 for R-RX4; the envelope 0x1C RejectedNotAuthority line (Luke's yes); the lifecycle index node.tags row; the consolidation's page renames; regenerate docs/reference/rdm after each RDM landing
+- [x] fabric-node-lifecycle-elections.md §5 ("Election movement never changes Fabric.build_id") and every architecture line naming Fabric.build_id as a pointer: the current Build is read LIFO (R-BI3, R-BI4); build.md for R-BI4 (an attempt lost with its executor leaves the Build in progress)
 - [x] (applied 2026-10-13 on Luke's direction, merged with that day's decisions Q2-Q10) the approved node.primary.update proposal's doc edits: a docs seat's attempt (97ebf365b1, 9e0e3bf757, 441f463f2a, 3d98dfd16c) was reverted (5f8db8a2d7..550c07cbe4) — it went beyond the listed edits and was relayed unread. Redo only on Luke's direction, each edit read by the lead before it is reported
 - [x] (done 2026-10-12, with the Fence→Target rename) R-UC1a's doc lines (envelope §0's 425 row, the reserved-code 425, node-rpc.md :480/:595) and the R-BI3 pointer sweep (build proposal A2) on Luke's yes
 
