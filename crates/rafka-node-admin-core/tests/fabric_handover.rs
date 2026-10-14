@@ -1366,8 +1366,8 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
         let calls = |to: &str| -> Vec<String> { spans.named(CALL).into_iter().filter(|f| f.get("op").map(String::as_str) == Some("33") && f.get("target").is_some_and(|t| t.contains(to))).map(|f| f.get("outcome").cloned().unwrap_or_else(|| "open".into())).collect() };
         let call_lines = || spans.lines().into_iter().filter(|l| l.contains(CALL)).collect::<Vec<_>>().join("\n");
         let out = tokio::time::timeout(std::time::Duration::from_secs(20), first).await.expect("an update whose successor was lost mid-call ends: it is never sent again on its own").unwrap();
-        let e = out.expect_err("a successor proven exited answered nothing").to_string();
-        assert!(e.contains("incomplete") && e.contains(rafka_node_admin_core::fabric_handover::SUCCESSOR_EXITED) && e.contains(&n_id) && e.contains(op), "the end is P's answer naming the failure, the successor and the operation: {e}\nthe 0x21 calls:\n{}", call_lines());
+        holder_gone_after_row(&out, &n, op, &["mesh-primary (mesh1) revision 4"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh2.admin.1 (000000000001)"]);
+        assert_seated_again_order(&spans, &[("mesh-primary", "5")]);
         let (to_p, to_n) = (calls(&p_id), calls(&n_id));
         assert!(to_p == ["Reply"] && to_n.len() == 1 && to_n[0] != "Reply" && to_n[0] != "open", "X's command answered by P; P's one call to N ended by name and was retried no more:\n{}", call_lines());
         let looks = spans.named(LADDER);
@@ -1384,8 +1384,7 @@ fn a_successor_proven_exited_after_the_row_vacates_its_seat_for_the_ordinary_rul
         assert_eq!(primary.as_deref(), Some("mesh1.admin.1"), "N's seat vacated on the proof and P's view seats the ordinary rule's choice, the lowest ReadyForTraffic NodeId of mesh1's node-admins not proven gone");
         // X's next attempt: P replays from its row, N's exit is proven, and N is called no more.
         let out = tokio::time::timeout(std::time::Duration::from_secs(20), x.door.command_update_primary(&p_node, "b1", 2, op)).await.expect("the next attempt ends");
-        let e = out.expect_err("no second update under the operation").to_string();
-        assert!(e.contains(op) && e.contains(&n_id) && e.contains("exit is proven"), "{e}");
+        holder_gone_after_row(&out, &n, op, &["mesh-primary (mesh1) revision 4"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh2.admin.1 (000000000001)"]);
         assert_eq!((calls(&p_id).len(), calls(&n_id).len()), (2, 1), "the next command answered by P, which called N no more:\n{}", call_lines());
         assert_eq!(spans.named(LADDER).len(), 1, "no second look at a birth proven exited");
         assert!(refusals(&spans).iter().any(|(side, reason, _)| side == "holder" && reason == "exit-proven"), "{:?}", refusals(&spans));
@@ -1406,16 +1405,17 @@ async fn n_runtime_recorded(f: &Seats) -> String {
     deployment
 }
 
-/// N's process is gone: its runtime `deployment` exited and its endpoint closed.
-async fn n_exits(f: &Seats, deployment: &str) {
+/// N's process is gone: its runtime `deployment` is confirmed gone by the provider and its endpoint closed.
+async fn n_process_gone(f: &Seats, deployment: &str) {
     f.p.provider.exited.lock().unwrap().insert(deployment.to_string());
     let _ = f.n._router.shutdown().await;
 }
 
 /// P moves both its seats to N by its own node.primary.update in attempt `attempt` under
-/// `operation`; N installs from P's row and dies there (its view never opens, so it never answers),
-/// and `between` runs once N installed, before N's runtime exits. Returns how the update ended.
-async fn p_moves_to_n_and_n_exits<B: std::future::Future<Output = ()>>(f: &Seats, attempt: u32, operation: &str, between: impl FnOnce() -> B) -> Result<Vec<CommittedSeat>, rafka_node_admin_core::build_drive::SeatMoveEnd> {
+/// `operation`; N installs from P's row and its process is gone there (its view never opens, so it
+/// never answers), and `between` runs once N installed, before N's process is gone. Returns how the
+/// update ended.
+async fn p_moves_to_n_and_n_gone<B: std::future::Future<Output = ()>>(f: &Seats, attempt: u32, operation: &str, between: impl FnOnce() -> B) -> Result<Vec<CommittedSeat>, rafka_node_admin_core::build_drive::SeatMoveEnd> {
     let deployment = n_runtime_recorded(f).await;
     f.n.view_open.send_replace(false);
     let moving = tokio::spawn({
@@ -1424,85 +1424,133 @@ async fn p_moves_to_n_and_n_exits<B: std::future::Future<Output = ()>>(f: &Seats
     });
     until("N installed mesh1's seat from P's row", || f.n.door.membership.seats().mesh("mesh1").is_some_and(|h| h.is_birth(&f.n.resolved.node_id, &f.n.resolved.incarnation))).await;
     between().await;
-    n_exits(f, &deployment).await;
-    tokio::time::timeout(std::time::Duration::from_secs(20), moving).await.expect("an update whose successor died after the row ends").unwrap()
+    n_process_gone(f, &deployment).await;
+    tokio::time::timeout(std::time::Duration::from_secs(20), moving).await.expect("an update whose new holder's process is gone after the row ends").unwrap()
 }
 
-/// The end a successor proven exited after the row gives P's own update: the step's named failure.
-fn successor_exited(end: &Result<Vec<CommittedSeat>, rafka_node_admin_core::build_drive::SeatMoveEnd>, n: &Admin, operation: &str) -> String {
+const GONE_AFTER_ROW: &str = "the new holder's process is gone, provider-confirmed, after the committed row";
+
+/// Asserts `end` is `SeatMoveEnd::Failed { step: "primary-update", reason }` whose plain-English
+/// reason starts with `GONE_AFTER_ROW` and records all five required facts: (1) the step, (2) the new
+/// holder's node id and incarnation, (3) the seats the row moved with their revisions (never "epoch"),
+/// (4) who the ordinary rule seated, and (5) the provider's proof that the new holder's process is gone.
+fn holder_gone_after_row(end: &Result<Vec<CommittedSeat>, rafka_node_admin_core::build_drive::SeatMoveEnd>, n: &Admin, operation: &str, moved_revisions: &[&str], seated: &[&str]) -> String {
     match end {
-        Err(e @ rafka_node_admin_core::build_drive::SeatMoveEnd::SuccessorExited(_)) => {
-            let text = e.to_string();
-            assert!(text.starts_with(rafka_node_admin_core::fabric_handover::SUCCESSOR_EXITED) && text.contains(&n.resolved.node_id.to_string()) && text.contains(operation), "the step fails by name, naming the successor and the operation: {text}");
-            text
+        Err(rafka_node_admin_core::build_drive::SeatMoveEnd::Failed { step, reason }) => {
+            assert_eq!(step, "primary-update", "the step is primary-update: {reason}");
+            assert!(reason.starts_with(GONE_AFTER_ROW), "the failure reason starts with the plain-English prefix: {reason}");
+            assert!(reason.contains(&format!("step primary-update ({operation})")), "(1) the reason records the step and its operation: {reason}");
+            assert!(reason.contains(&n.resolved.node_id.to_string()) && reason.contains(n.resolved.incarnation.as_str()), "(2) the reason records the new holder's node id and incarnation: {reason}");
+            for rev in moved_revisions {
+                assert!(reason.contains(rev), "(3) the reason records moved seat revision {rev:?}: {reason}");
+            }
+            assert!(!reason.contains("epoch"), "(3) the reason uses 'revision', never 'epoch': {reason}");
+            for s in seated {
+                assert!(reason.contains(s), "(4) the reason records who the ordinary rule seated {s:?}: {reason}");
+            }
+            assert!(reason.contains("provider proof:"), "(5) the reason records the provider's proof: {reason}");
+            reason.clone()
         }
-        other => panic!("the transfer step fails by name, {:?}, after its successor is proven exited; it ended {other:?}", rafka_node_admin_core::fabric_handover::SUCCESSOR_EXITED),
+        other => panic!("the transfer step ends Failed when the new holder's process is gone after the row; it ended {other:?}"),
     }
 }
 
-/// CONTRACT (ruling R-PU2, Luke 2026-10-13: "When the successor is proven exited after the committed
-/// row, the transfer step fails by name, `successor proven exited after committed transfer`, the Build
-/// is Failed under R-BI4, and the ordinary rule seats whoever it seats, P included"; recovery order
-/// (1) record the exit proof, the ordinary rule resolves, (2) install the resulting leadership
-/// revision, (3) "If P holds a seat again, restore only that seat's write scope under the new
-/// revision", (5) "that attempt's node.primary.update is a new transfer key, (build_id, attempt) ...
-/// step 2 excludes P and names the next ReadyForTraffic node"): P holds both seats and moves them to N
-/// by one row in run 1 of Build b1. N installs and dies; P's ladder finds N's runtime exited and puts
-/// its exit-proof row. The ordinary rule seats P in both seats again: P's update ends with the named
-/// failure, P holds both seats at the next epochs (mesh 5, fabric 9) and restores both seats' writes.
-/// The caller's resubmit opens run 2: its update is a new transfer key, P is its holder again and its
-/// pre-check excludes P and the proven-exited N and names M, which installs and answers. Must NOT
-/// happen: an `Incomplete` end (the drive would idle on it), the row rewritten or reused to pick
-/// another successor, P's cut-off left in place over seats it holds, or run 2 answered from run 1's
-/// row.
+/// Asserts that `via-seated-again` happens only after `via-successor-ladder` ends `exit-proven`, emits
+/// no "epoch" text, and for each seat in `expected_seats` (and no other) writes P's seat record first
+/// (`rdm.mesh.seat.update.via-announcement` with `via = "own"`, `outcome = "held"`) and announces second
+/// (`rdm.mesh.seat.update.via-announce`), in that order in the trace.
+fn assert_seated_again_order(spans: &Spans, expected_seats: &[(&str, &str)]) {
+    let seated = spans.named("rdm.node_admin.seat.update.via-seated-again");
+    assert_eq!(seated.len(), 1, "one via-seated-again span: {seated:?}");
+    let installed = seated[0].get("installed").cloned().unwrap_or_default();
+    assert!(!installed.contains("epoch"), "via-seated-again emits no 'epoch' span text: {seated:?}");
+    for (seat, rev) in expected_seats {
+        assert!(installed.contains(&format!("{seat} mesh1:000000000002@")) && installed.contains(&format!("(revision {rev})")), "via-seated-again reports {seat} at revision {rev}: {installed}");
+    }
+    let ladder_idx = spans.position(LADDER).expect("via-successor-ladder span present");
+    let seated_idx = spans.position("rdm.node_admin.seat.update.via-seated-again").expect("via-seated-again span present");
+    let ladders = spans.named(LADDER);
+    assert_eq!(ladders[0].get("finding").map(String::as_str), Some("exit-proven"), "the ladder ended exit-proven before seated-again: {ladders:?}");
+    assert!(ladder_idx < seated_idx, "via-seated-again happens only after via-successor-ladder");
+    let after_ladder: Vec<(String, BTreeMap<String, String>)> = spans.0.lock().unwrap().iter().skip(seated_idx).map(|c| (c.name.clone(), c.fields.clone())).collect();
+    let mut record_Write_and_announce = Vec::new();
+    for (name, fields) in &after_ladder {
+        if name == "rdm.mesh.seat.update.via-announcement" && fields.get("node").map(String::as_str) == Some("mesh1.admin.1") && fields.get("via").map(String::as_str) == Some("own") && fields.get("outcome").map(String::as_str) == Some("held") {
+            record_Write_and_announce.push(("record", fields.get("seat").cloned().unwrap_or_default()));
+        } else if name == "rdm.mesh.seat.update.via-announce" && fields.get("node").map(String::as_str) == Some("mesh1.admin.1") {
+            record_Write_and_announce.push(("announce", fields.get("seat").cloned().unwrap_or_default()));
+        }
+    }
+    let expected: Vec<(&str, String)> = expected_seats.iter().flat_map(|(seat, _)| [("record", (*seat).to_string()), ("announce", (*seat).to_string())]).collect();
+    assert_eq!(record_Write_and_announce, expected, "for each seat the rule gives back and no other, via-seated-again writes P's seat record first and announces second: {record_Write_and_announce:?}");
+}
+
+/// CONTRACT (ruling R-PU2, Q8/Q9/Q10 + Luke 2026-10-13: when the new holder's process is gone,
+/// provider-confirmed, after the committed row, the transfer step fails with "the new holder's process
+/// is gone, provider-confirmed, after the committed row", the Build is Failed under R-BI4, and the
+/// ordinary rule seats whoever it seats, P included; recovery order (1) record the exit proof, the
+/// ordinary rule resolves, (2) install the resulting leadership revision, (3) "If P holds a seat again,
+/// restore only that seat's write scope under the new revision", (5) that run's node.primary.update is
+/// keyed by `(build_id, run)` (`node.primary.update:<build_id>:<run>:<op>`), and the resubmit's new run
+/// excludes P and the gone birth and names the next ReadyForTraffic node): P holds both seats and moves
+/// them to N by one row in run 1 of Build b1. N installs and its process is gone; P's ladder confirms
+/// N's process gone via the provider and puts its exit-proof row. The ordinary rule seats P in both
+/// seats again: P's update ends `Failed { step, reason }` with the five facts, P holds both seats at
+/// the next revisions (mesh 5, fabric 9), writes each seat's record before announcing it, and restores
+/// both seats' writes. The caller's resubmit opens run 2: its update is a new transfer key, P is its
+/// holder again and its pre-check excludes P and the gone N and names M, which installs and answers.
+/// Must NOT happen: an `Incomplete` end, the row rewritten or reused to pick another successor, P's
+/// cut-off left in place over seats it holds, or run 2 answered from run 1's row.
 #[test]
-fn a_holder_seated_again_after_its_successor_is_proven_exited_fails_the_step_by_name_restores_its_seats_and_the_next_run_names_a_third_node() {
+fn a_holder_seated_again_after_the_new_holders_process_is_gone_fails_the_step_restores_its_seats_and_the_next_run_names_a_third_node() {
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
-    let (trace_id, ()) = cap.story("successor_exited_holder_seated_again", async {
+    let (trace_id, ()) = cap.story("holder_gone_after_row_seated_again", async {
         let f = seats_fabric().await;
         let key = "stop-node:mesh1.admin.1";
         let (run1, run2) = (update_operation(Seat::MeshPrimary, "b1", 1, key), update_operation(Seat::MeshPrimary, "b1", 2, key));
-        assert_ne!(run1, run2, "the next run's update is a new transfer key, (build_id, attempt)");
-        let end = p_moves_to_n_and_n_exits(&f, 1, &run1, || async {}).await;
-        successor_exited(&end, &f.n, &run1);
+        assert_ne!(run1, run2, "the next run's update is a new transfer key, (build_id, run)");
+        let end = p_moves_to_n_and_n_gone(&f, 1, &run1, || async {}).await;
+        holder_gone_after_row(&end, &f.n, &run1, &["mesh-primary (mesh1) revision 4", "fabric-primary revision 8"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh1.admin.1 (000000000002)"]);
         let view = f.p.door.topology.read().await.clone();
         assert_eq!((view.cohort_primary("mesh1", rafka_node_admin_core::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()), fabric_primary_of(&view)), (Some("mesh1.admin.1".into()), Some("mesh1.admin.1".into())), "the ordinary rule seats P in both seats again");
         assert_eq!((f.p.door.membership.seats().mesh("mesh1"), f.p.door.membership.seats().fabric()), (Some(holder_of(&f.p, 5)), Some(holder_of(&f.p, 9))), "P holds both seats under the next revision over the row's");
+        assert_seated_again_order(&spans, &[("mesh-primary", "5"), ("fabric-primary", "9")]);
         let cut_offs = f.p.cut_offs.lock().unwrap().clone();
         assert!(matches!(cut_offs.as_slice(), [WriteCutOff::Set { mesh_seat: true, fabric_seat: true, .. }, WriteCutOff::Committed { mesh_seat: true, fabric_seat: true, .. }, WriteCutOff::Restore { mesh_seat: true, fabric_seat: true, .. }]), "P restores the writes of both seats it holds again: {cut_offs:?}");
         let next = tokio::time::timeout(std::time::Duration::from_secs(20), f.p.door.move_own_seats(Moving::BothSeats, "b1", 2, &run2)).await.expect("run 2's transfer ends");
-        assert_eq!(next, Ok(committed_both(&f.m, 6, 10)), "run 2's transfer excludes P and the proven-exited N and names M");
+        assert_eq!(next, Ok(committed_both(&f.m, 6, 10)), "run 2's transfer excludes P and the gone N and names M");
         assert_eq!(f.m.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.m, 6)), "M installed run 2's row");
         assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 2, "run 1's row stands, run 2 wrote its own");
         assert_eq!(spans.named(ROW_WRITTEN).len(), 2);
     });
-    println!("cell=successor_exited_holder_seated_again trace_id={trace_id}");
+    println!("cell=holder_gone_after_row_seated_again trace_id={trace_id}");
 }
 
-/// CONTRACT (ruling R-PU2 cell 2: "successor exit then another candidate winning, P's cut-off staying
-/// in place"; "the ordinary rule seats whoever it seats"): mesh1's M has the lowest NodeId and is not
-/// ReadyForTraffic when P, holding both seats, moves them to N. M is ReadyForTraffic by the time N,
-/// having installed, is proven exited: the ordinary rule seats M in both seats. P's update ends with
-/// the named failure; P holds neither seat, installs no revision of its own and its cut-off stays.
-/// Must NOT happen: a restore of a seat P does not hold, or P's book naming P.
+/// CONTRACT (ruling R-PU2 cell 2: when the new holder's process is gone after the row and another
+/// candidate wins under the ordinary rule, P's cut-off stays in place): mesh1's M has the lowest NodeId
+/// and is not ReadyForTraffic when P, holding both seats, moves them to N. M is ReadyForTraffic by the
+/// time N, having installed, has its process confirmed gone by the provider: the ordinary rule seats M
+/// in both seats. P's update ends `Failed` naming M as who the ordinary rule seated; P holds neither
+/// seat, installs no revision of its own and its cut-off stays. Must NOT happen: a restore of a seat P
+/// does not hold, or P's book naming P.
 #[test]
-fn a_successor_proven_exited_with_another_candidate_winning_fails_the_step_by_name_and_the_holders_cut_off_stays() {
+fn a_new_holders_process_gone_with_another_candidate_winning_fails_the_step_and_the_holders_cut_off_stays() {
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
-    let (trace_id, ()) = cap.story("successor_exited_another_wins", async {
+    let (trace_id, ()) = cap.story("holder_gone_after_row_another_wins", async {
         let f = seats_fabric_m_below_p().await;
         let run1 = update_operation(Seat::MeshPrimary, "b1", 1, "stop-node:mesh1.admin.1");
         let m_id = f.m.resolved.node_id.clone();
-        let end = p_moves_to_n_and_n_exits(&f, 1, &run1, || async {
+        let end = p_moves_to_n_and_n_gone(&f, 1, &run1, || async {
             for n in f.p.door.topology.write().await.nodes.iter_mut().filter(|n| n.node_id == m_id) {
                 n.status = NodeStatus::ReadyForTraffic;
             }
         })
         .await;
-        successor_exited(&end, &f.n, &run1);
+        holder_gone_after_row(&end, &f.n, &run1, &["mesh-primary (mesh1) revision 4", "fabric-primary revision 8"], &["mesh-primary (mesh1): mesh1.admin.3 (000000000003)", "fabric-primary: mesh1.admin.3 (000000000003)"]);
         let view = f.p.door.topology.read().await.clone();
         assert_eq!((view.cohort_primary("mesh1", rafka_node_admin_core::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()), fabric_primary_of(&view)), (Some("mesh1.admin.3".into()), Some("mesh1.admin.3".into())), "the ordinary rule seats M");
         assert_eq!((f.p.door.membership.seats().mesh("mesh1"), f.p.door.membership.seats().fabric()), (Some(holder_of(&f.n, 4)), Some(holder_of(&f.n, 8))), "P installs no revision naming itself");
@@ -1510,69 +1558,113 @@ fn a_successor_proven_exited_with_another_candidate_winning_fails_the_step_by_na
         assert!(matches!(cut_offs.as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { mesh_seat: true, fabric_seat: true, .. }]), "P's cut-off stays: {cut_offs:?}");
         let _ = &spans;
     });
-    println!("cell=successor_exited_another_wins trace_id={trace_id}");
+    println!("cell=holder_gone_after_row_another_wins trace_id={trace_id}");
 }
 
 /// CONTRACT (ruling R-PU2 recovery order 3: "the mesh seat restores the mesh rows, the fabric seat
 /// restores fabric/ and topology-Build acceptance, never one for the other"; cell 3: "a dual-seat
 /// holder recovering one seat and not the other"): P holds both seats and moves them to N. After the
-/// row X, mesh2's primary, holds the fabric seat at the next epoch over the row's (its record held in
-/// P's book). N is proven exited: the ordinary rule seats P in mesh1's seat and keeps X in the fabric
-/// seat. P holds mesh1's seat at epoch 5 and restores the mesh seat's writes only. Must NOT happen:
-/// the fabric seat's writes restored, or a record of P in the fabric seat.
+/// row X, mesh2's primary, holds the fabric seat at the next revision over the row's (its record held in
+/// P's book). N's process is confirmed gone by the provider: the ordinary rule seats P in mesh1's seat
+/// and keeps X in the fabric seat. P holds mesh1's seat at revision 5, writes and announces only mesh1's
+/// seat, and restores the mesh seat's writes only. Must NOT happen: the fabric seat's writes restored,
+/// or a record of P in the fabric seat.
 #[test]
 fn a_dual_seat_holder_seated_again_in_one_seat_restores_that_seats_writes_and_not_the_others() {
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
-    let (trace_id, ()) = cap.story("successor_exited_one_seat_regained", async {
+    let (trace_id, ()) = cap.story("holder_gone_after_row_one_seat_regained", async {
         let f = seats_fabric().await;
         let run1 = update_operation(Seat::MeshPrimary, "b1", 1, "stop-node:mesh1.admin.1");
-        let end = p_moves_to_n_and_n_exits(&f, 1, &run1, || async {
+        let end = p_moves_to_n_and_n_gone(&f, 1, &run1, || async {
             f.p.door.membership.seats().take(Seat::FabricPrimary, &holder_of(&f.x, 9));
         })
         .await;
-        successor_exited(&end, &f.n, &run1);
+        holder_gone_after_row(&end, &f.n, &run1, &["mesh-primary (mesh1) revision 4", "fabric-primary revision 8"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh2.admin.1 (000000000001)"]);
         let view = f.p.door.topology.read().await.clone();
         assert_eq!((view.cohort_primary("mesh1", rafka_node_admin_core::model::NodeKind::NodeAdmin).map(|n| n.name.to_string()), fabric_primary_of(&view)), (Some("mesh1.admin.1".into()), Some("mesh2.admin.1".into())), "P is seated in mesh1's seat again, X keeps the fabric seat");
         assert_eq!((f.p.door.membership.seats().mesh("mesh1"), f.p.door.membership.seats().fabric()), (Some(holder_of(&f.p, 5)), Some(holder_of(&f.x, 9))));
+        assert_seated_again_order(&spans, &[("mesh-primary", "5")]);
         let cut_offs = f.p.cut_offs.lock().unwrap().clone();
         assert!(matches!(cut_offs.as_slice(), [WriteCutOff::Set { .. }, WriteCutOff::Committed { mesh_seat: true, fabric_seat: true, .. }, WriteCutOff::Restore { mesh_seat: true, fabric_seat: false, .. }]), "the mesh seat's writes are restored, the fabric seat's stay cut: {cut_offs:?}");
-        let _ = &spans;
     });
-    println!("cell=successor_exited_one_seat_regained trace_id={trace_id}");
+    println!("cell=holder_gone_after_row_one_seat_regained trace_id={trace_id}");
 }
 
 /// CONTRACT (ruling R-PU2 cell 4: "interruption before the terminal failure is recorded, the next
 /// attempt resuming from the exit-proof row"; recovery order 4 is the executor's): P's update in
-/// attempt 1 ends with N proven exited and its exit-proof row put, and its Failed receipt is never
-/// recorded (the executor interrupted there). The next attempt of the same run carries the same
-/// transfer key: P replays from its row, reads N's exit-proof row and ends with the same named
-/// failure, calling N no more and writing no second row. Must NOT happen: an `Incomplete` end, a
-/// second look or call at N, a second row, or a second cut-off over P's restored seats.
+/// attempt 1 ends with N's process confirmed gone by the provider and its exit-proof row put, and its
+/// Failed receipt is never recorded (the executor interrupted there). The next attempt of the same run
+/// carries the same transfer key: P replays from its row, reads N's exit-proof row and ends with the
+/// same Failed step and five facts, calling N no more and writing no second row. Must NOT happen: an
+/// `Incomplete` end, a second look or call at N, a second row, or a second cut-off over P's restored
+/// seats.
 #[test]
-fn the_next_attempt_after_an_interruption_resumes_from_the_exit_proof_row_and_fails_the_step_by_name() {
+fn the_next_attempt_after_an_interruption_resumes_from_the_exit_proof_row_and_fails_the_step() {
     let cap = trace_capture("fabric-handover");
     let spans = cap.spans.clone();
     let _file = SpanFile(spans.clone());
-    let (trace_id, ()) = cap.story("successor_exited_resumed", async {
+    let (trace_id, ()) = cap.story("holder_gone_after_row_resumed", async {
         let f = seats_fabric().await;
         let run1 = update_operation(Seat::MeshPrimary, "b1", 1, "stop-node:mesh1.admin.1");
-        let first = p_moves_to_n_and_n_exits(&f, 1, &run1, || async {}).await;
-        successor_exited(&first, &f.n, &run1);
+        let first = p_moves_to_n_and_n_gone(&f, 1, &run1, || async {}).await;
+        holder_gone_after_row(&first, &f.n, &run1, &["mesh-primary (mesh1) revision 4", "fabric-primary revision 8"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh1.admin.1 (000000000002)"]);
         let n_id = f.n.resolved.node_id.to_string();
         let calls_to_n = || spans.named(CALL).into_iter().filter(|c| c.get("op").map(String::as_str) == Some("33") && c.get("target").is_some_and(|t| t.contains(&n_id))).count();
         let (calls_before, cuts_before) = (calls_to_n(), f.p.cut_offs.lock().unwrap().len());
         let resumed = tokio::time::timeout(std::time::Duration::from_secs(20), f.p.door.move_own_seats(Moving::BothSeats, "b1", 2, &run1)).await.expect("the resumed attempt ends");
-        let text = successor_exited(&resumed, &f.n, &run1);
-        assert!(text.contains("exit is proven"), "the resumed attempt reads N's exit-proof row: {text}");
+        holder_gone_after_row(&resumed, &f.n, &run1, &["mesh-primary (mesh1) revision 4", "fabric-primary revision 8"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh1.admin.1 (000000000002)"]);
         assert_eq!((calls_to_n(), spans.named(LADDER).len()), (calls_before, 1), "N is called and looked at no more");
         assert_eq!(f.p.storage.seat_transfers().await.unwrap().len(), 1, "no second row");
         let cut_offs = f.p.cut_offs.lock().unwrap().clone();
         assert!(cut_offs[cuts_before..].iter().all(|c| matches!(c, WriteCutOff::Restore { mesh_seat: true, fabric_seat: true, .. })), "the resumed attempt cuts nothing off again: {cut_offs:?}");
         assert_eq!((f.p.door.membership.seats().mesh("mesh1"), f.p.door.membership.seats().fabric()), (Some(holder_of(&f.p, 5)), Some(holder_of(&f.p, 9))));
     });
-    println!("cell=successor_exited_resumed trace_id={trace_id}");
+    println!("cell=holder_gone_after_row_resumed trace_id={trace_id}");
+}
+
+/// CONTRACT (Q10 commanded arm on `0x21`: "When a commanded node.primary.update ends, the holder
+/// answers the fabric-primary with the Build carrier's own terminal, `Failed { step, reason }` (R-BI4;
+/// the envelope's only durable step outcomes are Complete and Failed). 0x21 gains that variant;
+/// `Incomplete` is not used for a step that ended. The FP fails the step on the variant, never on the
+/// reason's text"): the fabric-primary X (`mesh2.admin.1`) commands P (`mesh1.admin.1`) on `0x21` to
+/// move mesh1's seat in run 1. P writes the row naming N (`mesh1.admin.2`) at revision 4; N installs
+/// and its process is gone before it answers. P's ladder confirms N's process gone via the provider,
+/// puts N's exit-proof row, reseats P in mesh1's seat at revision 5 (record before announcement),
+/// restores P's mesh writes, and answers X on `0x21` with `NodePrimaryUpdateReply::Failed { step,
+/// reason }` recording all five facts. X fails the step on the `Failed` variant. On the resubmit's new
+/// run (run 2), X commands P again; P excludes P and the gone N and moves mesh1's seat to M
+/// (`mesh1.admin.3`) at revision 6.
+#[test]
+fn a_commanded_update_whose_new_holders_process_is_gone_after_the_row_answers_the_commander_failed_with_the_five_facts() {
+    let cap = trace_capture("fabric-handover");
+    let spans = cap.spans.clone();
+    let _file = SpanFile(spans.clone());
+    let (trace_id, ()) = cap.story("commanded_holder_gone_after_row", async {
+        let f = commanded_fabric().await;
+        let key = "stop-node:mesh1.admin.1";
+        let (run1, run2) = (update_operation(Seat::MeshPrimary, "b1", 1, key), update_operation(Seat::MeshPrimary, "b1", 2, key));
+        let deployment = n_runtime_recorded(&f).await;
+        f.n.view_open.send_replace(false);
+        let p_node = f.x.door.topology.read().await.members().find(|n| n.name.to_string() == "mesh1.admin.1").cloned().unwrap();
+        let commanding = tokio::spawn({
+            let (door, p_node, run1) = (f.x.door.clone(), p_node.clone(), run1.clone());
+            tracing::Instrument::instrument(async move { door.command_update_primary(&p_node, "b1", 1, &run1).await }, tracing::Span::current())
+        });
+        until("N installed mesh1's seat from P's row", || f.n.door.membership.seats().mesh("mesh1").is_some_and(|h| h.is_birth(&f.n.resolved.node_id, &f.n.resolved.incarnation))).await;
+        n_process_gone(&f, &deployment).await;
+        let end = tokio::time::timeout(std::time::Duration::from_secs(20), commanding).await.expect("the commanded update ends").unwrap();
+        holder_gone_after_row(&end, &f.n, &run1, &["mesh-primary (mesh1) revision 4"], &["mesh-primary (mesh1): mesh1.admin.1 (000000000002)", "fabric-primary: mesh2.admin.1 (000000000001)"]);
+        assert_seated_again_order(&spans, &[("mesh-primary", "5")]);
+        assert_eq!(f.p.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.p, 5)), "P holds mesh1's seat at revision 5");
+        // X receives P's Seated announcement at revision 5 and commands run 2 on the resubmit.
+        f.x.door.membership.seats().take(Seat::MeshPrimary, &holder_of(&f.p, 5));
+        let next = tokio::time::timeout(std::time::Duration::from_secs(20), f.x.door.command_update_primary(&p_node, "b1", 2, &run2)).await.expect("run 2's commanded transfer ends");
+        assert_eq!(next, Ok(committed_mesh(&f.m, 6)), "run 2's commanded transfer excludes P and the gone N and names M at revision 6");
+        assert_eq!(f.x.door.membership.seats().mesh("mesh1"), Some(holder_of(&f.m, 6)), "X installed M from run 2's answer");
+    });
+    println!("cell=commanded_holder_gone_after_row trace_id={trace_id}");
 }
 
 /// CONTRACT (ruling R-PU2 recovery order 3, at the stores: "restore only that seat's write scope ...
