@@ -782,7 +782,7 @@ impl Estate {
         ProbeHandle { evidence: self.evidence.clone(), artifacts: self.artifacts.clone(), bind }
     }
 
-    /// Every span every process of this estate wrote.
+    /// Every span every process of this estate wrote, ordered by start time.
     pub fn spans(&self) -> Vec<Value> {
         let mut out = Vec::new();
         for e in std::fs::read_dir(&self.evidence).into_iter().flatten().flatten() {
@@ -791,6 +791,7 @@ impl Estate {
                 out.extend(text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
             }
         }
+        out.sort_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0));
         out
     }
 

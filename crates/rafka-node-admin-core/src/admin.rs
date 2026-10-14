@@ -843,7 +843,8 @@ impl Records {
     /// reader of the view. A read older than the view it replaces is replaced at the next rebuild. A
     /// birth the view lists at a moved row's name for the first time is one span.
     pub async fn install_read(&self, me: &PathName, topology: &RwLock<Topology>, book: &DigestBook, fabric_id: &FabricId, project: impl FnOnce(&ViewReads) -> Topology) -> Topology {
-        let reads = ViewReads::read(me, book, self, fabric_id).await;
+        let me = book.held_path_name().unwrap_or_else(|| me.clone());
+        let reads = ViewReads::read(&me, book, self, fabric_id).await;
         let held = topology.write().await;
         let t = project(&reads);
         for (node_id, incarnation, published, name) in reads.rows.moved() {
@@ -957,7 +958,7 @@ pub(crate) fn fabric_seat_source(book: &DigestBook, records: &Arc<Records>, me: 
     let (book, records, me_name) = (book.clone(), records.clone(), me_name.to_string());
     let read = Arc::new(move || {
         let incumbency = incumbency_of(&book, &records);
-        let name_of = |id: &NodeId| if *id == me.0 { Some(me_name.clone()) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
+        let name_of = |id: &NodeId| if *id == me.0 { Some(book.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone())) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
         crate::seat_watch::fabric_seat_record(incumbency.fabric.as_ref(), &me, &incumbency.lost, name_of)
     });
     crate::fabric_builds::SeatSource { read, changed }
@@ -971,7 +972,7 @@ pub(crate) fn mesh_seat_source(book: &DigestBook, records: &Arc<Records>, me: (N
     let (book, records, me_name, mesh) = (book.clone(), records.clone(), me_name.to_string(), mesh.to_string());
     let read = Arc::new(move || {
         let incumbency = incumbency_of(&book, &records);
-        let name_of = |id: &NodeId| if *id == me.0 { Some(me_name.clone()) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
+        let name_of = |id: &NodeId| if *id == me.0 { Some(book.held_path_name().map(|p| p.to_string()).unwrap_or_else(|| me_name.clone())) } else { book.get(id.as_str()).map(|(d, _)| d.node.name.to_string()) };
         crate::seat_watch::mesh_seat_record(&mesh, incumbency.meshes.get(&mesh), &me, &incumbency.lost, name_of)
     });
     crate::fabric_builds::SeatSource { read, changed }
@@ -1050,9 +1051,10 @@ impl ViewReads {
     /// nothing is read). The exits are read first: a birth proven exited does not publish its name, so
     /// its row is read with the rest.
     pub async fn read(me: &PathName, book: &DigestBook, records: &Records, fabric_id: &FabricId) -> Self {
+        let me = book.held_path_name().unwrap_or_else(|| me.clone());
         records.read_exits(book).await;
         let at = std::time::Instant::now();
-        Self { at, rows: RowNames::read(me, book, records, fabric_id, at).await }
+        Self { at, rows: RowNames::read(&me, book, records, fabric_id, at).await }
     }
 }
 
@@ -1995,6 +1997,12 @@ pub enum Inspected {
 }
 
 impl RecoverySubmitter {
+    /// The name this admin currently holds in its membership digest book, or its boot name before its
+    /// birth is in the book.
+    pub(crate) fn held_name(&self) -> PathName {
+        self.book.held_path_name().unwrap_or_else(|| self.me.clone())
+    }
+
     /// The provider's exact-exit proof of `node`'s birth: the runtime fact the book's digest of that
     /// birth carries, else the birth's own durable runtime row (a point read by its key).
     pub(crate) async fn inspect(&self, node: &Node) -> Inspected {
@@ -2023,7 +2031,7 @@ impl RecoverySubmitter {
         match self.nodes_storage.runtimes().await {
             Ok(rows) => rows,
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.node.reject.via-runtime-rows-unreadable", reader = %self.me, store = "nodes.storage", error = %e)
+                tracing::info_span!("rdm.node_admin.node.reject.via-runtime-rows-unreadable", reader = %self.held_name(), store = "nodes.storage", error = %e)
                     .in_scope(|| tracing::info!("the durable runtime rows could not be read: this tick watches the view's births only"));
                 Vec::new()
             }
@@ -2052,7 +2060,7 @@ impl RecoverySubmitter {
                     node = %n.name,
                     node_id = %n.node_id,
                     incarnation_id = %incarnation,
-                    submitter = %self.me,
+                    submitter = %self.held_name(),
                     announced,
                     operation = %operation,
                     build_id = %build_id,
@@ -2126,7 +2134,7 @@ impl RecoverySubmitter {
             Inspected::NotExited(why) => ("not-exited", String::new(), "none", why.clone()),
         };
         let incarnation = node.incarnation_id.as_ref().map(|i| i.to_string()).unwrap_or_default();
-        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.me, verdict, exit_code, exit_proof, reason = %reason)
+        tracing::info_span!("rdm.node_admin.node.resolve.via-provider-inspection", node = %node.name, node_id = %node.node_id, incarnation_id = %incarnation, inspector = %self.held_name(), verdict, exit_code, exit_proof, reason = %reason)
             .in_scope(|| tracing::info!("the mesh primary asked the provider about the TRUE OFFLINE member's exact runtime"));
     }
 
@@ -2137,7 +2145,8 @@ impl RecoverySubmitter {
     /// the birth as submitted until then. A repeat answers AlreadyApplied or BuildInProgress.
     pub(crate) async fn submit(&self, node: &Node, code: Option<i32>, source: &'static str, row: Result<&'static str, String>) -> Result<(), String> {
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} holds no incarnation: no exited birth to key a recovery on", node.name))?;
-        let span = submit_span(&self.me, node, &incarnation, code, source);
+        let me = self.held_name();
+        let span = submit_span(&me, node, &incarnation, code, source);
         let end = match row {
             Ok(_) => self.submit_in(&span, node, &incarnation).instrument(span.clone()).await,
             Err(e) => Err(e),
@@ -2159,8 +2168,9 @@ impl RecoverySubmitter {
         if !holds_seat || frozen {
             return Vec::new();
         }
+        let me = self.held_name();
         let unreadable = |store: &str, build_id: &str, error: String| {
-            tracing::info_span!("rdm.node_admin.build.reject.via-owed-exits-unreadable", reader = %self.me, mesh, store, build_id, error = %error)
+            tracing::info_span!("rdm.node_admin.build.reject.via-owed-exits-unreadable", reader = %me, mesh, store, build_id, error = %error)
                 .in_scope(|| tracing::info!("the durable facts of the exits owed a submit could not be read: none is submitted this tick"));
         };
         let build_id = match self.builds.current_build().await {
@@ -2192,19 +2202,20 @@ impl RecoverySubmitter {
     /// of the Build with this birth's action, whose plan runs only what the receipts leave (a delete
     /// that completed is never run again).
     pub(crate) async fn submit_owed(&self, owed: &crate::build_state::OwedExit) -> Result<(), String> {
+        let me = self.held_name();
         let refused = |reason: &str, error: String| {
             tracing::info_span!(
                 "rdm.node_admin.node.reject.via-exit-proof-unread",
                 node = %owed.path,
                 node_id = %owed.node_id,
                 incarnation_id = %owed.incarnation.as_str(),
-                submitter = %self.me,
+                submitter = %me,
                 failed_attempt = owed.attempt,
                 reason,
                 error = %error,
             )
             .in_scope(|| tracing::info!("an exit owed a submit has no readable exit-proof row: nothing is submitted"));
-            format!("{}: no exit-proof row of {} at {} to submit on ({reason}{})", self.me, owed.node_id, owed.incarnation.as_str(), if error.is_empty() { String::new() } else { format!(": {error}") })
+            format!("{me}: no exit-proof row of {} at {} to submit on ({reason}{})", owed.node_id, owed.incarnation.as_str(), if error.is_empty() { String::new() } else { format!(": {error}") })
         };
         let row = match self.status_storage.node_exit(&owed.node_id, &owed.incarnation).await {
             Ok(Some(row)) => row,
@@ -2214,7 +2225,7 @@ impl RecoverySubmitter {
         let mut node = Node::allocated(owed.path.clone());
         node.node_id = owed.node_id.clone();
         node.incarnation_id = Some(owed.incarnation.clone());
-        let span = submit_span(&self.me, &node, &owed.incarnation, row.exit_code, &row.proof);
+        let span = submit_span(&me, &node, &owed.incarnation, row.exit_code, &row.proof);
         span.record("after_failed_attempt", owed.attempt);
         let end = self.submit_in(&span, &node, &owed.incarnation).instrument(span.clone()).await;
         settled(&span, end)
@@ -2228,7 +2239,7 @@ impl RecoverySubmitter {
     async fn submit_in(&self, span: &tracing::Span, node: &Node, incarnation: &IncarnationId) -> Result<RecoveryEnd, String> {
         use crate::build_run::{Recovered, RecoveryNotRun};
         use rafka_node_rpc_contract::build::BuildReply;
-        let door = self.door.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary seat but its Build door is not built yet", self.me))?;
+        let door = self.door.get().cloned().ok_or_else(|| format!("{} holds its mesh's primary seat but its Build door is not built yet", self.held_name()))?;
         let opened = |o: &crate::control_plane::Opened, disposition: &str| {
             span.record("build_id", o.build_id.as_str());
             span.record("mesh", o.mesh.as_deref().unwrap_or(""));
@@ -2264,7 +2275,7 @@ impl RecoverySubmitter {
     }
 }
 
-/// How a submit ended, on its span: the outcome named, and the submit's result.
+/// How a followed recovery Build ended: its terminal frame.
 fn settled(span: &tracing::Span, end: Result<RecoveryEnd, String>) -> Result<(), String> {
     let (outcome, r) = settle(end);
     span.record("outcome", outcome.as_str());
@@ -2465,9 +2476,16 @@ struct ProviderDeparture {
     records: Arc<Records>,
 }
 
+impl ProviderDeparture {
+    fn held_name(&self) -> PathName {
+        self.book.held_path_name().unwrap_or_else(|| self.me.clone())
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::build_drive::DepartureProof for ProviderDeparture {
     async fn proven(&self, executor: &PathName) -> Result<(), String> {
+        let me = self.held_name();
         let Some(n) = self.topology.read().await.node(executor).cloned() else {
             return Err(format!("{executor} is not a node of this admin's view, so no exact birth is named to inspect"));
         };
@@ -2479,8 +2497,8 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
         let row = if held_row.as_ref().is_some_and(|(dg, _)| dg.node.runtime.is_some()) {
             None
         } else {
-            Some(birth_runtime_row(&*self.nodes, &self.me, &n.name, &n.node_id, &incarnation).await?.ok_or_else(|| {
-                format!("the book holds no runtime for {executor} ({}) at {} and no durable runtime row of that birth was ever written at {}", n.node_id, incarnation.as_str(), self.me)
+            Some(birth_runtime_row(&*self.nodes, &me, &n.name, &n.node_id, &incarnation).await?.ok_or_else(|| {
+                format!("the book holds no runtime for {executor} ({}) at {} and no durable runtime row of that birth was ever written at {me}", n.node_id, incarnation.as_str())
             })?)
         };
         let (code, source) = crate::admin::exit_proof_of(&*self.provider, &held_row, row.as_ref()).await?;
@@ -2497,9 +2515,10 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
     /// admits a fully crashed mesh's create on. Durable rows that cannot be read prove nothing, and
     /// every node is named so.
     async fn exits_of(&self, nodes: &[PathName]) -> crate::build_drive::ExitProofs {
+        let me = self.held_name();
         let durable = match self.nodes.runtimes().await {
             Ok(rows) => rows,
-            Err(e) => return crate::build_drive::ExitProofs { proven: Vec::new(), unproven: nodes.iter().map(|a| format!("{a}: the durable runtime rows could not be read at {}: {e}", self.me)).collect() },
+            Err(e) => return crate::build_drive::ExitProofs { proven: Vec::new(), unproven: nodes.iter().map(|a| format!("{a}: the durable runtime rows could not be read at {me}: {e}")).collect() },
         };
         let view = self.topology.read().await.clone();
         let mut map = view.clone();
@@ -2511,7 +2530,7 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
     /// mesh a new node-admin and authors the fabric `degraded` ([`Records::open_mesh_recovery`]), naming
     /// the node-admin births of the mesh its view holds.
     async fn mesh_given_node_admin(&self, mesh: &str, _build_id: &crate::build::BuildId, _attempt: u32, from: std::time::Instant) {
-        give_mesh_node_admin(&self.records, &self.me, &self.topology, mesh, from).await;
+        give_mesh_node_admin(&self.records, &self.held_name(), &self.topology, mesh, from).await;
     }
 
     /// Whether the exit of the exact birth the view names for `executor` is recorded: a point read
@@ -2525,7 +2544,7 @@ impl crate::build_drive::DepartureProof for ProviderDeparture {
         match self.records.exit_row_of(&n).await {
             Ok(row) => row.is_some(),
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.node.reject.via-exit-row-unreadable", node = %self.me, subject = %n.name, node_id = %n.node_id, rows = 1, detail = %e)
+                tracing::info_span!("rdm.node_admin.node.reject.via-exit-row-unreadable", node = %self.held_name(), subject = %n.name, node_id = %n.node_id, rows = 1, detail = %e)
                     .in_scope(|| tracing::info!("the executor's exit-proof row could not be read: its exit is not taken as recorded"));
                 false
             }
@@ -2710,7 +2729,7 @@ fn drift_inputs(t: &Topology, steps: &[crate::build_state::BuildStepReceipt], re
 /// put once, by the pass that proved it.
 pub async fn reconcile_drift(
     time: &rafka_mesh_transport::clock::RafkaTime,
-    me: &PathName,
+    _me: &PathName,
     me_id: &NodeId,
     t: &Topology,
     book: &DigestBook,
@@ -2729,6 +2748,7 @@ pub async fn reconcile_drift(
     exits: &Records,
 ) -> Option<(crate::build::BuildId, u32)> {
     let authority = t.fabric_primary().filter(|n| n.node_id == *me_id)?;
+    let me = &authority.name;
     let current = match builds.current().await {
         Ok(current) => current?,
         Err(e) => {
@@ -3762,18 +3782,20 @@ impl EntryState {
     /// topology is read with `GetTopology`).
     async fn answer(&self) -> Result<crate::wire::JoinAnswer, String> {
         let e = self;
+        let me = e.membership.book.held_path_name().unwrap_or_else(|| e.name.clone());
         // An admin that holds no rafka-time has none to hand a joiner: the join is not completed,
         // and the refusal says why.
-        let rafka_time_ms = e.time.try_now_ms().ok_or_else(|| format!("{}: this admin holds no rafka-time to answer a join with", e.name))?;
+        let rafka_time_ms = e.time.try_now_ms().ok_or_else(|| format!("{me}: this admin holds no rafka-time to answer a join with"))?;
         // The fabric control state a new admin hydrates before it may be Ready: the answering admin's
         // current Build (R-BI3) and the attempt it holds of it, the floor a joiner's own copy of that
         // Build's attempt facts must reach before it is Ready.
         // A store that cannot be read is no answer: the join is refused naming it, never answered as
         // an admin that holds no Build or no Fabric.
-        let build = e.builds.current().await.map_err(|err| format!("{}: its builds store cannot be read for the current Build: {err}", e.name))?.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
-        let fabric = e.accepted.record().await.map_err(|err| format!("{}: its fabric.storage cannot be read for the Fabric identity: {err}", e.name))?;
+        let build = e.builds.current().await.map_err(|err| format!("{me}: its builds store cannot be read for the current Build: {err}"))?.map(|b| crate::wire::BuildFloor { build_id: b.build_id, attempt: b.attempt });
+        let fabric = e.accepted.record().await.map_err(|err| format!("{me}: its fabric.storage cannot be read for the Fabric identity: {err}"))?;
         let control = crate::wire::JoinControl { provider: e.provider, fabric, shutdown: e.shutdown.held(), build, rafka_time_ms, member_cert: Vec::new(), name: None, config: None };
-        Ok(crate::wire::JoinAnswer { served_by: e.name.to_string(), control, statuses: e.membership.status_frames(&e.name.to_string()) })
+        let me_str = me.to_string();
+        Ok(crate::wire::JoinAnswer { served_by: me_str.clone(), control, statuses: e.membership.status_frames(&me_str) })
     }
 }
 
@@ -3865,6 +3887,14 @@ pub struct GossipLifecycle {
     pub project: Option<Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
 }
 
+impl GossipLifecycle {
+    /// The name this admin currently holds in its membership digest book, or its boot name before its
+    /// birth is in the book.
+    pub(crate) fn held_name(&self) -> PathName {
+        self.membership.book.held_path_name().unwrap_or_else(|| self.me.clone())
+    }
+}
+
 #[async_trait::async_trait]
 impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     fn now_rafka_ms(&self) -> u64 {
@@ -3943,8 +3973,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     }
     async fn mesh_leaving(&self, e: &crate::deployment::pipeline::MeshLeaveEvent) {
         use rafka_mesh_transport::membership::Frame;
-        let f = Frame::MeshLeaving { mesh_id: e.mesh_id.clone(), build_id: e.build_id.clone(), attempt: e.attempt, operation: e.operation.clone(), publisher: self.me.to_string(), event_at_rafka_ms: self.membership.clock().now_rafka_ms(), forwarded_by: None };
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-leaving", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %self.me, channels = "mesh,backbone");
+        let me = self.held_name();
+        let f = Frame::MeshLeaving { mesh_id: e.mesh_id.clone(), build_id: e.build_id.clone(), attempt: e.attempt, operation: e.operation.clone(), publisher: me.to_string(), event_at_rafka_ms: self.membership.clock().now_rafka_ms(), forwarded_by: None };
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-leaving", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %me, channels = "mesh,backbone");
         async {
             if let Err(e) = self.backbone.publish_command_hook(&f).await {
                 tracing::info!(error = %e, "mesh-leaving not sent on every channel");
@@ -3957,6 +3988,7 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     async fn mesh_leave(&self, e: &crate::deployment::pipeline::MeshLeaveEvent) {
         use rafka_mesh_transport::membership::Frame;
         let Some((final_node_id, final_incarnation)) = e.final_primary.clone() else { return };
+        let me = self.held_name();
         let f = Frame::MeshLeave {
             mesh_id: e.mesh_id.clone(),
             build_id: e.build_id.clone(),
@@ -3965,11 +3997,11 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
             final_node_id,
             final_incarnation,
             receipt_manifest: e.receipt_manifest.clone().unwrap_or_default(),
-            publisher: self.me.to_string(),
+            publisher: me.to_string(),
             event_at_rafka_ms: self.membership.clock().now_rafka_ms(),
             forwarded_by: None,
         };
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-leave", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %self.me, receipt_manifest = e.receipt_manifest.as_deref().unwrap_or(""), channels = "mesh,backbone");
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-leave", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %me, receipt_manifest = e.receipt_manifest.as_deref().unwrap_or(""), channels = "mesh,backbone");
         async {
             if let Err(e) = self.backbone.publish_command_hook(&f).await {
                 tracing::info!(error = %e, "mesh-deleted not sent on every channel");
@@ -3981,8 +4013,9 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
     }
     async fn mesh_left(&self, e: &crate::deployment::pipeline::MeshLeaveEvent) {
         use rafka_mesh_transport::membership::Frame;
-        let f = Frame::MeshLeft { mesh_id: e.mesh_id.clone(), build_id: e.build_id.clone(), attempt: e.attempt, operation: e.operation.clone(), receipt_manifest: e.receipt_manifest.clone().unwrap_or_default(), publisher: self.me.to_string(), event_at_rafka_ms: self.membership.clock().now_rafka_ms(), forwarded_by: None };
-        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %self.me, receipt_manifest = e.receipt_manifest.as_deref().unwrap_or(""), channels = "mesh,backbone");
+        let me = self.held_name();
+        let f = Frame::MeshLeft { mesh_id: e.mesh_id.clone(), build_id: e.build_id.clone(), attempt: e.attempt, operation: e.operation.clone(), receipt_manifest: e.receipt_manifest.clone().unwrap_or_default(), publisher: me.to_string(), event_at_rafka_ms: self.membership.clock().now_rafka_ms(), forwarded_by: None };
+        let span = tracing::info_span!("rdm.node_admin.mesh.update.via-mesh-left", mesh_id = %e.mesh_id, build_id = %e.build_id, attempt = e.attempt, operation = %e.operation, publisher = %me, receipt_manifest = e.receipt_manifest.as_deref().unwrap_or(""), channels = "mesh,backbone");
         async {
             if let Err(e) = self.backbone.publish_command_hook(&f).await {
                 tracing::info!(error = %e, "mesh-left not sent on every channel");
@@ -4015,10 +4048,17 @@ impl crate::deployment::pipeline::LifecycleEvents for GossipLifecycle {
 }
 
 impl AdminRunner {
+    /// The name this admin currently holds in its membership digest book, or its boot name before its
+    /// birth is in the book.
+    pub(crate) fn held_name(&self) -> PathName {
+        self.book.held_path_name().unwrap_or_else(|| self.me.clone())
+    }
+
     /// Publish the view as it is now, so a Build that completes after this
     /// operation is never read back against an older view.
     async fn refresh_view(&self) {
-        self.records.install_read(&self.me, &self.topology, &self.book, &self.fabric_id, |reads| project_with(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records, reads)).await;
+        let me = self.held_name();
+        self.records.install_read(&me, &self.topology, &self.book, &self.fabric_id, |reads| project_with(&self.fabric, &self.fabric_id, self.fabric_provider, &self.book, &self.records, reads)).await;
     }
 
     /// A launch of `kind` in `mesh`. Every node carries its mesh's identity (it
@@ -4030,6 +4070,7 @@ impl AdminRunner {
     async fn template_for(&self, kind: NodeKind, mesh: &str) -> Result<LaunchTemplate, String> {
         let known = self.topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
         let mut t = self.template.clone();
+        t.launcher.name = self.held_name();
         t.executable = match &self.bindings {
             // Explicit mode: the bound executable, re-hashed now; an unbound kind is refused, never
             // launched from the built-in set.
@@ -4103,12 +4144,13 @@ impl AdminRunner {
                 return Ok((rec, h));
             }
         }
+        let me = self.held_name();
         let incarnation = node.incarnation_id.clone().ok_or_else(|| format!("{} has no known birth", node.name))?;
         // The birth says where its runtime is: its digest, or (a birth this admin never heard) the
         // durable runtime row its maker handed over.
         let held = self.book.get(node.node_id.as_str()).map(|(d, _)| d).or_else(|| self.book.parked().into_iter().find(|d| d.node.node_id == node.node_id)).filter(|d| d.node.incarnation == incarnation);
         let row = match (&held, self.records.contacts.get()) {
-            (None, Some(store)) => birth_runtime_row(&**store, &self.me, &node.name, &node.node_id, &incarnation).await?,
+            (None, Some(store)) => birth_runtime_row(&**store, &me, &node.name, &node.node_id, &incarnation).await?,
             _ => None,
         };
         let (published, data_dir) = match (&held, &row) {
@@ -4118,10 +4160,10 @@ impl AdminRunner {
         };
         let refuse = |reason: &str, detail: String| {
             let span = match reason {
-                "unpublished" => tracing::info_span!("rdm.node_admin.runtime.reject.via-unpublished", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %self.me, detail = %detail),
-                "other-provider" => tracing::info_span!("rdm.node_admin.runtime.reject.via-other-provider", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %self.me, detail = %detail),
-                "foreign-control-domain" => tracing::info_span!("rdm.node_admin.runtime.reject.via-foreign-control-domain", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %self.me, detail = %detail),
-                _ => tracing::info_span!("rdm.node_admin.runtime.reject.via-invalid-fact", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %self.me, detail = %detail),
+                "unpublished" => tracing::info_span!("rdm.node_admin.runtime.reject.via-unpublished", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %me, detail = %detail),
+                "other-provider" => tracing::info_span!("rdm.node_admin.runtime.reject.via-other-provider", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %me, detail = %detail),
+                "foreign-control-domain" => tracing::info_span!("rdm.node_admin.runtime.reject.via-foreign-control-domain", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %me, detail = %detail),
+                _ => tracing::info_span!("rdm.node_admin.runtime.reject.via-invalid-fact", node = %node.name, incarnation_id = %incarnation.as_str(), adopter = %me, detail = %detail),
             };
             span.in_scope(|| tracing::info!("runtime not adopted"));
             format!("{} (birth {}): {detail}", node.name, incarnation.as_str())
@@ -4144,7 +4186,7 @@ impl AdminRunner {
             runtime_locator_kind = fact.locator.kind(),
             runtime_locator_fingerprint = %fact.locator_fingerprint(),
             source = if held.is_some() { "self-published-membership" } else { "durable-runtime-row" },
-            adopter = %self.me,
+            adopter = %me,
             adopter_node_id = %self.node_id,
             execution_node_id = %self.node_id,
         )
@@ -4247,10 +4289,11 @@ impl AdminRunner {
     /// `Build(shape)` never starts under an assumed state.
     fn mesh_state_hook(&self, admin: &PathName, state: rafka_node_rpc_contract::status::MeshState) -> Result<crate::deployment::pipeline::BeforeReady, String> {
         let node_rpc = &self.node_rpc;
-        let (client, resolver, me, me_id, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
+        let (client, resolver, me, book, me_id, topology, mesh, records) = (node_rpc.client.clone(), node_rpc.resolver.clone(), self.me.clone(), self.book.clone(), self.node_id.clone(), self.topology.clone(), admin.mesh.clone(), self.records.clone());
         Ok(Arc::new(move |target: Node| {
-            let (client, resolver, me, me_id, topology, mesh, records) = (client.clone(), resolver.clone(), me.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone());
+            let (client, resolver, me, book, me_id, topology, mesh, records) = (client.clone(), resolver.clone(), me.clone(), book.clone(), me_id.clone(), topology.clone(), mesh.clone(), records.clone());
             Box::pin(async move {
+                let me = book.held_path_name().unwrap_or_else(|| me.clone());
                 // The mesh's exact identity, as the launch took it: what this admin created, or else
                 // what its view holds from the mesh's members (a recovery never mints one).
                 let known = topology.read().await.meshes.iter().find(|m| m.name == mesh).and_then(|m| m.id.clone());
@@ -4290,6 +4333,7 @@ impl AdminRunner {
         // The exit-proof row is read among the birth's own mesh's status rows, where its prover wrote it
         // (`Records::put_exit`): the fabric-primary recovering a peer mesh's node-admin reads mesh2's
         // rows, never its own mesh's.
+        let me = self.held_name();
         let mut exited = Node::allocated(node.clone());
         exited.node_id = from.node_id.clone();
         exited.incarnation_id = Some(from.incarnation.clone());
@@ -4297,8 +4341,8 @@ impl AdminRunner {
             .records
             .exit_row_of(&exited)
             .await
-            .map_err(|e| format!("retire-node:{node}: the exit-proof row of birth {} at {} could not be read by {}: {e}", from.node_id, from.incarnation.as_str(), self.me))?
-            .ok_or_else(|| format!("retire-node:{node}: {} reads no exit-proof row for birth {} at {} among {}'s status rows: only a proven exit is deleted as a crashed target", self.me, from.node_id, from.incarnation.as_str(), node.mesh))?;
+            .map_err(|e| format!("retire-node:{node}: the exit-proof row of birth {} at {} could not be read by {me}: {e}", from.node_id, from.incarnation.as_str()))?
+            .ok_or_else(|| format!("retire-node:{node}: {me} reads no exit-proof row for birth {} at {} among {}'s status rows: only a proven exit is deleted as a crashed target", from.node_id, from.incarnation.as_str(), node.mesh))?;
         self.delete_crashed(builds, build_id, attempt, node, from, exit).await
     }
 
@@ -4588,7 +4632,7 @@ impl AdminRunner {
                 let held = self.handles.lock().unwrap().get(node).cloned();
                 match held {
                     Some(h) => h,
-                    None => return Err(format!("retire-node:{node}: {} holds no birth at {node} in its view and no runtime handle of one", self.me)),
+                    None => return Err(format!("retire-node:{node}: {} holds no birth at {node} in its view and no runtime handle of one", self.held_name())),
                 }
             }
         };
@@ -4684,6 +4728,7 @@ impl OperationRunner for AdminRunner {
 impl AdminRunner {
     async fn run_op(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), crate::executor::RunEnd> {
         use tracing::Instrument;
+        let me = self.held_name();
         // The workflows write the attempt's receipts and read its Build through the lane's Build
         // state (R-BI7): a drift attempt's in its mesh's lane, a fabric attempt's in the fabric lane.
         let builds = crate::build_run::LaneBuilds::of(&self.builds, lane);
@@ -4691,11 +4736,11 @@ impl AdminRunner {
             // A mesh's drift lane carries a node recovery's attempts only (its open is
             // `ControlPlane::open_recovery`'s): any other operation is not one this lane runs.
             if !matches!(op, BuildOperation::RetireNode { exited: Some(_), .. } | BuildOperation::CreateNode { over: Some(_), .. }) {
-                return Err(crate::executor::RunEnd::Failed(format!("{}: {} is not an operation of a node recovery, the only work mesh {mesh}'s drift lane runs (attempt {attempt} of {build_id})", self.me, op.key())));
+                return Err(crate::executor::RunEnd::Failed(format!("{me}: {} is not an operation of a node recovery, the only work mesh {mesh}'s drift lane runs (attempt {attempt} of {build_id})", op.key())));
             }
         }
         let ended: Result<(), String> = match op {
-            BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor(), &self.me.to_string(), build_id, attempt, op).await,
+            BuildOperation::CreateMesh { .. } => create_mesh_step(&self.records, &*self.mesh_storage, &*self.builds, &self.template.executor(), &me.to_string(), build_id, attempt, op).await,
             BuildOperation::CreateNode { node, over: Some(from) } => {
                 // node-recovery.md names the create's span `node.create.via-build`.
                 let span = tracing::info_span!("rdm.node_admin.node.create.via-build", build_id = %build_id, node = %node, attempt, node_id = %from.node_id, incarnation_id = %from.incarnation.as_str());
@@ -4759,6 +4804,7 @@ impl AdminRunner {
     /// node.delete node.delete's workflow from the state the birth is in.
     async fn recipe_step(&self, build_id: &crate::build::BuildId, lane: Option<&str>, attempt: u32, step: &rafka_node_rpc_contract::build::RecipeStep, birth: Option<&crate::build::PinnedBirth>) -> Result<(), crate::executor::RunEnd> {
         use rafka_node_rpc_contract::build::RecipeStep as S;
+        let me = self.held_name();
         let node = step.node();
         let key = crate::build::recipe_step_key(step);
         if let S::Create { node } = step {
@@ -4771,7 +4817,7 @@ impl AdminRunner {
                 let held = seen.or_else(|| self.handles.lock().unwrap().get(node).map(|(n, _)| n.clone()));
                 match held.and_then(|n| n.incarnation_id.clone().map(|incarnation| crate::build::PinnedBirth { node_id: n.node_id.clone(), incarnation })) {
                     Some(b) => b,
-                    None => return Err(crate::executor::RunEnd::Failed(format!("{key}: the step acts on the node an earlier step of the recipe made at {node}, and {} holds no birth at {node}", self.me))),
+                    None => return Err(crate::executor::RunEnd::Failed(format!("{key}: the step acts on the node an earlier step of the recipe made at {node}, and {me} holds no birth at {node}"))),
                 }
             }
         };
@@ -4799,7 +4845,7 @@ impl AdminRunner {
                     let template = self.template_for(node.kind, &node.mesh).await?;
                     let put = async {
                         let Some(authority) = self.observer.authority.get() else {
-                            return Err(format!("{key}: {} holds no status authority yet to serve node.name.update; nothing is written", self.me));
+                            return Err(format!("{key}: {me} holds no status authority yet to serve node.name.update; nothing is written"));
                         };
                         let cutover = if node.new && *name == node.base() {
                             let retained = name.renamed();
@@ -6581,7 +6627,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     tasks.push(hook);
                                     {
                                         let hydration_state = hydration_cell.clone();
-                                        let (digest, book, provider, me, membership) = (digest.clone(), book.clone(), provider_dyn.clone(), name.clone(), membership.clone());
+                                        let (digest, book, provider, membership) = (digest.clone(), book.clone(), provider_dyn.clone(), membership.clone());
                                         let day0 = cfg.launch.is_none().then(|| cfg.data_dir.clone());
                                         let (hydrated, start_progress, entering_gate) = (builds_dyn.clone(), progress.clone(), entering.clone());
                                         let sweep_slot_gate = sweep_slot.clone();
@@ -6595,6 +6641,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             loop {
                                                 // Held here while the admin is parked: its own wait, outside every lock.
                                                 let turn = park.turn("ready").await;
+                                                let me = digest.lock().unwrap().node.name.clone();
                                                 let held: Vec<MeshDigest> = book
                                                     .current(book.staleness_floor())
                                                     .into_iter()
@@ -7116,6 +7163,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             loop {
                                                 // Held here while the admin is parked: its own wait, outside every lock.
                                                 let turn = park.turn("hierarchy").await;
+                                                let me = view_book.held_path_name().unwrap_or_else(|| me.clone());
                                                 // The current Build, read once per turn. A builds store that cannot be read is
                                                 // named once per distinct error and decides nothing this turn: no planned births,
                                                 // accepted meshes or round step are taken from a read that failed.
@@ -7320,13 +7368,14 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                             let mut turn = rebuild_gate.turn("view-rebuild").await;
                                             loop {
                                                 facts.seen();
-                                                let t = records.install_read(&me, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
-                                                elections.observe(&t);
+                                                let me_now = book.held_path_name().unwrap_or_else(|| me.clone());
+                                                let t = records.install_read(&me_now, &topology, &book, &fabric_id, |reads| project_with(&fabric, &fabric_id, provider, &book, &records, reads)).await;
+                                                elections.observe_as(&me_now, &t);
                                                 // A name this view held and now lacks: the exclusion is named from the same
                                                 // inputs at the moment it happens, not reconstructed later.
                                                 let now: BTreeSet<PathName> = t.members().map(|n| n.name.clone()).collect();
                                                 for gone in held.difference(&now) {
-                                                    tracing::info_span!("rdm.node_admin.topology.update.via-vanished-from-view", node = %me, name = %gone, why = %describe_absence(&book, &records, gone))
+                                                    tracing::info_span!("rdm.node_admin.topology.update.via-vanished-from-view", node = %me_now, name = %gone, why = %describe_absence(&book, &records, gone))
                                                         .in_scope(|| tracing::info!("a name this admin's view held is excluded by the projection now"));
                                                 }
                                                 held = now;
@@ -7445,7 +7494,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                     // A fabric shutdown: freeze (the executor stops, this admin says Draining), then this admin's
                                     // part of the drain. The fabric-primary stops itself last by waking the shutdown route.
                                     {
-                                        let (abort, digest_w, membership_w, me, me_id, records_w, runs_w) = (executor.abort_handle(), digest.clone(), membership.clone(), name.clone(), node_id.clone(), records.clone(), runs.clone());
+                                        let (abort, digest_w, membership_w, me_id, records_w, runs_w) = (executor.abort_handle(), digest.clone(), membership.clone(), node_id.clone(), records.clone(), runs.clone());
                                         let (seen, drain_control) = (shutdown_control.subscribe(), shutdown_control.clone());
                                         let stopper: Arc<dyn crate::shutdown::Stopper> = Arc::new(AdminStopper { runner: runner.clone(), topology: control.topology.clone() });
                                         let done = control.shutdown.clone();
@@ -7474,14 +7523,15 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                 d.status = MemberStatus::Draining;
                                                 d.clone()
                                             };
+                                            let me_now = d.node.name.clone();
                                             let _ = membership_w.publish(&d).await;
                                             // Its Draining reaches the other admins only as its mesh-primary sets it from
                                             // its report (its heartbeat carries no status): the declarer owes the report.
                                             records_w.wake.poke();
-                                            tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-frozen", node = %me)
+                                            tracing::info_span!("rdm.node_admin.fabric.update.via-shutdown-frozen", node = %me_now)
                                                 .in_scope(|| tracing::info!("reconciliation frozen; Draining, reported to this admin's mesh-primary"));
                                             drop(turn);
-                                            if crate::shutdown::drain(me, me_id, drain_control, stopper).await {
+                                            if crate::shutdown::drain(me_now, me_id, drain_control, stopper).await {
                                                 done.notify_waiters();
                                             }
                                         }));

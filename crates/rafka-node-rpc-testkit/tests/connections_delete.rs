@@ -113,6 +113,9 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         while node_book.get(peer.node_id.as_str()).is_none() {
             node_digests.changed().await.unwrap();
         }
+        while cut_seams.resolver.resolve(&NodeTarget::ExactNode(peer.node_id.clone())).is_err() {
+            tokio::task::yield_now().await;
+        }
 
         // The node originates a data-plane connection to its admin and one to its peer (connections.md
         // "Two planes, two words": in RDM standalone the testkit's originate door is the data plane):

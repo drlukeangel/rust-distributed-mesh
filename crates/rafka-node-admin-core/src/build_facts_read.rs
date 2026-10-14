@@ -40,9 +40,10 @@ impl BuildFactsDoor {
     /// with whether the holdings are whole.
     pub async fn serve(&self, req: BuildFactsRequest, sink: ReplySink<BuildFacts, NotStarted>) -> BuildFactsReply {
         let BuildFactsRequest::FetchBuildFacts { build_id } = req;
+        let me = self.builds.held_name().unwrap_or_else(|| self.me.clone());
         let span = tracing::info_span!(
             "rdm.node_admin.build.serve.via-fetch-facts",
-            node = %self.me,
+            node = %me,
             build_id = %build_id,
             facts = tracing::field::Empty,
             chunks = tracing::field::Empty,
@@ -55,7 +56,7 @@ impl BuildFactsDoor {
                 Ok(id) => id,
                 Err(e) => {
                     span.record("outcome", "malformed-build-id");
-                    tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %self.me, build_id = %build_id, reason = %e, "otel.kind" = "internal")
+                    tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %me, build_id = %build_id, reason = %e, "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the facts read is refused: its Build id is not a Crockford id"));
                     return BuildFactsReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt };
                 }
@@ -65,7 +66,7 @@ impl BuildFactsDoor {
                 Ok(all) => all.into_iter().filter(|f| *f.build_id() == id).collect(),
                 Err(e) => {
                     span.record("outcome", "not-ready");
-                    return BuildFactsReply::NotReady { reason: format!("{}: its Build log could not be read: {e}", self.me) };
+                    return BuildFactsReply::NotReady { reason: format!("{me}: its Build log could not be read: {e}") };
                 }
             };
             if held.is_empty() {
@@ -75,9 +76,9 @@ impl BuildFactsDoor {
             let facts = held.len() as u32;
             let (messages, refused) = encode_chunks(held);
             let floor = self.floor.lock().unwrap().clone();
-            let whole = refused.is_empty() && crate::admin::hydration_blocker(&self.me, &*self.builds, floor).await.is_none();
+            let whole = refused.is_empty() && crate::admin::hydration_blocker(&me, &*self.builds, floor).await.is_none();
             for e in &refused {
-                tracing::info_span!("rdm.node_admin.build.reject.via-unservable-fact", node = %self.me, build_id = %build_id, detail = %e)
+                tracing::info_span!("rdm.node_admin.build.reject.via-unservable-fact", node = %me, build_id = %build_id, detail = %e)
                     .in_scope(|| tracing::info!("a held Build fact fits no chunk: this answer is not complete"));
             }
             let chunks = messages.len() as u32;

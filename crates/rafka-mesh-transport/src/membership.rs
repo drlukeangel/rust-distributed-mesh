@@ -2046,6 +2046,7 @@ impl View {
         let mut view = Self { mesh: mesh.to_string(), node: node.to_string(), ..Self::default() };
         *view.book.holder.lock().unwrap() = node.to_string();
         *view.book.own_mesh.lock().unwrap() = mesh.to_string();
+        view.book.held_name = view.held_name.clone();
         // One flag: the view replays as its mesh's primary while the book authors its members' statuses.
         view.primary = view.book.primary.clone();
         view
@@ -4468,6 +4469,9 @@ pub struct DigestBook {
     ended_overlays: Arc<Mutex<BTreeSet<(String, u32, String)>>>,
     /// The path name of the node holding this book, named by the refusals it writes.
     holder: Arc<Mutex<String>>,
+    /// The name the mesh-primary's row last gave this birth (`ApplyNodeName`, R12), shared with its
+    /// membership; `None` while the birth holds its launch name.
+    held_name: Arc<Mutex<Option<rafka_mesh_entity::PathName>>>,
     /// The mesh names the accepted Build holds, once this node holds the Build: the authority on
     /// which meshes the fabric has.
     accepted_meshes: Arc<Mutex<Option<BTreeSet<String>>>>,
@@ -4602,6 +4606,12 @@ impl DigestBook {
         (!holder.is_empty()).then(|| holder.clone())
     }
 
+    /// The [`PathName`](rafka_mesh_entity::PathName) the mesh-primary's row last gave this book's
+    /// holder (`ApplyNodeName`, R12), or `None` while the holder has its launch name.
+    pub fn held_path_name(&self) -> Option<rafka_mesh_entity::PathName> {
+        self.held_name.lock().unwrap().clone()
+    }
+
     pub(crate) fn with_retention(retention: Duration) -> Self {
         Self::with_floor(retention, staleness_floor())
     }
@@ -4626,6 +4636,7 @@ impl DigestBook {
             projected: Arc::default(),
             ended_overlays: Arc::default(),
             holder: Arc::default(),
+            held_name: Arc::default(),
             accepted_meshes: Arc::default(),
             retention,
             staleness_floor,

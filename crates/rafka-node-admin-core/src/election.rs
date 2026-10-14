@@ -350,7 +350,12 @@ impl ElectionLog {
     /// Record `t`'s winners. Each change of a seat this admin owns, and each
     /// first resolution, emits one span.
     pub fn observe(&self, t: &Topology) {
-        let mesh = self.observer.mesh.clone();
+        self.observe_as(&self.observer, t)
+    }
+
+    /// [`Self::observe`], naming the observer by the `path.name` `observer` it holds now.
+    pub fn observe_as(&self, observer: &PathName, t: &Topology) {
+        let mesh = observer.mesh.clone();
         let mut last = self.last.lock().unwrap();
         let mut now: BTreeMap<NodeKind, Option<Seat>> = BTreeMap::new();
         for n in t.members().filter(|n| n.mesh == mesh) {
@@ -373,7 +378,7 @@ impl ElectionLog {
                 parent: None,
                 "rdm.mesh.election.resolve.via-recompute",
                 election_level = "node_type",
-                observer = %self.observer,
+                observer = %observer,
                 mesh = %mesh,
                 kind = kind_name(*kind),
                 candidate_count = candidates,
@@ -402,7 +407,7 @@ impl ElectionLog {
                 parent: None,
                 "rdm.mesh.election.resolve.via-mesh-primary",
                 election_level = "mesh_primary",
-                observer = %self.observer,
+                observer = %observer,
                 mesh = %mesh,
                 winner_node_id = %field(&mesh_primary, |s| &s.node_id),
                 winner_path = %field(&mesh_primary, |s| &s.path),
@@ -417,7 +422,7 @@ impl ElectionLog {
         // The fabric election is the mesh primaries' to own.
         let fabric = t.fabric_primary().map(Seat::of);
         let mut last_fabric = self.last_fabric.lock().unwrap();
-        let owner = mesh_primary.as_ref().is_some_and(|s| s.path == self.observer.to_string());
+        let owner = mesh_primary.as_ref().is_some_and(|s| s.path == observer.to_string());
         let mut owned = self.owned_fabric.lock().unwrap();
         let gained = owner && !*owned;
         *owned = owner;
@@ -432,7 +437,7 @@ impl ElectionLog {
                 parent: None,
                 "rdm.mesh.election.resolve.via-fabric-recompute",
                 election_level = "fabric_primary",
-                observer = %self.observer,
+                observer = %observer,
                 fabric = %t.fabric.name,
                 fabric_id = %t.fabric.id,
                 candidate_mesh_primaries = %candidates.join(","),

@@ -764,10 +764,20 @@ enum Inner {
 }
 
 impl DriveEnv {
+    /// This admin's currently held `path.name`: what its Build state or its view names its birth,
+    /// falling back to `self.me` before its birth is in the view.
+    pub async fn held_name(&self) -> PathName {
+        if let Some(held) = self.builds.held_name() {
+            return held;
+        }
+        self.topology.read().await.held_name_of(&self.me, Some(&self.door.node_id))
+    }
+
     /// Drive `drive`'s Build until it ends, stalls or loses the seat.
     pub async fn run(self: &Arc<Self>, drive: &Arc<Drive>) -> DriveEnd {
         let id = drive.build_id.clone();
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-drive", build_id = %id, node = %self.me, outcome = tracing::field::Empty, detail = tracing::field::Empty, dispatches = tracing::field::Empty);
+        let me = self.held_name().await;
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-drive", build_id = %id, node = %me, outcome = tracing::field::Empty, detail = tracing::field::Empty, dispatches = tracing::field::Empty);
         let mut dispatches = 0u32;
         let mut last_turn = None;
         let end = self.pass(drive, &mut dispatches, &mut last_turn).instrument(span.clone()).await;
@@ -789,6 +799,7 @@ impl DriveEnv {
     /// "From this write the holder is no longer primary"), and it names the holder this admin's
     /// authority ended at, while the view follows it.
     async fn may_act(&self, drive: &Arc<Drive>) -> Option<DriveEnd> {
+        let me = self.held_name().await;
         let record_holder = match self.gate.fence().await {
             Ok(holder) => holder,
             Err(e) => {
@@ -799,7 +810,7 @@ impl DriveEnv {
                     BuildStateError::SeatYielded { to, .. } => to,
                     _ => None,
                 };
-                tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %self.me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
+                tracing::info_span!("rdm.node_admin.build.reject.via-fenced", build_id = %drive.build_id, node = %me, fenced = true, detail = %why, to = to.as_deref().unwrap_or("none")).in_scope(|| tracing::info!("dispatch refused: the seat record names another holder"));
                 drive.lose_seat(SeatLoss { why: why.clone(), to });
                 return Some(DriveEnd::SeatLost(why));
             }
@@ -815,8 +826,8 @@ impl DriveEnv {
             // fence it names this birth, none, or a birth proven gone (no holder).
             let shows = seat.as_ref().map(|(name, id)| format!("{name} ({id})")).unwrap_or_else(|| "none".into());
             let names = record_holder.as_deref().unwrap_or("none");
-            let why = format!("{} ({}) does not hold the fabric-primary seat in its view (it shows {shows}); the committed fabric seat record names {names}", self.me, self.door.node_id);
-            tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id, node = %self.me, detail = %why, to = names).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
+            let why = format!("{me} ({}) does not hold the fabric-primary seat in its view (it shows {shows}); the committed fabric seat record names {names}", self.door.node_id);
+            tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", build_id = %drive.build_id, node = %me, detail = %why, to = names).in_scope(|| tracing::info!("dispatch refused: the seat is not held"));
             drive.lose_seat(SeatLoss { why: why.clone(), to: record_holder });
             return Some(DriveEnd::SeatLost(why));
         }
@@ -824,18 +835,18 @@ impl DriveEnv {
             return Some(DriveEnd::Paused(why));
         }
         if !self.gate.authorizes() {
-            let why = format!("{}: its view is cut off or within one silence window of healing, and authorizes nothing", self.me);
+            let why = format!("{me}: its view is cut off or within one silence window of healing, and authorizes nothing");
             if drive.stall_is_new(&why) {
-                tracing::info_span!("rdm.node_admin.build.reject.via-cut-off", build_id = %drive.build_id, node = %self.me).in_scope(|| tracing::info!("dispatch refused: a cut-off view authorizes nothing"));
+                tracing::info_span!("rdm.node_admin.build.reject.via-cut-off", build_id = %drive.build_id, node = %me).in_scope(|| tracing::info!("dispatch refused: a cut-off view authorizes nothing"));
             }
             return Some(DriveEnd::Paused(why));
         }
         None
     }
 
-    fn stalled(&self, drive: &Arc<Drive>, why: String) -> DriveEnd {
+    fn stalled(&self, me: &PathName, drive: &Arc<Drive>, why: String) -> DriveEnd {
         if drive.stall_is_new(&why) {
-            tracing::info_span!("rdm.node_admin.build.update.via-stalled", build_id = %drive.build_id, node = %self.me, reason = %why).in_scope(|| tracing::info!("the drive cannot go on until the world changes"));
+            tracing::info_span!("rdm.node_admin.build.update.via-stalled", build_id = %drive.build_id, node = %me, reason = %why).in_scope(|| tracing::info!("the drive cannot go on until the world changes"));
         }
         DriveEnd::Stalled(why)
     }
@@ -845,9 +856,10 @@ impl DriveEnv {
     /// names that attempt. A release that cannot be written is named: the mesh stays held, and the
     /// next claim on it is refused naming this attempt.
     async fn release_mesh(&self, id: &BuildId, attempt: u32, executor: &PathName) {
-        let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: self.me.to_string() };
+        let me = self.held_name().await;
+        let row = crate::mesh_claims::InFlight { build_id: id.clone(), lane: None, attempt, claimant: me.to_string() };
         if let Err(e) = self.door.claims.release(&executor.mesh, &row).await {
-            tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id, attempt, mesh = %executor.mesh, node = %self.me, error = %e)
+            tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %id, attempt, mesh = %executor.mesh, node = %me, error = %e)
                 .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
         }
     }
@@ -899,7 +911,7 @@ impl DriveEnv {
     /// its node-admins included, has crashed ... The fabric-primary acts on the provider's exact exit
     /// proof, never on silence"; "Members live": no exit proof means hold). Each read is named once per
     /// distinct result.
-    async fn crash_proven(&self, drive: &Drive, p: &BuildProjection) -> HashSet<String> {
+    async fn crash_proven(&self, me: &PathName, drive: &Drive, p: &BuildProjection) -> HashSet<String> {
         let mut crashed = HashSet::new();
         for m in p.topology.meshes.values().filter(|m| m.name != self.me.mesh && self.gate.peer_mesh(&m.name).is_some_and(|pm| pm.unreachable_decided)) {
             let nodes: Vec<PathName> = m.nodes.iter().cloned().collect();
@@ -908,7 +920,7 @@ impl DriveEnv {
             }
             let proofs = self.departure.exits_of(&nodes).await;
             if drive.first_time(format!("crash-proof|{}|{}|{}", m.name, proofs.proven.join(","), proofs.unproven.join("; "))) {
-                crash_proof_span(&self.me, &drive.build_id, &m.name, nodes.len(), &proofs);
+                crash_proof_span(me, &drive.build_id, &m.name, nodes.len(), &proofs);
             }
             if proofs.unproven.is_empty() {
                 crashed.insert(m.name.clone());
@@ -930,11 +942,10 @@ impl DriveEnv {
 
     /// The drive stops at the fence on `op` by name: once per mesh, operation and verdict on its own
     /// span, framed as the attempt's blocker, and stalled until the investigation's state changes.
-    fn stop_at_fence(&self, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool), crashed: &HashSet<String>) -> DriveEnd {
+    fn stop_at_fence(&self, me: &PathName, drive: &Arc<Drive>, attempt: u32, op: &BuildOperation, (node, unheard_ms, decided): (PathName, u64, bool), crashed: &HashSet<String>) -> DriveEnd {
         let unreachable = self.gate.peer_mesh(&node.mesh).is_some_and(|m| m.unreachable_decided);
         let why = format!(
-            "{}: {} acts on {node} of peer mesh {mesh}, which the peer-mesh investigation holds unheard ({unheard_ms} ms){}: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
-            self.me,
+            "{me}: {} acts on {node} of peer mesh {mesh}, which the peer-mesh investigation holds unheard ({unheard_ms} ms){}: nothing is claimed or dispatched for that mesh until it is heard again (R-D1)",
             op.key(),
             if decided {
                 "; its decided rebirth admits only the mesh's first recovering node-admin"
@@ -948,7 +959,7 @@ impl DriveEnv {
             mesh = node.mesh,
         );
         if drive.stall_is_new(&format!("unheard-mesh|{}|{}|{decided}", node.mesh, op.key())) {
-            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id, attempt, node = %self.me, operation = %op.key(), target = %node, mesh = %node.mesh, unheard_ms, rebirth_decided = decided)
+            tracing::info_span!("rdm.node_admin.build.reject.via-unheard-mesh-drive", build_id = %drive.build_id, attempt, node = %me, operation = %op.key(), target = %node, mesh = %node.mesh, unheard_ms, rebirth_decided = decided)
                 .in_scope(|| tracing::info!("the drive claims and dispatches nothing for a node of a peer mesh held unheard"));
         }
         self.blocked(drive, attempt, &op.key(), "unheard-mesh", &why);
@@ -962,10 +973,10 @@ impl DriveEnv {
     /// an operation no admin executes in this view (it waits for its mesh's own seat, never for the
     /// run's executor); a cut run hands back to this admin, whose next claim re-reads the view and
     /// the investigation. `Err` names the fence on the first operation.
-    fn plan_dispatch(&self, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName, crashed: &HashSet<String>) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
+    fn plan_dispatch(&self, me: &PathName, drive: &Drive, p: &BuildProjection, t: &Topology, executor: &PathName, crashed: &HashSet<String>) -> Result<RunPlan, (BuildOperation, (PathName, u64, bool))> {
         let ops = left(drive, p, t);
-        if let Some(op) = ops.first().filter(|op| *executor == self.me && self.rebirth_admits(p, op, crashed)) {
-            return Ok(RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| self.me.to_string()) });
+        if let Some(op) = ops.first().filter(|op| *executor == *me && self.rebirth_admits(p, op, crashed)) {
+            return Ok(RunPlan { operations: vec![op.clone()], hand_off_to: (ops.len() > 1).then(|| me.to_string()) });
         }
         let mut plan = run_of(&ops, t, executor);
         let mut cut = None;
@@ -984,7 +995,7 @@ impl DriveEnv {
         }
         if let Some(i) = cut {
             plan.operations.truncate(i);
-            plan.hand_off_to = Some(self.me.to_string());
+            plan.hand_off_to = Some(me.to_string());
         }
         Ok(plan)
     }
@@ -1003,9 +1014,10 @@ impl DriveEnv {
             if let Some(end) = self.may_act(drive).await {
                 return end;
             }
+            let me = self.held_name().await;
             let p = match self.builds.read_build(&id).await {
                 Ok(p) => p,
-                Err(e) => return self.stalled(drive, format!("{}: Build {id} could not be read: {e}", self.me)),
+                Err(e) => return self.stalled(&me, drive, format!("{me}: Build {id} could not be read: {e}")),
             };
             if p.state == BuildState::Complete {
                 if !drive.has_run_log() {
@@ -1013,7 +1025,7 @@ impl DriveEnv {
                     // the Build ended holds no frame of it. The executor of the last attempt replays
                     // it from the receipts it wrote itself, and the facts of earlier attempts are
                     // read; the Build topic's step facts are never the answer for the last attempt.
-                    if let Some(end) = self.reattach_to_ended(&turn, drive, &p).await {
+                    if let Some(end) = self.reattach_to_ended(&me, &turn, drive, &p).await {
                         return end;
                     }
                 }
@@ -1028,10 +1040,10 @@ impl DriveEnv {
             }
             match crate::build_state::drivable(&*self.builds, &p).await {
                 Ok(true) => {}
-                Ok(false) => return self.stalled(drive, format!("{}: Build {id} is neither the current Build nor a failed Build accepted after it: nothing drives it", self.me)),
-                Err(e) => return self.stalled(drive, format!("{}: the current Build could not be read to admit Build {id}: {e}", self.me)),
+                Ok(false) => return self.stalled(&me, drive, format!("{me}: Build {id} is neither the current Build nor a failed Build accepted after it: nothing drives it")),
+                Err(e) => return self.stalled(&me, drive, format!("{me}: the current Build could not be read to admit Build {id}: {e}")),
             }
-            let crashed = self.crash_proven(drive, &p).await;
+            let crashed = self.crash_proven(&me, drive, &p).await;
             // The claim's holder was proven departed: by this pass, or by an earlier pass or the
             // drift reconcile, whose proof this admin recorded for its exact birth. Either way the
             // next attempt is claimed without calling the lost holder or proving it again.
@@ -1046,14 +1058,14 @@ impl DriveEnv {
             let (attempt, executor, context) = if p.state == BuildState::Running && !take_over {
                 let holder = p.executor.clone().unwrap_or_default();
                 let Some(holder) = parse_path(&holder) else {
-                    return self.stalled(drive, format!("{}: attempt {} of Build {id} is claimed by {holder:?}, which is not a path.name", self.me, p.attempt));
+                    return self.stalled(&me, drive, format!("{me}: attempt {} of Build {id} is claimed by {holder:?}, which is not a path.name", p.attempt));
                 };
                 (p.attempt, holder, self.door.contexts.get(&id, p.attempt).await.ok().flatten().unwrap_or_default())
             } else {
-                if let Some(end) = self.idle_until_moved(drive, &p).await {
+                if let Some(end) = self.idle_until_moved(&me, drive, &p).await {
                     return end;
                 }
-                match self.seats_first(drive, &p).await {
+                match self.seats_first(&me, drive, &p).await {
                     Ok(true) => continue,
                     Ok(false) => {}
                     Err(end) => return end,
@@ -1065,7 +1077,7 @@ impl DriveEnv {
                         self.release_mesh(&id, p.attempt, &lost).await;
                     }
                 }
-                match self.claim_next(drive, &p, handed_to.take(), &crashed).await {
+                match self.claim_next(&me, drive, &p, handed_to.take(), &crashed).await {
                     Ok(c) => c,
                     Err(end) => return end,
                 }
@@ -1085,20 +1097,20 @@ impl DriveEnv {
             self.replay(drive, &p.steps, if fresh { 0 } else { first }, attempt).await;
             let plan = {
                 let t = self.topology.read().await.clone();
-                match self.plan_dispatch(drive, &p, &t, &executor, &crashed) {
+                match self.plan_dispatch(&me, drive, &p, &t, &executor, &crashed) {
                     Ok(plan) => plan,
-                    Err((op, f)) => return self.stop_at_fence(drive, attempt, &op, f, &crashed),
+                    Err((op, f)) => return self.stop_at_fence(&me, drive, attempt, &op, f, &crashed),
                 }
             };
             // A seat update a committed row records before an operation of this run is acknowledged
             // first, whether this admin moved the seat, resumes after another admin's row, or holds the
             // seat from that row already: node.primary.updated answered to this executor, never the
             // view alone (proposal Part C1 failure contract), in the claim's attempt and in a re-dispatch.
-            if let Some(end) = self.updates_acknowledged(drive, &plan, attempt, p.run_of(attempt)).await {
+            if let Some(end) = self.updates_acknowledged(&me, drive, &plan, attempt, p.run_of(attempt)).await {
                 return end;
             }
             *dispatches += 1;
-            let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %executor, node = %self.me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+            let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %executor, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
             if let Some(tp) = &context.traceparent {
                 rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
             }
@@ -1134,22 +1146,21 @@ impl DriveEnv {
                     self.verdicts.record(BuildAttemptReceipt { mesh: None, build_id: id.clone(), attempt, outcome: AttemptOutcome::HandedOff { to: to.clone() } }).await;
                     self.release_mesh(&id, attempt, &executor).await;
                     let Some(next) = parse_path(&to) else {
-                        return self.stalled(drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
+                        return self.stalled(&me, drive, format!("attempt {attempt} of Build {id} handed off to {to:?}, which is not a path.name"));
                     };
                     // An attempt handed back to this admin that moved nothing (it ended incomplete: a
                     // participant lost, a proof not in) would be claimed again and end the same way: the
                     // Build stays in progress, and the next attempt waits for what it decides on to move.
-                    if next == self.me {
+                    if next == me {
                         if let (Some(before), Ok(ended)) = (before, self.builds.read_build(&id).await) {
                             let after = world(drive, &ended, &self.topology.read().await.clone());
-                            if ended_incomplete(&self.me, &executor, &next, &before, &after) {
+                            if ended_incomplete(&me, &executor, &next, &before, &after) {
                                 let why = format!(
-                                    "{}: attempt {attempt} of Build {id} ended incomplete and was handed back to this fabric-primary with nothing moved ({after}): the Build stays in progress and no next attempt is claimed until what it decides on moves",
-                                    self.me
+                                    "{me}: attempt {attempt} of Build {id} ended incomplete and was handed back to this fabric-primary with nothing moved ({after}): the Build stays in progress and no next attempt is claimed until what it decides on moves"
                                 );
                                 self.blocked(drive, attempt, "", "incomplete", &why);
                                 drive.set_idle(Some(Idle { attempt, world: after, why: why.clone() }));
-                                return self.stalled(drive, why);
+                                return self.stalled(&me, drive, why);
                             }
                         }
                     }
@@ -1158,20 +1169,20 @@ impl DriveEnv {
                 }
                 Inner::Terminal(other) => {
                     dspan.record("outcome", "protocol-violation");
-                    return self.stalled(drive, format!("{executor} ended attempt {attempt} with {}, which is not a terminal of the attempt", other.name()));
+                    return self.stalled(&me, drive, format!("{executor} ended attempt {attempt} with {}, which is not a terminal of the attempt", other.name()));
                 }
                 Inner::Refused(r) => {
                     dspan.record("outcome", r.name());
                     let why = format!("{executor} refused attempt {attempt} of Build {id}: {}", describe(&r));
                     self.blocked(drive, attempt, "", "dispatch", &why);
-                    return self.stalled(drive, why);
+                    return self.stalled(&me, drive, why);
                 }
                 Inner::SeatYielded => {
                     dspan.record("outcome", "seat-yielded");
                     // The fence is sticky: `may_act` ends the drive SeatLost naming the new holder.
                     return match self.may_act(drive).await {
                         Some(end) => end,
-                        None => self.stalled(drive, format!("{}: attempt {attempt} of Build {id} stopped at a seat fence that the gate no longer reports", self.me)),
+                        None => self.stalled(&me, drive, format!("{me}: attempt {attempt} of Build {id} stopped at a seat fence that the gate no longer reports")),
                     };
                 }
                 Inner::Unreached(why) | Inner::Broke(why) => {
@@ -1181,18 +1192,18 @@ impl DriveEnv {
                     dspan.record("reason", detail.as_str());
                     // Only a proven departure lets another admin take the attempt; silence never does.
                     if departed.is_some() {
-                        return self.stalled(drive, format!("{executor} was proven departed and the attempt claimed after it could not be dispatched either: {detail}"));
+                        return self.stalled(&me, drive, format!("{executor} was proven departed and the attempt claimed after it could not be dispatched either: {detail}"));
                     }
                     match self.departure.proven(&executor).await {
                         Ok(()) => {
-                            tracing::info_span!("rdm.node_admin.build.update.via-departure-proven", build_id = %id, attempt, executor = %executor, node = %self.me)
+                            tracing::info_span!("rdm.node_admin.build.update.via-departure-proven", build_id = %id, attempt, executor = %executor, node = %me)
                                 .in_scope(|| tracing::info!("the executor's exact runtime is proven exited: the next attempt may be claimed"));
                             departed = Some(executor.to_string());
                         }
                         Err(not_proven) => {
                             let why = format!("executor {executor} is {class} ({detail}); its departure is not proven ({not_proven}); the attempt is not claimed for another admin");
                             self.blocked(drive, attempt, "", "departure-proof", &why);
-                            return self.stalled(drive, why);
+                            return self.stalled(&me, drive, why);
                         }
                     }
                 }
@@ -1203,16 +1214,16 @@ impl DriveEnv {
     /// Every seat update a committed row records before an operation of `plan`, acknowledged through
     /// the gate ([`Gate::seats_acknowledged`]); `Some` ends the drive stalled, the attempt blocked
     /// naming the updates and why, when one was not.
-    async fn updates_acknowledged(&self, drive: &Arc<Drive>, plan: &RunPlan, attempt: u32, run: u32) -> Option<DriveEnd> {
+    async fn updates_acknowledged(&self, me: &PathName, drive: &Arc<Drive>, plan: &RunPlan, attempt: u32, run: u32) -> Option<DriveEnd> {
         let mut updates: Vec<(String, PrecedingUpdate)> = plan.operations.iter().flat_map(|op| preceding_updates(op, &drive.build_id, run).into_iter().map(move |u| (op.key(), u))).collect();
         updates.dedup();
         let Some((first, _)) = updates.first().cloned() else { return None };
         let asked: Vec<PrecedingUpdate> = updates.into_iter().map(|(_, u)| u).collect();
         let why = self.gate.seats_acknowledged(&asked, &drive.build_id, attempt).await.err()?;
         let names = asked.iter().map(|u| format!("{} under mesh {}", u.operation, u.mesh)).collect::<Vec<_>>().join(", ");
-        let why = format!("{}: attempt {attempt} of Build {} dispatches nothing until node.primary.updated is acknowledged for the seat update a committed row records before it (one of {names}): {why}", self.me, drive.build_id);
+        let why = format!("{me}: attempt {attempt} of Build {} dispatches nothing until node.primary.updated is acknowledged for the seat update a committed row records before it (one of {names}): {why}", drive.build_id);
         self.blocked(drive, attempt, &first, "primary-update", &why);
-        Some(self.stalled(drive, why))
+        Some(self.stalled(me, drive, why))
     }
 
     /// The seats the first operation left moves before it runs (R-MT1, [`crate::executor::seat_move`],
@@ -1226,7 +1237,7 @@ impl DriveEnv {
     /// after the row (ruling R-PU2, Q10): the attempt ends `Failed` and the Build is Failed (R-BI4).
     /// Every other end hands the attempt to the view's fabric-primary, and when the seat moved
     /// (`Ok(true)`) the loop passes the gates again.
-    async fn seats_first(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Result<bool, DriveEnd> {
+    async fn seats_first(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection) -> Result<bool, DriveEnd> {
         let t = self.topology.read().await.clone();
         let Some(op) = left(drive, p, &t).into_iter().next() else { return Ok(false) };
         let Some(m) = crate::executor::seat_move(&op, &t) else { return Ok(false) };
@@ -1235,16 +1246,16 @@ impl DriveEnv {
         // next run a resubmit opens makes a new transfer (ruling R-PU2, Q9).
         let run = p.run_of(attempt);
         let id = &drive.build_id;
-        let context = match self.door.claim(&self.me.to_string(), id, attempt).await {
+        let context = match self.door.claim(&me.to_string(), id, attempt).await {
             BuildClaimReply::Won { context } => context,
             other => {
-                let why = format!("{}: the seats of {} move before {} as a step of attempt {attempt} of Build {id}, and that attempt was not claimed for {}: {}", self.me, m.holder.name, op.key(), self.me, claim_refusal(&other));
+                let why = format!("{me}: the seats of {} move before {} as a step of attempt {attempt} of Build {id}, and that attempt was not claimed for {me}: {}", m.holder.name, op.key(), claim_refusal(&other));
                 self.blocked(drive, attempt, &op.key(), "primary-update", &why);
-                return Err(self.stalled(drive, why));
+                return Err(self.stalled(me, drive, why));
             }
         };
-        let held = self.dispatcher.hold(&self.me, id, attempt);
-        let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %self.me, node = %self.me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let held = self.dispatcher.hold(me, id, attempt);
+        let dspan = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt, executor = %me, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         if let Some(tp) = &context.traceparent {
             rafka_mesh_telemetry::set_remote_parent(&dspan, tp, context.tracestate.as_deref());
         }
@@ -1253,10 +1264,10 @@ impl DriveEnv {
         let still = still_holds(&op, &m, &after);
         let to = match after.fabric_primary() {
             Some(fp) if !still => fp.name.clone(),
-            _ => self.me.clone(),
+            _ => me.clone(),
         };
         let failed = match &moved {
-            Err(SeatMoveEnd::Refused(why)) => Some(("primary-update".to_string(), format!("{}: the seats of {} did not move before {}: node.primary.update was refused before its row: {why}", self.me, m.holder.name, op.key()))),
+            Err(SeatMoveEnd::Refused(why)) => Some(("primary-update".to_string(), format!("{me}: the seats of {} did not move before {}: node.primary.update was refused before its row: {why}", m.holder.name, op.key()))),
             Err(SeatMoveEnd::Failed { step, reason }) => Some((step.clone(), reason.clone())),
             _ => None,
         };
@@ -1272,9 +1283,9 @@ impl DriveEnv {
             _ => AttemptOutcome::HandedOff { to: to.to_string() },
         };
         match held {
-            Some(held) => held.finish(terminal.clone(), self.release_mesh(id, attempt, &self.me)).await,
+            Some(held) => held.finish(terminal.clone(), self.release_mesh(id, attempt, me)).await,
             None => match self.builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: id.clone(), attempt, outcome, mesh: None }).await {
-                Ok(()) => self.release_mesh(id, attempt, &self.me).await,
+                Ok(()) => self.release_mesh(id, attempt, me).await,
                 Err(e) => {
                     dspan.record("reason", format!("the verdict of attempt {attempt} could not be recorded: {e}").as_str());
                 }
@@ -1291,29 +1302,29 @@ impl DriveEnv {
             (Err(why), false) => {
                 // After the row the seats are the successor's whatever the call returned (C1 failure
                 // contract): the drive goes on to the gates, which end it at the moved seat.
-                let why = format!("{}: its seats moved to {to} by the committed row before {}, and node.primary.update did not complete: {why}", self.me, op.key());
+                let why = format!("{me}: its seats moved to {to} by the committed row before {}, and node.primary.update did not complete: {why}", op.key());
                 dspan.record("reason", why.as_str());
                 self.blocked(drive, attempt, &op.key(), "primary-update", &why);
                 Ok(true)
             }
             (moved, true) => {
                 let why = match moved {
-                    Err(why) => format!("{}: the seat of {} did not move before {}: {why}", self.me, m.holder.name, op.key()),
-                    Ok(()) => format!("{}: node.primary.update of {} answered, and this view still names it the holder of the seat {} moves", self.me, m.holder.name, op.key()),
+                    Err(why) => format!("{me}: the seat of {} did not move before {}: {why}", m.holder.name, op.key()),
+                    Ok(()) => format!("{me}: node.primary.update of {} answered, and this view still names it the holder of the seat {} moves", m.holder.name, op.key()),
                 };
                 dspan.record("reason", why.as_str());
                 self.blocked(drive, attempt, &op.key(), "primary-update", &why);
                 if let Ok(ended) = self.builds.read_build(id).await {
                     drive.set_idle(Some(Idle { attempt, world: world(drive, &ended, &after), why: why.clone() }));
                 }
-                Err(self.stalled(drive, why))
+                Err(self.stalled(me, drive, why))
             }
         }
     }
 
     /// The drive waits, named, while the attempt it handed back to itself with nothing moved has not
     /// seen what its resume decides on move ([`world`]); the stall is the same reason, named once.
-    async fn idle_until_moved(&self, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
+    async fn idle_until_moved(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
         let idle = drive.idle()?;
         if idle.attempt != p.attempt {
             drive.set_idle(None);
@@ -1321,7 +1332,7 @@ impl DriveEnv {
         }
         let now = world(drive, p, &self.topology.read().await.clone());
         if now == idle.world {
-            return Some(self.stalled(drive, idle.why));
+            return Some(self.stalled(me, drive, idle.why));
         }
         drive.set_idle(None);
         None
@@ -1329,7 +1340,7 @@ impl DriveEnv {
 
     /// Claim the next attempt of `p` for the admin that runs what is left (or `forced`, the admin a
     /// run just handed off to), on this admin's own log.
-    async fn claim_next(&self, drive: &Arc<Drive>, p: &BuildProjection, forced: Option<PathName>, crashed: &HashSet<String>) -> Result<(u32, PathName, CallContext), DriveEnd> {
+    async fn claim_next(&self, me: &PathName, drive: &Arc<Drive>, p: &BuildProjection, forced: Option<PathName>, crashed: &HashSet<String>) -> Result<(u32, PathName, CallContext), DriveEnd> {
         let id = &drive.build_id;
         let attempt = p.attempt + 1;
         let first = {
@@ -1337,7 +1348,7 @@ impl DriveEnv {
             left(drive, p, &t).into_iter().next()
         };
         if let Some((op, f)) = first.as_ref().and_then(|op| self.fenced(p, op, crashed).map(|f| (op, f))) {
-            return Err(self.stop_at_fence(drive, attempt, op, f, crashed));
+            return Err(self.stop_at_fence(me, drive, attempt, op, f, crashed));
         }
         // The mesh's first recovering node-admin under the investigation's rebirth verdict is this
         // admin's to execute (R-D1). A run handed back to this admin (its own cut, or an executor whose
@@ -1349,7 +1360,7 @@ impl DriveEnv {
         // rebirth, which the ladder told when it decided): the mesh this claim gives a node-admin.
         let crash_mesh = first.as_ref().filter(|_| rebirth).and_then(|op| self.unheard_peer(op)).filter(|(_, _, decided)| !*decided).map(|(node, _, _)| node.mesh);
         let from = std::time::Instant::now();
-        let forced = if rebirth { Some(self.me.clone()) } else { forced.filter(|to| *to != self.me) };
+        let forced = if rebirth { Some(me.clone()) } else { forced.filter(|to| to != me) };
         let lead = match forced {
             Some(to) => Some(to),
             None => {
@@ -1373,11 +1384,11 @@ impl DriveEnv {
             // Named: the operation, its mesh, and the same-mesh admins the attempt waits for.
             let t = self.topology.read().await.clone();
             let why = match left(drive, p, &t).first() {
-                Some(op) => format!("{}: no admin can execute what is left of Build {id} in this view: {}", self.me, crate::executor::why_no_executor(op, &t)),
-                None => format!("{}: no admin can execute what is left of Build {id} in this view", self.me),
+                Some(op) => format!("{me}: no admin can execute what is left of Build {id} in this view: {}", crate::executor::why_no_executor(op, &t)),
+                None => format!("{me}: no admin can execute what is left of Build {id} in this view"),
             };
             self.blocked(drive, attempt, "", "successor-held", &why);
-            return Err(self.stalled(drive, why));
+            return Err(self.stalled(me, drive, why));
         };
         match self.door.claim(&lead.to_string(), id, attempt).await {
             BuildClaimReply::Won { context } => {
@@ -1391,17 +1402,17 @@ impl DriveEnv {
                     let context = self.door.contexts.get(id, attempt).await.ok().flatten().unwrap_or_default();
                     Ok((attempt, h, context))
                 }
-                None => Err(self.stalled(drive, format!("attempt {attempt} of Build {id} is held by {holder:?}, which is not a path.name"))),
+                None => Err(self.stalled(me, drive, format!("attempt {attempt} of Build {id} is held by {holder:?}, which is not a path.name"))),
             },
-            BuildClaimReply::NotOpen { next } => Err(self.stalled(drive, format!("{}: attempt {attempt} of Build {id} is not open (the open attempt is {next:?})", self.me))),
+            BuildClaimReply::NotOpen { next } => Err(self.stalled(me, drive, format!("{me}: attempt {attempt} of Build {id} is not open (the open attempt is {next:?})"))),
             // Another attempt holds the mesh this one acts in (R-BI7 caveat 3): nothing is claimed or
             // dispatched; the next pass claims once its verdict releases the mesh.
             BuildClaimReply::BuildInProgress { current_build_id, mesh, held_by } => {
-                let why = format!("{}: attempt {attempt} of Build {id} acts in mesh {mesh}, which an attempt of Build {current_build_id} holds (claimed by {}): one attempt in flight per mesh", self.me, held_by.as_deref().unwrap_or("no recorded claimant"));
+                let why = format!("{me}: attempt {attempt} of Build {id} acts in mesh {mesh}, which an attempt of Build {current_build_id} holds (claimed by {}): one attempt in flight per mesh", held_by.as_deref().unwrap_or("no recorded claimant"));
                 self.blocked(drive, attempt, "", "mesh-in-flight", &why);
-                Err(self.stalled(drive, why))
+                Err(self.stalled(me, drive, why))
             }
-            other => Err(self.stalled(drive, format!("{}: the claim of attempt {attempt} of Build {id} was not decided: {}", self.me, other.name()))),
+            other => Err(self.stalled(me, drive, format!("{me}: the claim of attempt {attempt} of Build {id} was not decided: {}", other.name()))),
         }
     }
 
@@ -1423,17 +1434,17 @@ impl DriveEnv {
 
     /// A complete Build this drive made no call of: attach to the last attempt's executor and read
     /// its frames. `None` when the attached run ended `Complete`; otherwise the end of the drive.
-    async fn reattach_to_ended(&self, turn: &crate::park_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
+    async fn reattach_to_ended(&self, me: &PathName, turn: &crate::park_gate::Turn, drive: &Arc<Drive>, p: &BuildProjection) -> Option<DriveEnd> {
         let id = &drive.build_id;
         self.replay(drive, &p.steps, 0, p.attempt).await;
         let named = p.executor.clone().unwrap_or_default();
         let Some(holder) = parse_path(&named) else {
-            drive.finish(BuildReply::NotReady { reason: format!("{}: attempt {} of Build {id} completed on {named:?}, which is not a path.name", self.me, p.attempt) });
+            drive.finish(BuildReply::NotReady { reason: format!("{me}: attempt {} of Build {id} completed on {named:?}, which is not a path.name", p.attempt) });
             return Some(DriveEnd::Terminal);
         };
         drive.note_first_attempt(p.attempt);
         let context = self.door.contexts.get(id, p.attempt).await.ok().flatten().unwrap_or_default();
-        let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %self.me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
+        let span = tracing::info_span!("rdm.node_admin.build.update.via-dispatch", build_id = %id, attempt = p.attempt, executor = %holder, node = %me, outcome = tracing::field::Empty, reason = tracing::field::Empty);
         let why = match self.run_inner(turn, drive, id, p.attempt, &holder, context, RunPlan::default()).instrument(span.clone()).await {
             Inner::Terminal(BuildReply::Complete { .. }) => {
                 span.record("outcome", "complete");
@@ -1443,7 +1454,7 @@ impl DriveEnv {
                 span.record("outcome", "seat-yielded");
                 return Some(match self.may_act(drive).await {
                     Some(end) => end,
-                    None => self.stalled(drive, format!("{}: the replay of Build {id} stopped at a seat fence that the gate no longer reports", self.me)),
+                    None => self.stalled(me, drive, format!("{me}: the replay of Build {id} stopped at a seat fence that the gate no longer reports")),
                 });
             }
             Inner::Terminal(t) => format!("it answered {}", t.name()),
@@ -1452,7 +1463,7 @@ impl DriveEnv {
         };
         span.record("outcome", "executor-lost");
         span.record("reason", why.as_str());
-        drive.finish(BuildReply::NotReady { reason: format!("{}: Build {id} is complete, and {holder}, which ran its last attempt {}, could not replay it: {why}", self.me, p.attempt) });
+        drive.finish(BuildReply::NotReady { reason: format!("{me}: Build {id} is complete, and {holder}, which ran its last attempt {}, could not replay it: {why}", p.attempt) });
         Some(DriveEnd::Terminal)
     }
 

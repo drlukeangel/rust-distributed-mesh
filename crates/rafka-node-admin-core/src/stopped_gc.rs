@@ -305,7 +305,8 @@ impl crate::control_plane::ControlPlane {
     /// candidates wait for the next sweep.
     pub async fn sweep_stopped(&self, ttl: Option<Duration>) -> Swept {
         let Some(ttl) = ttl else { return Swept::Forever };
-        if self.topology.read().await.fabric_primary().map(|n| &n.name) != Some(&self.me) {
+        let me = self.held_name().await;
+        if self.topology.read().await.fabric_primary().map(|n| &n.name) != Some(&me) {
             return Swept::NotFabricPrimary;
         }
         let now_ms = self.time.now_ms();

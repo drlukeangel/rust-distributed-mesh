@@ -187,6 +187,10 @@ impl RoundDriver {
         Self { me, me_id, mesh: None, fabric: None, addressed: BTreeMap::new() }
     }
 
+    fn held_name(&self, view: &crate::topology::Topology) -> PathName {
+        view.own(&self.me_id).map(|n| n.name.clone()).unwrap_or_else(|| self.me.clone())
+    }
+
     /// The fabric-primary's view of a mesh's primary changed (a mesh primary appeared, moved or
     /// was reborn): the down op goes to it, so it re-sends what it owes this admin. Not the
     /// takeover alone: a primary this admin has not addressed in this view is addressed now. A
@@ -194,7 +198,8 @@ impl RoundDriver {
     pub(crate) fn address_changed_mesh_primaries(&mut self, view: &crate::topology::Topology, is_fabric_primary: bool, client: Option<&Arc<NodeRpcClient>>) {
         let targets = self.changed_mesh_primaries(view, is_fabric_primary);
         if !targets.is_empty() {
-            send_down(&self.me, "fabric", &view.fabric.name, targets, client);
+            let me = self.held_name(view);
+            send_down(&me, "fabric", &view.fabric.name, targets, client);
         }
     }
 
@@ -228,7 +233,8 @@ impl RoundDriver {
     /// One step. `awaiting` says which adopted statuses still wait for their round; the answer says
     /// which rounds are complete now (so the publisher may republish).
     pub async fn step(&mut self, awaiting: Announced, i: Inputs<'_>) -> Complete {
-        let mesh_name = self.me.mesh.clone();
+        let me = self.held_name(i.view);
+        let mesh_name = me.mesh.clone();
         let mut out = Complete::default();
         if !awaiting.mesh_awaiting_round {
             self.mesh = None;
@@ -236,26 +242,26 @@ impl RoundDriver {
             let first = self.mesh.is_none();
             let round = self.mesh.get_or_insert_with(|| Round { began: Instant::now(), held: None });
             if first {
-                let targets: Vec<(String, Option<crate::model::Node>)> = i.planned.iter().flatten().filter(|p| **p != self.me).map(|p| (p.to_string(), i.view.members().find(|n| &n.name == p).cloned())).collect();
-                send_down(&self.me, "mesh", &mesh_name, targets, i.client);
+                let targets: Vec<(String, Option<crate::model::Node>)> = i.planned.iter().flatten().filter(|p| **p != me).map(|p| (p.to_string(), i.view.members().find(|n| &n.name == p).cloned())).collect();
+                send_down(&me, "mesh", &mesh_name, targets, i.client);
             }
             let missing = match &i.planned {
                 None => vec![Missing { who: mesh_name.clone(), why: "accepted-build-unreadable" }],
                 Some(planned) => {
                     let me_ready = i.view.own(&self.me_id).is_some_and(|n| n.status == crate::model::NodeStatus::ReadyForTraffic);
                     let (heard, known) = (i.book.heard_direct_since(round.began), i.book.all());
-                    missing_members(planned, &self.me, me_ready, &heard, &known, &|id| i.book.is_departed(id))
+                    missing_members(planned, &me, me_ready, &heard, &known, &|id| i.book.is_departed(id))
                 }
             };
             if missing.is_empty() {
                 let waited_ms = round.began.elapsed().as_millis() as u64;
-                tracing::info_span!("rdm.node_admin.mesh.update.via-round-complete", node = %self.me, mesh = %mesh_name, members = i.planned.as_ref().map(Vec::len).unwrap_or(0), waited_ms)
+                tracing::info_span!("rdm.node_admin.mesh.update.via-round-complete", node = %me, mesh = %mesh_name, members = i.planned.as_ref().map(Vec::len).unwrap_or(0), waited_ms)
                     .in_scope(|| tracing::info!("every planned birth checked in: the adopted status is republished"));
                 out.mesh = true;
             } else {
                 let now = named(&missing);
                 if round.held.as_deref() != Some(now.as_str()) {
-                    tracing::info_span!("rdm.node_admin.mesh.update.via-round-held", node = %self.me, mesh = %mesh_name, missing = %now, waited_ms = round.began.elapsed().as_millis() as u64)
+                    tracing::info_span!("rdm.node_admin.mesh.update.via-round-held", node = %me, mesh = %mesh_name, missing = %now, waited_ms = round.began.elapsed().as_millis() as u64)
                         .in_scope(|| tracing::info!("the round is held: a planned birth has not checked in"));
                     round.held = Some(now);
                 }
@@ -282,7 +288,7 @@ impl RoundDriver {
                         self.addressed.insert(mesh.clone(), Addressed::of(p, m));
                     }
                 }
-                send_down(&self.me, "fabric", &i.view.fabric.name, targets, i.client);
+                send_down(&me, "fabric", &i.view.fabric.name, targets, i.client);
             }
             let my_mesh_done = !awaiting.mesh_awaiting_round || out.mesh;
             let reports = reports_of(&i.records.declared.lock().unwrap(), i.view, meshes.iter().map(|(m, _, _)| m.as_str()));
@@ -290,14 +296,14 @@ impl RoundDriver {
             if missing.is_empty() {
                 let waited_ms = round.began.elapsed().as_millis() as u64;
                 let cleared = i.records.set_adopted_degraded(false);
-                tracing::info_span!("rdm.node_admin.fabric.update.via-round-complete", node = %self.me, meshes = meshes.len(), waited_ms, degraded_cleared = cleared)
+                tracing::info_span!("rdm.node_admin.fabric.update.via-round-complete", node = %me, meshes = meshes.len(), waited_ms, degraded_cleared = cleared)
                     .in_scope(|| tracing::info!("every mesh primary reported for this round"));
                 out.fabric = true;
             } else {
                 let now = named(&missing);
                 if round.held.as_deref() != Some(now.as_str()) {
-                    tracing::info_span!("rdm.node_admin.fabric.update.via-round-held", node = %self.me, missing = %now, waited_ms = round.began.elapsed().as_millis() as u64)
-                        .in_scope(|| tracing::info!("the fabric round is held: a mesh primary has not reported"));
+                    tracing::info_span!("rdm.node_admin.fabric.update.via-round-held", node = %me, missing = %now, waited_ms = round.began.elapsed().as_millis() as u64)
+                        .in_scope(|| tracing::info!("the fabric round is held: a planned birth has not reported"));
                     round.held = Some(now);
                 }
             }

@@ -2306,14 +2306,14 @@ fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_
             .filter_map(|s| s.attributes.iter().find(|kv| kv.key.as_str() == key).map(|kv| kv.value.to_string()))
             .collect()
     };
-    assert_eq!(attr("rdm.node_admin.build.create.via-submit", "node"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.create.via-accepted", "node"), vec!["mesh1.admin.1", "mesh1.admin.1"]);
     assert_eq!(attr("rdm.node_admin.node.create.via-node-row", "node"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-claim", "node"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-claim", "served_by"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-claim-decision", "node"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-claim-decision", "executor"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-drive", "node"), vec!["mesh1.admin.1"]);
     assert_eq!(attr("rdm.node_admin.build.update.via-dispatch", "node"), vec!["mesh1.admin.1"]);
     assert_eq!(attr("rdm.node_admin.build.update.via-dispatch", "executor"), vec!["mesh1.admin.1"]);
     assert_eq!(attr("rdm.node_admin.build.serve.via-attempt-run", "node"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-attempt-complete", "node"), vec!["mesh1.admin.1"]);
-    assert_eq!(attr("rdm.node_admin.build.update.via-attempt-complete", "executor"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-reconcile", "executor"), vec!["mesh1.admin.1"]);
 }
 

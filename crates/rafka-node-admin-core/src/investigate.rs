@@ -363,6 +363,12 @@ pub struct Watch {
     pub carriers: Mutex<BTreeMap<String, PathName>>,
 }
 
+impl Watch {
+    fn held_name_in(&self, view: &Topology) -> PathName {
+        self.membership.book.held_path_name().unwrap_or_else(|| view.held_name_of(&self.me, Some(&self.me_id)))
+    }
+}
+
 /// The local OS clock: the silence of a mesh is measured from a local event, and the read is only
 /// named in spans. No node reads it as a stamp.
 fn local_now_ms() -> u64 {
@@ -388,6 +394,8 @@ pub async fn run(w: Watch) {
         // the pass.
         let _turn = w.gate.turn("peer-mesh-investigation").await;
         let view = Arc::new(w.topology.read().await.clone());
+        let me = w.held_name_in(&view);
+        inv.set_me(me.to_string());
         let fabric_primary = view.holds_fabric_seat(&w.me_id);
         if !(fabric_primary && w.membership.authorizes()) {
             w.ladder.lock().unwrap().clear();
@@ -404,18 +412,18 @@ pub async fn run(w: Watch) {
             // A store that cannot be read starts no clock: named, and the clock is reset as for a
             // Build not settled.
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "mesh-investigation", node = %w.me, error = %e)
+                tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "mesh-investigation", node = %me, error = %e)
                     .in_scope(|| tracing::info!("the current Build could not be read: the never-heard clock does not run on a read that failed"));
                 seat_since = None;
             }
         }
         let book = &w.membership.book;
         let heard = book.backbone_meshes();
-        let never = if seat_since.is_some() { never_heard(&view, &w.me.mesh, &heard) } else { BTreeSet::new() };
+        let never = if seat_since.is_some() { never_heard(&view, &me.mesh, &heard) } else { BTreeSet::new() };
         forget_unheard_meshes(&w.ladder, &heard.union(&never).cloned().collect());
         let mut tasks = Vec::new();
         let mut unheard_now = Vec::new();
-        for mesh in heard.into_iter().filter(|m| *m != w.me.mesh) {
+        for mesh in heard.into_iter().filter(|m| *m != me.mesh) {
             let Some(unheard) = book.mesh_unheard(&mesh, Instant::now()) else { continue };
             unheard_now.push(mesh.clone());
             tasks.push(investigate(&w, &inv, &view, mesh, unheard));
@@ -439,7 +447,7 @@ pub async fn run(w: Watch) {
                 }
             }
         }
-        restore_peer_recovery(&w.me, &w.records, &view);
+        restore_peer_recovery(&me, &w.records, &view);
     }
 }
 
@@ -481,7 +489,7 @@ pub fn restore_peer_recovery(me: &PathName, records: &Records, view: &Topology) 
 /// probe the ladder asks for, recording the probe's result when the probe ends.
 pub(crate) struct Investigations {
     /// This admin's `path.name`, named on the probe and verdict spans.
-    me: String,
+    me: Mutex<String>,
     ladder: Arc<Mutex<Ladder>>,
     /// The probes in flight, each its own task, held by the admin's park gate while it is parked;
     /// dropped with the driver, they end with it.
@@ -494,7 +502,11 @@ pub(crate) struct Investigations {
 
 impl Investigations {
     pub(crate) fn new(me: String, ladder: Arc<Mutex<Ladder>>, gate: crate::park_gate::ParkGate) -> Self {
-        Self { me, ladder, probes: Mutex::new(tokio::task::JoinSet::new()), landed: Arc::new(tokio::sync::Notify::new()), gate }
+        Self { me: Mutex::new(me), ladder, probes: Mutex::new(tokio::task::JoinSet::new()), landed: Arc::new(tokio::sync::Notify::new()), gate }
+    }
+
+    pub(crate) fn set_me(&self, me: String) {
+        *self.me.lock().unwrap() = me;
     }
 
     /// Resolves when a probe has ended since the last wake.
@@ -514,6 +526,7 @@ impl Investigations {
         let steps = self.ladder.lock().unwrap().step(mesh, unheard);
         let mut probes = self.probes.lock().unwrap();
         while probes.try_join_next().is_some() {}
+        let me = self.me.lock().unwrap().clone();
         for s in &steps {
             if let Step::Probe { n, unheard_ms, ticket } = *s {
                 // The probe's span opens when it is asked and its calls are its children; what it
@@ -521,7 +534,7 @@ impl Investigations {
                 let empty = tracing::field::Empty;
                 let span = tracing::info_span!(
                     "rdm.node_admin.mesh.update.via-probe",
-                    node = %self.me,
+                    node = %me,
                     mesh = %mesh,
                     probe = n,
                     seat_record = empty,
@@ -534,7 +547,7 @@ impl Investigations {
                     iroh_active_addrs = empty,
                     unheard_ms,
                 );
-                let (me, ladder, landed, mesh) = (self.me.clone(), self.ladder.clone(), self.landed.clone(), mesh.to_string());
+                let (me, ladder, landed, mesh) = (me.clone(), self.ladder.clone(), self.landed.clone(), mesh.to_string());
                 let probe = tracing::Instrument::instrument(start(n), span.clone());
                 // A probe takes no lock a handler needs: while the admin is parked it is held where it
                 // stands, so a stopped admin's probe makes no further call.
@@ -568,6 +581,7 @@ fn land(me: &str, span: &tracing::Span, ladder: &Mutex<Ladder>, mesh: &str, tick
 }
 
 async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>, mesh: String, unheard: Duration) {
+    let me = w.held_name_in(view);
     let at = local_now_ms().saturating_sub(unheard.as_millis() as u64);
     let start = |n: u8| {
         let (w, view, mesh) = (w.clone(), view.clone(), mesh.clone());
@@ -577,24 +591,24 @@ async fn investigate(w: &Arc<Watch>, inv: &Investigations, view: &Arc<Topology>,
     for step in steps {
         match step {
             Step::Track { unheard_ms } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %w.me, mesh = %mesh, at, unheard_ms, mark = false)
+                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %me, mesh = %mesh, at, unheard_ms, mark = false)
                     .in_scope(|| tracing::info!("no word of the mesh on the backbone: the investigation tracks it"));
             }
             Step::Mark { unheard_ms } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %w.me, mesh = %mesh, at, unheard_ms, mark = true)
+                tracing::info_span!("rdm.node_admin.mesh.update.via-unheard", node = %me, mesh = %mesh, at, unheard_ms, mark = true)
                     .in_scope(|| tracing::info!("the mesh is marked silent; nothing is sent"));
             }
             Step::Probe { .. } | Step::Stop { .. } => {}
             Step::Decide { rebirth, latest, unheard_ms } => {
-                verdict(&w.me.to_string(), &mesh, latest.as_str(), unheard_ms, if rebirth { "the latest probe says a member cannot reach its own node-admin: the mesh is reborn" } else { "no member could say: the mesh is held" });
+                verdict(&me.to_string(), &mesh, latest.as_str(), unheard_ms, if rebirth { "the latest probe says a member cannot reach its own node-admin: the mesh is reborn" } else { "no member could say: the mesh is held" });
                 if rebirth {
                     let verdict_ms = w.membership.clock().now_rafka_ms();
                     let lost = view.cohort(&mesh, NodeKind::NodeAdmin).filter_map(|a| a.incarnation_id.clone()).collect();
-                    w.records.open_mesh_recovery(&w.me, crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: Some(verdict_ms), opened_at: Instant::now(), lost }, "carrier-edge-lost", true);
+                    w.records.open_mesh_recovery(&me, crate::admin::PeerRecovery { mesh: mesh.clone(), verdict_rafka_ms: Some(verdict_ms), opened_at: Instant::now(), lost }, "carrier-edge-lost", true);
                 }
             }
             Step::Cancel { unheard_ms, probes } => {
-                tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %w.me, mesh = %mesh, outcome = "heard-again", at = local_now_ms(), unheard_ms, probes)
+                tracing::info_span!("rdm.node_admin.mesh.update.via-probe-verdict", node = %me, mesh = %mesh, outcome = "heard-again", at = local_now_ms(), unheard_ms, probes)
                     .in_scope(|| tracing::info!("the mesh is heard on the backbone again: the investigation is cancelled"));
             }
         }

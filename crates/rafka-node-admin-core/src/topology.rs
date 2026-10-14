@@ -248,6 +248,33 @@ impl Topology {
         self.births().find(|n| &n.name == name)
     }
 
+    /// The `path.name` the birth `node_id` (born as `birth`) currently holds in this view (R12: a
+    /// live or rejoin `node.name.update` moves the birth to its new name while structs built at boot
+    /// still hold `birth`). Resolves by `node_id` first when given, then by `birth` or `birth.base()`
+    /// for a renamed `.new` birth, else the mesh's primary or sole node-admin when `birth` is a
+    /// node-admin not listed under `birth`, falling back to `birth` before the view holds it.
+    pub fn held_name_of(&self, birth: &PathName, node_id: Option<&NodeId>) -> PathName {
+        if let Some(n) = node_id.and_then(|id| self.own(id)) {
+            return n.name.clone();
+        }
+        if self.node(birth).is_some() {
+            return birth.clone();
+        }
+        if birth.new && self.node(&birth.base()).is_some() {
+            return birth.base();
+        }
+        if birth.kind == NodeKind::NodeAdmin {
+            if let Some(p) = self.cohort_primary(&birth.mesh, NodeKind::NodeAdmin) {
+                return p.name.clone();
+            }
+            let mut admins = self.cohort(&birth.mesh, NodeKind::NodeAdmin);
+            if let Some(only) = admins.next().filter(|_| admins.next().is_none()) {
+                return only.name.clone();
+            }
+        }
+        birth.clone()
+    }
+
     /// Every invariant a converged topology satisfies, as named violations.
     pub fn violations(&self) -> Vec<TopologyViolation> {
         use TopologyViolation as V;

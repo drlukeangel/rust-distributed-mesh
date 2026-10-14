@@ -203,9 +203,15 @@ impl BuildDoor {
         self.seats.fabric().is_some_and(|h| h.is_birth(&self.env.door.node_id, &self.incarnation))
     }
 
+    /// This admin's currently held `path.name`: what its executor door (`RunDoor::held_name`) resolves.
+    pub async fn held_name(&self) -> PathName {
+        self.run.held_name().await
+    }
+
     /// Answer one Build call.
     pub async fn serve(&self, req: BuildRequest, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
-        let span = tracing::info_span!("rdm.node_admin.build.serve.via-node-rpc", node = %self.me, call = req.op(), outcome = tracing::field::Empty);
+        let me = self.held_name().await;
+        let span = tracing::info_span!("rdm.node_admin.build.serve.via-node-rpc", node = %me, call = req.op(), outcome = tracing::field::Empty);
         let call = req.op();
         let reply = async {
             match req {
@@ -226,7 +232,7 @@ impl BuildDoor {
                             BuildReply::NotFabricPrimary { fabric_primary } => fabric_primary.clone().unwrap_or_default(),
                             _ => String::new(),
                         };
-                        tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", route, node = %self.me, fabric_primary = %named)
+                        tracing::info_span!("rdm.node_admin.build.reject.via-not-fabric-primary", route, node = %me, fabric_primary = %named)
                             .in_scope(|| tracing::info!("a Build call is answered only by the fabric-primary"));
                         return Ok(refusal);
                     }
@@ -285,13 +291,14 @@ impl BuildDoor {
     /// `AlreadyApplied` and its terminal; a running one with a holder streams that holder's run; a
     /// failed one, or one whose holder was lost, takes its next attempt.
     async fn resubmit(&self, id: BuildId, from_attempt: u32, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+        let me = self.held_name().await;
         let p = match self.control.builds.read_build(&id).await {
             Ok(p) => p,
             Err(BuildStateError::UnknownBuild(_)) => match self.from_incumbent(&id).await {
                 Ok(p) => p,
                 Err(refusal) => return Ok(refusal),
             },
-            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: Build {id} could not be read: {e}", self.me) }),
+            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{me}: Build {id} could not be read: {e}") }),
         };
         // The drive's own record answers a Build that ended: the frames it took off the calls it
         // made. A drive still running answers by streaming. A fabric-primary with no drive of the
@@ -305,8 +312,8 @@ impl BuildDoor {
         }
         match crate::build_state::drivable(&*self.control.builds, &p).await {
             Ok(true) => {}
-            Ok(false) => return Ok(BuildReply::Rejected { reason: "not-accepted".into(), detail: format!("{}: Build {id} is {:?} and is neither the current Build nor a failed Build accepted after it: nothing drives it", self.me, p.state) }),
-            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: the current Build could not be read to admit Build {id}: {e}", self.me) }),
+            Ok(false) => return Ok(BuildReply::Rejected { reason: "not-accepted".into(), detail: format!("{me}: Build {id} is {:?} and is neither the current Build nor a failed Build accepted after it: nothing drives it", p.state) }),
+            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{me}: the current Build could not be read to admit Build {id}: {e}") }),
         }
         let disposition = if p.state == BuildState::Failed { Disposition::NextAttempt } else { Disposition::Attached };
         // The drive is the one reader of the receipts: a drive this admin took up after a seat move
@@ -327,16 +334,17 @@ impl BuildDoor {
     /// log is the one it answers from), or the incumbent holds no fact of it either. A read that failed,
     /// or holdings the incumbent says are not whole, is `NotReady` naming the incumbent and the cause.
     async fn from_incumbent(&self, id: &BuildId) -> Result<crate::build_state::BuildProjection, BuildReply> {
+        let me = self.held_name().await;
         let span = tracing::info_span!(
             "rdm.node_admin.build.update.via-incumbent-facts",
-            node = %self.me,
+            node = %me,
             build_id = %id,
             incumbent = tracing::field::Empty,
             facts = tracing::field::Empty,
             chunks = tracing::field::Empty,
             outcome = tracing::field::Empty,
         );
-        let me = &self.me;
+        let me = &me;
         async {
             let span = tracing::Span::current();
             let (incumbent, read) = match self.incumbent.read(id).await {
@@ -387,10 +395,11 @@ impl BuildDoor {
     }
 
     async fn get(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+        let me = self.held_name().await;
         let p = match self.control.builds.read_build(&id).await {
             Ok(p) => p,
             Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.to_string() }),
-            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: Build {id} could not be read: {e}", self.me) }),
+            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{me}: Build {id} could not be read: {e}") }),
         };
         let steps: Vec<StepReceipt> = p
             .steps
@@ -446,10 +455,11 @@ impl BuildDoor {
     /// "Build schema": "A stream is one refusal, or Started, then ... Deleted for Delete"). `Started` names the
     /// Build's last attempt, read before the Build leaves history.
     async fn delete(&self, id: BuildId, sink: ReplySink<Build, NotStarted>) -> Result<BuildReply, HandlerFault> {
+        let me = self.held_name().await;
         let attempt = match self.control.builds.read_build(&id).await {
             Ok(p) => p.attempt,
             Err(BuildStateError::UnknownBuild(_)) => return Ok(BuildReply::UnknownBuild { build_id: id.to_string() }),
-            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{}: Build {id} could not be read: {e}", self.me) }),
+            Err(e) => return Ok(BuildReply::NotReady { reason: format!("{me}: Build {id} could not be read: {e}") }),
         };
         match self.control.forget_build(&id).await {
             Ok(()) => {
@@ -472,11 +482,12 @@ impl BuildDoor {
         // a stream the old driver stopped. The run goes on in its own task; this admin's own drive
         // reads its frames.
         let held_at_start = self.holds_fabric_seat();
+        let me = self.held_name().await;
         let mut plan = RunPlan { operations: Vec::with_capacity(operations.len()), hand_off_to };
         for (i, bytes) in operations.iter().enumerate() {
             match serde_json::from_slice::<BuildOperation>(bytes) {
                 Ok(op) => plan.operations.push(op),
-                Err(e) => return Ok(BuildReply::Rejected { reason: "operation-undecodable".into(), detail: format!("{}: operation {i} of the run of attempt {attempt} of Build {id} does not decode: {e}", self.me) }),
+                Err(e) => return Ok(BuildReply::Rejected { reason: "operation-undecodable".into(), detail: format!("{me}: operation {i} of the run of attempt {attempt} of Build {id} does not decode: {e}") }),
             }
         }
         match self.run.attempt_run(&id, attempt, &executor, &context, &intent, &plan).await {
@@ -496,16 +507,18 @@ impl BuildDoor {
                 // A cut call ends this stream and nothing else: the run is its own task.
                 while let Some(f) = reader.next().await {
                     if !held_at_start && self.holds_fabric_seat() {
-                        tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %id, attempt, node = %self.me, to = %self.me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
+                        let me = self.held_name().await;
+                        tracing::info_span!("rdm.node_admin.build.update.via-seat-moved", build_id = %id, attempt, node = %me, to = %me, detail = "this executor took the fabric-primary seat during the run: the old driver's stream ends with the new seat")
                             .in_scope(|| tracing::info!("the inner stream ends with the new seat"));
-                        return Ok(BuildReply::SeatMoved { build_id: id.to_string(), fabric_primary: Some(self.me.to_string()) });
+                        return Ok(BuildReply::SeatMoved { build_id: id.to_string(), fabric_primary: Some(me.to_string()) });
                     }
                     match f {
                         BuildReply::Step { .. } | BuildReply::Blocked { .. } => sink.data(f).await.map_err(gone)?,
                         terminal => return Ok(terminal),
                     }
                 }
-                Err(HandlerFault::invariant_broken(format!("{}: the run of attempt {attempt} of Build {id} ended without a terminal", self.me)))
+                let me = self.held_name().await;
+                Err(HandlerFault::invariant_broken(format!("{me}: the run of attempt {attempt} of Build {id} ended without a terminal")))
             }
         }
     }
@@ -623,17 +636,21 @@ pub const DISPATCH_SEND: Duration = Duration::from_secs(10);
 #[async_trait::async_trait]
 impl Dispatcher for RpcDispatcher {
     fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<crate::build_run::HeldRun> {
-        (*me == self.me).then(|| self.local.hold(build_id, attempt)).flatten()
+        let is_me = *me == self.me
+            || self.local.builds.held_name().as_ref() == Some(me)
+            || self.topology.try_read().ok().is_some_and(|t| t.held_name_of(&self.me, None) == *me);
+        is_me.then(|| self.local.hold(build_id, attempt)).flatten()
     }
     async fn dispatch(&self, turn: &crate::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: RunPlan) -> Dispatched {
-        if *executor == self.me {
+        let me = self.local.held_name().await;
+        if *executor == self.me || *executor == me {
             // The fabric-primary runs the attempt itself: it plans from the log the claim was decided
             // on, and the run's turn is begun under the drive pass's.
             return local_dispatched(self.local.attempt_run_under(turn, build_id, attempt, &executor.to_string(), &context, &[], &plan).await);
         }
         let node_id = self.topology.read().await.members().find(|n| n.name == *executor).map(|n| n.node_id.clone());
         let Some(node_id) = node_id else {
-            return Dispatched::Unreached(format!("{executor} is not a node of {}'s view", self.me));
+            return Dispatched::Unreached(format!("{executor} is not a node of {me}'s view"));
         };
         let mut operations = Vec::with_capacity(plan.operations.len());
         for op in &plan.operations {

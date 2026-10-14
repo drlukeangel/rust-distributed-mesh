@@ -210,6 +210,15 @@ pub struct ClaimDoor {
 }
 
 impl ClaimDoor {
+    /// The `path.name` this admin holds now: its Build adapter's held name when set, else its birth's
+    /// name in the view, falling back to `self.me` only before its birth is in the view.
+    pub async fn held_name(&self) -> PathName {
+        if let Some(held) = self.builds.held_name() {
+            return held;
+        }
+        self.topology.read().await.held_name_of(&self.me, Some(&self.node_id))
+    }
+
     /// The reply of a receiver that may not claim in `lane` (R-BI7 caveat 2), decided from this
     /// admin's view of the seats, never from who called: the fabric lane is the fabric-primary's, a
     /// mesh's drift lane that mesh's primary's. `mesh` is the mesh the attempt acts in, when known.
@@ -237,20 +246,21 @@ impl ClaimDoor {
     /// [`decide_claim`] on the mesh the attempt acts in (the lane's own mesh for a drift attempt,
     /// the executor's for a topology attempt).
     pub async fn claim_in(&self, executor: &str, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> BuildClaimReply {
+        let me = self.held_name().await;
         let mesh = match lane {
             Some(mesh) => mesh.to_string(),
             None => match executor.parse::<PathName>() {
                 Ok(e) => e.mesh,
-                Err(e) => return BuildClaimReply::NotReady { reason: format!("{}: the executor {executor:?} of attempt {attempt} of {build_id} is not a path.name: {e}", self.me) },
+                Err(e) => return BuildClaimReply::NotReady { reason: format!("{me}: the executor {executor:?} of attempt {attempt} of {build_id} is not a path.name: {e}") },
             },
         };
         if let Some(refusal) = self.not_claimant(lane, Some(&mesh)).await {
-            tracing::info_span!("rdm.node_admin.build.reject.via-not-claimant", node = %self.me, build_id = %build_id, attempt, executor, mesh = %mesh, lane = lane.unwrap_or("fabric"), detail = ?refusal)
+            tracing::info_span!("rdm.node_admin.build.reject.via-not-claimant", node = %me, build_id = %build_id, attempt, executor, mesh = %mesh, lane = lane.unwrap_or("fabric"), detail = ?refusal)
                 .in_scope(|| tracing::info!("this admin may not claim in that lane in its view"));
             return refusal;
         }
-        let claim = BuildAttemptClaim { claimant: Some(self.me.to_string()), mesh: lane.map(str::to_string), build_id: build_id.clone(), attempt, executor: executor.to_string() };
-        decide_claim(&self.me, &*self.builds, &self.claims, &self.contexts, &claim, &mesh).await
+        let claim = BuildAttemptClaim { claimant: Some(me.to_string()), mesh: lane.map(str::to_string), build_id: build_id.clone(), attempt, executor: executor.to_string() };
+        decide_claim(&me, &*self.builds, &self.claims, &self.contexts, &claim, &mesh).await
     }
 
     /// A request off the wire: the seat first (a receiver that may not claim in the request's lane
@@ -263,19 +273,20 @@ impl ClaimDoor {
         if let Some(refusal) = self.not_claimant(mesh.as_deref(), mesh.as_deref()).await {
             return refusal;
         }
+        let me = self.held_name().await;
         let executor = self.topology.read().await.births().find(|n| n.node_id == executor_node_id).cloned();
         let Some(executor) = executor else {
-            return BuildClaimReply::PeerUnresolved { reason: format!("{}: the request (from endpoint {}) names executor node {executor_node_id}, which is not in this fabric-primary's view", self.me, peer.0) };
+            return BuildClaimReply::PeerUnresolved { reason: format!("{me}: the request (from endpoint {}) names executor node {executor_node_id}, which is not in this fabric-primary's view", peer.0) };
         };
         if executor.incarnation_id.as_ref() != Some(&executor_incarnation) {
             return BuildClaimReply::PeerUnresolved {
-                reason: format!("{}: the request names birth {} of {} and this view holds {:?}", self.me, executor_incarnation.as_str(), executor.name, executor.incarnation_id.as_ref().map(|i| i.as_str())),
+                reason: format!("{me}: the request names birth {} of {} and this view holds {:?}", executor_incarnation.as_str(), executor.name, executor.incarnation_id.as_ref().map(|i| i.as_str())),
             };
         }
         let build_id = match BuildId::parse(&build_id) {
             Ok(build_id) => build_id,
             Err(e) => {
-                tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %self.me, executor = %executor.name, build_id = %build_id, reason = %e, "otel.kind" = "internal")
+                tracing::info_span!("rdm.node_admin.build.reject.via-malformed-build-id", node = %me, executor = %executor.name, build_id = %build_id, reason = %e, "otel.kind" = "internal")
                     .in_scope(|| tracing::info!("the claim is refused: its Build id is not a Crockford id"));
                 return BuildClaimReply::Malformed { kind: rafka_node_rpc_contract::outcome::MalformedKind::Corrupt };
             }

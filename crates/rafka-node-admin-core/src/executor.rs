@@ -492,7 +492,7 @@ impl BuildExecutor {
                 // No operation failed: the receipt names none, so no step is blamed for it.
                 None => {
                     let last = operations.last().map(BuildOperation::key).unwrap_or_else(|| "no operation".into());
-                    let reason = format!("{}: the run of attempt {attempt} ended after {last} with more of the plan to follow, and this admin's view seats no fabric primary to hand it back to", self.executor);
+                    let reason = format!("{me}: the run of attempt {attempt} ended after {last} with more of the plan to follow, and this admin's view seats no fabric primary to hand it back to");
                     self.finish(builds, &build, attempt, Err((String::new(), reason))).await
                 }
             };

@@ -226,26 +226,43 @@ impl NodeRows {
         &self.storage
     }
 
+    /// This admin's currently held `path.name` in `t`, falling back to `self.me` before its birth
+    /// is in the view.
+    fn held_name_in(&self, t: &Topology) -> PathName {
+        t.own(&self.me_id).map(|n| n.name.clone()).unwrap_or_else(|| self.me.clone())
+    }
+
+    /// This admin's currently held `path.name` if the view is readable without waiting, else `self.me`.
+    fn held_name_now(&self) -> PathName {
+        self.view.try_read().ok().map(|t| self.held_name_in(&t)).unwrap_or_else(|| self.me.clone())
+    }
+
+    /// This admin's currently held `path.name` in its view.
+    async fn held_name(&self) -> PathName {
+        self.held_name_in(&*self.view.read().await)
+    }
+
     /// Why this admin does not write `mesh`'s rows in view `t` (the row at `subject`), naming the
     /// writer the view holds; `None` when it is the writer.
     fn not_writer(&self, t: &Topology, mesh: &str, subject: &PathName) -> Option<String> {
         if writes_for(t, &self.me_id, mesh) {
             return None;
         }
+        let me = self.held_name_in(t);
         let writer = match (t.cohort_primary(mesh, NodeKind::NodeAdmin), t.fabric_primary()) {
             (Some(p), _) => format!("{mesh}'s primary node-admin {} ({}) writes them", p.name, p.node_id),
             (None, Some(fp)) => format!("{mesh} has no primary node-admin, and the fabric-primary {} ({}) writes them for it", fp.name, fp.node_id),
             (None, None) => format!("{mesh} has no primary node-admin and the view holds no fabric-primary to write them for it"),
         };
-        Some(format!("{} ({}) is not the writer of {mesh}'s node rows and refuses the row at {subject}: {writer}", self.me, self.me_id))
+        Some(format!("{me} ({}) is not the writer of {mesh}'s node rows and refuses the row at {subject}: {writer}", self.me_id))
     }
 
     /// The writer check at the moment of a write, over this admin's view as it is now.
-    async fn writer_check(&self, mesh: &str, subject: &PathName) -> Result<(), RowRefused> {
+    async fn writer_check(&self, mesh: &str, subject: &PathName) -> Result<PathName, RowRefused> {
         let t = self.view.read().await;
         match self.not_writer(&t, mesh, subject) {
             Some(why) => Err(RowRefused::NotMeshPrimary(why)),
-            None => Ok(()),
+            None => Ok(self.held_name_in(&t)),
         }
     }
 
@@ -260,9 +277,10 @@ impl NodeRows {
     /// written into the claim row with it ([`NodeRow::allocated`]), so the identity the claim is made
     /// with is durable wherever the claim is. One `via-node-row` span, `moment` `claim`.
     pub async fn claim(&self, name: &PathName, node_id: &NodeId, operation: &str, allocated: Option<&Allocation>, of: ClaimFor) -> Result<Claimed, RowRefused> {
+        let me = self.held_name_now();
         let span = tracing::info_span!(
             "rdm.node_admin.node.create.via-node-row",
-            node = %self.me,
+            node = %me,
             subject = %name,
             node_id = %node_id,
             operation,
@@ -279,9 +297,10 @@ impl NodeRows {
         let mut guard = ClaimGuard { span: span.clone(), done: false };
         let r = tracing::Instrument::instrument(
             async {
-                self.writer_check(&name.mesh, name).await?;
+                let me = self.writer_check(&name.mesh, name).await?;
+                span.record("node", me.to_string().as_str());
                 span.record("awaited", "writer-check");
-                self.put_seeded(name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, of, &span, "writer-check").await
+                self.put_seeded(&me, name, node_id, NodeStatus::Pending, &BTreeMap::new(), allocated, of, &span, "writer-check").await
             },
             span.clone(),
         )
@@ -299,7 +318,7 @@ impl NodeRows {
     /// is about to write. Nothing is written. `Ok(true)`: the row is held; `Ok(false)`: the store
     /// holds no row of this node at `name`. `Err` names the read that failed.
     pub async fn hold_row_of(&self, name: &PathName, node_id: &NodeId) -> Result<bool, String> {
-        let row = self.storage.node_row_at(name).await.map_err(|e| format!("{}: the row at {name} could not be read for {node_id}: {e}", self.me))?;
+        let row = self.storage.node_row_at(name).await.map_err(|e| format!("{}: the row at {name} could not be read for {node_id}: {e}", self.held_name_now()))?;
         match row.filter(|r| r.node_id == *node_id) {
             Some(row) => {
                 self.written.hold(&row);
@@ -315,7 +334,7 @@ impl NodeRows {
     /// claim was made by that same operation of that same Build; any other row, or none, answers
     /// `None`. Nothing is written. A read that fails is named.
     pub async fn allocation_at(&self, name: &PathName, build_id: &crate::build::BuildId, operation: &str) -> Result<Option<(NodeId, Allocation)>, String> {
-        let row = self.storage.node_row_at(name).await.map_err(|e| format!("{}: the row at {name} could not be read for the allocation of {operation} (Build {build_id}): {e}", self.me))?;
+        let row = self.storage.node_row_at(name).await.map_err(|e| format!("{}: the row at {name} could not be read for the allocation of {operation} (Build {build_id}): {e}", self.held_name_now()))?;
         Ok(row.filter(|r| r.status != NodeStatus::Deleted).and_then(|r| r.allocated.filter(|a| &a.build_id == build_id && a.operation == operation).map(|a| (r.node_id, a))))
     }
 
@@ -323,9 +342,10 @@ impl NodeRows {
     /// next birth at the name is not refused by it: a release of the holder's own key only, never
     /// another node's row. One `via-claim-withdrawn` span says why.
     pub async fn withdraw(&self, name: &PathName, node_id: &NodeId, operation: &str, why: &str) {
+        let mut me = self.held_name_now();
         let span = tracing::info_span!(
             "rdm.node_admin.node.remove.via-claim-withdrawn",
-            node = %self.me,
+            node = %me,
             subject = %name,
             node_id = %node_id,
             operation,
@@ -336,14 +356,18 @@ impl NodeRows {
         );
         let r = match self.writer_check(&name.mesh, name).await {
             Err(e) => Err(e),
-            Ok(()) => self.storage.release_node_row(name, node_id).await.map_err(|e| RowRefused::Unwritten(format!("{}: nodes.storage refused the release of {name} by {node_id}: {e}", self.me))),
+            Ok(held) => {
+                me = held;
+                span.record("node", me.to_string().as_str());
+                self.storage.release_node_row(name, node_id).await.map_err(|e| RowRefused::Unwritten(format!("{me}: nodes.storage refused the release of {name} by {node_id}: {e}")))
+            }
         };
         if let Ok(true) = r {
             self.written.forget(node_id);
         }
         match &r {
             Ok(true) => span.record("outcome", "withdrawn"),
-            Ok(false) => span.record("outcome", "not-held").record("detail", format!("{}: {node_id} holds no row at {name}; nothing is released", self.me).as_str()),
+            Ok(false) => span.record("outcome", "not-held").record("detail", format!("{me}: {node_id} holds no row at {name}; nothing is released").as_str()),
             Err(e) => span.record("outcome", e.outcome()).record("detail", e.to_string().as_str()),
         };
         span.in_scope(|| tracing::info!("node.create: the claim is withdrawn"));
@@ -365,9 +389,10 @@ impl NodeRows {
     /// those of the row the node holds now (a point read through the id index); none when it holds
     /// no row. A node's tags are never in the executor's record: they are meta only its rows carry.
     async fn known_tags(&self, record: &Node) -> Result<std::collections::BTreeSet<String>, RowRefused> {
+        let me = self.held_name().await;
         match self.written.known_row(&*self.storage, &record.mesh, &record.node_id).await {
             Ok(row) => Ok(row.map(|r| r.tags).unwrap_or_default()),
-            Err(why) => Err(RowRefused::Unwritten(format!("{}: {why}: the row of {} is not written without the tags it carries", self.me, record.name))),
+            Err(why) => Err(RowRefused::Unwritten(format!("{me}: {why}: the row of {} is not written without the tags it carries", record.name))),
         }
     }
 
@@ -385,9 +410,10 @@ impl NodeRows {
     /// config and tags (the row keeps both, as it keeps the record), or the refusal that names why
     /// it knows neither. The store tombstones every tags index row of its labels with the write.
     async fn deleted_row(&self, name: &PathName, node_id: &NodeId, known: Result<Option<(BTreeMap<String, String>, std::collections::BTreeSet<String>, &'static str)>, RowRefused>, operation: &str) -> Result<(), RowRefused> {
+        let me = self.held_name_now();
         let span = tracing::info_span!(
             "rdm.node_admin.node.delete.via-node-row",
-            node = %self.me,
+            node = %me,
             subject = %name,
             operation,
             node_id = %node_id,
@@ -403,9 +429,10 @@ impl NodeRows {
         }
         let r = tracing::Instrument::instrument(
             async {
-                self.writer_check(&name.mesh, name).await?;
+                let me = self.writer_check(&name.mesh, name).await?;
+                span.record("node", me.to_string().as_str());
                 let Some((config, tags, _)) = known? else {
-                    return Err(RowRefused::Unwritten(format!("{}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know", self.me)));
+                    return Err(RowRefused::Unwritten(format!("{me}: holds no record of the row of {name} ({node_id}) and no executor record of it: its Deleted row is not written with a config this writer does not know")));
                 };
                 let row = NodeRow { name: name.clone(), node_id: node_id.clone(), status: NodeStatus::Deleted, config, tags, allocated: None, renamed_from: None, inherited_by: None };
                 match self.storage.put_node_row(&row).await {
@@ -414,7 +441,7 @@ impl NodeRows {
                         Ok(())
                     }
                     Ok(Err(held)) => Err(RowRefused::NameHeld(held)),
-                    Err(e) => Err(RowRefused::Unwritten(format!("{}: nodes.storage refused the Deleted row of {name} ({node_id}): {e}", self.me))),
+                    Err(e) => Err(RowRefused::Unwritten(format!("{me}: nodes.storage refused the Deleted row of {name} ({node_id}): {e}"))),
                 }
             },
             span.clone(),
@@ -441,14 +468,13 @@ impl NodeRows {
     /// ([`WrittenRows::known_row`]), so a node renamed while stopped (told nothing of it, R12) keeps
     /// its one row where the rename put it, whatever name a view still lists it at.
     #[allow(clippy::too_many_arguments)]
-    async fn put_seeded(&self, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
-        let me = &self.me;
+    async fn put_seeded(&self, me: &PathName, name: &PathName, node_id: &NodeId, status: NodeStatus, own: &BTreeMap<String, String>, allocated: Option<&Allocation>, of: ClaimFor, span: &tracing::Span, prefix: &str) -> Result<Claimed, RowRefused> {
         match self.written.known_row(&*self.storage, &name.mesh, node_id).await {
             Ok(Some(held)) => return Ok(Claimed::HeldByNode(held)),
             Ok(None) => {}
             Err(e) => return Err(RowRefused::Unwritten(format!("{me}: the row {node_id} holds could not be read before its row at {name} was written: {e}"))),
         }
-        let claimed = seeded_put(&*self.storage, &self.me, name, node_id, status, own, allocated, of, span, prefix).await?;
+        let claimed = seeded_put(&*self.storage, me, name, node_id, status, own, allocated, of, span, prefix).await?;
         match &claimed {
             Claimed::Written { row, .. } | Claimed::HeldByNode(row) => self.written.hold(row),
         }
@@ -486,10 +512,11 @@ impl NodeRows {
     /// birth whose row carries a config it does not (seeded from a previous row, or claimed with
     /// one at its create) is told that config.
     pub async fn write_arrivals(&self, now: &Topology, arrivals: Vec<Node>) {
+        let me = self.held_name_in(now);
         for birth in arrivals {
             let span = tracing::info_span!(
                 "rdm.node_admin.node.create.via-node-row",
-                node = %self.me,
+                node = %me,
                 subject = %birth.name,
                 node_id = %birth.node_id,
                 moment = "arrival",
@@ -503,11 +530,11 @@ impl NodeRows {
                 detail = tracing::field::Empty,
                 "otel.kind" = "internal",
             );
-            let r = tracing::Instrument::instrument(self.rebuilt_row(&birth, &span), span.clone()).await;
+            let r = tracing::Instrument::instrument(self.rebuilt_row(&me, &birth, &span), span.clone()).await;
             record_claim(&span, &r);
             span.in_scope(|| tracing::info!("node.create: the birth's row decided"));
             match r {
-                Ok(Claimed::Written { row, .. } | Claimed::HeldByNode(row)) if row.config != birth.config => self.tell(now, &birth, row, &span),
+                Ok(Claimed::Written { row, .. } | Claimed::HeldByNode(row)) if row.config != birth.config => self.tell(&me, now, &birth, row, &span),
                 _ => {}
             }
         }
@@ -518,8 +545,7 @@ impl NodeRows {
     /// release its `renamed_from` names finished when still pending (proposal
     /// node-properties-own-commands.md §2.1: "a mesh-primary's rebuild from its mesh's rows after a
     /// seat change"); else the row seeded at the view's name ([`Self::put_seeded`]).
-    async fn rebuilt_row(&self, birth: &Node, span: &tracing::Span) -> Result<Claimed, RowRefused> {
-        let me = &self.me;
+    async fn rebuilt_row(&self, me: &PathName, birth: &Node, span: &tracing::Span) -> Result<Claimed, RowRefused> {
         let holds = match self.storage.node_row_name(&birth.mesh, &birth.node_id).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the id index entry of {} in {} could not be read: {e}", birth.node_id, birth.mesh)))? {
             Some(key) if key != birth.name => self.storage.node_row_at(&key).await.map_err(|e| RowRefused::Unwritten(format!("{me}: the row of {} at {key} could not be read: {e}", birth.node_id)))?.filter(|r| r.node_id == birth.node_id),
             _ => None,
@@ -531,7 +557,7 @@ impl NodeRows {
             }
             // A recovery's claim precedes its birth's arrival (the create claims before it launches),
             // so an arrival that finds no row of its node is never a recovery's: a plain create's seed.
-            None => self.put_seeded(&birth.name, &birth.node_id, birth.status, &birth.config, None, ClaimFor::Create, span, "").await?,
+            None => self.put_seeded(me, &birth.name, &birth.node_id, birth.status, &birth.config, None, ClaimFor::Create, span, "").await?,
         };
         if let Claimed::HeldByNode(row) = &claimed {
             if let Err(why) = finish_release(&*self.storage, me, row, "rebuild").await {
@@ -546,7 +572,7 @@ impl NodeRows {
     /// the birth through its mesh-primary. On its own task, under the row write's span: the view
     /// install that found the birth never waits on a call to it (the join door installs the view
     /// before it answers the joiner).
-    fn tell(&self, now: &Topology, birth: &Node, row: NodeRow, span: &tracing::Span) {
+    fn tell(&self, me: &PathName, now: &Topology, birth: &Node, row: NodeRow, span: &tracing::Span) {
         let Some(door) = self.configs.as_ref().and_then(|slot| slot.get().cloned()) else {
             span.record("told", "no-config-door");
             return;
@@ -554,7 +580,7 @@ impl NodeRows {
         let Some(incarnation) = birth.incarnation_id.clone() else { return };
         span.record("told", "config-door");
         let req = rafka_node_rpc_contract::status::StatusRequest::UpdateNodeConfig { node_id: birth.node_id.clone(), incarnation, config: row.config };
-        let (me, me_id, view, storage) = (self.me.clone(), self.me_id.clone(), now.clone(), self.storage.clone());
+        let (me, me_id, view, storage) = (me.clone(), self.me_id.clone(), now.clone(), self.storage.clone());
         tokio::spawn(tracing::Instrument::instrument(
             async move {
                 door.update(&me, &me_id, &view, &*storage, &req).await;

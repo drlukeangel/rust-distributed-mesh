@@ -408,7 +408,8 @@ pub async fn run(w: Watch) {
         turn = Some(w.gate.turn("seat-watch").await);
         let heard = w.membership.concerns().drain();
         let view = w.topology.read().await.clone();
-        let plan = plan(&view, &w.me, &me_birth, &heard, &mut said);
+        let me = w.membership.book.held_path_name().unwrap_or_else(|| view.held_name_of(&w.me, Some(&w.me_id)));
+        let plan = plan(&view, &me, &me_birth, &heard, &mut said);
         for (node_id, incarnation) in plan.concerns {
             let holder_key = view.births().find(|n| n.node_id == node_id).and_then(|n| n.endpoint_id.as_ref()).and_then(|k| k.0.parse::<iroh::PublicKey>().ok());
             w.backbone.concern(Seat::FabricPrimary, node_id, incarnation, holder_key).await;
@@ -416,12 +417,12 @@ pub async fn run(w: Watch) {
         if plan.answer {
             // The Concern names this very birth: it is there, so it says so. Its neighbours are
             // re-fed through the mechanisms that already exist, and each seat it holds is said again.
-            let span = tracing::info_span!("rdm.node_admin.seat.update.via-concern-answer", node = %w.me);
+            let span = tracing::info_span!("rdm.node_admin.seat.update.via-concern-answer", node = %me);
             async {
                 if let Some(f) = w.republish.get() {
                     f().await;
                 }
-                let admins: Vec<_> = w.membership.book.current(w.membership.book.staleness_floor()).iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != w.me).filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
+                let admins: Vec<_> = w.membership.book.current(w.membership.book.staleness_floor()).iter().filter(|d| d.node.name.kind == NodeKind::NodeAdmin && d.node.name != me).filter_map(rafka_mesh_transport::membership::gossip_addr).collect();
                 let refed = admins.len();
                 w.backbone.join_admins(admins).await;
                 let seats = w.membership.seats();
@@ -440,7 +441,7 @@ pub async fn run(w: Watch) {
         for (node, trigger) in plan.investigate {
             let span = tracing::info_span!(
                 "rdm.node_admin.seat.update.via-investigation",
-                node = %w.me,
+                node = %me,
                 suspect = %node.name,
                 suspect_node_id = %node.node_id,
                 suspect_incarnation = node.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or(""),
