@@ -1,7 +1,7 @@
 //! The Admin UI's topology routes: thin front doors to node-admin (PRD §4,
-//! i143.e1.s6). Each one submits one Build through
+//! i143.e1.s6). Each one submits one Build over Node RPC through the typed objects of
 //! `rafka-node-admin-client` and answers `202 {"build_id","attempt"}`, or node-admin's
-//! refusal with its status and named reason. The UI never starts or stops a
+//! refusal with its named reason. The UI never starts or stops a
 //! runtime itself.
 //!
 //! ```text
@@ -19,7 +19,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
 use axum::{Json, Router};
 use rafka_mesh_entity::{NodeKind, PathName};
-use rafka_node_admin_client::{Accepted, BuildId, ClientError, FabricDesired, MeshDesired, NodeAdminClient};
+use crate::admin::Admin;
+use rafka_node_admin_client::{Accepted, BuildId, CallEnd, FabricDesired, MeshDesired};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -31,7 +32,7 @@ pub trait BuildEvents: Send + Sync {
 
 #[derive(Clone)]
 struct Control {
-    admin: Option<NodeAdminClient>,
+    admin: Option<Arc<Admin>>,
     events: Arc<dyn BuildEvents>,
 }
 
@@ -51,7 +52,7 @@ struct SpawnRequest {
 
 /// The routes, driving the node-admin at `admin` (`None`: every route
 /// answers a named 503).
-pub fn router(admin: Option<NodeAdminClient>, events: Arc<dyn BuildEvents>) -> Router {
+pub fn router(admin: Option<Arc<Admin>>, events: Arc<dyn BuildEvents>) -> Router {
     Router::new()
         .route("/api/nodes/spawn", post(spawn))
         .route("/api/nodes/{node_name}/restart", post(restart))
@@ -62,20 +63,20 @@ pub fn router(admin: Option<NodeAdminClient>, events: Arc<dyn BuildEvents>) -> R
         .with_state(Control { admin, events })
 }
 
-fn client(c: &Control) -> Result<&NodeAdminClient, Response> {
-    c.admin.as_ref().ok_or_else(|| {
+fn client(c: &Control) -> Result<&Admin, Response> {
+    c.admin.as_deref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({
                 "error": "no-node-admin",
-                "detail": "set RDM_NODE_ADMIN_API_BASE to the node-admin control API this UI drives",
+                "detail": "set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed (RDM_NODE_BIRTH=...) for this UI to drive",
             })),
         )
             .into_response()
     })
 }
 
-fn answer(c: &Control, what: &str, r: Result<Accepted, ClientError>, node: Option<&str>, mesh: Option<&str>) -> Response {
+fn answer(c: &Control, what: &str, r: Result<Accepted, CallEnd>, node: Option<&str>, mesh: Option<&str>) -> Response {
     match r {
         Ok(Accepted { build_id, attempt }) => {
             c.events.submitted(what, &build_id, node, mesh);
@@ -83,13 +84,9 @@ fn answer(c: &Control, what: &str, r: Result<Accepted, ClientError>, node: Optio
                 .in_scope(|| tracing::info!(%build_id, "{what} submitted to node-admin"));
             (StatusCode::ACCEPTED, Json(json!({ "build_id": build_id, "attempt": attempt }))).into_response()
         }
-        Err(ClientError::Refused { status, error, detail }) => {
-            (StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY), Json(json!({ "error": error, "detail": detail })))
-                .into_response()
-        }
-        Err(e @ ClientError::Transport { .. }) => {
-            (StatusCode::BAD_GATEWAY, Json(json!({ "error": "node-admin-unreachable", "detail": e.to_string() }))).into_response()
-        }
+        Err(CallEnd::Rejected { reason, detail }) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": reason, "detail": detail }))).into_response(),
+        Err(e @ CallEnd::BuildInProgress { .. }) => (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({ "error": "build-in-progress", "detail": e.to_string() }))).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": "node-admin-unreachable", "detail": e.to_string() }))).into_response(),
     }
 }
 
@@ -137,7 +134,7 @@ async fn bootstrap(State(c): State<Control>) -> Response {
         Err(e) => return answer(&c, "bootstrap", Err(e), None, None),
     };
     let desired = FabricDesired { fabric, meshes: vec![MeshDesired::of("mesh1", [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)])] };
-    let r = admin.build(&desired).await;
+    let r = admin.build_fabric(desired).await;
     answer(&c, "bootstrap", r, None, Some("mesh1"))
 }
 
@@ -149,7 +146,7 @@ async fn create_mesh(State(c): State<Control>, Json(body): Json<MeshRequest>) ->
         Err(r) => return r,
     };
     let desired = MeshDesired::of(&body.name, [(NodeKind::NodeAdmin, body.node_admin), (NodeKind::RpcNode, body.rpc_node)]);
-    let r = admin.create_mesh(&desired).await;
+    let r = admin.create_mesh(desired).await;
     answer(&c, "create mesh", r, None, Some(&body.name))
 }
 

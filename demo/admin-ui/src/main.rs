@@ -1,4 +1,5 @@
-//! The demo admin UI server. `RDM_NODE_ADMIN_API_BASE` names the node-admin it reads and drives,
+//! The demo admin UI server. `RDM_NODE_ADMIN_BIRTH` (the birth a node-admin printed at start) names the
+//! node-admin it reads and drives over Node RPC,
 //! `RDM_EVIDENCE_DIR` the estate's evidence folder the Timeline reads, `RDM_UI_STATIC_DIR` the
 //! built React app, `RDM_ADMIN_UI_BIND_ADDR` where it listens (default 127.0.0.1:19090).
 
@@ -11,7 +12,8 @@ use rafka_admin_ui::chaos::{Chaos, FABRIC_PRIMARY_REFUSAL};
 use rafka_admin_ui::control::{self, BuildEvents};
 use rafka_admin_ui::timeline::{Event, Evidence};
 use rafka_admin_ui::view;
-use rafka_node_admin_client::{BuildId, NodeAdminClient};
+use rafka_admin_ui::admin::Admin;
+use rafka_node_admin_client::BuildId;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -28,7 +30,7 @@ fn now_ms() -> u64 {
 #[derive(Clone)]
 struct AppState {
     http: reqwest::Client,
-    admin: Option<NodeAdminClient>,
+    admin: Option<Arc<Admin>>,
     jaeger_url: String,
     chaos: Arc<Chaos>,
     evidence_dir: Option<PathBuf>,
@@ -48,13 +50,13 @@ impl AppState {
 struct Submitted(AppState);
 impl BuildEvents for Submitted {
     fn submitted(&self, what: &str, build_id: &BuildId, node: Option<&str>, mesh: Option<&str>) {
-        self.0.submitted.lock().unwrap().push(build_id.0.clone());
+        self.0.submitted.lock().unwrap().push(build_id.to_string());
         self.0.ui_event("ui.build.create.via-node-admin", "ui", format!("{what} node={} mesh={} build_id={build_id}", node.unwrap_or("-"), mesh.unwrap_or("-")));
     }
 }
 
 fn no_node_admin() -> Response {
-    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "no-node-admin", "detail": "set RDM_NODE_ADMIN_API_BASE to the node-admin control API this UI reads and drives"}))).into_response()
+    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "no-node-admin", "detail": "set RDM_NODE_ADMIN_BIRTH to the birth a node-admin printed (RDM_NODE_BIRTH=...) for this UI to read and drive"}))).into_response()
 }
 
 fn unreachable(e: impl std::fmt::Display) -> Response {
@@ -67,12 +69,12 @@ async fn health() -> Json<Value> {
 
 async fn overview(State(s): State<AppState>) -> Response {
     let Some(admin) = &s.admin else { return no_node_admin() };
-    Json(view::overview(admin, &s.http).await).into_response()
+    Json(view::overview(admin).await).into_response()
 }
 
 async fn topology(State(s): State<AppState>) -> Response {
     let Some(admin) = &s.admin else { return no_node_admin() };
-    match view::topology(admin, &s.http).await {
+    match view::topology(admin).await {
         Ok(t) => Json(t).into_response(),
         Err(e) => unreachable(e),
     }
@@ -81,7 +83,7 @@ async fn topology(State(s): State<AppState>) -> Response {
 async fn builds(State(s): State<AppState>) -> Response {
     let Some(admin) = &s.admin else { return no_node_admin() };
     let ids = s.submitted.lock().unwrap().clone();
-    Json(view::builds(admin, &s.http, &ids).await).into_response()
+    Json(view::builds(admin, &ids).await).into_response()
 }
 
 async fn chaos_state(State(s): State<AppState>) -> Response {
@@ -205,7 +207,7 @@ async fn main() -> anyhow::Result<()> {
     let static_dir = std::env::var("RDM_UI_STATIC_DIR").unwrap_or_else(|_| format!("{}/web/dist", env!("CARGO_MANIFEST_DIR")));
     let state = AppState {
         http: reqwest::Client::builder().timeout(Duration::from_secs(4)).build()?,
-        admin: std::env::var("RDM_NODE_ADMIN_API_BASE").ok().filter(|b| !b.trim().is_empty()).map(NodeAdminClient::new),
+        admin: Admin::from_env().await.map_err(anyhow::Error::msg)?.map(Arc::new),
         jaeger_url: std::env::var("JAEGER_QUERY_URL").unwrap_or_else(|_| "http://localhost:16686".into()),
         chaos: Arc::new(Chaos::default()),
         evidence_dir: std::env::var("RDM_EVIDENCE_DIR").ok().filter(|d| !d.trim().is_empty()).map(PathBuf::from),

@@ -1,8 +1,9 @@
-//! The read-only views the tabs draw, folded from node-admin's REST answers: the fabric header, the
-//! topology with its connection edges, and the Builds.
+//! The read-only views the tabs draw, folded from node-admin's typed answers over Node RPC: the fabric
+//! header, the topology with its connection edges, and the Builds.
 
 use crate::chaos::NodeFacts;
-use rafka_node_admin_client::{BuildId, ClientError, NodeAdminClient};
+use crate::admin::Admin;
+use rafka_node_admin_client::{BuildId, CallEnd};
 use serde_json::{json, Value};
 
 fn text(v: &Value, k: &str) -> Option<String> {
@@ -19,8 +20,8 @@ pub fn seat_label(kind: &str, is_primary: bool, is_fabric_primary: bool) -> &'st
     }
 }
 
-/// Node-admin's `GET /api/nodes`, as JSON objects (the client's `NodeView` serialized).
-pub async fn nodes(admin: &NodeAdminClient) -> Result<Vec<Value>, ClientError> {
+/// node.get of every node the entry admin's view holds, as JSON objects (the client's `NodeView` serialized).
+pub async fn nodes(admin: &Admin) -> Result<Vec<Value>, CallEnd> {
     Ok(admin.nodes().await?.iter().map(|n| serde_json::to_value(n).unwrap_or(Value::Null)).collect())
 }
 
@@ -40,20 +41,10 @@ pub fn facts(nodes: &[Value]) -> Vec<NodeFacts> {
         .collect()
 }
 
-async fn get_json(http: &reqwest::Client, url: &str) -> Result<Value, String> {
-    let res = http.get(url).send().await.map_err(|e| format!("{url}: {e}"))?;
-    let status = res.status();
-    let body: Value = res.json().await.map_err(|e| format!("{url}: undecodable answer: {e}"))?;
-    if !status.is_success() {
-        return Err(format!("{url}: {status} {}", body));
-    }
-    Ok(body)
-}
-
 /// The fabric header: state, current Build, meshes with node counts.
-pub async fn overview(admin: &NodeAdminClient, http: &reqwest::Client) -> Value {
-    let fabric = match get_json(http, &format!("{}/api/fabric", admin.base())).await {
-        Ok(f) => f,
+pub async fn overview(admin: &Admin) -> Value {
+    let fabric = match admin.fabric().await {
+        Ok(f) => serde_json::to_value(f).unwrap_or(Value::Null),
         Err(e) => return json!({"fabric": null, "meshes": [], "nodes_total": 0, "build": null, "error": format!("node-admin unreadable: {e}")}),
     };
     let nodes = nodes(admin).await.unwrap_or_default();
@@ -70,7 +61,10 @@ pub async fn overview(admin: &NodeAdminClient, http: &reqwest::Client) -> Value 
         })
         .unwrap_or_default();
     let build = match text(&fabric, "build_id") {
-        Some(id) => admin.build_view(&BuildId(id)).await.ok().map(|b| brief(&b)),
+        Some(id) => match BuildId::parse(&id) {
+            Ok(id) => admin.build(&id).await.ok().map(|b| brief(&receipts(&b))),
+            Err(_) => None,
+        },
         None => None,
     };
     json!({
@@ -82,22 +76,24 @@ pub async fn overview(admin: &NodeAdminClient, http: &reqwest::Client) -> Value 
     })
 }
 
-fn brief(b: &rafka_node_admin_client::BuildView) -> Value {
-    let v = serde_json::to_value(b).unwrap_or(Value::Null);
-    json!({
-        "build_id": v["build_id"], "state": v["state"], "attempt": v["attempt"], "reason": v["reason"], "executor": v["executor"],
-        "change": v["submitted_change"]["kind"],
-    })
+/// A Build's header as the tabs draw it.
+fn receipts(b: &rafka_node_admin_client::BuildReceipts) -> Value {
+    json!({ "build_id": b.build_id.to_string(), "phase": format!("{:?}", b.phase), "attempt": b.attempt, "reason": b.reason, "executor": b.executor, "last_failure": b.last_failure, "steps": b.steps.len() })
 }
 
-/// The nodes with their seat labels, and every connection fact node-admin's own view of the
-/// fabric can read: asked of each node-admin that publishes an API.
-pub async fn topology(admin: &NodeAdminClient, http: &reqwest::Client) -> Result<Value, ClientError> {
-    let nodes = nodes(admin).await?;
-    let view: Vec<Value> = nodes
+fn brief(v: &Value) -> Value {
+    json!({ "build_id": v["build_id"], "state": v["phase"], "attempt": v["attempt"], "reason": v["reason"], "executor": v["executor"] })
+}
+
+/// The nodes with their seat labels, and every connection fact a node-admin answers for its own
+/// exact birth (node.connections.get).
+pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
+    let views = admin.nodes().await?;
+    let view: Vec<Value> = views
         .iter()
         .map(|n| {
-            let kind = text(n, "kind").unwrap_or_default();
+            let n = serde_json::to_value(n).unwrap_or(Value::Null);
+            let kind = text(&n, "kind").unwrap_or_default();
             let (p, fp) = (n["is_primary"].as_bool().unwrap_or(false), n["is_fabric_primary"].as_bool().unwrap_or(false));
             json!({
                 "name": n["name"], "kind": kind, "mesh": n["mesh"], "status": n["status"], "seat": seat_label(&kind, p, fp),
@@ -108,12 +104,11 @@ pub async fn topology(admin: &NodeAdminClient, http: &reqwest::Client) -> Result
         .collect();
     let mut edges: Vec<Value> = Vec::new();
     let mut errors = Vec::new();
-    for n in &nodes {
-        let Some(base) = text(n, "admin_api_base") else { continue };
-        match get_json(http, &format!("{}/api/connections", base.trim_end_matches('/'))).await {
-            Ok(c) => {
-                let by = text(n, "name").unwrap_or_default();
-                for e in c["connections"].as_array().into_iter().flatten() {
+    for n in views.iter().filter(|n| n.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
+        match admin.connections(n).await {
+            Some(Ok(c)) => {
+                let by = n.name.to_string();
+                for e in serde_json::to_value(&c).unwrap_or(Value::Null)["connections"].as_array().into_iter().flatten() {
                     let mut e = e.clone();
                     e["reported_by"] = json!(by);
                     // One fact per (source, destination, kind): the latest any admin reports.
@@ -125,15 +120,16 @@ pub async fn topology(admin: &NodeAdminClient, http: &reqwest::Client) -> Result
                     }
                 }
             }
-            Err(e) => errors.push(e),
+            Some(Err(e)) => errors.push(format!("{}: {e}", n.name)),
+            None => {}
         }
     }
     Ok(json!({"nodes": view, "edges": edges, "edge_errors": errors}))
 }
 
-/// The current accepted Build and the Builds this UI submitted, newest first, each with its steps.
-pub async fn builds(admin: &NodeAdminClient, http: &reqwest::Client, submitted: &[String]) -> Value {
-    let current = get_json(http, &format!("{}/api/fabric", admin.base())).await.ok().and_then(|f| text(&f, "build_id"));
+/// The current accepted Build and the Builds this UI submitted, newest first.
+pub async fn builds(admin: &Admin, submitted: &[String]) -> Value {
+    let current = admin.fabric().await.ok().and_then(|f| f.build_id);
     let mut ids: Vec<String> = Vec::new();
     for id in current.iter().chain(submitted.iter().rev()) {
         if !ids.contains(id) {
@@ -142,11 +138,11 @@ pub async fn builds(admin: &NodeAdminClient, http: &reqwest::Client, submitted: 
     }
     let mut out = Vec::new();
     for id in ids.iter().take(20) {
-        if let Ok(b) = admin.build_view(&BuildId(id.clone())).await {
-            out.push(serde_json::to_value(&b).unwrap_or(Value::Null));
+        let Ok(parsed) = BuildId::parse(id) else { continue };
+        if let Ok(b) = admin.build(&parsed).await {
+            out.push(receipts(&b));
         }
     }
-    out.sort_by(|a, b| b["submitted_at_ms"].as_u64().cmp(&a["submitted_at_ms"].as_u64()));
     json!({"current": current, "builds": out})
 }
 

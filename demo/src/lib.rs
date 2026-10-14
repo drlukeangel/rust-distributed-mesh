@@ -43,7 +43,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
     let originates = serves_originate(role);
     let running = node::start_with_seams(&launch, |b, seams| {
         let client = seams.client.clone();
-        let b = oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, seams.resolver.clone());
+        let b = oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, seams.resolver.clone(), &seams.name);
         if originates {
             originate::serve_with_policy(b, seams, &launch, CARRIER_POLICY)
         } else {
