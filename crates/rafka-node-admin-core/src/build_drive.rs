@@ -769,7 +769,8 @@ impl DriveEnv {
         let id = drive.build_id.clone();
         let span = tracing::info_span!("rdm.node_admin.build.update.via-drive", build_id = %id, node = %self.me, outcome = tracing::field::Empty, detail = tracing::field::Empty, dispatches = tracing::field::Empty);
         let mut dispatches = 0u32;
-        let end = self.pass(drive, &mut dispatches).instrument(span.clone()).await;
+        let mut last_turn = None;
+        let end = self.pass(drive, &mut dispatches, &mut last_turn).instrument(span.clone()).await;
         span.record("dispatches", dispatches);
         match &end {
             DriveEnd::Terminal => span.record("outcome", "terminal"),
@@ -777,6 +778,8 @@ impl DriveEnv {
             DriveEnd::Paused(w) => span.record("outcome", "paused").record("detail", w.as_str()),
             DriveEnd::SeatLost(w) => span.record("outcome", "seat-lost").record("detail", w.as_str()),
         };
+        drop(span);
+        drop(last_turn);
         end
     }
 
@@ -986,7 +989,7 @@ impl DriveEnv {
         Ok(plan)
     }
 
-    async fn pass(self: &Arc<Self>, drive: &Arc<Drive>, dispatches: &mut u32) -> DriveEnd {
+    async fn pass(self: &Arc<Self>, drive: &Arc<Drive>, dispatches: &mut u32, last_turn: &mut Option<crate::park_gate::Turn>) -> DriveEnd {
         let id = drive.build_id.clone();
         let mut handed_to: Option<PathName> = None;
         let mut departed: Option<String> = None;
@@ -995,7 +998,8 @@ impl DriveEnv {
             // nothing, and while the admin is stopped it begins only once the admin starts. A pass in
             // progress when a stop parks the gate runs to its end (the attempt it dispatched, its
             // terminal handled) and the stop's quiesce waits for it, so nothing of it follows the cut.
-            let turn = self.turns.turn("build-drive").await;
+            let _ = last_turn.take();
+            let turn = last_turn.insert(self.turns.turn("build-drive").await);
             if let Some(end) = self.may_act(drive).await {
                 return end;
             }
