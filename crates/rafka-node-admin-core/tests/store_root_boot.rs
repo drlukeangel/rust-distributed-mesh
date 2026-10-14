@@ -279,7 +279,7 @@ enum History {
 /// A fabric's durable store root and the data dir of its one node-admin, prepared through the storage
 /// adapters with no previous process (R-SB1): the Fabric row and the fabric's name claim, mesh1's row,
 /// the admin's own row (fabric1, mesh1, `mesh1.admin.1`, its node key), the accepted Build of the root
-/// topology in the admin's own Build journal and, for [`History::ReadyForTraffic`], the
+/// topology in the Build journal on the shared store root (R-BI6) and, for [`History::ReadyForTraffic`], the
 /// ready-for-traffic row. The rows the fabric's state-commit publishes are held in the root's
 /// scratchpad and published by it, as the fabric-primary's commit-state action does. The store names no
 /// node but the admin itself: nothing is alive.
@@ -360,8 +360,7 @@ impl Prepared {
                 let status = rafka_node_admin_core::status_storage::FileStatusStorage::open(&root, "mesh1", &incarnation).await.unwrap();
                 status.put_fabric_event(&rafka_node_admin_core::status_storage::FabricEventRow { fabric_id: fabric_id.clone(), event: "ready-for-traffic".into() }).await.unwrap();
             }
-            root.scratchpad().expect("held until the state-commit").publish().await.unwrap();
-            let journal = rafka_node_admin_core::build_state::FileJournal::open(&data_dir).await.unwrap();
+            let journal = rafka_node_admin_core::build_state::FileJournal::open_on_root(&root, "mesh1").await.unwrap();
             let accepted = rafka_node_admin_core::build_state::BuildAccepted {
                 build_id: build_id.clone(),
                 topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", mesh_id.clone()),
@@ -369,10 +368,13 @@ impl Prepared {
                 submitted_at_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64,
             };
             rafka_node_admin_core::build_state::accept(&journal, &accepted, None, "mesh1.admin.1", "prepared-root").await.unwrap();
+            root.scratchpad().expect("held until the state-commit").publish().await.unwrap();
         });
         let prepared = Self { dir, store, data_dir, fabric_id, mesh_id, node_id, incarnation, build_id };
         assert_eq!(fabric_dirs(&prepared.store), vec![prepared.fabric_id.to_string()], "one fabric on the root");
         assert!(prepared.fabric_row().exists(), "the Fabric row stands on the root");
+        assert!(prepared.store.join(prepared.fabric_id.to_string()).join("fabric/builds/build-journal.jsonl").exists(), "the Build journal stands on the shared store root under fabric/builds/");
+        assert!(!prepared.data_dir.join("build-journal.jsonl").exists(), "no per-admin Build journal in data_dir");
         assert_eq!(prepared.ready_rows().len(), usize::from(history == History::ReadyForTraffic), "{history:?}: the ready-for-traffic rows on the root");
         prepared
     }

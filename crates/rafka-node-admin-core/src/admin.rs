@@ -5327,7 +5327,7 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
     };
     let nodes_files = Arc::new(crate::storage::FileNodesStorage::open(&cfg.data_dir, &store_root, &own_mesh, &incarnation).await.map_err(storage_err)?);
     let nodes_storage: Arc<dyn crate::storage::NodesStorage> = nodes_files.clone();
-    let journal = Arc::new(crate::build_state::FileJournal::open(&cfg.data_dir).await.map_err(|e| e.to_string())?);
+    let journal = Arc::new(crate::build_state::FileJournal::open_on_root(&store_root, &own_mesh).await.map_err(|e| e.to_string())?);
     let attempt_contexts = Arc::new(crate::build_claim::AttemptContexts::open(&cfg.data_dir, &incarnation).await.map_err(storage_err)?);
     // Each mesh's in-flight row on the fabric's store root (R-BI7 caveat 3): the one set of rows the
     // claim door, the drive's release and the recovery door all take and release.
@@ -5754,6 +5754,55 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                 // Only the fabric seat holder writes the Fabric rows, and only its held `fabric/` rows are published: the
                 // file store reads the committed fabric seat record, as the Build gate does.
                 fabric_files.set_seat_source(fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name));
+                {
+                    let seat = fabric_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name);
+                    let seat_for_holds = seat.clone();
+                    let gate = Arc::new(move || match (seat.read)() {
+                        crate::fabric_builds::SeatRecord::Moved { by, to } => Err(format!(
+                            "fabric-primary seat: {by}; the holder is {}",
+                            to.as_deref().unwrap_or("a birth whose path.name is not known here")
+                        )),
+                        crate::fabric_builds::SeatRecord::Open { .. } => Ok(()),
+                    });
+                    let launched = cfg.launch.is_some();
+                    let (book, records_f, fabric_name, fabric_id, me_id, bb) = (
+                        membership.book.clone(),
+                        records.clone(),
+                        cfg.fabric.clone(),
+                        cfg.fabric_id.clone(),
+                        node_id.clone(),
+                        backbone.clone(),
+                    );
+                    let holds_fabric = Arc::new(move || match (seat_for_holds.read)() {
+                        crate::fabric_builds::SeatRecord::Open { holder: Some(_) } => true,
+                        crate::fabric_builds::SeatRecord::Moved { .. } => false,
+                        crate::fabric_builds::SeatRecord::Open { holder: None } => {
+                            !launched
+                                || bb.is_fabric_primary()
+                                || project(&fabric_name, &fabric_id, ProviderKind::Process, &book, &records_f).holds_fabric_seat(&me_id)
+                        }
+                    });
+                    let mesh_seat_for_holds = mesh_seat_source(&membership.book, &records, (node_id.clone(), incarnation.clone()), &name, &own_mesh);
+                    let (book_m, records_m, fabric_name_m, fabric_id_m, me_id_m, mesh_m, bb_m) = (
+                        membership.book.clone(),
+                        records.clone(),
+                        cfg.fabric.clone(),
+                        cfg.fabric_id.clone(),
+                        node_id.clone(),
+                        own_mesh.clone(),
+                        backbone.clone(),
+                    );
+                    let holds_mesh = Arc::new(move || match (mesh_seat_for_holds.read)() {
+                        crate::fabric_builds::SeatRecord::Open { holder: Some(_) } => true,
+                        crate::fabric_builds::SeatRecord::Moved { .. } => false,
+                        crate::fabric_builds::SeatRecord::Open { holder: None } => {
+                            !launched
+                                || bb_m.is_mesh_primary()
+                                || project(&fabric_name_m, &fabric_id_m, ProviderKind::Process, &book_m, &records_m).holds_mesh_seat(&mesh_m, &me_id_m)
+                        }
+                    });
+                    journal.set_fabric_seat(gate, holds_fabric, holds_mesh);
+                }
                 // `fabric/` has one writer, the fabric-primary (R14 item 2): `FabricRowsWriter`, a round on every
                 // seat change.
                 {

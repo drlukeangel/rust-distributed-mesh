@@ -3714,6 +3714,11 @@ impl Backbone {
         }
     }
 
+    /// Whether this backbone publishes the fabric's status now (it is the fabric's primary).
+    pub fn is_fabric_primary(&self) -> bool {
+        self.status_publishing.load(Ordering::Relaxed)
+    }
+
     /// Be (or stop being) the fabric-status publisher: the fabric primary.
     pub fn set_fabric_primary(&self, primary: bool) {
         self.fabric_status.lock().unwrap().set_role(primary);
