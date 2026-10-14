@@ -1219,7 +1219,7 @@ mod tests {
     /// A mesh heard again is decided neither way. Must NOT happen: the hold read as a rebirth, or the
     /// fact surviving the silence.
     #[test]
-    fn an_unreachable_decision_is_exposed_as_a_hold_and_never_as_a_rebirth() {
+    fn an_unreachable_decision_is_exposed_as_a_hold_and_never_as_carrier_edge_lost() {
         let mut l = ladder();
         walk(&mut l, [Unreachable, Unreachable]);
         assert!(l.unreachable_decided("mesh2") && !l.rebirth_decided("mesh2"));

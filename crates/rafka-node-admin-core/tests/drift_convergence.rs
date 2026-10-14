@@ -1553,9 +1553,6 @@ mod fully_crashed_mesh {
         fn authorizes(&self) -> bool {
             true
         }
-        async fn fence(&self) -> Result<Option<String>, rafka_node_admin_core::build_state::BuildStateError> {
-            Ok(None)
-        }
         fn peer_mesh(&self, mesh: &str) -> Option<PeerMesh> {
             (mesh == self.mesh).then_some(self.held)
         }
@@ -1978,7 +1975,7 @@ mod decided_mesh {
     /// letting the drift pass repair the second node-admin from its exit proof (a second recoverer of
     /// the same member beside its mesh-primary).
     #[tokio::test]
-    async fn the_rest_of_a_reborn_mesh_is_its_new_primarys_to_recover_while_the_decision_is_still_held() {
+    async fn the_rest_of_a_decided_mesh_is_its_new_primarys_to_recover_while_the_decision_is_still_held() {
         let e = estate().await;
         let (_, peer_mesh) = meshes(&e).await;
         let admins = [format!("{peer_mesh}.admin.1"), format!("{peer_mesh}.admin.2")];
@@ -2106,7 +2103,7 @@ mod unheard_mesh_hold {
     }
 
     #[tokio::test]
-    async fn only_the_first_recovering_node_admin_of_a_reborn_mesh_is_recovered_from_here() {
+    async fn only_the_first_recovering_node_admin_of_a_decided_mesh_is_created_from_here() {
         let e = estate().await;
         let (_, peer_mesh) = meshes(&e).await;
         let admins = [format!("{peer_mesh}.admin.1"), format!("{peer_mesh}.admin.2")];

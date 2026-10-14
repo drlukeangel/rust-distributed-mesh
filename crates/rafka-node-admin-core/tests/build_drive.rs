@@ -1026,7 +1026,7 @@ impl OperationRunner for HeldOpen {
 /// waiting for that run's stream to end, the callers' streams end naming the holder the record names,
 /// and no later attempt is claimed.
 #[tokio::test]
-async fn a_fence_naming_another_holder_than_the_executor_ends_the_drive_at_the_fence_naming_that_holder() {
+async fn a_seat_row_naming_another_holder_than_the_executor_ends_the_drive_naming_that_holder() {
     let held = Arc::new(HeldOpen { began: tokio::sync::Notify::new() });
     let runner = held.clone();
     let r = rig_for(view(), TopologyChange::ReconcileMesh { desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 2)]) }, move |_, _| -> Arc<dyn OperationRunner> { runner }).await;
@@ -1084,7 +1084,7 @@ impl rafka_node_admin_core::build_drive::Dispatcher for Fed {
 /// Must NOT happen: a caller's stream ending with the seat loss, which sends the caller to the
 /// executor, before the executor's run said it holds the seat.
 #[tokio::test]
-async fn a_fence_naming_the_executor_ends_the_drive_on_the_executors_new_seat_frame_never_before() {
+async fn a_seat_row_naming_the_executor_ends_the_drive_on_the_executors_new_seat_frame_never_before() {
     use rafka_node_admin_core::build_drive::InnerItem;
     let r = rig().await;
     let (feed, items) = tokio::sync::mpsc::unbounded_channel();

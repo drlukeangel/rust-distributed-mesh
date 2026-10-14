@@ -52,7 +52,9 @@ pub trait Gate: Send + Sync {
     /// The seat fence of the Build log, read from the committed fabric seat record: refused by name
     /// once the record names another live birth; otherwise the path.name of the birth it names when
     /// that is this birth, `None` when it names none or a birth proven gone.
-    async fn fence(&self) -> Result<Option<String>, BuildStateError>;
+    async fn fence(&self) -> Result<Option<String>, BuildStateError> {
+        Ok(None)
+    }
     /// Why reconciliation is frozen (a fabric shutdown is in force), when it is: no claim and no
     /// dispatch from here on.
     fn frozen(&self) -> Option<String> {
@@ -743,7 +745,7 @@ fn own_attempt(p: &BuildProjection, mesh: &str) -> u32 {
 /// step 6), when the investigation decided the mesh's rebirth: the node-admin the Build already carried
 /// across the fence ([`crossed_admin`]) until its create completed since the mesh last executed its own
 /// work, and `first` (the mesh's first node-admin in path order) while the Build carried none.
-pub(crate) fn rebirth_owed(p: &BuildProjection, mesh: &str, first: &PathName) -> Option<PathName> {
+pub(crate) fn first_admin_owed(p: &BuildProjection, mesh: &str, first: &PathName) -> Option<PathName> {
     let Some(crossed) = crossed_admin(p, mesh) else { return Some(first.clone()) };
     let (own, key) = (own_attempt(p, mesh), format!("create-node:{crossed}"));
     let created = p.steps.iter().any(|s| s.attempt > own && s.operation == key && s.step == "Complete" && s.outcome == crate::build_state::StepOutcome::Complete);
@@ -877,7 +879,7 @@ impl DriveEnv {
 
     /// The node.create of the node-admin a fully crashed mesh is owed (mesh-investigation.md step 5,
     /// "Fully crashed"): `op` creates `node`, the mesh's first node-admin in path order (or the one
-    /// the Build already carried across the fence, [`rebirth_owed`]), and `crashed` (this pass's
+    /// the Build already carried across the fence, [`first_admin_owed`]), and `crashed` (this pass's
     /// [`Self::crash_proven`]) holds its mesh: the investigation's 60 s decision on it came out
     /// `unreachable` and the provider proves every node of it exited. Silence is never the proof.
     /// Nothing else of that mesh crosses the fence, and the create's own fence deletes a birth only on
@@ -885,7 +887,7 @@ impl DriveEnv {
     fn crash_admits(&self, p: &BuildProjection, op: &BuildOperation, node: &PathName, crashed: &HashSet<String>) -> bool {
         op.created_node() == Some(node)
             && crashed.contains(&node.mesh)
-            && p.topology.meshes.get(&node.mesh).and_then(|m| m.cohort(NodeKind::NodeAdmin).min()).and_then(|first| rebirth_owed(p, &node.mesh, first)).as_ref() == Some(node)
+            && p.topology.meshes.get(&node.mesh).and_then(|m| m.cohort(NodeKind::NodeAdmin).min()).and_then(|first| first_admin_owed(p, &node.mesh, first)).as_ref() == Some(node)
     }
 
     /// The peer meshes of `p` a fully crashed mesh's create may be admitted for, read now: each mesh

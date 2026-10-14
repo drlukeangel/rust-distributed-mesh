@@ -2649,7 +2649,7 @@ async fn crashed_peer_mesh(
         if !proofs.unproven.is_empty() {
             continue;
         }
-        let Some(owed) = crate::build_drive::rebirth_owed(current, &m.name, first) else { continue };
+        let Some(owed) = crate::build_drive::first_admin_owed(current, &m.name, first) else { continue };
         let Some((_, proof)) = proven.into_iter().find(|(p, _)| *p == owed) else { continue };
         return Some((m.name.clone(), owed, proof));
     }
@@ -2757,7 +2757,7 @@ pub async fn reconcile_drift(
     // across the fence, else the mesh's first in path order.
     let verdict: Option<(String, PathName)> = current.topology.meshes.values().filter(|m| m.name != me.mesh && decided(&m.name)).find_map(|m| {
         let first = m.cohort(NodeKind::NodeAdmin).min()?;
-        crate::build_drive::rebirth_owed(&current, &m.name, first).map(|admin| (m.name.clone(), admin))
+        crate::build_drive::first_admin_owed(&current, &m.name, first).map(|admin| (m.name.clone(), admin))
     });
     // The fully crashed mesh (mesh-investigation.md step 5): a peer mesh the investigation found
     // unreachable, every node of which the provider proves exited, is owed the same create.

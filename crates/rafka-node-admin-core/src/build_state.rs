@@ -2848,7 +2848,7 @@ mod tests {
     /// recovery index as that workflow's attempt, folded on append, journal replay and absorb alike.
     /// Must NOT happen: `None` for a birth a workflow deleted, which admits a recovery of it.
     #[tokio::test]
-    async fn a_birth_a_retire_deleted_is_answered_by_that_workflow() {
+    async fn a_birth_a_delete_deleted_is_answered_by_that_workflow() {
         let path: crate::model::PathName = "mesh2.rpc.2".parse().unwrap();
         let receipt = |kind: &str, attempt: u32, step: &str, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId| BuildStepReceipt {
             mesh: None,
