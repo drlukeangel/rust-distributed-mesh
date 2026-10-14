@@ -1,16 +1,21 @@
 //! The Build attempt claim on op `0x1C`, RDM's second control family (node-rpc.md §9;
 //! node-rpc-envelope.md tag table; i143 R-A1, R-T4, R-X1).
 //!
-//! An executor never decides its own claim of a Build attempt. The claim is an insert-and-fail
-//! on the FABRIC-PRIMARY's Build log, and the executor runs the attempt only on [`BuildClaimReply::Won`].
-//! One request, `ClaimAttempt`, names the Build, the attempt and the executor's exact birth; the
-//! receiver takes the sender from the authenticated peer, never from the request.
+//! An executor never decides its own claim of a Build attempt. The claim is decided by its
+//! claimant (R-BI7): the fabric-primary for a topology Build's attempt (the fabric lane), the
+//! mesh-primary of the mesh for that mesh's drift attempt (its lane); the key is
+//! `(build_id, mesh, attempt)`, decided by insert-and-fail on the mesh's rows, and the executor
+//! runs the attempt only on [`BuildClaimReply::Won`]. One request, `ClaimAttempt`, names the Build,
+//! the lane, the attempt and the executor's exact birth; the receiver takes the sender from the
+//! authenticated peer, never from the request.
 //!
 //! ```text
 //! Won                  the attempt is this executor's; the reply carries the attempt's context
 //! Lost { holder }      another executor holds the attempt
 //! NotOpen { next }     the attempt is not the Build's next (or the Build is complete): nothing ran
-//! NotFabricPrimary     the receiver is not the fabric-primary; it names the one it sees
+//! NotClaimant          the receiver may not claim on that mesh; it names who may: the
+//!                      fabric-primary (a topology attempt) and the mesh's mesh-primary (a drift attempt)
+//! BuildInProgress      another attempt holds the mesh the attempt acts in: the Build, the mesh, the holder
 //! ```
 //!
 //! The attempt's [`CallContext`] (traceparent, tracestate, allowlisted baggage, caller_system) is
@@ -41,6 +46,9 @@ pub enum BuildClaimRequest {
         executor_node_id: NodeId,
         /// The claiming executor's incarnation.
         executor_incarnation: IncarnationId,
+        /// The lane the attempt is numbered in: `None` the fabric lane (a topology Build's
+        /// attempts), `Some(mesh)` that mesh's drift lane.
+        mesh: Option<String>,
     },
 }
 
@@ -72,10 +80,15 @@ pub enum BuildClaimReply {
         /// The open attempt, when there is one.
         next: Option<u32>,
     },
-    /// The receiver is not the fabric-primary; `fabric_primary` is the one it sees, if any.
-    NotFabricPrimary {
+    /// The receiver may not claim on `mesh`: a topology attempt is claimed by the fabric-primary,
+    /// a drift attempt by its mesh's mesh-primary. Both are named as the receiver sees them.
+    NotClaimant {
+        /// The mesh the attempt acts in, when the receiver's view names one.
+        mesh: Option<String>,
         /// The fabric primary the receiver sees, when it sees one.
         fabric_primary: Option<String>,
+        /// The mesh's mesh-primary the receiver sees, when it sees one.
+        mesh_primary: Option<String>,
     },
     /// The peer the call needed could not be resolved.
     PeerUnresolved {
@@ -107,6 +120,16 @@ pub enum BuildClaimReply {
         /// Why the call is refused.
         reason: String,
     },
+    /// Another attempt holds the mesh the attempt acts in (one attempt in flight per mesh, R-BI7):
+    /// nothing is claimed.
+    BuildInProgress {
+        /// The Build of the attempt holding the mesh.
+        current_build_id: String,
+        /// The mesh.
+        mesh: String,
+        /// The admin that claimed the attempt holding it, when it was recorded.
+        held_by: Option<String>,
+    },
 }
 
 impl BuildClaimReply {
@@ -116,13 +139,14 @@ impl BuildClaimReply {
             Self::Won { .. } => "won",
             Self::Lost { .. } => "lost",
             Self::NotOpen { .. } => "not-open",
-            Self::NotFabricPrimary { .. } => "not-fabric-primary",
+            Self::NotClaimant { .. } => "not-claimant",
             Self::PeerUnresolved { .. } => "peer-unresolved",
             Self::NotReady { .. } => "not-ready",
             Self::Busy { .. } => "busy",
             Self::Draining { .. } => "draining",
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
+            Self::BuildInProgress { .. } => "build-in-progress",
         }
     }
 }
@@ -130,15 +154,15 @@ impl BuildClaimReply {
 impl NodeProtocol for BuildClaim {
     const OP: u8 = 0x1C;
     const NAME: &'static str = "build-claim";
-    /// A Build id, an attempt, a node id and an incarnation id.
+    /// A Build id, an attempt, a node id, an incarnation id and a mesh name.
     const MAX_REQUEST_FRAME_BYTES: usize = 512;
     /// A reply carries at most one `CallContext`: a traceparent, a tracestate (512 bytes) and
     /// baggage (8192 bytes), with room for the enum tag and the string lengths.
     const MAX_REPLY_FRAME_BYTES: usize = 9216;
-    /// The fabric-primary decides its own claims; a carried claim would be decided by no one.
+    /// The claimant decides its own claims; a carried claim would be decided by no one.
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 1;
-    const REPLY_VARIANTS: u32 = 10;
+    const REPLY_VARIANTS: u32 = 11;
 
     type Request = BuildClaimRequest;
     type Reply = BuildClaimReply;
@@ -146,7 +170,7 @@ impl NodeProtocol for BuildClaim {
     fn classify_reply(reply: &BuildClaimReply) -> ReplyKind {
         match reply {
             BuildClaimReply::Won { .. } => ReplyKind::Success,
-            BuildClaimReply::Lost { .. } | BuildClaimReply::NotOpen { .. } | BuildClaimReply::NotFabricPrimary { .. } => ReplyKind::ProtocolRefusal,
+            BuildClaimReply::Lost { .. } | BuildClaimReply::NotOpen { .. } | BuildClaimReply::NotClaimant { .. } | BuildClaimReply::BuildInProgress { .. } => ReplyKind::ProtocolRefusal,
             BuildClaimReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             BuildClaimReply::NotReady { .. } => ReplyKind::NotReady,
             BuildClaimReply::Busy { .. } => ReplyKind::Busy,
@@ -185,13 +209,14 @@ mod tests {
             (BuildClaimReply::Won { context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".into()), tracestate: None, baggage: None } }, ReplyKind::Success),
             (BuildClaimReply::Lost { holder: "mesh1.admin.1".into() }, ReplyKind::ProtocolRefusal),
             (BuildClaimReply::NotOpen { next: Some(7) }, ReplyKind::ProtocolRefusal),
-            (BuildClaimReply::NotFabricPrimary { fabric_primary: Some("mesh1.admin.1".into()) }, ReplyKind::ProtocolRefusal),
+            (BuildClaimReply::NotClaimant { mesh: Some("mesh2".into()), fabric_primary: Some("mesh1.admin.1".into()), mesh_primary: Some("mesh2.admin.1".into()) }, ReplyKind::ProtocolRefusal),
             (BuildClaim::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (BuildClaim::not_ready("n".into()), ReplyKind::NotReady),
             (BuildClaim::busy("b".into()), ReplyKind::Busy),
             (BuildClaim::draining("d".into()), ReplyKind::Draining),
             (BuildClaim::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (BuildClaim::unauthorized("u".into()), ReplyKind::Unauthorized),
+            (BuildClaimReply::BuildInProgress { current_build_id: "b7swg3jj790z".into(), mesh: "mesh2".into(), held_by: Some("mesh1.admin.1".into()) }, ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, BuildClaim::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -199,7 +224,7 @@ mod tests {
             assert_eq!(back, r);
             assert_eq!(BuildClaim::classify_reply(&back), kind);
         }
-        let q = BuildClaimRequest::ClaimAttempt { build_id: "bld-x".into(), attempt: 3, executor_node_id: NodeId::mint(), executor_incarnation: IncarnationId::mint() };
+        let q = BuildClaimRequest::ClaimAttempt { build_id: "b7swg3jj790z".into(), attempt: 3, executor_node_id: NodeId::mint(), executor_incarnation: IncarnationId::mint(), mesh: Some("mesh2".into()) };
         assert_eq!(BuildClaim::decode_request(&BuildClaim::encode_request(&q).unwrap()).unwrap(), q);
         assert!(BuildClaim::encode_request(&q).unwrap().len() <= BuildClaim::MAX_REQUEST_FRAME_BYTES);
     }

@@ -3,12 +3,13 @@
 //! cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
 //! manifest, rpc ledger and every process's spans land under it, feature `i143-2775`).
 //!
-//! The testkit proof store (op 0x70) on a real estate, driven only through the node-admin control
-//! API and `rafka-rpc-probe` over real Node RPC: a restart is a Build the rectifier executes; a
-//! replacement is the rectifier's answer to the runtime's death (an attempt whose action is
-//! `replace`, reason proven drift).
+//! The testkit proof store (op 0x70) on a real estate, driven only through the `node` objects and
+//! `rafka-rpc-probe` over real Node RPC: a restart is a Build the rectifier executes and keeps the
+//! node.id and the incarnation (node-restart.md: stop then start on the parked process); the new
+//! birth is node recovery (node-recovery.md), the mesh-primary's answer to the runtime's death (an
+//! attempt of the accepted Build, reason recovery, a new node.id at the same path.name).
 
-use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -90,9 +91,11 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     landed_on(&before, &first, "get");
     assert_eq!(before["reply"]["result"], json!({"found": true, "value": "before-restart"}), "presence control: {before}");
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.expect("the fabric-primary accepts the restart");
     let restart_attempt = Estate::complete(&mut restart).await;
-    let restart_build = restart_attempt.build_id.0.clone();
+    let restart_build = restart_attempt.build_id.to_string();
     let restarted = view(&estate, NODE).await;
     assert_eq!(restarted["status"], "ready-for-traffic", "the restarted birth is ready: {restarted}");
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
@@ -101,7 +104,7 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     assert_eq!(restarted_dir, first_dir, "a restart keeps the node's data dir");
     let kept = estate.probe(&["get", "--target", &exact, "--key", "41"]);
     landed_on(&kept, &restarted, "get");
-    assert_eq!(kept["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the new incarnation serves the old value: {kept}");
+    assert_eq!(kept["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the restarted node serves the old value: {kept}");
     let store_file = std::fs::read_dir(&restarted_dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().is_some_and(|f| f.to_string_lossy().contains("proof"))).map(|p| p.display().to_string());
     estate.stop().await;
 
@@ -110,7 +113,7 @@ async fn proof_holder_restarts_preserves_same_node_store() {
     let at = |inc: &Value, op: &str, outcome: &str| served.iter().find(|s| s["attributes"]["incarnation_id"] == *inc && s["attributes"]["op"] == op && s["attributes"]["outcome"] == outcome).cloned().cloned();
     let put_span = at(&first["incarnation_id"], "put", "stored").expect("the first birth served the put");
     let kept_span = at(&restarted["incarnation_id"], "get", "value").expect("the restarted birth served the kept value");
-    // The restart ran as the Build attempt its REST request opened: the request, then the
+    // The restart ran as the Build attempt its node.restart call opened: the call, then the
     // rectifier's node update of this path under the same Build.
     let accepted = named(&spans, "rdm.node_admin.build.update.via-node-rpc").into_iter().find(|sp| sp["attributes"]["build_id"] == restart_build.as_str() && sp["attributes"]["node"] == NODE).cloned().expect("the restart's build.create span");
     let update = named(&spans, "rdm.node_admin.node.update.via-build").into_iter().find(|sp| sp["attributes"]["build_id"] == restart_build.as_str() && sp["attributes"]["node"] == NODE).cloned().expect("the restart's node update");
@@ -162,8 +165,7 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     let first_dir = estate.node_view(NODE).await.data_dir.expect("the launching admin advertises the node's data dir");
     let put = estate.probe(&["put", "--target", &path, "--key", "41", "--value", "old-birth"]);
     landed_on(&put, &first, "put");
-    let build_id = build.0.clone();
-    let attempt_before = u64::from(estate.builds_obj().await.get(&build).await.expect("build.get of the accepted Build").attempt);
+    let build_id = build.to_string();
 
     // The runtime dies (a fault); its mesh-primary answers it with node recovery.
     estate.kill_node(NODE).await;
@@ -182,11 +184,9 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     // The probe also prints its own traceparent; the verdict is the outcome, reason and route.
     assert_eq!((&old["outcome"], &old["reason"], &old["route"]), (&json!("NotSent"), &json!("Resolve(Unknown)"), &json!("direct")), "exact:<old> never follows a replacement: {old}");
     let other = format!("path:{OTHER}");
-    let gone = wait_for("the other rpc node holds the old birth's departure", Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", &other, "--query", &exact_old]);
-        (r["reply"]["resolution"] == "gone").then_some(r)
-    })
-    .await;
+    estate.holds_departure(OTHER, "mesh1", &s(&first["node_id"])).await;
+    let gone = estate.probe(&["resolve", "--target", &other, "--query", &exact_old]);
+    assert_eq!(gone["reply"]["resolution"], "gone", "the other rpc node holds the old birth's departure: {gone}");
     let holder = estate.probe(&["resolve", "--target", &other, "--query", &path]);
     assert_eq!(holder["reply"]["resolution"], "found", "{holder}");
     assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current holder is the replacement: {holder}");
@@ -195,20 +195,22 @@ async fn proof_replacement_inherits_the_data_dir_exact_old_never_follows_path() 
     estate.stop().await;
 
     let spans = estate.spans();
-    // Node recovery: the next attempt of the accepted Build (reason recovery), deleting the exited
-    // birth and creating this path again, then updating it (node-recovery.md steps).
-    let attempt_of = |r: &Value| r["attributes"]["attempt"].as_u64().or_else(|| r["attributes"]["attempt"].as_str().and_then(|a| a.parse().ok())).unwrap_or(0);
-    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == build_id.as_str() && attempt_of(r) > attempt_before).collect();
-    let replace = reconciles
-        .iter()
-        .find(|r| r["attributes"]["reason"] == "recovery" && [format!("retire-node:{NODE}"), format!("create-node:{NODE}"), format!("update-node:{NODE}")].iter().all(|op| s(&r["attributes"]["operations"]).contains(op.as_str())))
-        .cloned()
-        .unwrap_or_else(|| panic!("a recovery attempt deleting, creating and updating {NODE}: {reconciles:?}"));
+    // Node recovery: an attempt of the accepted Build in the node's mesh's drift lane (reason
+    // recovery, R-BI7: the mesh-primary runs it in its own mesh's lane, numbered from 1 there),
+    // deleting the exited birth and creating this path again, and nothing after (node-recovery.md
+    // steps). The reconcile is the one in the recovery submit's own trace: a lane's attempt number
+    // also names an attempt of the fabric lane.
     let recovery = named(&spans, "rdm.node_admin.build.update.via-node-recovery")
         .into_iter()
         .find(|d| d["attributes"]["node"] == NODE && d["attributes"]["build_id"] == build_id.as_str() && s(&d["attributes"]["outcome"]).starts_with("complete"))
         .cloned()
         .unwrap_or_else(|| panic!("node recovery of {NODE} completed under the accepted Build"));
+    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| r["attributes"]["build_id"] == build_id.as_str() && r["trace_id"] == recovery["trace_id"] && r["attributes"]["lane"] == "mesh1").collect();
+    let replace = reconciles
+        .iter()
+        .find(|r| r["attributes"]["reason"] == "recovery" && s(&r["attributes"]["operations"]) == format!("retire-node:{NODE},create-node:{NODE}"))
+        .cloned()
+        .unwrap_or_else(|| panic!("a recovery attempt of mesh1's lane deleting and creating {NODE}, and nothing else, in the recovery's trace: {reconciles:?}"));
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request");
     // The old birth's own serve span of the put is not evidence here: the cell SIGKILLs that process,
     // and spans still queued in its batch exporter die with it (rafka-mesh-telemetry init_telemetry:

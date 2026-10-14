@@ -25,6 +25,12 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 iroh = { workspace = true }
 
+# The one node executable of node-admin's built-in set: every node_type but node_admin, taken from
+# the launch.
+[[bin]]
+name = "rafka-node"
+path = "src/bin/rafka_node.rs"
+
 [dev-dependencies]
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
 rafka-node-rpc-testkit = { path = "../rafka-node-rpc-testkit", features = ["rig"] }

@@ -26,6 +26,7 @@ fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
         load: None,
         gossip: None,
         tags: Default::default(),
+        config: Default::default(),
     }
 }
 
@@ -55,10 +56,22 @@ fn an_election_in_flight_is_no_seat_not_a_guess() {
 /// The product base holds no election: no NodeId ordering, no seat computation, anywhere in it.
 #[test]
 fn node_base_holds_no_comparator() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // Every source file under src/, its executables' (src/bin/) included.
+    let mut files = Vec::new();
+    let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if entry.file_type().unwrap().is_dir() {
+                dirs.push(entry.path());
+            } else {
+                files.push(entry.path());
+            }
+        }
+    }
+    assert!(files.iter().any(|f| f.ends_with("bin/rafka_node.rs")), "the scan reaches the node executable: {files:?}");
     let mut hits = Vec::new();
-    for entry in std::fs::read_dir(&src).unwrap().flatten() {
-        let text = std::fs::read_to_string(entry.path()).unwrap();
+    for path in files {
+        let text = std::fs::read_to_string(&path).unwrap();
         for (i, line) in text.lines().enumerate() {
             let l = line.trim_start();
             if l.starts_with("//") {
@@ -66,7 +79,7 @@ fn node_base_holds_no_comparator() {
             }
             for token in ["min_by", "max_by", ".cmp(", "fn elect", "is_primary =", "is_fabric_primary ="] {
                 if line.contains(token) {
-                    hits.push(format!("{}:{}: {token}: {}", entry.path().display(), i + 1, line.trim()));
+                    hits.push(format!("{}:{}: {token}: {}", path.display(), i + 1, line.trim()));
                 }
             }
         }

@@ -16,7 +16,7 @@ use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{DrainReceipt, NodeState, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
 
@@ -39,7 +39,7 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("park-start-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
@@ -56,6 +56,7 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let running = node::start(&launch, |b, _| b).await.expect("the node comes up");
@@ -76,15 +77,15 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         let target = NodeTarget::ExactNode(born.node.node_id.clone());
         let (node_id, incarnation) = (born.node.node_id.clone(), born.node.incarnation.clone());
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
-        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_park".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
-        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_park".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 2, operation: "start-node:mesh1.rpc.1".into() };
 
         // A live node refuses a start: only a parked one starts.
         assert!(matches!(call(&admin, &target, &start).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "a start of a live node is refused naming its state");
 
         // The stop is answered Stopped on its own call, with the drain's receipt.
         let left = call(&admin, &target, &stop).await;
-        assert!(matches!(left, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{left:?}");
+        assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{left:?}");
         assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentParked { .. }), "a parked node answers CurrentParked");
         assert_eq!(running.membership.neighbours(), 0, "the node left its gossip topic");
         // Stopping a parked node is done: the same receipt again.
@@ -125,6 +126,15 @@ fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
         assert!(after.digest_seq > seq_at_stop, "its digest sequence continued across the cycle");
         assert!(!node::stop_commanded(), "the process is live again");
         assert!(running.membership.neighbours() >= 1, "the node is a neighbour again");
+        // The same start reissued by a later attempt of its Build (a successor executor whose
+        // predecessor was lost after the node started) settles as AlreadyApplied: the command is
+        // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a
+        // naturally idempotent uncertain step can settle it"). Another command's start of this live
+        // node is still refused naming its state.
+        let reissued = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 3, operation: "start-node:mesh1.rpc.1".into() };
+        assert_eq!(call(&admin, &target, &reissued).await, StatusReply::AlreadyApplied, "the reissued start settles as already applied");
+        let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7kq2m9vx4pzr".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() };
+        assert!(matches!(call(&admin, &target, &other).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "another Build's start of the live node is refused naming its state");
         let _ = std::fs::remove_dir_all(&dir);
     })
 }

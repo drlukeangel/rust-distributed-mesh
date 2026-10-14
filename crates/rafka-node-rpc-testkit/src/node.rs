@@ -289,7 +289,7 @@ async fn start_with_rafka_time(launch: &Launch, rafka_time: rafka_mesh_transport
 async fn start_with_rafka_time_hydrating(launch: &Launch, rafka_time: rafka_mesh_transport::clock::RafkaTime, hydration: rafka_node_admin_core::app_hydration::Hydration, register: impl FnOnce(ServerBuilder, crate::originate::Seams) -> ServerBuilder) -> Result<RunningNode> {
     // One boot trace per birth: this root is never entered (iroh's tasks must not inherit it), each
     // step below is a child that lives exactly as long as the step, and `via-ready` closes it.
-    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.0, kind = launch.name.kind.name());
+    let boot = tracing::info_span!(parent: None, "rdm.mesh.node.create.via-boot", node = %launch.name, node_id = %launch.node_id, incarnation_id = %launch.incarnation.as_str(), kind = launch.name.kind.name());
     let started = crate::taskdump::watched("start", start_booted(launch, rafka_time, hydration, register, &boot)).await;
     if let Err(e) = &started {
         boot.in_scope(|| tracing::error!(error = %e, "node failed to come up"));
@@ -322,7 +322,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     rafka_mesh_entity::runtime::set_own_exit(rafka_mesh_entity::runtime::OwnExit {
         data_dir: launch.data_dir.clone(),
         deployment_id: runtime.deployment_id.clone(),
-        incarnation: launch.incarnation.0.clone(),
+        incarnation: launch.incarnation.to_string(),
     });
     // One endpoint, one socket for the process: Node RPC and gossip share it by ALPN. A request
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-endpoint-bound", node = %launch.name, requested = %launch.bind_addr, bound = tracing::field::Empty);
@@ -368,25 +368,48 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     connections.held().lock().unwrap().set_membership(resolver.clone());
     connections.hydrate().await.map_err(|e| anyhow!("connections hydrate: {e}"))?;
     drop(step);
-    // An owed Proxy retirement whose write was refused is attempted again while owed
-    // (connections.md §10); the task ends with the process.
-    let _retirements = connections.spawn_retirement_reconciler(rafka_node_admin_core::connections_writer::RETIREMENT_RETRY);
-    let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
+    // The control plane: Node RPC is no connection (connections.md "Two planes, two words"), so its
+    // dials and accepts write nothing to the connections log.
+    let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm"));
+    // The data plane of RDM standalone: the originate door's own client, whose dials are the
+    // connections this node originates for traffic, each a Direct entry of its log.
+    let data_plane = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep0.clone(), resolver.clone()).with_caller_system("rdm").with_connection_observer(connections.clone()));
+    // The node's one connections reconciler (connections.md §9.4, §10): an owed Proxy retirement
+    // whose write was refused is attempted again while owed, and a recovery attempt an accept armed
+    // (R-CN1) is dialled through the data plane once its backoff ends, its fact the data plane's own
+    // observation. The task ends with the process.
+    let recovery_dial: rafka_node_admin_core::connections_writer::RecoveryDial = {
+        let data_plane = data_plane.clone();
+        Arc::new(move |destination: rafka_mesh_entity::connections::ConnectionEnd| {
+            let data_plane = data_plane.clone();
+            Box::pin(async move {
+                use rafka_node_rpc_contract::ping::{Ping, PingRequest};
+                let (out, _) = data_plane.call::<Ping>(&rafka_node_rpc::NodeTarget::ExactNode(destination.node_id), &PingRequest::Ping { payload: b"recovery".to_vec() }, &rafka_node_rpc::CallOptions::default()).await;
+                out.name().to_string()
+            })
+        })
+    };
+    let _reconciler = connections.spawn_reconciler(rafka_node_admin_core::connections_writer::RECONCILER_TICK, Some(recovery_dial));
     // The status kick (fabric-node-lifecycle.md §7.3): answered once this node has joined.
     let subject: KickSlot = Arc::new(std::sync::OnceLock::new());
-    // Every connection this node accepts from a live peer is Direct Connected from this node
-    // to that peer (connections.md §10), reported to the same writer as its own dials.
-    let seams = crate::originate::Seams { resolver: resolver.clone(), client: client.clone(), connections: connections.clone(), fault };
+    // The name this birth holds, read per call by every door that names it: its launch's until it joins.
+    let held_name = crate::held_name::HeldName::of_birth(launch.name.clone());
+    let seams = crate::originate::Seams { resolver: resolver.clone(), client: data_plane.clone(), connections: connections.clone(), fault, name: held_name.clone() };
     let topology_slot: rafka_node_admin_core::topology_read::TopologySlot = Arc::new(std::sync::OnceLock::new());
+    // node.primary.update (op 0x21) on a node that is not a node-admin: the holder its mesh-primary
+    // commands with the committed row, and the successor the holder calls (proposal Part C1, Q3).
+    let primary_update_slot: rafka_node_admin_core::fabric_handover::MemberSlot = Arc::new(std::sync::OnceLock::new());
     // Closed until this node has joined its mesh (the kick slot is filled): every op, ping
     // included, is a typed NotReady before then.
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-catalog-sealed", node = %launch.name);
-    let server = serve_kick(register(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new().with_connection_observer(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), seams), subject.clone())
+    // Every connection this node accepts from a live peer is a recovery trigger for its own dial
+    // toward that birth, never a Direct entry (R-CN1).
+    let server = serve_kick(register(rafka_node_admin_core::fabric_handover::serve_member(rafka_node_admin_core::topology_read::serve(core_protocols(ServerBuilder::new().with_accept_trigger(resolver.clone(), connections.clone()), client.clone(), Some(connections.clone())), topology_slot.clone()), primary_update_slot.clone()), seams), subject.clone())
         .carry::<crate::proof_store::ProofStore>()
         .carry::<rafka_node_rpc_contract::status::Status>()
         .with_ready_gate(ready.clone())
-        .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.0.clone() })
+        .seal(rafka_node_rpc::ServedBirth { node_id: launch.node_id.to_string(), incarnation: launch.incarnation.to_string() })
         .map_err(|e| anyhow!("protocol catalog refused to seal: {e:?}"))?;
     drop(step);
     let step = tracing::info_span!(parent: boot, "rdm.mesh.node.create.via-gossip-started", node = %launch.name);
@@ -432,7 +455,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
     // holds. A node whose join is not accepted ends by name, whether the admin refused the digest
     // or could not take the join within the attempts: it is never ready for traffic.
     let launcher = launcher.clone();
-    let resolve: Box<dyn FnOnce() -> Result<rafka_node_admin_core::workflows::node_start::JoinThrough, rafka_node_admin_core::node_self::StartFailed> + Send> = {
+    let resolve: Box<dyn FnOnce() -> Result<rafka_node_admin_core::workflows::node_start::JoinTo, rafka_node_admin_core::node_self::StartFailed> + Send> = {
         let (resolver, launch_name, launcher, seed) = (resolver.clone(), launch.name.clone(), launcher.clone(), seeds.first().cloned());
         Box::new(move || {
             use rafka_node_admin_core::node_self::StartFailed;
@@ -445,7 +468,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                 incarnation: launcher.incarnation.clone(),
             };
             resolver.apply(launcher_ref, None);
-            Ok(rafka_node_admin_core::workflows::node_start::JoinThrough { node_id: launcher.node_id.clone(), name: launcher.name.clone(), incarnation: launcher.incarnation.clone(), anchor: seed.id.fmt_short().to_string() })
+            Ok(rafka_node_admin_core::workflows::node_start::JoinTo::Launcher { target: rafka_node_rpc::NodeTarget::ExactNode(launcher.node_id.clone()), endpoint: seed.id, name: launcher.name.clone() })
         })
     };
     // What the start brought up, once it did: handed to the caller, or ended if the hook fails.
@@ -466,10 +489,13 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
 
             let membership = Membership::join(&g, &ep0, &launch.fabric_id, &launch.name.mesh, &mesh_id, &name, Arc::new(rafka_time.clone()), seeds).await?;
             // The name this birth holds is its membership's (R12): its connections rows name it as their
-            // source from here on, whatever name the join hands it or an `ApplyNodeName` gives it.
+            // source from here on, and every door names the node by it, whatever name the join hands it
+            // or an `ApplyNodeName` gives it.
             {
                 let (held, birth) = (membership.clone(), launch.name.clone());
                 connections.follow_held_name(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
+                let (held, birth) = (membership.clone(), launch.name.clone());
+                held_name.follow(move || held.held_name(&birth)).map_err(|e| anyhow!(e))?;
             }
             // The row's name and config the join answer handed are held before this node publishes
             // anything or declares readiness: every digest from its first carries them (R-JN1).
@@ -524,12 +550,13 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                     })
                                 };
                                 Arc::new(
-                                    rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, current, Some(declare))
+                                    rafka_node_admin_core::node_self::NodeSelf::new(launch.node_id.clone(), launch.incarnation.clone(), launch.name.clone(), server.clone(), client.clone(), node_rpc.resolver.clone(), membership.clone(), set_status, current, Some(declare), launch.connections_delete_deadline)
                                         .with_retire(cancel.clone())
                                         .with_round_actions(Arc::new(rafka_node_admin_core::fabric_rounds::StorePublication::new(store_root.scratchpad().cloned(), None))),
                                 )
                             };
                             own.set_connections(connections.clone());
+                            own.set_data_plane(data_plane.clone());
                             let publisher: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
                             let hydration_cell: Arc<Mutex<Option<rafka_node_admin_core::app_hydration::HydrationHandle>>> = Arc::default();
                             let hydrating_cell: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::default();
@@ -542,7 +569,6 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                 runtime: runtime.clone(),
                                 membership: membership.clone(),
                                 client: client.clone(),
-                                resolver: resolver.clone(),
                                 server: server.clone(),
                                 digest: digest.clone(),
                                 status: status.clone(),
@@ -554,6 +580,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                 hydration_cell: hydration_cell.clone(),
                                 hydrating: hydrating_cell.clone(),
                             }));
+                            let _ = primary_update_slot.set(Arc::new(rafka_node_admin_core::fabric_handover::MemberDoor::new(launch.name.clone(), launch.node_id.clone(), launch.incarnation.clone(), membership.clone(), client.clone())));
                             let _ = subject.set(Arc::new(Kicked { membership: membership.clone(), digest: digest.clone(), status: status.clone(), own: own.clone(), addressed: addressed.clone(), hydration: hydration_cell.clone(), stats: server.stats() }));
                             ready.store(true, std::sync::atomic::Ordering::SeqCst);
                             *publisher.lock().unwrap() = Some(spawn_publisher(&membership, &digest, &status, &server));
@@ -595,7 +622,7 @@ async fn start_booted(launch: &Launch, rafka_time: rafka_mesh_transport::clock::
                                 boot: boot.clone(),
                                 name: name.clone(),
                                 kind: launch.name.kind.name(),
-                                incarnation_id: launch.incarnation.0.clone(),
+                                incarnation_id: launch.incarnation.to_string(),
                                 node_id: launch.node_id.clone(),
                                 mesh_id: mesh_id.to_string(),
                                 fabric_id: launch.fabric_id.to_string(),
@@ -675,7 +702,6 @@ struct NodeSession {
     runtime: rafka_mesh_entity::runtime::RuntimeFact,
     membership: Membership,
     client: Arc<rafka_node_rpc::NodeRpcClient>,
-    resolver: Arc<rafka_node_rpc::LiveNodeResolver>,
     server: NodeRpcServer,
     digest: MeshDigest,
     status: Arc<Mutex<MemberStatus>>,
@@ -690,7 +716,7 @@ struct NodeSession {
 
 #[async_trait::async_trait]
 impl rafka_node_admin_core::node_self::Session for NodeSession {
-    async fn cut(&self, spare: Option<iroh::PublicKey>) -> rafka_node_admin_core::node_self::CutReport {
+    async fn cut(&self, spare: &[iroh::PublicKey]) -> rafka_node_admin_core::node_self::CutReport {
         if let Some(p) = self.publisher.lock().unwrap().take() {
             p.abort();
         }
@@ -706,12 +732,12 @@ impl rafka_node_admin_core::node_self::Session for NodeSession {
         rafka_node_admin_core::node_self::CutReport { neighbours, pooled, accepted, turns_in_progress: 0 }
     }
 
-    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: iroh::PublicKey, rows: Option<rafka_node_admin_core::connections_writer::RowsHeld>) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
+    async fn rejoin(&self, retire: rafka_node_rpc::CancelToken, commander: tokio::sync::watch::Receiver<iroh::PublicKey>, rows: Option<rafka_node_admin_core::connections_writer::RowsHeld>) -> Result<(), rafka_node_admin_core::node_self::StartFailed> {
         // The digest this birth presents is the one it holds: a name it took live (ApplyNodeName)
         // rides it, never the birth's frozen name (R-JN1).
         let held = self.membership.with_config(&self.digest);
         let name = held.node.name.to_string();
-        let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.0);
+        let root = tracing::info_span!(parent: None, "rdm.mesh.node.update.via-start", node = %name, node_id = %self.node_id, incarnation_id = %self.incarnation.as_str());
         let mut start = AfterStop { session: self, root, name, held, commander, retire: Some(retire), rows };
         rafka_node_admin_core::workflows::node_start::node_start(&mut start, rafka_node_admin_core::app_hydration::StartKind::AfterStop).await
     }
@@ -726,9 +752,9 @@ struct AfterStop<'a> {
     name: String,
     /// The digest the birth holds: the one its join presents.
     held: MeshDigest,
-    /// The endpoint key of the call that commanded the start: the admin holding it answers the join
-    /// and is the hook's accepting authority.
-    commander: iroh::PublicKey,
+    /// The endpoint key of the call that commanded the start last: the join goes back over that call,
+    /// and the admin that answers is the hook's accepting authority.
+    commander: tokio::sync::watch::Receiver<iroh::PublicKey>,
     /// The new cycle's token: the hook runs under it.
     retire: Option<rafka_node_rpc::CancelToken>,
     /// The start's hold on this birth's connections rows, dropped once the handed name is held.
@@ -745,12 +771,11 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
     }
 
     fn joining(&self) -> rafka_node_admin_core::workflows::node_start::Joining {
-        rafka_node_admin_core::workflows::node_start::Joining::Authority { label: self.commander.fmt_short().to_string() }
+        rafka_node_admin_core::workflows::node_start::Joining::Authority { label: self.commander.borrow().fmt_short().to_string() }
     }
 
-    async fn resolve_authority(&mut self) -> Result<rafka_node_admin_core::workflows::node_start::JoinThrough, rafka_node_admin_core::node_self::StartFailed> {
-        let s = self.session;
-        rafka_node_admin_core::workflows::node_start::join_back(&self.name, &s.membership, &s.client, &s.resolver, &self.commander).await
+    async fn resolve_authority(&mut self) -> Result<rafka_node_admin_core::workflows::node_start::JoinTo, rafka_node_admin_core::node_self::StartFailed> {
+        Ok(rafka_node_admin_core::workflows::node_start::JoinTo::Commander(self.commander.clone()))
     }
 
     fn join_digest(&self) -> MeshDigest {
@@ -792,7 +817,7 @@ impl rafka_node_admin_core::workflows::node_start::StartNode for AfterStop<'_> {
             boot: self.root.clone(),
             name: me.to_string(),
             kind: s.name.kind.name(),
-            incarnation_id: s.incarnation.0.clone(),
+            incarnation_id: s.incarnation.to_string(),
             node_id: s.node_id.clone(),
             mesh_id: s.mesh_id.to_string(),
             fabric_id: s.fabric_id.to_string(),
@@ -1023,8 +1048,8 @@ fn node_state_of(s: MemberStatus) -> rafka_node_rpc_contract::status::NodeState 
 /// state; no transition. While its `hydrate_before_ready` hook is Blocked it answers `Blocked` with
 /// the hook's blocker and republishes nothing. `DrainNode`, `StopNode` and `StartNode` are obeyed by
 /// `rafka_node_admin_core::node_self`. A stale incarnation is refused with the one held. Nothing
-/// checks who is calling (node-rpc.md §14): every request is decided on the target node id, the op
-/// and the exact birth it names; the caller, the birth holding the call's endpoint key in the member
+/// checks who is calling (node-rpc.md §14) or the node id a call names (R-RX5): every request is
+/// decided on the op and the exact birth it names; the caller, the birth holding the call's endpoint key in the member
 /// projection this node installed, is named in spans and is the authority a blocked hook was addressed by.
 fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
     use rafka_node_rpc_contract::status::{NotAuthority, Status, StatusReply, StatusRequest};
@@ -1043,9 +1068,9 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
             let sender = me.membership.projected_member_at(&peer.endpoint_id.to_string());
             // A sender no projection this node holds names is named by the one fact it holds of it: its endpoint.
             let sender_name = sender.as_ref().map(|d| d.node.name.to_string()).unwrap_or_else(|| format!("unknown peer, endpoint {}", peer.endpoint_id));
-            if let Some(from) = sender.as_ref().filter(|d| d.node.name.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
-                me.addressed.note(&from.node.node_id);
-            }
+            // Every call addressed this birth from its endpoint: a hook blocked on its authority's word
+            // counts it, whether or not a record names the caller.
+            me.addressed.note(&peer.endpoint_id);
             if matches!(req, StatusRequest::DrainNode { .. } | StatusRequest::StopNode { .. } | StatusRequest::StartNode { .. } | StatusRequest::DeleteConnections { .. }) {
                 let commander = sender.as_ref().map(|d| d.node.node_id.clone());
                 let reply = me.own.serve(commander.as_ref(), Some(peer.endpoint_id), &req).await.expect("a command");
@@ -1073,13 +1098,13 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                 let name = me.membership.book.all().into_iter().find(|d| d.node.node_id == *node_id).map(|d| d.node.name.to_string()).unwrap_or_default();
                 return Ok(rafka_node_admin_core::node_commands::refuse_node_left(&me.membership.held_name(&me.digest.node.name).to_string(), &name, &sender_name, &req));
             }
-            let (node_id, incarnation) = match &req {
-                StatusRequest::ProbeNodeState { node_id, incarnation } | StatusRequest::ApplyNodeState { node_id, incarnation, .. } | StatusRequest::ApplyNodeConfig { node_id, incarnation, .. } | StatusRequest::ApplyNodeName { node_id, incarnation, .. } | StatusRequest::GetConnections { node_id, incarnation } => (node_id, incarnation),
+            let incarnation = match &req {
+                StatusRequest::ProbeNodeState { incarnation, .. } | StatusRequest::ApplyNodeState { incarnation, .. } | StatusRequest::ApplyNodeConfig { incarnation, .. } | StatusRequest::ApplyNodeName { incarnation, .. } | StatusRequest::GetConnections { incarnation, .. } => incarnation,
                 _ => return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             };
-            if *node_id != me.digest.node.node_id {
-                return Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } });
-            }
+            // The birth the call reached answers it, whatever node id it names (R-RX5); the exact
+            // birth it names is checked, so a call that reached another birth is refused naming the
+            // one held.
             if *incarnation != me.digest.node.incarnation {
                 return Ok(StatusReply::RejectedStaleIncarnation { held: me.digest.node.incarnation.clone() });
             }
@@ -1179,10 +1204,14 @@ fn serve_kick(b: ServerBuilder, slot: KickSlot) -> ServerBuilder {
                         }
                         _ => "unchanged",
                     };
+                    // The apply resolved: the admission block `All` set lifts, under the name now held.
+                    if matches!(decision, rafka_node_admin_core::node_name::NameApply::Applied | rafka_node_admin_core::node_name::NameApply::AlreadyApplied) {
+                        me.own.name_apply_resolved();
+                    }
                     let held_routes = routes.iter().map(rafka_node_admin_core::node_name::route_name).collect::<Vec<_>>().join(", ");
                     tracing::info_span!("rdm.node_admin.node.update.via-apply-node-name", node = %held, sender = %sender_name, from = %held, to = %asked, connections = routes.len(), routes = %held_routes, digest = published, outcome = decision.name(), "otel.kind" = "internal")
                         .in_scope(|| tracing::info!("the mesh-primary's name for this birth was decided"));
-                    Ok(rafka_node_admin_core::node_name::reply(&held, &asked, &decision))
+                    Ok(rafka_node_admin_core::node_name::reply(&decision))
                 }
                 _ => Ok(StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a node-admin".into() } }),
             }

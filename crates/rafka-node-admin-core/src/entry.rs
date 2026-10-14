@@ -40,7 +40,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
     }
     if let Some(l) = &cfg.launch {
         boot.record("node", l.name.to_string().as_str());
-        boot.record("incarnation_id", l.incarnation.0.as_str());
+        boot.record("incarnation_id", l.incarnation.as_str());
     }
     // The runtime's long-lived tasks (endpoint, gossip, control API) must not
     // hold the boot span open: it closes, and is exported, once booted.
@@ -71,7 +71,7 @@ pub async fn run_with(service: &str, wiring: impl FnOnce(&AdminConfig) -> Wiring
         }
     };
     drop(boot);
-    println!("RDM_NODE_ADMIN_API_BASE={}", running.api_base);
+    running.announce();
 
     // Leave when this admin's part of a fabric shutdown is done (the fabric-primary, after it has
     // stopped the mesh-primary spine; fabric-mesh-lifecycle.md §11.1), or on a signal. A signal is a

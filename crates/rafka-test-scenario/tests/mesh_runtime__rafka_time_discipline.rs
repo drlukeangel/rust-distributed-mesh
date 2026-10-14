@@ -10,7 +10,7 @@
 //! - `mesh2.rpc.2` runs on an OS clock an hour ahead (the clock the binaries never read).
 
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -69,18 +69,13 @@ async fn a_node_off_its_authoritys_time_is_brought_back_by_the_heartbeats() {
     write(rafka_node_rpc_testkit::rafka_time_knob_dir(&estate.root), "mesh2.rpc.1", format!("drift_ppm={DRIFT_PPM}\n"));
     write(rafka_node_rpc_testkit::rafka_time_knob_dir(&estate.root), "mesh1.rpc.1", format!("ahead_ms={AHEAD_MS}\n"));
     write(rafka_node_rpc_testkit::os_clock_skew_dir(&estate.root), "mesh2.rpc.2", OS_CLOCK_SKEW_MS.to_string());
-    let shape = json!({"fabric": "fabric1", "meshes": [
-        {"name": "mesh1", "node_admin": 2, "rpc_node": 2},
-        {"name": "mesh2", "node_admin": 2, "rpc_node": 2},
-    ]});
-    let (status, a) = estate.post("/api/build", &shape).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_attempt(&s(&a["build_id"]), Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let nodes = estate.settled(&names(), Duration::from_secs(30)).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2), ("mesh2", 2, 2)]).await;
+    let nodes = Estate::values(&estate.settles_to_named(&names(), Duration::from_secs(30)).await);
     let mesh2_primary = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["is_primary"] == true).map(|n| s(&n["name"])).expect("mesh2 has a primary");
     let fabric_primary = nodes.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
 
     // The ahead node is told, by its mesh primary's stamps, that it is ahead; the slow node is stepped.
+    // No object reports a node's clock discipline: the span the node records is the only place the fact lives.
     let slewing = wait_for("the ahead node shed its excess", Duration::from_secs(90), || {
         let spans = estate.spans();
         let found = named(&spans, "rdm.mesh.entry.update.via-rafka-time-observed").into_iter().find(|sp| attr(sp, "node") == "mesh1.rpc.1" && attr(sp, "outcome") == "slew-started").cloned();

@@ -112,7 +112,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
     let survivor_pids: BTreeMap<String, u64> = described.values().filter(|d| survivors.contains(&s(&d["name"]))).map(|d| (s(&d["name"]), d["host"]["pid"].as_u64().unwrap())).collect();
     let survivor_bases: BTreeSet<String> = survivors.iter().map(|n| s(&described[n]["admin_api_base"])).collect();
     // Control moves to the surviving mesh's admins before the loss: they execute the retire.
-    estate.admin = s(&described[&survivors[0]]["admin_api_base"]);
+    estate.enter(&Estate::path(&survivors[0])).await;
     let fabric_id = estate.fabric_id.clone();
 
     // Every survivor is asked, continuously through the loss, who holds the fabric, and the
@@ -155,9 +155,12 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         })
     };
 
-    // THE HAND-OFF, through the rectifier: one Build retiring the holder's mesh.
+    // THE HAND-OFF, through the rectifier: one Build retiring the holder's mesh. A mesh.delete is refused
+    // until the initial fabric has first reached ready-for-traffic (states.md "The initial fabric before
+    // ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let started = now_ns();
-    let build_id = estate.reconcile_shape("fabric1", &[mesh(&survivor_mesh)]).await.build_id.0;
+    let build_id = estate.reconcile_shape("fabric1", &[mesh(&survivor_mesh)]).await.build_id.to_string();
     let build_complete = now_ns();
     // mesh.deleted leaves the lost mesh's last admin alive; its end is its own node.delete, which the
     // fabric-primary executes and whose TerminateRuntime proves the exit (mesh-delete.md step 7).
@@ -216,7 +219,7 @@ async fn surviving_admins_reproduce_primary_loss_with_complete_evidence() {
         survivors_after.insert(name.clone(), json!({"admin_api_base": base, "node": describe(&estate, n).await, "fabric": fabric_view, "nodes_seen": nodes_view.iter().map(|v| json!({"name": v["name"], "status": v["status"], "is_primary": v["is_primary"], "is_fabric_primary": v["is_fabric_primary"], "admin_api_base": v["admin_api_base"]})).collect::<Vec<_>>()}));
     }
 
-    estate.admin = new_base.clone();
+    estate.enter(&Estate::path(&new_holder)).await;
     estate.stop().await;
     let spans = estate.spans();
 

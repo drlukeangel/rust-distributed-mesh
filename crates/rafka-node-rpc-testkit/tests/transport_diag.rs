@@ -6,29 +6,26 @@
 //! the joining end is the `rafka-rpc-probe` process, which dials the maker's address expecting
 //! another endpoint's key. The maker answers the Initial, the probe verifies the maker's key, finds
 //! it is not the one it dialled and closes: a failed handshake with work on both ends.
+//!
+//! The subject of both cells is the process-wide telemetry init itself, `init_evidence_telemetry`: the
+//! diagnostic layer it installs from the process environment (`RDM_EVIDENCE_DIR`, `RDM_DATA_DIR`,
+//! `RDM_NODE_NAME`, `RDM_MESH`), the callsites that layer enables or leaves off, and the file it opens.
+//! A thread-scoped `EvidenceCapture` installs no diagnostic layer and reads none of that environment,
+//! so a cell on one would pass without exercising what these cells prove. Each cell is therefore its
+//! own process, started with the environment its subject reads, as the estate starts a node: the cell
+//! never sets a variable.
 
+use crate::common::admin_view::{self, node};
 use iroh::protocol::ProtocolHandler;
 use rafka_mesh_entity::{IncarnationId, NodeId};
 use rafka_node_rpc::{ServedBirth, ServerBuilder};
-use std::io::{Read, Write};
-use std::net::TcpListener;
 
 /// The diagnostic file each process writes in its node log directory.
 const DIAG: &str = "transport-diag.log";
 
-/// A one-route admin: every request is answered with the same node view.
-fn serve_view(view: String) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut stream = stream;
-            let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf);
-            let _ = write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{view}", view.len());
-        }
-    });
-    base
+/// The directory a cell owns: both of its processes compute the same one.
+fn cell_dir(cell: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/i143-testkit").join(cell)
 }
 
 fn line_with<'a>(file: &'a str, parts: &[&str]) -> Option<&'a str> {
@@ -49,37 +46,39 @@ fn line_with<'a>(file: &'a str, parts: &[&str]) -> Option<&'a str> {
 /// names it: `node="mesh1.admin.1"`, `mesh="mesh1"`.
 #[test]
 fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs() {
-    if crate::own_process::delegated(module_path!(), "a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs") {
+    let cell = "a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_dirs";
+    let root = cell_dir(cell);
+    let (run, maker_dir, dialler_dir) = (root.join("spans"), root.join("mesh1.admin.1"), root.join("mesh1.rpc.9-diag"));
+    // As the estate launches the bootstrap admin: an evidence run, a mesh and a data dir, no node name.
+    let env = [
+        ("RDM_EVIDENCE_DIR", Some(run.as_os_str())),
+        ("RDM_DATA_DIR", Some(maker_dir.as_os_str())),
+        ("RDM_NODE_NAME", None),
+        ("RDM_MESH", Some(std::ffi::OsStr::new("mesh1"))),
+        ("RDM_FABRIC", Some(std::ffi::OsStr::new("diag"))),
+    ];
+    if crate::own_process::delegated_with_env(module_path!(), cell, &env) {
         return;
     }
-    let root = std::env::temp_dir().join(format!("rdm-transport-diag-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let (run, maker_dir, dialler_dir) = (root.join("spans"), root.join("mesh1.admin.1"), root.join("mesh1.rpc.9-diag"));
     std::fs::create_dir_all(&run).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &run);
-    std::env::set_var("RDM_DATA_DIR", &maker_dir);
-    // As the estate launches the bootstrap admin: a mesh and a data dir, no node name.
-    std::env::remove_var("RDM_NODE_NAME");
-    std::env::set_var("RDM_MESH", "mesh1");
-    std::env::set_var("RDM_FABRIC", "diag");
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let telemetry = rt.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin") });
     let maker_key = iroh::SecretKey::generate();
     let expected = iroh::SecretKey::generate().public();
     let (maker_addr, accepted, out) = rt.block_on(async {
-        let server = ServerBuilder::new().seal(ServedBirth { node_id: NodeId::mint().to_string(), incarnation: IncarnationId::mint().0 }).unwrap();
+        let server = ServerBuilder::new().seal(ServedBirth { node_id: NodeId::mint().to_string(), incarnation: IncarnationId::mint().to_string() }).unwrap();
         let ep = rafka_node_rpc::endpoint::bind(maker_key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let maker_addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
-        let target = NodeId::mint().to_string();
-        let view = serde_json::json!({"nodes": [{
-            "node_id": target, "name": "mesh1.admin.1", "endpoint_id": expected.to_string(), "transport_addr": maker_addr.to_string(), "incarnation_id": "c0ffee00c0ffee00c0ffee00c0ffee00",
-        }]})
-        .to_string();
-        let admin = serve_view(view);
+        let target = NodeId::mint();
+        // The entry admin the probe reads its view from: a third endpoint of this process, whose view
+        // names the target at the maker's address under another endpoint's key.
+        let served = admin_view::serve(vec![node("mesh1.admin.1", &target, Some(expected.to_string()), Some(maker_addr), Some(IncarnationId::mint()))]).await;
+        let admin = served.birth_arg();
         let (run, dialler_dir) = (run.clone(), dialler_dir.clone());
-        let dialler = tokio::task::spawn_blocking(move || {
+        let mut dialler = tokio::task::spawn_blocking(move || {
             std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
-                .args(["--admin", &admin, "get", "--target", &format!("exact:{target}"), "--key", "k"])
+                .args(["--admin-birth", &admin, "get", "--target", &format!("exact:{target}"), "--key", "k"])
                 .env("RDM_EVIDENCE_DIR", &run)
                 .env("RDM_DATA_DIR", &dialler_dir)
                 .env("RDM_NODE_NAME", "mesh1.rpc.9")
@@ -87,13 +86,20 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
                 .unwrap()
         });
         // As the router accepts: the Initial, the ALPN, then the protocol's own accepting.
-        let incoming = ep.accept().await.expect("the dialler's Initial reached the maker");
+        let incoming = tokio::select! {
+            incoming = ep.accept() => incoming.expect("the dialler's Initial reached the maker"),
+            out = &mut dialler => {
+                let out = out.unwrap();
+                panic!("the dialler ended without sending an Initial to the maker: {} / {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            }
+        };
         let mut accepting = incoming.accept().expect("the maker accepts the incoming connection");
         let accepted = match accepting.alpn().await {
             Ok(_) => server.on_accepting(accepting).await.map(|_| ()).map_err(|e| format!("{e:#}")),
             Err(e) => Err(format!("alpn: {e:#}")),
         };
         let out = dialler.await.unwrap();
+        served.shutdown().await;
         ep.close().await;
         (maker_addr, accepted, out)
     });
@@ -142,15 +148,14 @@ fn a_failed_handshake_leaves_both_ends_transport_diagnostics_in_their_node_log_d
 /// debug-only), or a diagnostic file written outside a gate run.
 #[test]
 fn a_process_outside_an_evidence_run_installs_no_transport_diagnostics() {
-    if crate::own_process::delegated(module_path!(), "a_process_outside_an_evidence_run_installs_no_transport_diagnostics") {
+    let cell = "a_process_outside_an_evidence_run_installs_no_transport_diagnostics";
+    let data_dir = cell_dir(cell);
+    // A node outside an evidence run: a node log dir and a node name, no evidence dir.
+    let env = [("RDM_EVIDENCE_DIR", None), ("RUST_LOG", None), ("RDM_DATA_DIR", Some(data_dir.as_os_str())), ("RDM_NODE_NAME", Some(std::ffi::OsStr::new("mesh1.rpc.1")))];
+    if crate::own_process::delegated_with_env(module_path!(), cell, &env) {
         return;
     }
-    let data_dir = std::env::temp_dir().join(format!("rdm-transport-diag-off-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data_dir);
-    std::env::remove_var("RDM_EVIDENCE_DIR");
-    std::env::remove_var("RUST_LOG");
-    std::env::set_var("RDM_DATA_DIR", &data_dir);
-    std::env::set_var("RDM_NODE_NAME", "mesh1.rpc.1");
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
     let telemetry = rt.block_on(async { rafka_mesh_telemetry::init_evidence_telemetry("rafka-rpc-node") });
     let (noq_trace, diag_target) = (tracing::enabled!(target: "noq_proto::endpoint", tracing::Level::TRACE), tracing::enabled!(target: "transport_diag", tracing::Level::INFO));

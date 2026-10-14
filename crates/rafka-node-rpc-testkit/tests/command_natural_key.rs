@@ -1,13 +1,12 @@
 //! A birth admits a command once per natural key, never per attempt or commander
 //! (node-rpc-envelope.md, "Status": "Idempotency is the natural key `(node_id, incarnation,
 //! state)`, `(mesh_id, state)` or `(fabric_id, event)`. Backward transitions are refused by name";
-//! node-drain.md, "Failure and receipts": "Completed steps are not rerun. Settle an idempotent
-//! uncertain step by its natural key and `AlreadyApplied`"). A drain's key is `(node_id,
-//! incarnation, Draining)`; a start's `(node_id, incarnation, Pending)`.
+//! "Completed steps are not rerun. Settle an idempotent uncertain step by its natural key and
+//! `AlreadyApplied`"). A start's key is `(node_id, incarnation, Pending)`.
 //!
 //! One admin side commands the birth under several attempts of one Build: each attempt is its own
 //! open command in the admin's command book, matched by its attempt, so a completion carrying
-//! another attempt resolves nothing. A drain's natural key holds no commander, so a second physical
+//! another attempt resolves nothing. A natural key holds no commander, so a second physical
 //! node-admin adds nothing the attempts do not already prove. A fabric round is scoped to the
 //! accepted Build and attempt (node-rpc-envelope.md, "Fabric status rounds") and its command comes
 //! from whichever node-admin holds the mesh's primary seat: its cell moves the seat between two
@@ -22,13 +21,13 @@ use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_admin_core::node_commands::CommandKey;
 use rafka_node_rpc::{CallOptions, NodeTarget, ResolvedNode};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{DrainReceipt, NodeState, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
 use rafka_node_admin_core::app_hydration::{HookOutcome, Hydration};
 use rafka_node_rpc_testkit::hydrate_probe::{HydratePull, Mode, PullRequest, PullServer, TestHydrator};
 use rafka_node_rpc_testkit::node;
 use std::time::Duration;
 
-const BUILD: &str = "bld_natural_key";
+const BUILD: &str = "d9efmj2jpt75";
 const NODE: &str = "mesh1.rpc.1";
 
 /// A node of the admin side's mesh serving one held op (a call into it stays in flight until the
@@ -45,16 +44,25 @@ struct Birth {
 
 impl Birth {
     async fn up(cell: &str) -> Self {
-        Self::up_hydrating(cell, None).await
+        Self::launched(cell, None, rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
     }
 
     /// [`Self::up`], its `hydrate_before_ready` hook `hydrator` when one is given.
     async fn up_hydrating(cell: &str, hydrator: Option<std::sync::Arc<TestHydrator>>) -> Self {
+        Self::launched(cell, hydrator, rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE).await
+    }
+
+    /// [`Self::up`], launched with `deadline` as its `node.connections.delete { All }` bound.
+    async fn up_bounded(cell: &str, deadline: Duration) -> Self {
+        Self::launched(cell, None, deadline).await
+    }
+
+    async fn launched(cell: &str, hydrator: Option<std::sync::Arc<TestHydrator>>, deadline: Duration) -> Self {
         let fabric = FabricId::mint();
         let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("{cell}-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
@@ -71,6 +79,7 @@ impl Birth {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
+            connections_delete_deadline: deadline,
         };
         admin.deployed(&launch, &key);
         let pull = PullServer::new(vec![]);
@@ -152,10 +161,6 @@ impl Birth {
         CommandKey { build_id: BUILD.into(), attempt, operation: operation.into(), node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone() }
     }
 
-    fn drain(&self, attempt: u32) -> StatusRequest {
-        StatusRequest::DrainNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: format!("drain-node:{NODE}") }
-    }
-
     fn stop(&self, attempt: u32) -> StatusRequest {
         StatusRequest::StopNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: format!("stop-node:{NODE}") }
     }
@@ -163,130 +168,17 @@ impl Birth {
     fn start(&self, attempt: u32) -> StatusRequest {
         StatusRequest::StartNode { node_id: self.launch.node_id.clone(), incarnation: self.launch.incarnation.clone(), build_id: BUILD.into(), attempt, operation: format!("start-node:{NODE}") }
     }
-
-    /// The admin side's open drain command of `attempt`: resolves when its node-drained is accepted.
-    fn open_drain(&self, attempt: u32) -> tokio::sync::watch::Receiver<bool> {
-        self.admin.observer.commands.open(self.command_key(attempt, &format!("drain-node:{NODE}")))
-    }
-}
-
-async fn node_drained(rx: &mut tokio::sync::watch::Receiver<bool>, attempt: u32) {
-    tokio::time::timeout(Duration::from_secs(20), rx.wait_for(|done| *done))
-        .await
-        .unwrap_or_else(|_| panic!("attempt {attempt}'s commander never accepted a node-drained naming attempt {attempt}"))
-        .expect("the command book is held by the admin side");
 }
 
 fn spans_named(spans: &crate::common::Spans, name: &str) -> Vec<std::collections::BTreeMap<String, String>> {
     spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, _, f)| f.clone()).collect()
 }
 
-/// CONTRACT: a birth draining under attempt 1 answers attempt 2's `DrainNode` `AlreadyApplied` and
-/// runs no second drain; when its in-flight work reaches zero, the commander of each attempt that
-/// asked accepts a `node-drained` naming its own attempt. Once drained, attempt 3's `DrainNode` is
-/// `AlreadyApplied` too and attempt 3's commander gets its `node-drained` at once (the held
-/// completion reaches the commander that asks). A `StopNode` is a different state and is admitted
-/// (`Stopped`, the drain established); a `DrainNode` after it is the backward transition and is
-/// refused naming `Leaving`. The started birth is a new cycle: its next `DrainNode` is admitted and
-/// drains. What must NOT happen: a second drain task for one birth's one drain, `Applied` for a
-/// repeat of the same state, or a later attempt's commander left without its completion.
-#[test]
-fn a_drain_from_a_later_attempt_joins_the_drain_under_way_and_each_commander_gets_node_drained() {
-    let cell = "a_drain_from_a_later_attempt_joins_the_drain_under_way_and_each_commander_gets_node_drained";
-    let cap = crate::common::capture(cell);
-    let spans = cap.spans.clone();
-    cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), cell) {
-            return;
-        }
-        let birth = std::sync::Arc::new(Birth::up("drain-natural-key").await);
-        let held = birth.hold_one_call().await;
-        let (mut first, mut second, mut third) = (birth.open_drain(1), birth.open_drain(2), birth.open_drain(3));
-
-        // Attempt 1 admits the drain; the held call keeps it under way.
-        assert_eq!(birth.call(&birth.drain(1)).await, StatusReply::Applied, "attempt 1 admits the drain");
-        // Attempt 2 of the same Build asks for the same state of the same birth.
-        assert_eq!(birth.call(&birth.drain(2)).await, StatusReply::AlreadyApplied, "attempt 2's DrainNode for the birth attempt 1 is draining is the same natural key (node_id, incarnation, Draining)");
-        assert!(!*first.borrow() && !*second.borrow(), "nothing is drained while a call is in flight");
-
-        // The in-flight work reaches zero: each attempt that asked gets node-drained naming itself.
-        birth.pull.release();
-        held.await.unwrap();
-        node_drained(&mut first, 1).await;
-        node_drained(&mut second, 2).await;
-
-        // Drained: a later attempt is the same state again, and its commander gets the held completion.
-        assert_eq!(birth.call(&birth.drain(3)).await, StatusReply::AlreadyApplied, "a drained birth answers a later attempt's DrainNode AlreadyApplied");
-        node_drained(&mut third, 3).await;
-        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 1, "one drain task for the birth's one drain, whichever attempts asked");
-        // The commander's book resolves before its decision span is made: the span is awaited.
-        for attempt in ["1", "2", "3"] {
-            let first = |f: &std::collections::BTreeMap<String, String>| f.get("op").map(String::as_str) == Some("node-drained") && f.get("attempt").map(String::as_str) == Some(attempt) && f.get("outcome").map(String::as_str) == Some("applied");
-            tokio::time::timeout(Duration::from_secs(20), spans.recorded("rdm.node_admin.status.update.via-completion-accepted", first))
-                .await
-                .unwrap_or_else(|_| panic!("the commander accepted attempt {attempt}'s node-drained as its first"));
-        }
-
-        // StopNode is a different state: admitted, the drain established with nothing in flight.
-        let stopped = birth.call(&birth.stop(4)).await;
-        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "a StopNode after a completed drain is admitted: {stopped:?}");
-        // A drain of a stopped birth goes backward: refused naming the state it is in.
-        assert_eq!(birth.call(&birth.drain(5)).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving }, "a DrainNode after the stop is refused by name");
-
-        // Started, the birth is a new cycle: its next drain is admitted and drains.
-        birth.admin.deployed(&birth.launch, &birth.key);
-        assert_eq!(birth.call(&birth.start(6)).await, StatusReply::Started);
-        birth.status_heard(MemberStatus::ReadyForTraffic).await;
-        let mut after_start = birth.open_drain(7);
-        assert_eq!(birth.call(&birth.drain(7)).await, StatusReply::Applied, "the started birth's drain is a new drain");
-        node_drained(&mut after_start, 7).await;
-        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 2, "one drain task per drain: the first cycle's and the started birth's");
-        let _ = std::fs::remove_dir_all(&birth.dir);
-    })
-}
-
-/// CONTRACT: a `DrainNode` that reaches a birth while its stop is draining is the same state the
-/// stop's drain is in: it answers `AlreadyApplied`, runs no drain task of its own, and its
-/// commander accepts a `node-drained` naming its attempt once the stop's drain is established,
-/// before the stop answers `Stopped`. What must NOT happen: a second drain loop beside the stop's,
-/// `Applied` for it, or its commander left without a completion.
-#[test]
-fn a_drain_during_a_stop_joins_the_stops_drain_and_runs_no_drain_of_its_own() {
-    let cell = "a_drain_during_a_stop_joins_the_stops_drain_and_runs_no_drain_of_its_own";
-    let cap = crate::common::capture(cell);
-    let spans = cap.spans.clone();
-    cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), cell) {
-            return;
-        }
-        let birth = std::sync::Arc::new(Birth::up("drain-during-stop").await);
-        let held = birth.hold_one_call().await;
-        let mut drained = birth.open_drain(2);
-
-        // The stop is admitted and drains: its held call keeps it Draining.
-        let stop = {
-            let birth = birth.clone();
-            tokio::spawn(async move { birth.call(&birth.stop(1)).await })
-        };
-        birth.own_status(MemberStatus::Draining).await;
-        assert_eq!(birth.call(&birth.drain(2)).await, StatusReply::AlreadyApplied, "a DrainNode for a birth whose stop is draining is the same natural key (node_id, incarnation, Draining)");
-        assert!(!*drained.borrow(), "nothing is drained while a call is in flight");
-
-        birth.pull.release();
-        held.await.unwrap();
-        node_drained(&mut drained, 2).await;
-        let stopped = stop.await.unwrap();
-        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "the stop completes on its own drain: {stopped:?}");
-        assert!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").is_empty(), "the stop's drain is the only drain: no drain task of its own for the DrainNode");
-        let _ = std::fs::remove_dir_all(&birth.dir);
-    })
-}
-
 /// CONTRACT: a `StartNode` that reaches a parked birth while another attempt's start of it is under
 /// way (its hook still running) is the same natural key: it runs no rejoin of its own and answers
 /// that start's outcome, `Started`, once it ends; the birth is ready afterwards. What must NOT
 /// happen: a second rejoin of one birth, or the second start's own failure path (Leaving, the
-/// server drained, the mesh connections cut) tearing down the start under way.
+/// connections deleted, the transport cut) tearing down the start under way.
 #[test]
 fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcome() {
     let cell = "a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcome";
@@ -327,66 +219,6 @@ fn a_start_from_a_later_attempt_joins_the_start_under_way_and_answers_its_outcom
         birth.status_heard(MemberStatus::ReadyForTraffic).await;
         let rejoins = spans_named(&spans, "rdm.mesh.node.update.via-start");
         assert_eq!(rejoins.len(), 1, "one rejoin of the birth: {rejoins:?}");
-        let _ = std::fs::remove_dir_all(&birth.dir);
-    })
-}
-
-/// CONTRACT: a birth whose start is under way is still in Leaving until the start ends
-/// (states.md, "Stopped nodes": node.start is the only transition out of Leaving and completes
-/// all start gates first; it is parked until then, and the probe answers `CurrentParked`). A
-/// `DrainNode` that reaches it then is the backward transition and is refused naming `Leaving`:
-/// its commander gets no `node-drained`. What must NOT happen: the drain of the cycle the stop
-/// ended answering for the start under way (`AlreadyApplied` and a `node-drained` at once, though
-/// the new cycle has drained nothing). Once started, the birth is a new cycle and its next
-/// `DrainNode` is admitted and drains.
-#[test]
-fn a_drain_during_a_start_is_refused_naming_leaving_and_gets_no_drained_of_the_parked_cycle() {
-    let cell = "a_drain_during_a_start_is_refused_naming_leaving_and_gets_no_drained_of_the_parked_cycle";
-    let cap = crate::common::capture(cell);
-    let spans = cap.spans.clone();
-    cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), cell) {
-            return;
-        }
-        let hydrator = TestHydrator::new(Mode::Fixed(HookOutcome::Ok));
-        let birth = std::sync::Arc::new(Birth::up_hydrating("drain-during-start", Some(hydrator.clone())).await);
-
-        // The first cycle drains, then stops on that drain.
-        let mut first = birth.open_drain(1);
-        assert_eq!(birth.call(&birth.drain(1)).await, StatusReply::Applied, "the first cycle's drain is admitted");
-        node_drained(&mut first, 1).await;
-        let stopped = birth.call(&birth.stop(2)).await;
-        assert!(matches!(stopped, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{stopped:?}");
-
-        // The start runs until its hook, which holds until the cell lets it go.
-        let (started, resume) = (std::sync::Arc::new(tokio::sync::Notify::new()), std::sync::Arc::new(tokio::sync::Notify::new()));
-        hydrator.set_mode(Mode::Pause { started: started.clone(), resume: resume.clone(), outcome: HookOutcome::Ok });
-        birth.admin.deployed(&birth.launch, &birth.key);
-        let start = {
-            let birth = birth.clone();
-            tokio::spawn(async move { birth.call(&birth.start(3)).await })
-        };
-        started.notified().await;
-
-        // A drain of the birth while its start is under way.
-        let during = birth.open_drain(4);
-        assert_eq!(
-            birth.call(&birth.drain(4)).await,
-            StatusReply::RejectedInvalidNodeTransition { current: NodeState::Leaving },
-            "a DrainNode while the start is under way meets a birth still in Leaving: refused by name, never the parked cycle's drain"
-        );
-
-        hydrator.set_mode(Mode::Fixed(HookOutcome::Ok));
-        resume.notify_one();
-        assert_eq!(start.await.unwrap(), StatusReply::Started);
-        birth.status_heard(MemberStatus::ReadyForTraffic).await;
-
-        // The started birth's drain is the new cycle's: admitted, and it drains.
-        let mut after = birth.open_drain(5);
-        assert_eq!(birth.call(&birth.drain(5)).await, StatusReply::Applied, "the started birth's drain is a new drain");
-        node_drained(&mut after, 5).await;
-        assert!(!*during.borrow(), "the refused DrainNode's commander is owed no node-drained");
-        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 2, "one drain task per cycle: the first cycle's and the started birth's");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
@@ -601,46 +433,43 @@ fn a_round_command_from_a_new_primary_the_birth_has_not_heard_take_the_seat_is_c
     })
 }
 
-/// CONTRACT: `node.drain` observes the eligible in-flight work under the drain bound
-/// (node-drain.md step 3; Receipt: `Established { in_flight }`, or at the drain bound
-/// `Deadline { last_in_flight }`). A call that never finishes ends the drain at the bound with
-/// `Deadline` naming the count it last observed, never zero. The process keeps running and the
-/// birth stays Draining (node-drain.md: no connection cut, exit or Leaving is implied). A deadline
-/// is not drained: the commander is owed no `node-drained`, and a later `DrainNode` of the birth is
-/// the same drain, `AlreadyApplied`, with no drain of its own. What must NOT happen: a drain loop
-/// that never ends while the call is held.
+/// CONTRACT: `node.connections.delete { All }` lets the eligible in-flight work finish under the
+/// birth's bound (node-connections-delete.md step 5), the one its launch carries
+/// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`, read once where the process reads its launch): a call
+/// that never finishes ends the closure at that bound with `Deadline` naming the count it last
+/// observed, never zero, and the process keeps running. The birth is launched with a 500 ms bound
+/// and the process environment names none. What must NOT happen: `Established` while the call is
+/// held, a closure that never ends while the call is held, or a closure that runs to any bound but
+/// the launch's (the 5000 ms default an unset environment means).
 #[test]
-fn a_drain_with_work_that_never_finishes_ends_at_the_drain_bound_with_a_deadline_receipt() {
-    let cell = "a_drain_with_work_that_never_finishes_ends_at_the_drain_bound_with_a_deadline_receipt";
+fn an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receipt() {
+    let cell = "an_all_with_work_that_never_finishes_ends_at_its_bound_with_a_deadline_receipt";
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
-        if crate::own_process::delegated(module_path!(), cell) {
-            return;
-        }
-        // This process's drain bound.
-        std::env::set_var("RDM_DRAIN_DEADLINE_MS", "500");
-        let birth = std::sync::Arc::new(Birth::up("drain-bound").await);
+        assert!(std::env::var_os("RDM_CONNECTIONS_DELETE_DEADLINE_MS").is_none(), "this binary's process environment names no connections-delete bound");
+        let bound = Duration::from_millis(500);
+        let birth = std::sync::Arc::new(Birth::up_bounded("connections-delete-bound", bound).await);
         let held = birth.hold_one_call().await;
-        let drained = birth.open_drain(1);
-
-        assert_eq!(birth.call(&birth.drain(1)).await, StatusReply::Applied, "the drain is admitted");
-        // The held call never finishes on its own: the drain ends at its bound.
-        let deadline = |f: &std::collections::BTreeMap<String, String>| f.get("receipt").map(String::as_str) == Some("deadline");
-        tokio::time::timeout(Duration::from_secs(10), spans.recorded("rdm.node_admin.status.update.via-drain-node", deadline))
-            .await
-            .expect("the drain ends at its bound with a Deadline receipt while the held call is in flight");
-        let drain = spans_named(&spans, "rdm.node_admin.status.update.via-drain-node");
-        assert_eq!(drain.len(), 1, "one drain task: {drain:?}");
-        assert_eq!(drain[0].get("in_flight").map(String::as_str), Some("1"), "the Deadline receipt names the one call it last observed in flight, never zero: {drain:?}");
-        assert_eq!(*birth.running.status.lock().unwrap(), MemberStatus::Draining, "a drain at its bound leaves the birth Draining: no Leaving is implied");
-
-        // A deadline is not drained: no node-drained, and a later DrainNode is the same drain.
-        assert_eq!(birth.call(&birth.drain(2)).await, StatusReply::AlreadyApplied, "a DrainNode after the drain ended at its bound is the same natural key (node_id, incarnation, Draining)");
+        let all = StatusRequest::DeleteConnections { node_id: birth.launch.node_id.clone(), incarnation: birth.launch.incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All };
+        let began = std::time::Instant::now();
+        let reply = tokio::time::timeout(Duration::from_secs(10), birth.call(&all)).await.expect("the closure ends at its bound while the held call is in flight");
+        let took = began.elapsed();
+        assert!(
+            took >= bound && took < Duration::from_secs(2),
+            "the closure ends at the launch's 500 ms bound, never at the 5000 ms an unset environment means: it took {took:?}"
+        );
+        assert!(
+            matches!(&reply, StatusReply::ConnectionsDeleted { receipt: Some(ConnectionsReceipt::Deadline { last_in_flight: 1, .. }), .. }),
+            "the Deadline receipt names the one call it last observed in flight, never zero: {reply:?}"
+        );
+        let decided = spans_named(&spans, "rdm.node_admin.node.connections.delete.via-delete-connections");
+        assert!(
+            decided.iter().any(|f| f.get("deadline_ms").map(String::as_str) == Some("500") && f.get("receipt").map(String::as_str) == Some("deadline")),
+            "the birth's node.connections.delete span names the bound it ran under and the Deadline receipt: {decided:?}"
+        );
         birth.pull.release();
         held.await.unwrap();
-        assert!(!*drained.borrow(), "a drain that ended at its bound owes its commander no node-drained");
-        assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-drain-node").len(), 1, "the later DrainNode runs no drain of its own");
         let _ = std::fs::remove_dir_all(&birth.dir);
     })
 }
@@ -649,7 +478,7 @@ fn a_drain_with_work_that_never_finishes_ends_at_the_drain_bound_with_a_deadline
 /// `NotReady` naming the start under way, as a `StartNode` that reaches a birth whose stop is under
 /// way is refused naming the stop: the start ends the birth's stopped cycle, so the receipt of the
 /// stop that parked it answers for a birth that is leaving Leaving. Once the start ends, the stop
-/// is decided on the cycle it ended in: the started birth is stopped afresh, on a drain of its own.
+/// is decided on the cycle it ended in: the started birth is stopped afresh, its connections deleted again.
 /// What must NOT happen: `Stopped` with the parked cycle's receipt while the start goes on to make
 /// the birth live (its commander holding a stopped birth that is ready for traffic, and the
 /// mesh-primary's NodeStopped for it published after the start's node.joined).
@@ -691,7 +520,7 @@ fn a_stop_during_a_start_is_refused_naming_the_start_and_never_answers_the_parke
 
         // The started birth's stop is a stop of its own cycle.
         let after = birth.call(&birth.stop(4)).await;
-        assert!(matches!(after, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "the started birth is stopped afresh: {after:?}");
+        assert!(matches!(after, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "the started birth is stopped afresh: {after:?}");
         assert!(birth.running.own.is_parked(), "the stop that answered Stopped left the birth parked");
         assert_eq!(spans_named(&spans, "rdm.node_admin.status.update.via-stop-node").len(), 2, "one stop per cycle: the first cycle's and the started birth's");
         let _ = std::fs::remove_dir_all(&birth.dir);

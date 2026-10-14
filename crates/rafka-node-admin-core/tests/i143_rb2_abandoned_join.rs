@@ -119,7 +119,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
             .await
             .unwrap();
-        builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 3, executor: "mesh1.admin.1".into() }).await.unwrap();
+        builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 3, executor: "mesh1.admin.1".into() }).await.unwrap();
         let data_root = std::env::temp_dir().join(format!("i143-rb2-{}", NodeId::mint()));
         let template = LaunchTemplate {
             fabric: "fabric1".into(),
@@ -131,6 +131,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Arc::new(Joins::default());
         let pipeline = DeploymentPipeline {
@@ -151,7 +152,7 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
         let view = builds.read_build(&build_id).await.unwrap();
         let identity = receipt_output(&view, "AllocateIdentity");
         let node_id = NodeId::parse(identity["node_id"].as_str().unwrap()).unwrap();
-        let incarnation = IncarnationId(identity["incarnation"].as_str().unwrap().to_string());
+        let incarnation = IncarnationId::parse(identity["incarnation"].as_str().unwrap()).unwrap();
         let endpoint_id = EndpointId(receipt_output(&view, "PrepareStorage").as_str().unwrap().to_string());
         let data_dir = data_root.join(format!("{name}-{node_id}"));
         let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
@@ -215,6 +216,6 @@ fn join_after_the_deployment_was_abandoned_is_refused_naming_the_build_attempt_a
     let abandoned: Vec<&&Value> = via_join.iter().filter(|s| s["attributes"]["outcome"] == "deployment-abandoned").collect();
     assert_eq!(abandoned.len(), 1, "{via_join:?}");
     assert_eq!(abandoned[0]["attributes"]["attempt"], "3");
-    assert!(abandoned[0]["attributes"]["build_id"].as_str().unwrap().starts_with("bld-"));
+    assert!(rafka_mesh_entity::BuildId::parse(abandoned[0]["attributes"]["build_id"].as_str().unwrap()).is_ok());
     assert!(via_join.iter().all(|s| s["attributes"]["outcome"] != "not-authority"), "the authority never answers not-authority about itself");
 }

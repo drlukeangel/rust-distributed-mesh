@@ -13,10 +13,12 @@ pub mod node_rpc;
 pub mod declare_probe;
 pub mod hydrate_probe;
 pub mod proof_store;
+pub mod held_name;
 pub mod resolve_probe;
 pub mod faults;
 pub mod originate;
 pub mod admin_faults;
+pub mod fault_door;
 pub mod test_certs;
 pub mod test_app;
 

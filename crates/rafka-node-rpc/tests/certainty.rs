@@ -54,7 +54,7 @@ async fn rig(echo_cap: Option<Limits>) -> Rig {
     if let Some(l) = echo_cap {
         b = b.limits(Ping::OP, l);
     }
-    let server = b.seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() }).unwrap();
+    let server = b.seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() }).unwrap();
     let stats = server.stats();
     let key = SecretKey::generate();
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -175,23 +175,24 @@ async fn admission_full_is_an_immediate_typed_busy_and_the_handler_never_runs() 
     let _ = hang.await;
 }
 
+/// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": NotSent before the commit cut;
+/// R-UC1a: no receiver refuses a call for the node id it names): a call whose target the caller's
+/// resolver does not know is `NotSent` with the resolve failure and no evidence; a call whose
+/// caller maps another node id to this process is dispatched and served. Must NOT happen: the
+/// second call `RejectedStale` from the receiver, or not dispatched.
 #[tokio::test]
-async fn a_resolution_failure_is_not_sent_and_a_wrong_node_id_is_rejected_stale_by_the_target() {
+async fn a_resolution_failure_is_not_sent_and_a_wrong_node_id_is_served_by_the_target() {
     let r = rig(None).await;
     let (out, ev) = r.client.call::<Ping>(&NodeTarget::ExactNode(NodeId::mint()), &echo(b"x"), &CallOptions::default()).await;
     assert!(matches!(&out, RpcOutcome::NotSent(n) if matches!(n.reason(), NotSentReason::Resolve(_))), "{out:?}");
     assert!(ev.is_none());
-    // The caller's record maps another node id to this process: the target refuses the fence.
     let mut other = rafka_node_rpc::NodeResolver::resolve(&*r.resolver, &r.target).unwrap();
     other.node_id = NodeId::mint();
     r.resolver.insert(other.clone());
     let (out, ev) = r.client.call::<Ping>(&NodeTarget::ExactNode(other.node_id.clone()), &echo(b"x"), &CallOptions::default()).await;
-    assert!(
-        matches!(&out, RpcOutcome::RejectedStale(s) if s.target_node_id() == other.node_id.to_string()),
-        "the target decided the fence names another node: RejectedStale, not NotSent: {out:?}"
-    );
-    assert!(ev.is_some_and(|e| e.committed), "the request was sent and refused");
-    assert_eq!(ServerStats::get(&r.stats.dispatched), 0);
+    assert!(matches!(&out, RpcOutcome::Reply(_)), "the called process serves a target naming another node id: {out:?}");
+    assert!(ev.is_some_and(|e| e.committed), "the request was sent and answered");
+    assert_eq!(ServerStats::get(&r.stats.dispatched), 1);
 }
 
 #[tokio::test]

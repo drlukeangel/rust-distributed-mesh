@@ -8,8 +8,7 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 |---|---|
 | 19090 | topology-ui REST + HTML |
 | 16686 | Jaeger UI (`http://localhost:16686`) |
-| 4316  | OTLP/gRPC ingest |
-| 4317  | OTLP/HTTP ingest |
+| 4318  | OTLP/HTTP ingest |
 | 0     | rafka-* iroh endpoint (random ephemeral; override with `RDM_NODE_BIND_ADDR`) |
 
 ## Environment variables
@@ -27,7 +26,7 @@ Single-page operator reference: env vars, ports, common commands, troubleshootin
 | `RDM_LINK_SLOW_MS` | `0` | Sleep that many ms before each outbound ping `open_uni`. Chaos `slow_link` |
 | `RDM_LINK_LOSS_PCT` | `0` | Per outbound ping, roll u8%100; if `<` this, emit drop span + skip write. Chaos `lossy_link` |
 | `RDM_AUTO_SHUTDOWN_SECS` | unset (= wait for SIGINT) | Auto-exit after N seconds; used by e2e tests |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4316` | Where node-base + topology-ui ship spans |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | Where node-base + topology-ui ship spans |
 | `OTEL_SERVICE_NAME` | (set per binary) | Jaeger service tag |
 | `RUST_LOG` | `info` | tracing filter (e.g. `rafka_node_base=debug,info`) |
 

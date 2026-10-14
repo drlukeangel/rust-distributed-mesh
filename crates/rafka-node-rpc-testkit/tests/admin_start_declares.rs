@@ -11,8 +11,7 @@
 //! the birth's status stays what node.joined set).
 //!
 //! The mesh's primary is a real Day-0 node-admin in this process; it launches the second admin and
-//! commands its stop and start. Its own process: the cell holds process-wide state (the parking flag)
-//! and sets the gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
+//! commands its stop and start. Its own process: the cell holds process-wide state (the parking flag).
 
 use rafka_mesh_entity::launch::{Launch, Launcher};
 use rafka_mesh_entity::runtime::RuntimeFact;
@@ -26,8 +25,6 @@ use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
 /// What a declaration owed at a report is given: the declarer's round runs on the report's wake.
@@ -49,7 +46,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(dir).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     Launch {
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
@@ -65,6 +62,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
         store_dir: dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 
@@ -94,7 +92,7 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 }
 
 fn command(launch: &Launch, start: bool) -> StatusRequest {
-    let (node_id, incarnation, build_id) = (launch.node_id.clone(), launch.incarnation.clone(), "bld_admin_start_declares".to_string());
+    let (node_id, incarnation, build_id) = (launch.node_id.clone(), launch.incarnation.clone(), "xtccsd8180sr".to_string());
     if start {
         StatusRequest::StartNode { node_id, incarnation, build_id, attempt: 2, operation: format!("start-node:{}", launch.name) }
     } else {
@@ -123,9 +121,6 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
     if crate::own_process::delegated(module_path!(), "a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_primary_again") {
         return;
     }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
-    }
     let cap = crate::common::capture("a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_primary_again");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -137,6 +132,13 @@ fn a_node_admins_start_after_its_stop_reports_its_node_started_to_its_mesh_prima
         let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
+        tokio::time::timeout(WRONG, async {
+            while root.membership.seats().mesh("mesh1").is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the Day-0 admin takes mesh1's primary seat");
         let root_name = root.digest.lock().unwrap().node.name.to_string();
 
         let launch = launch_by(&root, "mesh1.admin.2", &admin_dir);

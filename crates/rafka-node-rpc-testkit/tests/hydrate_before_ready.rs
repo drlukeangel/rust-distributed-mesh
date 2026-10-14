@@ -43,7 +43,7 @@ async fn birth(status: MemberStatus) -> Birth {
     .await;
     let dir = std::env::temp_dir().join(format!("hydrate-before-ready-{}", NodeId::mint()));
     std::fs::create_dir_all(&dir).unwrap();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
     let key = node::load_or_mint_key(&dir).unwrap();
     let launch = Launch {
         fabric: "fabric1".into(),
@@ -60,6 +60,7 @@ async fn birth(status: MemberStatus) -> Birth {
         store_dir: dir.clone(),
         mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     admin.deployed(&launch, &key);
     Birth { admin, authority, launch, dir }
@@ -149,8 +150,8 @@ fn probe(d: &MeshDigest) -> StatusRequest {
     StatusRequest::ProbeNodeState { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone() }
 }
 
-fn drain(d: &MeshDigest) -> StatusRequest {
-    StatusRequest::DrainNode { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), build_id: "bld_hydrate".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() }
+fn delete_all(d: &MeshDigest) -> StatusRequest {
+    StatusRequest::DeleteConnections { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), scope: rafka_node_rpc_contract::status::ConnectionScope::All }
 }
 
 /// CONTRACT: a node whose hook is `Blocked` on its authority stays Pending: it publishes Pending
@@ -247,19 +248,19 @@ fn a_retry_armed_after_the_authority_was_already_ready_still_completes() {
 
 /// CONTRACT: while its hook is blocked the node answers its authority's status probe with Status
 /// `Blocked { node_id, incarnation, reason, retry_on }` (node-start.md step 3): the exact birth, the
-/// hook's own reason and the event it runs again on. It obeys `drain-node` (`Applied`); the
-/// retirement cancels the hook: the blocker span closes `retired`, the hook does not run again, and
+/// hook's own reason and the event it runs again on. It obeys `node.connections.delete { All }`
+/// (`ConnectionsDeleted`); the retirement at its admission cancels the hook: the blocker span closes `retired`, the hook does not run again, and
 /// the node never publishes ReadyForTraffic. What must NOT happen: `Current` or `NotReady` for a
 /// blocked node's probe (the executor could not name the blocker, or would take its door for it), or
 /// `NotReady` for a lifecycle command (s15).
 #[test]
-fn a_blocked_node_answers_status_and_drain_node_and_its_hook_ends() {
+fn a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends() {
     // A scoped subscriber: tracing's process-wide callsite interest cache is not shared with the
     // cells that run the same callsites without one.
-    if crate::own_process::delegated(module_path!(), "a_blocked_node_answers_status_and_drain_node_and_its_hook_ends") {
+    if crate::own_process::delegated(module_path!(), "a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends") {
         return;
     }
-    let cap = crate::common::capture("a_blocked_node_answers_status_and_drain_node_and_its_hook_ends");
+    let cap = crate::common::capture("a_blocked_node_answers_status_and_connections_delete_and_its_hook_ends");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Current, async move {
         let b = birth(MemberStatus::Pending).await;
@@ -272,7 +273,7 @@ fn a_blocked_node_answers_status_and_drain_node_and_its_hook_ends() {
         let probed = command(&b, probe).await;
         let d = running.digest.clone();
         assert_eq!(probed, StatusReply::Blocked { node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), reason: hook_reason.clone(), retry_on: RetryOn::AuthorityReady }, "a blocked node answers Blocked: the exact birth, the hook's own reason and its retry event");
-        assert_eq!(command(&b, drain).await, StatusReply::Applied, "drain-node is admitted while the hook is blocked");
+        assert!(matches!(command(&b, delete_all).await, StatusReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the hook is blocked");
         let settled = tokio::time::timeout(WRONG, handle.settled()).await.expect("the retirement ends the hook");
         assert_eq!(settled, HydrationState::Retired);
         assert_eq!(spans_named(&spans, "rdm.mesh.node.reject.via-hydration-blocked")[0]["cleared_by"], "retired");
@@ -285,7 +286,7 @@ fn a_blocked_node_answers_status_and_drain_node_and_its_hook_ends() {
 }
 
 /// CONTRACT: a retire during hydration cancels the pull. The authority's gate is open and the pull
-/// is held in flight; `drain-node` reaches the node; the attempt span closes `cancelled`, the pull
+/// is held in flight; `node.connections.delete { All }` reaches the node; the attempt span closes `cancelled`, the pull
 /// is dropped in flight (started = answered + dropped, nothing left running), its call span never
 /// records an outcome, and the node never publishes ReadyForTraffic. What must NOT happen: the
 /// pull answering into a node that was retired, or the node going Ready afterwards.
@@ -307,7 +308,7 @@ fn a_retire_during_the_pull_cancels_it_and_orphans_no_call() {
         let starting = start(&b, &hydrator);
         tokio::time::timeout(WRONG, b.authority.entered(1)).await.expect("the pull is in flight at the authority");
 
-        assert_eq!(command(&b, drain).await, StatusReply::Applied, "drain-node is admitted while the pull is in flight");
+        assert!(matches!(command(&b, delete_all).await, StatusReply::ConnectionsDeleted { .. }), "node.connections.delete {{ All }} is answered while the pull is in flight");
         let running = tokio::time::timeout(WRONG, starting).await.expect("the retirement ends the first attempt").unwrap().expect("the retired node's start returns");
         assert_eq!(running.hydration().expect("handle").state(), HydrationState::Retired);
         use std::sync::atomic::Ordering::SeqCst;

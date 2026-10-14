@@ -45,7 +45,7 @@ async fn main() {
         }
     };
     drop(boot);
-    println!("RDM_NODE_ADMIN_API_BASE={}", running.api_base);
+    running.announce();
 
     // Leave when this admin's part of a fabric shutdown is done (the fabric-primary, after it has
     // stopped the mesh-primary spine; fabric-mesh-lifecycle.md §11.1), or on a signal. A signal is a

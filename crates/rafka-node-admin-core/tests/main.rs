@@ -11,6 +11,21 @@ pub fn assert_own_story<'a>(names: impl IntoIterator<Item = &'a str>) {
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 
+/// The binary's process environment, set once, here, before `main` and before any thread exists
+/// (one binary is one process): a cell never sets or removes a variable. The gate's cadence
+/// (`tools/test-runner/src/lib.rs` CADENCE), each value only where the environment the binary was
+/// started with names none: the gate's own export, or the environment a delegating parent hands the
+/// child it starts for one cell (`own_process::delegated_with_env`, a cell whose process needs other
+/// values: a stretched round, its own evidence directory, a runtime socket), stays as given.
+#[ctor::ctor]
+fn process_env() {
+    for (k, v) in [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")] {
+        if std::env::var_os(k).is_none() {
+            std::env::set_var(k, v);
+        }
+    }
+}
+
 /// The rafka-time a test admin holds, adopted from a reference nowhere near any OS clock.
 pub fn adopted_time() -> rafka_mesh_transport::clock::RafkaTime {
     let t = rafka_mesh_transport::clock::RafkaTime::unadopted();
@@ -19,27 +34,29 @@ pub fn adopted_time() -> rafka_mesh_transport::clock::RafkaTime {
 }
 
 mod admin_serves_forward;
+mod ids_crockford;
 mod backbone_anti_entropy;
 mod boot_stop;
 mod loopback;
-mod mesh_leave_resume;
+mod mesh_delete_resume;
 mod mesh_delete_round;
 mod mesh_delete_source;
+mod mesh_delete_view;
 mod build_catch_up;
 mod build_admission;
 mod build_claim;
 mod build_drive;
+mod build_run;
 mod build_facts_read;
 mod build_takeover;
-mod client_contract;
 mod command_admission_status;
 mod connections_writer;
 mod container_proof;
 mod container_unsupported;
-mod control_routes;
+mod current_build;
 mod drift_convergence;
 mod fabric_handover;
-mod fabric_pointer_rows;
+mod fabric_not_ready;
 mod i143_acceptance_2805;
 mod i143_acceptance_2892;
 mod i143_acceptance_2938;
@@ -59,10 +76,12 @@ mod receipt_refusal;
 mod recovery_admission;
 mod restart_hold_from_facts;
 mod restart_one_operation;
-mod seat_transfer_step;
+mod pipeline_moves_no_seat;
+mod pipeline_step_io;
 mod status_declarations;
 mod status_seat_fold;
 mod stopped_delete;
 mod stopped_gc;
+mod stopped_view;
 mod store_root_boot;
 mod topology_read;

@@ -1,5 +1,5 @@
 //! i143.e6.s7 process E2E: a node declares its lifecycle state to its authority over Node RPC,
-//! from public surfaces (node-admin's control API, `rafka-rpc-probe`'s `declare` oracle on the
+//! from public surfaces (`node.get` at the authority, `rafka-rpc-probe`'s `declare` oracle on the
 //! node) and the estate's span evidence only.
 //!
 //! 0. Born ready, every rpc node declares `ReadyForTraffic` to its mesh-primary by itself
@@ -40,32 +40,28 @@ fn declared(out: &Value) -> (String, String) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 2}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    estate.settled_shape(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
-    let nodes = estate.nodes().await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 2, 2)]).await;
+    estate.settles_to(&[("mesh1", 2, 2)], Duration::from_secs(30)).await;
+    let nodes = estate.node_values().await;
     let primary = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] == true).expect("a mesh primary").clone();
     let other_admin = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_primary"] != true).expect("a non-primary admin").clone();
-    let rpc1 = estate.node("mesh1.rpc.1").await;
+    let rpc1 = estate.node_value("mesh1.rpc.1").await;
     let node = format!("exact:{}", rpc1["node_id"].as_str().unwrap());
     let to = format!("exact:{}", primary["node_id"].as_str().unwrap());
     // What the authority applied is the authority's view: read it there.
-    estate.admin = primary["admin_api_base"].as_str().expect("the primary advertises its control API").to_string();
+    estate.enter(&Estate::path(primary["name"].as_str().expect("the primary is named"))).await;
 
     // 0. Born ready, the nodes and the other admin declared by themselves.
-    let declared_by_birth = rafka_test_scenario::estate::wait_for("every birth's own ReadyForTraffic declared at the authority", Duration::from_secs(20), || async {
-        let nodes = estate.nodes().await;
-        let of = |name: &str| nodes.iter().find(|n| n["name"] == name).map(|n| n["declared"].clone()).unwrap_or(Value::Null);
-        // The primary's own declaration is applied by itself and reaches this view like every
-        // other: it is waited for, never asserted on the instant after the others landed.
-        (of("mesh1.rpc.1") == "ReadyForTraffic"
-            && of("mesh1.rpc.2") == "ReadyForTraffic"
-            && of(other_admin["name"].as_str().unwrap()) == "ReadyForTraffic"
-            && of(primary["name"].as_str().unwrap()) == "ReadyForTraffic")
-            .then_some(nodes)
-    })
-    .await;
+    let declared_by_birth = Estate::values(
+        &estate
+            .until_view("every birth's own ReadyForTraffic declared at the authority", Duration::from_secs(20), |views| {
+                let of = |name: &str| views.iter().find(|n| n.name.to_string() == name).and_then(|n| n.declared.clone());
+                // The primary's own declaration is applied by itself and reaches this view like every
+                // other: it is waited for, never asserted on the instant after the others landed.
+                [("mesh1.rpc.1"), ("mesh1.rpc.2"), other_admin["name"].as_str().unwrap(), primary["name"].as_str().unwrap()].iter().all(|name| of(name).as_deref() == Some("ReadyForTraffic")).then(|| views.to_vec())
+            })
+            .await,
+    );
     let view = declared_by_birth.iter().find(|n| n["name"] == "mesh1.rpc.1").unwrap().clone();
     assert_eq!(view["status"], "ready-for-traffic", "membership's status is untouched");
     // The authority itself: its own ReadyForTraffic goes through the same door, applied by itself.
@@ -89,7 +85,7 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-authority", "{r}");
     assert!(detail.contains("SubjectUnknown"), "{r}");
-    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-incarnation", "00000000000000000000000000000000"]);
+    let r = estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining", "--as-incarnation", rafka_mesh_entity::IncarnationId::mint().as_str()]);
     assert_eq!(declared(&r).0, "rejected-stale-incarnation", "{r}");
 
     // 4. The non-primary admin is not the authority.
@@ -98,13 +94,13 @@ async fn a_node_declares_its_state_to_its_authority_and_the_authority_decides() 
     let (reply, detail) = declared(&r);
     assert_eq!(reply, "rejected-not-authority", "{r}");
     assert!(detail.contains("ReceiverNotPrimary"), "{r}");
-    assert_eq!(estate.node("mesh1.rpc.1").await["declared"], "ReadyForTraffic", "a refusal applies nothing");
+    assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "ReadyForTraffic", "a refusal applies nothing");
 
     // 5. Forward moves apply and the view follows.
     assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "draining"])).0, "applied");
     assert_eq!(declared(&estate.probe(&["declare", "--target", &node, "--to", &to, "--state", "leaving"])).0, "applied");
-    assert_eq!(estate.node("mesh1.rpc.1").await["declared"], "Leaving");
-    assert_eq!(estate.node("mesh1.rpc.2").await["declared"], "ReadyForTraffic", "rpc.2 declared only its birth");
+    assert_eq!(estate.node_value("mesh1.rpc.1").await["declared"], "Leaving");
+    assert_eq!(estate.node_value("mesh1.rpc.2").await["declared"], "ReadyForTraffic", "rpc.2 declared only its birth");
 
     estate.artifact("declarations.json", &json!({"primary": primary["name"], "other_admin": other_admin["name"], "node": rpc1["name"]}));
     estate.stop().await;

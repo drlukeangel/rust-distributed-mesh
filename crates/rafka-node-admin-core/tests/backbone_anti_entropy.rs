@@ -7,17 +7,21 @@
 //! for longer than that while it is live and serving fences its own mesh.
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`), its mesh's primary, at the
-//! gate's cadence (`tools/test-runner` CADENCE), in a process of its own. Its `fabric.storage` is
-//! wrapped (`Wiring::fabric_storage`) so the cell can make every read of the Fabric rows take three
-//! backbone intervals, which is what a read of the shared store root does while the disk is held by
-//! another admin's state-commit publication. The observer is a peer mesh's place on the backbone.
+//! gate's cadence (`tools/test-runner` CADENCE, set by the binary's ctor in `tests/main.rs`), in a
+//! process of its own. Its Build state is wrapped
+//! (`Wiring::builds`) so the cell can make every read of the current Build (R-BI3, the read the
+//! admin's round makes each turn) take three backbone intervals, which is what a store read does
+//! while the disk is held by another writer. The observer is a peer mesh's place on the backbone.
 
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rafka_mesh_entity::{IncarnationId, MeshId, NodeId};
 use rafka_mesh_transport::membership::{gossip_addr, learn_addresses, Backbone, Membership};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
-use rafka_node_admin_core::fabric_storage::{FabricClaim, FabricIdentity, FabricNameHeld, FabricPointer, FabricRecord, FabricShutdown, FabricStorage, FabricStorageError, HandoverRow, SeatRow, SeatTransferRow};
+use rafka_mesh_entity::PathName;
+use rafka_node_admin_core::build::BuildId;
+use rafka_node_admin_core::build_state::{AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter, BuildStateError, BuildStepReceipt, ClaimOutcome, CurrentBuild, OwedExit};
+use rafka_node_admin_core::fabric_storage::FabricIdentity;
 use rafka_node_admin_core::investigate::Rungs;
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
 use serde_json::{json, Value};
@@ -25,11 +29,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that is immediate on a correct admin is given before the cell fails by name.
 const NEVER: Duration = Duration::from_secs(20);
-/// How long one read of the Fabric rows takes while the store is held: three backbone intervals.
+/// How long one read of the current Build takes while the store is held: three backbone intervals.
 const HELD_READ: Duration = Duration::from_millis(1500);
 /// How long the store stays held: two held reads end to end.
 const HELD_FOR: Duration = Duration::from_millis(3000);
@@ -48,64 +50,74 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
     .expect("a readable environment")
 }
 
-/// `fabric.storage` whose reads of the Fabric rows take [`HELD_READ`] while the cell holds it, each
-/// held read a `cell.store.update.via-held-read` span; every other call passes straight through.
-struct HeldStore {
-    inner: Arc<dyn FabricStorage>,
+/// The Build state whose reads of the current Build (R-BI3: the Build entities read last in, first
+/// out) take [`HELD_READ`] while the cell holds it, each held read a `cell.store.update.via-held-read`
+/// span; every other call passes straight through.
+struct HeldBuilds {
+    inner: Arc<dyn BuildStateAdapter>,
     held: Arc<AtomicBool>,
     reads: Arc<AtomicU64>,
     began: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait::async_trait]
-impl FabricStorage for HeldStore {
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        self.inner.fabric().await
+impl BuildStateAdapter for HeldBuilds {
+    async fn publish_accepted(&self, a: &BuildAccepted) -> Result<(), BuildStateError> {
+        self.inner.publish_accepted(a).await
     }
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
+    async fn open_attempt(&self, o: &AttemptOpened) -> Result<(), BuildStateError> {
+        self.inner.open_attempt(o).await
+    }
+    async fn publish_fabric(&self, record: &FabricIdentity) -> Result<(), BuildStateError> {
+        self.inner.publish_fabric(record).await
+    }
+    async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+        self.inner.read_build(id).await
+    }
+    async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
         if self.held.load(Ordering::SeqCst) {
             let span = tracing::info_span!("cell.store.update.via-held-read", held_ms = HELD_READ.as_millis() as u64);
             self.began.notify_waiters();
             tracing::Instrument::instrument(tokio::time::sleep(HELD_READ), span).await;
             self.reads.fetch_add(1, Ordering::SeqCst);
         }
-        self.inner.fabric_rows().await
+        self.inner.current_build().await
     }
-    async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
-        self.inner.claim_identity(identity).await
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
     }
-    async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError> {
-        self.inner.release_name(identity).await
+    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
+        self.inner.list_active().await
     }
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        self.inner.put_pointer(pointer).await
+    async fn claim_attempt(&self, c: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
+        self.inner.claim_attempt(c).await
     }
-    async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
-        self.inner.shutdown().await
+    async fn adopt_claim(&self, c: &BuildAttemptClaim) -> Result<(), BuildStateError> {
+        self.inner.adopt_claim(c).await
     }
-    async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
-        self.inner.put_shutdown(shutdown).await
+    async fn append_step_receipt(&self, r: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        self.inner.append_step_receipt(r).await
     }
-    async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError> {
-        self.inner.put_seat(row).await
+    async fn append_attempt_receipt(&self, r: &BuildAttemptReceipt) -> Result<(), BuildStateError> {
+        self.inner.append_attempt_receipt(r).await
     }
-    async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
-        self.inner.seats().await
+    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.inner.facts().await
     }
-    async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError> {
-        self.inner.put_handover(row).await
+    async fn forget(&self, id: &BuildId) -> Result<(), BuildStateError> {
+        self.inner.forget(id).await
     }
-    async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError> {
-        self.inner.handovers().await
+    async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
+        self.inner.note_blocked(build_id, lane, attempt, operation, step, reason).await
     }
-    async fn put_seat_transfer(&self, row: &SeatTransferRow) -> Result<(), FabricStorageError> {
-        self.inner.put_seat_transfer(row).await
+    async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
     }
-    async fn seat_transfer(&self, holder_mesh: &str, operation: &str) -> Result<Option<SeatTransferRow>, FabricStorageError> {
-        self.inner.seat_transfer(holder_mesh, operation).await
+    async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+        self.inner.mesh_deleted_of(node_id, incarnation).await
     }
-    async fn seat_transfers(&self) -> Result<Vec<SeatTransferRow>, FabricStorageError> {
-        self.inner.seat_transfers().await
+    async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError> {
+        self.inner.exits_owed(build_id, mesh).await
     }
 }
 
@@ -157,16 +169,13 @@ impl Capture {
 /// whose reads of the shared store take three backbone intervals each goes on publishing its mesh
 /// on the backbone every interval. A peer mesh's t of it stays under the track rung the whole time
 /// the store is held, so the fabric-primary never holds a live, serving mesh unheard. Must NOT
-/// happen: the publication waiting on a store read of the admin's round (the accepted Build's
-/// pointer, the exit rows, the view's installation), so a held disk reads as a silent mesh.
+/// happen: the publication waiting on a store read of the admin's round (the current Build, the exit
+/// rows, the view's installation), so a held disk reads as a silent mesh.
 #[test]
 fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_every_interval() {
     let cell = "a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_every_interval";
     if crate::own_process::delegated(module_path!(), cell) {
         return;
-    }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
     }
     let track = Rungs::configured().track;
     let cap = capture();
@@ -175,9 +184,9 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
         let (held, reads, began) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU64::new(0)), Arc::new(tokio::sync::Notify::new()));
         let wrap = {
             let (held, reads, began) = (held.clone(), reads.clone(), began.clone());
-            move |inner: Arc<dyn FabricStorage>| -> Arc<dyn FabricStorage> { Arc::new(HeldStore { inner, held, reads, began }) }
+            move |inner: Arc<dyn BuildStateAdapter>| -> Arc<dyn BuildStateAdapter> { Arc::new(HeldBuilds { inner, held, reads, began }) }
         };
-        let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), fabric_storage: Some(Box::new(wrap)), ..Wiring::no_certs() };
+        let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), builds: Some(Box::new(wrap)), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
         tokio::time::timeout(NEVER, async {
             while !running.publishes_its_mesh() {
@@ -207,11 +216,11 @@ fn a_mesh_primary_whose_store_reads_are_held_publishes_its_mesh_on_the_backbone_
         .await
         .expect("the peer mesh never received the publisher's mesh on the backbone");
 
-        // The store is held: every read of the Fabric rows now takes three backbone intervals. The
+        // The store is held: every read of the current Build now takes three backbone intervals. The
         // window opens once a held read has begun.
         let first = began.notified();
         held.store(true, Ordering::SeqCst);
-        tokio::time::timeout(NEVER, first).await.expect("no read of the Fabric rows began while the store was held");
+        tokio::time::timeout(NEVER, first).await.expect("no read of the current Build began while the store was held");
         let opened = std::time::Instant::now();
         let mut worst = Duration::ZERO;
         let mut during = 0u32;

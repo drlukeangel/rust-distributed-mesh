@@ -4,8 +4,8 @@
 //! arms, a cell by name, a wire count). Every violation is named with its file and line, and a
 //! ratchet whose subject is missing says so by name rather than passing vacuously.
 //!
-//! Behavioral rules (a drain attempted before termination, a carried call keeping its
-//! context, drain success distinct from refusal, silence never retiring) are proven by their
+//! Behavioral rules (a stop attempted before termination, a carried call keeping its
+//! context, node.connections.deleted distinct from refusal, silence never retiring) are proven by their
 //! cells; the ratchet for such a rule holds the cell in the tree by name and the structural
 //! facts the cell relies on, so deleting or renaming the proof is itself a violation.
 
@@ -17,15 +17,15 @@ use std::path::{Path, PathBuf};
 pub enum Ratchet {
     TagIsDescriptiveOnly,
     ResourceBehaviorIsTypedMeta,
-    AcceptedBuildHasExplicitNodeMeta,
+    AcceptedBuildHasExplicitPathConfig,
     LegacyDefaultsAreIngressOnly,
     ProviderInterpretsNeitherMetaNorTags,
     NoTransportTagVocabulary,
-    RetireAttemptsRpcDrainFirst,
+    RetireAttemptsRpcStopFirst,
     RetireHasBoundedFailureArms,
     DriftSilenceIsNotRetireAuthority,
-    RetireReceiptNamesDrainArm,
-    DrainSuccessIsNotRefusal,
+    RetireReceiptNamesCommandArm,
+    ConnectionsDeletedIsNotRefusal,
     ForwardPreservesContext,
     PostcardSectionBounds,
     TypedProtocolIdentity,
@@ -43,15 +43,15 @@ impl Ratchet {
     pub const ALL: [Ratchet; 22] = [
         Self::TagIsDescriptiveOnly,
         Self::ResourceBehaviorIsTypedMeta,
-        Self::AcceptedBuildHasExplicitNodeMeta,
+        Self::AcceptedBuildHasExplicitPathConfig,
         Self::LegacyDefaultsAreIngressOnly,
         Self::ProviderInterpretsNeitherMetaNorTags,
         Self::NoTransportTagVocabulary,
-        Self::RetireAttemptsRpcDrainFirst,
+        Self::RetireAttemptsRpcStopFirst,
         Self::RetireHasBoundedFailureArms,
         Self::DriftSilenceIsNotRetireAuthority,
-        Self::RetireReceiptNamesDrainArm,
-        Self::DrainSuccessIsNotRefusal,
+        Self::RetireReceiptNamesCommandArm,
+        Self::ConnectionsDeletedIsNotRefusal,
         Self::ForwardPreservesContext,
         Self::PostcardSectionBounds,
         Self::TypedProtocolIdentity,
@@ -70,15 +70,15 @@ impl Ratchet {
         match self {
             Self::TagIsDescriptiveOnly => "tag_is_descriptive_only",
             Self::ResourceBehaviorIsTypedMeta => "resource_behavior_is_typed_meta",
-            Self::AcceptedBuildHasExplicitNodeMeta => "accepted_build_has_explicit_node_meta",
+            Self::AcceptedBuildHasExplicitPathConfig => "accepted_build_has_explicit_path_config",
             Self::LegacyDefaultsAreIngressOnly => "legacy_defaults_are_ingress_only",
             Self::ProviderInterpretsNeitherMetaNorTags => "provider_interprets_neither_meta_nor_tags",
             Self::NoTransportTagVocabulary => "no_transport_tag_vocabulary",
-            Self::RetireAttemptsRpcDrainFirst => "retire_attempts_rpc_drain_first",
+            Self::RetireAttemptsRpcStopFirst => "retire_attempts_rpc_stop_first",
             Self::RetireHasBoundedFailureArms => "retire_has_bounded_failure_arms",
             Self::DriftSilenceIsNotRetireAuthority => "drift_silence_is_not_retire_authority",
-            Self::RetireReceiptNamesDrainArm => "retire_receipt_names_drain_arm",
-            Self::DrainSuccessIsNotRefusal => "drain_success_is_not_refusal",
+            Self::RetireReceiptNamesCommandArm => "retire_receipt_names_command_arm",
+            Self::ConnectionsDeletedIsNotRefusal => "connections_deleted_is_not_refusal",
             Self::ForwardPreservesContext => "forward_preserves_context",
             Self::PostcardSectionBounds => "postcard_section_bounds",
             Self::TypedProtocolIdentity => "typed_protocol_identity",
@@ -183,7 +183,7 @@ pub const INGRESS_SOURCES: &[&str] = &[
     "crates/rafka-node-admin-core/src/accepted.rs",
     "crates/rafka-node-admin-core/src/build.rs",
 ];
-pub const DEFAULT_TOKENS: &[&str] = &["default_for(", "normalize_node_meta("];
+pub const DEFAULT_TOKENS: &[&str] = &["default_for(", "normalize_path_config("];
 
 /// The provider implementations: concrete actions on exact locators, policy-blind.
 pub const PROVIDER_SOURCES: &[&str] = &[
@@ -191,7 +191,7 @@ pub const PROVIDER_SOURCES: &[&str] = &[
     "crates/rafka-node-admin-core/src/deployment/process.rs",
     "crates/rafka-node-admin-core/src/deployment/container.rs",
 ];
-pub const PROVIDER_BANNED_TOKENS: &[&str] = &["NodeMeta", "StorageMeta", "PlacementMeta", ".extra", ".tags", "stateful"];
+pub const PROVIDER_BANNED_TOKENS: &[&str] = &["PathConfig", "StorageMeta", "PlacementMeta", ".extra", ".tags", "stateful"];
 
 /// The internal wire paths (R-W1, Luke 2026-10-08): every gossip frame and every Node RPC frame is
 /// postcard. These sources carry no JSON codec in their non-test code.
@@ -243,7 +243,7 @@ pub const TOPOLOGY_CELLS: &str = "crates/rafka-node-rpc-contract/tests/topology_
 pub const BUILD_FACTS_SOURCE: &str = "crates/rafka-node-admin-core/src/build_facts_read.rs";
 pub const BUILD_FACTS_HYDRATE: &str = "crates/rafka-node-admin-core/src/hydrate.rs";
 pub const BUILD_FACTS_CELLS: &str = "crates/rafka-node-rpc-contract/tests/build_facts_wire.rs";
-/// The fabric-primary handover (`TakeFabricPrimary` / `FabricPrimaryTaken`) and the Build-driven seat transfer (`TakeSeats`), 0x21: its door and the cells that prove its postcard shape and the new-fabric-primary frame.
+/// node.primary.update (`PrimaryUpdate` / `UpdatePrimary`, 0x21): the holder writes the one committed seat-transfer row, the successor installs from it and answers `PrimaryUpdated`; its door and the cells that prove its postcard shape and the seat frames.
 pub const HANDOVER_SOURCE: &str = "crates/rafka-node-admin-core/src/fabric_handover.rs";
 pub const HANDOVER_CELLS: &str = "crates/rafka-node-rpc-contract/tests/handover_wire.rs";
 
@@ -263,13 +263,13 @@ pub const RETIRE_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/retire_pipel
 pub const DRIFT_CELLS: &str = "crates/rafka-node-admin-core/tests/drift_convergence.rs";
 pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_probe_apply.rs";
 
-/// The five typed arms of the landed `CommandAdmission` (what a directed `drain-node` / `stop-node`
-/// call established at the exact birth).
-pub const DRAIN_ARMS: [&str; 8] = ["Admitted", "AlreadyAdmitted", "Stopped", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
+/// The typed arms of the landed `CommandAdmission` (what a directed `node.connections.delete`,
+/// `stop-node` or `start-node` call established at the exact birth).
+pub const COMMAND_ARMS: [&str; 9] = ["Admitted", "AlreadyAdmitted", "Stopped", "ConnectionsDeleted", "Started", "StartFailed", "NotSent", "Indeterminate", "Refused"];
 
 /// The frozen 0x1B counts.
-pub const STATUS_REQUESTS: u32 = 26;
-pub const STATUS_REPLIES: u32 = 44;
+pub const STATUS_REQUESTS: u32 = 28;
+pub const STATUS_REPLIES: u32 = 49;
 
 fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
@@ -504,11 +504,11 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             let files: Vec<PathBuf> = files_in(root, RUNTIME_SOURCES).into_iter().filter(|f| rel(root, f) != INGRESS_META).collect();
             scan_tokens(root, &files, UNTYPED_BEHAVIOR_TOKENS, ratchet, &mut out);
         }
-        Ratchet::AcceptedBuildHasExplicitNodeMeta => {
+        Ratchet::AcceptedBuildHasExplicitPathConfig => {
             require(
                 root,
                 ACCEPTED,
-                &["node_meta_by_path", "NodeMetaMismatch", "fn every_materialized_path_carries_exactly_one_node_meta"],
+                &["path_config_by_path", "PathConfigMismatch", "fn every_materialized_path_carries_exactly_one_path_config"],
                 ratchet,
                 &mut out,
             );
@@ -524,32 +524,32 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
         Ratchet::NoTransportTagVocabulary => {
             scan_tokens(root, &files_in(root, ACTIVE_TRANSPORT_SOURCES), TRANSPORT_TAG_TOKENS, ratchet, &mut out);
         }
-        Ratchet::RetireAttemptsRpcDrainFirst => {
-            require(root, RETIRE_CELLS, &["fn retire_runs_every_step_in_order", "RetireStep::DrainNode"], ratchet, &mut out);
+        Ratchet::RetireAttemptsRpcStopFirst => {
+            require(root, RETIRE_CELLS, &["fn retire_runs_every_step_in_order", "RetireStep::StopNode"], ratchet, &mut out);
             if let Some(text) = read(root, PIPELINE) {
-                match (text.find("Self::DrainNode,"), text.find("Self::TerminateRuntime,")) {
+                match (text.find("Self::StopNode,"), text.find("Self::TerminateRuntime,")) {
                     (Some(a), Some(b)) if a < b => {}
-                    _ => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "DrainNode ordered before TerminateRuntime in the retire steps".into() }),
+                    _ => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "StopNode ordered before TerminateRuntime in the retire steps".into() }),
                 }
             } else {
                 out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "the file itself".into() });
             }
         }
         Ratchet::RetireHasBoundedFailureArms => match read(root, PIPELINE).as_deref().and_then(|t| enum_arms(t, "CommandAdmission")) {
-            Some(found) if found == DRAIN_ARMS => {}
-            Some(found) => out.push(Violation::Arms { ratchet, file: PIPELINE.into(), expected: DRAIN_ARMS.iter().map(|s| s.to_string()).collect(), found }),
+            Some(found) if found == COMMAND_ARMS => {}
+            Some(found) => out.push(Violation::Arms { ratchet, file: PIPELINE.into(), expected: COMMAND_ARMS.iter().map(|s| s.to_string()).collect(), found }),
             None => out.push(Violation::Missing { ratchet, file: PIPELINE.into(), what: "`pub enum CommandAdmission`".into() }),
         },
         Ratchet::DriftSilenceIsNotRetireAuthority => {
             require(root, DRIFT_CELLS, &["fn a_silent_node_whose_runtime_runs_opens_no_attempt_and_is_never_replaced"], ratchet, &mut out);
         }
-        Ratchet::RetireReceiptNamesDrainArm => {
-            require(root, PIPELINE, &["#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum CommandAdmission"], ratchet, &mut out);
-            require(root, RETIRE_CELLS, &["DrainNode"], ratchet, &mut out);
+        Ratchet::RetireReceiptNamesCommandArm => {
+            require(root, PIPELINE, &["#[serde(tag = \"arm\", rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission"], ratchet, &mut out);
+            require(root, RETIRE_CELLS, &["StopNode"], ratchet, &mut out);
         }
-        Ratchet::DrainSuccessIsNotRefusal => {
-            require(root, STATUS, &["NodeDrainingApplied { in_flight: u64 }", "Draining { reason: String }", "DrainNode {"], ratchet, &mut out);
-            require(root, PROBE_APPLY_CELLS, &["fn a_node_admin_probes_and_drains_the_exact_birth_over_the_status_family"], ratchet, &mut out);
+        Ratchet::ConnectionsDeletedIsNotRefusal => {
+            require(root, STATUS, &["Draining { reason: String }", "ConnectionsDeleted {", "receipt: Option<ConnectionsReceipt>"], ratchet, &mut out);
+            require(root, PROBE_APPLY_CELLS, &["fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_status_family"], ratchet, &mut out);
         }
         Ratchet::ForwardPreservesContext => {
             require(root, CONTEXT_CELLS, &["fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_hop"], ratchet, &mut out);
@@ -619,8 +619,8 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 root,
                 STATUS_WIRE,
                 &[
-                    "fn requests_match_the_frozen_twenty_six_variant_wire_schema",
-                    "fn replies_match_the_frozen_forty_four_variant_wire_schema",
+                    "fn requests_match_the_frozen_twenty_eight_variant_wire_schema",
+                    "fn replies_match_the_frozen_forty_nine_variant_wire_schema",
                     "fn nested_enum_discriminants_and_fields_are_frozen_too",
                     "Status::REQUEST_VARIANTS",
                     "Status::REPLY_VARIANTS",
@@ -668,11 +668,11 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
             require(root, TOPOLOGY_SOURCE, &["chunks_of", "take_read_chunk", "ProjectionEntry::from", "rdm.mesh.topology.serve.via-read", "rdm.mesh.topology.update.via-read-install"], ratchet, &mut out);
             require(root, TOPOLOGY_CELLS, &["fn replies_match_the_frozen_fourteen_variant_wire_schema"], ratchet, &mut out);
             require(root, BUILD_FACTS_SOURCE, &["encode_chunks", "BuildMessage::from_bytes", "rdm.node_admin.build.serve.via-fetch-facts"], ratchet, &mut out);
-            require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "resolve_wanted", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
+            require(root, BUILD_FACTS_HYDRATE, &["absorb_facts", "rdm.node_admin.build.update.via-fetch-facts"], ratchet, &mut out);
             require(root, BUILD_FACTS_CELLS, &["fn replies_match_the_frozen_ten_variant_wire_schema"], ratchet, &mut out);
-            require(root, HANDOVER_SOURCE, &["rdm.node_admin.fabric.update.via-handover-committed", "rdm.node_admin.fabric.update.via-handover-confirmed", "rdm.node_admin.fabric.reject.via-handover", "announce_new_fabric_primary", "put_seat"], ratchet, &mut out);
-            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_three_variant_wire_schema", "fn replies_match_the_frozen_nineteen_variant_wire_schema"], ratchet, &mut out);
-            require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema"], ratchet, &mut out);
+            require(root, HANDOVER_SOURCE, &["rdm.node_admin.seat.update.via-seat-row-written", "rdm.node_admin.seat.update.via-primary-updated", "rdm.node_admin.seat.reject.via-primary-update", "put_seat_transfer"], ratchet, &mut out);
+            require(root, HANDOVER_CELLS, &["fn requests_match_the_frozen_three_variant_wire_schema", "fn replies_match_the_frozen_seventeen_variant_wire_schema"], ratchet, &mut out);
+            require(root, SEAT_FRAME_CELLS, &["fn new_fabric_primary_matches_the_frozen_wire_schema", "fn primary_updated_matches_the_frozen_wire_schema", "fn primary_updating_matches_the_frozen_wire_schema"], ratchet, &mut out);
             require(root, WIRE_CELLS, &["fn every_gossip_frame_and_build_message_round_trips_through_postcard_under_the_ceiling"], ratchet, &mut out);
         }
         Ratchet::OneRenameWritePath => {

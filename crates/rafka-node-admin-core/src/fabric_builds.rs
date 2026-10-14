@@ -25,7 +25,7 @@ use crate::build_state::{
     AttemptOpened, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildProjection, BuildStateAdapter,
     BuildStateError, BuildStepReceipt, ClaimOutcome, LocalBuildLog,
 };
-use crate::fabric_storage::FabricRecord;
+use crate::fabric_storage::FabricIdentity;
 use futures_lite::StreamExt as _;
 use iroh::EndpointAddr;
 use iroh_gossip::api::{Event, GossipSender};
@@ -37,18 +37,18 @@ use tracing::Instrument as _;
 /// One message on the Build topic, one postcard frame (`rafka_mesh_transport::wire`). The nonce
 /// makes every send distinct, so a catch-up resend is never taken for a message already seen.
 ///
-/// `fabric` is the Fabric record (`Fabric.build_id`): Fabric control state of
-/// its own, sent alone when the pointer moves and to a new neighbour, never
-/// inside a run of Build facts. A neighbour's catch-up hands it the record and
-/// the facts of the Build it names and of every active Build. Facts and the Fabric record
-/// travel in their wire shapes (`crate::wire`), never the JSON-shaped domain types.
+/// `fabric` is the Fabric record, the Fabric's identity: Fabric control state of its own, sent alone
+/// when a Build is accepted and to a new neighbour, never inside a run of Build facts. A neighbour's
+/// catch-up hands it the record and the facts of the sender's current Build and of every active
+/// Build. Facts and the Fabric record travel in their wire shapes (`crate::wire`), never the
+/// JSON-shaped domain types.
 pub struct BuildMessage {
     /// The message's nonce.
     pub nonce: u64,
     /// The Build facts the message carries.
     pub facts: Vec<BuildFact>,
-    /// The Fabric record the message carries.
-    pub fabric: Option<FabricRecord>,
+    /// The Fabric record the message carries: the Fabric's identity.
+    pub fabric: Option<FabricIdentity>,
     /// A fabric shutdown in force: Fabric control state, sent alone when initiated and to a new
     /// neighbour first (fabric-mesh-lifecycle.md §11.1). Never a Build fact.
     pub shutdown: Option<crate::fabric_storage::FabricShutdown>,
@@ -72,8 +72,10 @@ fn encode_shutdown(s: &crate::fabric_storage::FabricShutdown) -> Result<bytes::B
     BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: None, shutdown: Some(s.clone()) }.to_bytes()
 }
 
-fn encode_fabric(r: &FabricRecord) -> Result<bytes::Bytes, BuildStateError> {
-    BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: Some(r.clone()), shutdown: None }.to_bytes()
+/// The Fabric record a Build-topic message carries: the Fabric's identity. A receiver reads its own
+/// current Build from its own Build entities (R-BI3); the record names none.
+fn encode_fabric(identity: &FabricIdentity) -> Result<bytes::Bytes, BuildStateError> {
+    BuildMessage { nonce: rand::random(), facts: Vec::new(), fabric: Some(identity.clone()), shutdown: None }.to_bytes()
 }
 
 pub use rafka_mesh_transport::chunking::{GOSSIP_FRAME_LIMIT, MAX_MESSAGE_BYTES};
@@ -121,8 +123,7 @@ fn span_refused(sent_by: &str, refused: &[BuildStateError]) {
     }
 }
 
-/// The facts of every active Build `local` holds, and of `also` (the Build the pointer names),
-/// in append order.
+/// The facts of every active Build `local` holds, and of `also` (its current Build), in append order.
 async fn active_facts(local: &dyn LocalBuildLog, also: Option<BuildId>) -> Vec<BuildFact> {
     let mut active: std::collections::BTreeSet<BuildId> = match local.list_active().await {
         Ok(a) => a.into_iter().map(|b| b.build_id).collect(),
@@ -189,6 +190,10 @@ pub struct FabricBuildStateAdapter {
     joined: std::sync::Mutex<std::collections::BTreeSet<iroh::EndpointId>>,
     /// The authority gate every fabric-primary mutation passes (ruling R-A2).
     authority: Authority,
+    /// The gate of this admin's drift-lane opens and claims (R-BI7): the committed seat record of its
+    /// own mesh's primary seat, never the fabric seat's, so an admin that yielded the fabric seat
+    /// still opens and claims its own mesh's drift attempts while it holds its mesh's seat.
+    mesh_seat_gate: Authority,
 }
 
 /// What the committed fabric seat record says of this birth's Build authority.
@@ -228,9 +233,10 @@ impl SeatSource {
 
 /// The gate of the fabric-primary's mutations: one lock, held from the decision through its
 /// durable commit and its broadcast, and the committed fabric seat record read under it. A seat
-/// commit on this admin (the handover door's, TakeSeats') holds the same lock across the record's
-/// move, so a decision is either wholly committed before the record moves or refused by it. The
-/// record is the fence (node-rpc-envelope.md TakeSeats): nothing else is written to fence the log.
+/// commit on this admin (node.primary.update's row at its holder, the install at its successor) holds
+/// the same lock across the record's move, so a decision is either wholly committed before the record
+/// moves or refused by it. The record is the target every decision is judged against (proposal
+/// node-primary-update Part C1 step 5): nothing else is written for the log.
 pub struct Authority {
     node: String,
     decisions: Arc<tokio::sync::Mutex<()>>,
@@ -281,12 +287,20 @@ impl Authority {
 }
 
 impl FabricBuildStateAdapter {
+    /// This log's drift-lane opens and claims gated by `seat`, the committed record of this admin's
+    /// own mesh's primary seat (R-BI7).
+    pub fn with_mesh_seat(mut self, seat: SeatSource) -> Self {
+        let node = self.authority.node.clone();
+        self.mesh_seat_gate = Authority::new(node, seat);
+        self
+    }
+
     /// Join `fabric`'s Build topic through `peers` (the other node-admins), as
     /// bootstrap hints: it returns at once, connected or not.
     ///
-    /// `accepted` is this admin's `Fabric.build_id` holder: every Fabric record heard on the
-    /// topic is offered to it, and a new neighbour is handed the one it holds first. `node` names
-    /// this admin in evidence.
+    /// `accepted` is this admin's Fabric identity holder: every Fabric identity heard on the topic is
+    /// offered to it, and a new neighbour is handed the one it holds first, with the current Build
+    /// this admin reads. `node` names this admin in evidence.
     pub async fn join(
         gossip: &Gossip,
         book: &rafka_mesh_transport::membership::LocationBook,
@@ -337,9 +351,9 @@ impl FabricBuildStateAdapter {
                                 }
                                 absorb.absorb_facts(&w.facts).await;
                                 if let Some(r) = heard_fabric {
-                                    store.learn(r, &*absorb, &m.delivered_from.to_string()).await;
-                                } else if !w.facts.is_empty() {
-                                    store.resolve_wanted(&*absorb).await;
+                                    tracing::info_span!("rdm.node_admin.fabric.update.via-build-topic-record", node = %node, sender = %m.delivered_from.fmt_short(), bytes = m.content.len(), fabric_id = %r.fabric_id, name = %r.name)
+                                        .in_scope(|| tracing::info!("the Fabric record heard on the Build topic"));
+                                    store.learn(r, &m.delivered_from.to_string()).await;
                                 }
                             }
                             Err(e) => tracing::info_span!("rdm.node_admin.build.reject.via-undecodable-fact", fabric = %fabric_name, sender = %m.delivered_from.fmt_short(), bytes = m.content.len(), error = %e)
@@ -355,7 +369,22 @@ impl FabricBuildStateAdapter {
                             }
                             // Sent from its own task: the receive loop never waits on the actor.
                             let (absorb, shared, fabric_name) = (absorb.clone(), shared.clone(), fabric_name.clone());
-                            let (record, pointer) = (store.record().await.ok().flatten(), store.build_id().await);
+                            // What cannot be read is named and left out of the catch-up, never sent as "none".
+                            let unreadable = |what: &str, e: String| {
+                                tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "neighbour-up", node = %node, peer = %peer, what, error = %e)
+                                    .in_scope(|| tracing::info!("a store could not be read for the neighbour-up catch-up: what it holds is left out"));
+                            };
+                            let record = store.record().await.unwrap_or_else(|e| {
+                                unreadable("fabric identity", e.to_string());
+                                None
+                            });
+                            let current = match absorb.current_build().await {
+                                Ok(c) => c.into_build_id(),
+                                Err(e) => {
+                                    unreadable("current Build", e.to_string());
+                                    None
+                                }
+                            };
                             let in_force = held_shutdown.held();
                             let sent_by = node.clone();
                             tokio::spawn(async move {
@@ -372,13 +401,13 @@ impl FabricBuildStateAdapter {
                                     None => {}
                                 }
                                 // The Fabric record first, as its own message; then the facts of the
-                                // Build it names and of every active Build.
+                                // current Build and of every active Build.
                                 match record.as_ref().map(encode_fabric) {
                                     Some(Ok(r)) => send(r, "the Fabric record").await,
                                     Some(Err(e)) => span_refused(&catch_up, &[e]),
                                     None => {}
                                 }
-                                let facts = active_facts(&*absorb, pointer.clone()).await;
+                                let facts = active_facts(&*absorb, current.clone()).await;
                                 let _span = tracing::info_span!(
                                     "rdm.node_admin.build.update.via-neighbor-up",
                                     fabric = %fabric_name,
@@ -423,7 +452,7 @@ impl FabricBuildStateAdapter {
                 receiver = r;
             }
         });
-        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name, seat) })
+        Ok(Self { local, sender, known: known_peers_handle, joined: std::sync::Mutex::new(seed_ids_set), authority: Authority::new(node_name.clone(), seat), mesh_seat_gate: Authority::new(node_name, SeatSource::unrecorded()) })
     }
 
     /// Join the Build topic to every live node-admin `admins` names, as the
@@ -466,9 +495,10 @@ impl FabricBuildStateAdapter {
         self.authority.decisions()
     }
 
-    /// The fabric-primary seat record moved off this birth, or this holder leaves: hand every active
-    /// committed fact to the neighbours before the new holder acts. `to` is the admin the record
-    /// names now (none for a leaving holder). Returns how many facts were handed on. Nothing is
+    /// The fabric-primary seat record moved off this birth: hand every active committed fact to the
+    /// neighbours before the new holder acts. `to` is the admin the record names now, by the name
+    /// this admin's view holds for it (none while its view holds no name for that birth). A leave
+    /// hands nothing on (R-SB1). Returns how many facts were handed on. Nothing is
     /// fenced here: the record is the fence. A send that fails is named (`via-broadcast-refused`,
     /// fact `hand-over`) and fails nothing: the new holder's catch-up and `FetchBuildFacts` carry the
     /// facts.
@@ -539,7 +569,10 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError> {
-        let _gate = self.authority.enter().await?;
+        let _gate = match opened.mesh {
+            None => self.authority.enter().await?,
+            Some(_) => self.mesh_seat_gate.enter().await?,
+        };
         let fact = BuildFact::Opened(opened.clone());
         let bytes = encode(vec![fact.clone()])?;
         self.local.open_attempt(opened).await?;
@@ -551,13 +584,24 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
         self.local.read_build(build_id).await
     }
 
+    async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, BuildStateError> {
+        self.local.current_build().await
+    }
+
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.local.newest_accepted_at_ms().await
+    }
+
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.local.list_active().await
     }
 
     /// The fabric-primary's decision: called by `build_claim::ClaimDoor` on the seat's own log.
     async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError> {
-        let _gate = self.authority.enter().await?;
+        let _gate = match claim.mesh {
+            None => self.authority.enter().await?,
+            Some(_) => self.mesh_seat_gate.enter().await?,
+        };
         let fact = BuildFact::Claim(claim.clone());
         let bytes = encode(vec![fact.clone()])?;
         let outcome = self.local.claim_attempt(claim).await?;
@@ -593,7 +637,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.local.facts().await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.local.recovery_of(path, node_id, incarnation).await
     }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
@@ -613,7 +657,7 @@ impl BuildStateAdapter for FabricBuildStateAdapter {
     }
 
 
-    async fn publish_fabric(&self, record: &FabricRecord) -> Result<(), BuildStateError> {
+    async fn publish_fabric(&self, record: &FabricIdentity) -> Result<(), BuildStateError> {
         let _gate = self.authority.enter().await?;
         let sender = self.sender.read().await.clone();
         sender.broadcast(encode_fabric(record)?).await.map_err(|e| BuildStateError::Io(format!("broadcasting the Fabric record: {e}")))
@@ -642,7 +686,8 @@ mod tests {
             event_at_rafka_ms: 4_242,
         };
         let receipt = |operation: &str| BuildStepReceipt {
-            build_id: BuildId("b1".into()),
+            mesh: None,
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt: 2,
             operation: operation.into(),
             step: "Complete".into(),
@@ -666,6 +711,8 @@ mod tests {
             let facts: Vec<BuildFact> = (0..60u32)
                 .map(|i| {
                     BuildFact::Claim(BuildAttemptClaim {
+                        claimant: None,
+                        mesh: None,
                         build_id: BuildId::mint(),
                         attempt: i,
                         executor: format!("mesh{}.admin.{}", round, "x".repeat(((i * 37 + round) % 90) as usize)),
@@ -690,7 +737,8 @@ mod tests {
         let node: crate::model::PathName = "mesh1.rpc.1".parse().unwrap();
         let pin = crate::build::PinnedBirth { node_id: rafka_mesh_entity::NodeId::mint(), incarnation: rafka_mesh_entity::IncarnationId::mint() };
         let opened = crate::build_state::AttemptOpened {
-            build_id: BuildId("bld-1".into()),
+            mesh: None,
+            build_id: BuildId::parse("3qcfk1kq47m9").unwrap(),
             attempt: 2,
             reason: crate::build_state::AttemptReason::Recipe,
             action: Some(crate::accepted::AttemptAction::Recipe {
@@ -707,9 +755,9 @@ mod tests {
         assert_eq!(BuildMessage::from_bytes(&bytes).unwrap().facts, vec![BuildFact::Opened(opened)], "a peer folds the same recipe");
     }
 
-    /// CONTRACT (node-rpc-envelope.md TakeSeats: "The row is the fence: P's execution authority ends
-    /// at the row's epoch, Build dispatch from the old seat is refused with Fenced, and no separate
-    /// fence write precedes or follows it"): the Build log reads its authority from the committed
+    /// CONTRACT (proposal node-primary-update Part C1 step 5: "This is the commit. From this write the
+    /// holder is no longer primary"; Build dispatch from the old seat is refused `Fenced`, and nothing
+    /// else is written): the Build log reads its authority from the committed
     /// fabric seat record. Once the record names another live birth, every decision is refused by
     /// name, naming that birth's path.name from the digest book even when the projected view does not
     /// hold it yet, and a wait on the fence resolves; no fence write is made. A record naming a birth
@@ -721,8 +769,8 @@ mod tests {
         use futures_util::FutureExt as _;
         use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
         let seats = rafka_mesh_transport::membership::SeatBook::default();
-        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId("p1".into()));
-        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId("n1".into()), epoch: 2 };
+        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p1")).unwrap());
+        let next = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::parse("100000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), epoch: 2 };
         let lost = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::<IncarnationId>::new()));
         let source = {
             let changed = Some(seats.subscribe());
@@ -756,7 +804,7 @@ mod tests {
     async fn a_seat_commit_waits_for_the_decision_in_flight_and_the_moved_record_refuses_every_later_one() {
         use rafka_mesh_entity::{IncarnationId, NodeId, Seat, SeatHolder};
         let seats = rafka_mesh_transport::membership::SeatBook::default();
-        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId("p1".into()));
+        let me = (NodeId::parse("300000000000").unwrap(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p1")).unwrap());
         let source = {
             let changed = Some(seats.subscribe());
             let (seats, me) = (seats.clone(), me.clone());
@@ -769,7 +817,7 @@ mod tests {
         let (decisions, c, book) = (authority.decisions(), committed.clone(), seats.clone());
         let moving = tokio::spawn(async move {
             let _held = decisions.lock_owned().await;
-            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId("n1".into()), epoch: 2 });
+            book.take(Seat::FabricPrimary, &SeatHolder { mesh: "mesh1".into(), node_id: NodeId::parse("400000000000").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n1")).unwrap(), epoch: 2 });
             c.load(std::sync::atomic::Ordering::SeqCst)
         });
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

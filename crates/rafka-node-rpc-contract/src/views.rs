@@ -113,6 +113,11 @@ pub struct NodeView {
     /// node's row at its `path.name`, never from its digest.
     #[serde(default)]
     pub tags: std::collections::BTreeSet<String>,
+    /// The node's config (R-TG1, node-rpc-envelope.md "Meta and config"): the application's property
+    /// bag, a property of the node (node.get answers the whole node), as the node's digest carries
+    /// the live copy. RDM never reads it.
+    #[serde(default)]
+    pub config: std::collections::BTreeMap<String, String>,
 }
 
 /// One mesh as the answering node-admin's view holds it (`mesh.get`).

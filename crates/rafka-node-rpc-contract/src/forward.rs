@@ -66,7 +66,8 @@ pub enum ForwardReply {
         /// The op the target does not serve.
         op: u8,
     },
-    /// The target refused the inner call's fence (`425 STALE_TARGET`): it is not that node.
+    /// The carrier's resolver stopped naming the birth the inner call was dialled to, before the
+    /// inner request went: never dispatched (no receiver refuses a call for the node id it names).
     InnerRejectedStale {
         /// The node the inner call addressed.
         target_node_id: NodeId,

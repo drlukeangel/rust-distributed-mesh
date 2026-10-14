@@ -140,12 +140,20 @@ impl fmt::Display for RuntimeFactError {
 }
 
 impl RuntimeFact {
+    /// The deployment the fact names, refused by name when it is not a Crockford id.
+    pub fn deployment(&self) -> Result<crate::ids::DeploymentId, crate::ids::IdError> {
+        crate::ids::DeploymentId::parse(&self.deployment_id)
+    }
+
     /// Every field present and well formed, the provider matching the
     /// locator, the whole within [`MAX_FACT_BYTES`].
     pub fn validate(&self) -> Result<(), RuntimeFactError> {
         let bad = |reason: &str| Err(RuntimeFactError::Malformed { reason: reason.into() });
         if self.deployment_id.trim().is_empty() {
             return bad("no deployment id");
+        }
+        if let Err(e) = crate::ids::DeploymentId::parse(&self.deployment_id) {
+            return bad(&e.to_string());
         }
         if self.control_domain.trim().is_empty() {
             return bad("no provider control domain");
@@ -318,7 +326,7 @@ mod tests {
 
     fn container(id: &str) -> RuntimeFact {
         RuntimeFact {
-            deployment_id: "dep-1".into(),
+            deployment_id: crate::ids::fixture_crockford60("dep-1"),
             provider: RuntimeProvider::Container,
             control_domain: "container:daemon-a".into(),
             locator: RuntimeLocator::Container { id: id.into() },
@@ -327,7 +335,7 @@ mod tests {
 
     #[test]
     fn this_process_adopts_itself_with_its_start_token_and_domain() {
-        let me = RuntimeFact::of_this_process("dep-1").unwrap();
+        let me = RuntimeFact::of_this_process(&crate::ids::fixture_crockford60("dep-1")).unwrap();
         assert_eq!(me.verify_is_this_runtime(), Ok(()));
         let RuntimeLocator::Process { pid, start } = me.locator else { panic!() };
         assert_eq!(pid, std::process::id());

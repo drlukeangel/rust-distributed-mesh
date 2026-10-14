@@ -2,6 +2,8 @@
 //! of the fabric reaches on the same backing namespace.
 //!
 //! Layout: `fabric/` (the fabric-primary's), `meshes/<mesh>` (each mesh's primary's Mesh row),
+//! `meshes/<mesh>/claims/` (the mesh's one attempt in flight, inserted by its claimant: the
+//! fabric-primary for a topology operation, the mesh-primary for its drift attempt; R-BI7),
 //! `nodes/<mesh>/` (each mesh's primary's members' Node rows and contacts), `connections/<node>/`
 //! (each node its own) and `status/<mesh>/` (each mesh's primary's status rows). Beside the
 //! per-fabric roots, `<store_dir>/fabrics/<name>` is the fabrics' name index (R-FN1): each fabric's
@@ -127,6 +129,12 @@ impl StoreRoot {
     /// `nodes/<mesh>/`: the mesh's members' Node rows and contacts.
     pub fn nodes(&self, mesh: &str) -> PathBuf {
         self.dir.join("nodes").join(mesh)
+    }
+
+    /// `meshes/<mesh>/`: the mesh's own rows beside its Mesh row (`meshes/<mesh>/claims/`, its
+    /// in-flight attempt: `crate::mesh_claims`).
+    pub fn meshes(&self, mesh: &str) -> PathBuf {
+        self.dir.join("meshes").join(mesh)
     }
 
     /// `connections/<node>/`: the node's own connections rows and raw log.

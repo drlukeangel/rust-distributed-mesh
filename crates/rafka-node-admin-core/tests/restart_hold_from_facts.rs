@@ -7,13 +7,13 @@
 //!
 //! The admin under test is a real Day-0 admin (`admin::start_with`) whose rounds are stretched far
 //! past the cell's bound (`RDM_GOSSIP_INTERVAL_MS`, `RDM_BACKBONE_INTERVAL_MS`), in a process of its
-//! own: nothing but the fact's own arrival can move the hold inside the bound.
+//! own (the cadence is read once per process): nothing but the fact's own arrival can move the hold
+//! inside the bound. Each cell reads back the spans of its own `EvidenceCapture` and no other.
 
 use rafka_mesh_entity::{IncarnationId, LifecycleOp, NodeId};
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::build_state::{AttemptOutcome, BuildAttemptReceipt, BuildStepReceipt, StepOutcome};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
-use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -29,6 +29,18 @@ fn evidence_dir(cell: &str) -> PathBuf {
     }
 }
 
+/// Runs `cell` in its own process, started with the stretched rounds (the cadence is read once per
+/// process): `true` in the process that delegated, once the child passed; `false` in the child, which
+/// runs the cell.
+fn delegated(cell: &str) -> bool {
+    let stretched = std::ffi::OsStr::new(STRETCHED_MS);
+    let parent = crate::own_process::delegated_with_env(module_path!(), cell, &[("RDM_GOSSIP_INTERVAL_MS", Some(stretched)), ("RDM_BACKBONE_INTERVAL_MS", Some(stretched))]);
+    if !parent {
+        assert_eq!(rafka_mesh_entity::cadence::gossip_interval(), Duration::from_millis(600_000), "the cell's process runs the rounds it was started with");
+    }
+    parent
+}
+
 fn day0_config(dir: &std::path::Path) -> AdminConfig {
     let dir = dir.display().to_string();
     AdminConfig::from_env(|k| match k {
@@ -39,22 +51,6 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
         _ => None,
     })
     .expect("a readable environment")
-}
-
-/// Every span this process emitted, from the evidence exporter's JSONL files in `dir`.
-fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
-    let mut spans = Vec::new();
-    for e in std::fs::read_dir(dir).unwrap().flatten() {
-        let p = e.path();
-        if p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(".spans.jsonl")) {
-            for line in std::fs::read_to_string(&p).unwrap().lines() {
-                if let Ok(v) = serde_json::from_str::<Value>(line) {
-                    spans.push(v);
-                }
-            }
-        }
-    }
-    spans
 }
 
 /// CONTRACT (node-restart.md "Completion"; membership.rs `restarts_from_facts`: "each is open here
@@ -68,29 +64,25 @@ fn collect_spans(dir: &std::path::Path) -> Vec<Value> {
 #[test]
 fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
     let cell = "a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log";
-    if crate::own_process::delegated(module_path!(), cell) {
+    if delegated(cell) {
         return;
     }
     let evidence = evidence_dir(cell);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&evidence).unwrap();
-    std::env::set_var("RDM_GOSSIP_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_BACKBONE_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-3016");
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
-    rt.block_on(async {
+    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&evidence, "rafka-node-admin-core-3016").expect("the cell's evidence file can be created");
+    capture.run(4, async {
         let dir = std::env::temp_dir().join(format!("restart-hold-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
-        let build_id = running.control.accepted.build_id().await.expect("the Day-0 admin holds its accepted Build");
+        let build_id = running.control.builds.current_build().await.unwrap().into_build_id().expect("the Day-0 admin holds its accepted Build");
         let book = running.membership.book.clone();
         let builds = running.runner.builds.clone();
 
         let path: rafka_node_admin_core::model::PathName = "mesh1.rpc.1".parse().unwrap();
         let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
         let op = LifecycleOp {
-            build_id: build_id.0.clone(),
+            build_id: build_id.to_string(),
             attempt: 2,
             operation: format!("restart-node:{path}"),
             node_id: node_id.clone(),
@@ -99,6 +91,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
             event_at_rafka_ms: 1,
         };
         let receipt = |operation: String, step: &str| BuildStepReceipt {
+            mesh: None,
             build_id: build_id.clone(),
             attempt: 2,
             operation,
@@ -125,9 +118,7 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
         running.leave().await;
         let _ = std::fs::remove_dir_all(&dir);
     });
-    drop(rt);
-    drop(telemetry);
-    let spans = collect_spans(&evidence);
+    let spans = capture.spans().expect("the cell's spans can be read");
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name).cloned().collect::<Vec<_>>();
     let opened = named("rdm.mesh.membership.update.via-node-restarting");
     let closed = named("rdm.mesh.membership.update.via-restart-closed-by-facts");
@@ -149,29 +140,25 @@ fn a_restart_hold_opens_and_closes_as_its_receipts_enter_the_log() {
 #[test]
 fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_on_its_complete() {
     let cell = "a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_on_its_complete";
-    if crate::own_process::delegated(module_path!(), cell) {
+    if delegated(cell) {
         return;
     }
     let evidence = evidence_dir(cell);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&evidence).unwrap();
-    std::env::set_var("RDM_GOSSIP_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_BACKBONE_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-3016");
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
-    rt.block_on(async {
+    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&evidence, "rafka-node-admin-core-3016").expect("the cell's evidence file can be created");
+    capture.run(4, async {
         let dir = std::env::temp_dir().join(format!("restart-hold-frame-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
-        let build_id = running.control.accepted.build_id().await.expect("the Day-0 admin holds its accepted Build");
+        let build_id = running.control.builds.current_build().await.unwrap().into_build_id().expect("the Day-0 admin holds its accepted Build");
         let book = running.membership.book.clone();
         let builds = running.runner.builds.clone();
 
         let op_at = |path: &str, kind: &str| {
             let path: rafka_node_admin_core::model::PathName = path.parse().unwrap();
             LifecycleOp {
-                build_id: build_id.0.clone(),
+                build_id: build_id.to_string(),
                 attempt: 2,
                 operation: format!("{kind}:{path}"),
                 node_id: NodeId::mint(),
@@ -183,6 +170,7 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
         let restart = op_at("mesh1.rpc.1", "restart-node");
         let retire = op_at("mesh1.rpc.2", "retire-node");
         let receipt = |operation: String, step: &str, output: Option<&LifecycleOp>| BuildStepReceipt {
+            mesh: None,
             build_id: build_id.clone(),
             attempt: 2,
             operation,
@@ -220,9 +208,7 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
         running.leave().await;
         let _ = std::fs::remove_dir_all(&dir);
     });
-    drop(rt);
-    drop(telemetry);
-    let spans = collect_spans(&evidence);
+    let spans = capture.spans().expect("the cell's spans can be read");
     let named = |name: &str| spans.iter().filter(|s| s["name"] == name).cloned().collect::<Vec<_>>();
     let opened = named("rdm.mesh.membership.update.via-node-restarting");
     let closed = named("rdm.mesh.membership.update.via-restart-closed-by-facts");
@@ -248,22 +234,18 @@ fn a_frame_opened_restart_hold_stays_open_through_an_unrelated_fact_and_closes_o
 #[test]
 fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_arrives() {
     let cell = "a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_arrives";
-    if crate::own_process::delegated(module_path!(), cell) {
+    if delegated(cell) {
         return;
     }
     let evidence = evidence_dir(cell);
     let _ = std::fs::remove_dir_all(&evidence);
     std::fs::create_dir_all(&evidence).unwrap();
-    std::env::set_var("RDM_GOSSIP_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_BACKBONE_INTERVAL_MS", STRETCHED_MS);
-    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-node-admin-core-3016");
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
-    rt.block_on(async {
+    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&evidence, "rafka-node-admin-core-3016").expect("the cell's evidence file can be created");
+    capture.run(4, async {
         let dir = std::env::temp_dir().join(format!("restart-hold-converged-{}", NodeId::mint()));
         let wiring = Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() };
         let running = start_with(day0_config(&dir), wiring).await.expect("the Day-0 admin comes up");
-        let build_id = running.control.accepted.build_id().await.expect("the Day-0 admin holds its accepted Build");
+        let build_id = running.control.builds.current_build().await.unwrap().into_build_id().expect("the Day-0 admin holds its accepted Build");
         let book = running.membership.book.clone();
         let builds = running.runner.builds.clone();
 
@@ -272,7 +254,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
         let op_at = |path: &str, attempt: u32| {
             let path: rafka_node_admin_core::model::PathName = path.parse().unwrap();
             LifecycleOp {
-                build_id: build_id.0.clone(),
+                build_id: build_id.to_string(),
                 attempt,
                 operation: format!("restart-node:{path}"),
                 node_id: NodeId::mint(),
@@ -285,6 +267,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
         let restart = op_at("mesh1.rpc.1", ATTEMPT);
         let other = op_at("mesh1.rpc.2", ATTEMPT + 1);
         let pre_event = |op: &LifecycleOp| BuildStepReceipt {
+            mesh: None,
             build_id: build_id.clone(),
             attempt: op.attempt,
             operation: op.operation.clone(),
@@ -309,7 +292,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
 
         // The attempt's Converged enters the log (the fabric-primary's own verdict from the stream's
         // terminal), no restart-node Complete with it: the hold is over when the append returns.
-        builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: build_id.clone(), attempt: ATTEMPT, outcome: AttemptOutcome::Converged }).await.unwrap();
+        builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: build_id.clone(), attempt: ATTEMPT, outcome: AttemptOutcome::Converged }).await.unwrap();
         assert_eq!(
             book.restart_of(restart.node_id.as_str(), &restart.incarnation),
             None,
@@ -324,9 +307,7 @@ fn a_restart_hold_closes_when_its_attempt_converges_before_its_complete_receipt_
         running.leave().await;
         let _ = std::fs::remove_dir_all(&dir);
     });
-    drop(rt);
-    drop(telemetry);
-    let spans = collect_spans(&evidence);
+    let spans = capture.spans().expect("the cell's spans can be read");
     let closed: Vec<_> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-restart-closed-by-facts").cloned().collect();
     assert_eq!(closed.len(), 1, "one restart hold closed, by its attempt's Converged: {closed:?}");
     let text = closed[0].to_string();

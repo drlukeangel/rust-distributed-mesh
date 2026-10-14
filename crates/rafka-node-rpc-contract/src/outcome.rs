@@ -92,6 +92,11 @@ pub enum NotSentReason {
     },
     /// Connections chose no route to the exact target: no leg was started.
     NoActiveRoute,
+    /// The source admits no new connection: its `node.connections.delete { All }` closed its
+    /// connections, and neither has its name apply resolved nor has it started since (proposal
+    /// node-properties-own-commands.md §2.1, §2.4, the admission block). No connection opened, or the one a dial already had was closed
+    /// before it was pooled; the string names the source and why it admits none.
+    AdmissionBlocked(String),
 }
 
 /// Why a resolver gave no node.
@@ -172,14 +177,16 @@ impl Unserved {
     }
 }
 
-/// The receiver's `425 STALE_TARGET`: the request's fence named a node the receiver is not.
+/// The caller's own stale target: its resolver stopped naming the birth the call was dialled to
+/// before the request went. No receiver decides it: nothing inside the mesh refuses a call for the
+/// node id it names (R-UC1a).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RejectedStale {
     target_node_id: String,
 }
 
 impl RejectedStale {
-    /// The node the caller addressed and the receiver was not.
+    /// The node the caller addressed, whose birth its resolver no longer names.
     pub fn target_node_id(&self) -> &str {
         &self.target_node_id
     }
@@ -208,9 +215,8 @@ pub enum RpcOutcome<R> {
     NotSent(NotSent),
     /// The receiver's `421 UNSERVED_OP` proves the op was never dispatched.
     Unserved(Unserved),
-    /// The receiver's `425 STALE_TARGET` proves the request was never dispatched:
-    /// it reached a process that is not the fenced node. It
-    /// is not `NotSent`: the request was sent and refused.
+    /// The caller's resolver stopped naming the birth the call was dialled to, before the request
+    /// went: never dispatched. It is not `NotSent`: the target itself is stale.
     RejectedStale(RejectedStale),
     /// Committed, and no stronger proof exists. Never silently replayed.
     Indeterminate(Indeterminate),
@@ -311,12 +317,10 @@ impl PreCommit {
         RpcOutcome::Unserved(Unserved { op: self.op })
     }
 
-    /// The fence is stale: the caller found its target superseded
-    /// before or during the dial, or the receiver refused it with
-    /// `425 STALE_TARGET` before the request finished. Definitive no-dispatch,
-    /// never `NotSent`.
-    pub fn stale_before_finish<R>(self, fence: &crate::framing::Fence) -> RpcOutcome<R> {
-        RpcOutcome::RejectedStale(RejectedStale { target_node_id: fence.target_node_id.clone() })
+    /// The call's target is stale: the caller found the node it addressed superseded before or during the dial.
+    /// Definitive no-dispatch, never `NotSent`.
+    pub fn stale_before_finish<R>(self, target: &crate::framing::Target) -> RpcOutcome<R> {
+        RpcOutcome::RejectedStale(RejectedStale { target_node_id: target.node_id.clone() })
     }
 }
 
@@ -371,15 +375,11 @@ impl Committed {
         }
     }
 
-    /// The stream was reset with `code` after commit, for a request that named
-    /// `target`. Only `421` and `425` prove non-dispatch; every other code leaves
-    /// the call `Indeterminate`.
-    pub fn reset<R>(self, code: u64, fence: &crate::framing::Fence) -> RpcOutcome<R> {
+    /// The stream was reset with `code` after commit. Only `421` proves non-dispatch; every other
+    /// code, `425` included (no receiver sends it, R-UC1a), leaves the call `Indeterminate`.
+    pub fn reset<R>(self, code: u64) -> RpcOutcome<R> {
         match ResetCode::from_code(code) {
             Some(ResetCode::UnservedOp) => RpcOutcome::Unserved(Unserved { op: self.op }),
-            Some(ResetCode::StaleTarget) => {
-                RpcOutcome::RejectedStale(RejectedStale { target_node_id: fence.target_node_id.clone() })
-            }
             _ => self.indeterminate(IndeterminateReason::Reset(code)),
         }
     }
@@ -476,12 +476,12 @@ mod tests {
 
     #[test]
     fn unserved_comes_only_from_a_421_after_commit() {
-        let target = crate::framing::Fence { target_node_id: "n1".into(), op: 0x01 };
-        let o: RpcOutcome<PingReply> = committed().reset(421, &target);
+        let o: RpcOutcome<PingReply> = committed().reset(421);
         assert!(matches!(&o, RpcOutcome::Unserved(u) if u.op() == 0x01));
         assert!(o.proves_not_dispatched());
-        for code in [422u64, 423, 424, 499, 0, 501] {
-            let o: RpcOutcome<PingReply> = committed().reset(code, &target);
+        // 425 included: no receiver sends it (R-UC1a), so it proves nothing.
+        for code in [422u64, 423, 424, 425, 499, 0, 501] {
+            let o: RpcOutcome<PingReply> = committed().reset(code);
             assert!(matches!(&o, RpcOutcome::Indeterminate(i) if *i.reason() == IndeterminateReason::Reset(code)), "{code}");
             assert!(!o.proves_not_dispatched());
         }

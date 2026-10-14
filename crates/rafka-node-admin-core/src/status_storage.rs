@@ -78,7 +78,7 @@ impl NodeDeclaredRow {
     }
 
     fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId, state: NodeState) -> String {
-        format!("{node_id}--{}--{state:?}", incarnation_id.0)
+        format!("{node_id}--{}--{state:?}", incarnation_id.as_str())
     }
 
     /// Every key a birth's declared-state rows can hold: what a cycle begin tombstones, blind.
@@ -127,7 +127,7 @@ pub struct NodeSilenceRow {
 impl NodeSilenceRow {
     /// The row's key: the exact birth.
     pub fn key(&self) -> String {
-        format!("{}--{}", self.node_id, self.incarnation_id.0)
+        format!("{}--{}", self.node_id, self.incarnation_id.as_str())
     }
 }
 
@@ -161,7 +161,7 @@ impl NodeExitRow {
 
     /// The key of the birth `(node_id, incarnation_id)`'s exit row.
     pub fn key_of(node_id: &NodeId, incarnation_id: &IncarnationId) -> String {
-        format!("{node_id}--{}", incarnation_id.0)
+        format!("{node_id}--{}", incarnation_id.as_str())
     }
 }
 
@@ -176,6 +176,10 @@ pub trait StatusStorage: Send + Sync {
     async fn put_fabric_event(&self, row: &FabricEventRow) -> Result<(), StorageError>;
     /// The events held, per Fabric, each once.
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError>;
+    /// The events among the status rows of the mesh named `mesh` (`status/<mesh>/fabric/` of the store
+    /// root: this store's own mesh or another's), each once: the fabric-primary's ready-for-traffic row
+    /// among its own mesh's rows is read here by an admin of any mesh.
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError>;
     /// A blind put of the declared-state fact's own key.
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError>;
     /// A blind tombstone of every declared-state key of the birth `(node_id, incarnation_id)`.
@@ -194,7 +198,7 @@ pub trait StatusStorage: Send + Sync {
     /// store's own mesh or another's) hold the Mesh status fact `row`: a point read of its key.
     async fn mesh_status_held_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<bool, StorageError>;
     /// A blind put of the Mesh status fact `row` among the status rows of the mesh named `mesh`: the
-    /// fabric-primary as acting primary of a leaving mesh with none left (mesh-leave.md step 7, R-MD1).
+    /// fabric-primary as acting primary of a leaving mesh with none left (mesh-delete.md step 7, R-MD1).
     async fn put_mesh_status_of(&self, mesh: &str, row: &MeshStatusRow) -> Result<(), StorageError>;
     /// The exit-proof row of the birth `(node_id, incarnation_id)` among the status rows of the mesh
     /// named `mesh` (this store's own or another's): a point read of its key.
@@ -228,6 +232,22 @@ pub struct MemoryStatusStorage {
     meshes_named: Mutex<std::collections::BTreeMap<String, Vec<MeshStatusRow>>>,
     /// The exit-proof rows of each mesh named through the `_of` reads and puts, by row key.
     exits_named: Mutex<std::collections::BTreeMap<String, std::collections::BTreeMap<String, NodeExitRow>>>,
+    /// The Fabric event rows of each mesh named through [`MemoryStatusStorage::put_fabric_event_of`]:
+    /// another mesh's rows on the store root, which this store's own `fabric_events` never lists.
+    events_named: Mutex<std::collections::BTreeMap<String, Vec<FabricEventRow>>>,
+}
+
+impl MemoryStatusStorage {
+    /// Keep `row` among the status rows of the mesh named `mesh`, as that mesh's writer puts its own
+    /// (the fabric-primary's ready-for-traffic row among its mesh's rows): another mesh's rows on the
+    /// store root, read by name, never listed as this store's own.
+    pub fn put_fabric_event_of(&self, mesh: &str, row: &FabricEventRow) {
+        let mut named = self.events_named.lock().unwrap();
+        let rows = named.entry(mesh.to_string()).or_default();
+        if !rows.contains(row) {
+            rows.push(row.clone());
+        }
+    }
 }
 
 #[async_trait]
@@ -251,6 +271,16 @@ impl StatusStorage for MemoryStatusStorage {
     }
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
         Ok(self.events.lock().unwrap().clone())
+    }
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError> {
+        // A store held in memory names no mesh of its own: a named mesh's rows, and this store's own.
+        let mut rows = self.events_named.lock().unwrap().get(mesh).cloned().unwrap_or_default();
+        for row in self.events.lock().unwrap().iter() {
+            if !rows.contains(row) {
+                rows.push(row.clone());
+            }
+        }
+        Ok(rows)
     }
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
         self.declared.lock().unwrap().insert(row.key(), row.clone());
@@ -324,7 +354,7 @@ pub struct FileStatusStorage {
     mesh: String,
     root: crate::store_root::StoreRoot,
     writer: IncarnationId,
-    /// Every other mesh's status rows this admin has read or written (`meshes`, `exits`), by mesh
+    /// Every other mesh's status rows this admin has read or written (`meshes`, `exits`, `fabric`), by mesh
     /// and directory, opened on first use.
     others: Mutex<std::collections::BTreeMap<(String, &'static str), std::sync::Arc<FileRecords>>>,
     /// Set when the fabric-primary seat this admin held moved (a seat transfer's cut-off): every
@@ -357,7 +387,7 @@ impl FileStatusStorage {
         [&self.meshes, &self.fabric, &self.declared, &self.silence, &self.exits]
     }
 
-    /// The `dir` status rows (`meshes`, `exits`) of another mesh `mesh` on the shared root, opened
+    /// The `dir` status rows (`meshes`, `exits`, `fabric`) of another mesh `mesh` on the shared root, opened
     /// outside the lock and kept once under it (the cut-off read under the same lock).
     async fn other(&self, mesh: &str, dir: &'static str) -> Result<std::sync::Arc<FileRecords>, StorageError> {
         let key = (mesh.to_string(), dir);
@@ -432,6 +462,12 @@ impl StatusStorage for FileStatusStorage {
     async fn fabric_events(&self) -> Result<Vec<FabricEventRow>, StorageError> {
         self.fabric.list(FABRIC_EVENT_FORMAT).await
     }
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<FabricEventRow>, StorageError> {
+        if mesh == self.mesh {
+            return self.fabric_events().await;
+        }
+        self.other(mesh, "fabric").await?.list(FABRIC_EVENT_FORMAT).await
+    }
     async fn put_node_declared(&self, row: &NodeDeclaredRow) -> Result<(), StorageError> {
         self.declared.write(&row.key(), NODE_DECLARED_FORMAT, row).await
     }
@@ -491,7 +527,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("status-storage-{}", MeshId::mint()));
         let (m, f) = (MeshId::mint(), FabricId::mint());
         {
-            let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId("test".into())).await.unwrap();
+            let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
             // Written out of order: the later fact first, a lagging earlier one after it.
             s.put_mesh_status(&MeshStatusRow { mesh_id: m.clone(), state: MeshState::ReadyForTraffic }).await.unwrap();
             s.put_mesh_status(&MeshStatusRow { mesh_id: m.clone(), state: MeshState::Pending }).await.unwrap();
@@ -499,7 +535,7 @@ mod tests {
             s.put_fabric_event(&FabricEventRow { fabric_id: f.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
             s.put_fabric_event(&FabricEventRow { fabric_id: f.clone(), event: "shutdown-initiated:mesh1.admin.1".into() }).await.unwrap();
         }
-        let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId("test".into())).await.unwrap();
+        let s = FileStatusStorage::open(&crate::store_root::StoreRoot::at(&dir), "mesh1", &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(s.mesh_statuses().await.unwrap().get(&m), Some(&MeshState::ReadyForTraffic), "the greatest state wins whatever the write order");
         assert_eq!(s.fabric_events().await.unwrap().len(), 1, "one row per event key");
         std::fs::remove_dir_all(&dir).ok();

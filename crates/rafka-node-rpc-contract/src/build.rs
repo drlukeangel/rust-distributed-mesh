@@ -58,7 +58,7 @@ pub struct MeshCounts {
 
 /// What a caller submits. The fabric-primary compiles it once against the accepted topology (a
 /// topology change opens a new Build) or opens the next attempt of the accepted Build (a restart,
-/// drain, stop, start, recovery or recipe, fenced to the births it acts on).
+/// connections delete, stop, start, recovery or recipe, targeted at the births it acts on).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BuildChange {
     /// The whole fabric's meshes and counts.
@@ -100,8 +100,8 @@ pub enum BuildChange {
         /// The node.
         node: PathName,
     },
-    /// Drain the live birth at `node` and keep it running.
-    Drain {
+    /// `node.connections.delete { All }` of the live birth at `node`; it keeps running.
+    DeleteConnections {
         /// The node.
         node: PathName,
     },
@@ -447,10 +447,16 @@ pub enum BuildReply {
         /// The rule's detail.
         detail: String,
     },
-    /// Refusal: another Build is still reconciling; one accepted topology, one Build in flight.
+    /// Refusal: another attempt holds what the request needs (R-BI7: one attempt in flight per
+    /// mesh; a second topology change while a topology Build is in progress is refused fabric-wide).
     BuildInProgress {
         /// The Build in flight.
         current_build_id: String,
+        /// The mesh the holding attempt acts in, when one is known (a claimed attempt's).
+        mesh: Option<String>,
+        /// The admin that claimed the holding attempt (the fabric-primary for a topology attempt,
+        /// the mesh's mesh-primary for its drift attempt), when one claimed it.
+        held_by: Option<String>,
     },
     /// Refusal: the attempt number was opened first by another action.
     AttemptTaken {
@@ -503,13 +509,24 @@ pub enum BuildReply {
         reason: String,
     },
     /// Terminal of `Create`: the fabric-primary seat moved off the receiver while the Build ran (a
-    /// planned handover, op `0x21`). The Build goes on at the new seat; the caller re-submits the
+    /// node.fabric-primary.update, op `0x21`). The Build goes on at the new seat; the caller re-submits the
     /// same `build_id` there. Never `Indeterminate` on a planned move.
     SeatMoved {
         /// The Build.
         build_id: String,
         /// The admin (path.name) that holds the seat now, when the receiver's view names one.
         fabric_primary: Option<String>,
+    },
+    /// Refusal: the receiver may not claim on the mesh the request acts in (R-BI7): a topology
+    /// Build's attempt is the fabric-primary's, a drift attempt its mesh's mesh-primary's. Both are
+    /// named as the receiver sees them.
+    NotClaimant {
+        /// The mesh the request acts in.
+        mesh: Option<String>,
+        /// The fabric-primary the receiver sees, when it sees one.
+        fabric_primary: Option<String>,
+        /// The mesh's mesh-primary the receiver sees, when it sees one.
+        mesh_primary: Option<String>,
     },
 }
 
@@ -542,6 +559,7 @@ impl BuildReply {
             Self::Malformed { .. } => "malformed",
             Self::Unauthorized { .. } => "unauthorized",
             Self::SeatMoved { .. } => "seat-moved",
+            Self::NotClaimant { .. } => "not-claimant",
         }
     }
 
@@ -566,7 +584,7 @@ impl NodeProtocol for Build {
     /// A stream, decided by the fabric-primary itself or not at all.
     const FORWARDABLE: bool = false;
     const REQUEST_VARIANTS: u32 = 4;
-    const REPLY_VARIANTS: u32 = 25;
+    const REPLY_VARIANTS: u32 = 26;
 
     type Request = BuildRequest;
     type Reply = BuildReply;
@@ -589,6 +607,7 @@ impl NodeProtocol for Build {
             | BuildReply::UnknownBuild { .. }
             | BuildReply::Rejected { .. }
             | BuildReply::BuildInProgress { .. }
+            | BuildReply::NotClaimant { .. }
             | BuildReply::AttemptTaken { .. }
             | BuildReply::Fenced { .. }
             | BuildReply::CannotDelete { .. } => ReplyKind::ProtocolRefusal,

@@ -1,9 +1,9 @@
 //! i143.e6.s9 functional: caller identity and W3C context ride the request envelope, end to end.
 //!
-//! `caller_system`, `traceparent`, `tracestate` and `baggage` travel beside the target fence,
+//! `caller_system`, `traceparent`, `tracestate` and `baggage` travel beside the target,
 //! never inside a protocol codec. A direct call continues the caller's trace at the target; a
 //! carried call keeps the origin's causal parent and `caller_system` through the hop. Nothing
-//! here reaches target selection, authority, the fence or the result: a missing context is
+//! here reaches target selection, authority, the target or the result: a missing context is
 //! valid, and a malformed or over-bound part is dropped, named as `context_dropped` on the
 //! local span, while the call proceeds unchanged. Baggage propagates whole and only allowlisted
 //! keys (`test_case`, `scenario`, `operation`) become span attributes.
@@ -164,7 +164,7 @@ async fn process(name: &str) -> Process {
                 Ok(ProbeReply::Probed { payload })
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(endpoint).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { node_id, name: name.parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
@@ -369,28 +369,36 @@ async fn malformed_or_over_bound_context_is_dropped_by_name_and_never_changes_th
     assert!(serve.iter().any(|s| attr(s, "caller_system").as_deref() == Some("rdm") && s.parent_span_id.to_string() == PARENT), "the valid parts still apply: {serve:?}");
 }
 
+/// CONTRACT (node-rpc-envelope.md Section 0: the receiver reads the target first and alone; R-UC1a:
+/// the target's node id is never a reason to refuse): a call of an op this process does not serve,
+/// carrying a full context, is refused `421` on the target alone, so the refusal is not in the
+/// caller's trace and carries no `caller_system`; a call whose target names another node id at this
+/// process is served with the context it carried. Must NOT happen: the context read before the
+/// unserved refusal, or the other node id refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn context_never_reaches_the_fence_decision() {
+async fn context_never_reaches_the_target_decision() {
     spans();
     let p = process("mesh1.rpc.1").await;
-    let (c, _) = client(None, &[&p.resolved]).await;
-    // The caller's view names another node id at this process: 425 whatever the context says.
-    let mut stale = p.resolved.clone();
-    stale.node_id = NodeId::mint();
-    let (c2, _) = client(None, &[&stale]).await;
+    let mut other = p.resolved.clone();
+    other.node_id = NodeId::mint();
+    let (c, _) = client(None, &[&p.resolved, &other]).await;
     let t = trace();
-    let ctx = CallContext { baggage: Some("operation=make-it-current".into()), ..full(&t) };
-    let (out, _) = c2.call::<Ping>(&NodeTarget::ExactNode(stale.node_id.clone()), &echo(b"stale"), &with(ctx)).await;
-    assert!(matches!(out, RpcOutcome::RejectedStale(_)), "the fence decides, the context cannot: {out:?}");
+    let ctx = CallContext { baggage: Some("operation=make-it-served".into()), ..full(&t) };
+    let (out, _) = c
+        .invoke_raw::<PingReply, _>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), 0x42, vec![1, 2, 3], 1024, &with(ctx.clone()), |d| match d {
+            rafka_node_rpc::Decode::Committed(c, b) => c.reply::<Ping>(b),
+            rafka_node_rpc::Decode::Early(e, b) => e.reply::<Ping>(b),
+        })
+        .await;
+    assert!(matches!(out, RpcOutcome::Unserved(_)), "the target's op decides, the context cannot: {out:?}");
     assert!(p.seen.lock().unwrap().is_empty(), "nothing was dispatched");
-    // The refusal was decided on the fence alone: the context was never read, so the refusal
-    // is not in the caller's trace and carries no caller_system.
-    assert!(finished("rdm.node_rpc.connection.reject.via-stale-target", Some(&t.id)).is_empty(), "a 425 owes nothing to section 1");
-    let refused = finished("rdm.node_rpc.connection.reject.via-stale-target", None);
-    assert!(refused.iter().any(|s| attr(s, "decided_by").as_deref() == Some("target") && attr(s, "caller_system").is_none()), "{refused:?}");
-    // The current client serves with the same context.
-    let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(p.resolved.node_id.clone()), &echo(b"current"), &with(full(&t))).await;
-    assert!(matches!(out, RpcOutcome::Reply(_)), "{out:?}");
+    assert!(finished("rdm.node_rpc.request.reject.via-unserved-op", Some(&t.id)).is_empty(), "a 421 owes nothing to section 1");
+    let refused = finished("rdm.node_rpc.request.reject.via-unserved-op", None);
+    assert!(!refused.is_empty() && refused.iter().all(|s| attr(s, "caller_system").is_none()), "{refused:?}");
+    // The target naming another node id at this process is served, with the context it carried.
+    let (out, _) = c.call::<Ping>(&NodeTarget::ExactNode(other.node_id.clone()), &echo(b"other"), &with(full(&t))).await;
+    assert!(matches!(out, RpcOutcome::Reply(_)), "a target naming another node id is served: {out:?}");
+    assert_eq!(p.seen.lock().unwrap().len(), 1, "it was dispatched");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -409,7 +417,7 @@ async fn a_carried_call_keeps_the_origins_trace_and_caller_system_through_the_ho
         .ledger(test_ledger())
         .carry::<Probe>()
         .serve_forward(carrier_client)
-        .seal(ServedBirth { node_id: cid.to_string(), incarnation: cinc.0.clone() })
+        .seal(ServedBirth { node_id: cid.to_string(), incarnation: cinc.to_string() })
         .unwrap();
     let _carrier_router = Router::builder(carrier_ep).accept(rafka_node_rpc::ALPN, carrier_server).spawn();
     let carrier = ResolvedNode { node_id: cid, name: "mesh1.rpc.2".parse().unwrap(), endpoint_id: carrier_key.public(), transport_addr: carrier_addr, incarnation: cinc };

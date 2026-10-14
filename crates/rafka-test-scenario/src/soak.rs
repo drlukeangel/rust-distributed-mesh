@@ -17,10 +17,11 @@
 //! - [`crate::elections`]: the seats a view advertises equal the ones the public candidates
 //!   compute.
 //!
-//! Topology actions go through the control API only (grow = spawn, shrink = delete, restart =
-//! restart, replace = delete then spawn into the freed ordinal, hand-off = replace of the mesh's
-//! seat-holding node-admin). A restart or a replacement is confirmed from the Build's own receipts
-//! (`AllocateIdentity`) before anything is judged.
+//! Topology actions are Node RPC workflows on the typed objects (grow = `node.create`, shrink =
+//! `node.delete`, restart = `node.restart`, replace = delete then create into the freed ordinal,
+//! hand-off = replace of the mesh's seat-holding node-admin), each awaited on its reply stream. A
+//! restart or a replacement is confirmed from the Build's own receipts (`AllocateIdentity`, read
+//! through the [`BuildRead`] the test binary hands the driver) before anything is judged.
 //!
 //! The fabric-primary node-admin is never signalled, killed, held or silenced: a fault that names
 //! it is redrawn and the redraw is recorded. It leaves only through a hand-off Build. The
@@ -42,6 +43,7 @@ use crate::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault};
 use crate::scenario::Operation as ProofOp;
 use crate::sim::Scheduler;
 use crate::wedge::{judge, Control, Evidence, Family, FaultAck, Primitive, Progress as WedgeProgress, Reconciliation, Recovery, Release, Routing};
+use rafka_node_admin_client::{birth_of_view, Accepted, CallEnd, FabricDesired, FabricView, Frame, LaunchKind, MeshDesired, MeshNode, NodeSpec, NodeView, PathName, ScopeStatus, WorkflowStream};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -324,8 +326,8 @@ struct OpBook {
 
 #[derive(Default, Clone)]
 struct View {
-    /// The fabric-primary's control API: the traffic's probes read the view through it.
-    admin: Option<String>,
+    /// The fabric-primary's birth: the traffic's probes enter at it and read its view.
+    admin: Option<MeshNode>,
     rpcs: Vec<(String, String)>,
     /// The gateways that carry a quarter of the traffic to its exact target (`--via`).
     gateways: Vec<String>,
@@ -351,7 +353,7 @@ struct Call {
 
 /// Issue `call` once: recorded in the ledger before it is sent, classified from the printed typed
 /// outcome after. No retry: an outcome is recorded, never repeated.
-async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &str, call: Call) {
+async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &MeshNode, call: Call) {
     let id: OperationId = {
         let mut b = shared.book.lock().unwrap();
         let mutation = match (call.kind, &call.value) {
@@ -381,7 +383,7 @@ async fn issue(shared: &Shared, probe: &ProbeHandle, admin: &str, call: Call) {
     if let Some(gw) = &call.via {
         args.extend(["--via".into(), format!("path:{gw}")]);
     }
-    let (p, a) = (probe.clone(), admin.to_string());
+    let (p, a) = (probe.clone(), admin.clone());
     let printed = tokio::task::spawn_blocking(move || {
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         p.run(&a, &refs)
@@ -443,38 +445,84 @@ async fn traffic(shared: Arc<Shared>, probe: ProbeHandle, seed: u64) {
     }
 }
 
-/// Every live admin's control API, from the entry admin's view.
-fn admin_bases(nodes: &[Value]) -> Vec<String> {
-    nodes.iter().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(|n| n["admin_api_base"].as_str().map(String::from)).collect()
+/// A live node-admin as the entry admin's view names it: its `path.name`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Admin {
+    name: String,
 }
 
-/// A read that may hit an admin whose process just died: `None`, never a panic.
-async fn try_get(base: &str, path: &str) -> Option<Value> {
-    let r = reqwest::Client::new().get(format!("{base}{path}")).timeout(Duration::from_secs(2)).send().await.ok()?;
-    if r.status().as_u16() != 200 {
-        return None;
+impl Admin {
+    fn path(&self) -> PathName {
+        self.name.parse().unwrap_or_else(|e| panic!("the view names a node-admin {} that is no path.name: {e:?}", self.name))
     }
-    r.json().await.ok()
 }
 
-/// Control follows whoever answers for this Fabric: the fabric's advertised holder if it answers,
-/// else the first live admin from `known` that does. False when nobody answers.
-async fn relocate_control(estate: &mut Estate, known: &[String]) -> bool {
-    let mut candidates: Vec<String> = vec![estate.admin.clone()];
-    candidates.extend(known.iter().cloned());
-    for c in candidates.clone() {
-        if let Some(f) = estate.fabric_at(&c).await {
-            if let Some(h) = f["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
-                if estate.fabric_at(h).await.is_some() {
-                    estate.admin = h.to_string();
-                    return true;
+/// The node-admin a node of a view is.
+fn admin_of(n: &Value) -> Option<Admin> {
+    Some(Admin { name: n["name"].as_str()?.to_string() })
+}
+
+/// Every live admin, from the entry admin's view.
+fn admins_of(nodes: &[Value]) -> Vec<Admin> {
+    nodes.iter().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(admin_of).collect()
+}
+
+/// `node.get` of every node of every mesh `admin` holds, as that admin's own view holds them, as JSON: a read that
+/// may hit an admin whose process just died answers `None`, never a panic.
+async fn views_at(estate: &Estate, admin: &Admin) -> Option<Vec<Value>> {
+    estate.node_views_at(&admin.path()).await.map(|v| Estate::values(&v))
+}
+
+/// `fabric.get` at `admin`, only when it answers within 2 s for this estate's Fabric.
+async fn fabric_at(estate: &Estate, admin: &Admin) -> Option<FabricView> {
+    estate.fabric_view_at(&admin.path()).await
+}
+
+/// Control follows whoever answers for this Fabric: the fabric's advertised holder if it answers, else the first
+/// live admin from `known` that does. The admin control now starts at; `None` when nobody answers.
+async fn relocate_control(estate: &mut Estate, known: &[Admin]) -> Option<Admin> {
+    let entry = estate.admin.clone();
+    let mut candidates: Vec<&Admin> = known.iter().filter(|a| a.path() == entry).collect();
+    candidates.extend(known.iter().filter(|a| a.path() != entry));
+    for c in candidates {
+        if let Some(f) = fabric_at(estate, c).await {
+            if let Some(holder) = f.fabric_primary.as_ref() {
+                if estate.fabric_view_at(holder).await.is_some() {
+                    estate.enter(holder).await;
+                    return Some(Admin { name: holder.to_string() });
                 }
             }
-            estate.admin = c;
-            return true;
+            estate.enter(&c.path()).await;
+            return Some(c.clone());
         }
     }
-    false
+    None
+}
+
+/// The kind a class launches as.
+fn launch_kind(class: NodeClass) -> LaunchKind {
+    match class {
+        NodeClass::NodeAdmin => LaunchKind::NodeAdmin,
+        NodeClass::RpcNode => LaunchKind::RpcNode,
+        NodeClass::Compute => LaunchKind::Compute,
+        NodeClass::Gateway => LaunchKind::Gateway,
+        NodeClass::Broker => LaunchKind::Broker,
+    }
+}
+
+/// The `path.name` a model or a view names.
+fn path_name(p: &str) -> PathName {
+    p.parse().unwrap_or_else(|e| panic!("{p} is not a path.name: {e:?}"))
+}
+
+/// A workflow call the fabric-primary did not accept, by name.
+fn refused(call: &str, end: CallEnd) -> Broken {
+    broken("topology-action-accepted", format!("{call}: {end}"))
+}
+
+/// The Build and attempt a workflow call opened, as a round row records them.
+fn accepted_json(a: &Accepted) -> Value {
+    json!({"build_id": a.build_id.to_string(), "attempt": a.attempt})
 }
 
 /// The node count of every class per mesh the model holds.
@@ -490,9 +538,9 @@ fn serves_proof(n: &Value) -> bool {
 
 /// The fabric has converged when every live admin's view holds the same births: the expected
 /// counts, every one ready for traffic, the same (path, incarnation) set everywhere. Returns the
-/// live admin bases that agree.
-async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTreeMap<&'static str, u32>>) -> Option<Vec<String>> {
-    let nodes = estate.nodes().await;
+/// live admins that agree.
+async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTreeMap<&'static str, u32>>) -> Option<Vec<Admin>> {
+    let nodes = estate.node_values().await;
     let shape_ok = |nodes: &[Value]| {
         expected.iter().all(|(m, counts)| {
             let ready = |k: &str| nodes.iter().filter(|n| n["mesh"] == m.as_str() && n["kind"] == k && n["status"] == "ready-for-traffic").count() as u32;
@@ -506,22 +554,28 @@ async fn converged_everywhere(estate: &Estate, expected: &BTreeMap<String, BTree
     }
     let want = births(&nodes);
     let mut agreeing = Vec::new();
-    for base in admin_bases(&nodes) {
-        let v = try_get(&base, "/api/nodes").await?;
-        let theirs: Vec<Value> = v["nodes"].as_array().cloned().unwrap_or_default();
+    for admin in admins_of(&nodes) {
+        let theirs = views_at(estate, &admin).await?;
         if !shape_ok(&theirs) || births(&theirs) != want {
             return None;
         }
-        agreeing.push(base);
+        agreeing.push(admin);
     }
     Some(agreeing)
 }
 
+/// How the driver reads Build `id` as the fabric-primary's Build log holds it, as the JSON the Build projection
+/// serializes to (`attempt`, `state`, `last_failure`, `steps` with each receipt's `output`). The read is the test
+/// binary's: the receipts' outputs travel on `FetchBuildFacts` (op `0x1F`, `build_state::fold`), a read the
+/// scenario crate's shipped code cannot link (`tools/mesh-audit/src/deps.rs`, rule 4), and `build.get` carries no
+/// output.
+pub type BuildRead = for<'a> fn(&'a Estate, &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = Value> + Send + 'a>>;
+
 /// The birth a round's operation produced at `path`, from the Build's own receipts: the last
 /// completed `AllocateIdentity` for an operation on `path` in an attempt after `after_attempt`.
 /// `Ok(None)` while the Build has not completed it; `Err` names a failed Build.
-async fn born_at(estate: &Estate, build_id: &str, path: &str, after_attempt: u64) -> Result<Option<(String, String)>, String> {
-    let (_, b) = estate.get(&format!("/api/builds?id={build_id}")).await;
+async fn born_at(estate: &Estate, read: BuildRead, build_id: &str, path: &str, after_attempt: u64) -> Result<Option<(String, String)>, String> {
+    let b = read(estate, build_id).await;
     // A Build still reporting an attempt up to `after_attempt` is reporting an earlier attempt's
     // state: this operation's attempt has not been claimed here yet.
     if num(&b["attempt"]) <= after_attempt && after_attempt > 0 {
@@ -545,18 +599,17 @@ async fn born_at(estate: &Estate, build_id: &str, path: &str, after_attempt: u64
 /// Every live admin's view holds exactly `birth` at `path`, ready for traffic, and the replaced
 /// incarnation `old` nowhere live.
 async fn birth_held_everywhere(estate: &Estate, path: &str, birth: &(String, String), old: &str) -> Result<(), String> {
-    let nodes = estate.nodes().await;
-    for base in admin_bases(&nodes) {
-        let Some(v) = try_get(&base, "/api/nodes").await else { return Err(format!("{base}: /api/nodes unanswered")) };
-        let theirs = v["nodes"].as_array().cloned().unwrap_or_default();
+    let nodes = estate.node_values().await;
+    for admin in admins_of(&nodes) {
+        let Some(theirs) = views_at(estate, &admin).await else { return Err(format!("{}: node.get unanswered", admin.name)) };
         let at_path: Vec<String> = theirs.iter().filter(|n| n["name"] == path).map(|n| format!("{}/{}:{}", s(&n["node_id"]), s(&n["incarnation_id"]), s(&n["status"]))).collect();
         let holds = theirs.iter().any(|n| n["name"] == path && n["node_id"] == birth.0.as_str() && n["incarnation_id"] == birth.1.as_str() && n["status"] == "ready-for-traffic");
         let old_live: Vec<String> = theirs.iter().filter(|n| n["incarnation_id"] == old && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).map(|n| format!("{}:{}", s(&n["name"]), s(&n["status"]))).collect();
         if !holds {
-            return Err(format!("{base} holds {at_path:?} at {path}, not {}/{} ready-for-traffic", birth.0, birth.1));
+            return Err(format!("{} holds {at_path:?} at {path}, not {}/{} ready-for-traffic", admin.name, birth.0, birth.1));
         }
         if !old_live.is_empty() {
-            return Err(format!("{base} still holds the replaced incarnation {old} live: {old_live:?}"));
+            return Err(format!("{} still holds the replaced incarnation {old} live: {old_live:?}", admin.name));
         }
     }
     Ok(())
@@ -564,12 +617,12 @@ async fn birth_held_everywhere(estate: &Estate, path: &str, birth: &(String, Str
 
 /// No live admin's view holds `path` live any more.
 async fn gone_everywhere(estate: &Estate, path: &str) -> Result<(), String> {
-    let nodes = estate.nodes().await;
-    for base in admin_bases(&nodes) {
-        let Some(v) = try_get(&base, "/api/nodes").await else { return Err(format!("{base}: /api/nodes unanswered")) };
-        let live: Vec<String> = v["nodes"].as_array().into_iter().flatten().filter(|n| n["name"] == path && !matches!(n["status"].as_str(), Some("dead"))).map(|n| format!("{}:{}", s(&n["node_id"]), s(&n["status"]))).collect();
+    let nodes = estate.node_values().await;
+    for admin in admins_of(&nodes) {
+        let Some(v) = views_at(estate, &admin).await else { return Err(format!("{}: node.get unanswered", admin.name)) };
+        let live: Vec<String> = v.iter().filter(|n| n["name"] == path && !matches!(n["status"].as_str(), Some("dead"))).map(|n| format!("{}:{}", s(&n["node_id"]), s(&n["status"]))).collect();
         if !live.is_empty() {
-            return Err(format!("{base} still holds {path}: {live:?}"));
+            return Err(format!("{} still holds {path}: {live:?}", admin.name));
         }
     }
     Ok(())
@@ -580,34 +633,33 @@ async fn gone_everywhere(estate: &Estate, path: &str) -> Result<(), String> {
 ///
 /// `direct`: the paths are judged by the admins of their own mesh (the direct observers of a held
 /// node), any one of them marking every path; otherwise by the admin that answers for the Fabric.
-async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], true_offline: bool, direct: bool, within: Duration) -> Result<Duration, String> {
+async fn until_unheard(estate: &mut Estate, known: &[Admin], paths: &[String], true_offline: bool, direct: bool, within: Duration) -> Result<Duration, String> {
     let began = Instant::now();
     let until = Instant::now() + within;
     let mut last = String::new();
     while Instant::now() < until {
-        if relocate_control(estate, known).await {
+        if let Some(entry) = relocate_control(estate, known).await {
             // Only the target mesh's primary tickles it, so only its view records `dead`: true
             // offline is read there; pending-reconnect from any admin that answers.
-            let mut judge = estate.admin.clone();
+            let mut judge = entry.clone();
             if true_offline {
-                if let (Some(v), Some(mesh)) = (try_get(&estate.admin, "/api/nodes").await, paths.first().and_then(|p| p.split('.').next())) {
-                    if let Some(base) = v["nodes"].as_array().into_iter().flatten().find(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["is_primary"] == true && n["status"] == "ready-for-traffic").and_then(|n| n["admin_api_base"].as_str()) {
-                        judge = base.to_string();
+                if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, paths.first().and_then(|p| p.split('.').next())) {
+                    if let Some(primary) = v.iter().find(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["is_primary"] == true && n["status"] == "ready-for-traffic").and_then(admin_of) {
+                        judge = primary;
                     }
                 }
             }
             let mut judges = vec![judge.clone()];
             if direct && !true_offline {
-                if let (Some(v), Some(mesh)) = (try_get(&estate.admin, "/api/nodes").await, paths.first().and_then(|p| p.split('.').next())) {
-                    let own: Vec<String> = v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["status"] == "ready-for-traffic").filter_map(|n| n["admin_api_base"].as_str().map(String::from)).filter(|b| known.contains(b)).collect();
+                if let (Some(v), Some(mesh)) = (views_at(estate, &entry).await, paths.first().and_then(|p| p.split('.').next())) {
+                    let own: Vec<Admin> = v.iter().filter(|n| n["kind"] == "node_admin" && n["mesh"] == mesh && n["status"] == "ready-for-traffic").filter_map(admin_of).filter(|a| known.contains(a)).collect();
                     if !own.is_empty() {
                         judges = own;
                     }
                 }
             }
             for judge in judges {
-              if let Some(v) = try_get(&judge, "/api/nodes").await {
-                let nodes = v["nodes"].as_array().cloned().unwrap_or_default();
+              if let Some(nodes) = views_at(estate, &judge).await {
                 let unheard = |p: &String| {
                     nodes.iter().filter(|n| n["name"] == p.as_str()).all(|n| match n["status"].as_str() {
                         Some("dead") => true,
@@ -626,12 +678,12 @@ async fn until_unheard(estate: &mut Estate, known: &[String], paths: &[String], 
     }
     // What every admin that answers holds, so the refusal says who did not mark it.
     let mut views = Vec::new();
-    for base in known.iter().chain(std::iter::once(&estate.admin)) {
-        let held = match try_get(base, "/api/nodes").await {
-            Some(v) => paths.iter().map(|p| format!("{p}:{:?}", v["nodes"].as_array().into_iter().flatten().filter(|n| n["name"] == p.as_str()).map(|n| s(&n["status"])).collect::<Vec<_>>())).collect::<Vec<_>>().join(" "),
+    for admin in known {
+        let held = match views_at(estate, admin).await {
+            Some(v) => paths.iter().map(|p| format!("{p}:{:?}", v.iter().filter(|n| n["name"] == p.as_str()).map(|n| s(&n["status"])).collect::<Vec<_>>())).collect::<Vec<_>>().join(" "),
             None => "unanswered".into(),
         };
-        views.push(format!("{base} -> {held}"));
+        views.push(format!("{} -> {held}", admin.name));
     }
     Err(format!("not marked unheard within {}s: {last}; every admin's view: {views:?}", within.as_secs()))
 }
@@ -652,7 +704,7 @@ enum Cut {
     /// Container provider: a packet filter in the namespaces of the mesh's containers.
     Container(container_faults::Silenced),
     /// Process provider: UDP between the mesh's transport sockets and every other mesh's dropped
-    /// by `iptables`; dropping the value lifts it.
+    /// by an nftables table; dropping the value lifts it.
     Udp { partition: Partition, members: Vec<String> },
 }
 
@@ -699,7 +751,9 @@ pub struct Driver {
     sched: Scheduler,
     shared: Arc<Shared>,
     progress: Arc<Mutex<Progress>>,
-    known: Vec<String>,
+    known: Vec<Admin>,
+    /// How a Build is read as the fabric-primary's log holds it (the test binary's).
+    read: BuildRead,
     build_id: String,
     executed: Vec<Action>,
     actions: BTreeMap<String, usize>,
@@ -711,26 +765,17 @@ pub struct Driver {
 
 impl Driver {
     /// Bring the estate to the born shape through the rectifier and hold the born model.
-    pub async fn new(mut estate: Estate, cfg: Config) -> Self {
+    pub async fn new(mut estate: Estate, cfg: Config, read: BuildRead) -> Self {
         estate.set_seed(cfg.seed);
         let initial = cfg.model(&estate.owner.provider);
-        let desired = json!({"fabric": "fabric1", "meshes": cfg.shape.iter().map(|(m, classes)| {
-            let mut mesh = serde_json::Map::new();
-            mesh.insert("name".into(), json!(m));
-            for (class, n) in classes {
-                mesh.insert(class.kind_name().into(), json!(n));
-            }
-            Value::Object(mesh)
-        }).collect::<Vec<_>>()});
-        let (status, a) = estate.post("/api/build", &desired).await;
-        assert_eq!(status, 202, "{a}");
-        let build_id = s(&a["build_id"]);
-        estate.await_build(&build_id, Duration::from_secs(120)).await;
-        let want: BTreeMap<(String, String), usize> = cfg.shape.iter().flat_map(|(m, classes)| classes.iter().map(move |(class, n)| ((m.to_string(), class.kind_name().to_string()), *n as usize))).collect();
-        estate.settled_counts(want, Duration::from_secs(60)).await;
+        let desired = FabricDesired { fabric: "fabric1".into(), meshes: cfg.shape.iter().map(|(m, classes)| MeshDesired::of(*m, classes.iter().map(|(class, n)| (launch_kind(*class), *n)))).collect() };
+        let reconciled = tokio::time::timeout(Duration::from_secs(120), estate.reconcile(&desired)).await.unwrap_or_else(|_| panic!("the formation Build of {desired:?} did not complete within 120s"));
+        let build_id = reconciled.build_id.to_string();
+        let want: BTreeMap<(String, LaunchKind), usize> = cfg.shape.iter().flat_map(|(m, classes)| classes.iter().map(move |(class, n)| ((m.to_string(), launch_kind(*class)), *n as usize))).collect();
+        estate.settles_to_counts(want, Duration::from_secs(60)).await;
         let expected = expected_counts(&initial);
         wait_for("every live admin holds the same births", cfg.floor * 2 + cfg.backbone * 2 + Duration::from_secs(60), || converged_everywhere(&estate, &expected)).await;
-        let known = admin_bases(&estate.nodes().await);
+        let known = admins_of(&estate.node_values().await);
         let progress = Arc::new(Mutex::new(Progress { executed: Vec::new(), initial: Some(initial.clone()) }));
         let shared = Arc::new(Shared { book: Mutex::new(OpBook::default()), view: Mutex::new(View::default()), stop: AtomicBool::new(false) });
         Self {
@@ -743,6 +788,7 @@ impl Driver {
             shared,
             progress,
             known,
+            read,
             build_id,
             executed: Vec::new(),
             actions: BTreeMap::new(),
@@ -759,7 +805,13 @@ impl Driver {
     }
 
     fn publish_view(&self, nodes: &[Value]) {
-        let admin = nodes.iter().find(|n| n["kind"] == "node_admin" && n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic").or_else(|| nodes.iter().find(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic")).and_then(|n| n["admin_api_base"].as_str().map(String::from));
+        let admin = nodes
+            .iter()
+            .find(|n| n["kind"] == "node_admin" && n["is_fabric_primary"] == true && n["status"] == "ready-for-traffic")
+            .or_else(|| nodes.iter().find(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic"))
+            .and_then(|n| serde_json::from_value::<NodeView>(n.clone()).ok())
+            .as_ref()
+            .and_then(birth_of_view);
         let rpcs = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["node_id"]))).collect();
         let gateways = nodes.iter().filter(|n| n["kind"] == "gateway" && n["status"] == "ready-for-traffic").map(|n| s(&n["name"])).collect();
         *self.shared.view.lock().unwrap() = View { admin, rpcs, gateways };
@@ -838,6 +890,8 @@ impl Driver {
 
     /// Run until the deadline or the first violation.
     pub async fn run(mut self) -> (Report, Estate) {
+        // The initial fabric refuses a node delete, restart and replace until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+        self.estate.until_fabric_ready(Duration::from_secs(120)).await;
         let tr = tokio::spawn(traffic(self.shared.clone(), self.estate.probe_handle(), self.cfg.seed));
         self.sched.record("start", &format!("seed={} secs={}", self.cfg.seed, self.cfg.secs));
         let deadline = Instant::now() + Duration::from_secs(self.cfg.secs);
@@ -846,12 +900,12 @@ impl Driver {
         // A cut owes its Heal row: the run ends on a healed fabric, never inside a hold.
         while (Instant::now() < deadline || !self.silenced.is_empty()) && violations.is_empty() {
             round += 1;
-            if !relocate_control(&mut self.estate, &self.known).await {
-                violations.push(Violation { rule: "control-api-answers".into(), round, step: self.executed.len(), action: "-".into(), detail: "no admin answers its control API".into() });
+            if relocate_control(&mut self.estate, &self.known).await.is_none() {
+                violations.push(Violation { rule: "control-api-answers".into(), round, step: self.executed.len(), action: "-".into(), detail: format!("no admin answers fabric.get: {:?}", self.known.iter().map(|a| a.name.as_str()).collect::<Vec<_>>()) });
                 break;
             }
-            let nodes = self.estate.nodes().await;
-            self.known = admin_bases(&nodes);
+            let nodes = self.estate.node_values().await;
+            self.known = admins_of(&nodes);
             self.publish_view(&nodes);
             let Some(action) = self.next_action(&nodes) else {
                 violations.push(Violation { rule: "a-legal-action-exists".into(), round, step: self.executed.len(), action: "-".into(), detail: format!("no drawn action is executable on the live estate; skipped: {:?}", self.skipped) });
@@ -955,7 +1009,7 @@ impl Driver {
 
     async fn execute(&mut self, action: &Action, nodes: &[Value], round: usize, entry: &mut Value) -> Result<(), Broken> {
         let expected = expected_counts(&self.model);
-        let attempt_before = num(&self.estate.get(&format!("/api/builds?id={}", self.build_id)).await.1["attempt"]);
+        let attempt_before = num(&(self.read)(&self.estate, &self.build_id).await["attempt"]);
         let node_json = |p: &str| nodes.iter().find(|n| n["name"] == p).cloned();
         // The exact birth the action removes, and the Build whose receipts name the birth that
         // replaces it (with the attempt it must come after).
@@ -969,34 +1023,27 @@ impl Driver {
         match action {
             Action::Grow { mesh, class } => {
                 let kind = class.kind_name();
-                let (st, b) = self.estate.post("/api/nodes/spawn", &json!({"mesh": mesh, "kind": kind})).await;
-                entry["accepted"] = json!(st);
-                if st != 202 {
-                    return Err(broken("topology-action-accepted", format!("spawn {kind} in {mesh}: {st} {b}")));
-                }
-                self.await_build(&s(&b["build_id"]), entry).await?;
+                let spawn = self.estate.nodes_obj().await.create(&NodeSpec { mesh: mesh.clone(), kind: launch_kind(*class) }).await.map_err(|end| refused(&format!("node.create {kind} in {mesh}"), end))?;
+                entry["accepted"] = accepted_json(spawn.accepted());
+                entry["build"] = self.await_build(spawn).await?;
             }
             Action::Shrink { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
-                let (st, b) = self.estate.delete(&format!("/api/nodes/{node}")).await;
-                entry["accepted"] = json!(st);
-                if st != 202 {
-                    return Err(broken("topology-action-accepted", format!("delete {node}: {st} {b}")));
-                }
-                self.await_build(&s(&b["build_id"]), entry).await?;
+                let delete = self.estate.nodes_obj().await.delete(&path_name(node)).await.map_err(|end| refused(&format!("node.delete {node}"), end))?;
+                entry["accepted"] = accepted_json(delete.accepted());
+                entry["build"] = self.await_build(delete).await?;
                 gone = Some(node.clone());
                 retired_node_id = Some(s(&n["node_id"]));
             }
             Action::Restart { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
-                let (st, b) = self.estate.post(&format!("/api/nodes/{node}/restart"), &json!({})).await;
-                entry["accepted"] = json!(st);
-                if st != 202 {
-                    return Err(broken("topology-action-accepted", format!("restart {node}: {st} {b}")));
-                }
+                let restart = self.estate.nodes_obj().await.restart(&path_name(node)).await.map_err(|end| refused(&format!("node.restart {node}"), end))?;
+                entry["accepted"] = accepted_json(restart.accepted());
                 removed = Some((node.clone(), s(&n["incarnation_id"])));
                 // The birth is read from the attempt this restart opened, never an earlier one's.
-                watch = Some((s(&b["build_id"]), Estate::attempt_of(&b) - 1));
+                let opened = restart.accepted().clone();
+                self.await_build(restart).await?;
+                watch = Some((opened.build_id.to_string(), u64::from(opened.attempt) - 1));
             }
             Action::Replace { node } => {
                 let n = node_json(node).ok_or_else(|| broken("model-matches-view", format!("{node} is not in the view")))?;
@@ -1047,7 +1094,7 @@ impl Driver {
                 };
                 let n = node_json(target).filter(|n| n["status"] == "ready-for-traffic").ok_or_else(|| broken("model-matches-view", format!("{target} is not ready in the view")))?;
                 let probe = self.estate.probe_handle();
-                let admin = self.shared.view.lock().unwrap().admin.clone().unwrap_or_else(|| self.estate.admin.clone());
+                let admin = self.shared.view.lock().unwrap().admin.clone().unwrap_or_else(|| self.estate.entry_birth());
                 let call = match op {
                     ProofOp::Put { value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "put", key, value: Some(value.clone()), expected: None, via: None },
                     ProofOp::Cas { expected, value, .. } => Call { target_path: target.clone(), target_id: s(&n["node_id"]), kind: "cas", key, value: Some(value.clone()), expected: Some(expected.clone()), via: None },
@@ -1066,11 +1113,11 @@ impl Driver {
         // live admin holds the same births.
         let until = Instant::now() + CONVERGE;
         loop {
-            if relocate_control(&mut self.estate, &self.known).await {
-                let view = self.estate.nodes().await;
+            if relocate_control(&mut self.estate, &self.known).await.is_some() {
+                let view = self.estate.node_values().await;
                 self.publish_view(&view);
                 let born = match (&watch, &removed) {
-                    (Some((b, after)), Some((path, _))) => born_at(&self.estate, b, path, *after).await.map_err(|f| broken("build-completes", f))?,
+                    (Some((b, after)), Some((path, _))) => born_at(&self.estate, self.read, b, path, *after).await.map_err(|f| broken("build-completes", f))?,
                     _ => None,
                 };
                 let sequence_done = match (&removed, &born, &gone) {
@@ -1106,18 +1153,18 @@ impl Driver {
             }
             if Instant::now() >= until {
                 let mut views = serde_json::Map::new();
-                for base in self.known.iter().chain(std::iter::once(&self.estate.admin)) {
-                    let v = match try_get(base, "/api/nodes").await {
-                        Some(v) => {
+                for admin in &self.known {
+                    let v = match views_at(&self.estate, admin).await {
+                        Some(nodes) => {
                             let mut by: BTreeMap<String, Vec<String>> = BTreeMap::new();
-                            for n in v["nodes"].as_array().into_iter().flatten() {
+                            for n in &nodes {
                                 by.entry(s(&n["mesh"])).or_default().push(format!("{}:{}", s(&n["name"]), s(&n["status"])));
                             }
                             json!(by)
                         }
                         None => json!("unanswered"),
                     };
-                    views.insert(base.clone(), v);
+                    views.insert(admin.name.clone(), v);
                 }
                 return Err(broken("birth-sequence-converges", format!("the birth sequence did not complete within {}s: {entry}; views {}", CONVERGE.as_secs(), Value::Object(views))));
             }
@@ -1126,7 +1173,7 @@ impl Driver {
         entry["converged_ms"] = json!(entry["wall_ms"].as_u64().unwrap_or(0));
         // A silenced birth whose runtime ran is held, never replaced: the same birth is back.
         if let Some((path, inc)) = &held {
-            let now_nodes = self.estate.nodes().await;
+            let now_nodes = self.estate.node_values().await;
             if !now_nodes.iter().any(|n| n["name"] == path.as_str() && n["incarnation_id"] == inc.as_str() && n["status"] == "ready-for-traffic") {
                 return Err(broken("silence-is-not-death", format!("{path} came back as another birth than {inc}: silence replaced a running runtime")));
             }
@@ -1140,8 +1187,8 @@ impl Driver {
             }
         }
         // A loss opens attempts of the accepted Build, never a Build.
-        let (_, f) = self.estate.get("/api/fabric").await;
-        let now_build = s(&f["build_id"]);
+        let fabric = self.estate.try_fabric_view().await.map_err(|end| broken("fabric-build-id-readable", format!("fabric.get at the entry admin {}: {end}", self.estate.admin)))?;
+        let now_build = fabric.build_id.unwrap_or_default();
         if no_build_for_drift && now_build != self.build_id {
             return Err(broken("no-build-for-drift", format!("a Build was minted for drift: {} -> {now_build}", self.build_id)));
         }
@@ -1149,46 +1196,50 @@ impl Driver {
         Ok(())
     }
 
-    async fn await_build(&mut self, id: &str, entry: &mut Value) -> Result<(), Broken> {
-        let until = Instant::now() + Duration::from_secs(120);
+    /// A workflow stream to its `Complete`, within 120 s; a stream that ends `SeatMoved` (a planned fabric-primary
+    /// hand-off) is followed at the new seat. The Build and attempt the call opened, as the round row records them.
+    async fn await_build(&mut self, mut stream: WorkflowStream) -> Result<Value, Broken> {
+        let accepted = stream.accepted().clone();
+        let until = tokio::time::Instant::now() + Duration::from_secs(120);
         loop {
-            relocate_control(&mut self.estate, &self.known).await;
-            let (_, b) = self.estate.get(&format!("/api/builds?id={id}")).await;
-            match b["state"].as_str() {
-                Some("complete") => {
-                    entry["build"] = json!({"id": id, "attempt": b["attempt"]});
-                    return Ok(());
+            match tokio::time::timeout_at(until, stream.next()).await {
+                Err(_) => return Err(broken("build-completes", format!("Build {} did not complete within 120s", accepted.build_id))),
+                Ok(None) => return Err(broken("build-completes", format!("the stream of Build {} attempt {} ended with no terminal frame", accepted.build_id, accepted.attempt))),
+                Ok(Some(Err(end))) => return Err(broken("build-completes", format!("the stream of Build {} attempt {} broke: {end}", accepted.build_id, accepted.attempt))),
+                Ok(Some(Ok(Frame::Complete))) => return Ok(accepted_json(&accepted)),
+                Ok(Some(Ok(Frame::Failed { step, reason }))) => return Err(broken("build-completes", format!("Build {} failed at {step:?}: {reason}", accepted.build_id))),
+                Ok(Some(Ok(Frame::SeatMoved { fabric_primary }))) => {
+                    stream = self
+                        .estate
+                        .nodes_obj()
+                        .await
+                        .resume(stream.kind().clone(), &accepted)
+                        .await
+                        .map_err(|end| broken("build-completes", format!("the fabric-primary seat moved to {fabric_primary:?} and the new seat does not stream Build {} from attempt {}: {end}", accepted.build_id, accepted.attempt)))?;
                 }
-                Some("failed") => return Err(broken("build-completes", format!("Build {id} failed: {}", b["last_failure"]))),
-                _ => {}
+                Ok(Some(Ok(_))) => {}
             }
-            if Instant::now() >= until {
-                return Err(broken("build-completes", format!("Build {id} did not complete within 120s: {b}")));
-            }
-            tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
 
-    /// DELETE `n`, await the Build, spawn the same kind into the freed ordinal. Returns the
+    /// `node.delete` of `n`, await the Build, `node.create` of the same kind into the freed ordinal. Returns the
     /// spawn's Build and the replaced incarnation.
     async fn replace(&mut self, n: &Value, entry: &mut Value) -> Result<(String, String), Broken> {
-        let (path, mesh, kind) = (s(&n["name"]), s(&n["mesh"]), s(&n["kind"]));
-        let (st, b) = self.estate.delete(&format!("/api/nodes/{path}")).await;
-        entry["accepted"] = json!(st);
-        if st != 202 {
-            return Err(broken("topology-action-accepted", format!("delete {path}: {st} {b}")));
-        }
-        self.await_build(&s(&b["build_id"]), entry).await?;
-        let (st2, b2) = self.estate.post("/api/nodes/spawn", &json!({"mesh": mesh, "kind": kind})).await;
-        entry["regrow"] = json!(st2);
-        if st2 != 202 {
-            return Err(broken("topology-action-accepted", format!("spawn {kind} in {mesh}: {st2} {b2}")));
-        }
-        Ok((s(&b2["build_id"]), s(&n["incarnation_id"])))
+        let (path, mesh) = (s(&n["name"]), s(&n["mesh"]));
+        let kind: LaunchKind = serde_json::from_value(n["kind"].clone()).unwrap_or_else(|e| panic!("{path}: the view's kind {} is no node kind: {e}", n["kind"]));
+        let nodes = self.estate.nodes_obj().await;
+        let delete = nodes.delete(&path_name(&path)).await.map_err(|end| refused(&format!("node.delete {path}"), end))?;
+        entry["accepted"] = accepted_json(delete.accepted());
+        entry["build"] = self.await_build(delete).await?;
+        let spawn = nodes.create(&NodeSpec { mesh: mesh.clone(), kind }).await.map_err(|end| refused(&format!("node.create {kind:?} in {mesh}"), end))?;
+        entry["regrow"] = accepted_json(spawn.accepted());
+        let build = spawn.accepted().build_id.to_string();
+        self.await_build(spawn).await?;
+        Ok((build, s(&n["incarnation_id"])))
     }
 
     async fn published(&self, node: &str) -> Result<ExactRuntime, Broken> {
-        let dir = self.estate.data_dir_of(node).await;
+        let dir = self.estate.data_dir(node).await;
         ExactRuntime::published(std::path::Path::new(&dir)).map_err(|r| broken("fault-names-an-exact-runtime", format!("{node}: no exact runtime published in {dir}: {r:?}")))
     }
 
@@ -1220,7 +1271,7 @@ impl Driver {
         let floor = self.cfg.floor;
         let key = (9000 + round).to_string();
         let probe = self.estate.probe_handle();
-        let admin = self.estate.admin.clone();
+        let admin = self.estate.entry_birth();
         let run = |args: Vec<String>| {
             let (p, a) = (probe.clone(), admin.clone());
             async move { tokio::task::spawn_blocking(move || p.run(&a, &args.iter().map(String::as_str).collect::<Vec<_>>())).await.ok().and_then(|r| r.ok()).unwrap_or(Value::Null) }
@@ -1231,7 +1282,7 @@ impl Driver {
                 return Err(broken("healthy-control-before-fault", format!("{path}: the control put before the hold: {put}")));
             }
         }
-        let nodes0 = self.estate.nodes().await;
+        let nodes0 = self.estate.node_values().await;
         let (seats_before, detail_before) = seats(&nodes0);
         let fp_before = fabric_primaries(&nodes0);
         let mut ev = Evidence::new(Family::SilentRuntime, format!("silent-runtime:{path}"));
@@ -1259,11 +1310,11 @@ impl Driver {
         let coin = self.rng.next() % 2 == 0;
         let true_offline = coin && !container;
         // Control never waits on the held node's own control API: a held admin answers nothing.
-        let held_base = n["admin_api_base"].as_str().map(String::from);
-        self.known.retain(|b| Some(b) != held_base.as_ref());
-        if held_base.as_deref() == Some(self.estate.admin.as_str()) {
-            if let Some(other) = self.known.first() {
-                self.estate.admin = other.clone();
+        let held_name = n["name"].as_str().map(String::from);
+        self.known.retain(|a| Some(&a.name) != held_name.as_ref());
+        if held_name.as_deref() == Some(self.estate.admin.to_string().as_str()) {
+            if let Some(other) = self.known.first().map(Admin::path) {
+                self.estate.enter(&other).await;
             }
         }
         entry["held_until"] = json!(if true_offline { "dead" } else { "pending-reconnect" });
@@ -1290,10 +1341,10 @@ impl Driver {
             }
         }
         let held_at_last_read = hold_rt.as_ref().map(|r| proc_state(r.pid) == Some('T')).unwrap_or(true);
-        let nodes_during = self.estate.nodes().await;
+        let nodes_during = self.estate.node_values().await;
         let (seats_during, detail_during) = seats(&nodes_during);
         let during = nodes_during.iter().find(|x| x["name"] == path.as_str()).cloned();
-        let attempt_during = num(&self.estate.get(&format!("/api/builds?id={}", self.build_id)).await.1["attempt"]);
+        let attempt_during = num(&(self.read)(&self.estate, &self.build_id).await["attempt"]);
         let alive = hold_rt.as_ref().map(|r| r.check().is_ok()).unwrap_or(true);
         let replaced = during.as_ref().is_none_or(|x| x["node_id"] != n["node_id"]);
         let released = release();
@@ -1309,14 +1360,14 @@ impl Driver {
         let back = {
             let est = &self.estate;
             let back = wait_for_opt(&format!("{path} back as its own birth"), floor * 2 + Duration::from_secs(60), || async {
-                est.node_opt(&path).await.filter(|x| x["incarnation_id"] == inc.as_str() && x["status"] == "ready-for-traffic")
+                est.node_value_opt(&path).await.filter(|x| x["incarnation_id"] == inc.as_str() && x["status"] == "ready-for-traffic")
             })
             .await;
             back.ok_or_else(|| broken("silence-is-not-death", format!("{path} did not come back as {inc} after the release")))?
         };
         let kept = if is_rpc { run(vec!["get".into(), "--target".into(), exact.clone(), "--key".into(), key.clone()]).await } else { Value::Null };
         ev.recovery = Some(Recovery { work_complete: if is_rpc { kept["outcome"] == "Reply" } else { true }, marker_after: json!({"proc_state": hold_rt.as_ref().and_then(|r| proc_state(r.pid)).map(String::from), "outcome": kept["outcome"]}).to_string() });
-        let nodes_after = self.estate.nodes().await;
+        let nodes_after = self.estate.node_values().await;
         let (seats_after, detail_after) = seats(&nodes_after);
         ev.control = Some(Control {
             seats_as_expected: [seats_before, seats_during, seats_after],
@@ -1333,7 +1384,7 @@ impl Driver {
             rec.check("the value stored before the hold is served after it", kept["reply"]["result"] == json!({"found": true, "value": "before-hold"}), kept.to_string());
             rec.check("the same birth serves it", kept["reply"]["incarnation_id"] == n["incarnation_id"] && kept["reply"]["executing_node"] == n["node_id"], kept.to_string());
         }
-        rec.check("the Build gained no attempt", num(&self.estate.get(&format!("/api/builds?id={}", self.build_id)).await.1["attempt"]) == attempt_before, format!("attempt {attempt_before}"));
+        rec.check("the Build gained no attempt", num(&(self.read)(&self.estate, &self.build_id).await["attempt"]) == attempt_before, format!("attempt {attempt_before}"));
         rec.check("the seats equal the public candidates' after the release", seats_after, detail_after);
         ev.reconciliation = Some(rec);
         entry["wedge"] = json!({"released": released, "view_while_held": during.as_ref().map(|x| x["status"].clone())});
@@ -1358,7 +1409,7 @@ impl Driver {
             return Err(broken("fault-is-observed", format!("{mesh}: the silence chain is not installed on every member")));
         }
         // Seen from the other mesh: control is read through its admins.
-        let others: Vec<String> = self.known.iter().filter(|b| !nodes.iter().any(|n| n["mesh"] == mesh && n["admin_api_base"] == b.as_str())).cloned().collect();
+        let others: Vec<Admin> = self.known.iter().filter(|a| !nodes.iter().any(|n| n["mesh"] == mesh && n["name"] == a.name.as_str())).cloned().collect();
         // The window the container cell for this fault (#2784) observes the same consequence in; the
         // soak measures the time it took (`unheard_after_ms`).
         let within = Duration::from_secs(90);
@@ -1382,7 +1433,7 @@ impl Driver {
         let partition = Partition::start(&pa, &pb).map_err(|why| broken("fault-applies", format!("RDM_REQUIRE_NETFAULT: this host cannot drop traffic between {mesh} and the other meshes: {why}")))?;
         let cut_at_ns = now_ns();
         self.silenced.insert(mesh.to_string(), Cut::Udp { partition, members: members.clone() });
-        let admins: Vec<(String, String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["mesh"]), s(&n["admin_api_base"]))).collect();
+        let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();
         let window = self.cfg.floor;
         let until = Instant::now() + window * 6 + Duration::from_secs(40);
         let held_at = loop {
@@ -1391,7 +1442,7 @@ impl Driver {
                 .iter()
                 .filter(|sp| sp["name"] == "rdm.mesh.connection.update.via-refeed" && sp["attributes"]["reason"] == "stale-held-member" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= cut_at_ns)
                 .collect();
-            let all = admins.iter().all(|(obs, om, _)| admins.iter().filter(|(_, pm, _)| pm != om).all(|(peer, _, _)| att.iter().filter(|sp| sp["attributes"]["node"] == obs.as_str() && sp["attributes"]["peer_node"] == peer.as_str()).count() >= 2));
+            let all = admins.iter().all(|(obs, om)| admins.iter().filter(|(_, pm)| pm != om).all(|(peer, _)| att.iter().filter(|sp| sp["attributes"]["node"] == obs.as_str() && sp["attributes"]["peer_node"] == peer.as_str()).count() >= 2));
             if all {
                 break now_ns();
             }
@@ -1400,12 +1451,11 @@ impl Driver {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         };
-        for (name, node_mesh, base) in &admins {
+        for (name, node_mesh) in &admins {
             let own: Vec<&str> = nodes.iter().filter(|n| s(&n["mesh"]) == *node_mesh && n["status"] == "ready-for-traffic").filter_map(|n| n["name"].as_str()).collect();
-            let Some(view) = try_get(base, "/api/nodes").await else {
-                return Err(broken("cut-leaves-own-mesh-ready", format!("{name} ({base}) does not answer /api/nodes during the cut")));
+            let Some(theirs) = views_at(&self.estate, &Admin { name: name.clone() }).await else {
+                return Err(broken("cut-leaves-own-mesh-ready", format!("{name} does not answer node.get during the cut")));
             };
-            let theirs = view["nodes"].as_array().cloned().unwrap_or_default();
             let missing: Vec<&&str> = own.iter().filter(|p| !theirs.iter().any(|n| n["name"] == **p && n["status"] == "ready-for-traffic")).collect();
             if !missing.is_empty() {
                 return Err(broken("cut-leaves-own-mesh-ready", format!("{name} no longer holds its own mesh members ready during the cut: {missing:?}")));
@@ -1420,7 +1470,7 @@ impl Driver {
         if !self.silenced.is_empty() {
             return Ok(Vec::new());
         }
-        let nodes = self.estate.nodes().await;
+        let nodes = self.estate.node_values().await;
         let mut per_path: BTreeMap<String, usize> = BTreeMap::new();
         for n in nodes.iter().filter(|n| !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))) {
             *per_path.entry(s(&n["name"])).or_default() += 1;
@@ -1429,20 +1479,20 @@ impl Driver {
             return Err(broken("one-current-birth-per-path", format!("round {round}: {c} current births at {p}")));
         }
         let mut writers: BTreeSet<String> = BTreeSet::new();
-        for base in admin_bases(&nodes) {
-            let Some(f) = try_get(&base, "/api/fabric").await else {
-                return Err(broken("live-admin-answers", format!("round {round}: {base} (named ready-for-traffic in the view) does not answer /api/fabric")));
+        for admin in admins_of(&nodes) {
+            let Some(f) = fabric_at(&self.estate, &admin).await else {
+                return Err(broken("live-admin-answers", format!("round {round}: {} (named ready-for-traffic in the view) does not answer fabric.get", admin.name)));
             };
-            if let Some(p) = f["fabric_primary"].as_str().filter(|p| !p.is_empty()) {
+            if let Some(p) = &f.fabric_primary {
                 writers.insert(p.to_string());
             }
-            if f["build_id"].as_str() != Some(self.build_id.as_str()) {
-                return Err(broken("fabric-build-id-held", format!("round {round}: {base} holds Fabric.build_id {} not {}", f["build_id"], self.build_id)));
+            if f.build_id.as_deref() != Some(self.build_id.as_str()) {
+                return Err(broken("fabric-build-id-held", format!("round {round}: {} holds the current build_id {:?} not {}", admin.name, f.build_id, self.build_id)));
             }
-            let heard: BTreeSet<String> = f["meshes"].as_array().into_iter().flatten().filter(|m| m["status"] == "ready-for-traffic").map(|m| s(&m["name"])).collect();
+            let heard: BTreeSet<String> = f.meshes.iter().filter(|m| m.status == ScopeStatus::ReadyForTraffic).map(|m| m.name.clone()).collect();
             for (mesh, _) in &self.cfg.shape {
                 if !heard.contains(*mesh) {
-                    return Err(broken("no-peer-mesh-permanently-unheard", format!("round {round}: {base} does not hold {mesh} ready-for-traffic")));
+                    return Err(broken("no-peer-mesh-permanently-unheard", format!("round {round}: {} does not hold {mesh} ready-for-traffic", admin.name)));
                 }
             }
         }
@@ -1478,7 +1528,7 @@ impl Driver {
     /// fails.
     async fn reconcile_ledger(&mut self) -> (LedgerReport, Vec<(String, String)>) {
         let mut found: Vec<(String, String)> = Vec::new();
-        let nodes = if relocate_control(&mut self.estate, &self.known).await { self.estate.nodes().await } else { Vec::new() };
+        let nodes = if relocate_control(&mut self.estate, &self.known).await.is_some() { self.estate.node_values().await } else { Vec::new() };
         let alive: BTreeMap<String, String> = nodes.iter().filter(|n| serves_proof(n) && n["status"] == "ready-for-traffic").map(|n| (s(&n["node_id"]), s(&n["name"]))).collect();
         let (meta, excluded, probe_failures) = {
             let b = self.shared.book.lock().unwrap();
@@ -1507,7 +1557,7 @@ impl Driver {
         // The state algebra, store by store.
         let ids: BTreeSet<String> = meta.iter().map(|m| m.target_id.clone()).collect();
         let probe = self.estate.probe_handle();
-        let admin = self.estate.admin.clone();
+        let admin = self.estate.entry_birth();
         for id in ids {
             let Some(path) = alive.get(&id) else {
                 report.ops_on_retired_births += meta.iter().filter(|m| m.target_id == id).count();

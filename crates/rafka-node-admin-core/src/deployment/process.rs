@@ -294,7 +294,7 @@ fn spawn_on_disk(spec: &ResolvedNodeLaunch, children: &std::sync::Arc<Mutex<Hash
     let child = spawn_gated(&mut cmd, |pid| {
         failpoints.before_record(pid)?;
         start = process_start_token(pid);
-        super::provider::write_launch_record(&spec.data_dir, DEPLOYMENT_FILE, &serde_json::json!({ "deployment_id": spec.deployment_id.0, "pid": pid, "start": start }))
+        super::provider::write_launch_record(&spec.data_dir, DEPLOYMENT_FILE, &serde_json::json!({ "deployment_id": spec.deployment_id.as_str(), "pid": pid, "start": start }))
     })
     .map_err(|reason| err(format!("{}: {reason}", spec.executable.display())))?;
     let pid = child.id();
@@ -339,7 +339,7 @@ fn find_on_disk(spec: &ResolvedNodeLaunch) -> Result<OnDisk, DeployError> {
         Err(e) => return Err(named(e.to_string())),
     };
     let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| named(e.to_string()))?;
-    if v.get("deployment_id").and_then(|d| d.as_str()) != Some(spec.deployment_id.0.as_str()) {
+    if v.get("deployment_id").and_then(|d| d.as_str()) != Some(spec.deployment_id.as_str()) {
         return Ok(OnDisk::NeverLaunched);
     }
     let pid = v.get("pid").and_then(|p| p.as_u64()).and_then(|p| u32::try_from(p).ok()).ok_or_else(|| named("no pid".into()))?;
@@ -372,7 +372,7 @@ impl DeploymentProvider for ProcessDeploymentProvider {
 
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
         let Some(pid) = handle.pid else {
-            return Err(DeployError::Terminate { deployment: handle.deployment_id.0.clone(), reason: "no pid".into() });
+            return Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: "no pid".into() });
         };
         #[cfg(unix)]
         if !self.is_ours(pid, handle.start).await {
@@ -411,7 +411,7 @@ impl DeploymentProvider for ProcessDeploymentProvider {
 
     async fn signal_stop(&self, handle: &DeploymentHandle) -> Result<(), DeployError> {
         let Some(pid) = handle.pid else {
-            return Err(DeployError::Terminate { deployment: handle.deployment_id.0.clone(), reason: "no pid".into() });
+            return Err(DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason: "no pid".into() });
         };
         #[cfg(unix)]
         if self.running(pid, handle.start).await {

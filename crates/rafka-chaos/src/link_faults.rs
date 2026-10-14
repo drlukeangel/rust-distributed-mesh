@@ -4,19 +4,18 @@
 //!
 //! Every target is a node NAME resolved to its published UDP port in the admin's node view, and
 //! refused by name when it is unknown, empty, the whole estate, or one the caller protects (a
-//! fabric-primary). Where the host cannot run `iptables` (no root, no `sudo -n`) every fault
-//! answers [`LinkRefusal::Unavailable`] with the reason: a test skips by that name, or fails with
-//! it when `RDM_REQUIRE_NETFAULT=1`.
+//! fabric-primary). Each fault is a packet-filter table the installing process owns
+//! ([`crate::netfault::Held`]): it ends with that process, however the process ends. Where the
+//! host cannot run `nft` (no root, no `sudo -n`) every fault answers [`LinkRefusal::Unavailable`]
+//! with the reason: a test skips by that name, or fails with it when `RDM_REQUIRE_NETFAULT=1`.
 //!
 //! Each application is one span: `rdm.testkit.fault.update.via-partition-subset`,
 //! `rdm.testkit.fault.update.via-link-flap` or `rdm.testkit.fault.update.via-inbound-drop`, with
 //! the typed outcome; its heal is `rdm.testkit.fault.remove.via-heal` carrying the fault.
 
-use crate::netfault::Partition;
+use crate::netfault::{Held, Partition};
 use serde::Serialize;
 use serde_json::Value;
-use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// The most flap cycles one call runs: a flap is bounded.
@@ -24,13 +23,11 @@ pub const MAX_FLAP_CYCLES: u32 = 20;
 /// The longest one phase (cut or healed) of a flap lasts.
 pub const MAX_FLAP_PHASE: Duration = Duration::from_secs(60);
 
-static CHAINS: AtomicUsize = AtomicUsize::new(0);
-
 /// Why a link fault was not applied. Nothing is cut.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "link_refusal", rename_all = "snake_case")]
 pub enum LinkRefusal {
-    /// The host cannot cut UDP (`iptables` is unavailable to this user).
+    /// The host cannot cut UDP (`nft` is unavailable to this user).
     Unavailable {
         /// Why.
         reason: String,
@@ -210,29 +207,19 @@ fn flap_inner(nodes: &[Value], a: &[String], b: &[String], protected: &[String],
     Ok(out)
 }
 
-/// The `iptables` invocations that drop inbound UDP to each of `ports` (any sender), in `chain`.
-pub fn inbound_drop_rules(chain: &str, ports: &[u16]) -> Vec<Vec<String>> {
-    ports.iter().map(|p| ["-A", chain, "-i", "lo", "-p", "udp", "--dport", &p.to_string(), "-j", "DROP"].iter().map(|s| s.to_string()).collect()).collect()
+/// The rule that drops inbound UDP to each of `ports` (any sender) on loopback.
+pub fn inbound_drop_rule(ports: &[u16]) -> String {
+    let mut ports = ports.to_vec();
+    ports.sort_unstable();
+    ports.dedup();
+    format!("iifname \"lo\" udp dport {{ {} }} drop", ports.iter().map(u16::to_string).collect::<Vec<_>>().join(", "))
 }
 
-fn iptables(sudo: bool, args: &[&str]) -> Result<(), String> {
-    let mut c = if sudo { Command::new("sudo") } else { Command::new("iptables") };
-    if sudo {
-        c.args(["-n", "iptables"]);
-    }
-    let out = c.arg("-w").args(args).output().map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-    }
-}
-
-/// Inbound UDP to one node dropped, whoever sends it, until dropped. The node's own sends are not
-/// touched: peers cannot reach it, and it can still reach them.
+/// Inbound UDP to one node dropped, whoever sends it, until dropped or until the process that
+/// installed it ends. The node's own sends are not touched: peers cannot reach it, and it can still
+/// reach them.
 pub struct FirewallInbound {
-    chain: String,
-    sudo: bool,
+    held: Held,
     /// The node.
     pub target: String,
     /// The ports dropped.
@@ -257,25 +244,19 @@ impl FirewallInbound {
         non_empty("target", &[target.to_string()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>())?;
         refuse_protected(&[target.to_string()], protected)?;
         let ports = ports_of(nodes, &[target.to_string()])?;
-        let chain = format!("RAFKA-INB-{}-{}", std::process::id(), CHAINS.fetch_add(1, Ordering::SeqCst));
-        let sudo = iptables(false, &["-L", "INPUT", "-n"]).is_err();
-        let unavailable = |e: String| LinkRefusal::Unavailable { reason: format!("iptables unavailable: {e}") };
-        iptables(sudo, &["-N", &chain]).map_err(unavailable)?;
-        let f = Self { chain, sudo, target: target.into(), ports, since: Instant::now() };
-        iptables(sudo, &["-I", "INPUT", "-j", &f.chain]).map_err(|e| LinkRefusal::Unavailable { reason: format!("iptables: {e}") })?;
-        for rule in inbound_drop_rules(&f.chain, &f.ports) {
-            let args: Vec<&str> = rule.iter().map(String::as_str).collect();
-            iptables(sudo, &args).map_err(|e| LinkRefusal::Unavailable { reason: format!("iptables: {e}") })?;
-        }
-        Ok(f)
+        let held = Held::install("inb", &[inbound_drop_rule(&ports)]).map_err(|reason| LinkRefusal::Unavailable { reason })?;
+        Ok(Self { held, target: target.into(), ports, since: Instant::now() })
+    }
+
+    /// The process whose exit ends this drop.
+    pub fn holder_pid(&self) -> u32 {
+        self.held.holder_pid()
     }
 }
 
 impl Drop for FirewallInbound {
     fn drop(&mut self) {
-        let _ = iptables(self.sudo, &["-D", "INPUT", "-j", &self.chain]);
-        let _ = iptables(self.sudo, &["-F", &self.chain]);
-        let _ = iptables(self.sudo, &["-X", &self.chain]);
+        self.held.release();
         heal_span("inbound-drop", self.since.elapsed());
     }
 }
@@ -321,10 +302,9 @@ mod tests {
 
     #[test]
     fn an_inbound_drop_matches_the_destination_port_only_never_the_sender() {
-        let rules = inbound_drop_rules("C", &[40001, 40002]);
-        assert_eq!(rules.len(), 2);
-        assert_eq!(rules[0].join(" "), "-A C -i lo -p udp --dport 40001 -j DROP");
-        assert!(rules.iter().all(|r| !r.iter().any(|a| a == "--sport")), "the node's own sends are not dropped");
+        let rule = inbound_drop_rule(&[40002, 40001]);
+        assert_eq!(rule, r#"iifname "lo" udp dport { 40001, 40002 } drop"#);
+        assert!(!rule.contains("sport"), "the node's own sends are not dropped");
         assert_eq!(FirewallInbound::start(&view(), "mesh1.rpc.3", &names(&["mesh1.rpc.3"])).err(), Some(LinkRefusal::Protected { name: "mesh1.rpc.3".into() }));
     }
 }

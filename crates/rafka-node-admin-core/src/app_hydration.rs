@@ -21,10 +21,10 @@
 //! [`AfterReady`] is for optional work only: nothing required may live there.
 
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rafka_mesh_entity::MemberStatus;
+use rafka_mesh_entity::{MemberStatus, MeshDigest};
+use std::time::Duration;
 use rafka_mesh_transport::membership::{DigestBook, Membership};
 use rafka_node_rpc::{CancelToken, HydrationGate, NodeRpcClient};
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::Instrument;
@@ -46,15 +46,20 @@ pub struct Birth {
     pub kind: NodeKind,
 }
 
-/// The admin that accepted this birth's `JoinNode`: the authority the hook pulls from.
+/// The admin that accepted this birth's `JoinNode`: the authority the hook pulls from. A start after
+/// a stop reached it back over the call that commanded the start, holding no record of it
+/// (node-start.md step 2): it is known by the name its join answer gave and the endpoint it answered
+/// on, and the hook calls it through `target`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptingAuthority {
-    /// The admin's `path.name`.
+    /// The admin's `path.name`, as the join answer's `served_by` (or, at a first start, the
+    /// launcher's record) names it.
     pub name: PathName,
-    /// Its node id.
-    pub node_id: NodeId,
-    /// The incarnation that accepted the join.
-    pub incarnation: IncarnationId,
+    /// Its endpoint key.
+    pub endpoint: iroh::PublicKey,
+    /// Where a call to it goes: the launcher's birth at a first start; after a stop, the endpoint
+    /// and path of the call the join went back over.
+    pub target: rafka_node_rpc::NodeTarget,
 }
 
 /// Why a birth has no authority to pull from.
@@ -62,9 +67,9 @@ pub struct AcceptingAuthority {
 pub enum NoAuthority {
     /// The Day-0 root: no fabric authority exists before it.
     Day0Root,
-    /// A fabric-primary reborn from its durable map: it has no maker, and its own storage is the
-    /// authority.
-    FabricPrimaryReborn,
+    /// An admin started on an inherited root (fabric recovery): it has no maker, and hydrates from the
+    /// inherited storage.
+    InheritedRoot,
     /// A recovery start (mesh-primary or fabric-primary flags): it hydrates from the nodes it reaches.
     Recovery,
 }
@@ -74,7 +79,7 @@ impl NoAuthority {
     pub fn reason(self) -> &'static str {
         match self {
             Self::Day0Root => "the Day-0 root: no authority exists before this node",
-            Self::FabricPrimaryReborn => "a fabric-primary reborn from its durable map: its own storage is the authority",
+            Self::InheritedRoot => "an admin started on an inherited root: it hydrates from the inherited storage",
             Self::Recovery => "a recovery start: no admin accepted this birth",
         }
     }
@@ -219,11 +224,13 @@ impl Hydration {
     }
 }
 
-/// Which authorities addressed this node, counted: a count survives an event that happened before
-/// anything waited on it.
+/// Which endpoints addressed this node with a down op, counted: a count survives an event that
+/// happened before anything waited on it. Keyed by the endpoint the transport proved for the call,
+/// so an authority no record names (a commander born after this node's stop, node-start.md step 2)
+/// is counted too.
 #[derive(Debug, Default)]
 pub struct Addressed {
-    counts: Mutex<BTreeMap<NodeId, u64>>,
+    counts: Mutex<std::collections::HashMap<iroh::PublicKey, u64>>,
     tick: tokio::sync::watch::Sender<u64>,
 }
 
@@ -233,13 +240,13 @@ impl Addressed {
         Arc::default()
     }
 
-    /// `from` sent this node a down op.
-    pub fn note(&self, from: &NodeId) {
-        *self.counts.lock().unwrap().entry(from.clone()).or_default() += 1;
+    /// The endpoint `from` sent this node a down op.
+    pub fn note(&self, from: &iroh::PublicKey) {
+        *self.counts.lock().unwrap().entry(*from).or_default() += 1;
         self.tick.send_modify(|v| *v += 1);
     }
 
-    fn count(&self, from: &NodeId) -> u64 {
+    fn count(&self, from: &iroh::PublicKey) -> u64 {
         self.counts.lock().unwrap().get(from).copied().unwrap_or(0)
     }
 }
@@ -278,9 +285,17 @@ impl Events {
     pub fn mark(&self, authority: &Authority) -> Mark {
         let heard = *self.book.heard_changes().borrow();
         match authority.accepted() {
-            Some(a) => Mark { heard, addressed: self.addressed.count(&a.node_id), authority_incarnation: self.book.get(a.node_id.as_str()).map(|(d, _)| d.node.incarnation) },
+            Some(a) => Mark { heard, addressed: self.addressed.count(&a.endpoint), authority_incarnation: self.birth_of(a).map(|(d, _)| d.node.incarnation) },
             None => Mark { heard, addressed: 0, authority_incarnation: None },
         }
+    }
+
+    /// The birth this node's book holds at the authority's endpoint, and how long it has been silent:
+    /// the authority is known by its endpoint, which names one process.
+    fn birth_of(&self, authority: &AcceptingAuthority) -> Option<(MeshDigest, Duration)> {
+        let key = authority.endpoint.to_string();
+        let held = self.book.all().into_iter().find(|d| d.node.endpoint_id.0 == key)?;
+        self.book.get(held.node.node_id.as_str())
     }
 
     fn holds(&self, on: &RetryOn, authority: Option<&AcceptingAuthority>, mark: &Mark) -> bool {
@@ -291,13 +306,15 @@ impl Events {
         // An authority event of a birth with no authority never happens; the attempt refuses such a
         // request by name before any wait begins.
         let Some(authority) = authority else { return false };
+        let birth = self.birth_of(authority);
         match on {
-            RetryOn::AuthorityChanged => {
-                self.book.is_departed(authority.node_id.as_str()) || self.book.get(authority.node_id.as_str()).map(|(d, _)| d.node.incarnation) != mark.authority_incarnation
-            }
-            RetryOn::AuthorityReady => moved && self.book.get(authority.node_id.as_str()).is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),
+            RetryOn::AuthorityChanged => match &birth {
+                Some((d, _)) => self.book.is_departed(d.node.node_id.as_str()) || Some(&d.node.incarnation) != mark.authority_incarnation.as_ref(),
+                None => mark.authority_incarnation.is_some(),
+            },
+            RetryOn::AuthorityReady => moved && birth.is_some_and(|(d, silent)| d.status == MemberStatus::ReadyForTraffic && silent <= self.book.staleness_floor()),
             RetryOn::TargetReachable { .. } => unreachable!("answered above"),
-            RetryOn::AuthorityAddressed => self.addressed.count(&authority.node_id) > mark.addressed,
+            RetryOn::AuthorityAddressed => self.addressed.count(&authority.endpoint) > mark.addressed,
         }
     }
 

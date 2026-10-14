@@ -126,8 +126,8 @@ async fn attempt_of(estate: &Estate, id: &str) -> u64 {
 /// birth follows; the thaw returns the SAME birth, which serves the value stored before the hold
 /// (the semantic wedge detector judges it). A killed rpc node is recovered by its mesh-primary
 /// (node-recovery.md): on the provider's exact exit proof it submits one recovery as the next
-/// attempt of the SAME Build (reason recovery, operations `retire-node:<path>`, `create-node:<path>`,
-/// `update-node:<path>`, no Build minted); the exited instance is deleted and fenced, and a new
+/// attempt of the SAME Build (reason recovery, operations `retire-node:<path>` then `create-node:<path>`,
+/// no Build minted); the exited instance is deleted before the new join, and a new
 /// NodeId/incarnation is created at the same path.name over the inherited data dir (same endpoint
 /// key, the stored value still served), every step of the create a child of the create pipeline. The exited birth's old NodeId resolves to nothing:
 /// a call aimed at it is not sent (`Resolve(Unknown)`), never dialled to the successor that holds
@@ -290,12 +290,14 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let seats_end = seats(&nodes_end);
     assert!(seats_end.0, "{}", seats_end.1);
     let build_end = estate.accepted_build_id().await;
-    assert_eq!(build_end, build_id, "Fabric.build_id is the Build it was");
+    assert_eq!(build_end, build_id, "the current build_id is the Build it was");
     estate.stop().await;
 
     // ---- Evidence: the estate's exported spans and this process's own.
     let spans = estate.spans();
-    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == build_id && num(&r["attributes"]["attempt"]) > attempt_before).collect();
+    // The recoveries are attempts of mesh1's drift lane (R-BI7: its mesh-primary runs them in its own
+    // mesh's lane, numbered from 1 there; the fabric lane's attempt number is not theirs).
+    let reconciles: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-reconcile").into_iter().filter(|r| attr(r, "build_id") == build_id && attr(r, "lane") == "mesh1").collect();
     let recovery_for = |path: &str, reason: &str, operation: &str| -> Value {
         reconciles
             .iter()
@@ -309,7 +311,7 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     let (rpc_rec, admin_rec) = (recovery_for(&kill, "recovery", "create-node"), recovery_for(&admin, "recovery", "create-node"));
     for rec in [&rpc_rec, &admin_rec] {
         let path = attr(rec, "operations").rsplit(':').next().unwrap_or_default().to_string();
-        assert_eq!(attr(rec, "operations"), format!("retire-node:{path},create-node:{path},update-node:{path}"), "the recovery's three operations, in order: {rec}");
+        assert_eq!(attr(rec, "operations"), format!("retire-node:{path},create-node:{path}"), "the recovery's two operations, in order: {rec}");
     }
     for path in [&kill, &admin] {
         assert!(
@@ -322,17 +324,19 @@ async fn process_fault_backend_kills_exact_runtime_recovers_current_birth() {
     }
     assert_eq!(attr(&rpc_rec, "build_id"), build_id);
     assert!(named(&spans, "rdm.node_admin.build.create.via-proven-drift").is_empty(), "no Build is minted for drift");
-    let pipeline_of = |kind: &str, path: &str, attempt: u64| -> Value {
+    // The pipeline in the recovery reconcile's own trace: a lane's attempt number also names an
+    // attempt of the fabric lane, whose create pipeline of the same path is the node's first birth.
+    let pipeline_of = |kind: &str, path: &str, attempt: u64, rec: &Value| -> Value {
         named(&spans, "rdm.node_admin.deployment.update.via-pipeline")
             .into_iter()
-            .find(|p| attr(p, "pipeline") == kind && attr(p, "node") == path && attr(p, "build_id") == build_id && num(&p["attributes"]["attempt"]) == attempt)
+            .find(|p| p["trace_id"] == rec["trace_id"] && attr(p, "pipeline") == kind && attr(p, "node") == path && attr(p, "build_id") == build_id && num(&p["attributes"]["attempt"]) == attempt)
             .cloned()
-            .unwrap_or_else(|| panic!("a {kind} pipeline span of {path} at attempt {attempt}"))
+            .unwrap_or_else(|| panic!("a {kind} pipeline span of {path} at attempt {attempt} in the recovery's trace"))
     };
     let mut recoveries = Vec::new();
     for (path, rec, kind) in [(&kill, &rpc_rec, "create"), (&admin, &admin_rec, "create")] {
         let attempt = num(&rec["attributes"]["attempt"]);
-        let pipe = pipeline_of(kind, path, attempt);
+        let pipe = pipeline_of(kind, path, attempt, rec);
         let steps: Vec<&Value> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|st| st["parent_span_id"] == pipe["span_id"]).collect();
         assert!(!steps.is_empty(), "{path}: step spans are children of the {kind} pipeline");
         assert!(steps.iter().all(|st| st["trace_id"] == pipe["trace_id"] && attr(st, "node") == path.as_str()), "{path}: every step shares the pipeline's trace");

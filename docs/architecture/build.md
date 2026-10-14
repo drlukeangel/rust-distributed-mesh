@@ -1,0 +1,629 @@
+# Build: the topology engine, leadership, lifecycle transitions and state adapters
+
+This page owns the Build engine (the accepted topology, the Build/attempt/claim model and `BuildStateAdapter`), the node-admin storage interfaces and crash safety, and the RDM/Rafka boundary with its import rule. The deployment provider and the RuntimeFact contract are [deployment-provider.md](deployment-provider.md); this page's sections skip §7 and §8 so that §9 to §16 keep their numbers.
+
+It defines the generic control-plane contract proven in `rust-distributed-mesh` (RDM), an independently owned and versioned reusable distributed-system substrate that Rafka imports at an exact revision. Rafka is its first customer: RDM owns how distributed execution works, and Rafka owns what its product asks nodes to do.
+
+The ownership test is behavioral: a mechanism that makes sense for a non-Rafka distributed mesh belongs in RDM. Behavior that depends on Rafka roles, entities, authorization, storage policy or other product concepts belongs in Rafka.
+
+The Fabric → Mesh → Node hierarchy is [fabric-authority.md §1](fabric-authority.md#1-the-product-hierarchy-is-fabric---mesh---node). Exact node lifecycle operation/RPC/gossip choreography is owned by [fabric-mesh-node-lifecycles.md](fabric-mesh-node-lifecycles.md).
+
+The control plane has deliberately separate mechanisms:
+
+```text
+fabric-primary + Fabric.build_id
+    the one topology authority and the current accepted topology Build
+
+Membership + RuntimeFacts + current runtime metadata
+    current exact births/runtimes that actually exist
+
+Build / Reconciler
+    realizes the accepted topology Build
+
+builds.storage (BuildStateAdapter)
+    Build intent/attempt/receipt/completion evidence and history
+
+LeadershipResolver
+    deterministic cohort -> mesh-primary -> fabric-primary projection
+
+DeploymentPipeline
+    how one runtime is created, adopted, observed, or retired
+
+LifecycleTransitionPipeline
+    what must complete before Node/Mesh/Fabric changes lifecycle state
+```
+
+No one mechanism impersonates another. Build storage is execution evidence: it is neither a second topology authority nor the current-runtime database. `Fabric.build_id` names which Build is current; `builds.storage` records what happened while executing it.
+
+RDM `rafka-node-admin-core` is the single implementation of Build reconciliation, runtime adoption and leadership projection; Rafka imports it, binds its adapters and policy into it, and never reimplements leadership, shape reconciliation, executor selection, runtime adoption, drift detection or recovery.
+
+### Node-admin composition and customer seams
+
+```text
+Rafka node-admin process
+    +-- Rafka integration: inputs, policy, bindings and product hooks
+    `-- imported RDM node-admin-core: generic control algorithms
+```
+
+RDM node-admin-core MUST expose one documented embedding/composition boundary through which
+a customer supplies its approved bindings. That boundary MUST NOT require copying or
+reimplementing generic algorithms. This requirement does not prescribe a Rust constructor;
+a reference launcher choosing file stores/provider configuration is not the only supported
+customer composition model.
+
+Allowed customer seams are:
+
+- implementations of the imported Fabric/Mesh/Nodes/Connections/Build storage interfaces;
+- product Build-input/shape normalization and explicit desired path config policy;
+- deployment-provider bindings, resolved launch/listener configuration, and mapping of customer
+  runtime-management metadata into the imported current-runtime projection;
+- current membership/runtime fact feeds and projection/public-API mappings;
+- product authorization and the hooks of [Fabric and node hooks](fabric-node-hooks.md).
+
+RDM retains Build compilation/reconciliation and attempts, election and authority resolution,
+executor selection, generic lifecycle eligibility/commit/receipts, readiness roots, recovery,
+drift, exact-runtime adoption/death proof, provider-domain execution and connection mechanics.
+Customer seams supply policy or facts; they MUST NOT substitute a second implementation of
+those algorithms. Hooks are registered before sealing, idempotent and bounded, and report
+failure through the lifecycle receipt path. A hook requesting exact synchronous execution
+of gateway-owned application behavior uses a typed Rafka Op on the exact gateway rather than
+importing the gateway implementation. Durable asynchronous job/event contracts and explicitly
+authorized read projections are valid under the same owner boundary.
+
+RDM's only surface is Node RPC: the `node`, `mesh`, `fabric` and `build` op families and the typed objects over them ([Node RPC envelope](node-rpc-envelope.md#typed-object-contract)). No RDM crate serves HTTP, depends on an HTTP server or defines a route. An application that wants HTTP routes builds them in its own crate as thin callers over the same typed objects.
+
+Shared typed contracts, genuinely role-neutral domain models and RDM substrate packages are allowed across roles. A crate that holds role-owned executable handlers, stores or boot registrations does not become a shared model by being named `core` or `shared`. Same-role implementation composition is allowed.
+
+### Role-neutral execution and policy
+
+Execution authority follows topology and lifecycle ownership, not application NodeKind.
+The owning Mesh executor realizes ordinary members and sibling node-admins; an exact Pending
+bootstrap admin or a node-admin joining a live mesh executes only its own Mesh under fabric authority. Fabric-wide and
+outside-Mesh retirement rules remain generic control decisions. A general rule equivalent to
+`if kind == RpcNode { mesh executor } else { fabric executor }` is forbidden. Provider-domain
+locality may change execution location, never topology or election authority.
+
+RDM may carry an opaque or typed node class required by generic algorithms, but MUST NOT
+require a closed Rafka Broker/Gateway/Compute taxonomy as its generic abstraction. Rafka
+owns its role vocabulary and ingress policy. Generic `StorageMeta` validity and pipeline
+interpretation remain RDM-owned; `default_for(RafkaRole)` and product storage-default choices
+belong downstream. This is an embedding requirement; it is not a new wire schema.
+
+### Packages
+
+Rafka imports these RDM packages at one exact revision:
+
+| package | what it holds |
+|---|---|
+| `rafka-node-rpc-contract` | the Node RPC protocol contract: framing, outcomes, reserved codes and protocol traits, with no transport dependency |
+| `rafka-mesh-entity` | the generic Mesh entity: exact-node identity, process incarnation, membership, endpoint-slot freshness, RuntimeFact and connection projections |
+| `rafka-mesh-transport` | the gossip substrate on Iroh: the membership digest book, versioned cross-mesh topology snapshots and deltas, and the gossip frame codec |
+| `rafka-node-rpc` | the Node RPC runtime over Iroh: exact-target client and server, pool, commit cut and admission |
+| `rafka-node-admin-core` | generic Fabric/Mesh/Node control: Build/Reconciler and drift trigger, LeadershipResolver, the fabric/mesh/nodes/connections/builds storage interfaces with memory and durable-file implementations, and the lifecycle, deployment, runtime-adoption, provider-domain and recovery contracts |
+| `rafka-node-admin-client` | the typed client and DTOs for the node-admin control API |
+| `rafka-test-scenario` | provider-neutral scenario, evidence and replay contracts |
+| `rafka-node-rpc-testkit` | the generic RPC proof node, proof protocols and probes |
+
+`rafka-chaos`, the fault backends with typed outcomes, is an RDM proof package used by
+`rafka-test-scenario`. RDM packages import no Rafka domain crate.
+
+---
+
+## 1. Build is the only topology mutation engine
+
+A submitted BuildIntent/change request is **input to compilation**, not the topology itself.
+
+The current fabric-primary applies that change once to the complete topology of the Build currently named by Fabric.build_id and produces the complete explicit next-topology map.
+
+~~~text
+Fabric.build_id = B
+
+submitted change
+    -> apply once to B.topology
+    -> exact complete next topology
+    -> persist new Build B'
+    -> persist Fabric.build_id = B'
+    -> reconcile B'.topology
+~~~
+
+The accepted topology names the exact logical slots/path.names that should exist, grouped by Mesh. Counts may remain product-facing resize input, but the compiler resolves a count change to exact paths before the Build is persisted.
+
+~~~text
+B.topology:
+  mesh1:
+    admin.1
+    admin.2
+    rpc.1
+    rpc.2
+    rpc.3
+
+submit: remove mesh1.rpc.2
+
+B'.topology:
+  mesh1:
+    admin.1
+    admin.2
+    rpc.1
+    rpc.3
+~~~
+
+The reconciler never later decides which node "count 2" meant. It diffs the stored exact topology map against current realized/observed state.
+
+The submitted change may remain on B' as audit/history for build.get, but it is never replayed as topology and is never read to decide reconciliation after B' exists.
+
+Exactly one current fabric-primary accepts topology-changing requests. A non-primary refuses by name. A second topology-changing request while the current Build is actively reconciling is refused with a named build-in-progress refusal naming the current Build; RDM does not implement Build supersession/cancellation. One attempt is in flight per mesh, not per fabric: a topology Build's operation on mesh X and mesh X's drift attempt never both open; the loser is refused build-in-progress naming the holder (R-BI7).
+
+Every workflow (node.create, node.stop, node.start, node.restart, node.delete, the recovery Build, mesh.delete, fabric.delete) is submitted as its own Build through build.create and gets its own build_id. `Fabric.build_id` names the Build whose accepted topology is current, and a Build that leaves the topology unchanged does not move it. Authority movement or proven runtime drift opens another attempt of the Build Fabric.build_id already names. Rafka's replace recipe is submitted as one Build of node primitives ([node replace](lifecycles/node-replace.md)).
+
+Workflow input is execution state, not topology: node.restart on an exact birth (node id and incarnation) and the recovery Build (`node.delete` then `node.create` at the same path.name) carry the exact birth they act on, which refuses a stale birth by name. They never change the accepted topology map.
+
+Every execution attempt re-reads the accepted topology and current realized/observed state and computes remaining work. Completed step receipts prevent repeating already-satisfied work; a Build never resumes from a mutable instruction pointer.
+
+Forbidden:
+
+- application entry points directly spawning or killing nodes outside Build execution;
+- a separate Rafka shape/resize/recovery engine beside imported Build;
+- any node-admin other than the current fabric-primary accepting a topology change;
+- treating BuildIntent/change-request data as the accepted topology;
+- storing only counts and letting each executor independently choose which logical path to add/remove;
+- minting a new Build for restart, authority movement, or runtime drift against unchanged topology;
+- accepting a second topology mutation while the current Build is actively reconciling;
+- replaying the submitted change to reconstruct topology;
+- blindly replaying operations already satisfied in current state.
+
+Rafka shape vocabulary may remain product-facing input. It compiles once into the exact complete topology map stored in the accepted Build.
+
+---
+
+## 2. Public Build calls
+
+RDM creates, drives, reads and deletes Builds only through the
+[Build carrier](node-rpc-envelope.md#build-op-0x20-rdm), which defines build.create,
+build.attempt.run, build.get and build.delete, their direction, streams and refusals.
+node.create, node.stop, node.start, node.restart and node.delete are submitted through
+build.create; §1 decides whether an input compiles a new Build or opens an attempt of
+the current one. Application bootstrap and fault injection are application work, not
+Build calls.
+
+---
+
+## 3. Product identity and transport identity are different
+
+The node, mesh and fabric ids and the node's transport `endpoint_id` are defined in
+[node-identity-and-state.md §2](node-identity-and-state.md#2-a-node-is-an-entity-and-it-has-three-ids),
+[§2.7](node-identity-and-state.md#27-a-mesh-is-an-entity-and-node-admin-owns-it) and
+[§2.8](node-identity-and-state.md#28-a-fabric-is-an-entity-and-the-fabric-primary-owns-it); leadership
+ordering over them is [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). The
+control values this page introduces (BuildId, DeploymentId, transition ids, provider handles and
+control-domain values) are opaque and are not Crockford product ids
+(RDM's `BuildId` in `rafka-node-admin-core`).
+
+---
+
+## 4. The accepted topology is the fabric-primary's current Build
+
+There is exactly one Fabric topology writer: the current fabric-primary.
+
+```text
+many node-admins
+    -> canonical LeadershipView
+    -> current fabric-primary
+    -> ONLY topology-changing authority
+```
+
+```text
+non-fabric-primary topology mutation -> REFUSE
+fabric-primary topology mutation     -> ACCEPT -> complete-topology Build B18 -> Fabric.build_id = B18
+```
+
+Authority is the current fabric-primary from [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). A stale projected boolean never creates a second writer, and a cut-off/healing node-admin does not gain authority from stale state.
+
+"Desired topology" means the topology the current fabric-primary accepted, which the current Build is intended to realize. It is not a separate authoritative object beside the Build:
+
+- `Fabric.build_id` names the current accepted topology Build;
+- every authority-capable node-admin holds `Fabric.build_id` and can load that Build from `builds.storage`;
+- a leadership change does not change it;
+- later runtime loss is reconciled against it.
+
+Persisted copies are not writers: several node-admins may each hold the same Fabric and Build facts for recovery, and only the current fabric-primary from the canonical LeadershipView may accept the next topology mutation.
+
+A topology-changing request compiles the current accepted explicit path map plus the requested change into a new complete Build. Create/remove/add/resize select exact logical paths during compilation. Restart and node recovery are each submitted as their own Build and keep that exact topology map unchanged.
+
+### 4.1 Build identity is active reconciliation state
+
+The fabric-primary is the one driver of a Build; an attached caller does not own its execution.
+
+While a Build is active, `Fabric.build_id` and `builds.storage` carry enough information for any eligible successor to continue the same work:
+
+```text
+build_id (Fabric.build_id)
+complete explicit topology map
+submitted change history (optional; never planning authority)
+current executor/attempt evidence
+completed step receipts and outputs
+```
+
+Authority/executor movement during that active Build keeps the same `build_id`. Authority movement is not a topology mutation and never mints a Build.
+
+```text
+Build B123 active (Fabric.build_id = B123)
+fabric-primary disappears
+canonical LeadershipView resolves the successor fabric-primary
+        |
+        v
+same B123
+load B123 from builds.storage
+recompute accepted - observed
+        |
+        v
+continue remaining work
+```
+
+Later drift after B123 has already converged is an execution problem, not a topology change:
+
+```text
+Build B123 complete
+Fabric.build_id = B123
+
+later exact runtime death of a node
+    -> node recovery: node.delete of the lost node, node.create at the same path.name
+    -> accepted topology unchanged
+    -> the mesh-primary of the member's mesh opens the next attempt of B123 in its mesh's lane, on its mesh's rows
+    -> perform only unsatisfied work
+    -> append receipts to B123 in builds.storage
+    -> B123 converged again
+```
+
+[Node recovery](lifecycles/node-recovery.md) owns who detects the loss, proves the exit and submits the recovery.
+
+Every workflow is its own Build with its own build_id; `Fabric.build_id` moves only when a Build changes the accepted topology. Proven runtime drift against an unchanged accepted topology opens a new attempt of the existing `Fabric.build_id`; it never mints a new Build. A Build is the durable accepted topology plus the history of attempts to realize it.
+
+### 4.2 Hydration of the accepted topology
+
+A joining or reconnecting authority-bearing admin holds `Fabric.build_id` and loads that Build:
+
+```text
+node-admin start
+    -> fabric.storage / builds.storage (durable local state)
+
+first connection / JoinNode (op `0x1D`)
+    -> Fabric identity + Fabric.build_id + that Build
+
+Build-topic catch-up
+    -> active Build facts
+```
+
+Join admission and its answer are defined by [JoinNode](node-rpc-envelope.md#join-op-0x1d-rdm). Completed Build history is never a topology authority; the Build `Fabric.build_id` names is.
+
+### 4.3 The accepted topology changes first; the observed topology follows execution
+
+The accepted topology is the Build's; the observed topology follows the executor's steps and the provider's proof. The moment-by-moment table of what every node observes while a node is removed, and which status and overlay stop application routing, is [States: Routing](lifecycles/states.md#routing); the removal's steps are [node.delete](lifecycles/node-delete.md). The claim (the fabric-primary's for a topology attempt, the mesh-primary's for a drift attempt in its mesh), the fabric-primary's dispatch of build.attempt.run to the executor `executor_for` names, the hand-off between executors and a successor's resumption are the [Build carrier](node-rpc-envelope.md#calls-and-direction)'s.
+
+---
+
+## 5. BuildStateAdapter
+
+Build mechanics must not depend on one storage technology.
+
+```rust
+#[async_trait]
+pub trait BuildStateAdapter: Send + Sync {
+    async fn publish_intent(&self, intent: &BuildIntentFact) -> Result<(), BuildStateError>;
+    async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError>;
+    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
+    async fn claim_attempt(&self, claim: &BuildAttemptClaim) -> Result<ClaimOutcome, BuildStateError>;
+    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError>;
+    async fn append_attempt_receipt(&self, receipt: &BuildAttemptReceipt) -> Result<(), BuildStateError>;
+}
+```
+
+The exported semantic vocabulary is append/fold friendly:
+
+```text
+BuildIntentFact
+BuildAttemptClaim
+BuildStepReceipt
+BuildAttemptReceipt
+BuildCompletionFact
+```
+
+These facts describe reconciliation execution. `Fabric.build_id` names which Build is current; these facts record what happened while executing it. They are not a second topology authority and not the current-runtime store. Completed Build records remain valid history for recovery, API views, diagnostics, audit and chaos evidence.
+
+### 5.1 RDM adapters
+
+RDM proves the contract without inventing a broker-backed database:
+
+- `MemoryBuildStateAdapter` for unit/functional proof;
+- fabric-projected **active** Build facts for cross-authority takeover;
+- optional local-file journal for same-node-admin restart, replay, and evidence artifacts.
+
+Neighbor/catch-up does not ship every completed birth receipt forever. Single-writer safety comes from the writer ladder: one claimant per mesh for drift (its mesh-primary, on its mesh's in-flight row), the fabric-primary (`is_fabric_primary`, which a cut-off admin never holds) for topology operations, idempotent operation keys, stable logical topology identities, and exact-runtime/lifecycle fencing. When an unheard peer mesh is heard again, leadership converges and the current authority reconciles reality rather than trusting attempt history.
+
+### 5.2 Rafka adapter
+
+Rafka maps the same semantic contract onto its durable application/control infrastructure.
+
+Rafka must not persist one mutable Build row and increment `attempt` by read-modify-write. Instead:
+
+```text
+BuildIntentFact
+    blind put once
+
+BuildAttemptClaim(build_id, attempt)
+    insert-and-fail claim
+
+BuildStepReceipt(...)
+    append
+
+BuildAttemptReceipt(...)
+    append
+
+current attempt
+    folded maximum/winning claim
+```
+
+The next attempt is claimed after the running attempt's terminal receipt (Complete, Failed or HandedOff), or, when the executor is lost with the attempt unfinished, after exact departure proof. A live run is reattached, never re-claimed: the caller resubmits the same build_id through build.create and the executor's build.attempt.run replays the held receipts ([Build carrier](node-rpc-envelope.md#build-op-0x20-rdm)); build.get is a read of the evidence, not a reattachment. Claims are the claimant's (the fabric-primary's for a topology attempt, the mesh's mesh-primary's for a drift attempt inside its mesh) and are insert-and-fail on `(build_id, mesh, attempt)`, which prevents two claims of one attempt; a call carrying a claim that is not the current folded attempt of the receiver's projection is refused `StaleClaim` naming the held and carried attempts, and `adopt_claim` moves an admin's view only to a claim its claimant decided Won, so a delayed dispatch or receipt of an earlier attempt never reopens a terminally closed run. The attempt counter is never read-modify-written.
+
+Rafka persists `Fabric.build_id` on the Fabric row, and each accepted Build (its complete topology) with its execution evidence behind `builds.storage`. A `system.ops`-backed implementation is one option; the reconciler knows the storage interface, never a specific topic.
+
+The Build `Fabric.build_id` names cannot be deleted (build.delete refuses by name); older Builds become deletable history once the pointer has moved past them.
+
+A recovery-critical Build fact (the accepted Build, an attempt claim, a step receipt, a completion) is not committed until it is durable in storage that survives the loss of the current fabric-primary. Storage local to the active fabric-primary alone is insufficient for failover. Each node-admin keeps its own Build journal; the fabric-primary's claim log reaches every admin through the Build topic and FetchBuildFacts (`0x1F`), so it survives the fabric-primary's loss. The Build journal is never copied into the shared store root.
+
+Acceptance is crash-safe because the Build is persisted before the Fabric pointer moves. `Fabric.build_id` is Fabric state (`fabric.storage`), not a Build fact:
+
+```text
+fabric-primary prepares B19
+    -> persist complete B19 through builds.storage
+    -> B19 is durable beyond this fabric-primary
+    -> durably set Fabric.build_id = B19 through fabric.storage
+    -> NOW B19 is accepted
+
+crash before Fabric.build_id moves
+    -> B19 may exist as an orphan, unaccepted Build
+    -> the old Fabric.build_id remains authority
+
+crash after Fabric.build_id moves
+    -> B19 is already durable
+    -> the successor loads it
+```
+
+`Fabric.build_id` never durably points at a Build that is not already recoverably durable: persist the Build first, advance the Fabric pointer second.
+
+### 5.3 Node-admin storage boundaries
+
+Control-plane state lives behind RDM's five storage interfaces: fabric, mesh, nodes, connections and status. In RDM's file adapter they open under one store root per fabric, `<store_dir>/<fabric_id>/{fabric, meshes/<mesh>, nodes/<mesh>/, connections/<node>/, status/<mesh>/}`, where `<mesh>` is the mesh's logical name. Writers are the ladder: the fabric-primary writes `fabric/`, each mesh-primary its `meshes/<mesh>` and `nodes/<mesh>/`, each node its own `connections/<node>/`. Each node-admin also keeps its own Build journal (`builds.storage`). The generic code knows the interfaces, never a specific database; Rafka binds its system topics to them.
+
+`fabric.storage` holds the Fabric as an immutable identity row, `FabricIdentity { fabric_id, name }`, written once, and one pointer row, `FabricPointer { build_id, submitted_at_ms }`, per move of `Fabric.build_id`. A reader folds them into `FabricRecord { fabric_id, name, build_id }`, taking the greatest `(submitted_at_ms, build_id)`, so a pointer row written late never moves the pointer back; the record is never written whole (RDM's `FabricRecord` in `rafka-node-admin-core`).
+
+Restarting every node-admin at once must not erase the facts needed to reconstruct the Fabric and continue an active Build; gossip or another live admin is never the only persistence.
+
+```text
+node-admin starts
+    -> open the fabric's store root and this admin's Build journal
+    -> reconstruct local control-plane state
+    -> canonical LeadershipView: mesh primaries and current fabric-primary
+new fabric-primary
+    -> reads Fabric.build_id -> loads that Build -> continues remaining work
+```
+
+---
+
+## 6. LeadershipResolver is library-owned
+
+All normative election semantics live in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md).
+
+This document does not restate eligibility, ordering, hierarchy, preemption, or shutdown seat behavior. It only consumes the imported LeadershipView.
+
+Rafka supplies lifecycle/topology facts and maps the resolved leadership view into product-facing state. Rafka does not keep an active local comparator, lowest-name rule, incumbent ladder, or second fabric-primary algorithm.
+
+---
+
+## 9. LifecycleTransitionPipeline
+
+Lifecycle state must be more than a status field somebody happens to write after side work. Node, Mesh, and Fabric transitions are explicit state-machine operations with registered hooks.
+
+```rust
+pub enum LifecycleScope {
+    Node,
+    Mesh,
+    Fabric,
+}
+
+pub struct TransitionKey {
+    pub scope: LifecycleScope,
+    pub from: LifecycleState,
+    pub to: LifecycleState,
+}
+
+pub struct Transition<'a> {
+    pub transition_id: String,
+    pub target: String,
+    pub key: TransitionKey,
+    pub shape: &'a ShapeFacts,
+}
+```
+
+`LifecycleTransitionPipeline` runs a `Transition` through its sealed hooks, its eligibility check and its commit; a failed blocking hook prevents the commit (RDM's `LifecycleTransitionPipeline` in `rafka-node-admin-core`). `transition_id` is internal to one transition execution and keys its once-only hook receipts; the Status calls do not carry it, and their natural idempotency keys are defined in [the envelope](node-rpc-envelope.md#status-op-0x1b-rdm).
+
+Application work enters a lifecycle only through [Fabric and node hooks](fabric-node-hooks.md). What an Applied reply means beside gossip is [gossip.md §10](gossip.md#10-status-dissemination-versus-status-certainty); what proves a runtime dead is [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
+
+---
+
+## 10. Readiness gates are shape-aware through the accepted Build
+
+SN/MN/MM are minimum proof rungs, not caps. Lifecycle eligibility should usually derive from the accepted Build rather than hard-coded `if shape == MM` branches.
+
+The Fabric leaves `pending` for `state-sync` when every Mesh the accepted Build names is ready-for-traffic (every planned member ready). It reaches `ready-for-traffic` only through the completed state-commit and open-traffic rounds ([States](lifecycles/states.md#states)).
+
+For an authority-bearing node-admin `Pending -> ReadyForTraffic` transition, required generic hydration includes:
+
+```text
+Fabric.build_id and its accepted Build
+current topology/membership required by its role
+RuntimeFacts + required runtime metadata for held births it may need to manage
+provider-control-domain reachability or valid domain-local execution path
+```
+
+This prevents a newcomer from becoming Ready before it can actually execute authority work. These are lifecycle readiness prerequisites; leadership semantics are defined only in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md).
+
+### 10.1 Ready root / deadlock guard
+
+An ordinary joining or restarted admin must hydrate current control state from an existing Fabric control projection before it may commit authority-capable Ready. Missing hydration is not permission to invent topology or self-Ready.
+
+Only two lifecycle roots establish Ready without a live Ready authority:
+
+```text
+Day 0
+    no prior Fabric control authority exists
+    the first node-admin is the first fabric-primary and accepts the first Build (Fabric.build_id)
+    establish first Ready through the Day-0 lifecycle path (the sequence is lifecycles/fabric-create.md)
+
+single-admin recovery root
+    only when canonical lifecycle proof says no live Ready admin exists
+    use the defined single-admin recovery-root Ready self-apply
+```
+
+Those roots establish lifecycle eligibility only. They do not assign primary seats; leadership is consumed from the canonical election model in [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md). A node-admin joining a live mesh, where a live fabric primary exists, does not use the recovery-root shortcut.
+
+For SN/MN, the accepted Build names one mesh. For MM it names two. The same gate therefore naturally waits for the correct estate.
+
+---
+
+## 11. Rafka's Day-0 work is the `sync_state` hook
+
+RDM carries no system-org bootstrap logic. Rafka's Day-0 work (its system org, its system topics and the store RDM's rows go into) runs inside the application's [`sync_state`](fabric-node-hooks.md#sync_state) hook; [Fabric state-sync](lifecycles/fabric-state-sync.md) owns the round, the hook's answer and what completes it.
+
+---
+
+## 12. Mesh creation, a node-admin joining a live mesh, and replacement are different Build semantics
+
+All three must be proven.
+
+### 12.1 Create a new mesh
+
+```text
+fabric-primary accepts Build B19:
+    {mesh1} -> {mesh1, mesh2}
+    Fabric.build_id = B19
+```
+
+The fabric-primary decides that mesh2 exists and what it contains; mesh2's node-admin creates mesh2's nodes. mesh2 comes into being with the `node.create` of its first node-admin, whose sequence is [node.create's mesh-absent arm](lifecycles/node-create.md#mesh-absent).
+
+### 12.2 Add a node-admin to a live mesh
+
+```text
+the accepted Build still names mesh1 + mesh2
+mesh1's node-admins are all lost, its members live (mesh1 holds a node, so it is alive)
+    -> node.create of a node-admin into mesh1 under the same logical FabricId + MeshId
+```
+
+[Mesh investigation](lifecycles/mesh-investigation.md#a-node-admin-joins-the-live-mesh) owns the sequence: the fabric-primary's carrier-edge-lost verdict creates one node-admin under the mesh's MeshId and runs its work as attempts of the same Build (§4.1). Fabric authority is not the local Build executor: the joining node-admin is the local executor for its own mesh, and while it is `Pending` it executes only work the fabric-primary dispatches for that mesh, never another mesh's or fabric-wide work ([Role-neutral execution](#role-neutral-execution-and-policy)). A surviving runtime in another provider control domain is handled by [deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain).
+
+### 12.3 Replace a mesh intentionally
+
+```text
+fabric-primary accepts Build B20:
+    {mesh1, mesh2} -> {mesh2, mesh3}
+    Fabric.build_id = B20
+```
+
+mesh1 is deleted by `mesh.delete` and mesh3 comes into being with the `node.create` of its first node-admin. mesh3 always has a new MeshId; a MeshId is never reissued, even when the new mesh takes mesh1's name after mesh1's row is deleted. A dead mesh is never restarted: mesh3 is mesh.create of a new mesh, and it does not preserve mesh1's logical identity merely to reuse its slot/name.
+
+### 12.4 Remove one node
+
+```text
+fabric-primary accepts Build B21:
+    mesh2 {rpc.1, rpc.2} -> mesh2 {rpc.1}
+    Fabric.build_id = B21
+```
+
+The removal is the [node.delete](lifecycles/node-delete.md) of mesh2.rpc.2, which mesh2's primary
+executes under the fabric-primary's claim; the fabric-primary never commands mesh2.rpc.2 and never
+publishes its events. A delete of the node-admin that holds mesh2's seat: the holder first runs
+[node.primary.update](lifecycles/node-primary-update.md), commanded by the fabric-primary; its successor,
+now mesh2's primary, executes the delete.
+
+---
+
+## 13. Held-member repair when a peer is heard again
+
+Held-member repair is a generic membership mechanism owned by [gossip.md §6](gossip.md#6-repair-held-member-stale-coverage-not-zero-neighbours), with its heal path in [§12](gossip.md#12-an-unheard-peer-mesh). Repair dials a held member with a known transport identity and address; the accepted topology alone is not dial material. Rafka adds no second repair loop beside it (§15).
+
+---
+
+## 14. Control endpoint ownership and authority movement
+
+Callers reach the current fabric-primary over Node RPC at the endpoint its [new-fabric-primary announcement](gossip.md#new-fabric-primary-and-contact-addresses) and digest carry. An application contact such as `admin_api_base` is application config on the node record.
+
+A fabric-primary lost mid-Build and runtime drift after a Build completed both continue the Build `Fabric.build_id` names (§4.1).
+
+Leadership may recover before every application hook is complete. A resolved primary and Fabric ReadyForTraffic are distinct facts; election semantics are owned only by [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md).
+
+---
+
+## 15. Import/binding rule
+
+The target dependency is deliberately one-way:
+
+```text
+RDM rafka-node-admin-core
+    Build/Reconciler + drift trigger
+    RuntimeFact + current runtime metadata + provider-control-domain adoption contract
+    LeadershipResolver
+    executor/attempt rules
+    lifecycle/deployment contracts
+        |
+        v
+Rafka adapters
+    shape mapping into Builds
+    Fabric.build_id + the single-writer (is_fabric_primary) Build call
+    production backends for imported fabric/mesh/nodes/connections/builds storage interfaces
+    DeploymentProvider implementation / domain routing
+    current runtime metadata mapping
+    lifecycle hooks/status persistence
+    auth/cert/Rafka-time policy
+    topology/public-view mapping
+        |
+        v
+Rafka protocol/domain consumers
+```
+
+An import boundary is eligible when it proves:
+
+1. logical FabricId and transport EndpointId are distinct everywhere in target APIs;
+2. exactly one fabric-primary topology writer and one `Fabric.build_id` exist, with one drift mechanism that opens attempts of the current Build, driven by the mesh-primary of the drifting mesh; no node-admin other than the fabric-primary accepts a topology change, and no desired-topology authority stands beside the accepted Build, including imported generic desired-state/revision machinery promoted into Rafka's topology authority;
+3. one Build/Reconciler implementation exists; no active Rafka-local `nodes_to_reach_shape`/shape reconciliation competes with it;
+4. one LeadershipResolver implementation exists; no Rafka-local leadership comparator or primary ladder, and no product protocol recomputing a mesh/fabric primary, stands in for the canonical LeadershipView;
+5. one current RuntimeFact + runtime-metadata publication/adoption contract exists; no Rafka-local runtime adoption depends on launcher-private completed Build receipts, and no launcher-private `data_dir`/runtime-management metadata keeps a successor from managing a current birth;
+6. provider/bootstrap produces the locator and the node publishes the one normalized RuntimeFact;
+7. one provider-control-domain execution contract exists, and host locality never alters the canonical LeadershipView;
+8. one exact-runtime provider/death-proof contract exists, including Day-0 adoption;
+9. one Ready-root rule exists: ordinary admins hydrate, and only the Day-0 or single-admin recovery root establishes Ready without a live Ready authority (§10.1);
+10. one held-member repair mechanism exists (§13);
+11. one Direct/Proxy route-truth source exists ([connections.md](connections.md));
+12. one Node RPC certainty implementation exists;
+13. no Rafka-local executor rule overrides the imported recovery authority/executor semantics, and Rafka's adaptation adds policy, storage and product semantics without a second generic control brain.
+
+An unmet item is a defect. If two layers can independently answer "who is primary?", "what should exist?", "how does a new admin learn the accepted topology?", "which exact runtime is this current birth?", "what current runtime metadata is required to manage it?", "which provider domain owns it?", "who executes this recovery?", "may this admin self-Ready?" or "is this runtime dead?", the ownership cut is incomplete.
+
+A compatibility wrapper is allowed only when it delegates to the imported mechanism and has no independent state/decision algorithm.
+
+---
+
+## 16. Test ownership
+
+Framework mechanisms are proven once by the Mesh product feature that owns them; a downstream Rafka application feature consumes those guarantees and tests only the application semantics it adds ([mesh product taxonomy §4](/home/admin/rafka-v2/docs/eng/mesh-product-taxonomy.md#4-prove-framework-mechanics-once)).
+
+RDM's role executables, `test-roles`' `rafka-broker`, `rafka-gateway` and `rafka-compute` and the `rafka-consumer-fixture` executables, are role processes on `rafka-node-base` that carry no Rafka product behaviour; they are not Rafka's product roles. A generic proof runs node-admins, the RPC proof nodes of `rafka-node-rpc-testkit` and these role processes, and asserts no Rafka customer or product state; that proof stays in Rafka.
+
+The RDM-generic proofs of this page's mechanisms:
+
+- an all-node-admin restart kills every node-admin at once and restarts them from durable storage: Fabric/Mesh/Node/Connection state is recovered, `Fabric.build_id` still names the active Build, its evidence is recovered, exactly one fabric-primary continues it without repeating completed work, and no new Build or competing topology appears (§5.3);
+- a fabric-primary death mid-Build: the successor recovers and continues the same Build (§4.1);
+- process/container proof demonstrates same-domain successor control and refusal of cross-domain PID/container-ID misuse ([deployment-provider.md §2.4](deployment-provider.md#24-exact-provider-locator-and-control-domain)); a multi-host proof demonstrates remotely controllable locators or domain-local exact-runtime execution without changing the canonical LeadershipView ([deployment-provider.md §1](deployment-provider.md#1-deployment-provider-is-environment-policy));
+- elastic shape/grow/shrink tests assert accepted per-cohort counts or settled shape rather than requiring surviving ordinals to be contiguous; identity/leadership/restart/replacement tests retain exact path/NodeId/IncarnationId assertions when identity is the behavior under test;
+- leadership proof uses [fabric-node-lifecycle-elections.md](fabric-node-lifecycle-elections.md) as its only expected-result specification;
+- private maps are not E2E truth.
+
+Membership, hydration, late-admin adoption and repair proofs are [gossip.md §14](gossip.md#14-required-proofs).

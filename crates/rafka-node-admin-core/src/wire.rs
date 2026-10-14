@@ -1,7 +1,7 @@
 //! The wire shape of the Build topic (`fabric_builds`): every type here is positional postcard
 //! (`rafka_mesh_transport::wire`), carrying every field and no internally tagged enum.
 //!
-//! The domain types (`BuildFact`, `FabricRecord`, the accepted topology) are JSON elsewhere: the
+//! The domain types (`BuildFact`, `FabricIdentity`, the accepted topology) are JSON elsewhere: the
 //! REST views, the local journal and the tests read `"fact"`, `"kind"`, `"action"`,
 //! `"persistence"` keys and absent optional fields. They keep that shape; these mirrors are what
 //! travels. A conversion is one `From` per direction, so a field added to a domain type without
@@ -18,12 +18,12 @@ use crate::build::{BuildId, FabricDesired, MeshDesired};
 use crate::build_state::{AttemptReason, BuildAccepted, BuildAttemptClaim, BuildAttemptReceipt, BuildFact, BuildStepReceipt, AttemptOpened, StepOutcome};
 use crate::deployment::pipeline::Bound;
 use crate::deployment::pipeline::{CommandAdmission, Completion, CreateStep, Identity, RetireStep, StorageDisposition, TerminalReceipt};
-use crate::mesh_leave::{ExitManifest, RosterAmended};
+use crate::mesh_delete::{ExitManifest, RosterAmended};
 use crate::deployment::provider::DeploymentHandle;
 use crate::fabric_builds::BuildMessage;
-use crate::fabric_storage::{FabricRecord, FabricShutdown};
+use crate::fabric_storage::{FabricIdentity, FabricShutdown};
 use crate::model::{EndpointId, FabricId, IncarnationId, MeshId, NodeId, NodeKind, PathName};
-use rafka_mesh_entity::meta::{NodeMeta, PersistentRetireDisposition, PlacementMeta, StorageMeta};
+use rafka_mesh_entity::meta::{PathConfig, PersistentRetireDisposition, PlacementMeta, StorageMeta};
 use rafka_mesh_entity::LifecycleOp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,9 +49,9 @@ impl std::fmt::Display for WireRefusal {
 pub(crate) enum WireFact {
     Accepted(WireAccepted),
     Opened(WireOpened),
-    Claim(BuildAttemptClaim),
+    Claim(WireClaim),
     Step(WireStep),
-    Attempt(BuildAttemptReceipt),
+    Attempt(WireAttempt),
     Forget { build_id: BuildId },
 }
 
@@ -71,6 +71,24 @@ pub(crate) struct WireOpened {
     action: Option<WireAction>,
     opened_by: String,
     opened_at_ms: u64,
+    mesh: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WireClaim {
+    build_id: BuildId,
+    attempt: u32,
+    executor: String,
+    claimant: Option<String>,
+    mesh: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WireAttempt {
+    build_id: BuildId,
+    attempt: u32,
+    outcome: crate::build_state::AttemptOutcome,
+    mesh: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -82,6 +100,7 @@ pub(crate) struct WireStep {
     outcome: StepOutcome,
     output: Option<WireOutput>,
     executor: Option<String>,
+    mesh: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -95,11 +114,11 @@ struct WireMesh {
     name: String,
     mesh_id: MeshId,
     nodes: BTreeSet<PathName>,
-    node_meta_by_path: BTreeMap<PathName, WireNodeMeta>,
+    path_config_by_path: BTreeMap<PathName, WirePathConfig>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct WireNodeMeta {
+struct WirePathConfig {
     storage: WireStorage,
     placement: PlacementMeta,
 }
@@ -139,7 +158,7 @@ enum WireChange {
 #[derive(Serialize, Deserialize)]
 enum WireAction {
     Restart { path: PathName, from_incarnation: IncarnationId },
-    Drain { path: PathName, from_incarnation: IncarnationId },
+    DeleteConnections { path: PathName, from_incarnation: IncarnationId },
     Stop { path: PathName, from_incarnation: IncarnationId },
     Start { path: PathName, from_incarnation: IncarnationId },
     Recover { path: PathName, node_id: NodeId, from_incarnation: IncarnationId },
@@ -195,7 +214,7 @@ impl From<&AttemptAction> for WireAction {
     fn from(a: &AttemptAction) -> Self {
         match a {
             AttemptAction::Restart { path, from_incarnation } => Self::Restart { path: path.clone(), from_incarnation: from_incarnation.clone() },
-            AttemptAction::Drain { path, from_incarnation } => Self::Drain { path: path.clone(), from_incarnation: from_incarnation.clone() },
+            AttemptAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Stop { path, from_incarnation } => Self::Stop { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Start { path, from_incarnation } => Self::Start { path: path.clone(), from_incarnation: from_incarnation.clone() },
             AttemptAction::Recover { path, node_id, from_incarnation } => Self::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: from_incarnation.clone() },
@@ -208,7 +227,7 @@ impl From<WireAction> for AttemptAction {
     fn from(a: WireAction) -> Self {
         match a {
             WireAction::Restart { path, from_incarnation } => Self::Restart { path, from_incarnation },
-            WireAction::Drain { path, from_incarnation } => Self::Drain { path, from_incarnation },
+            WireAction::DeleteConnections { path, from_incarnation } => Self::DeleteConnections { path, from_incarnation },
             WireAction::Stop { path, from_incarnation } => Self::Stop { path, from_incarnation },
             WireAction::Start { path, from_incarnation } => Self::Start { path, from_incarnation },
             WireAction::Recover { path, node_id, from_incarnation } => Self::Recover { path, node_id, from_incarnation },
@@ -217,8 +236,8 @@ impl From<WireAction> for AttemptAction {
         }
     }
 }
-impl From<&NodeMeta> for WireNodeMeta {
-    fn from(m: &NodeMeta) -> Self {
+impl From<&PathConfig> for WirePathConfig {
+    fn from(m: &PathConfig) -> Self {
         let storage = match m.storage {
             StorageMeta::Ephemeral => WireStorage::Ephemeral,
             StorageMeta::Persistent { on_retire } => WireStorage::Persistent { on_retire },
@@ -226,8 +245,8 @@ impl From<&NodeMeta> for WireNodeMeta {
         Self { storage, placement: m.placement }
     }
 }
-impl From<WireNodeMeta> for NodeMeta {
-    fn from(m: WireNodeMeta) -> Self {
+impl From<WirePathConfig> for PathConfig {
+    fn from(m: WirePathConfig) -> Self {
         let storage = match m.storage {
             WireStorage::Ephemeral => StorageMeta::Ephemeral,
             WireStorage::Persistent { on_retire } => StorageMeta::Persistent { on_retire },
@@ -245,7 +264,7 @@ impl From<&FabricTopology> for WireTopology {
                     name: m.name.clone(),
                     mesh_id: m.mesh_id.clone(),
                     nodes: m.nodes.clone(),
-                    node_meta_by_path: m.node_meta_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect(),
+                    path_config_by_path: m.path_config_by_path.iter().map(|(p, meta)| (p.clone(), meta.into())).collect(),
                 };
                 (k.clone(), mesh)
             })
@@ -259,7 +278,7 @@ impl From<WireTopology> for FabricTopology {
             .meshes
             .into_iter()
             .map(|(k, m)| {
-                let mesh = MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, node_meta_by_path: m.node_meta_by_path.into_iter().map(|(p, meta)| (p, meta.into())).collect() };
+                let mesh = MeshTopology { name: m.name, mesh_id: m.mesh_id, nodes: m.nodes, path_config_by_path: m.path_config_by_path.into_iter().map(|(p, meta)| (p, meta.into())).collect() };
                 (k, mesh)
             })
             .collect();
@@ -284,43 +303,7 @@ pub(crate) enum WireOutput {
     Storage(WireStorageDisposition),
     Terminal(TerminalReceipt),
     ExitManifest(ExitManifest),
-    SeatTransfer(WireSeatTransfer),
     RosterAmended(RosterAmended),
-}
-
-/// The SeatTransfer step's receipt (`fabric_handover::SeatTransferOutcome`), positional.
-#[derive(Serialize, Deserialize)]
-pub(crate) enum WireSeatTransfer {
-    NotAHolder,
-    Committed { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
-    CommittedRow { seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> },
-    NoTransfer,
-    OtherMesh { holder_mesh: String },
-}
-
-impl From<&crate::fabric_handover::SeatTransferOutcome> for WireSeatTransfer {
-    fn from(o: &crate::fabric_handover::SeatTransferOutcome) -> Self {
-        use crate::fabric_handover::SeatTransferOutcome as O;
-        match o {
-            O::NotAHolder => Self::NotAHolder,
-            O::Committed { seats } => Self::Committed { seats: seats.clone() },
-            O::CommittedRow { seats } => Self::CommittedRow { seats: seats.clone() },
-            O::NoTransfer => Self::NoTransfer,
-            O::OtherMesh { holder_mesh } => Self::OtherMesh { holder_mesh: holder_mesh.clone() },
-        }
-    }
-}
-
-impl From<WireSeatTransfer> for crate::fabric_handover::SeatTransferOutcome {
-    fn from(o: WireSeatTransfer) -> Self {
-        match o {
-            WireSeatTransfer::NotAHolder => Self::NotAHolder,
-            WireSeatTransfer::Committed { seats } => Self::Committed { seats },
-            WireSeatTransfer::CommittedRow { seats } => Self::CommittedRow { seats },
-            WireSeatTransfer::NoTransfer => Self::NoTransfer,
-            WireSeatTransfer::OtherMesh { holder_mesh } => Self::OtherMesh { holder_mesh },
-        }
-    }
 }
 
 /// A runtime step's receipt: the runtime by fingerprint.
@@ -349,8 +332,9 @@ pub(crate) enum WireCommandAdmission {
     NotSent { reason: String },
     Indeterminate { reason: String },
     Refused { reply: String },
-    Stopped { receipt: rafka_node_rpc_contract::status::DrainReceipt },
+    Stopped { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt },
     Started,
+    ConnectionsDeleted { receipt: rafka_node_rpc_contract::status::ConnectionsReceipt },
     StartFailed { step: String, reason: String },
 }
 
@@ -372,13 +356,14 @@ pub(crate) enum WireStorageDisposition {
 impl From<&CommandAdmission> for WireCommandAdmission {
     fn from(d: &CommandAdmission) -> Self {
         match d {
-            CommandAdmission::Admitted => Self::Admitted,
-            CommandAdmission::AlreadyAdmitted => Self::AlreadyAdmitted,
+            CommandAdmission::Admitted {} => Self::Admitted,
+            CommandAdmission::AlreadyAdmitted {} => Self::AlreadyAdmitted,
             CommandAdmission::NotSent { reason } => Self::NotSent { reason: reason.clone() },
             CommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason: reason.clone() },
             CommandAdmission::Refused { reply } => Self::Refused { reply: reply.clone() },
-            CommandAdmission::Stopped { receipt } => Self::Stopped { receipt: *receipt },
-            CommandAdmission::Started => Self::Started,
+            CommandAdmission::Stopped { receipt } => Self::Stopped { receipt: receipt.clone() },
+            CommandAdmission::ConnectionsDeleted { receipt } => Self::ConnectionsDeleted { receipt: receipt.clone() },
+            CommandAdmission::Started {} => Self::Started,
             CommandAdmission::StartFailed { step, reason } => Self::StartFailed { step: step.clone(), reason: reason.clone() },
         }
     }
@@ -386,13 +371,14 @@ impl From<&CommandAdmission> for WireCommandAdmission {
 impl From<WireCommandAdmission> for CommandAdmission {
     fn from(d: WireCommandAdmission) -> Self {
         match d {
-            WireCommandAdmission::Admitted => Self::Admitted,
-            WireCommandAdmission::AlreadyAdmitted => Self::AlreadyAdmitted,
+            WireCommandAdmission::Admitted => Self::Admitted {},
+            WireCommandAdmission::AlreadyAdmitted => Self::AlreadyAdmitted {},
             WireCommandAdmission::NotSent { reason } => Self::NotSent { reason },
             WireCommandAdmission::Indeterminate { reason } => Self::Indeterminate { reason },
             WireCommandAdmission::Refused { reply } => Self::Refused { reply },
             WireCommandAdmission::Stopped { receipt } => Self::Stopped { receipt },
-            WireCommandAdmission::Started => Self::Started,
+            WireCommandAdmission::ConnectionsDeleted { receipt } => Self::ConnectionsDeleted { receipt },
+            WireCommandAdmission::Started => Self::Started {},
             WireCommandAdmission::StartFailed { step, reason } => Self::StartFailed { step, reason },
         }
     }
@@ -400,9 +386,9 @@ impl From<WireCommandAdmission> for CommandAdmission {
 impl From<&Completion> for WireCompletion {
     fn from(a: &Completion) -> Self {
         match a {
-            Completion::Received => Self::Received,
-            Completion::Deadline => Self::Deadline,
-            Completion::RuntimeExited => Self::RuntimeExited,
+            Completion::Received {} => Self::Received,
+            Completion::Deadline {} => Self::Deadline,
+            Completion::RuntimeExited {} => Self::RuntimeExited,
             Completion::NotAwaited { admission } => Self::NotAwaited { admission: admission.clone() },
         }
     }
@@ -410,9 +396,9 @@ impl From<&Completion> for WireCompletion {
 impl From<WireCompletion> for Completion {
     fn from(a: WireCompletion) -> Self {
         match a {
-            WireCompletion::Received => Self::Received,
-            WireCompletion::Deadline => Self::Deadline,
-            WireCompletion::RuntimeExited => Self::RuntimeExited,
+            WireCompletion::Received => Self::Received {},
+            WireCompletion::Deadline => Self::Deadline {},
+            WireCompletion::RuntimeExited => Self::RuntimeExited {},
             WireCompletion::NotAwaited { admission } => Self::NotAwaited { admission },
         }
     }
@@ -421,8 +407,8 @@ impl From<&StorageDisposition> for WireStorageDisposition {
     fn from(s: &StorageDisposition) -> Self {
         match s {
             StorageDisposition::Released { locator } => Self::Released { locator: locator.clone() },
-            StorageDisposition::Preserved => Self::Preserved,
-            StorageDisposition::PreservedNoMeta => Self::PreservedNoMeta,
+            StorageDisposition::Preserved {} => Self::Preserved,
+            StorageDisposition::PreservedNoMeta {} => Self::PreservedNoMeta,
         }
     }
 }
@@ -430,8 +416,8 @@ impl From<WireStorageDisposition> for StorageDisposition {
     fn from(s: WireStorageDisposition) -> Self {
         match s {
             WireStorageDisposition::Released { locator } => Self::Released { locator },
-            WireStorageDisposition::Preserved => Self::Preserved,
-            WireStorageDisposition::PreservedNoMeta => Self::PreservedNoMeta,
+            WireStorageDisposition::Preserved => Self::Preserved {},
+            WireStorageDisposition::PreservedNoMeta => Self::PreservedNoMeta {},
         }
     }
 }
@@ -457,7 +443,6 @@ enum Produces {
     Storage,
     Terminal,
     ExitManifest,
-    SeatTransfer,
     RosterAmended,
 }
 
@@ -488,20 +473,18 @@ fn produces(operation: &str, step: &str) -> Option<Produces> {
         Produces::MeshPending
     } else if ret(RetireStep::NodeDeleting) || ret(RetireStep::NodeRestarting) || ret(RetireStep::NodeDeleted) {
         Produces::LifecycleOp
-    } else if ret(RetireStep::DrainNode) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
+    } else if ret(RetireStep::DeleteConnections) || ret(RetireStep::StopNode) || step == crate::deployment::pipeline::StartStep::StartNode.name() {
         Produces::CommandAdmission
-    } else if ret(RetireStep::AwaitNodeDrained) || ret(RetireStep::AwaitNodeLeft) {
+    } else if ret(RetireStep::AwaitNodeLeft) {
         Produces::Completion
     } else if step == RELEASE_STORAGE_STEP {
         Produces::Storage
     } else if ret(RetireStep::TerminateRuntime) {
         Produces::Terminal
-    } else if ret(RetireStep::SeatTransfer) {
-        Produces::SeatTransfer
-    } else if [crate::mesh_leave::STEP_OTHER_MEMBERS_EXITED, crate::mesh_leave::STEP_MESH_DELETED, crate::mesh_leave::STEP_MESH_LEFT, crate::mesh_leave::STEP_ACCEPTED_ROSTER, crate::mesh_leave::STEP_LEAVING_ROSTER].contains(&step) {
+    } else if [crate::mesh_delete::STEP_OTHER_MEMBERS_EXITED, crate::mesh_delete::STEP_MESH_DELETED, crate::mesh_delete::STEP_MESH_LEFT, crate::mesh_delete::STEP_ACCEPTED_ROSTER, crate::mesh_delete::STEP_LEAVING_ROSTER].contains(&step) {
         // The accepted roster rides the exit-manifest shape: an exit manifest with no receipts yet.
         Produces::ExitManifest
-    } else if step == crate::mesh_leave::STEP_ROSTER_AMENDED {
+    } else if step == crate::mesh_delete::STEP_ROSTER_AMENDED {
         Produces::RosterAmended
     } else {
         return None;
@@ -568,7 +551,6 @@ fn output_to_wire(operation: &str, step: &str, v: &serde_json::Value) -> Result<
         Produces::Storage => WireOutput::Storage((&typed::<StorageDisposition>(v)?).into()),
         Produces::Terminal => WireOutput::Terminal(typed(v)?),
         Produces::ExitManifest => WireOutput::ExitManifest(typed(v)?),
-        Produces::SeatTransfer => WireOutput::SeatTransfer((&typed::<crate::fabric_handover::SeatTransferOutcome>(v)?).into()),
         Produces::RosterAmended => WireOutput::RosterAmended(typed(v)?),
     })
 }
@@ -605,7 +587,6 @@ fn output_to_json(o: WireOutput) -> Result<serde_json::Value, String> {
         WireOutput::Storage(s) => json(&StorageDisposition::from(s)),
         WireOutput::Terminal(t) => json(&t),
         WireOutput::ExitManifest(m) => json(&m),
-        WireOutput::SeatTransfer(o) => json(&crate::fabric_handover::SeatTransferOutcome::from(o)),
         WireOutput::RosterAmended(a) => json(&a),
     }
 }
@@ -628,8 +609,9 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
             action: o.action.as_ref().map(Into::into),
             opened_by: o.opened_by.clone(),
             opened_at_ms: o.opened_at_ms,
+            mesh: o.mesh.clone(),
         }),
-        BuildFact::Claim(c) => WireFact::Claim(c.clone()),
+        BuildFact::Claim(c) => WireFact::Claim(WireClaim { build_id: c.build_id.clone(), attempt: c.attempt, executor: c.executor.clone(), claimant: c.claimant.clone(), mesh: c.mesh.clone() }),
         BuildFact::Step(s) => {
             let refuse = |reason: String| WireRefusal { build_id: s.build_id.clone(), attempt: s.attempt, step: s.step.clone(), reason };
             let output = match &s.output {
@@ -644,9 +626,10 @@ pub(crate) fn fact_to_wire(fact: &BuildFact) -> Result<WireFact, WireRefusal> {
                 outcome: s.outcome.clone(),
                 output,
                 executor: s.executor.clone(),
+                mesh: s.mesh.clone(),
             })
         }
-        BuildFact::Attempt(a) => WireFact::Attempt(a.clone()),
+        BuildFact::Attempt(a) => WireFact::Attempt(WireAttempt { build_id: a.build_id.clone(), attempt: a.attempt, outcome: a.outcome.clone(), mesh: a.mesh.clone() }),
         BuildFact::Forget { build_id } => WireFact::Forget { build_id: build_id.clone() },
     })
 }
@@ -667,26 +650,28 @@ pub(crate) fn fact_from_wire(w: WireFact) -> Result<BuildFact, WireRefusal> {
             action: o.action.map(Into::into),
             opened_by: o.opened_by,
             opened_at_ms: o.opened_at_ms,
+            mesh: o.mesh,
         }),
-        WireFact::Claim(c) => BuildFact::Claim(c),
+        WireFact::Claim(c) => BuildFact::Claim(BuildAttemptClaim { build_id: c.build_id, attempt: c.attempt, executor: c.executor, claimant: c.claimant, mesh: c.mesh }),
         WireFact::Step(s) => {
             let (build_id, attempt, step) = (s.build_id.clone(), s.attempt, s.step.clone());
             let output = match s.output {
                 None => None,
                 Some(o) => Some(output_to_json(o).map_err(|reason| WireRefusal { build_id: build_id.clone(), attempt, step: step.clone(), reason })?),
             };
-            BuildFact::Step(BuildStepReceipt { build_id: s.build_id, attempt: s.attempt, operation: s.operation, step: s.step, outcome: s.outcome, output, executor: s.executor })
+            BuildFact::Step(BuildStepReceipt { build_id: s.build_id, attempt: s.attempt, operation: s.operation, step: s.step, outcome: s.outcome, output, executor: s.executor, mesh: s.mesh })
         }
-        WireFact::Attempt(a) => BuildFact::Attempt(a),
+        WireFact::Attempt(a) => BuildFact::Attempt(BuildAttemptReceipt { build_id: a.build_id, attempt: a.attempt, outcome: a.outcome, mesh: a.mesh }),
         WireFact::Forget { build_id } => BuildFact::Forget { build_id },
     })
 }
 
+/// The Fabric identity: the Fabric record of the Build topic's frame and a join answer carry it. A
+/// receiver reads its current Build from its own Build entities (R-BI3), never from the record.
 #[derive(Serialize, Deserialize)]
-struct WireFabric {
+struct WireFabricIdentity {
     fabric_id: FabricId,
     name: String,
-    build_id: Option<BuildId>,
 }
 
 /// The message of the Build topic as it travels: one postcard frame.
@@ -694,7 +679,7 @@ struct WireFabric {
 pub(crate) struct WireMessage {
     nonce: u64,
     facts: Vec<WireFact>,
-    fabric: Option<WireFabric>,
+    fabric: Option<WireFabricIdentity>,
     shutdown: Option<FabricShutdown>,
 }
 
@@ -704,7 +689,7 @@ impl WireMessage {
         Ok(Self {
             nonce: m.nonce,
             facts: m.facts.iter().map(fact_to_wire).collect::<Result<_, _>>()?,
-            fabric: m.fabric.as_ref().map(|r| WireFabric { fabric_id: r.fabric_id.clone(), name: r.name.clone(), build_id: r.build_id.clone() }),
+            fabric: m.fabric.as_ref().map(|r| WireFabricIdentity { fabric_id: r.fabric_id.clone(), name: r.name.clone() }),
             shutdown: m.shutdown.clone(),
         })
     }
@@ -713,7 +698,7 @@ impl WireMessage {
         Ok(BuildMessage {
             nonce: self.nonce,
             facts: self.facts.into_iter().map(fact_from_wire).collect::<Result<_, _>>()?,
-            fabric: self.fabric.map(|r| FabricRecord { fabric_id: r.fabric_id, name: r.name, build_id: r.build_id }),
+            fabric: self.fabric.map(|r| FabricIdentity { fabric_id: r.fabric_id, name: r.name }),
             shutdown: self.shutdown,
         })
     }
@@ -739,11 +724,12 @@ pub struct JoinAnswer {
 pub struct JoinControl {
     /// The deployment provider the fabric's policy names.
     pub provider: crate::model::ProviderKind,
-    /// The Fabric record the admin holds.
-    pub fabric: Option<FabricRecord>,
+    /// The Fabric identity the admin holds.
+    pub fabric: Option<FabricIdentity>,
     /// The shutdown the admin holds.
     pub shutdown: Option<FabricShutdown>,
-    /// The attempt of the pointed Build the joiner's copy of its facts must reach before Ready.
+    /// The answering admin's current Build and its attempt: the joiner's copy of that Build's facts
+    /// must reach the attempt before Ready.
     pub build: Option<BuildFloor>,
     /// The answering admin's rafka-time now, in milliseconds: the joiner adopts it as it stands.
     /// An admin that holds no rafka-time answers `NotReady` naming why and builds no answer.
@@ -761,7 +747,7 @@ pub struct JoinControl {
     pub config: Option<std::collections::BTreeMap<String, String>>,
 }
 
-/// The attempt of the pointed Build a joiner's copy must reach before Ready.
+/// The answering admin's current Build, and the attempt a joiner's copy of it must reach before Ready.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildFloor {
     /// The Build.
@@ -780,7 +766,7 @@ struct WireJoinAnswer {
 #[derive(Serialize, Deserialize)]
 struct WireControl {
     provider: crate::model::ProviderKind,
-    fabric: Option<WireFabric>,
+    fabric: Option<WireFabricIdentity>,
     shutdown: Option<FabricShutdown>,
     build: Option<WireBuildFloor>,
     rafka_time_ms: u64,
@@ -802,7 +788,7 @@ pub fn answer_to_wire(answer: &JoinAnswer) -> Result<Vec<u8>, String> {
         served_by: answer.served_by.clone(),
         control: WireControl {
             provider: c.provider,
-            fabric: c.fabric.as_ref().map(|r| WireFabric { fabric_id: r.fabric_id.clone(), name: r.name.clone(), build_id: r.build_id.clone() }),
+            fabric: c.fabric.as_ref().map(|r| WireFabricIdentity { fabric_id: r.fabric_id.clone(), name: r.name.clone() }),
             shutdown: c.shutdown.clone(),
             build: c.build.as_ref().map(|b| WireBuildFloor { build_id: b.build_id.clone(), attempt: b.attempt }),
             rafka_time_ms: c.rafka_time_ms,
@@ -822,7 +808,7 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
         served_by: w.served_by,
         control: JoinControl {
             provider: w.control.provider,
-            fabric: w.control.fabric.map(|r| FabricRecord { fabric_id: r.fabric_id, name: r.name, build_id: r.build_id }),
+            fabric: w.control.fabric.map(|r| FabricIdentity { fabric_id: r.fabric_id, name: r.name }),
             shutdown: w.control.shutdown,
             build: w.control.build.map(|b| BuildFloor { build_id: b.build_id, attempt: b.attempt }),
             rafka_time_ms: w.control.rafka_time_ms,
@@ -832,4 +818,181 @@ pub fn answer_from_wire(bytes: &[u8]) -> Result<JoinAnswer, String> {
         },
         statuses: w.statuses,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::build_state::StepOutcome;
+    use crate::deployment::pipeline::{CreateStep, RetireStep};
+    use crate::model::{DeploymentId, ProviderKind};
+    use serde_json::{json, Value};
+
+    const EXTRA: &str = "zz_extra";
+
+    /// The Build fact of a completed step whose receipt carries `output`.
+    fn step_fact(operation: &str, step: &str, output: Value) -> BuildFact {
+        BuildFact::Step(BuildStepReceipt {
+            mesh: None,
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
+            attempt: 3,
+            operation: operation.into(),
+            step: step.into(),
+            outcome: StepOutcome::Complete,
+            output: Some(output),
+            executor: None,
+        })
+    }
+
+    /// `valid` with one field no type of its kind declares, put at the JSON pointer `at` ("" is the
+    /// output itself).
+    fn with_extra(mut valid: Value, at: &str) -> Value {
+        let shown = valid.to_string();
+        let target = valid.pointer_mut(at).unwrap_or_else(|| panic!("the valid output has nothing at {at:?}: {shown}"));
+        target.as_object_mut().unwrap_or_else(|| panic!("the valid output at {at:?} is not an object: {shown}")).insert(EXTRA.into(), json!(1));
+        valid
+    }
+
+    /// CONTRACT (CLAUDE.md "DURABLE": "a reader that does not RECOGNISE a value must REFUSE with a
+    /// named reason"; this module's doc: an output that is not the type its step produces "is refused
+    /// by name ... never dropped"): the step's valid output goes to the wire; the same output with one
+    /// field the type does not declare (at `at`) is refused, and the refusal names the step, the Build
+    /// and attempt, and the field. Must NOT happen: the field dropped and the fact sent as a different
+    /// output than the one the step committed.
+    fn unknown_field_is_refused_by_name(operation: &str, step: &str, valid: Value, at: &str) {
+        if let Err(r) = fact_to_wire(&step_fact(operation, step, valid.clone())) {
+            panic!("the valid output of step {step} was refused: {r}");
+        }
+        let Err(refusal) = fact_to_wire(&step_fact(operation, step, with_extra(valid, at))) else {
+            panic!("the output of step {step} carried the unknown field {EXTRA} at {at:?} and went to the wire: the field was dropped");
+        };
+        assert_eq!(refusal.step, step, "the step whose output was refused");
+        assert_eq!(refusal.attempt, 3);
+        let text = refusal.to_string();
+        assert!(text.contains(&format!("step {step} ")) && text.contains("attempt 3"), "the refusal names the step and attempt: {text}");
+        assert!(text.contains(&format!("unknown field `{EXTRA}`")), "the refusal names the unknown field: {text}");
+    }
+
+    fn runtime_proof() -> Value {
+        json!({ "deployment_id": "d1", "provider": "process", "control_domain_fingerprint": "cd", "locator_kind": "pid", "locator_fingerprint": "lf" })
+    }
+
+    fn roster_birth(name: &str) -> Value {
+        json!({ "node": name, "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string() })
+    }
+
+    fn terminal() -> Value {
+        json!({ "node": "mesh1.rpc.1", "node_id": crate::model::NodeId::mint().to_string(), "incarnation_id": crate::model::IncarnationId::mint().to_string(), "runtime": runtime_proof(), "exit_code": 0 })
+    }
+
+    #[test]
+    fn an_identity_output_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "node_id": crate::model::NodeId::mint(), "incarnation": crate::model::IncarnationId::mint(), "supersedes": null, "deployment_id": DeploymentId::mint() });
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::AllocateIdentity.name(), valid, "");
+    }
+
+    #[test]
+    fn a_bound_output_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "transport": "127.0.0.1:4000", "listeners": [["http", "127.0.0.1:4001"]] });
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::WaitForBind.name(), valid, "");
+    }
+
+    /// An endpoint id is the endpoint's key as one string: it has no field to add, so what the reader
+    /// refuses is an object where the string is.
+    #[test]
+    fn an_endpoint_id_output_that_is_an_object_is_refused_by_name() {
+        let step = CreateStep::PrepareStorage.name();
+        let operation = "create-node:mesh1.rpc.1";
+        if let Err(r) = fact_to_wire(&step_fact(operation, step, json!("endpoint-key"))) {
+            panic!("the valid output of step {step} was refused: {r}");
+        }
+        let Err(refusal) = fact_to_wire(&step_fact(operation, step, json!({ EXTRA: 1 }))) else { panic!("an object went to the wire as the endpoint id") };
+        let text = refusal.to_string();
+        assert!(text.contains(&format!("step {step} ")) && text.contains("not a EndpointId"), "the refusal names the step and the type: {text}");
+    }
+
+    #[test]
+    fn a_deployment_handle_output_with_an_unknown_field_is_refused_by_name() {
+        let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: Some(7), start: Some(8), container: None, domain: Some("cd".into()) };
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::DeployRuntime.name(), serde_json::to_value(&handle).unwrap(), "");
+    }
+
+    #[test]
+    fn a_runtime_evidence_output_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "deployment_id": "d1", "provider": "process", "provider_control_domain_fingerprint": "cd", "runtime_locator_kind": "pid", "runtime_locator_fingerprint": "lf" });
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::RegisterExactRuntimeHandle.name(), valid, "");
+    }
+
+    #[test]
+    fn a_mesh_pending_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("create-node:mesh1.rpc.1", CreateStep::ApplyMeshPending.name(), json!({ "applied": "mesh1" }), "");
+    }
+
+    #[test]
+    fn a_lifecycle_op_output_with_an_unknown_field_is_refused_by_name() {
+        let op = rafka_mesh_entity::LifecycleOp {
+            build_id: "b1".into(),
+            attempt: 3,
+            operation: "retire-node:mesh1.rpc.1".into(),
+            node_id: crate::model::NodeId::mint(),
+            incarnation: crate::model::IncarnationId::mint(),
+            name: "mesh1.rpc.1".parse().unwrap(),
+            event_at_rafka_ms: 4_242,
+        };
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::NodeDeleting.name(), serde_json::to_value(&op).unwrap(), "");
+    }
+
+    #[test]
+    fn a_command_admission_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::DeleteConnections.name(), json!({ "arm": "admitted" }), "");
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::StopNode.name(), json!({ "arm": "not-sent", "reason": "no route" }), "");
+    }
+
+    #[test]
+    fn a_connections_receipt_in_an_admission_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "arm": "connections-deleted", "receipt": { "Established": { "in_flight": 0, "closed": [] } } });
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::DeleteConnections.name(), valid, "/receipt/Established");
+    }
+
+    #[test]
+    fn a_completion_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "received" }), "");
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::AwaitNodeLeft.name(), json!({ "arm": "not-awaited", "admission": "refused" }), "");
+    }
+
+    #[test]
+    fn a_storage_disposition_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "preserved" }), "");
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RELEASE_STORAGE_STEP, json!({ "arm": "released", "locator": "dir" }), "");
+    }
+
+    #[test]
+    fn a_terminal_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "");
+    }
+
+    #[test]
+    fn a_runtime_proof_inside_a_terminal_output_with_an_unknown_field_is_refused_by_name() {
+        unknown_field_is_refused_by_name("retire-node:mesh1.rpc.1", RetireStep::TerminateRuntime.name(), terminal(), "/runtime");
+    }
+
+    fn exit_manifest() -> Value {
+        json!({ "mesh_id": "meshd0000001", "roster": [roster_birth("mesh1.admin.1")], "final_primary": roster_birth("mesh1.admin.1"), "final_runtime": runtime_proof(), "receipts": [terminal()] })
+    }
+
+    #[test]
+    fn an_exit_manifest_output_with_an_unknown_field_is_refused_by_name() {
+        let step = crate::mesh_delete::STEP_OTHER_MEMBERS_EXITED;
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "");
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "/roster/0");
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "/final_primary");
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", step, exit_manifest(), "/receipts/0");
+    }
+
+    #[test]
+    fn a_roster_amended_output_with_an_unknown_field_is_refused_by_name() {
+        let valid = json!({ "predecessor": roster_birth("mesh1.admin.1"), "final_primary": roster_birth("mesh1.admin.2"), "final_runtime": runtime_proof() });
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", crate::mesh_delete::STEP_ROSTER_AMENDED, valid.clone(), "");
+        unknown_field_is_refused_by_name("mesh.delete:mesh1", crate::mesh_delete::STEP_ROSTER_AMENDED, valid, "/final_runtime");
+    }
 }

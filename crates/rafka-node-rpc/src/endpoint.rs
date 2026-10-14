@@ -25,7 +25,7 @@ pub fn transport_config() -> iroh::endpoint::QuicTransportConfig {
 /// The process's one endpoint: one identity, one physical UDP socket, at
 /// exactly the transport address node-admin assigned (relay off, no
 /// discovery, the shared `transport_config`). Node RPC and gossip
-/// share it by ALPN. A request names its target in the fence of its framing;
+/// share it by ALPN. A request names its target in the first section of its framing;
 /// the socket decides nothing and there is never a second one.
 pub async fn bind(secret: SecretKey, addr: SocketAddr) -> Result<Endpoint> {
     let builder = Endpoint::builder(presets::Minimal)

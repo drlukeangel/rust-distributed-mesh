@@ -1,7 +1,7 @@
 //! The single calls of the `node` family that travel over node-RPC today, and the one way any
 //! object call ends.
 //!
-//! Each object builds today's request (`node.drain` → `StatusRequest::DrainNode`, `node.declare`
+//! Each object builds today's request (`node.stop` → `StatusRequest::StopNode`, `node.declare`
 //! → `DeclareNodeState`, `node.apply` → `ApplyNodeState`, `node.get` of one exact birth →
 //! `ProbeNodeState`, `node.topology.get` → `GetTopology` on op `0x1E`), sends it with the
 //! node-RPC client and returns the typed reply. A caller never builds the request.
@@ -168,27 +168,6 @@ pub struct ExactBirth {
     pub incarnation: IncarnationId,
 }
 
-/// The Build, attempt and node a `node.drain` belongs to. The operation key
-/// (`drain-node:<path.name>`) is derived here and never written by a caller.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DrainContext {
-    build_id: BuildId,
-    attempt: u32,
-    node: PathName,
-}
-
-impl DrainContext {
-    /// The drain of `node` that attempt `attempt` of Build `build_id` holds.
-    pub fn new(build_id: BuildId, attempt: u32, node: PathName) -> Self {
-        Self { build_id, attempt, node }
-    }
-
-    /// The operation key the Build records the drain under.
-    pub fn operation(&self) -> String {
-        format!("drain-node:{}", self.node)
-    }
-}
-
 /// The membership one node holds of a mesh, read through `node.topology.get`: the births it holds
 /// and the open overlays and retained departures it knows. What a peer reports of another node.
 #[derive(Debug, Clone, Default)]
@@ -280,28 +259,14 @@ impl<'a> NodeRpc<'a> {
         r
     }
 
-    /// `node.drain`: tell the exact birth to refuse new work and finish what it holds, and keep
-    /// running. `Applied` and `AlreadyApplied` admit the command; completion arrives later as
-    /// the birth's `node-drained` call.
-    pub async fn drain(&self, birth: &ExactBirth, ctx: &DrainContext, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::DrainNode {
-            node_id: birth.node_id.clone(),
-            incarnation: birth.incarnation.clone(),
-            build_id: ctx.build_id.0.clone(),
-            attempt: ctx.attempt,
-            operation: ctx.operation(),
-        };
-        self.status(NodeOp::Drain, birth, req, opts).await
-    }
-
-    /// `node.stop`: tell the exact birth to drain, cut its mesh connections and park. The call is
-    /// held until the birth is parked; the reply is `Stopped` with the drain's receipt, on the stop
+    /// `node.stop`: tell the exact birth to delete its connections, cut its transport and stop. The
+    /// call is held until the birth is stopped; the reply is `Stopped` with its `All`'s receipt, on the stop
     /// call's own stream. A birth already parked answers the same.
     pub async fn stop(&self, birth: &ExactBirth, ctx: &StopContext, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::StopNode {
             node_id: birth.node_id.clone(),
             incarnation: birth.incarnation.clone(),
-            build_id: ctx.build_id.0.clone(),
+            build_id: ctx.build_id.to_string(),
             attempt: ctx.attempt,
             operation: ctx.operation(),
         };
@@ -314,7 +279,7 @@ impl<'a> NodeRpc<'a> {
         let req = StatusRequest::StartNode {
             node_id: birth.node_id.clone(),
             incarnation: birth.incarnation.clone(),
-            build_id: ctx.build_id.0.clone(),
+            build_id: ctx.build_id.to_string(),
             attempt: ctx.attempt,
             operation: ctx.operation(),
         };
@@ -348,25 +313,46 @@ impl<'a> NodeRpc<'a> {
         self.status(NodeOp::ConfigUpdate, birth, req, opts).await
     }
 
-    /// `node.update` of the exact birth's name and tags, the caller's single call to the node's
-    /// mesh-primary `mesh_primary` (R13, R-TG1; node-rpc-envelope.md "Meta and config"): it validates
-    /// from its held record, claims a changed name in its store adapter, puts each label's row of the
-    /// tags index and tombstones each label dropped, writes the row, tells a live birth whose name
-    /// changed `ApplyNodeName` and answers `NodeUpdated` after the apply answered; a stopped birth is
-    /// told nothing, and a put that changes no name completes once the row is written. `route` is the
-    /// caller's choice: `Direct` to the mesh-primary, or `ViaPeer` through a carrier (Forward `0x1A`),
-    /// executed exactly as chosen (`NodeRpcClient::call_routed`).
-    pub async fn node_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &rafka_mesh_entity::PathName, tags: &std::collections::BTreeSet<String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
-        let req = StatusRequest::UpdateNode { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string(), tags: tags.clone() };
-        let span = NodeOp::Update.span();
-        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, &req, opts), span.clone()).await;
+    /// `node.tags.create` of `labels` on the exact birth, the caller's single call to the node's
+    /// mesh-primary `mesh_primary` (R-TG1; node-rpc-envelope.md node.tags): it writes the node's row
+    /// carrying them and puts each label's key of the tags index, and answers `TagsCreated` naming
+    /// any label the node already carried. `route` as [`Self::node_update`].
+    pub async fn tags_create(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, labels: &std::collections::BTreeSet<String>, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::CreateTags { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), labels: labels.clone() };
+        self.row_writer_call(NodeOp::TagsCreate, mesh_primary, route, &req, opts).await
+    }
+
+    /// `node.tags.delete` of `scope` on the exact birth, as [`Self::tags_create`]: the row written
+    /// without the labels and each removed label's key of the tags index tombstoned; answered
+    /// `TagsDeleted` naming any named label the node did not carry.
+    pub async fn tags_delete(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, scope: &rafka_node_rpc_contract::status::TagScope, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::DeleteTags { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), scope: scope.clone() };
+        self.row_writer_call(NodeOp::TagsDelete, mesh_primary, route, &req, opts).await
+    }
+
+    /// One call of `op` to the row writer `mesh_primary` over `route`, its span saying how it ended.
+    async fn row_writer_call(&self, op: NodeOp, mesh_primary: &NodeId, route: &RouteChoice, req: &StatusRequest, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let span = op.span();
+        let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(mesh_primary, route, req, opts), span.clone()).await;
         let r = ended(out);
         span.record("outcome", match &r {
             Ok(reply) => reply.name(),
             Err(e) => e.outcome(),
         });
-        span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), route = route.token(), "an object call ended"));
+        span.in_scope(|| tracing::info!(op = op.name(), route = route.token(), "an object call ended"));
         r
+    }
+
+    /// `node.name.update` of the exact birth, the caller's single call to the node's mesh-primary
+    /// `mesh_primary` (proposal node-properties-own-commands.md §2; R13, R-CR1): `name` is the name
+    /// only, never its path. The mesh-primary validates from its held record, claims the name in its
+    /// store adapter, moves the row, tells a live birth `ApplyNodeName` and answers `NameUpdated` after
+    /// the birth answered; a stopped birth is told nothing and the call completes on the row. `route`
+    /// is the caller's choice: `Direct` to the mesh-primary, or `ViaPeer` through a carrier (Forward
+    /// `0x1A`), executed exactly as chosen (`NodeRpcClient::call_routed`).
+    pub async fn name_update(&self, mesh_primary: &NodeId, route: &RouteChoice, birth: &ExactBirth, name: &str, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
+        let req = StatusRequest::UpdateName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
+        self.row_writer_call(NodeOp::NameUpdate, mesh_primary, route, &req, opts).await
     }
 
     /// `node.connections.delete` of the exact birth's connections named by `scope`, the caller's single
@@ -388,18 +374,19 @@ impl<'a> NodeRpc<'a> {
 
     /// The mesh-primary's call to the exact birth, after it wrote the renamed row: take this name and carry
     /// it in every digest from now on (`ApplyNodeName`, R12/R13). `Applied` once the birth holds and
-    /// published it, `AlreadyApplied` for the name it holds, `Busy` naming the connections it holds
-    /// while it holds any (R-CR1). `route` is executed exactly as chosen (`NodeRpcClient::call_routed`).
+    /// published it, `AlreadyApplied` for the name it holds, `BusyHoldingConnections` naming each
+    /// connection it holds while it holds any (R-CR1). `route` is executed exactly as chosen
+    /// (`NodeRpcClient::call_routed`).
     pub async fn name_apply(&self, birth: &ExactBirth, route: &RouteChoice, name: &rafka_mesh_entity::PathName, opts: &CallOptions) -> Result<StatusReply, CallEnd> {
         let req = StatusRequest::ApplyNodeName { node_id: birth.node_id.clone(), incarnation: birth.incarnation.clone(), name: name.to_string() };
-        let span = NodeOp::Update.span();
+        let span = NodeOp::NameUpdate.span();
         let (out, _, _) = tracing::Instrument::instrument(self.client.call_routed::<Status>(&birth.node_id, route, &req, opts), span.clone()).await;
         let r = ended(out);
         span.record("outcome", match &r {
             Ok(reply) => reply.name(),
             Err(e) => e.outcome(),
         });
-        span.in_scope(|| tracing::info!(op = NodeOp::Update.name(), route = route.token(), "an object call ended"));
+        span.in_scope(|| tracing::info!(op = NodeOp::NameUpdate.name(), route = route.token(), "an object call ended"));
         r
     }
 

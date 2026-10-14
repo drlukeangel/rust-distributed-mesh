@@ -31,8 +31,8 @@
 
 use crate::outcome::{MalformedKind, ReplyKind};
 use crate::protocol::NodeProtocol;
-use crate::views::{ConnectionsView, FabricView, MeshView, NodeView};
-use rafka_mesh_entity::{ConfigOverCap, ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS, OPAQUE_ID_LEN};
+use crate::views::{ConnectionsView, FabricView, MeshView, NodeStatus, NodeView};
+use rafka_mesh_entity::{ConfigOverCap, ConnectionId, FabricId, IncarnationId, MeshId, NodeId, RuntimeFact, CROCKFORD60_LEN, MAX_CONFIG_BYTES, MAX_CONFIG_KEYS};
 use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
@@ -139,9 +139,8 @@ pub enum StatusRequest {
         /// The event applied.
         event: FabricEvent,
     },
-    /// Downward: the owning mesh-admin tells the exact birth to refuse new work and finish the
-    /// eligible in-flight work, and to keep running (`drain-node`; node-drain.md). The reply
-    /// (`Applied` / `AlreadyApplied`) admits the command; completion is [`Self::NodeDrained`].
+    /// Reserved position (R-CR4): never sent. A node's connections are deleted by
+    /// [`Self::DeleteConnections`]; a receiver refuses this by name.
     DrainNode {
         /// The birth commanded.
         node_id: NodeId,
@@ -154,8 +153,7 @@ pub enum StatusRequest {
         /// The operation: `drain-node:<path>`.
         operation: String,
     },
-    /// Upward: the exact birth tells its owning mesh-admin that no eligible work remains in
-    /// flight (`node-drained`). The subject is the sender; the fence names the admin.
+    /// Reserved position (R-CR4): never sent; a receiver refuses this by name.
     NodeDrained {
         /// The birth that drained.
         node_id: NodeId,
@@ -198,10 +196,10 @@ pub enum StatusRequest {
         /// The operation: `stop-node:<path>`.
         operation: String,
     },
-    /// Downward: the fabric-primary tells the leaving mesh's primary to run the mesh-leave
-    /// workflow (`leave-mesh`; mesh-leave.md). `Applied` / `AlreadyApplied` admit the command; the
-    /// departure is complete only when the fabric-primary records `MeshLeft`.
-    LeaveMesh {
+    /// Downward: the fabric-primary tells the deleting mesh's primary to run its mesh.delete
+    /// (`delete-mesh`; mesh-delete.md). `Applied` / `AlreadyApplied` admit the command; mesh.deleted is
+    /// reported only by the `MeshDeleted` call that follows.
+    DeleteMesh {
         /// The mesh that leaves.
         mesh_id: MeshId,
         /// The Build the operation belongs to.
@@ -212,10 +210,10 @@ pub enum StatusRequest {
         operation: String,
     },
     /// Upward: the still-running mesh-primary hands the fabric-primary the proof that every other
-    /// member exited and its own exact runtime (`mesh-leave`). The manifest is a reference to
+    /// member exited and its own exact runtime (`mesh-deleted`). The manifest is a reference to
     /// immutable receipts in the accepted Build's records; the fabric-primary reads and validates
     /// them before it accepts. The primary keeps running: the outside owner stops it next.
-    MeshLeave {
+    MeshDeleted {
         /// The mesh that leaves.
         mesh_id: MeshId,
         /// The Build the operation belongs to.
@@ -337,10 +335,10 @@ pub enum StatusRequest {
         config: BTreeMap<String, String>,
     },
     /// Downward: the node's mesh-primary, having written the renamed row, tells the exact birth
-    /// its name (node-rpc-envelope.md "Meta and config"; R12: the node owns its name and publishes
-    /// only the row's name). The birth holds the name and publishes its digest carrying it, then
-    /// answers [`StatusReply::Applied`]; [`StatusReply::AlreadyApplied`] for the name it already
-    /// holds; [`StatusReply::Busy`] naming its in-flight count while it still routes traffic, with
+    /// its name (proposal node-properties-own-commands.md §2.2 step 6; R12: the node owns its name and
+    /// publishes only the row's name). The birth holds the name and publishes its digest carrying it,
+    /// then answers [`StatusReply::Applied`]; [`StatusReply::AlreadyApplied`] for the name it already
+    /// holds; [`StatusReply::BusyHoldingConnections`] naming each connection it still holds, with
     /// nothing held. A stopped birth is sent nothing: its join answer hands it the name.
     ApplyNodeName {
         /// The birth told.
@@ -350,25 +348,26 @@ pub enum StatusRequest {
         /// The `path.name` the row now holds.
         name: String,
     },
-    /// Upward: a caller asks the node's mesh-primary, the only writer of its mesh's rows, to put
-    /// the exact birth's record with `name` and `tags` (`node.update`; node-rpc-envelope.md "Meta
-    /// and config", R13, R-TG1). The mesh-primary validates against the record it holds
-    /// ([`StatusReply::RejectedMetaFieldIsRdmOwned`], [`StatusReply::RejectedTags`]), claims a
-    /// changed name by insert-and-fail in its store adapter ([`StatusReply::NameHeld`]), puts each
-    /// label's row of the node store's tags index and tombstones each label the put drops, puts the
-    /// row, sends a live birth whose name changed `ApplyNodeName` (a stopped one nothing) and
-    /// answers [`StatusReply::NodeUpdated`] (`node.updated`) only after the apply answered; a put
-    /// that changes no name completes once the row is written. A single call, never a Build.
-    UpdateNode {
-        /// The birth whose record is put.
+    /// Upward: `node.name.update` (proposal node-properties-own-commands.md §2; R13, R-CR1): a caller
+    /// asks the node's mesh-primary, the only writer of its mesh's rows, through a carrier (Forward
+    /// `0x1A`) when it cannot reach it directly, to rename the exact birth. The request carries the
+    /// name only, so the path cannot move: the mesh-primary joins the held record's own path and
+    /// `name` for the `path.name` index key. It validates from the record it holds, in order: the
+    /// exact birth ([`StatusReply::RejectedStaleIncarnation`]), its own writer role
+    /// ([`NotAuthority::ReceiverNotPrimary`]), the node admitting no connection
+    /// ([`StatusReply::RejectedAdmittingConnections`]), the name grammar ([`StatusReply::RejectedName`]);
+    /// then it claims the name by insert-and-fail in its store adapter ([`StatusReply::NameHeld`]),
+    /// moves the row (put at the new key carrying `renamed_from`, release of the old key), sends a live
+    /// birth `ApplyNodeName` (a stopped one nothing) and answers [`StatusReply::NameUpdated`]
+    /// (`node.name.updated`): for a stopped node after both writes of the move, for a live one after
+    /// the birth answered `Applied` or `AlreadyApplied`. A single call, never a Build.
+    UpdateName {
+        /// The birth renamed.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
-        /// The `path.name` the record is put with.
+        /// The new name, without its path (`2`, `2.old`, `9`).
         name: String,
-        /// The node's whole set of tag labels: a put replaces it, it never merges. At most
-        /// [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
-        tags: BTreeSet<String>,
     },
     /// `node.connections.delete` (R-CR3; node-stop.md step 3 is its `All`): a caller asks the exact
     /// birth's mesh-primary, which commands the birth with the same request and holds its completion
@@ -412,6 +411,35 @@ pub enum StatusRequest {
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
+    },
+    /// `node.tags.create` (node-rpc-envelope.md node.tags; R-TG1): a caller asks the exact birth's
+    /// mesh-primary, the only writer of its mesh's rows, through a carrier (Forward `0x1A`) when it
+    /// cannot reach it directly, to add `labels` to the node's tags. Each label is its own key of the
+    /// node store's tags index, a blind put: a label the node already carries is ignored and named in
+    /// the reply. Answered [`StatusReply::TagsCreated`] (`node.tags.created`) once the row and its
+    /// index entries are written; a non-label, an empty list, or labels that would carry the node past
+    /// [`MAX_NODE_TAGS`] are [`StatusReply::RejectedTags`] with nothing written. No precondition but
+    /// the fabric having first reached ready-for-traffic; the node is told nothing. A single call,
+    /// never a Build.
+    CreateTags {
+        /// The birth whose tags grow.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The labels added: one or a list, at most [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
+        labels: BTreeSet<String>,
+    },
+    /// `node.tags.delete` (node-rpc-envelope.md node.tags; R-TG1): as [`StatusRequest::CreateTags`],
+    /// removing every label (`All`) or the named ones; each removed label's index key is tombstoned.
+    /// Answered [`StatusReply::TagsDeleted`] (`node.tags.deleted`) naming any named label the node
+    /// did not carry.
+    DeleteTags {
+        /// The birth whose tags shrink.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// Which labels.
+        scope: TagScope,
     },
 }
 
@@ -475,26 +503,44 @@ impl TagFilter {
 }
 
 /// The most tag labels one node carries (R-TG1): a set at the cap, each label at
-/// [`MAX_TAG_BYTES`], fits the Status request bound with an `UpdateNode`'s other fields.
+/// [`MAX_TAG_BYTES`], fits the Status request bound with a `CreateTags`'s other fields.
 pub const MAX_NODE_TAGS: usize = 32;
 
 /// The longest tag label, in bytes.
 pub const MAX_TAG_BYTES: usize = 64;
 
-/// Why `label` is not a tag label, by name, or `None` when it is one: 1 to [`MAX_TAG_BYTES`] bytes
-/// of lowercase ASCII letters, digits and `-`, starting with a letter or a digit (`rabbit`, `red`,
-/// `zone-a`). A label keys one row of the node store's tags index, so it is a key every store can
-/// hold.
+/// Why `label` is not a tag label, by name, or `None` when it is one (node-rpc-envelope.md node.tags:
+/// "A label is 1-64 characters of a-z 0-9 - _ . ~, with no leading '.'"): 1 to [`MAX_TAG_BYTES`] bytes
+/// of lowercase ASCII letters, digits, `-`, `_`, `.` and `~`, not starting with `.` (`rabbit`,
+/// `zone_a`, `v1.2~rc`). A label keys one row of the node store's tags index, so it is a key every
+/// store can hold: no separator, no whitespace, and never `.` or `..`.
 pub fn tag_refusal(label: &str) -> Option<String> {
-    let b = label.as_bytes();
+    grammar_refusal("tag label", label)
+}
+
+/// Why `name` is not a node name, by name, or `None` when it is one (proposal
+/// node-properties-own-commands.md §9, ruled A: "a rename may take any name within the name grammar
+/// (the tag-label grammar ...: 1-64 of `a-z 0-9 - _ . ~`, no leading `.`, whitespace refused)").
+pub fn name_refusal(name: &str) -> Option<String> {
+    grammar_refusal("name", name)
+}
+
+/// Why `value`, a `noun` (a tag label, a node name), is outside the one grammar both take, by name, or
+/// `None` when it is within it: 1 to [`MAX_TAG_BYTES`] bytes of lowercase ASCII letters, digits, `-`,
+/// `_`, `.` and `~`, not starting with `.`.
+fn grammar_refusal(noun: &str, value: &str) -> Option<String> {
+    let b = value.as_bytes();
     if b.is_empty() {
-        return Some("a tag label is empty".into());
+        return Some(format!("the {noun} is empty"));
     }
     if b.len() > MAX_TAG_BYTES {
-        return Some(format!("the tag label {:?} is {} bytes, over the {MAX_TAG_BYTES}-byte cap", within(label, MAX_TAG_BYTES), b.len()));
+        return Some(format!("the {noun} {:?} is {} bytes, over the {MAX_TAG_BYTES}-byte cap", within(value, MAX_TAG_BYTES), b.len()));
     }
-    if !(b[0].is_ascii_lowercase() || b[0].is_ascii_digit()) || !b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-') {
-        return Some(format!("the tag label {label:?} is not lowercase ASCII letters, digits and '-' starting with a letter or a digit"));
+    if b[0] == b'.' {
+        return Some(format!("the {noun} {value:?} starts with '.'"));
+    }
+    if !b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_' | b'.' | b'~')) {
+        return Some(format!("the {noun} {value:?} is not lowercase ASCII letters, digits, '-', '_', '.' and '~'"));
     }
     None
 }
@@ -547,7 +593,48 @@ impl ConnectionScope {
     }
 }
 
-/// The longest `receipt_manifest` reference a `MeshLeave` carries.
+/// Which of a node's tag labels `node.tags.delete` removes (node-rpc-envelope.md, node.tags: "the
+/// same scope shape as `node.connections.delete`"). Positional order is part of the wire schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TagScope {
+    /// Every label the node carries. A tag of its own, never a value in the list.
+    All,
+    /// The named labels: at least one, at most [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]).
+    Labels(BTreeSet<String>),
+}
+
+impl TagScope {
+    /// The scope's name in spans and evidence.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Labels(_) => "labels",
+        }
+    }
+
+    /// Why the scope is refused, by name, or `None` when it names labels a node can carry: an empty
+    /// list names nothing to remove (`All` is its own scope); a list past [`MAX_NODE_TAGS`] or naming
+    /// a non-label is refused as [`tags_refusal`] refuses it.
+    pub fn refusal(&self) -> Option<String> {
+        match self {
+            Self::All => None,
+            Self::Labels(labels) if labels.is_empty() => Some("node.tags.delete names no label: Labels needs at least one label (All is its own scope)".into()),
+            Self::Labels(labels) => tags_refusal(labels),
+        }
+    }
+}
+
+/// Why a `node.tags.create`'s labels are refused, by name, or `None`: at least one label, at most
+/// [`MAX_NODE_TAGS`], each a label ([`tag_refusal`]). Whether the node may carry them all is the
+/// writer's decision, from the labels its row already carries.
+pub fn create_tags_refusal(labels: &BTreeSet<String>) -> Option<String> {
+    if labels.is_empty() {
+        return Some("node.tags.create names no label: it needs at least one".into());
+    }
+    tags_refusal(labels)
+}
+
+/// The longest `receipt_manifest` reference a `MeshDeleted` carries.
 pub const MAX_RECEIPT_MANIFEST_BYTES: usize = 128;
 
 /// The most bytes postcard spends on one varint length prefix of a config key or value: one string
@@ -557,9 +644,9 @@ const _: () = assert!(MAX_CONFIG_BYTES < 1 << 14, "a config string's length pref
 
 /// The most bytes an `UpdateNodeConfig` (or `ApplyNodeConfig`) at the config cap encodes to: the
 /// variant (a varint, at most five bytes), the node id (a one-byte length and [`CROCKFORD60_LEN`]
-/// characters), the incarnation (a one-byte length and [`OPAQUE_ID_LEN`] characters), the map's length (a varint under the key cap, at most two bytes), and every key and
+/// characters), the incarnation (a one-byte length and [`CROCKFORD60_LEN`] characters), the map's length (a varint under the key cap, at most two bytes), and every key and
 /// value at the cap with its length prefix. Derived from the cap, so the two cannot drift.
-pub const MAX_CONFIG_REQUEST_BYTES: usize = 5 + (1 + CROCKFORD60_LEN) + (1 + OPAQUE_ID_LEN) + 2 + MAX_CONFIG_BYTES + MAX_CONFIG_KEYS * 2 * CONFIG_STRING_PREFIX_BYTES;
+pub const MAX_CONFIG_REQUEST_BYTES: usize = 5 + (1 + CROCKFORD60_LEN) + (1 + CROCKFORD60_LEN) + 2 + MAX_CONFIG_BYTES + MAX_CONFIG_KEYS * 2 * CONFIG_STRING_PREFIX_BYTES;
 
 /// The bound every other Status request fits in.
 const MAX_DECLARATION_REQUEST_BYTES: usize = 1024;
@@ -578,8 +665,8 @@ impl StatusRequest {
             Self::NodeDrained { .. } => "node-drained",
             Self::StopNode { .. } => "stop-node",
             Self::NodeLeft { .. } => "node-left",
-            Self::LeaveMesh { .. } => "leave-mesh",
-            Self::MeshLeave { .. } => "mesh-leave",
+            Self::DeleteMesh { .. } => "delete-mesh",
+            Self::MeshDeleted { .. } => "mesh-deleted",
             Self::CommitState { .. } => "commit-state",
             Self::StateCommitted { .. } => "state-committed",
             Self::OpenTraffic { .. } => "open-traffic",
@@ -588,12 +675,14 @@ impl StatusRequest {
             Self::UpdateNodeConfig { .. } => "update-node-config",
             Self::ApplyNodeConfig { .. } => "apply-node-config",
             Self::ApplyNodeName { .. } => "apply-node-name",
-            Self::UpdateNode { .. } => "update-node",
+            Self::UpdateName { .. } => "node.name.update",
             Self::DeleteConnections { .. } => "delete-connections",
             Self::GetNodes { .. } => "node.get",
             Self::GetMeshes { .. } => "mesh.get",
             Self::GetFabric => "fabric.get",
             Self::GetConnections { .. } => "node.connections.get",
+            Self::CreateTags { .. } => "node.tags.create",
+            Self::DeleteTags { .. } => "node.tags.delete",
         }
     }
 }
@@ -626,24 +715,31 @@ impl NotAuthority {
     }
 }
 
-/// What a drain established (node-drain.md): the count it measured, and whether the work finished
-/// inside the drain bound. `Deadline` records the last observed count and never claims zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DrainReceipt {
-    /// The eligible in-flight work finished: `in_flight` is the count at the moment it was
-    /// established.
+/// What a `node.connections.delete { All }` established (node-connections-delete.md, "Receipt"): the
+/// in-flight count it measured and the connections it closed. `Deadline` records the last observed
+/// count and the connections still open; it never claims zero.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum ConnectionsReceipt {
+    /// The eligible in-flight work reached zero and every open connection was closed.
     Established {
-        /// The in-flight count when the drain was established.
+        /// The in-flight count when the closure was admitted.
         in_flight: u64,
+        /// The open entries closed.
+        closed: Vec<ConnectionId>,
     },
-    /// The drain bound passed with work still in flight: `last_in_flight` is the last count seen.
+    /// `RDM_CONNECTIONS_DELETE_DEADLINE_MS` passed with work still in flight.
     Deadline {
         /// The last in-flight count observed before the bound.
         last_in_flight: u64,
+        /// The open entries closed.
+        closed: Vec<ConnectionId>,
+        /// The open entries still held.
+        held: Vec<ConnectionId>,
     },
 }
 
-impl DrainReceipt {
+impl ConnectionsReceipt {
     /// The receipt's name as it appears in spans and evidence.
     pub fn name(&self) -> &'static str {
         match self {
@@ -653,7 +749,7 @@ impl DrainReceipt {
     }
 }
 
-/// The round of one mesh.delete, as a `LeaveMesh` or `MeshLeave` names it: its workflow identity
+/// The round of one mesh.delete, as a `DeleteMesh` or `MeshDeleted` names it: its workflow identity
 /// `(mesh_id, build_id, attempt, operation)` (node-rpc-envelope.md, "Mesh delete command pair") less
 /// the mesh id, which the call itself names. A round refusal carries the round the receiver holds and
 /// the one offered, so the mismatch is named whole.
@@ -768,12 +864,12 @@ pub enum StatusReply {
         /// What the completion reported.
         reported: String,
     },
-    /// The reply of a `StopNode` call, sent when the stop is done (`stopped`): the birth drained, cut
-    /// its mesh connections and is `Leaving`, parked with its process alive. The receipt is what
-    /// its drain established.
+    /// The reply of a `StopNode` call, sent when the stop is done (`node.stopped`): the birth's
+    /// `node.connections.delete { All }` completed, it cut its transport and is stopped, its process
+    /// alive. The receipt is what that `All` established.
     Stopped {
-        /// What the drain established.
-        receipt: DrainReceipt,
+        /// What the stop's `node.connections.delete { All }` established.
+        receipt: ConnectionsReceipt,
     },
     /// The reply of a `StartNode` call: the parked birth rejoined as itself.
     Started,
@@ -837,21 +933,26 @@ pub enum StatusReply {
         /// The event the hook runs again on.
         retry_on: RetryOn,
     },
-    /// The reply of an `UpdateNode`: the mesh-primary wrote the node's row, and the exact birth
-    /// holds the name, or is stopped and reads it in its next join answer (`node.updated`).
-    NodeUpdated {
-        /// The birth whose record was put.
+    /// The reply of an `UpdateName` (`node.name.updated`): the mesh-primary moved the node's row to
+    /// the new name, and the exact birth holds the name (it answered `Applied` or `AlreadyApplied`),
+    /// or is stopped and reads it in its next join answer.
+    NameUpdated {
+        /// The birth renamed.
         node_id: NodeId,
         /// The incarnation of that birth.
         incarnation: IncarnationId,
     },
-    /// The `UpdateNode` was not made: it changes a field RDM owns, or a name it may not change now
-    /// (`MetaFieldIsRdmOwned { field }`). Nothing was written.
-    RejectedMetaFieldIsRdmOwned {
-        /// The field, by name.
-        field: String,
+    /// The `UpdateName` was not made: the node admits connections (R-CR1). Its status is not
+    /// stopped, and its mesh-primary holds no `node.connections.deleted` of an `All` made while it was
+    /// not ready-for-traffic that left it holding nothing. Nothing was written.
+    RejectedAdmittingConnections {
+        /// The node's status as its mesh-primary holds it (at the cut, when it holds one).
+        status: NodeStatus,
+        /// The connections the node still held after its last `node.connections.delete`, at most
+        /// [`MAX_REPORTED_CONNECTIONS`]; empty when it holds no cut of every connection.
+        held_connections: Vec<ConnectionId>,
     },
-    /// The `UpdateNode` was not made: another node holds the name (insert-and-fail on its key in
+    /// The `UpdateName` was not made: another node holds the name (insert-and-fail on its key in
     /// the store adapter). Nothing was written.
     NameHeld {
         /// The name claimed.
@@ -859,20 +960,23 @@ pub enum StatusReply {
         /// The node that holds it.
         by: NodeId,
     },
-    /// The `UpdateNode` was not made: the nodes store refused the claim or the put, so nothing was
-    /// told to the birth.
+    /// The `UpdateName` was not made: the nodes store refused the claim or the put at the new key, so
+    /// nothing was written and the old name stands.
     NodeRowRefused {
         /// The node's `path.name`, the row the store refused.
         node: String,
         /// The store's refusal.
         reason: String,
     },
-    /// The mesh-primary wrote the renamed row, and the live birth did not apply the name: the
-    /// record holds the new name, the birth does not.
+    /// The `UpdateName` ended incomplete after its put at the new key (proposal
+    /// node-properties-own-commands.md §2.3, §2.4): the old key's release is pending
+    /// (`answered: release-pending`), or the live birth did not apply the name (its answer). The row
+    /// holds the new name; a resubmit finishes what is pending and completes on the node's answer.
     NameNotApplied {
         /// The node's `path.name` the row now holds.
         node: String,
-        /// The birth's reply to `apply-node-name` by name, or the call's end by name.
+        /// `release-pending`, or the birth's reply to `apply-node-name` by name, or the call's end by
+        /// name.
         answered: String,
         /// Its detail.
         reason: String,
@@ -888,6 +992,8 @@ pub enum StatusReply {
         not_open: Vec<ConnectionId>,
         /// The open entries the birth still holds.
         held: Vec<ConnectionId>,
+        /// For `All`, what the closure established; `None` for `Connections`.
+        receipt: Option<ConnectionsReceipt>,
     },
     /// The `DeleteConnections` scope names nothing the birth can cut (an empty list, or more ids
     /// than one request carries); nothing is cut.
@@ -931,7 +1037,7 @@ pub enum StatusReply {
         /// The Status reply bound, in bytes.
         max: u64,
     },
-    /// A `LeaveMesh` or `MeshLeave` names an earlier attempt of the round the receiver holds for the
+    /// A `DeleteMesh` or `MeshDeleted` names an earlier attempt of the round the receiver holds for the
     /// mesh: same Build and operation, a lower attempt (node-rpc-envelope.md, "Mesh delete command
     /// pair": "A stale/conflicting round ... is refused by name"). Nothing is admitted or accepted.
     RejectedStaleRound {
@@ -940,8 +1046,8 @@ pub enum StatusReply {
         /// The round the call names.
         offered: MeshDeleteRound,
     },
-    /// A `LeaveMesh` or `MeshLeave` names a round of the mesh the receiver does not hold and that is
-    /// no earlier attempt of the one it holds: another Build or operation, or (for `MeshLeave`) an
+    /// A `DeleteMesh` or `MeshDeleted` names a round of the mesh the receiver does not hold and that is
+    /// no earlier attempt of the one it holds: another Build or operation, or (for `MeshDeleted`) an
     /// attempt the receiver never opened. Nothing is admitted or accepted.
     RejectedConflictingRound {
         /// The round the receiver holds for the mesh.
@@ -949,7 +1055,7 @@ pub enum StatusReply {
         /// The round the call names.
         offered: MeshDeleteRound,
     },
-    /// A `MeshLeave` whose manifest is incomplete: the leaving mesh-primary recorded no exit manifest
+    /// A `MeshDeleted` whose manifest is incomplete: the leaving mesh-primary recorded no exit manifest
     /// for the round, so the member workflows are incomplete and the open leave ends
     /// (node-rpc-envelope.md, "Mesh delete command pair": "A ... incomplete manifest is refused by
     /// name with a typed Status refusal naming the mismatch").
@@ -979,12 +1085,62 @@ pub enum StatusReply {
         /// does not name. Within [`MAX_SOURCE_FAILED_CAUSE_BYTES`].
         cause: String,
     },
-    /// An `UpdateNode`'s tags, or a `GetNodes` tag filter, name something that is not a node's tag
+    /// A tags command's labels, or a `GetNodes` tag filter, name something that is not a node's tag
     /// set (R-TG1): an empty filter, more than [`MAX_NODE_TAGS`] labels, or a label that is not a
     /// label ([`tag_refusal`]). Nothing is written or read.
     RejectedTags {
         /// Why, by name, naming the label; within [`MAX_REFUSAL_REASON_BYTES`].
         reason: String,
+    },
+    /// A caller's node property command at a mesh-primary whose fabric has not yet first reached
+    /// ready-for-traffic (states.md "The initial fabric before ready-for-traffic"): before
+    /// state-commit a row lives only in its holder's scratchpad, so the command writes none. Nothing is written
+    /// and no claim is made. The Build family's `Rejected { reason: "fabric-not-ready", detail }`
+    /// is the same refusal at build.create.
+    RejectedFabricNotReady {
+        /// The refused workflow and its subject, by name (`node.name.update <path.name>`); within
+        /// [`MAX_REFUSAL_NODE_BYTES`].
+        workflow: String,
+        /// The fabric's current status as the refusing admin holds it (`pending`, `state-sync`,
+        /// `state-commit`); within [`MAX_REFUSAL_NODE_BYTES`].
+        status: String,
+    },
+    /// The reply of a `CreateTags` (`node.tags.created`): the mesh-primary wrote the node's row
+    /// carrying the labels and their tags index entries.
+    TagsCreated {
+        /// The birth whose tags grew.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The labels the node already carried: ignored, nothing written for them
+        /// (`AlreadyApplied` for those).
+        already_carried: BTreeSet<String>,
+    },
+    /// The reply of a `DeleteTags` (`node.tags.deleted`): the mesh-primary wrote the node's row
+    /// without the labels and tombstoned their tags index entries.
+    TagsDeleted {
+        /// The birth whose tags shrank.
+        node_id: NodeId,
+        /// The incarnation of that birth.
+        incarnation: IncarnationId,
+        /// The named labels the node did not carry: nothing was removed for them.
+        not_carried: BTreeSet<String>,
+    },
+    /// The `UpdateName` was not made: `name` is outside the name grammar ([`name_refusal`]), or the
+    /// `path.name` its join with the held record's path makes is not one this build can key. Nothing
+    /// was written.
+    RejectedName {
+        /// Why, by name, naming the name; within [`MAX_REFUSAL_REASON_BYTES`].
+        reason: String,
+    },
+    /// The exact birth's answer to `ApplyNodeName` while it holds connections (R-CR1; proposal
+    /// node-properties-own-commands.md §2.2 step 6, "`Busy { connections }` naming each connection it
+    /// still holds"): it keeps its name and holds nothing. Not [`StatusReply::Busy`], the protocol's
+    /// admission bound.
+    BusyHoldingConnections {
+        /// Each connection it holds, by the minted id of its open entry; at most
+        /// [`MAX_REPORTED_CONNECTIONS`].
+        connections: Vec<ConnectionId>,
     },
 }
 
@@ -1019,9 +1175,9 @@ impl RetryOn {
 
 /// The most bytes of a hook's blocker a `Blocked` reply carries: what is left of the reply bound
 /// after the variant (one byte), the node id (a one-byte length and [`CROCKFORD60_LEN`] characters),
-/// the incarnation (a one-byte length and [`OPAQUE_ID_LEN`] characters), the retry event at its
+/// the incarnation (a one-byte length and [`CROCKFORD60_LEN`] characters), the retry event at its
 /// largest (a variant byte and a node id), and a two-byte length prefix on the reason.
-pub const MAX_BLOCKED_REASON_BYTES: usize = 1024 - 1 - (1 + CROCKFORD60_LEN) - (1 + OPAQUE_ID_LEN) - (1 + 1 + CROCKFORD60_LEN) - 2;
+pub const MAX_BLOCKED_REASON_BYTES: usize = 1024 - 1 - (1 + CROCKFORD60_LEN) - (1 + CROCKFORD60_LEN) - (1 + 1 + CROCKFORD60_LEN) - 2;
 
 /// The most connection ids one `node.connections.deleted` carries across its three lists: each id
 /// is a one-byte length and [`CROCKFORD60_LEN`] characters, after the variant (one byte) and three
@@ -1098,9 +1254,31 @@ impl StatusReply {
         Self::RejectedTags { reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
     }
 
+    /// `RejectedFabricNotReady` for `workflow` while the fabric holds `status`, each within its budget
+    /// so the reply always fits the Status reply bound.
+    pub fn rejected_fabric_not_ready(workflow: &str, status: &str) -> Self {
+        Self::RejectedFabricNotReady { workflow: within(workflow, MAX_REFUSAL_NODE_BYTES), status: within(status, MAX_REFUSAL_NODE_BYTES) }
+    }
+
     /// `NodeRowRefused` for `node`, each field within its budget (as [`Self::config_row_refused`]).
     pub fn node_row_refused(node: &str, reason: &str) -> Self {
         Self::NodeRowRefused { node: within(node, MAX_REFUSAL_NODE_BYTES), reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
+    }
+
+    /// `RejectedName` naming why, within its budget so the reply always fits the Status reply bound.
+    pub fn rejected_name(reason: &str) -> Self {
+        Self::RejectedName { reason: within(reason, MAX_REFUSAL_REASON_BYTES) }
+    }
+
+    /// `RejectedAdmittingConnections` for a node of `status` still holding `held`, at most
+    /// [`MAX_REPORTED_CONNECTIONS`] of them so the reply always fits the Status reply bound.
+    pub fn rejected_admitting_connections(status: NodeStatus, held: &[ConnectionId]) -> Self {
+        Self::RejectedAdmittingConnections { status, held_connections: held.iter().take(MAX_REPORTED_CONNECTIONS).cloned().collect() }
+    }
+
+    /// `BusyHoldingConnections` naming `held`, at most [`MAX_REPORTED_CONNECTIONS`] of them.
+    pub fn busy_holding_connections(held: &[ConnectionId]) -> Self {
+        Self::BusyHoldingConnections { connections: held.iter().take(MAX_REPORTED_CONNECTIONS).cloned().collect() }
     }
 
     /// `NameNotApplied` for `node`, each field within its budget (as [`Self::config_not_applied`]).
@@ -1166,8 +1344,8 @@ impl StatusReply {
             Self::ConfigRowRefused { .. } => "config-row-refused",
             Self::ConfigNotApplied { .. } => "config-not-applied",
             Self::Blocked { .. } => "blocked",
-            Self::NodeUpdated { .. } => "node-updated",
-            Self::RejectedMetaFieldIsRdmOwned { .. } => "rejected-meta-field-is-rdm-owned",
+            Self::NameUpdated { .. } => "name-updated",
+            Self::RejectedAdmittingConnections { .. } => "rejected-admitting-connections",
             Self::NameHeld { .. } => "name-held",
             Self::NodeRowRefused { .. } => "node-row-refused",
             Self::NameNotApplied { .. } => "name-not-applied",
@@ -1184,6 +1362,11 @@ impl StatusReply {
             Self::RejectedIncompleteManifest { .. } => "rejected-incomplete-manifest",
             Self::RejectedSourceFailed { .. } => "rejected-source-failed",
             Self::RejectedTags { .. } => "rejected-tags",
+            Self::RejectedFabricNotReady { .. } => "rejected-fabric-not-ready",
+            Self::TagsCreated { .. } => "tags-created",
+            Self::TagsDeleted { .. } => "tags-deleted",
+            Self::RejectedName { .. } => "rejected-name",
+            Self::BusyHoldingConnections { .. } => "busy-holding-connections",
         }
     }
 }
@@ -1201,8 +1384,8 @@ impl NodeProtocol for Status {
     const FORWARDABLE: bool = true;
     /// A draining node still answers its authority's probe and apply.
     const SERVED_WHILE_DRAINING: bool = true;
-    const REQUEST_VARIANTS: u32 = 26;
-    const REPLY_VARIANTS: u32 = 44;
+    const REQUEST_VARIANTS: u32 = 28;
+    const REPLY_VARIANTS: u32 = 49;
 
     type Request = StatusRequest;
     type Reply = StatusReply;
@@ -1216,13 +1399,15 @@ impl NodeProtocol for Status {
             | StatusReply::CurrentParked { .. }
             | StatusReply::ConfigUpdated { .. }
             | StatusReply::Blocked { .. }
-            | StatusReply::NodeUpdated { .. }
+            | StatusReply::NameUpdated { .. }
             | StatusReply::Stopped { .. }
             | StatusReply::ConnectionsDeleted { .. }
             | StatusReply::Nodes { .. }
             | StatusReply::Meshes { .. }
             | StatusReply::Fabric { .. }
             | StatusReply::Connections { .. }
+            | StatusReply::TagsCreated { .. }
+            | StatusReply::TagsDeleted { .. }
             | StatusReply::Started => ReplyKind::Success,
             StatusReply::RejectedStaleIncarnation { .. }
             | StatusReply::RejectedStaleMesh { .. }
@@ -1235,7 +1420,7 @@ impl NodeProtocol for Status {
             | StatusReply::RejectedConfig { .. }
             | StatusReply::ConfigRowRefused { .. }
             | StatusReply::ConfigNotApplied { .. }
-            | StatusReply::RejectedMetaFieldIsRdmOwned { .. }
+            | StatusReply::RejectedAdmittingConnections { .. }
             | StatusReply::NameHeld { .. }
             | StatusReply::NodeRowRefused { .. }
             | StatusReply::NameNotApplied { .. }
@@ -1246,7 +1431,10 @@ impl NodeProtocol for Status {
             | StatusReply::RejectedConflictingRound { .. }
             | StatusReply::RejectedIncompleteManifest { .. }
             | StatusReply::RejectedSourceFailed { .. }
-            | StatusReply::RejectedTags { .. } => ReplyKind::ProtocolRefusal,
+            | StatusReply::RejectedTags { .. }
+            | StatusReply::RejectedFabricNotReady { .. }
+            | StatusReply::RejectedName { .. }
+            | StatusReply::BusyHoldingConnections { .. } => ReplyKind::ProtocolRefusal,
             StatusReply::PeerUnresolved { .. } => ReplyKind::PeerUnresolved,
             StatusReply::NotReady { .. } => ReplyKind::NotReady,
             StatusReply::Busy { .. } => ReplyKind::Busy,
@@ -1324,7 +1512,7 @@ mod tests {
             (Status::malformed(MalformedKind::Corrupt), ReplyKind::Malformed(MalformedKind::Corrupt)),
             (Status::unauthorized("u".into()), ReplyKind::Unauthorized),
             (StatusReply::RejectedUnmatchedCompletion { field: "attempt".into(), expected: "1".into(), reported: "2".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::Stopped { receipt: DrainReceipt::Deadline { last_in_flight: 2 } }, ReplyKind::Success),
+            (StatusReply::Stopped { receipt: ConnectionsReceipt::Deadline { last_in_flight: 2, closed: vec![ConnectionId::mint()], held: vec![ConnectionId::mint()] } }, ReplyKind::Success),
             (StatusReply::Started, ReplyKind::Success),
             (StatusReply::StartFailed { step: "node.join".into(), reason: "refused".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::CurrentParked { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
@@ -1333,24 +1521,29 @@ mod tests {
             (StatusReply::ConfigRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::ConfigNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::Blocked { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), reason: "rows not yet published".into(), retry_on: RetryOn::TargetReachable { node_id: NodeId::mint() } }, ReplyKind::Success),
-            (StatusReply::NodeUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
-            (StatusReply::RejectedMetaFieldIsRdmOwned { field: "name".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::NameUpdated { node_id: NodeId::mint(), incarnation: IncarnationId::mint() }, ReplyKind::Success),
+            (StatusReply::RejectedAdmittingConnections { status: crate::views::NodeStatus::Draining, held_connections: vec![ConnectionId::mint()] }, ReplyKind::ProtocolRefusal),
             (StatusReply::NameHeld { name: "mesh1.rpc.1".into(), by: NodeId::mint() }, ReplyKind::ProtocolRefusal),
             (StatusReply::NodeRowRefused { node: "mesh1.rpc.1".into(), reason: "io".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::NameNotApplied { node: "mesh1.rpc.1".into(), answered: "busy".into(), reason: "b".into() }, ReplyKind::ProtocolRefusal),
-            (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![] }, ReplyKind::Success),
+            (StatusReply::ConnectionsDeleted { closed: vec![ConnectionId::mint()], not_open: vec![ConnectionId::mint()], held: vec![], receipt: None }, ReplyKind::Success),
             (StatusReply::RejectedConnectionScope { reason: "empty".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::Nodes { nodes: vec![node_view()] }, ReplyKind::Success),
             (StatusReply::Meshes { meshes: vec![mesh_view()] }, ReplyKind::Success),
-            (StatusReply::Fabric { fabric: crate::views::FabricView { id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::StateSync, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("bld-1".into()) } }, ReplyKind::Success),
+            (StatusReply::Fabric { fabric: crate::views::FabricView { id: FabricId::mint(), name: "fabric1".into(), status: crate::views::ScopeStatus::StateSync, provider: crate::views::ProviderKind::Process, fabric_primary: Some("mesh1.admin.1".parse().unwrap()), admin_api_base: None, meshes: vec![mesh_view()], build_id: Some("3qcfk1kq47m9".into()) } }, ReplyKind::Success),
             (StatusReply::Connections { connections: crate::views::ConnectionsView { node: "mesh1.rpc.1".into(), complete: true, connections: vec![connection_view()] } }, ReplyKind::Success),
             (StatusReply::UnknownMesh { mesh: "mesh9".into() }, ReplyKind::ProtocolRefusal),
             (StatusReply::ReadOverBound { read: "node.get".into(), bytes: 70_000, max: 65_536 }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedStaleRound { held: MeshDeleteRound { build_id: "bld_1".into(), attempt: 2, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "bld_1".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
-            (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "bld_1".into(), attempt: 1, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "bld_2".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedStaleRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 2, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
+            (StatusReply::RejectedConflictingRound { held: MeshDeleteRound { build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "shutdown-mesh:m".into() }, offered: MeshDeleteRound { build_id: "h5g70m03ktnb".into(), attempt: 1, operation: "shutdown-mesh:m".into() } }, ReplyKind::ProtocolRefusal),
             (StatusReply::incomplete_manifest(&["mesh2.rpc.1 i1".into()], "no exit manifest"), ReplyKind::ProtocolRefusal),
-            (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts bld_1", "unreached: no path"), ReplyKind::ProtocolRefusal),
+            (StatusReply::source_failed("the Build log of mesh2.admin.1", "fetch-build-facts 66h8qrqvaajk", "unreached: no path"), ReplyKind::ProtocolRefusal),
             (StatusReply::rejected_tags("the tag label \"Rabbit\" is not lowercase ASCII letters, digits and '-'"), ReplyKind::ProtocolRefusal),
+            (StatusReply::rejected_fabric_not_ready("node.update mesh1.rpc.1", "state-sync"), ReplyKind::ProtocolRefusal),
+            (StatusReply::TagsCreated { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), already_carried: ["red".to_string()].into() }, ReplyKind::Success),
+            (StatusReply::TagsDeleted { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), not_carried: ["blue".to_string()].into() }, ReplyKind::Success),
+            (StatusReply::RejectedName { reason: "r".into() }, ReplyKind::ProtocolRefusal),
+            (StatusReply::BusyHoldingConnections { connections: vec![ConnectionId::mint()] }, ReplyKind::ProtocolRefusal),
         ];
         assert_eq!(all.len() as u32, Status::REPLY_VARIANTS);
         for (r, kind) in all {
@@ -1365,35 +1558,37 @@ mod tests {
             StatusRequest::DeclareMeshState { mesh_id: MeshId::mint(), state: MeshState::ReadyForTraffic },
             StatusRequest::ApplyMeshState { mesh_id: MeshId::mint(), mesh_name: "mesh2".into(), state: MeshState::Pending },
             StatusRequest::ApplyFabricEvent { fabric_id: FabricId::mint(), event: FabricEvent::ShutdownInitiated { initiated_by: "mesh1.admin.1".into() } },
-            StatusRequest::DrainNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
-            StatusRequest::NodeDrained { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
-            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
-            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
-            StatusRequest::LeaveMesh { mesh_id: MeshId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "shutdown-mesh:m".into() },
-            StatusRequest::MeshLeave {
+            StatusRequest::DrainNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
+            StatusRequest::NodeDrained { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into() },
+            StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
+            StatusRequest::NodeLeft { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "stop-node:mesh1.rpc.1".into() },
+            StatusRequest::DeleteMesh { mesh_id: MeshId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "shutdown-mesh:m".into() },
+            StatusRequest::MeshDeleted {
                 mesh_id: MeshId::mint(),
-                build_id: "bld_1".into(),
+                build_id: "66h8qrqvaajk".into(),
                 attempt: 1,
                 operation: "shutdown-mesh:m".into(),
                 final_node_id: NodeId::mint(),
                 final_incarnation: IncarnationId::mint(),
-                final_runtime: RuntimeFact { deployment_id: "dep".into(), provider: rafka_mesh_entity::RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: rafka_mesh_entity::RuntimeLocator::Process { pid: 4321, start: 123456 } },
-                receipt_manifest: "bld_1/1/shutdown-mesh:m/other-members-exited".into(),
+                final_runtime: RuntimeFact { deployment_id: rafka_mesh_entity::fixture_crockford60("dep"), provider: rafka_mesh_entity::RuntimeProvider::Process, control_domain: "process:boot-a:pidns-a".into(), locator: rafka_mesh_entity::RuntimeLocator::Process { pid: 4321, start: 123456 } },
+                receipt_manifest: "66h8qrqvaajk/1/shutdown-mesh:m/other-members-exited".into(),
             },
-            StatusRequest::CommitState { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "commit-state:fabric1".into() },
-            StatusRequest::StateCommitted { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "commit-state:fabric1".into() },
-            StatusRequest::OpenTraffic { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
-            StatusRequest::TrafficOpened { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
-            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "bld_1".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() },
+            StatusRequest::CommitState { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
+            StatusRequest::StateCommitted { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "commit-state:fabric1".into() },
+            StatusRequest::OpenTraffic { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
+            StatusRequest::TrafficOpened { fabric_id: FabricId::mint(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "open-traffic:fabric1".into() },
+            StatusRequest::StartNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "start-node:mesh1.rpc.1".into() },
             StatusRequest::UpdateNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: [("k".to_string(), "v".to_string())].into() },
             StatusRequest::ApplyNodeConfig { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), config: Default::default() },
             StatusRequest::ApplyNodeName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into() },
-            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "mesh1.rpc.1".into(), tags: ["rabbit".to_string(), "red".to_string()].into() },
+            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: "1.old".into() },
             StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(vec![ConnectionId::mint()]) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::All(["rabbit".to_string(), "red".to_string()].into())) },
             StatusRequest::GetMeshes { mesh: None },
             StatusRequest::GetFabric,
             StatusRequest::GetConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint() },
+            StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: ["rabbit".to_string()].into() },
+            StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(["rabbit".to_string()].into()) },
         ];
         assert_eq!(reqs.len() as u32, Status::REQUEST_VARIANTS);
         for q in reqs {
@@ -1422,28 +1617,36 @@ mod tests {
         }
     }
 
-    /// CONTRACT (R-TG1; node-rpc-envelope.md node.get: a tag filter names labels): an `UpdateNode`
-    /// carrying the most labels one node carries, each at its longest, with the longest `path.name`,
-    /// encodes within the Status request bound, as does a `GetNodes` filter naming as many. A label is
-    /// lowercase letters, digits and `-` starting with a letter or a digit, 1 to `MAX_TAG_BYTES`
-    /// bytes; anything else, a set past `MAX_NODE_TAGS` and an empty filter are refused by name, the
-    /// label named.
+    /// CONTRACT (R-TG1; node-rpc-envelope.md node.tags: "A label is 1-64 characters of a-z 0-9 - _ .
+    /// ~, with no leading '.', and a node carries at most 32"): a `CreateTags` and a `DeleteTags`
+    /// carrying the most labels one node carries, each at its longest, encode within the Status request
+    /// bound, as do a `GetNodes` filter naming as many and an `UpdateName` at the longest name.
+    /// Anything outside the grammar, a set past `MAX_NODE_TAGS`, an empty filter, an empty create and
+    /// an empty `Labels` delete are refused by name, the label named.
     #[test]
     fn a_tag_set_at_its_cap_encodes_within_the_status_request_bound_and_a_non_label_is_refused_by_name() {
         let at_cap: BTreeSet<String> = (0..MAX_NODE_TAGS).map(|i| format!("{i:0>width$}", width = MAX_TAG_BYTES)).collect();
         assert_eq!((at_cap.len(), tags_refusal(&at_cap)), (MAX_NODE_TAGS, None));
-        let longest_name = format!("{}.broker.4294967295.old", "m".repeat(64));
+        let longest_name = "n".repeat(MAX_TAG_BYTES);
+        assert_eq!(name_refusal(&longest_name), None);
         for q in [
-            StatusRequest::UpdateNode { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: longest_name.clone(), tags: at_cap.clone() },
+            StatusRequest::UpdateName { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), name: longest_name.clone() },
+            StatusRequest::CreateTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), labels: at_cap.clone() },
+            StatusRequest::DeleteTags { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: TagScope::Labels(at_cap.clone()) },
             StatusRequest::GetNodes { select: NodeSelect::Tags(TagFilter::Any(at_cap.clone())) },
         ] {
             let len = Status::encode_request(&q).unwrap().len();
             assert!(len <= Status::MAX_REQUEST_FRAME_BYTES, "{} encodes to {len}, over {}", q.op(), Status::MAX_REQUEST_FRAME_BYTES);
         }
-        for ok in ["rabbit", "red", "zone-a", "7", "a-1-b"] {
+        for ok in ["rabbit", "red", "zone-a", "7", "a-1-b", "zone_a", "a.b", "v1.2~rc", "-red", "~x", "_x"] {
             assert_eq!(tag_refusal(ok), None, "{ok}");
+            assert_eq!(name_refusal(ok), None, "a name takes the tag-label grammar (§9 A): {ok}");
         }
-        for (bad, says) in [("", "empty"), ("Rabbit", "\"Rabbit\""), ("-red", "\"-red\""), ("zone_a", "\"zone_a\""), ("a.b", "\"a.b\""), ("a/b", "\"a/b\"")] {
+        for (bad, says) in [("", "empty"), ("Rpc", "\"Rpc\""), (".old", "\".old\""), ("a b", "\"a b\"")] {
+            assert!(name_refusal(bad).is_some_and(|r| r.contains(says)), "{bad:?}: {:?}", name_refusal(bad));
+        }
+        assert!(name_refusal(&"x".repeat(MAX_TAG_BYTES + 1)).is_some_and(|r| r.contains("over the 64-byte cap")));
+        for (bad, says) in [("", "empty"), ("Rabbit", "\"Rabbit\""), (".red", "\".red\""), ("a/b", "\"a/b\""), ("a b", "\"a b\""), ("zone\ta", "\"zone\\ta\"")] {
             assert!(tag_refusal(bad).is_some_and(|r| r.contains(says)), "{bad:?}: {:?}", tag_refusal(bad));
         }
         assert!(tag_refusal(&"x".repeat(MAX_TAG_BYTES + 1)).is_some_and(|r| r.contains("over the 64-byte cap")));
@@ -1451,6 +1654,11 @@ mod tests {
         assert!(tags_refusal(&over).is_some_and(|r| r.contains("33 tag labels, over the 32")));
         assert!(TagFilter::All(BTreeSet::new()).refusal().is_some_and(|r| r.contains("names no label")));
         assert!(TagFilter::Any(["Red".to_string()].into()).refusal().is_some_and(|r| r.contains("\"Red\"")));
+        assert!(create_tags_refusal(&BTreeSet::new()).is_some_and(|r| r.contains("node.tags.create names no label")));
+        assert!(create_tags_refusal(&["Red".to_string()].into()).is_some_and(|r| r.contains("\"Red\"")));
+        assert_eq!(TagScope::All.refusal(), None);
+        assert!(TagScope::Labels(BTreeSet::new()).refusal().is_some_and(|r| r.contains("node.tags.delete names no label")));
+        assert!(TagScope::Labels(over.clone()).refusal().is_some_and(|r| r.contains("33 tag labels, over the 32")));
         let long = "x".repeat(4 * Status::MAX_REPLY_FRAME_BYTES);
         let len = Status::encode_reply(&StatusReply::rejected_tags(&long)).unwrap().len();
         assert!(len <= 1024, "rejected-tags encodes to {len}, over 1024");
@@ -1511,9 +1719,14 @@ mod tests {
         let q = StatusRequest::DeleteConnections { node_id: NodeId::mint(), incarnation: IncarnationId::mint(), scope: ConnectionScope::Connections(ids(MAX_CONNECTION_IDS)) };
         let len = Status::encode_request(&q).unwrap().len();
         assert!(len <= MAX_DECLARATION_REQUEST_BYTES, "{MAX_CONNECTION_IDS} ids encode to {len}, over {MAX_DECLARATION_REQUEST_BYTES}");
-        let r = StatusReply::ConnectionsDeleted { closed: ids(MAX_REPORTED_CONNECTIONS - 2), not_open: ids(1), held: ids(1) };
+        let r = StatusReply::ConnectionsDeleted { closed: ids(MAX_REPORTED_CONNECTIONS - 2), not_open: ids(1), held: ids(1), receipt: None };
         let len = Status::encode_reply(&r).unwrap().len();
         assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "{MAX_REPORTED_CONNECTIONS} ids encode to {len}, over {}", Status::MAX_REPLY_FRAME_BYTES);
+        // The rename's two refusals naming held connections are capped at the same count.
+        for r in [StatusReply::rejected_admitting_connections(crate::views::NodeStatus::PendingReconnect, &ids(MAX_REPORTED_CONNECTIONS + 1)), StatusReply::busy_holding_connections(&ids(MAX_REPORTED_CONNECTIONS + 1))] {
+            let len = Status::encode_reply(&r).unwrap().len();
+            assert!(len <= Status::MAX_REPLY_FRAME_BYTES, "{} encodes to {len}, over {}", r.name(), Status::MAX_REPLY_FRAME_BYTES);
+        }
         assert!(ConnectionScope::Connections(vec![]).refusal().is_some_and(|r| r.contains("at least one")));
         assert!(ConnectionScope::Connections(ids(MAX_CONNECTION_IDS + 1)).refusal().is_some_and(|r| r.contains("over the")));
         assert_eq!(ConnectionScope::All.refusal(), None);
@@ -1542,6 +1755,7 @@ mod tests {
             load: Some(rafka_mesh_entity::NodeLoad { cpu_used_millicores: 2400, cpu_budget_millicores: 16000, ram_used_bytes: 123_456_789, ram_budget_bytes: 64_000_000_000 }),
             gossip: Some(rafka_mesh_entity::GossipStats { heard: 20, neighbours: 5, frames_sent: 123_456, frames_received: 654_321 }),
             tags: ["rabbit".to_string(), "zone-a".to_string()].into(),
+            config: [("tier".to_string(), "gold".to_string())].into(),
         }
     }
 

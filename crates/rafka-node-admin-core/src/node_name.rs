@@ -1,11 +1,11 @@
-//! `ApplyNodeName` at its subject (node-rpc-envelope.md "Meta and config", R12/R13; R-CR1, R-CR1a):
+//! `ApplyNodeName` at its subject (proposal node-properties-own-commands.md §2.2 step 6; R12/R13; R-CR1, R-CR1a):
 //! the node owns its name and publishes only the name its mesh-primary's row holds. It takes a new
 //! name only while it holds no connection: every route it held was closed by
 //! `node.connections.delete`, its drop written under the old name, before the name changes. The
 //! name it already holds is done whatever it holds.
 
 use rafka_mesh_entity::connections::{ConnectionKind, NodeConnection};
-use rafka_mesh_entity::PathName;
+use rafka_mesh_entity::{ConnectionId, PathName};
 use rafka_node_rpc_contract::status::StatusReply;
 
 /// What the subject of an `ApplyNodeName` decides.
@@ -15,8 +15,11 @@ pub enum NameApply {
     Applied,
     /// The node already holds the name.
     AlreadyApplied,
-    /// The node still holds connections: each route by its destination, kind and open entry.
+    /// The node still holds connections: each by the minted id of its open entry, and each route by
+    /// its destination, kind and open entry.
     Busy {
+        /// The connections it holds, by the minted id of each open entry.
+        connections: Vec<ConnectionId>,
         /// The routes it holds, as `<destination> (<kind>, entry <id>)`.
         routes: Vec<String>,
     },
@@ -48,25 +51,19 @@ pub fn decide(held: &PathName, asked: &PathName, routes: &[NodeConnection]) -> N
     if held == asked {
         NameApply::AlreadyApplied
     } else if !routes.is_empty() {
-        NameApply::Busy { routes: routes.iter().map(route_name).collect() }
+        NameApply::Busy { connections: routes.iter().map(|r| r.id.clone()).collect(), routes: routes.iter().map(route_name).collect() }
     } else {
         NameApply::Applied
     }
 }
 
-/// The reply the node `me` answers for `decision`.
-pub fn reply(me: &PathName, asked: &PathName, decision: &NameApply) -> StatusReply {
+/// The reply a node answers for its `decision`: a node holding connections names each by its entry's
+/// id (`BusyHoldingConnections`), the routes on the decision's span.
+pub fn reply(decision: &NameApply) -> StatusReply {
     match decision {
         NameApply::Applied => StatusReply::Applied,
         NameApply::AlreadyApplied => StatusReply::AlreadyApplied,
-        NameApply::Busy { routes } => StatusReply::Busy {
-            reason: format!(
-                "{me} holds {} connection{}: {}; the name changes to {asked} only once node.connections.delete has closed every one",
-                routes.len(),
-                if routes.len() == 1 { "" } else { "s" },
-                routes.join(", ")
-            ),
-        },
+        NameApply::Busy { connections, .. } => StatusReply::busy_holding_connections(connections),
     }
 }
 
@@ -76,8 +73,9 @@ mod tests {
     use rafka_mesh_entity::connections::{ConnectionEnd, ConnectionState};
     use rafka_mesh_entity::{ConnectionId, NodeId};
 
-    /// CONTRACT (R-CR1): the held name is done whatever the node holds; another name is Busy naming
-    /// every route the node holds, and Applied with none.
+    /// CONTRACT (R-CR1; proposal node-properties-own-commands.md §2.2 step 6: "`Busy { connections }`
+    /// naming each connection it still holds"): the held name is done whatever the node holds; another
+    /// name is refused naming every connection the node holds by its entry's id, and Applied with none.
     #[test]
     fn a_node_takes_another_name_only_while_it_holds_no_connection() {
         let (new, bare): (PathName, PathName) = ("mesh1.rpc.1.new".parse().unwrap(), "mesh1.rpc.1".parse().unwrap());
@@ -85,11 +83,8 @@ mod tests {
         let route = NodeConnection { id: ConnectionId::parse("3123456789ab").unwrap(), source: end("mesh1.rpc.1.new"), destination: end("mesh1.admin.1"), kind: ConnectionKind::Direct, state: ConnectionState::Connected, carrier: None, recovery: None, reason: None, logged_at_ms: 1 };
         assert_eq!(decide(&bare, &bare, std::slice::from_ref(&route)), NameApply::AlreadyApplied);
         let busy = decide(&new, &bare, std::slice::from_ref(&route));
-        assert_eq!(busy, NameApply::Busy { routes: vec!["mesh1.admin.1 (direct, entry 3123456789ab)".into()] });
+        assert_eq!(busy, NameApply::Busy { connections: vec![route.id.clone()], routes: vec!["mesh1.admin.1 (direct, entry 3123456789ab)".into()] });
         assert_eq!(decide(&new, &bare, &[]), NameApply::Applied);
-        assert_eq!(
-            reply(&new, &bare, &busy),
-            StatusReply::Busy { reason: "mesh1.rpc.1.new holds 1 connection: mesh1.admin.1 (direct, entry 3123456789ab); the name changes to mesh1.rpc.1 only once node.connections.delete has closed every one".into() }
-        );
+        assert_eq!(reply(&busy), StatusReply::BusyHoldingConnections { connections: vec![route.id.clone()] });
     }
 }

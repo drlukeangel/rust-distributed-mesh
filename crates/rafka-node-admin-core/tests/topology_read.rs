@@ -65,7 +65,7 @@ async fn node(fabric: &FabricId, mesh: &str, name: &str, extra: impl FnOnce(Serv
     let slot: TopologySlot = Arc::new(OnceLock::new());
     let (node_id, incarnation) = (NodeId::mint(), IncarnationId::mint());
     let server = extra(rafka_node_admin_core::topology_read::serve(ServerBuilder::new(), slot.clone()))
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .expect("the catalog seals");
     let router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, server).spawn();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -87,7 +87,7 @@ fn open(n: &Node, fabric: &FabricId) {
 }
 
 fn publisher(node: &str) -> PublisherId {
-    PublisherId { node: node.into(), incarnation: IncarnationId("birth-1".into()) }
+    PublisherId { node: node.into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth-1")).unwrap() }
 }
 
 /// `s` held by `m` as a complete snapshot its primary put into the mesh.
@@ -292,7 +292,7 @@ async fn a_snapshot_missing_a_chunk_is_never_installed() {
                 Ok(TopologyReply::End { meshes: 1 })
             }
         })
-        .seal(ServedBirth { node_id: lid.to_string(), incarnation: linc.0.clone() })
+        .seal(ServedBirth { node_id: lid.to_string(), incarnation: linc.to_string() })
         .unwrap();
     let _router = Router::builder(lossy_ep.clone()).accept(rafka_node_rpc::ALPN, lossy).spawn();
     let lossy_node = ResolvedNode { node_id: lid.clone(), name: "mesh1.rpc.9".parse().unwrap(), endpoint_id: lossy_ep.id(), transport_addr: lossy_ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap(), incarnation: linc };
@@ -386,7 +386,7 @@ fn a_since_from_another_publisher_epoch_is_answered_with_the_snapshot_not_unchan
         let epoch1 = publisher("mesh2.admin.1");
         hold(&server.membership, &snap("mesh2", &epoch1, 7, (1..=2).map(|k| member_of(&fabric, "mesh2", "rpc", k)).collect()));
         let t = target_of(&caller, &server);
-        let epoch2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId("birth-2".into()) };
+        let epoch2 = PublisherId { node: "mesh2.admin.1".into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth-2")).unwrap() };
         let other_epoch = SourceVersion { publisher: epoch2, topology_version: 7 };
         let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, Some("mesh2"), Some(other_epoch.clone())).await.unwrap();
         assert!(read.unchanged.is_empty() && read.installed.len() == 1, "{read:?}");
@@ -579,12 +579,13 @@ fn a_stored_answer_is_never_installed_as_current_topology() {
 }
 
 // @feature: node-lifecycle
-/// CONTRACT: a read is served with the rafka-time the node adopted (never its own clock) and the
-/// seat it holds in its own seat records: none for a replica, the mesh's for its primary, the
-/// fabric's for the fabric-primary.
+/// CONTRACT: a read is served with the rafka-time the node adopted (never its own clock), the
+/// seat it holds in its own seat records (none for a replica, the mesh's for its primary, the
+/// fabric's for the fabric-primary), and every cohort's holder record the node holds (not only the
+/// admin's), which `get_topology` installs into the caller's seat book.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_holds() {
-    use rafka_mesh_entity::{Seat, SeatHolder};
+    use rafka_mesh_entity::{NodeKind, Seat, SeatHolder};
     let fabric = FabricId::mint();
     let (server, caller) = (node(&fabric, "mesh1", "mesh1.rpc.1", |b| b).await, node(&fabric, "mesh1", "mesh1.rpc.2", |b| b).await);
     open(&server, &fabric);
@@ -598,13 +599,21 @@ async fn a_read_is_served_with_the_adopted_rafka_time_and_the_seat_the_node_hold
 
     let (seat, holder) = held(Seat::MeshPrimary);
     server.membership.seats().take(seat, &holder);
+    let rpc_holder = SeatHolder { mesh: "mesh1".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 2 };
+    let broker_holder = SeatHolder { mesh: "mesh2".into(), node_id: NodeId::mint(), incarnation: IncarnationId::mint(), epoch: 3 };
+    server.membership.seats().take(Seat::Cohort(NodeKind::RpcNode), &rpc_holder);
+    server.membership.seats().take(Seat::Cohort(NodeKind::Broker), &broker_holder);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().seat, Some(Seat::MeshPrimary));
+    assert_eq!(caller.membership.seats().mesh("mesh1"), Some(holder.clone()));
+    assert_eq!(caller.membership.seats().cohort("mesh1", NodeKind::RpcNode), Some(rpc_holder), "join and catch-up carry every cohort's holder, not only the admin's");
+    assert_eq!(caller.membership.seats().cohort("mesh2", NodeKind::Broker), Some(broker_holder), "peer mesh cohort holders are carried and installed too");
 
     let (seat, holder) = held(Seat::FabricPrimary);
     server.membership.seats().take(seat, &holder);
     let read = get_topology(&caller.client, &t, "mesh1", &caller.membership, None, None).await.unwrap();
     assert_eq!(read.rafka_time.unwrap().seat, Some(Seat::FabricPrimary), "the fabric seat outranks the mesh seat it also holds");
+    assert_eq!(caller.membership.seats().fabric(), Some(holder));
     server.ep.close().await;
     caller.ep.close().await;
 }

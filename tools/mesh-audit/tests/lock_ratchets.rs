@@ -102,16 +102,16 @@ fn resource_behavior_is_typed_meta_fails_a_behavior_boolean_outside_ingress() {
 }
 
 #[test]
-fn accepted_build_has_explicit_node_meta_fails_when_the_build_loses_its_meta_or_its_proof() {
+fn accepted_build_has_explicit_path_config_fails_when_the_build_loses_its_path_config_or_its_proof() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/accepted.rs", "fn every_materialized_path_carries_exactly_one_node_meta", "fn every_materialized_path_carries_a_name");
-    only(check(t.root()), Ratchet::AcceptedBuildHasExplicitNodeMeta);
+    t.edit("crates/rafka-node-admin-core/src/accepted.rs", "fn every_materialized_path_carries_exactly_one_path_config", "fn every_materialized_path_carries_a_name");
+    only(check(t.root()), Ratchet::AcceptedBuildHasExplicitPathConfig);
 }
 
 #[test]
 fn legacy_defaults_are_ingress_only_fails_a_default_applied_in_the_pipeline() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-admin-core/src/deployment/planted.rs", "fn storage(kind: NodeKind) -> StorageMeta { NodeMeta::default_for(kind).storage }\n");
+    t.write("crates/rafka-node-admin-core/src/deployment/planted.rs", "fn storage(kind: NodeKind) -> StorageMeta { PathConfig::default_for(kind).storage }\n");
     only(check(t.root()), Ratchet::LegacyDefaultsAreIngressOnly);
 }
 
@@ -137,21 +137,21 @@ fn no_transport_tag_vocabulary_fails_a_tag_owner_in_an_active_source() {
 }
 
 #[test]
-fn retire_attempts_rpc_drain_first_fails_when_termination_precedes_the_drain() {
+fn retire_attempts_rpc_stop_first_fails_when_termination_precedes_the_stop() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rafka-node-admin-core/src/deployment/pipeline.rs",
-        "        Self::DrainNode,\n        Self::AwaitNodeDrained,",
-        "        Self::AwaitNodeDrained,",
+        "        Self::NodeDeleting,\n        Self::StopNode,",
+        "        Self::NodeDeleting,",
     );
-    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "        Self::TerminateRuntime,", "        Self::TerminateRuntime,\n        Self::DrainNode,");
-    only(check(t.root()), Ratchet::RetireAttemptsRpcDrainFirst);
+    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "        Self::TerminateRuntime,", "        Self::TerminateRuntime,\n        Self::StopNode,");
+    only(check(t.root()), Ratchet::RetireAttemptsRpcStopFirst);
 }
 
 #[test]
 fn retire_has_bounded_failure_arms_fails_the_older_four_arm_draft() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "    /// The birth, or the op fence, refused the call by name (a stale incarnation, an unserved op).\n    Refused {\n        /// The refusal's name.\n        reply: String,\n    },\n", "");
+    t.edit("crates/rafka-node-admin-core/src/deployment/pipeline.rs", "    /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).\n    Refused {\n        /// The refusal's name.\n        reply: String,\n    },\n", "");
     let v = only(check(t.root()), Ratchet::RetireHasBoundedFailureArms);
     assert!(matches!(&v[0], Violation::Arms { found, .. } if !found.iter().any(|a| a == "Refused")));
 }
@@ -168,21 +168,21 @@ fn drift_silence_is_not_retire_authority_fails_without_its_proof() {
 }
 
 #[test]
-fn retire_receipt_names_drain_arm_fails_an_untagged_outcome() {
+fn retire_receipt_names_command_arm_fails_an_untagged_outcome() {
     let t = Planted::of_tree();
     t.edit(
         "crates/rafka-node-admin-core/src/deployment/pipeline.rs",
-        "#[serde(tag = \"arm\", rename_all = \"kebab-case\")]\npub enum CommandAdmission",
-        "#[serde(rename_all = \"kebab-case\")]\npub enum CommandAdmission",
+        "#[serde(tag = \"arm\", rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission",
+        "#[serde(rename_all = \"kebab-case\", deny_unknown_fields)]\npub enum CommandAdmission",
     );
-    only(check(t.root()), Ratchet::RetireReceiptNamesDrainArm);
+    only(check(t.root()), Ratchet::RetireReceiptNamesCommandArm);
 }
 
 #[test]
-fn drain_success_is_not_refusal_fails_when_the_applied_reply_is_gone() {
+fn connections_deleted_is_not_refusal_fails_when_the_receipt_is_gone() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "NodeDrainingApplied {\n        /// The work still in flight.\n        in_flight: u64,\n    }", "NodeDrainingApplied");
-    only(check(t.root()), Ratchet::DrainSuccessIsNotRefusal);
+    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "        receipt: Option<ConnectionsReceipt>,\n", "        receipt: Option<u64>,\n");
+    only(check(t.root()), Ratchet::ConnectionsDeletedIsNotRefusal);
 }
 
 #[test]
@@ -217,7 +217,7 @@ fn typed_protocol_evidence_fails_untyped_held_evidence() {
 #[test]
 fn status_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
     let t = Planted::of_tree();
-    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "const REPLY_VARIANTS: u32 = 44;", "const REPLY_VARIANTS: u32 = 45;");
+    t.edit("crates/rafka-node-rpc-contract/src/status.rs", "const REPLY_VARIANTS: u32 = 49;", "const REPLY_VARIANTS: u32 = 50;");
     only(check(t.root()), Ratchet::StatusResealIsAtomic);
     let f = Planted::of_tree();
     f.delete("crates/rafka-node-rpc-contract/tests/status_wire.rs");

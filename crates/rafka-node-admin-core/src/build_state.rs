@@ -53,14 +53,14 @@ pub enum AttemptReason {
     Restart,
     /// The previous attempt's executor is gone; another admin continues the Build.
     AuthorityMoved,
-    /// A standalone drain of an exact birth was requested (`drain-node:<path>`).
-    Drain,
+    /// `POST /api/nodes/{name}/connections/delete`: node.connections.delete { All }.
+    DeleteConnections,
     /// A standalone stop of an exact birth was requested (`stop-node:<path>`).
     Stop,
     /// A standalone start of a parked birth was requested (`start-node:<path>`).
     Start,
     /// A mesh-primary proved a member's exact birth exited and submitted its recovery
-    /// (`retire-node:<path>`, `create-node:<path>`, `update-node:<path>`, node-recovery.md "Steps").
+    /// (`retire-node:<path>`, then `create-node:<path>`, node-recovery.md "Steps").
     Recovery,
     /// The delete of a stopped birth at its `.old` path, or of a deleted mesh's last admin, was
     /// requested (`retire-node:<path>`, node.delete's one key).
@@ -77,7 +77,7 @@ impl AttemptReason {
             Self::ProvenDrift => "proven-drift",
             Self::Restart => "restart",
             Self::AuthorityMoved => "authority-moved",
-            Self::Drain => "drain",
+            Self::DeleteConnections => "node.connections.delete",
             Self::Stop => "stop",
             Self::Start => "start",
             Self::Recovery => "recovery",
@@ -105,6 +105,12 @@ pub struct AttemptOpened {
     pub opened_by: String,
     /// When the attempt was opened, in milliseconds since the Unix epoch.
     pub opened_at_ms: u64,
+    /// The lane the attempt is numbered in (R-BI7, proposal Part C caveat 2): `None` the fabric lane
+    /// (a topology Build's attempts and the fabric-primary's workflow attempts, numbered across the
+    /// Build); `Some(mesh)` that mesh's drift lane (its mesh-primary's attempts, numbered per Build
+    /// and mesh from 1). A line written before lanes existed carries none: the fabric lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
 }
 
 /// A claim of one attempt by an executor.
@@ -116,6 +122,18 @@ pub struct BuildAttemptClaim {
     pub attempt: u32,
     /// The claiming executor (a node-admin's path.name).
     pub executor: String,
+    /// The admin that decided the claim (a node-admin's path.name): the fabric-primary for a fabric-lane
+    /// attempt, the mesh's own mesh-primary for a drift attempt. What a refusal names as the holder of
+    /// the attempt's mesh, as the claim recorded it (never re-read from a later seat view). A line
+    /// written before claimants were recorded carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimant: Option<String>,
+    /// The lane the attempt is numbered in (R-BI7, proposal Part C caveat 2): `None` the fabric lane
+    /// (a topology Build's attempts and the fabric-primary's workflow attempts, numbered across the
+    /// Build); `Some(mesh)` that mesh's drift lane (its mesh-primary's attempts, numbered per Build
+    /// and mesh from 1). A line written before lanes existed carries none: the fabric lane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
 }
 
 /// The receipt of one step of an attempt.
@@ -140,6 +158,10 @@ pub struct BuildStepReceipt {
     /// lost admin. Absent on lines written by an executor that did not record it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executor: Option<String>,
+    /// The lane of the attempt the step belongs to (`None` the fabric lane, `Some(mesh)` that mesh's
+    /// drift lane; see [`AttemptOpened::mesh`]). A line written before lanes existed carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
 }
 
 /// How a step ended.
@@ -164,6 +186,10 @@ pub struct BuildAttemptReceipt {
     pub attempt: u32,
     /// How the attempt ended.
     pub outcome: AttemptOutcome,
+    /// The lane of the attempt (`None` the fabric lane, `Some(mesh)` that mesh's drift lane; see
+    /// [`AttemptOpened::mesh`]). A line written before lanes existed carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
 }
 
 /// How an attempt ended.
@@ -277,14 +303,120 @@ pub struct BuildProjection {
     /// continue by hand-off or take-over. A step receipt from it on is this run's.
     #[serde(default)]
     pub opened: u32,
+    /// The attempt whose `Failed` verdict last failed the Build, when one did: the attempt after it,
+    /// which a caller's resubmit opens (R-BI3), begins a new run ([`Self::run_of`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<u32>,
+    /// The attempt whose `Converged` verdict first completed the Build, when one did. Kept when a
+    /// later attempt reopens it (a restart, a recovery, proven drift: attempts of an unchanged
+    /// topology, build.md §4.1), so a Build that once realized its topology stays the known state
+    /// whatever such an attempt ends with ([`CurrentBuild`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<u32>,
     /// The attempts whose executor reported its run's end by the attempt's verdict (`HandedOff` or
     /// `Converged`): what such a run completed is done. A run whose executor was lost reported nothing,
     /// and its successor re-checks the world for what it left.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub reported: std::collections::BTreeSet<u32>,
+    /// The admin that decided the current fabric-lane attempt's claim, as its claim recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimant: Option<String>,
+    /// Each mesh's drift lane, by mesh (R-BI7 caveat 2): the attempts its mesh-primary opened,
+    /// claimed and ended on this Build, numbered per mesh from 1. The fields above are the fabric
+    /// lane's alone, and nothing of a drift lane moves them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lanes: BTreeMap<String, Lane>,
+}
+
+/// One mesh's drift lane of a Build (R-BI7): its mesh-primary's attempts of the Build inside its
+/// mesh, folded from the facts whose `mesh` names it, with the fabric lane's rules (an open moves the
+/// lane to its next attempt, the first claim of that attempt runs it, the attempt's first verdict
+/// ends it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lane {
+    /// Where the lane's current attempt is.
+    pub state: BuildState,
+    /// The lane's current attempt: the highest claimed. An opened attempt is `attempt + 1`.
+    pub attempt: u32,
+    /// The executor of the current attempt, when one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
+    /// The admin that decided the current attempt's claim (the mesh's mesh-primary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimant: Option<String>,
+    /// Why the current attempt exists.
+    pub reason: AttemptReason,
+    /// The action the current attempt carries, targeted at one exact birth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<AttemptAction>,
+    /// The attempt the latest open opened: the first attempt of the lane's current run.
+    pub opened: u32,
+    /// The reason the lane's last attempt failed, when one did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<String>,
+    /// The step receipts of the lane's attempts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<BuildStepReceipt>,
+    /// The attempts whose executor reported its run's end (`HandedOff` or `Converged`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub reported: std::collections::BTreeSet<u32>,
+    /// The action each claimed attempt carried, by attempt.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub attempt_actions: BTreeMap<u32, AttemptAction>,
+}
+
+impl Lane {
+    /// Whether the lane holds an attempt open: opened and not yet claimed, or claimed and running.
+    pub fn is_open(&self) -> bool {
+        matches!(self.state, BuildState::Pending | BuildState::Running)
+    }
 }
 
 impl BuildProjection {
+    /// Whether any mesh's drift lane holds an attempt open.
+    pub fn lane_open(&self) -> bool {
+        self.lanes.values().any(Lane::is_open)
+    }
+
+    /// The Build as an attempt of `lane` reads it (R-BI7): `None` the fabric lane, the Build itself;
+    /// `Some(mesh)` that mesh's drift lane, whose state, attempt, executor, claimant, reason, action,
+    /// steps and verdicts stand where the fabric lane's do, so the executor, its pipelines and the
+    /// plan read the lane's own numbering and receipts and never the fabric lane's. The accepted
+    /// topology and the Build's identity are the Build's. A lane never opened reads as no attempt yet.
+    pub fn in_lane(&self, lane: Option<&str>) -> BuildProjection {
+        let Some(mesh) = lane else { return self.clone() };
+        let mut p = self.clone();
+        let l = self.lanes.get(mesh).cloned().unwrap_or(Lane {
+            state: BuildState::Complete,
+            attempt: 0,
+            executor: None,
+            claimant: None,
+            reason: AttemptReason::Recovery,
+            action: None,
+            opened: 0,
+            last_failure: None,
+            steps: Vec::new(),
+            reported: Default::default(),
+            attempt_actions: BTreeMap::new(),
+        });
+        p.state = l.state;
+        p.attempt = l.attempt;
+        p.attempt_executors = l.executor.iter().map(|e| (l.attempt, e.clone())).collect();
+        p.executor = l.executor;
+        p.claimant = l.claimant;
+        p.reason = l.reason;
+        p.action = l.action;
+        p.opened = l.opened;
+        p.last_failure = l.last_failure;
+        p.steps = l.steps;
+        p.reported = l.reported;
+        p.attempt_actions = l.attempt_actions;
+        p.completed_at = (l.state == BuildState::Complete && l.attempt > 0).then_some(l.attempt);
+        // A drift lane numbers its attempts per mesh: the fabric lane's failed attempt is not one of them.
+        p.failed_at = None;
+        p
+    }
+
     /// The attempt a drive of this Build covers as it reads now: the current attempt while it runs or
     /// once it completed; the next one while it waits for its claim (an attempt opened on it, a
     /// complete Build reopened included, or the hand-off of the current one) or after it failed.
@@ -293,6 +425,17 @@ impl BuildProjection {
             BuildState::Running | BuildState::Complete => self.attempt,
             BuildState::Pending | BuildState::Failed => self.attempt + 1,
         }
+    }
+
+    /// The first attempt of the run `attempt` belongs to (ruling R-PU2): the attempt the latest
+    /// `Opened` fact opened ([`Self::opened`]), or the first attempt of the Build. A seat update's
+    /// transfer key is `(build_id, run)` ([`crate::fabric_handover::update_operation`]): the attempts
+    /// of one run (hand-offs and take-overs) share it and replay its row; a new run makes a new one.
+    pub fn run_of(&self, attempt: u32) -> u32 {
+        // The attempt after a Failed verdict begins a new run: only a caller's resubmit drives a failed
+        // Build on (R-BI3), and that is never the continuation of the failed run.
+        let after_failure = self.failed_at.filter(|f| *f < attempt).map_or(1, |f| f + 1);
+        self.opened.max(after_failure)
     }
 
     /// Whether `attempt` carried exactly `action`.
@@ -313,6 +456,101 @@ impl BuildProjection {
     pub fn completed_in_run(&self, key: &str) -> bool {
         self.steps.iter().any(|s| self.reported_in_run(s.attempt) && s.operation == key && s.step == "Complete" && s.outcome == StepOutcome::Complete)
     }
+}
+
+/// The current Build (R-BI3, rulings 2026-10-12): the Build entities read last in, first out through
+/// the acceptance-order index, the first that is in progress or completed. A failed Build is skipped
+/// and never current; nothing resumes it on its own, and a caller resubmits it. No row points at it:
+/// the Fabric row carries no pointer to the newest Build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CurrentBuild {
+    /// The newest Build not failed is being driven (an attempt open or running): it is resumed, its
+    /// completed steps replayed and never run again.
+    InProgress(BuildId),
+    /// The newest Build not failed completed (it realized its topology once): the known state.
+    Completed(BuildId),
+    /// No Build held is in progress or completed.
+    None,
+}
+
+impl CurrentBuild {
+    /// The current Build's id, when there is one.
+    pub fn build_id(&self) -> Option<&BuildId> {
+        match self {
+            Self::InProgress(id) | Self::Completed(id) => Some(id),
+            Self::None => None,
+        }
+    }
+
+    /// The current Build's id, when there is one.
+    pub fn into_build_id(self) -> Option<BuildId> {
+        match self {
+            Self::InProgress(id) | Self::Completed(id) => Some(id),
+            Self::None => None,
+        }
+    }
+}
+
+/// What a read of `p`, one entry of the acceptance-order index, makes of it: in progress, completed,
+/// or skipped (`None`: failed, and it never completed).
+fn current_of(p: &BuildProjection) -> Option<CurrentBuild> {
+    // A drift lane's open attempt keeps its Build in progress (R-BI7 caveat 5: the LIFO read is
+    // otherwise untouched).
+    if p.lane_open() {
+        return Some(CurrentBuild::InProgress(p.build_id.clone()));
+    }
+    match p.state {
+        BuildState::Pending | BuildState::Running => Some(CurrentBuild::InProgress(p.build_id.clone())),
+        BuildState::Complete => Some(CurrentBuild::Completed(p.build_id.clone())),
+        BuildState::Failed if p.completed_at.is_some() => Some(CurrentBuild::Completed(p.build_id.clone())),
+        BuildState::Failed => None,
+    }
+}
+
+/// Whether `p` may be driven now: it is the current Build, or it is a failed Build accepted after the
+/// current one (each Build between them failed too) while the current one is not in progress. The
+/// resubmit that resumes it opens its next attempt, which makes it the current Build (R-BI3: "a
+/// caller resubmits it"); one Build is in flight at a time.
+pub async fn drivable(builds: &dyn BuildStateAdapter, p: &BuildProjection) -> Result<bool, BuildStateError> {
+    let current = builds.current_build().await?;
+    if current.build_id() == Some(&p.build_id) {
+        return Ok(true);
+    }
+    if p.state != BuildState::Failed || p.completed_at.is_some() {
+        return Ok(false);
+    }
+    Ok(match current {
+        CurrentBuild::InProgress(_) => false,
+        CurrentBuild::None => true,
+        CurrentBuild::Completed(id) => {
+            let c = builds.read_build(&id).await?;
+            (p.submitted_at_ms, &p.build_id) > (c.submitted_at_ms, &c.build_id)
+        }
+    })
+}
+
+/// Accept `accepted` (build.md §5.2, acceptance): the Build entity is written once into the builds
+/// store, and it is current from the moment it is there (an index read finds it newest), so nothing
+/// is moved after it and nothing can read it as current before it is durable. `previous` is the Build
+/// that was current, which the span names; `via` names the surface (`accepted`, `day-0`, `seeded`).
+pub async fn accept(builds: &dyn BuildStateAdapter, accepted: &BuildAccepted, previous: Option<&BuildId>, node: &str, via: &str) -> Result<(), BuildStateError> {
+    use tracing::Instrument as _;
+    // The span opens BEFORE the write: the Build is current to a reader the moment it is in the
+    // store, which is before `publish_accepted` returns.
+    let span = tracing::info_span!(
+        "rdm.node_admin.build.create.via-accepted",
+        node = %node,
+        build_id = %accepted.build_id,
+        previous_build_id = %previous.map(|b| b.as_str()).unwrap_or(""),
+        submitted_at_ms = accepted.submitted_at_ms,
+        via,
+    );
+    let put = builds.publish_accepted(accepted).instrument(span.clone()).await;
+    match &put {
+        Ok(()) => span.in_scope(|| tracing::info!("the Build is in the builds store: it is the newest accepted, and the current Build")),
+        Err(e) => span.in_scope(|| tracing::info!(error = %e, "the Build could not be written to the builds store: nothing is accepted")),
+    }
+    put
 }
 
 /// The result of claiming an attempt.
@@ -412,10 +650,12 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
     let mut ordered: Vec<&BuildFact> = facts.iter().collect();
     ordered.sort_by(|a, b| a.build_id().cmp(b.build_id()).then(rank(a).cmp(&rank(b))));
     let mut out: BTreeMap<BuildId, BuildProjection> = BTreeMap::new();
-    let mut winners: BTreeMap<(BuildId, u32), String> = BTreeMap::new();
-    let mut opened: std::collections::BTreeSet<(BuildId, u32)> = std::collections::BTreeSet::new();
+    // Keyed by lane (`None` the fabric lane, `Some(mesh)` that mesh's drift lane, R-BI7): one
+    // Build's attempt number names one attempt per lane.
+    let mut winners: BTreeMap<(BuildId, Option<String>, u32), String> = BTreeMap::new();
+    let mut opened: std::collections::BTreeSet<(BuildId, Option<String>, u32)> = std::collections::BTreeSet::new();
     // An attempt has one verdict: the first appended. A stale second receipt changes nothing.
-    let mut decided: std::collections::BTreeSet<(BuildId, u32)> = std::collections::BTreeSet::new();
+    let mut decided: std::collections::BTreeSet<(BuildId, Option<String>, u32)> = std::collections::BTreeSet::new();
     for f in ordered {
         match f {
             BuildFact::Accepted(i) => {
@@ -434,16 +674,43 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                     attempt_actions: BTreeMap::new(),
                     attempt_executors: BTreeMap::new(),
                     opened: 0,
+                    failed_at: None,
+                    completed_at: None,
                     reported: Default::default(),
+                    claimant: None,
+                    lanes: BTreeMap::new(),
                 });
             }
             BuildFact::Opened(o) => {
-                let key = (o.build_id.clone(), o.attempt);
+                let key = (o.build_id.clone(), o.mesh.clone(), o.attempt);
                 if opened.contains(&key) {
                     continue;
                 }
                 opened.insert(key);
-                if let Some(p) = out.get_mut(&o.build_id) {
+                if let (Some(mesh), Some(p)) = (&o.mesh, out.get_mut(&o.build_id)) {
+                    // A drift lane comes into being with its first open; it moves as the fabric lane does.
+                    let lane = p.lanes.entry(mesh.clone()).or_insert_with(|| Lane {
+                        state: BuildState::Complete,
+                        attempt: 0,
+                        executor: None,
+                        claimant: None,
+                        reason: o.reason,
+                        action: None,
+                        opened: 0,
+                        last_failure: None,
+                        steps: Vec::new(),
+                        reported: Default::default(),
+                        attempt_actions: BTreeMap::new(),
+                    });
+                    if o.attempt == lane.attempt + 1 && !matches!(lane.state, BuildState::Running) {
+                        lane.state = BuildState::Pending;
+                        lane.executor = None;
+                        lane.claimant = None;
+                        lane.reason = o.reason;
+                        lane.action = o.action.clone();
+                        lane.opened = o.attempt;
+                    }
+                } else if let Some(p) = out.get_mut(&o.build_id) {
                     // The authority opens the attempt after the current one, on a Build not in
                     // flight; it reopens a complete Build. The executor that leads then claims it.
                     if o.attempt == p.attempt + 1 && !matches!(p.state, BuildState::Running) {
@@ -456,17 +723,31 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                 }
             }
             BuildFact::Claim(c) => {
-                let key = (c.build_id.clone(), c.attempt);
+                let key = (c.build_id.clone(), c.mesh.clone(), c.attempt);
                 if winners.contains_key(&key) {
                     continue;
                 }
                 winners.insert(key, c.executor.clone());
-                if let Some(p) = out.get_mut(&c.build_id) {
+                if let Some(mesh) = &c.mesh {
+                    // A drift lane's attempt exists only by its open: a claim of a lane never opened moves nothing.
+                    if let Some(lane) = out.get_mut(&c.build_id).and_then(|p| p.lanes.get_mut(mesh)) {
+                        if c.attempt == lane.attempt + 1 && !matches!(lane.state, BuildState::Complete) {
+                            lane.attempt = c.attempt;
+                            lane.executor = Some(c.executor.clone());
+                            lane.claimant = c.claimant.clone();
+                            lane.state = BuildState::Running;
+                            if let Some(a) = &lane.action {
+                                lane.attempt_actions.insert(c.attempt, a.clone());
+                            }
+                        }
+                    }
+                } else if let Some(p) = out.get_mut(&c.build_id) {
                     // The next attempt only, and never of a complete Build: a complete Build runs
                     // again only through an opened attempt.
                     if c.attempt == p.attempt + 1 && !matches!(p.state, BuildState::Complete) {
                         p.attempt = c.attempt;
                         p.executor = Some(c.executor.clone());
+                        p.claimant = c.claimant.clone();
                         p.attempt_executors.insert(c.attempt, c.executor.clone());
                         p.state = BuildState::Running;
                         if let Some(a) = &p.action {
@@ -476,17 +757,41 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                 }
             }
             BuildFact::Step(s) => {
-                if let Some(p) = out.get_mut(&s.build_id) {
-                    if !p.steps.contains(s) {
-                        p.steps.push(s.clone());
+                // A drift lane's step is its lane's, never the fabric lane's: every reader of the
+                // fabric lane's steps by attempt reads its own numbering only.
+                let steps = match (&s.mesh, out.get_mut(&s.build_id)) {
+                    (None, Some(p)) => Some(&mut p.steps),
+                    (Some(mesh), Some(p)) => p.lanes.get_mut(mesh).map(|l| &mut l.steps),
+                    (_, None) => None,
+                };
+                if let Some(steps) = steps {
+                    if !steps.contains(s) {
+                        steps.push(s.clone());
                     }
                 }
             }
             BuildFact::Attempt(a) => {
-                if !decided.insert((a.build_id.clone(), a.attempt)) {
+                if !decided.insert((a.build_id.clone(), a.mesh.clone(), a.attempt)) {
                     continue; // the attempt already has its verdict
                 }
-                if let Some(p) = out.get_mut(&a.build_id) {
+                if let Some(mesh) = &a.mesh {
+                    if let Some(lane) = out.get_mut(&a.build_id).and_then(|p| p.lanes.get_mut(mesh)) {
+                        if matches!(a.outcome, AttemptOutcome::Converged | AttemptOutcome::HandedOff { .. }) {
+                            lane.reported.insert(a.attempt);
+                        }
+                        if a.attempt != lane.attempt || lane.state == BuildState::Complete {
+                            continue;
+                        }
+                        match &a.outcome {
+                            AttemptOutcome::Converged => lane.state = BuildState::Complete,
+                            AttemptOutcome::Failed { reason } => {
+                                lane.state = BuildState::Failed;
+                                lane.last_failure = Some(reason.clone());
+                            }
+                            AttemptOutcome::HandedOff { .. } => lane.state = BuildState::Pending,
+                        }
+                    }
+                } else if let Some(p) = out.get_mut(&a.build_id) {
                     if matches!(a.outcome, AttemptOutcome::Converged | AttemptOutcome::HandedOff { .. }) {
                         p.reported.insert(a.attempt);
                     }
@@ -494,10 +799,14 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                         continue; // a superseded attempt's verdict does not decide the Build
                     }
                     match &a.outcome {
-                        AttemptOutcome::Converged => p.state = BuildState::Complete,
+                        AttemptOutcome::Converged => {
+                            p.state = BuildState::Complete;
+                            p.completed_at.get_or_insert(a.attempt);
+                        }
                         AttemptOutcome::Failed { reason } => {
                             p.state = BuildState::Failed;
                             p.last_failure = Some(reason.clone());
+                            p.failed_at = Some(a.attempt);
                         }
                         // No attempt is in flight: the Build waits for the next claim.
                         AttemptOutcome::HandedOff { .. } => p.state = BuildState::Pending,
@@ -505,7 +814,7 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
                 }
             }
             BuildFact::Forget { build_id } => {
-                if out.get(build_id).is_some_and(|p| matches!(p.state, BuildState::Complete | BuildState::Failed)) {
+                if out.get(build_id).is_some_and(|p| matches!(p.state, BuildState::Complete | BuildState::Failed) && !p.lane_open()) {
                     out.remove(build_id);
                 }
             }
@@ -525,17 +834,26 @@ pub fn fold(facts: &[BuildFact]) -> BTreeMap<BuildId, BuildProjection> {
 /// overlays from the same facts.
 pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, BuildProjection>) -> InFlight {
     let mut out = InFlight::default();
-    // An attempt has one verdict, the first appended (as `fold` reads it).
-    let mut decided: std::collections::BTreeSet<(&BuildId, u32)> = std::collections::BTreeSet::new();
+    // An attempt has one verdict, the first appended (as `fold` reads it), in its own lane: the
+    // terminal verdicts by (Build, lane, attempt). `out.attempts_converged` is the fabric lane's
+    // alone (its reader keys a restart by (Build, attempt), and only the fabric lane restarts); a
+    // removal's close is handed on by the removal's own key, decided here in its own lane.
+    let mut decided: std::collections::BTreeSet<(&BuildId, Option<&str>, u32)> = std::collections::BTreeSet::new();
+    let mut converged: std::collections::BTreeSet<(String, Option<String>, u32)> = std::collections::BTreeSet::new();
+    let mut failed: std::collections::BTreeSet<(String, Option<String>, u32)> = std::collections::BTreeSet::new();
     for f in facts {
         if let BuildFact::Attempt(a) = f {
-            if decided.insert((&a.build_id, a.attempt)) && builds.contains_key(&a.build_id) {
+            if decided.insert((&a.build_id, a.mesh.as_deref(), a.attempt)) && builds.contains_key(&a.build_id) {
+                let key = (a.build_id.to_string(), a.mesh.clone(), a.attempt);
                 match a.outcome {
                     AttemptOutcome::Converged => {
-                        out.attempts_converged.insert((a.build_id.0.clone(), a.attempt));
+                        if a.mesh.is_none() {
+                            out.attempts_converged.insert((a.build_id.to_string(), a.attempt));
+                        }
+                        converged.insert(key);
                     }
                     AttemptOutcome::Failed { .. } => {
-                        out.attempts_failed.insert((a.build_id.0.clone(), a.attempt));
+                        failed.insert(key);
                     }
                     _ => {}
                 }
@@ -543,9 +861,12 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
         }
     }
     for p in builds.values() {
-        for s in &p.steps {
-            if s.step == "Complete" && s.outcome == StepOutcome::Complete && s.operation.starts_with("restart-node:") {
-                out.restarts_completed.insert((s.build_id.0.clone(), s.operation.clone()));
+        // The fabric lane's steps, then each drift lane's: a removal or restart in any lane holds
+        // its overlay.
+        for lane_steps in std::iter::once(&p.steps).chain(p.lanes.values().map(|l| &l.steps)) {
+        for s in lane_steps {
+            if s.step == "Complete" && s.outcome == StepOutcome::Complete && s.operation.starts_with("restart-node:") && s.mesh.is_none() {
+                out.restarts_completed.insert((s.build_id.to_string(), s.operation.clone()));
             }
             if s.outcome != StepOutcome::Complete || (s.step != "NodeDeleting" && s.step != "NodeRestarting") {
                 continue;
@@ -569,17 +890,26 @@ pub(crate) fn in_flight_ops(facts: &[BuildFact], builds: &BTreeMap<BuildId, Buil
             // A removal's overlay is keyed by its attempt (gossip.md `NodeDeleting`): it ends with the
             // departure, or when that attempt's verdict is terminal (Converged or Failed: the attempt
             // no longer claims the operation).
+            let verdict = (op.build_id.clone(), s.mesh.clone(), op.attempt);
             let closed = if s.step == "NodeDeleting" {
-                p.steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete)
-                    || out.attempts_converged.contains(&(op.build_id.clone(), op.attempt))
-                    || out.attempts_failed.contains(&(op.build_id.clone(), op.attempt))
+                let by = if failed.contains(&verdict) {
+                    Some("attempt-failed")
+                } else if converged.contains(&verdict) {
+                    Some("attempt-converged")
+                } else {
+                    None
+                };
+                if let Some(by) = by {
+                    out.removals_ended.insert(op.key(), by);
+                }
+                lane_steps.iter().any(|t| t.step == "NodeDeleted" && t.operation == s.operation && t.outcome == StepOutcome::Complete) || by.is_some()
             } else {
-                out.attempts_converged.contains(&(op.build_id.clone(), op.attempt))
-                    || p.steps.iter().any(|t| t.step == "Complete" && t.operation == op.operation && t.outcome == StepOutcome::Complete)
+                converged.contains(&verdict) || lane_steps.iter().any(|t| t.step == "Complete" && t.operation == op.operation && t.outcome == StepOutcome::Complete)
             };
             if !closed {
                 out.ops.push(op);
             }
+        }
         }
     }
     out
@@ -599,9 +929,10 @@ pub struct InFlight {
     /// The attempts whose verdict is `Converged`, by (Build, attempt): the facts end every restart
     /// hold of that attempt in that Build.
     pub attempts_converged: std::collections::BTreeSet<(String, u32)>,
-    /// The attempts whose verdict is `Failed`, by (Build, attempt): the facts end every removal
-    /// (`NodeDeleting`) hold of that attempt in that Build; a restart's hold stays open.
-    pub attempts_failed: std::collections::BTreeSet<(String, u32)>,
+    /// The removals (`NodeDeleting`) whose own attempt, in its own lane, has a terminal verdict, by
+    /// the removal's key (`LifecycleOp::key`), each `attempt-failed` or `attempt-converged`: the
+    /// facts end that hold. A restart's hold is not one.
+    pub removals_ended: std::collections::BTreeMap<(String, u32, String), &'static str>,
 }
 
 /// The Builds the facts forgot: each a `Forget` fact names whose Build the fold no longer holds
@@ -611,7 +942,7 @@ pub(crate) fn forgotten_builds(facts: &[BuildFact], builds: &BTreeMap<BuildId, B
     facts
         .iter()
         .filter_map(|f| match f {
-            BuildFact::Forget { build_id } if !builds.contains_key(build_id) => Some(build_id.0.clone()),
+            BuildFact::Forget { build_id } if !builds.contains_key(build_id) => Some(build_id.to_string()),
             _ => None,
         })
         .collect()
@@ -643,13 +974,31 @@ pub trait BuildStateAdapter: Send + Sync {
     /// same drift) changes nothing and succeeds; one that asks for another action is refused
     /// `AttemptTaken`, so no caller is told an attempt is open for an action it does not carry.
     async fn open_attempt(&self, opened: &AttemptOpened) -> Result<(), BuildStateError>;
-    /// Tell the fabric `Fabric.build_id` moved (the record it names). A local-only adapter has no
-    /// fabric to tell.
-    async fn publish_fabric(&self, _record: &crate::fabric_storage::FabricRecord) -> Result<(), BuildStateError> {
+    /// Tell the fabric the Fabric record, its identity, on the Build topic. A local-only adapter has
+    /// no fabric to tell.
+    async fn publish_fabric(&self, _record: &crate::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
         Ok(())
     }
     /// The folded view of `build_id`.
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError>;
+    /// The current Build ([`CurrentBuild`], R-BI3): the acceptance-order index read last in, first
+    /// out, each Build read from its own facts, until the first that is in progress or completed. A
+    /// failed Build is skipped; no Build accepted before the current one is read. Every adapter
+    /// answers it from its index (or delegates to the adapter it decorates).
+    async fn current_build(&self) -> Result<CurrentBuild, BuildStateError>;
+    /// The acceptance stamp (`submitted_at_ms`) of the newest Build accepted, whatever its state: the
+    /// head of the acceptance-order index. A Build accepted next is stamped after it.
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError>;
+    /// The current Build's folded view: [`Self::current_build`], then a point read of that Build.
+    /// `Ok(None)`: no Build in the store is in progress or completed (none was ever accepted here, or
+    /// every one failed). `Err`: the store could not be read, named; never answered as `None`, so a
+    /// caller never takes "could not be read" for "never written".
+    async fn current(&self) -> Result<Option<BuildProjection>, BuildStateError> {
+        match self.current_build().await?.into_build_id() {
+            None => Ok(None),
+            Some(id) => self.read_build(&id).await.map(Some),
+        }
+    }
     /// Builds that are neither complete nor failed.
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError>;
     /// Insert-and-fail on `(build_id, attempt)`. Only the fabric-primary calls this on its own
@@ -667,23 +1016,25 @@ pub trait BuildStateAdapter: Send + Sync {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError>;
     /// Drop a finished Build from the views (history administration).
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError>;
-    /// The step in flight of `operation` in `attempt` waits on `reason`: live progress for a call
-    /// attached to the run, never a fact, never durable. A state with no call attached to its runs
+    /// The step in flight of `operation` in `attempt` of `lane` (`None` the fabric lane, `Some(mesh)`
+    /// that mesh's drift lane) waits on `reason`: live progress for a call attached to the run, never
+    /// a fact, never durable. A state with no call attached to its runs
     /// has nobody to tell.
-    async fn note_blocked(&self, _build_id: &BuildId, _attempt: u32, _operation: &str, _step: &str, _reason: &str) {}
-    /// The Build, attempt and operation of the node workflow at `path` that deleted the exited
-    /// birth `(node_id, incarnation)` and completed: a recovery of that birth (its `retire-node:<path>`
+    async fn note_blocked(&self, _build_id: &BuildId, _lane: Option<&str>, _attempt: u32, _operation: &str, _step: &str, _reason: &str) {}
+    /// The Build, lane (`None` the fabric lane, `Some(mesh)` that mesh's drift lane), attempt and
+    /// operation of the node workflow at `path` that deleted the exited birth `(node_id, incarnation)`
+    /// and completed: a recovery of that birth (its `retire-node:<path>`
     /// in an attempt the recovery opened, answered at the attempt its last operation,
-    /// `update-node:<path>`, completed), or a `retire-node:<path>` (the birth
+    /// `create-node:<path>`, completed), or a `retire-node:<path>` (the birth
     /// exited inside that workflow, node-recovery.md "Failure and receipts", so it is no drift to
     /// recover). Read from every
     /// Build's step receipts in the log (a forgotten Build's receipts included: forgetting leaves
     /// the views, never the receipts). The first such attempt. A point read by the exited birth:
     /// every adapter answers it from its index (or delegates to the adapter it decorates), never by
     /// reading the fact log.
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError>;
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError>;
     /// The Build, attempt and operation of the mesh.delete whose completion receipt
-    /// (`mesh_leave::STEP_MESH_DELETED`) names the exact birth `(node_id, incarnation)` its final
+    /// (`mesh_delete::STEP_MESH_DELETED`) names the exact birth `(node_id, incarnation)` its final
     /// primary: the mesh.delete that ended with that birth alive, whose mesh-left follows that birth's
     /// exit proof. The first such attempt. A point read by the birth: every adapter answers it from
     /// its index (or delegates to the adapter it decorates), never by reading the fact log.
@@ -691,12 +1042,14 @@ pub trait BuildStateAdapter: Send + Sync {
     /// The exited births of `mesh` whose node workflow in `build_id` stopped at a Failed attempt and
     /// is not done (node-recovery.md "Failure and receipts": the mesh-primary submits each again):
     /// for each birth an attempt of `build_id` was opened for with `AttemptAction::Recover`, the run
-    /// that its latest such open began (up to the next attempt opened in the Build, whatever it
+    /// that its latest claimed such open began (up to the next attempt opened in the Build, whatever it
     /// carries) ended with its last claimed attempt's verdict `Failed`, and
-    /// [`BuildStateAdapter::recovery_of`] does not answer the birth. A run still in flight (opened and
-    /// not claimed, or claimed with no verdict) or handed off is not owed. A point read by the Build:
-    /// every adapter answers it from its index (or delegates to the adapter it decorates), never by
-    /// reading or folding the fact log.
+    /// [`BuildStateAdapter::recovery_of`] does not answer the birth. An open no one claimed ran nothing
+    /// and ends no run: a resubmit whose opener was lost between its open and its claim leaves the
+    /// birth owed, and the submit claims that open attempt as it stands (build.md :365, claims are
+    /// insert-and-fail on the attempt). A run claimed with no verdict yet, or handed off, is not owed.
+    /// A point read by the Build: every adapter answers it from its index (or delegates to the adapter
+    /// it decorates), never by reading or folding the fact log.
     async fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Result<Vec<OwedExit>, BuildStateError>;
 }
 
@@ -720,9 +1073,12 @@ pub struct OwedExit {
 /// one of them deleted is answered by it in the recovery index ([`BuildStateAdapter::recovery_of`]).
 const DELETING_WORKFLOWS: [&str; 1] = ["retire-node:"];
 
-/// The last operation of a node recovery (node-recovery.md "Steps"): node.update of the new node at
-/// the exited birth's path.name. A recovery's deletion is answered once it completes.
-const RECOVERY_LAST: &str = "update-node:";
+/// The last operation of a node recovery (node-recovery.md "Steps"): node.create of the new node at
+/// the exited birth's path.name over its data dir, whose claim seeds config and tags from the
+/// Deleted row (proposal node-properties-own-commands.md §8). A recovery's deletion is answered once
+/// it completes at or after the deletion's attempt, in the deletion's lane: a create from before
+/// the deletion (the path's original create) is not the recovery's.
+const RECOVERY_LAST: &str = "create-node:";
 
 /// The path of a deleting workflow's operation `<kind>:<path>`, as text.
 fn deleting_workflow_path(operation: &str) -> Option<&str> {
@@ -751,12 +1107,12 @@ fn recovery_completed(s: &BuildStepReceipt) -> bool {
 /// The final primary a mesh.delete's completion receipt (`MeshDeleted`) names: its manifest's
 /// `final_primary`, `(node_id, incarnation)`.
 fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, crate::model::IncarnationId)> {
-    if s.step != crate::mesh_leave::STEP_MESH_DELETED || s.outcome != StepOutcome::Complete {
+    if s.step != crate::mesh_delete::STEP_MESH_DELETED || s.outcome != StepOutcome::Complete {
         return None;
     }
     let last = s.output.as_ref()?.get("final_primary")?;
     let node_id = crate::model::NodeId::parse(last.get("node_id")?.as_str()?).ok()?;
-    let incarnation = crate::model::IncarnationId(last.get("incarnation_id")?.as_str()?.to_string());
+    let incarnation = crate::model::IncarnationId::parse(last.get("incarnation_id")?.as_str()?).ok()?;
     Some((node_id, incarnation))
 }
 
@@ -764,7 +1120,7 @@ fn mesh_deleted_final(s: &BuildStepReceipt) -> Option<(crate::model::NodeId, cra
 fn describe_open(o: &AttemptOpened) -> String {
     let action = match &o.action {
         Some(crate::accepted::AttemptAction::Restart { path, from_incarnation }) => format!("restart of {path} from {from_incarnation}"),
-        Some(crate::accepted::AttemptAction::Drain { path, from_incarnation }) => format!("drain of {path} from {from_incarnation}"),
+        Some(crate::accepted::AttemptAction::DeleteConnections { path, from_incarnation }) => format!("node.connections.delete of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Stop { path, from_incarnation }) => format!("stop of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Start { path, from_incarnation }) => format!("start of {path} from {from_incarnation}"),
         Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }) => format!("recovery of {path} from exited {node_id} at {from_incarnation}"),
@@ -772,7 +1128,8 @@ fn describe_open(o: &AttemptOpened) -> String {
         Some(crate::accepted::AttemptAction::Recipe { steps, .. }) => format!("recipe of {} step(s): {}", steps.len(), steps.iter().map(crate::build::recipe_step_key).collect::<Vec<_>>().join(", ")),
         None => "no fenced action".to_string(),
     };
-    format!("{} ({action}, opened by {})", o.reason.as_str(), o.opened_by)
+    let lane = o.mesh.as_ref().map(|m| format!(", in {m}'s drift lane")).unwrap_or_default();
+    format!("{} ({action}, opened by {}{lane})", o.reason.as_str(), o.opened_by)
 }
 
 /// The shared core of both RDM adapters: what readers see of the log, and its indexes, behind one
@@ -792,31 +1149,42 @@ struct FactLog {
     /// `Opened` answers it as a standalone retire's): every deleting workflow's (`retire-node`)
     /// `NodeDeleted` by the birth `(node_id, incarnation)` it names, to its path, operation, Build
     /// and attempt...
-    recovery_deletes: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(crate::model::PathName, String, BuildId, u32)>>,
+    recovery_deletes: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(crate::model::PathName, String, LaneOf, u32)>>,
     /// ...the attempts of each `(Build, operation)` whose `Complete` is receipted, for the deleting
-    /// operations and a recovery's last (`update-node`)...
-    recovery_completes: std::collections::HashMap<(BuildId, String), std::collections::BTreeSet<u32>>,
+    /// operations and a recovery's last (`create-node`)...
+    recovery_completes: std::collections::HashMap<(LaneOf, String), std::collections::BTreeSet<u32>>,
     /// ...and the attempts each recovery of a birth was opened at, by that birth, with its Build.
     /// A birth is answered once its `NodeDeleted` and a `Complete` at that attempt or later are both
-    /// held: of the recovery's `update-node:<path>` when a recovery of the birth was opened in that
+    /// held: of the recovery's `create-node:<path>` when a recovery of the birth was opened in that
     /// Build at or before the deletion's attempt (its `retire-node` is the recovery's node.delete),
     /// else of the deleting operation itself. Filled by [`FactLog::index`], the one place a fact
     /// enters the log (own appends, absorbed facts and a journal's replay alike); forgetting a Build
     /// leaves all three, as it leaves the receipts.
-    recoveries_opened: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(BuildId, u32)>>,
+    recoveries_opened: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(LaneOf, u32)>>,
     /// The mesh.delete completion index: every `MeshDeleted` receipt by the final primary its
     /// manifest names, to its Build, attempt and operation ([`BuildStateAdapter::mesh_deleted_of`]).
     mesh_deleted: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), Vec<(BuildId, u32, String)>>,
     /// The index of [`BuildStateAdapter::exits_owed`], per Build, filled by [`FactLog::index`] in
     /// whatever order the facts arrive: the exited birth each attempt opened with
     /// `AttemptAction::Recover` names, by attempt (the first open of an attempt)...
-    exit_opens: std::collections::HashMap<BuildId, BTreeMap<u32, (crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)>>,
+    exit_opens: std::collections::HashMap<LaneOf, BTreeMap<u32, (crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId)>>,
     /// ...every attempt opened, whatever it carries (the next one ends the run of the one before)...
-    opens: std::collections::HashMap<BuildId, std::collections::BTreeSet<u32>>,
+    opens: std::collections::HashMap<LaneOf, std::collections::BTreeSet<u32>>,
     /// ...and every attempt claimed or decided, with its verdict once one is held: the first
     /// appended, as [`fold`] reads it.
-    verdicts: std::collections::HashMap<BuildId, BTreeMap<u32, Option<AttemptOutcome>>>,
+    verdicts: std::collections::HashMap<LaneOf, BTreeMap<u32, Option<AttemptOutcome>>>,
+    /// The acceptance-order index (R-BI3): every Build accepted, by its own acceptance stamp
+    /// `(submitted_at_ms, build_id)`, entered once by its `Accepted` fact and never rewritten, in
+    /// whatever order the facts arrive. Read newest first by [`current_build`].
+    accepted_order: std::collections::BTreeSet<(u64, BuildId)>,
+    /// Each Build's own facts, by their position in `facts`: a Build is read by folding its facts
+    /// alone ([`read_own`]).
+    by_build: std::collections::HashMap<BuildId, Vec<usize>>,
 }
+
+/// A lane of a Build, as the attempt-keyed indexes key it: the Build, and `None` for its fabric lane
+/// or `Some(mesh)` for that mesh's drift lane (R-BI7). One attempt number names one attempt per lane.
+type LaneOf = (BuildId, Option<String>);
 
 /// A derivation over the whole fact log, run before any reader sees the facts a writer adds
 /// ([`LocalBuildLog::derive_on_every_fact`]).
@@ -833,16 +1201,18 @@ impl std::fmt::Debug for Derived {
 }
 
 impl FactLog {
-    /// Fold `fact` into the indexes (own appends, absorbed facts and a journal's replay alike).
-    fn index(&mut self, fact: &BuildFact) {
+    /// Fold `fact`, which sits at position `at` of the facts, into the indexes (own appends, absorbed
+    /// facts and a journal's replay alike).
+    fn index(&mut self, fact: &BuildFact, at: usize) {
         if let BuildFact::Step(s) = fact {
+            let lane: LaneOf = (s.build_id.clone(), s.mesh.clone());
             if let Some((path, node_id, incarnation)) = recovery_deleted(s) {
                 let held = self.recovery_deletes.entry((node_id, incarnation)).or_default();
-                if !held.iter().any(|(p, o, b, a)| *p == path && *o == s.operation && *b == s.build_id && *a == s.attempt) {
-                    held.push((path, s.operation.clone(), s.build_id.clone(), s.attempt));
+                if !held.iter().any(|(p, o, l, a)| *p == path && *o == s.operation && *l == lane && *a == s.attempt) {
+                    held.push((path, s.operation.clone(), lane, s.attempt));
                 }
             } else if recovery_completed(s) {
-                self.recovery_completes.entry((s.build_id.clone(), s.operation.clone())).or_default().insert(s.attempt);
+                self.recovery_completes.entry((lane, s.operation.clone())).or_default().insert(s.attempt);
             } else if let Some(birth) = mesh_deleted_final(s) {
                 let held = self.mesh_deleted.entry(birth).or_default();
                 if !held.iter().any(|(b, a, o)| *b == s.build_id && *a == s.attempt && *o == s.operation) {
@@ -850,50 +1220,56 @@ impl FactLog {
                 }
             }
         }
-        if let BuildFact::Opened(AttemptOpened { build_id, attempt, action: Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }), .. }) = fact {
+        if let BuildFact::Opened(AttemptOpened { build_id, attempt, mesh, action: Some(crate::accepted::AttemptAction::Recover { path, node_id, from_incarnation }), .. }) = fact {
+            let lane: LaneOf = (build_id.clone(), mesh.clone());
             let opened = self.recoveries_opened.entry((node_id.clone(), from_incarnation.clone())).or_default();
-            if !opened.contains(&(build_id.clone(), *attempt)) {
-                opened.push((build_id.clone(), *attempt));
+            if !opened.contains(&(lane.clone(), *attempt)) {
+                opened.push((lane.clone(), *attempt));
             }
-            self.exit_opens.entry(build_id.clone()).or_default().entry(*attempt).or_insert_with(|| (path.clone(), node_id.clone(), from_incarnation.clone()));
+            self.exit_opens.entry(lane).or_default().entry(*attempt).or_insert_with(|| (path.clone(), node_id.clone(), from_incarnation.clone()));
         }
         match fact {
             BuildFact::Opened(o) => {
-                self.opens.entry(o.build_id.clone()).or_default().insert(o.attempt);
+                self.opens.entry((o.build_id.clone(), o.mesh.clone())).or_default().insert(o.attempt);
             }
             BuildFact::Claim(c) => {
-                self.verdicts.entry(c.build_id.clone()).or_default().entry(c.attempt).or_insert(None);
+                self.verdicts.entry((c.build_id.clone(), c.mesh.clone())).or_default().entry(c.attempt).or_insert(None);
             }
             BuildFact::Attempt(a) => {
-                let held = self.verdicts.entry(a.build_id.clone()).or_default().entry(a.attempt).or_insert(None);
+                let held = self.verdicts.entry((a.build_id.clone(), a.mesh.clone())).or_default().entry(a.attempt).or_insert(None);
                 if held.is_none() {
                     *held = Some(a.outcome.clone());
                 }
             }
+            BuildFact::Accepted(a) => {
+                self.accepted_order.insert((a.submitted_at_ms, a.build_id.clone()));
+            }
             _ => {}
         }
+        self.by_build.entry(fact.build_id().clone()).or_default().push(at);
     }
 
 
     /// The point read of [`BuildStateAdapter::recovery_of`]: the birth's `NodeDeleted` receipts at
     /// `path`, each answered by the first `Complete` at its attempt or later of the operation that
-    /// ends its workflow: a recovery's `update-node:<path>` when a recovery of the birth was opened in
+    /// ends its workflow: a recovery's `create-node:<path>` when a recovery of the birth was opened in
     /// that Build at or before the deletion's attempt, else the deleting operation itself. The first
     /// such attempt, with the deleting operation.
-    fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, u32, String)> {
+    fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Option<(BuildId, Option<String>, u32, String)> {
         let birth = (node_id.clone(), incarnation.clone());
         let opened = self.recoveries_opened.get(&birth);
         self.recovery_deletes
             .get(&birth)?
             .iter()
             .filter(|(p, _, _, _)| p == path)
-            .filter_map(|(_, operation, build, deleted)| {
-                let recovering = opened.is_some_and(|o| o.iter().any(|(b, at)| b == build && at <= deleted));
+            .filter_map(|(_, operation, lane, deleted)| {
+                // In the deletion's own lane: an attempt number names one attempt per lane.
+                let recovering = opened.is_some_and(|o| o.iter().any(|(l, at)| l == lane && at <= deleted));
                 let ends = if recovering { format!("{RECOVERY_LAST}{path}") } else { operation.clone() };
-                let completed = self.recovery_completes.get(&(build.clone(), ends))?.range(*deleted..).next()?;
-                Some((build.clone(), *completed, operation.clone()))
+                let completed = self.recovery_completes.get(&(lane.clone(), ends))?.range(*deleted..).next()?;
+                Some((lane.0.clone(), lane.1.clone(), *completed, operation.clone()))
             })
-            .min_by_key(|(_, a, _)| *a)
+            .min_by_key(|(_, _, a, _)| *a)
     }
 
     /// The point read of [`BuildStateAdapter::mesh_deleted_of`]: the first attempt's.
@@ -902,23 +1278,33 @@ impl FactLog {
     }
 
     /// The point read of [`BuildStateAdapter::exits_owed`]: per exited birth of `mesh`, the run its
-    /// latest `Recover` open in `build_id` began, up to the next attempt opened in the Build; owed when
-    /// the run's last claimed attempt holds the verdict `Failed` and [`FactLog::recovery_of`] does not
-    /// answer the birth.
+    /// latest claimed `Recover` open in `build_id` began, up to the next attempt opened in the Build;
+    /// owed when the run's last claimed attempt holds the verdict `Failed` and [`FactLog::recovery_of`]
+    /// does not answer the birth. An open with no claim (no entry in `verdicts`) starts no run.
     fn exits_owed(&self, build_id: &BuildId, mesh: &str) -> Vec<OwedExit> {
-        let Some(exit_opens) = self.exit_opens.get(build_id) else { return Vec::new() };
-        // The latest open per birth: the attempts ascend, so the last one seen stands.
+        // The fabric lane's recoveries of the mesh's births, and the mesh's own drift lane's.
+        let mut owed: Vec<OwedExit> = [None, Some(mesh.to_string())].into_iter().flat_map(|lane| self.exits_owed_in(&(build_id.clone(), lane), mesh)).collect();
+        owed.sort_by(|a, b| a.path.cmp(&b.path).then(a.attempt.cmp(&b.attempt)));
+        owed
+    }
+
+    /// [`FactLog::exits_owed`] in one lane of the Build.
+    fn exits_owed_in(&self, lane: &LaneOf, mesh: &str) -> Vec<OwedExit> {
+        let Some(exit_opens) = self.exit_opens.get(lane) else { return Vec::new() };
+        let claimed = |attempt: &u32| self.verdicts.get(lane).is_some_and(|v| v.contains_key(attempt));
+        // The latest claimed open per birth: the attempts ascend, so the last one seen stands. An open
+        // no one claimed ran nothing, so the run before it stands.
         let mut latest: std::collections::HashMap<(crate::model::NodeId, crate::model::IncarnationId), (u32, crate::model::PathName)> = std::collections::HashMap::new();
         for (attempt, (path, node_id, incarnation)) in exit_opens {
-            if path.mesh == mesh {
+            if path.mesh == mesh && claimed(attempt) {
                 latest.insert((node_id.clone(), incarnation.clone()), (*attempt, path.clone()));
             }
         }
         let mut owed: Vec<OwedExit> = latest
             .into_iter()
             .filter_map(|((node_id, incarnation), (from, path))| {
-                let until = self.opens.get(build_id).and_then(|o| o.range(from + 1..).next().copied()).unwrap_or(u32::MAX);
-                let (attempt, verdict) = self.verdicts.get(build_id)?.range(from..until).next_back()?;
+                let until = self.opens.get(lane).and_then(|o| o.range(from + 1..).next().copied()).unwrap_or(u32::MAX);
+                let (attempt, verdict) = self.verdicts.get(lane)?.range(from..until).next_back()?;
                 let Some(AttemptOutcome::Failed { reason }) = verdict else { return None };
                 if self.recovery_of(&path, &node_id, &incarnation).is_some() {
                     return None;
@@ -956,8 +1342,9 @@ fn publish(log: &Mutex<FactLog>, derive: Option<&FactDerivation>, new: Vec<Build
         derive(&next);
     }
     let mut log = log.lock().unwrap();
-    for f in &new {
-        log.index(f);
+    let base = log.facts.len();
+    for (i, f) in new.iter().enumerate() {
+        log.index(f, base + i);
     }
     log.facts = next;
 }
@@ -974,12 +1361,17 @@ fn accepted_conflict(facts: &[BuildFact], accepted: &BuildAccepted) -> Result<bo
     Ok(false)
 }
 
-/// A claim that is not the Build's next attempt, or is on a complete Build: refused by name,
-/// never recorded (the fold would ignore it, but the attempt number stays free).
+/// A claim that is not its lane's next attempt, or is on a complete lane (a drift lane never opened
+/// included): refused by name, never recorded (the fold would ignore it, but the attempt number
+/// stays free).
 fn not_open(facts: &[BuildFact], claim: &BuildAttemptClaim) -> Option<ClaimOutcome> {
     let p = fold(facts).remove(&claim.build_id)?;
-    if matches!(p.state, BuildState::Complete) || claim.attempt != p.attempt + 1 {
-        return Some(ClaimOutcome::NotOpen { next: (!matches!(p.state, BuildState::Complete)).then_some(p.attempt + 1) });
+    let (state, attempt) = match &claim.mesh {
+        None => (p.state, p.attempt),
+        Some(mesh) => p.lanes.get(mesh).map(|l| (l.state, l.attempt)).unwrap_or((BuildState::Complete, 0)),
+    };
+    if matches!(state, BuildState::Complete) || claim.attempt != attempt + 1 {
+        return Some(ClaimOutcome::NotOpen { next: (!matches!(state, BuildState::Complete)).then_some(attempt + 1) });
     }
     None
 }
@@ -989,15 +1381,16 @@ fn not_open(facts: &[BuildFact], claim: &BuildAttemptClaim) -> Option<ClaimOutco
 fn is_new(facts: &[BuildFact], f: &BuildFact) -> bool {
     match f {
         BuildFact::Accepted(i) => !known(facts, &i.build_id),
-        BuildFact::Opened(o) => opened(facts, &o.build_id, o.attempt).is_none(),
-        BuildFact::Claim(c) => claim_holder(facts, &c.build_id, c.attempt).is_none(),
+        BuildFact::Opened(o) => opened(facts, &o.build_id, o.mesh.as_deref(), o.attempt).is_none(),
+        BuildFact::Claim(c) => claim_holder(facts, &c.build_id, c.mesh.as_deref(), c.attempt).is_none(),
         _ => !facts.contains(f),
     }
 }
 
-fn opened<'a>(facts: &'a [BuildFact], build_id: &BuildId, attempt: u32) -> Option<&'a AttemptOpened> {
+/// The open of `attempt` of `build_id` in the lane `mesh` (`None` the fabric lane).
+fn opened<'a>(facts: &'a [BuildFact], build_id: &BuildId, mesh: Option<&str>, attempt: u32) -> Option<&'a AttemptOpened> {
     facts.iter().find_map(|f| match f {
-        BuildFact::Opened(o) if &o.build_id == build_id && o.attempt == attempt => Some(o),
+        BuildFact::Opened(o) if &o.build_id == build_id && o.mesh.as_deref() == mesh && o.attempt == attempt => Some(o),
         _ => None,
     })
 }
@@ -1005,7 +1398,7 @@ fn opened<'a>(facts: &'a [BuildFact], build_id: &BuildId, attempt: u32) -> Optio
 /// Whether `wanted` may be recorded: `Ok(true)` the number is free, `Ok(false)` it is held for the
 /// same action (nothing to record), `Err(AttemptTaken)` it is held for another.
 fn admit_open(facts: &[BuildFact], wanted: &AttemptOpened) -> Result<bool, BuildStateError> {
-    match opened(facts, &wanted.build_id, wanted.attempt) {
+    match opened(facts, &wanted.build_id, wanted.mesh.as_deref(), wanted.attempt) {
         None => Ok(true),
         Some(held) if held.action == wanted.action => Ok(false),
         Some(held) => Err(BuildStateError::AttemptTaken {
@@ -1017,9 +1410,11 @@ fn admit_open(facts: &[BuildFact], wanted: &AttemptOpened) -> Result<bool, Build
     }
 }
 
-fn claim_holder(facts: &[BuildFact], build_id: &BuildId, attempt: u32) -> Option<String> {
+/// The executor holding `attempt` of `build_id` in the lane `mesh` (`None` the fabric lane): the
+/// claim key `(build_id, mesh, attempt)`.
+fn claim_holder(facts: &[BuildFact], build_id: &BuildId, mesh: Option<&str>, attempt: u32) -> Option<String> {
     facts.iter().find_map(|f| match f {
-        BuildFact::Claim(c) if &c.build_id == build_id && c.attempt == attempt => Some(c.executor.clone()),
+        BuildFact::Claim(c) if &c.build_id == build_id && c.mesh.as_deref() == mesh && c.attempt == attempt => Some(c.executor.clone()),
         _ => None,
     })
 }
@@ -1030,6 +1425,31 @@ fn known(facts: &[BuildFact], build_id: &BuildId) -> bool {
 
 fn read(facts: &[BuildFact], build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
     fold(facts).remove(build_id).ok_or_else(|| BuildStateError::UnknownBuild(build_id.clone()))
+}
+
+/// The folded view of `build_id`, from its own facts alone: its positions and the snapshot are taken
+/// together under the readers' lock (one `Arc` clone and one small point read), and the Build's facts
+/// are folded outside it.
+fn read_own(log: &Mutex<FactLog>, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+    let (facts, at) = {
+        let log = log.lock().unwrap();
+        (log.facts.clone(), log.by_build.get(build_id).cloned().unwrap_or_default())
+    };
+    let own: Vec<BuildFact> = at.iter().map(|i| facts[*i].clone()).collect();
+    read(&own, build_id)
+}
+
+/// The point read of [`BuildStateAdapter::current_build`]: the acceptance-order index newest first,
+/// each Build read from its own facts, until the first in progress or completed. A Build forgotten
+/// has left the views and is passed over, as a failed one is.
+fn current_build(log: &Mutex<FactLog>) -> CurrentBuild {
+    let newest_first: Vec<BuildId> = log.lock().unwrap().accepted_order.iter().rev().map(|(_, id)| id.clone()).collect();
+    newest_first.iter().find_map(|id| read_own(log, id).ok().as_ref().and_then(current_of)).unwrap_or(CurrentBuild::None)
+}
+
+/// The point read of [`BuildStateAdapter::newest_accepted_at_ms`]: the index's head.
+fn newest_accepted_at_ms(log: &Mutex<FactLog>) -> Option<u64> {
+    log.lock().unwrap().accepted_order.last().map(|(at, _)| *at)
 }
 
 fn active(facts: &[BuildFact]) -> Vec<BuildProjection> {
@@ -1145,7 +1565,15 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
     }
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
-        read(&snapshot(&self.log), build_id)
+        read_own(&self.log, build_id)
+    }
+
+    async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
+        Ok(current_build(&self.log))
+    }
+
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        Ok(newest_accepted_at_ms(&self.log))
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
@@ -1158,7 +1586,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         if !known(&held, &claim.build_id) {
             return Err(BuildStateError::UnknownBuild(claim.build_id.clone()));
         }
-        if let Some(holder) = claim_holder(&held, &claim.build_id, claim.attempt) {
+        if let Some(holder) = claim_holder(&held, &claim.build_id, claim.mesh.as_deref(), claim.attempt) {
             return Ok(if holder == claim.executor { ClaimOutcome::Won } else { ClaimOutcome::Lost { holder } });
         }
         if let Some(not_open) = not_open(&held, claim) {
@@ -1190,7 +1618,7 @@ impl BuildStateAdapter for MemoryBuildStateAdapter {
         Ok(snapshot(&self.log).as_ref().clone())
     }
 
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
         Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
     }
 
@@ -1216,7 +1644,7 @@ pub(crate) const JOURNAL_FILE: &str = "build-journal.jsonl";
 /// data dir before the fact counts. Re-opening it replays to the same view, so a Build accepted
 /// before an all-admin restart is still held after it.
 #[derive(Debug)]
-pub(crate) struct FileJournal {
+pub struct FileJournal {
     path: PathBuf,
     /// The replayed facts and their indexes. Held only for a snapshot, a point read or a
     /// publication's swap, never across the disk, a fold or the derivation.
@@ -1250,7 +1678,7 @@ impl FileJournal {
                 }
                 let fact: BuildFact = serde_json::from_str(&line)
                     .map_err(|e| BuildStateError::CorruptJournal { line: i + 1, reason: e.to_string() })?;
-                log.index(&fact);
+                log.index(&fact, facts.len());
                 facts.push(fact);
             }
             log.facts = Arc::new(facts);
@@ -1302,7 +1730,15 @@ impl BuildStateAdapter for FileJournal {
     }
 
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
-        read(&snapshot(&self.log), build_id)
+        read_own(&self.log, build_id)
+    }
+
+    async fn current_build(&self) -> Result<CurrentBuild, BuildStateError> {
+        Ok(current_build(&self.log))
+    }
+
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        Ok(newest_accepted_at_ms(&self.log))
     }
 
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
@@ -1316,7 +1752,7 @@ impl BuildStateAdapter for FileJournal {
             if !known(&held, &claim.build_id) {
                 return Err(BuildStateError::UnknownBuild(claim.build_id.clone()));
             }
-            if let Some(holder) = claim_holder(&held, &claim.build_id, claim.attempt) {
+            if let Some(holder) = claim_holder(&held, &claim.build_id, claim.mesh.as_deref(), claim.attempt) {
                 return Ok(if holder == claim.executor { ClaimOutcome::Won } else { ClaimOutcome::Lost { holder } });
             }
             if let Some(not_open) = not_open(&held, claim) {
@@ -1349,7 +1785,7 @@ impl BuildStateAdapter for FileJournal {
         Ok(snapshot(&self.log).as_ref().clone())
     }
 
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
         Ok(self.log.lock().unwrap().recovery_of(path, node_id, incarnation))
     }
 
@@ -1371,8 +1807,8 @@ impl BuildStateAdapter for FileJournal {
 mod tests {
     #[test]
     fn a_step_line_written_before_receipts_carried_output_still_decodes() {
-        let old = r#"{"fact":"step","build_id":"b1","attempt":1,"operation":"create-node:mesh1.rpc.1","step":"DeployRuntime","outcome":"complete"}"#;
-        let fact: BuildFact = serde_json::from_str(old).unwrap();
+        let old = format!(r#"{{"fact":"step","build_id":"{}","attempt":1,"operation":"create-node:mesh1.rpc.1","step":"DeployRuntime","outcome":"complete"}}"#, rafka_mesh_entity::fixture_crockford60("b1"));
+        let fact: BuildFact = serde_json::from_str(&old).unwrap();
         assert!(matches!(fact, BuildFact::Step(BuildStepReceipt { output: None, .. })));
         let with = BuildStepReceipt { output: Some(serde_json::json!({"pid": 7})), ..step("b1", 1, "create-node:mesh1.rpc.1") };
         let back: BuildStepReceipt = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
@@ -1383,7 +1819,7 @@ mod tests {
 
     fn intent(id: &str) -> BuildAccepted {
         BuildAccepted {
-            build_id: BuildId(id.into()),
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(),
             topology: FabricTopology::root("fabric1", "mesh1", crate::model::MeshId::parse("meshd0000001").unwrap()),
             submitted_change: None,
             submitted_at_ms: 1,
@@ -1391,19 +1827,19 @@ mod tests {
     }
 
     fn opened(id: &str, attempt: u32, reason: AttemptReason) -> AttemptOpened {
-        AttemptOpened { build_id: BuildId(id.into()), attempt, reason, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }
+        AttemptOpened { mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, reason, action: None, opened_by: "mesh1.admin.1".into(), opened_at_ms: 5 }
     }
 
     fn claim(id: &str, attempt: u32, who: &str) -> BuildAttemptClaim {
-        BuildAttemptClaim { build_id: BuildId(id.into()), attempt, executor: who.into() }
+        BuildAttemptClaim { claimant: None, mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, executor: who.into() }
     }
 
     fn step(id: &str, attempt: u32, op: &str) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: BuildId(id.into()), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete, output: None, executor: None }
+        BuildStepReceipt { mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, operation: op.into(), step: "DeployRuntime".into(), outcome: StepOutcome::Complete, output: None, executor: None }
     }
 
     fn attempt(id: &str, attempt: u32, outcome: AttemptOutcome) -> BuildAttemptReceipt {
-        BuildAttemptReceipt { build_id: BuildId(id.into()), attempt, outcome }
+        BuildAttemptReceipt { mesh: None, build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, outcome }
     }
 
     fn log() -> Vec<BuildFact> {
@@ -1424,12 +1860,12 @@ mod tests {
     fn the_fold_is_deterministic_and_idempotent() {
         let a = fold(&log());
         assert_eq!(a, fold(&log()));
-        let b1 = &a[&BuildId("b1".into())];
+        let b1 = &a[&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()];
         assert_eq!(b1.state, BuildState::Complete);
         assert_eq!(b1.attempt, 2);
         assert_eq!(b1.executor.as_deref(), Some("mesh1.admin.2"), "the first claim of an attempt wins");
         assert_eq!(b1.steps.len(), 1);
-        assert_eq!(a[&BuildId("b2".into())].state, BuildState::Pending);
+        assert_eq!(a[&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b2")).unwrap()].state, BuildState::Pending);
         // Duplicating every fact changes nothing.
         let doubled: Vec<BuildFact> = log().into_iter().flat_map(|f| [f.clone(), f]).collect();
         assert_eq!(fold(&doubled), a);
@@ -1438,17 +1874,17 @@ mod tests {
     #[test]
     fn a_failed_attempt_leaves_the_build_failed_until_a_later_claim() {
         let v = fold(&log()[..4]);
-        let b1 = &v[&BuildId("b1".into())];
+        let b1 = &v[&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()];
         assert_eq!(b1.state, BuildState::Failed);
         assert_eq!(b1.last_failure.as_deref(), Some("executor lost"));
         let v = fold(&log()[..5]);
-        assert_eq!(v[&BuildId("b1".into())].state, BuildState::Running, "a successor's claim resumes the same build id");
+        assert_eq!(v[&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()].state, BuildState::Running, "a successor's claim resumes the same build id");
     }
 
     #[test]
     fn open_retire_and_restart_overlays_are_derived_from_the_build_facts() {
         let op = |node: &str| rafka_mesh_entity::LifecycleOp {
-            build_id: "b1".into(),
+            build_id: rafka_mesh_entity::fixture_crockford60("b1"),
             attempt: 1,
             operation: format!("retire-node:{node}"),
             node_id: rafka_mesh_entity::NodeId::mint(),
@@ -1459,7 +1895,8 @@ mod tests {
         let (a, b) = (op("mesh1.rpc.1"), op("mesh1.rpc.2"));
         let with = |operation: &str, step: &str, output: &rafka_mesh_entity::LifecycleOp| {
             BuildFact::Step(BuildStepReceipt {
-                build_id: BuildId("b1".into()),
+                mesh: None,
+                build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
                 attempt: 1,
                 operation: operation.into(),
                 step: step.into(),
@@ -1473,7 +1910,7 @@ mod tests {
             with(&a.operation, "NodeDeleting", &a),
             with(&a.operation, "NodeDeleted", &a),
             with(&b.operation, "NodeDeleting", &b),
-            with(&b.operation, "DrainNode", &b),
+            with(&b.operation, "DeleteConnections", &b),
         ];
         let open = in_flight_ops(&facts, &fold(&facts)).ops;
         assert_eq!(open, vec![b.clone()], "a retire with its pre-notice and no departure is open; a completed one is not");
@@ -1491,15 +1928,15 @@ mod tests {
         assert!(in_flight_ops(&facts, &fold(&facts)).unrecognised.is_empty());
         assert_eq!(
             in_flight_ops(&facts, &fold(&facts)).restarts_completed,
-            [("b1".to_string(), "restart-node:mesh1.rpc.3".to_string())].into(),
+            [(rafka_mesh_entity::fixture_crockford60("b1"), "restart-node:mesh1.rpc.3".to_string())].into(),
             "the restart's Complete is named by Build and operation: it ends that restart's hold and no other"
         );
 
         // A Build is forgotten once the fold drops it on its `Forget`; a `Forget` of a Build still in
         // flight leaves it held, so it names nothing forgotten.
-        facts.push(BuildFact::Forget { build_id: BuildId("b1".into()) });
-        facts.push(BuildFact::Forget { build_id: BuildId("b9".into()) });
-        assert_eq!(forgotten_builds(&facts, &fold(&facts)), ["b9".to_string()].into(), "only a Build the fold no longer holds is forgotten");
+        facts.push(BuildFact::Forget { build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap() });
+        facts.push(BuildFact::Forget { build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b9")).unwrap() });
+        assert_eq!(forgotten_builds(&facts, &fold(&facts)), [rafka_mesh_entity::fixture_crockford60("b9")].into(), "only a Build the fold no longer holds is forgotten");
     }
 
     /// CONTRACT (node-rpc-envelope.md: "Progress waits on no gossip"): a restart is open until its
@@ -1509,7 +1946,7 @@ mod tests {
     #[test]
     fn a_restart_is_closed_by_its_attempts_converged_verdict_and_by_no_other_attempts() {
         let restart = |node: &str, attempt: u32| rafka_mesh_entity::LifecycleOp {
-            build_id: "b1".into(),
+            build_id: rafka_mesh_entity::fixture_crockford60("b1"),
             attempt,
             operation: format!("restart-node:{node}"),
             node_id: rafka_mesh_entity::NodeId::mint(),
@@ -1519,7 +1956,8 @@ mod tests {
         };
         let pre_event = |op: &rafka_mesh_entity::LifecycleOp| {
             BuildFact::Step(BuildStepReceipt {
-                build_id: BuildId("b1".into()),
+                mesh: None,
+                build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
                 attempt: op.attempt,
                 operation: op.operation.clone(),
                 step: "NodeRestarting".into(),
@@ -1536,7 +1974,7 @@ mod tests {
         facts.push(BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::Converged)));
         let read = in_flight_ops(&facts, &fold(&facts));
         assert_eq!(read.ops, vec![failed, later], "attempt 3's Converged ends its restart; attempt 2's first verdict is Failed and attempt 4 has none");
-        assert_eq!(read.attempts_converged, [("b1".to_string(), 3)].into(), "the converged attempts are named by Build and attempt");
+        assert_eq!(read.attempts_converged, [(rafka_mesh_entity::fixture_crockford60("b1"), 3)].into(), "the converged attempts are named by Build and attempt");
     }
 
     /// CONTRACT: a completed pre-event step whose recorded operation this build cannot read (a row
@@ -1546,7 +1984,8 @@ mod tests {
     fn a_pre_event_step_this_build_cannot_read_is_refused_by_name() {
         let step = |output: Option<serde_json::Value>| {
             BuildFact::Step(BuildStepReceipt {
-                build_id: BuildId("b1".into()),
+                mesh: None,
+                build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
                 attempt: 2,
                 operation: "retire-node:mesh1.rpc.1".into(),
                 step: "NodeDeleting".into(),
@@ -1555,7 +1994,7 @@ mod tests {
                 executor: None,
             })
         };
-        let old_shape = serde_json::json!({"build_id": "b1", "attempt": 2, "operation": "retire-node:mesh1.rpc.1", "event_at_ms": 1});
+        let old_shape = serde_json::json!({"build_id": rafka_mesh_entity::fixture_crockford60("b1"), "attempt": 2, "operation": "retire-node:mesh1.rpc.1", "event_at_ms": 1});
         let facts = vec![BuildFact::Accepted(intent("b1")), step(Some(old_shape))];
         let read = in_flight_ops(&facts, &fold(&facts));
         assert!(read.ops.is_empty(), "an unreadable step opens no overlay");
@@ -1575,10 +2014,10 @@ mod tests {
         assert_eq!(m.claim_attempt(&claim("b1", 1, "a")).await.unwrap(), ClaimOutcome::Won);
         assert_eq!(m.claim_attempt(&claim("b1", 1, "b")).await.unwrap(), ClaimOutcome::Lost { holder: "a".into() });
         assert_eq!(m.claim_attempt(&claim("b1", 1, "a")).await.unwrap(), ClaimOutcome::Won, "re-claiming your own attempt is idempotent");
-        assert_eq!(m.claim_attempt(&claim("b9", 1, "a")).await, Err(BuildStateError::UnknownBuild(BuildId("b9".into()))));
+        assert_eq!(m.claim_attempt(&claim("b9", 1, "a")).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b9")).unwrap())));
         let mut other = intent("b1");
         other.submitted_at_ms = 2;
-        assert_eq!(m.publish_accepted(&other).await, Err(BuildStateError::ConflictingIntent(BuildId("b1".into()))));
+        assert_eq!(m.publish_accepted(&other).await, Err(BuildStateError::ConflictingIntent(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap())));
         m.publish_accepted(&intent("b1")).await.unwrap();
         assert_eq!(m.list_active().await.unwrap().len(), 1);
     }
@@ -1595,7 +2034,7 @@ mod tests {
             BuildFact::Claim(claim("b7", 1, "a")),
             BuildFact::Accepted(intent("b7")),
         ];
-        let b = fold(&chain).remove(&BuildId("b7".into())).unwrap();
+        let b = fold(&chain).remove(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b7")).unwrap()).unwrap();
         assert_eq!((b.state, b.attempt, b.executor.as_deref()), (BuildState::Complete, 3, Some("c")));
     }
 
@@ -1605,25 +2044,25 @@ mod tests {
         m.publish_accepted(&intent("b1")).await.unwrap();
         assert_eq!(m.claim_attempt(&claim("b1", 1, "a")).await.unwrap(), ClaimOutcome::Won);
         m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
-        assert_eq!(m.read_build(&BuildId("b1".into())).await.unwrap().state, BuildState::Complete);
+        assert_eq!(m.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete);
         // A claim on a complete Build runs nothing and records nothing: a complete Build runs
         // again only once an attempt is opened on it.
         assert_eq!(m.claim_attempt(&claim("b1", 2, "a")).await.unwrap(), ClaimOutcome::NotOpen { next: None });
-        assert_eq!(m.read_build(&BuildId("b1".into())).await.unwrap().state, BuildState::Complete, "a stray claim does not reopen");
+        assert_eq!(m.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete, "a stray claim does not reopen");
         // Two authorities proving the same drift open one attempt: the first opener wins.
         m.open_attempt(&opened("b1", 2, AttemptReason::ProvenDrift)).await.unwrap();
         let mut again = opened("b1", 2, AttemptReason::Restart);
         again.opened_by = "mesh1.admin.2".into();
         m.open_attempt(&again).await.unwrap();
-        let b = m.read_build(&BuildId("b1".into())).await.unwrap();
+        let b = m.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap();
         assert_eq!((b.state, b.attempt, b.reason, b.executor), (BuildState::Pending, 1, AttemptReason::ProvenDrift, None));
         assert_eq!(m.facts().await.unwrap().iter().filter(|f| matches!(f, BuildFact::Opened(_))).count(), 1);
         assert_eq!(m.list_active().await.unwrap().len(), 1, "the reopened Build is active again");
         assert_eq!(m.claim_attempt(&claim("b1", 3, "b")).await.unwrap(), ClaimOutcome::NotOpen { next: Some(2) }, "only the next attempt");
         assert_eq!(m.claim_attempt(&claim("b1", 2, "b")).await.unwrap(), ClaimOutcome::Won);
-        let b = m.read_build(&BuildId("b1".into())).await.unwrap();
+        let b = m.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap();
         assert_eq!((b.state, b.attempt, b.executor.as_deref()), (BuildState::Running, 2, Some("b")));
-        assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Restart)).await, Err(BuildStateError::UnknownBuild(BuildId("b9".into()))));
+        assert_eq!(m.open_attempt(&opened("b9", 1, AttemptReason::Restart)).await, Err(BuildStateError::UnknownBuild(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b9")).unwrap())));
     }
 
     /// Two openers that computed one attempt number from one settled Build: the first append holds it.
@@ -1649,7 +2088,7 @@ mod tests {
         let err = m.open_attempt(&other_node).await.expect_err("another action asked for the held number");
         match &err {
             BuildStateError::AttemptTaken { build_id, attempt, held, wanted } => {
-                assert_eq!((build_id.0.as_str(), *attempt), ("b1", 2));
+                assert_eq!((build_id.to_string(), *attempt), (rafka_mesh_entity::fixture_crockford60("b1"), 2));
                 assert!(held.contains("restart of mesh1.rpc.2") && held.contains("proven-drift"), "the refusal names what holds the number: {held}");
                 assert!(wanted.contains("restart of mesh2.rpc.1"), "the refusal names what was asked: {wanted}");
             }
@@ -1690,7 +2129,7 @@ mod tests {
     async fn a_reader_of_the_journal_never_waits_behind_a_push_held_mid_derivation() {
         let dir = tmp();
         let j = Arc::new(FileJournal::open(&dir).await.unwrap());
-        let b1 = BuildId("b1".into());
+        let b1 = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
         j.publish_accepted(&intent("b1")).await.unwrap();
         j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
         let held_op = "restart-node:mesh1.rpc.9";
@@ -1740,35 +2179,156 @@ mod tests {
             j.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
             j.append_step_receipt(&step("b1", 1, "restart-node:mesh1.rpc.2")).await.unwrap();
             j.publish_accepted(&intent("b2")).await.unwrap();
-            (j.read_build(&BuildId("b1".into())).await.unwrap(), j.list_active().await.unwrap())
+            (j.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap(), j.list_active().await.unwrap())
         };
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.read_build(&BuildId("b1".into())).await.unwrap(), before.0);
+        assert_eq!(j.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap(), before.0);
         assert_eq!(j.list_active().await.unwrap(), before.1);
         assert_eq!(j.claim_attempt(&claim("b1", 1, "mesh1.admin.2")).await.unwrap(), ClaimOutcome::Lost { holder: "mesh1.admin.1".into() });
         j.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
         let again = FileJournal::open(&dir).await.unwrap();
-        assert_eq!(again.read_build(&BuildId("b1".into())).await.unwrap().state, BuildState::Complete);
+        assert_eq!(again.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()).await.unwrap().state, BuildState::Complete);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn accepted_at(id: &str, at_ms: u64) -> BuildAccepted {
+        BuildAccepted { submitted_at_ms: at_ms, ..intent(id) }
+    }
+
+    /// CONTRACT (R-BI3: "it reads the builds till it finds the last committed/completed build id and
+    /// then uses that as known state"; "if we're LIFO it would be in-progress || completed"; "failed
+    /// Builds are skipped. A failed Build is never current"): the acceptance-order index is read
+    /// newest first and the first Build in progress or completed is current. A Build that realized
+    /// its topology once stays the known state when a later attempt of it (a restart, proven drift:
+    /// build.md §4.1, the topology unchanged) fails; a Build that never completed and failed is
+    /// skipped; a forgotten one has left the views. Memory and the journal answer alike, and the
+    /// journal answers the same after a restart replays it.
+    #[tokio::test]
+    async fn the_current_build_is_the_newest_in_progress_or_completed_and_a_failed_one_is_skipped() {
+        let dir = tmp();
+        let journal = FileJournal::open(&dir).await.unwrap();
+        for s in [&MemoryBuildStateAdapter::new() as &dyn BuildStateAdapter, &journal] {
+            let id = |b: &str| BuildId::parse(&rafka_mesh_entity::fixture_crockford60(b)).unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::None, "an empty store holds no current Build");
+            s.publish_accepted(&accepted_at("b0", 10)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b0")), "an accepted Build is current, in progress");
+            s.claim_attempt(&claim("b0", 1, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b0", 1, AttemptOutcome::Converged)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")));
+            s.publish_accepted(&accepted_at("b1", 20)).await.unwrap();
+            s.claim_attempt(&claim("b1", 1, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Failed { reason: "x".into() })).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "the failed b1 is skipped: b0 is the known state");
+            assert_eq!(s.newest_accepted_at_ms().await.unwrap(), Some(20), "the index's head is the failed b1, whatever its state");
+            // A restart of b0 is an attempt of it: in progress while it runs, and b0 stays the known
+            // state when it fails.
+            s.open_attempt(&opened("b0", 2, AttemptReason::Restart)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b0")));
+            s.claim_attempt(&claim("b0", 2, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b0", 2, AttemptOutcome::Failed { reason: "restart failed".into() })).await.unwrap();
+            assert_eq!(s.read_build(&id("b0")).await.unwrap().state, BuildState::Failed);
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b0")), "an attempt of an unchanged topology that failed never makes an older Build current");
+            // The failed b1 resubmitted: its next attempt makes it the Build in progress.
+            s.open_attempt(&opened("b1", 2, AttemptReason::AuthorityMoved)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
+            s.claim_attempt(&claim("b1", 2, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b1", 2, AttemptOutcome::Converged)).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b1")));
+            // A newer Build that failed and was forgotten leaves the views: b1 stays current.
+            s.publish_accepted(&accepted_at("b2", 30)).await.unwrap();
+            s.claim_attempt(&claim("b2", 1, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt("b2", 1, AttemptOutcome::Failed { reason: "y".into() })).await.unwrap();
+            s.forget(&id("b2")).await.unwrap();
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(id("b1")));
+        }
+        let replayed = FileJournal::open(&dir).await.unwrap(); // the admin restarted
+        assert_eq!(replayed.current_build().await.unwrap(), CurrentBuild::Completed(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap()), "the journal's replay answers the same current Build");
+        assert_eq!(replayed.newest_accepted_at_ms().await.unwrap(), Some(30));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CONTRACT (R-BI3: "Each accepted Build is its own entity in the builds store, written once"):
+    /// the acceptance order is each Build's own stamp, written once in its accepted fact, so facts
+    /// absorbed in any order (gossip, catch-up) give the same current Build: an older Build's facts
+    /// arriving after a newer one's never make the older one current.
+    #[tokio::test]
+    async fn the_acceptance_order_is_each_builds_own_stamp_whatever_order_the_facts_arrive() {
+        let newer = [BuildFact::Accepted(accepted_at("bnew", 20)), BuildFact::Claim(claim("bnew", 1, "a")), BuildFact::Attempt(attempt("bnew", 1, AttemptOutcome::Converged))];
+        let older = [BuildFact::Accepted(accepted_at("bold", 10)), BuildFact::Claim(claim("bold", 1, "a")), BuildFact::Attempt(attempt("bold", 1, AttemptOutcome::Converged))];
+        let (a, b) = (MemoryBuildStateAdapter::new(), MemoryBuildStateAdapter::new());
+        a.absorb(&newer).await;
+        a.absorb(&older).await;
+        b.absorb(&older).await;
+        b.absorb(&newer).await;
+        for s in [&a, &b] {
+            assert_eq!(s.current_build().await.unwrap(), CurrentBuild::Completed(BuildId::parse(&rafka_mesh_entity::fixture_crockford60("bnew")).unwrap()));
+        }
+    }
+
+    /// CONTRACT (ruling R-PU2: "The caller's resubmit opens the next attempt of the same Build ...
+    /// that attempt's node.primary.update is a new transfer key, (build_id, attempt), never the Build id
+    /// alone"; proposal Part C1: "A later attempt that reads the committed row has discovered the
+    /// commit"): attempt 1 of b1 hands off and attempt 2 continues its run (run 1); attempt 2 fails,
+    /// and the attempt a resubmit opens after it, attempt 3, begins run 3, as does attempt 4 continuing
+    /// it. Must NOT happen: a resubmitted attempt in the failed run, or a hand-off starting a new one.
+    #[tokio::test]
+    async fn a_resubmit_after_a_failed_attempt_opens_a_new_run_and_a_hand_off_continues_its_run() {
+        let m = MemoryBuildStateAdapter::new();
+        let b1 = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Claim(claim("b1", 1, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 1, AttemptOutcome::HandedOff { to: "mesh1.admin.2".into() }))]).await;
+        let p = m.read_build(&b1).await.unwrap();
+        assert_eq!(p.run_of(p.attempt_to_drive()), 1, "the hand-off's next attempt continues run 1");
+        m.absorb(&[BuildFact::Claim(claim("b1", 2, "mesh1.admin.2")), BuildFact::Attempt(attempt("b1", 2, AttemptOutcome::Failed { reason: "successor proven exited after committed transfer".into() }))]).await;
+        let p = m.read_build(&b1).await.unwrap();
+        assert_eq!((p.state, p.attempt_to_drive(), p.run_of(p.attempt_to_drive())), (BuildState::Failed, 3, 3), "the resubmit's attempt opens run 3");
+        m.absorb(&[BuildFact::Claim(claim("b1", 3, "mesh1.admin.1")), BuildFact::Attempt(attempt("b1", 3, AttemptOutcome::HandedOff { to: "mesh1.admin.3".into() }))]).await;
+        let p = m.read_build(&b1).await.unwrap();
+        assert_eq!(p.run_of(p.attempt_to_drive()), 3, "attempt 4 continues run 3");
+    }
+
+    /// CONTRACT (R-BI3: "a caller resubmits it"; one Build in flight): a failed Build may be driven
+    /// again while it is newer than the current Build and the current Build is not in progress; a
+    /// Build older than the current one, or any Build while another is in progress, is not.
+    #[tokio::test]
+    async fn a_failed_build_newer_than_the_current_one_is_drivable_and_an_older_one_is_not() {
+        let s = MemoryBuildStateAdapter::new();
+        let id = |b: &str| BuildId::parse(&rafka_mesh_entity::fixture_crockford60(b)).unwrap();
+        for (b, at, outcome) in [("b0", 10, AttemptOutcome::Failed { reason: "x".into() }), ("b1", 20, AttemptOutcome::Converged), ("b2", 30, AttemptOutcome::Failed { reason: "y".into() })] {
+            s.publish_accepted(&accepted_at(b, at)).await.unwrap();
+            s.claim_attempt(&claim(b, 1, "a")).await.unwrap();
+            s.append_attempt_receipt(&attempt(b, 1, outcome)).await.unwrap();
+        }
+        let held = &s;
+        let p = |b: &'static str| async move { held.read_build(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60(b)).unwrap()).await.unwrap() };
+        assert!(drivable(&s, &p("b1").await).await.unwrap(), "the current Build");
+        assert!(drivable(&s, &p("b2").await).await.unwrap(), "a failed Build accepted after the current one");
+        assert!(!drivable(&s, &p("b0").await).await.unwrap(), "a failed Build older than the current one");
+        s.open_attempt(&opened("b1", 2, AttemptReason::Restart)).await.unwrap();
+        assert_eq!(s.current_build().await.unwrap(), CurrentBuild::InProgress(id("b1")));
+        assert!(!drivable(&s, &p("b2").await).await.unwrap(), "one Build in flight: not while the current one is in progress");
+    }
+
     /// CONTRACT (node-recovery.md "A repeat submit answers AlreadyApplied ... never a second
-    /// recovery"; "Steps"): a recovery's exited birth is answered by the recovery index only once the
-    /// recovery's last operation (`update-node:<path>`) completed at or after the deletion's attempt:
-    /// its node.delete's `NodeDeleted` and `Complete` alone, or with the create's, are not a recovery.
-    /// The index is folded wherever a fact enters the log, so a restarted fabric-primary's journal
-    /// replay and absorbed facts, in any order, answer the point read as an own append does, and the
-    /// first recovering attempt stays the answer, naming the operation that deleted the birth.
-    /// Must NOT happen: a recovery answered before its create and update completed (a resubmit then
-    /// answers AlreadyApplied for a path no node was created at), or a restarted admin answering None
-    /// for a birth its journal holds recovered.
+    /// recovery"; "Steps"; proposal node-properties-own-commands.md §5 item 8: recovery is node.delete
+    /// then node.create, no step 6): a recovery's exited birth is answered by the recovery index once
+    /// the recovery's last operation, its node.create (`create-node:<path>`), completed at or after
+    /// the deletion's attempt: its node.delete's `NodeDeleted` and `Complete` alone are not a
+    /// recovery, nor is a create's `Complete` from before the deletion. The index is folded wherever a
+    /// fact enters the log, so a restarted fabric-primary's journal replay and absorbed facts, in any
+    /// order, answer the point read as an own append does, and the first recovering attempt stays the
+    /// answer, naming the operation that deleted the birth.
+    /// Must NOT happen: a recovery answered before its create completed (a resubmit then answers
+    /// AlreadyApplied for a path no node was created at), a recovery left unanswered after its create
+    /// completed (waiting on a node.update no plan runs), or a restarted admin answering None for a
+    /// birth its journal holds recovered.
     #[tokio::test]
     async fn the_recovery_index_is_folded_on_append_replay_and_absorb() {
         let (path, node_id, incarnation): (crate::model::PathName, _, _) = ("mesh1.rpc.1".parse().unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
-        // A recovery's receipts as its three operations write them: the delete's NodeDeleted names
+        // A recovery's receipts as its two operations write them: the delete's NodeDeleted names
         // the exited birth (its lifecycle operation), and each operation's Complete commits no output.
         let receipt = |build: &str, attempt: u32, operation: &str, step: &str| BuildStepReceipt {
-            build_id: BuildId(build.into()),
+            mesh: None,
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(build)).unwrap(),
             attempt,
             operation: format!("{operation}:{path}"),
             step: step.into(),
@@ -1779,7 +2339,8 @@ mod tests {
             executor: Some("mesh1.admin.1".into()),
         };
         let opened = |build: &str, attempt: u32| AttemptOpened {
-            build_id: BuildId(build.into()),
+            mesh: None,
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(build)).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
             action: Some(crate::accepted::AttemptAction::Recover { path: path.clone(), node_id: node_id.clone(), from_incarnation: incarnation.clone() }),
@@ -1796,22 +2357,22 @@ mod tests {
             j.open_attempt(&opened("b1", 2)).await.unwrap();
             j.append_step_receipt(&receipt("b1", 2, "retire-node", "NodeDeleted")).await.unwrap();
             j.append_step_receipt(&receipt("b1", 2, "retire-node", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "deleted, the create and the update owed: not recovered");
-            j.append_step_receipt(&receipt("b1", 2, "create-node", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "created, the update owed: not recovered");
-            j.append_step_receipt(&receipt("b1", 3, "update-node", "Complete")).await.unwrap();
-            j.append_step_receipt(&receipt("b1", 4, "update-node", "Complete")).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId("b1".into()), 3, deleted.clone())), "own append: the first attempt that completed the recovery");
+            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "deleted, the create owed: not recovered");
+            j.append_step_receipt(&receipt("b1", 1, "create-node", "Complete")).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "the path's create from before the deletion: not recovered");
+            j.append_step_receipt(&receipt("b1", 3, "create-node", "Complete")).await.unwrap();
+            j.append_step_receipt(&receipt("b1", 4, "create-node", "Complete")).await.unwrap();
+            assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "own append: the first attempt that completed the recovery");
         }
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId("b1".into()), 3, deleted.clone())), "journal replay");
+        assert_eq!(j.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, deleted.clone())), "journal replay");
         assert_eq!(j.recovery_of(&"mesh1.rpc.2".parse().unwrap(), &node_id, &incarnation).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
-        // Gossip delivers in any order: the update's Complete heard first, the attempt's opening last.
-        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "update-node", "Complete"))]).await;
+        // Gossip delivers in any order: the create's Complete heard first, the attempt's opening last.
+        m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("b1", 2, "create-node", "Complete"))]).await;
         assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), None, "a Complete alone names no birth");
-        m.absorb(&[BuildFact::Step(receipt("b1", 2, "retire-node", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "retire-node", "Complete")), BuildFact::Step(receipt("b1", 2, "create-node", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
-        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId("b1".into()), 2, deleted.clone())), "absorbed, in any order");
+        m.absorb(&[BuildFact::Step(receipt("b1", 2, "retire-node", "NodeDeleted")), BuildFact::Step(receipt("b1", 2, "retire-node", "Complete")), BuildFact::Opened(opened("b1", 2))]).await;
+        assert_eq!(m.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, deleted.clone())), "absorbed, in any order");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1821,8 +2382,8 @@ mod tests {
     /// birth of `mesh` once the run its latest `Recover` open began ends with its last claimed attempt
     /// `Failed` and the birth is not done. A run in flight (opened and not claimed, or claimed with no
     /// verdict) is not owed; the next open of another birth bounds the run before it; a birth of
-    /// another mesh or another Build is not answered; once the birth's `update-node` completes it is
-    /// owed no longer. Folded wherever a fact enters the log, so a restarted admin's journal replay
+    /// another mesh or another Build is not answered; once the birth's `create-node`, the recovery's
+    /// last operation, completes it is owed no longer. Folded wherever a fact enters the log, so a restarted admin's journal replay
     /// and facts absorbed in reverse order answer as own appends do. Must NOT happen: an owed exit
     /// lost by a restart, a run in flight answered owed, or a done birth answered owed.
     #[tokio::test]
@@ -1830,18 +2391,20 @@ mod tests {
         let birth = |path: &str| (path.parse::<crate::model::PathName>().unwrap(), crate::model::NodeId::mint(), crate::model::IncarnationId::mint());
         let (r, q) = (birth("mesh2.rpc.1"), birth("mesh1.rpc.1"));
         let receipt = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32, operation: &str, step: &str| BuildStepReceipt {
-            build_id: BuildId("b1".into()),
+            mesh: None,
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("{operation}:{}", b.0),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt, operation: format!("{operation}:{}", b.0), node_id: b.1.clone(), incarnation: b.2.clone(), name: b.0.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: rafka_mesh_entity::fixture_crockford60("b1"), attempt, operation: format!("{operation}:{}", b.0), node_id: b.1.clone(), incarnation: b.2.clone(), name: b.0.clone(), event_at_rafka_ms: 1 }).unwrap()
             }),
             executor: Some("mesh2.admin.1".into()),
         };
         let open = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32| AttemptOpened {
-            build_id: BuildId("b1".into()),
+            mesh: None,
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             reason: AttemptReason::Recovery,
             action: Some(crate::accepted::AttemptAction::Recover { path: b.0.clone(), node_id: b.1.clone(), from_incarnation: b.2.clone() }),
@@ -1850,7 +2413,7 @@ mod tests {
         };
         let failed = |n: u32, why: &str| attempt("b1", n, AttemptOutcome::Failed { reason: why.into() });
         let owed = |b: &(crate::model::PathName, crate::model::NodeId, crate::model::IncarnationId), attempt: u32, reason: &str| OwedExit { path: b.0.clone(), node_id: b.1.clone(), incarnation: b.2.clone(), attempt, reason: reason.into() };
-        let b1 = BuildId("b1".into());
+        let b1 = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
         let mut facts: Vec<BuildFact> = Vec::new();
         let dir = tmp();
         {
@@ -1882,7 +2445,7 @@ mod tests {
             }
             assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![owed(&r, 2, "create-node: PrepareStorage")], "the next open bounds the run; the other mesh's birth is not answered");
             assert_eq!(j.exits_owed(&b1, "mesh1").await.unwrap(), vec![owed(&q, 3, "q's create")], "the other mesh answers its own");
-            assert_eq!(j.exits_owed(&BuildId("b2".into()), "mesh2").await.unwrap(), vec![], "another Build holds none");
+            assert_eq!(j.exits_owed(&BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b2")).unwrap(), "mesh2").await.unwrap(), vec![], "another Build holds none");
             for f in [BuildFact::Opened(open(&r, 4)), BuildFact::Claim(claim("b1", 4, "mesh2.admin.2"))] {
                 put(f).await;
             }
@@ -1895,7 +2458,6 @@ mod tests {
             BuildFact::Opened(open(&r, 5)),
             BuildFact::Claim(claim("b1", 5, "mesh2.admin.2")),
             BuildFact::Step(receipt(&r, 5, "create-node", "Complete")),
-            BuildFact::Step(receipt(&r, 5, "update-node", "Complete")),
             BuildFact::Attempt(attempt("b1", 5, AttemptOutcome::Converged)),
         ] {
             match &f {
@@ -1907,7 +2469,7 @@ mod tests {
             }
             facts.push(f);
         }
-        assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "created and updated: done, owed no longer");
+        assert_eq!(j.exits_owed(&b1, "mesh2").await.unwrap(), vec![], "created: done, owed no longer");
         assert_eq!(j.exits_owed(&b1, "mesh1").await.unwrap(), vec![owed(&q, 3, "q's create")], "the other mesh's run is untouched");
         let m = MemoryBuildStateAdapter::new();
         facts.reverse();
@@ -1927,13 +2489,14 @@ mod tests {
     async fn a_birth_a_retire_deleted_is_answered_by_that_workflow() {
         let path: crate::model::PathName = "mesh2.rpc.2".parse().unwrap();
         let receipt = |kind: &str, attempt: u32, step: &str, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId| BuildStepReceipt {
-            build_id: BuildId("b1".into()),
+            mesh: None,
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(),
             attempt,
             operation: format!("{kind}:{path}"),
             step: step.into(),
             outcome: StepOutcome::Complete,
             output: (step == "NodeDeleted").then(|| {
-                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: "b1".into(), attempt, operation: format!("{kind}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
+                serde_json::to_value(rafka_mesh_entity::LifecycleOp { build_id: rafka_mesh_entity::fixture_crockford60("b1"), attempt, operation: format!("{kind}:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 }).unwrap()
             }),
             executor: Some("mesh2.admin.1".into()),
         };
@@ -1948,17 +2511,17 @@ mod tests {
             j.append_step_receipt(&receipt("retire-node", 2, "Complete", &replaced.0, &replaced.1)).await.unwrap();
             j.append_step_receipt(&receipt("retire-node", 3, "NodeDeleted", &retired.0, &retired.1)).await.unwrap();
             j.append_step_receipt(&receipt("retire-node", 3, "Complete", &retired.0, &retired.1)).await.unwrap();
-            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("retire-node:{path}"))), "own append: the first retire that deleted its birth");
-            assert_eq!(j.recovery_of(&path, &retired.0, &retired.1).await.unwrap(), Some((BuildId("b1".into()), 3, format!("retire-node:{path}"))), "own append: the retire that deleted the birth");
+            assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, format!("retire-node:{path}"))), "own append: the first retire that deleted its birth");
+            assert_eq!(j.recovery_of(&path, &retired.0, &retired.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 3, format!("retire-node:{path}"))), "own append: the retire that deleted the birth");
         }
         let j = FileJournal::open(&dir).await.unwrap(); // the admin restarted
-        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("retire-node:{path}"))), "journal replay");
+        assert_eq!(j.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, format!("retire-node:{path}"))), "journal replay");
         assert_eq!(j.recovery_of(&"mesh2.rpc.1".parse().unwrap(), &replaced.0, &replaced.1).await.unwrap(), None, "another path's operation");
         let m = MemoryBuildStateAdapter::new();
         m.absorb(&[BuildFact::Accepted(intent("b1")), BuildFact::Step(receipt("retire-node", 2, "Complete", &replaced.0, &replaced.1))]).await;
         assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), None, "a Complete alone names no birth");
         m.absorb(&[BuildFact::Step(receipt("retire-node", 2, "NodeDeleted", &replaced.0, &replaced.1))]).await;
-        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId("b1".into()), 2, format!("retire-node:{path}"))), "absorbed, in either order");
+        assert_eq!(m.recovery_of(&path, &replaced.0, &replaced.1).await.unwrap(), Some((BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap(), None, 2, format!("retire-node:{path}"))), "absorbed, in either order");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1986,7 +2549,11 @@ mod tests {
     }
 
     /// PRD §1.4 / §7: no test, and no code outside this module, opens a Build
-    /// journal; cross-mesh authority is the live projection, never a disk.
+    /// journal; cross-mesh authority is the live projection, never a disk. The one
+    /// exception is store_root_boot's preparation of an admin's data dir before that
+    /// admin starts on it (R-SB1, Luke 2026-10-13: each cell "prepares a durable store
+    /// root through the storage adapters, with no previous process"): it writes the
+    /// accepted Build the admin then reloads, and decides nothing from it.
     #[test]
     fn nothing_but_this_module_opens_a_build_journal() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap();
@@ -1999,7 +2566,7 @@ mod tests {
                     if !p.ends_with("target") {
                         stack.push(p);
                     }
-                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rafka-node-admin-core/src/admin.rs") {
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("build_state.rs") && !p.ends_with("rafka-node-admin-core/src/admin.rs") && !p.ends_with("rafka-node-admin-core/tests/store_root_boot.rs") {
                     let text = std::fs::read_to_string(&p).unwrap_or_default();
                     if text.contains("FileJournal::open") || text.contains("build-journal.jsonl") || text.contains("JOURNAL_FILE") {
                         offenders.push(p);
@@ -2007,6 +2574,100 @@ mod tests {
                 }
             }
         }
-        assert!(offenders.is_empty(), "only build_state.rs and the admin's own boot may open a journal: {offenders:?}");
+        assert!(offenders.is_empty(), "only build_state.rs, the admin's own boot and store_root_boot's prepared data dir may open a journal: {offenders:?}");
+    }
+
+    /// An attempt of `id` opened on `mesh`'s drift lane (R-BI7): the recovery of `path`'s exited birth.
+    fn lane_open(id: &str, mesh: &str, attempt: u32, path: &str) -> AttemptOpened {
+        AttemptOpened {
+            mesh: Some(mesh.into()),
+            build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(),
+            attempt,
+            reason: AttemptReason::Recovery,
+            action: Some(crate::accepted::AttemptAction::Recover { path: path.parse().unwrap(), node_id: crate::model::NodeId::mint(), from_incarnation: crate::model::IncarnationId::mint() }),
+            opened_by: format!("{mesh}.admin.1"),
+            opened_at_ms: 6,
+        }
+    }
+
+    /// A claim of `mesh`'s drift-lane attempt for `who`, decided by `who` (a mesh-primary claims its own).
+    fn lane_claim(id: &str, mesh: &str, attempt: u32, who: &str) -> BuildAttemptClaim {
+        BuildAttemptClaim { claimant: Some(who.into()), mesh: Some(mesh.into()), build_id: BuildId::parse(&rafka_mesh_entity::fixture_crockford60(id)).unwrap(), attempt, executor: who.into() }
+    }
+
+    /// CONTRACT (R-BI7 caveat 2, proposal Part C: "The claim key becomes `(build_id, mesh, attempt)`.
+    /// Each mesh-primary claims drift attempts for its own mesh by insert-and-fail on its own mesh's
+    /// rows"): attempt 1 of one Build opened on mesh1's lane and on mesh2's lane are two attempts, and
+    /// each mesh-primary's claim of its own is `Won`; a second claimant of mesh2's attempt 1 is `Lost`
+    /// naming the first. Must NOT happen: mesh2's claim refused because mesh1 holds the Build's
+    /// attempt number, or two winners of one mesh's attempt.
+    #[tokio::test]
+    async fn claims_of_one_attempt_number_in_two_meshes_both_win_and_a_second_claimant_in_one_mesh_loses() {
+        let m = MemoryBuildStateAdapter::new();
+        m.publish_accepted(&intent("b1")).await.unwrap();
+        m.claim_attempt(&claim("b1", 1, "mesh1.admin.1")).await.unwrap();
+        m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
+        m.open_attempt(&lane_open("b1", "mesh1", 1, "mesh1.rpc.2")).await.expect("mesh1's drift lane opens its attempt 1");
+        m.open_attempt(&lane_open("b1", "mesh2", 1, "mesh2.rpc.2")).await.expect("mesh2's drift lane opens its own attempt 1");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh1", 1, "mesh1.admin.1")).await.unwrap(), ClaimOutcome::Won, "mesh1's mesh-primary claims its attempt");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.1")).await.unwrap(), ClaimOutcome::Won, "mesh2's attempt 1 is another key than mesh1's");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.2")).await.unwrap(), ClaimOutcome::Lost { holder: "mesh2.admin.1".into() }, "one winner per (build, mesh, attempt)");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.1")).await.unwrap(), ClaimOutcome::Won, "re-claiming your own attempt is idempotent");
+        assert_eq!(m.claim_attempt(&lane_claim("b1", "mesh3", 1, "mesh3.admin.1")).await.unwrap(), ClaimOutcome::NotOpen { next: None }, "a lane with no attempt opened has nothing to claim");
+    }
+
+    /// CONTRACT (R-BI7 caveats 2 and 3; proposal Part C: "A recovery in mesh 2 is no longer refused
+    /// because a node.create runs in mesh 1"): the fold reads the fabric lane (the topology Build's own
+    /// attempts) and each mesh's drift lane apart. With the fabric lane's attempt running in mesh1 and
+    /// mesh2's drift attempt claimed, the Build view shows both running, each with its own attempt,
+    /// executor and claimant, and the drift lane's steps never enter the fabric lane's. A Build whose
+    /// fabric lane completed while a drift lane is open is in progress (the LIFO read's
+    /// `InProgress`), and once the drift attempt converges it is completed again. Must NOT happen:
+    /// mesh2's attempt 1 read as a stale fabric attempt (ignored) or as the fabric lane's next attempt.
+    #[tokio::test]
+    async fn the_fold_reads_the_fabric_lane_and_each_drift_lane_apart() {
+        let m = MemoryBuildStateAdapter::new();
+        m.publish_accepted(&intent("b1")).await.unwrap();
+        let id = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("b1")).unwrap();
+        let mut fabric = claim("b1", 1, "mesh1.admin.1");
+        fabric.claimant = Some("mesh1.admin.1".into());
+        m.claim_attempt(&fabric).await.unwrap();
+        m.open_attempt(&lane_open("b1", "mesh2", 1, "mesh2.rpc.2")).await.unwrap();
+        m.claim_attempt(&lane_claim("b1", "mesh2", 1, "mesh2.admin.1")).await.unwrap();
+        let mut drift_step = step("b1", 1, "retire-node:mesh2.rpc.2");
+        drift_step.mesh = Some("mesh2".into());
+        m.append_step_receipt(&drift_step).await.unwrap();
+        let p = m.read_build(&id).await.unwrap();
+        assert_eq!((p.state, p.attempt, p.executor.as_deref()), (BuildState::Running, 1, Some("mesh1.admin.1")), "the fabric lane's attempt runs in mesh1: {p:?}");
+        assert!(p.steps.is_empty(), "the drift lane's step is not the fabric lane's: {:?}", p.steps);
+        let view = serde_json::to_value(&p).unwrap();
+        assert_eq!(view["claimant"], "mesh1.admin.1", "the fabric lane's claimant: {view}");
+        let lane = &view["lanes"]["mesh2"];
+        assert_eq!((lane["state"].as_str(), lane["attempt"].as_u64(), lane["executor"].as_str(), lane["claimant"].as_str()), (Some("running"), Some(1), Some("mesh2.admin.1"), Some("mesh2.admin.1")), "mesh2's drift lane runs its own attempt 1: {view}");
+        assert_eq!(lane["steps"].as_array().map(Vec::len), Some(1), "the drift step is the lane's: {view}");
+
+        // The fabric lane converges; the drift lane keeps the Build in progress until its verdict.
+        m.append_attempt_receipt(&attempt("b1", 1, AttemptOutcome::Converged)).await.unwrap();
+        assert_eq!(m.read_build(&id).await.unwrap().state, BuildState::Complete);
+        assert_eq!(m.current_build().await.unwrap(), CurrentBuild::InProgress(id.clone()), "an open drift lane keeps the Build in progress");
+        let mut verdict = attempt("b1", 1, AttemptOutcome::Converged);
+        verdict.mesh = Some("mesh2".into());
+        m.append_attempt_receipt(&verdict).await.unwrap();
+        assert_eq!(m.current_build().await.unwrap(), CurrentBuild::Completed(id.clone()), "both lanes settled: the known state");
+        assert_eq!(serde_json::to_value(m.read_build(&id).await.unwrap()).unwrap()["lanes"]["mesh2"]["state"], "complete");
+    }
+
+    /// CONTRACT (durable format moved, R-BI7): a journal line written before lanes and claimants
+    /// existed (no `mesh`, no `claimant`) decodes as the fabric lane, with no claimant recorded; a
+    /// line with them round-trips them.
+    #[test]
+    fn a_fact_line_written_before_lanes_decodes_as_the_fabric_lane() {
+        let id = rafka_mesh_entity::fixture_crockford60("b1");
+        let old: BuildFact = serde_json::from_str(&format!(r#"{{"fact":"claim","build_id":"{id}","attempt":2,"executor":"mesh1.admin.1"}}"#)).unwrap();
+        assert!(matches!(&old, BuildFact::Claim(c) if c.mesh.is_none() && c.claimant.is_none()), "{old:?}");
+        let new = BuildFact::Claim(lane_claim("b1", "mesh2", 1, "mesh2.admin.1"));
+        assert_eq!(serde_json::from_str::<BuildFact>(&serde_json::to_string(&new).unwrap()).unwrap(), new);
+        let fabric = serde_json::to_value(BuildFact::Claim(claim("b1", 2, "mesh1.admin.1"))).unwrap();
+        assert!(fabric.get("mesh").is_none() && fabric.get("claimant").is_none(), "a fabric-lane line is written as before: {fabric}");
     }
 }

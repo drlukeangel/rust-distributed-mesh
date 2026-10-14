@@ -141,6 +141,17 @@ impl Topology {
         self.nodes.iter().filter(|n| n.name.old)
     }
 
+    /// Whether the birth `node_id` is the only node of `mesh` (R-MT1: the delete of a mesh's only node
+    /// skips node.primary.update): every other member of the mesh is a birth whose exit is proven
+    /// (`Node::exit_proven`). Such a birth holds its path until its delete or its mesh's end, but it is
+    /// no node of the mesh: mesh.delete's resume records the lost primary's exact Exited before its
+    /// final primary's node.delete (mesh-delete.md "Resume after the primary's loss"). A member that is
+    /// silent, or `Dead` by the true-offline mark alone, is still a node of the mesh. The one place
+    /// that rule lives: the Build door (`http`) and the drive (`executor::seat_move`) read it.
+    pub fn only_node(&self, mesh: &str, node_id: &NodeId) -> bool {
+        self.members().filter(|n| n.mesh == mesh && !n.exit_proven).all(|n| n.node_id == *node_id)
+    }
+
     /// Every node of one cohort, among the members.
     pub fn cohort(&self, mesh: &str, kind: NodeKind) -> impl Iterator<Item = &Node> {
         let mesh = mesh.to_string();

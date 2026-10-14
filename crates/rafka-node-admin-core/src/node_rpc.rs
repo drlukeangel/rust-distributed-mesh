@@ -31,31 +31,17 @@ impl ProcessNodeRpc {
     /// The same, on a resolver made earlier (a server handler may hold it
     /// before the endpoint is bound).
     pub fn start_with(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint, book: &DigestBook, node: &str) -> (Self, tokio::task::JoinHandle<()>) {
-        Self::start_observed(resolver, endpoint, book, node, None)
-    }
-
-    /// The same, with this process's source-owned connections writer hearing every Direct fact
-    /// the client observes about its own pooled connections.
-    pub(crate) fn start_observed(
-        resolver: Arc<LiveNodeResolver>,
-        endpoint: iroh::Endpoint,
-        book: &DigestBook,
-        node: &str,
-        observer: Option<Arc<dyn rafka_node_rpc::ConnectionObserver>>,
-    ) -> (Self, tokio::task::JoinHandle<()>) {
-        let me = Self::new(resolver, endpoint, observer);
+        let me = Self::new(resolver, endpoint);
         let feed = me.feed(book, node);
         (me, feed)
     }
 
     /// The process's one client on `endpoint`, dialling through `resolver`, before any membership
     /// exists: a node's first call (its `JoinNode`) goes through it, and [`Self::feed`] starts the
-    /// resolver's membership feed once the process holds a book.
-    pub fn new(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint, observer: Option<Arc<dyn rafka_node_rpc::ConnectionObserver>>) -> Self {
-        let mut client = NodeRpcClient::new(endpoint, resolver.clone()).with_caller_system("rdm");
-        if let Some(o) = observer {
-            client = client.with_connection_observer(o);
-        }
+    /// resolver's membership feed once the process holds a book. The client writes nothing to the
+    /// connections log: Node RPC is control plane, no connection (R-CR5).
+    pub fn new(resolver: Arc<LiveNodeResolver>, endpoint: iroh::Endpoint) -> Self {
+        let client = NodeRpcClient::new(endpoint, resolver.clone()).with_caller_system("rdm");
         Self { resolver, client: Arc::new(client) }
     }
 
@@ -82,7 +68,7 @@ pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
     for op in book.departed() {
         let applied = resolver.depart(&op.node_id, &op.incarnation, &op.name);
         if applied == Applied::Departed {
-            tracing::info_span!("rdm.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.0)
+            tracing::info_span!("rdm.node_rpc.node.remove.via-membership", node, target = %op.name, target_id = %op.node_id, incarnation_id = %op.incarnation.as_str())
                 .in_scope(|| tracing::info!("the resolver holds the departure: Gone"));
         }
     }
@@ -90,13 +76,13 @@ pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
     let parked = book.parked().into_iter().map(|d| (d.node.node_id, d.node.incarnation, d.node.name)).chain(book.parked_unheard().into_iter().map(|op| (op.node_id, op.incarnation, op.name)));
     for (node_id, incarnation, name) in parked {
         if resolver.park(&node_id, &incarnation) {
-            tracing::info_span!("rdm.node_rpc.node.update.via-membership", node, target = %name, target_id = %node_id, incarnation_id = %incarnation.0, change = "Parked")
+            tracing::info_span!("rdm.node_rpc.node.update.via-membership", node, target = %name, target_id = %node_id, incarnation_id = %incarnation.as_str(), change = "Parked")
                 .in_scope(|| tracing::info!("the resolver holds the parked birth by its exact id only: its path is given up"));
         }
     }
     for d in book.all() {
         let Some(birth) = resolved(&d) else { continue };
-        let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.0.clone());
+        let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.to_string());
         match resolver.apply(birth, d.node.supersedes.as_ref()) {
             Applied::Unchanged | Applied::Departed => {}
             Applied::Refused(r) => tracing::info_span!("rdm.node_rpc.node.reject.via-membership", node, target = %target, target_id = %target_id, incarnation_id = %incarnation, reason = ?r)

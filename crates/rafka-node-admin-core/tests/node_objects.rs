@@ -21,7 +21,7 @@ use rafka_node_rpc::{NodeRpcClient, ResolvedNode, ServedBirth, ServerBuilder, St
 use rafka_node_admin_core::deployment::endpoint::RPC_NODE;
 use rafka_node_admin_core::deployment::pipeline::{CreateRequest, DeploymentPipeline, LaunchTemplate, NoLifecycleEvents, NodeObserver, Publication, Timeouts, TopologySink};
 use rafka_node_admin_core::deployment::provider::{DeployError, DeploymentHandle, DeploymentProvider, DeploymentStatus, ResolvedNodeLaunch, TerminationMode};
-use rafka_node_admin_core::http::ControlPlane;
+use rafka_node_admin_core::control_plane::ControlPlane;
 use rafka_node_admin_core::join::Joins;
 use rafka_node_admin_core::model::{Fabric, Mesh, Node, NodeKind, NodeStatus, PathName, ProviderKind, ScopeStatus};
 use rafka_node_admin_core::topology::Topology;
@@ -184,11 +184,15 @@ fn node(name: &str, primary: bool) -> Node {
     n
 }
 
+/// One mesh: `mesh1.admin.1` (the fabric-primary), `mesh1.rpc.1` and `mesh1.rpc.2`, which holds mesh1's
+/// rpc seat. The cells restart `mesh1.rpc.1`, which holds no seat, so no node.primary.update precedes
+/// the restart (proposal Part C1) and the drive's gate of this fixture, which moves no seat, is never
+/// asked to; a recovery of an exited birth moves no seat (`executor::seat_move`).
 fn mn() -> Topology {
     Topology {
         fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
         meshes: vec![Mesh { id: Some(rafka_mesh_entity::MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
-        nodes: vec![node("mesh1.admin.1", true), node("mesh1.rpc.1", true), node("mesh1.rpc.2", false)],
+        nodes: vec![node("mesh1.admin.1", true), node("mesh1.rpc.1", false), node("mesh1.rpc.2", true)],
     }
 }
 
@@ -207,17 +211,43 @@ async fn door_via(rig: &Arc<Rig>, join: Duration, dispatcher: impl FnOnce(Arc<Ru
     let control = Arc::new(ControlPlane::new(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone() });
+    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
-        accepted,
         builds: rig.builds.clone(),
-        door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: control.claims.clone() }),
         dispatcher: dispatcher(run.clone()),
         gate: Arc::new(OpenGate),
         departure,
         verdicts: Arc::new(crate::loopback::NoVerdicts),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+    });
+    Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
+}
+
+/// The Build door of `mesh1.admin.2`, a node-admin of the fabric that does not hold the fabric-primary
+/// seat (`mesh1.admin.1` holds it): its claim door carries its own birth's node id.
+async fn door_without_the_seat(rig: &Arc<Rig>) -> Arc<BuildDoor> {
+    let mut t = mn();
+    t.nodes.push(node("mesh1.admin.2", false));
+    let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*rig.builds, t.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+    let me: PathName = "mesh1.admin.2".parse().unwrap();
+    let control = Arc::new(ControlPlane::new(rig.builds.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
+    let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join: Duration::from_millis(300) });
+    let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
+    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
+    let node_id = control.topology.read().await.node(&me).expect("the admin is in the view").node_id.clone();
+    let env = Arc::new(DriveEnv {
+        me: me.clone(),
+        topology: control.topology.clone(),
+        builds: rig.builds.clone(),
+        door: Arc::new(ClaimDoor { me: me.clone(), node_id, topology: control.topology.clone(), builds: rig.builds.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: control.claims.clone() }),
+        dispatcher: Arc::new(Local(run.clone())),
+        gate: Arc::new(OpenGate),
+        departure: Arc::new(crate::loopback::Proofs::default()),
+        verdicts: Arc::new(crate::loopback::NoVerdicts),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
@@ -232,17 +262,17 @@ async fn door_with_own_log(rig: &Arc<Rig>, fp: Arc<MemoryBuildStateAdapter>, joi
     let control = Arc::new(ControlPlane::new(fp.clone(), accepted.clone(), me.clone(), t, crate::adopted_time()));
     let runner: Arc<dyn OperationRunner> = Arc::new(RigRunner { rig: rig.clone(), join });
     let exec = Arc::new(BuildExecutor { executor: me.to_string(), builds: rig.builds.clone(), topology: control.topology.clone(), runner });
-    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone() });
+    let run = Arc::new(RunDoor { me: me.clone(), builds: rig.builds.clone(), exec, runs: rig.runs.clone(), local: rig.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() });
     let env = Arc::new(DriveEnv {
         me: me.clone(),
         topology: control.topology.clone(),
-        accepted,
         builds: fp.clone(),
-        door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: fp.clone(), contexts: Arc::new(AttemptContexts::in_memory()) }),
+        door: Arc::new(ClaimDoor { me: me.clone(), node_id: control.topology.read().await.node(&me).expect("the fabric-primary is in the view").node_id.clone(), topology: control.topology.clone(), builds: fp.clone(), contexts: Arc::new(AttemptContexts::in_memory()), claims: control.claims.clone() }),
         dispatcher: Arc::new(Local(run.clone())),
         gate: Arc::new(OpenGate),
         departure: Arc::new(crate::loopback::Proofs::default()),
         verdicts: Arc::new(rafka_node_admin_core::build_op::LocalVerdicts { local: fp }),
+        turns: rafka_node_admin_core::park_gate::ParkGate::new(),
     });
     Arc::new(BuildDoor { me, control, drives: Arc::new(Drives::default()), env, run, seats: rafka_mesh_transport::membership::SeatBook::default(), incarnation: rafka_mesh_entity::IncarnationId::mint(), incumbent: Arc::new(rafka_node_admin_core::build_op::NoIncumbent) })
 }
@@ -252,7 +282,7 @@ struct Local(Arc<RunDoor>);
 
 #[async_trait::async_trait]
 impl Dispatcher for Local {
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: rafka_node_rpc_contract::context::CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         local_dispatched(self.0.attempt_run(build_id, attempt, &executor.to_string(), &context, &intent, &plan).await)
     }
 }
@@ -265,10 +295,10 @@ struct RigRunner {
 
 #[async_trait::async_trait]
 impl OperationRunner for RigRunner {
-    async fn run(&self, build_id: &BuildId, attempt: u32, op: &BuildOperation) -> Result<(), String> {
+    async fn run(&self, build_id: &BuildId, _lane: Option<&str>, attempt: u32, op: &BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
         match op {
-            BuildOperation::CreateNode { node, over: None } => self.rig.pipeline_create(build_id, attempt, &node.to_string(), self.join).await,
-            other => Err(format!("the fixture creates nodes only, not {other:?}")),
+            BuildOperation::CreateNode { node, over: None } => self.rig.pipeline_create(build_id, attempt, &node.to_string(), self.join).await.map_err(Into::into),
+            other => Err(format!("the fixture creates nodes only, not {other:?}").into()),
         }
     }
 }
@@ -284,7 +314,7 @@ async fn serve(door: Arc<BuildDoor>) -> Served {
     let slot: BuildSlot = Arc::new(OnceLock::new());
     let _ = slot.set(door);
     let server = rafka_node_admin_core::build_op::serve(ServerBuilder::new(), slot)
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -325,6 +355,7 @@ impl Rig {
             data_root: data_root.clone(),
             store_dir: data_root.clone(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let runs = Arc::new(AttemptRuns::default());
         let local = Arc::new(MemoryBuildStateAdapter::new());
@@ -363,7 +394,7 @@ impl Rig {
             if let (Some(identity), Some(storage), Some(_)) = (done("AllocateIdentity"), done("PrepareStorage"), done("MakeRuntimeFactAvailableToBirth")) {
                 let id = identity.output.clone().unwrap();
                 let node_id = NodeId::parse(id["node_id"].as_str().unwrap()).unwrap();
-                let incarnation = IncarnationId(id["incarnation"].as_str().unwrap().to_string());
+                let incarnation = IncarnationId::parse(id["incarnation"].as_str().unwrap()).unwrap();
                 let endpoint_id = EndpointId(storage.output.clone().unwrap().as_str().unwrap().to_string());
                 let data_dir = self.data_root.join(format!("{name}-{node_id}"));
                 let runtime: RuntimeFact = RuntimeFact::read_record(&data_dir).expect("the create wrote the runtime record").unwrap();
@@ -399,7 +430,7 @@ impl Drop for Rig {
 
 /// Read a stream to its end. A stream that yields nothing for `within` is a defect of the stream,
 /// reported with the frames it did deliver.
-async fn drain(stream: &mut WorkflowStream, within: Duration) -> (Vec<Frame>, Option<CallEnd>) {
+async fn collect_frames(stream: &mut WorkflowStream, within: Duration) -> (Vec<Frame>, Option<CallEnd>) {
     let mut frames = Vec::new();
     loop {
         match tokio::time::timeout(within, stream.next()).await {
@@ -436,12 +467,12 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
         let served = serve(door(&rig, Duration::from_millis(300)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
-        let (frames, end) = drain(&mut stream, Duration::from_secs(5)).await;
+        let (frames, end) = collect_frames(&mut stream, Duration::from_secs(15)).await;
         let published = rig.sink.0.lock().unwrap().clone();
         (frames, end, published)
     });
@@ -470,6 +501,16 @@ fn a_create_whose_join_fails_names_the_join_step_and_emits_nothing_after_it() {
     let join_step: Vec<&Value> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|s| s["attributes"]["step"] == "WaitForMeshJoin").collect();
     assert_eq!(join_step.len(), 1, "the pipeline ran the join step once");
     assert_eq!(join_step[0]["attributes"]["outcome"], "failed", "and it failed there");
+    // Each step's wall and, for one that ran blocking calls, their wait for a thread and their run.
+    let walls: Vec<String> = spans_named(&spans, "rdm.node_admin.deployment.update.via-step")
+        .into_iter()
+        .map(|s| {
+            let a = &s["attributes"];
+            let io = a.get("io_calls").map(|_| format!(" io_calls={} io_queued_ms={} io_ms={}", a["io_calls"], a["io_queued_ms"], a["io_ms"])).unwrap_or_default();
+            format!("{}={}ms{io}", a["step"].as_str().unwrap_or_default(), a.get("elapsed_ms").and_then(Value::as_str).unwrap_or("?"))
+        })
+        .collect();
+    eprintln!("trace {}: rdm.node_admin.node.create.via-workflow outcome=failed failed_step=node.join; steps {}", call[0]["trace_id"], walls.join(", "));
 }
 
 /// CONTRACT: a create whose node has joined but is not ready (its Ready check names a blocker, as an
@@ -488,7 +529,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
@@ -504,7 +545,7 @@ fn a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names() 
         // The Ready check polls again with the same reason: no second frame. Then the node is ready.
         tokio::time::sleep(Duration::from_millis(350)).await;
         *rig.membership.not_ready.lock().unwrap() = None;
-        let (after, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (after, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
         (blocked.unwrap(), after)
     });
@@ -532,14 +573,14 @@ fn a_create_whose_node_is_merely_pending_streams_no_blocked_frame() {
         let served = serve(door(&rig, Duration::from_secs(30)).await).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
         tokio::time::sleep(Duration::from_millis(450)).await;
         *rig.membership.pending.lock().unwrap() = None;
-        drain(&mut stream, Duration::from_secs(10)).await
+        collect_frames(&mut stream, Duration::from_secs(10)).await
     });
     assert!(end.is_none(), "the stream ends with its terminal frame: {end:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Blocked { .. })), "a Pending node with no named blocker is not a Blocked frame: {frames:?}");
@@ -562,7 +603,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let served = serve(door.clone()).await;
         let nodes = nodes_over(&served.carrier);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         // The birth reports its bind; the join is not heard yet.
         tokio::spawn({
@@ -597,7 +638,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
         let mut resumed = nodes_over(&again.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
         rig.membership.joined.store(true, Ordering::SeqCst);
-        let (final_frames, resumed_end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        let (final_frames, resumed_end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(resumed_end.is_none(), "the resumed stream ends with its terminal frame: {resumed_end:?}");
         let receipts_after = builds.get(&accepted.build_id).await.unwrap();
         (frames, end, receipts_after_cut, resume, receipts_after, final_frames, disposition)
@@ -651,18 +692,18 @@ fn a_resubmit_after_the_end_replays_the_frames_the_drive_recorded_not_the_facts_
         let nodes = nodes_over(&served.carrier);
         rig.membership.joined.store(true, Ordering::SeqCst);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
-        let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         assert!(fp.facts().await.unwrap().iter().all(|f| !matches!(f, rafka_node_admin_core::build_state::BuildFact::Step(_))), "the fabric-primary's log holds no step receipt");
         let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
-        let (again, end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        let (again, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         (first, again, disposition)
     });
@@ -690,13 +731,13 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         let nodes = nodes_over(&served.carrier);
         rig.membership.joined.store(true, Ordering::SeqCst);
         let mut stream = nodes.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
-        let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         let completed = door.drives.get(&build).expect("the drive that completed the Build is held");
         assert!(completed.completed(), "the drive ended Complete");
@@ -706,7 +747,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
         let kept = Arc::ptr_eq(&ensured, &completed) && door.drives.get(&build).is_some_and(|d| Arc::ptr_eq(&d, &completed));
         let mut resumed = nodes_over(&served.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
-        let (again, end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        let (again, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         (build, kept, first, again, disposition)
     });
@@ -714,7 +755,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
     assert_eq!(disposition, rafka_node_rpc_contract::build::Disposition::AlreadyApplied);
     assert_eq!(again[1..], first[1..], "every event again, from the drive's own record: {again:?}");
     let spans = cap.spans();
-    let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.0.as_str()).collect();
+    let dispatches: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["build_id"] == build.as_str()).collect();
     assert_eq!(dispatches.len(), 1, "one build.attempt.run, from the drive that made the calls: {dispatches:?}");
     eprintln!("span rdm.node_admin.build.update.via-dispatch {}", dispatches[0]);
 }
@@ -722,7 +763,7 @@ fn a_reconcile_tick_after_the_end_keeps_the_completed_drive_and_a_resubmit_is_al
 /// CONTRACT (node-recovery.md "Numbered end-to-end sequence" step 1: "A repeat submit answers
 /// AlreadyApplied or BuildInProgress, never a second recovery"): over op `0x20`, a recovery submit
 /// for an exited birth already recovered answers `Started { AlreadyApplied }` naming the Build and
-/// attempt whose recovery (its delete, create and update) recovered it, then the terminal `Complete` of that attempt
+/// attempt whose recovery (its delete, then its create) recovered it, then the terminal `Complete` of that attempt
 /// and nothing else. Must NOT happen: a drive made or started for the Build (a drive of an ended
 /// Build claims its next attempt), or an attempt opened.
 #[test]
@@ -736,34 +777,36 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let path: PathName = "mesh1.rpc.2".parse().unwrap();
         let exited = cp.topology.read().await.node(&path).unwrap().clone();
         let (node_id, birth) = (exited.node_id.clone(), exited.incarnation_id.clone().unwrap());
-        let b0 = cp.accepted.build_id().await.unwrap();
+        let b0 = cp.builds.current_build().await.unwrap().into_build_id().unwrap();
         let settle = |attempt: u32| {
             let (builds, b0) = (rig.builds.clone(), b0.clone());
             async move {
-                builds.claim_attempt(&BuildAttemptClaim { build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
-                builds.append_attempt_receipt(&BuildAttemptReceipt { build_id: b0, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
+                builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: b0.clone(), attempt, executor: "mesh1.admin.1".into() }).await.unwrap();
+                builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: b0, attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
             }
         };
         settle(1).await;
         let recovering = match cp.open_recovery("build.create", path.clone(), node_id.clone(), birth.clone()).await {
-            Ok(rafka_node_admin_core::http::Recovery::Opened(o)) => o,
+            Ok(rafka_node_admin_core::control_plane::Recovery::Opened(o)) => o,
             other => panic!("the first recovery is admitted: {other:?}"),
         };
-        // The recovery's receipts as its three workflows write them: the delete's NodeDeleted names
-        // the exited birth, and each operation's Complete commits no output.
+        // The recovery's receipts as its two workflows write them, in the lane its door opened it in
+        // (R-BI7: the member's mesh's lane): the delete's NodeDeleted names the exited birth, and
+        // each operation's Complete commits no output; the create is the last.
         let deleted = rafka_mesh_entity::LifecycleOp { build_id: b0.to_string(), attempt: recovering.attempt, operation: format!("retire-node:{path}"), node_id: node_id.clone(), incarnation: birth.clone(), name: path.clone(), event_at_rafka_ms: 1 };
-        for (operation, step, output) in [("retire-node", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("retire-node", "Complete", None), ("create-node", "Complete", None), ("update-node", "Complete", None)] {
+        for (operation, step, output) in [("retire-node", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("retire-node", "Complete", None), ("create-node", "Complete", None)] {
             rig.builds
-                .append_step_receipt(&BuildStepReceipt { build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
+                .append_step_receipt(&BuildStepReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
                 .await
                 .unwrap();
         }
-        settle(recovering.attempt).await;
+        // The recovery's verdict in its own lane: its door opened and claimed it there (R-BI7).
+        rig.builds.append_attempt_receipt(&BuildAttemptReceipt { mesh: recovering.mesh.clone(), build_id: b0.clone(), attempt: recovering.attempt, outcome: AttemptOutcome::Converged }).await.unwrap();
         let opened = |facts: Vec<BuildFact>| facts.iter().filter(|f| matches!(f, BuildFact::Opened(_))).count();
         let opened_before = opened(rig.builds.facts().await.unwrap());
         let served = serve(door.clone()).await;
         let mut stream = served.carrier.create(rafka_node_rpc_contract::build::BuildChange::Recover { node: path.clone(), node_id: node_id.clone(), incarnation: birth.clone() }).await.expect("the repeat is answered with a stream");
-        let head = (stream.build_id().0.clone(), stream.attempt(), stream.disposition());
+        let head = (stream.build_id().to_string(), stream.attempt(), stream.disposition());
         let mut frames = Vec::new();
         while let Some(f) = tokio::time::timeout(Duration::from_secs(5), stream.next()).await.expect("the answer ends") {
             frames.push(f);
@@ -772,7 +815,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
         let drive = door.drives.get(&b0).is_some();
         (opened_before, opened_after, b0, recovering, head, frames, drive)
     });
-    assert_eq!(stream, (b0.0.clone(), recovering.attempt, rafka_node_rpc_contract::build::Disposition::AlreadyApplied), "Started names the Build and attempt that recovered the birth");
+    assert_eq!(stream, (b0.to_string(), recovering.attempt, rafka_node_rpc_contract::build::Disposition::AlreadyApplied), "Started names the Build and attempt that recovered the birth");
     assert_eq!(frames.len(), 1, "one terminal and nothing else: {frames:?}");
     assert!(matches!(&frames[0], Ok(rafka_node_admin_client::BuildFrame::Complete { attempt }) if *attempt == recovering.attempt), "{frames:?}");
     assert_eq!(opened_after, opened_before, "no attempt is opened");
@@ -797,20 +840,20 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
         let served = serve(before.clone()).await;
         rig.membership.joined.store(true, Ordering::SeqCst);
         let mut stream = nodes_over(&served.carrier).create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap();
-        let build = BuildId(stream.accepted().build_id.0.clone());
+        let build = stream.accepted().build_id.clone();
         let accepted = stream.accepted().clone();
         tokio::spawn({
             let (rig, build) = (rig.clone(), build.clone());
             async move { rig.report_bind(&build, "mesh1.rpc.3").await }
         });
-        let (first, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (first, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         // The same Build log and executor under a fabric-primary that never drove this Build.
         let after = Arc::new(BuildDoor { me: before.me.clone(), control: before.control.clone(), drives: Arc::new(Drives::default()), env: before.env.clone(), run: before.run.clone(), seats: before.seats.clone(), incarnation: before.incarnation.clone(), incumbent: before.incumbent.clone() });
         let successor = serve(after).await;
         let mut resumed = nodes_over(&successor.carrier).resume(WorkflowKind::Create, &accepted).await.unwrap();
         let disposition = resumed.disposition();
-        let (again, end) = drain(&mut resumed, Duration::from_secs(10)).await;
+        let (again, end) = collect_frames(&mut resumed, Duration::from_secs(10)).await;
         assert!(end.is_none(), "{end:?}");
         (first, again, disposition)
     });
@@ -818,44 +861,28 @@ fn a_fabric_primary_with_no_drive_of_an_ended_build_replays_it_from_the_executor
     assert_eq!(again[1..], first[1..], "every event again, replayed by the executor of the last attempt: {again:?}");
 }
 
-/// CONTRACT: a put that changes a field RDM owns is refused before anything is sent, and one that
-/// changes otel_debug, which no row field carries, ends `NotBackedToday`. A put whose tags are not a
-/// node's tag set, and a `node.get` tag filter naming no label or a label that is not one, are
-/// refused by name before anything is sent (R-TG1). A `node.connections.delete` naming no connection
-/// is refused by name before anything is sent (R-CR3). Calls whose request no op carries say so by
-/// name.
+/// CONTRACT: a `node.name.update` whose name is outside the name grammar (proposal
+/// node-properties-own-commands.md §9 A) is refused `RejectedName` by name before anything is sent,
+/// as are tags that are not a node's tag set and a `node.get` tag filter naming no label or a label
+/// that is not one (R-TG1). A `node.connections.delete` naming no connection is refused by name before
+/// anything is sent (R-CR3). Calls whose request no op carries say so by name.
 #[test]
 fn calls_no_op_carries_today_say_so_by_name() {
-    use rafka_node_admin_client::{MetaField, NodeMeta};
     let cap = capture();
     cap.run(async {
         let rig = Arc::new(Rig::new());
         let served = serve(door(&rig, Duration::from_secs(1)).await).await;
         let nodes = nodes_over(&served.carrier);
-        let held = NodeMeta {
-            node_id: NodeId::mint(),
-            incarnation: Some(IncarnationId::mint()),
-            endpoint: Some("ep-1".into()),
-            transport_addr: Some("127.0.0.1:4000".parse().unwrap()),
-            exe: Some("rpc-node@abc123".into()),
-            runtime: Some("dep-1".into()),
-            status: rafka_node_admin_client::NodeStatus::ReadyForTraffic,
-            name: "mesh1.rpc.1".parse().unwrap(),
-            mesh: "mesh1".into(),
-            kind: NodeKind::RpcNode,
-            otel_debug: false,
-            tags: Default::default(),
-        };
-        // The put reaches the node's mesh-primary only with what its request carries: a body that
-        // changes a field RDM owns is refused here, and one that changes otel_debug has no row field.
+        let node_id = NodeId::mint();
+        let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: IncarnationId::mint() };
+        // The rename reaches the node's mesh-primary only with a name within the grammar.
         let (mp, route) = (NodeId::mint(), rafka_node_rpc::RouteChoice::Direct);
-        assert_eq!(
-            nodes.update(&NodeMeta { status: rafka_node_admin_client::NodeStatus::Dead, ..held.clone() }, &held, &mp, &route).await.expect("a typed refusal"),
-            rafka_node_rpc_contract::status::StatusReply::RejectedMetaFieldIsRdmOwned { field: MetaField::Status.name().into() }
-        );
-        assert!(matches!(nodes.update(&held, &NodeMeta { otel_debug: true, ..held.clone() }, &mp, &route).await, Err(CallEnd::NotBackedToday { op: NodeOp::Update, .. })));
-        // Tags that are not a node's tag set, and a tag filter no node can match, are refused here.
-        let not_a_label = nodes.update(&held, &NodeMeta { tags: ["Rabbit".to_string()].into(), ..held.clone() }, &mp, &route).await.expect("a typed refusal");
+        for (bad, says) in [("Rpc", "\"Rpc\""), (".old", "starts with '.'"), ("", "empty")] {
+            let refused = nodes.name_update(&birth, &mp, &route, bad).await.expect("a typed refusal");
+            assert!(matches!(&refused, rafka_node_rpc_contract::status::StatusReply::RejectedName { reason } if reason.contains(says)), "{bad:?}: {refused:?}");
+        }
+        // Labels that are not a node's tag set, and a tag filter no node can match, are refused here.
+        let not_a_label = nodes.tags_create(&birth, &mp, &route, &["Rabbit".to_string()].into()).await.expect("a typed refusal");
         assert!(matches!(&not_a_label, rafka_node_rpc_contract::status::StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "{not_a_label:?}");
         for (filter, says) in [(rafka_node_admin_client::TagFilter::All(Default::default()), "names no label"), (rafka_node_admin_client::TagFilter::Any(["a/b".to_string()].into()), "a/b")] {
             match nodes.get(&rafka_node_admin_client::NodeSelector::Tags(filter.clone())).await {
@@ -865,7 +892,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         }
         // node.connections.delete naming no connection is refused by name, and nothing is sent.
         assert!(
-            matches!(nodes.connections_delete(&held, &mp, &route, &rafka_node_rpc_contract::status::ConnectionScope::Connections(vec![])).await, Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason }) if reason.contains("at least one")),
+            matches!(nodes.connections_delete(&birth, &mp, &route, &rafka_node_rpc_contract::status::ConnectionScope::Connections(vec![])).await, Ok(rafka_node_rpc_contract::status::StatusReply::RejectedConnectionScope { reason }) if reason.contains("at least one")),
             "an empty Connections list is refused by name"
         );
         let end = nodes.config_get();
@@ -875,7 +902,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
 
 /// CONTRACT: every step the create and retire pipelines record is one the client names. The
 /// receipts of a whole create fold to `node.joined`, `node.started`, `node.created`
-/// and `Complete`; the receipts of a whole delete fold to the draining, drained, connections-deleted, stopped and
+/// and `Complete`; the receipts of a whole delete fold to the connections-deleted, stopped and
 /// deleted events and `Complete`; the receipts of a whole restart, one `restart-node:<path>` operation,
 /// fold to `node.restarting`, the stop's events, `node.joined`, `node.started`, `node.restarted` and
 /// `Complete`. A step the client does not name is refused by name, never skipped.
@@ -884,7 +911,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     use rafka_node_admin_core::deployment::pipeline::{CreateStep, RetireStep};
     let view = |op: &str, steps: Vec<&str>| -> rafka_node_admin_client::BuildView {
         serde_json::from_value(json!({
-            "build_id": "bld-1", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
+            "build_id": "3qcfk1kq47m9", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
             "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": op, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
             "last_failure": null, "reason": "requested"
         }))
@@ -898,18 +925,16 @@ fn every_pipeline_step_is_named_by_the_client() {
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(name.clone()), &view("retire-node:mesh1.rpc.3", retire.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
-        [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
+        [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
     // A restart is one operation: its pre-event, the stop of the live process and the start of the
     // same process are all `restart-node:<path>` receipts, and its one `Complete` ends it.
-    let restart = vec!["NodeRestarting", "DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"];
+    let restart = vec!["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"];
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [
             Frame::Event(NodeEvent::Restarting),
-            Frame::Event(NodeEvent::Draining),
-            Frame::Event(NodeEvent::Drained),
             Frame::Event(NodeEvent::ConnectionsDeleted),
             Frame::Event(NodeEvent::Stopped),
             Frame::Event(NodeEvent::Joined),
@@ -923,39 +948,33 @@ fn every_pipeline_step_is_named_by_the_client() {
     let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("retire-node:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap();
     assert_eq!((f.frames.len(), f.next), (0, Some(("restart-node".to_string(), "NodeRestarting".to_string()))));
     // Its stop half done, the restart is not over: the fold stands at the start.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart[..5].to_vec()), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("restart-node:mesh1.rpc.3", restart[..3].to_vec()), 1).unwrap();
     assert_eq!((f.frames.last(), f.next.as_ref().map(|(_, s)| s.as_str())), (Some(&Frame::Event(NodeEvent::Stopped)), Some("StartNode")));
-    // The SeatTransfer step runs only for a node-admin target (it moves the seats it holds before it
-    // drains or stops; the pipeline decides on the target's kind): a node-admin's workflow has the
-    // row and its receipts fold to the same events; an rpc node's workflow has no such row.
+    // A node-admin's workflow is any node's: its seats move by node.primary.update before the operation
+    // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
+    // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
     let admin: rafka_mesh_entity::PathName = "mesh1.admin.2".parse().unwrap();
-    let admin_retire: Vec<&str> = ["NodeDeleting", "SeatTransfer"].into_iter().chain(retire.iter().copied().skip(1)).collect();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", admin_retire), 1).unwrap();
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", retire.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
-        [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
+        [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(admin.clone()), &view("stop-node:mesh1.admin.2", vec!["SeatTransfer", "StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
-    assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
+    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(admin.clone()), &view("stop-node:mesh1.admin.2", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
     let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(name.clone()), &view("stop-node:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
-    assert_eq!(f.frames, [Frame::Event(NodeEvent::Draining), Frame::Event(NodeEvent::Drained), Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
-    // A node-admin whose transfer has not run yet: the fold stops at it, and a resume starts there.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!((f.frames.len(), f.next.as_ref().map(|(_, s)| s.as_str())), (0, Some("SeatTransfer")));
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
+    // A standalone node.connections.delete { All } ends on the birth's node.connections.deleted: the
+    // process is not stopped and nothing is deleted.
+    let f = rafka_node_admin_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view("node.connections.delete:mesh1.rpc.3", vec!["DeleteConnections", "Complete"]), 1).unwrap();
+    assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
+    // A node-admin's delete with only NodeDeleting held resumes at StopNode, as any node's does.
     let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!(r.from, Some(("retire-node".to_string(), "SeatTransfer".to_string())), "nothing after NodeDeleting is held: the workflow stands at SeatTransfer");
-    // A node-admin's SeatTransfer row is a step of its workflow whatever comes after: receipts past it
-    // with none for it fold no further than it (nothing is inferred from its absence).
-    let skipped: Vec<&str> = ["NodeDeleting"].into_iter().chain(retire.iter().copied().skip(1)).collect();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("retire-node:mesh1.admin.2", skipped), 1).unwrap();
-    assert_eq!((f.frames.len(), f.next.as_ref().map(|(_, s)| s.as_str())), (0, Some("SeatTransfer")), "{:?}", f.frames);
-    // An rpc node's workflow has no SeatTransfer row: its delete with only NodeDeleting held resumes
-    // at DrainNode, and a SeatTransfer receipt under it is refused by name, never folded.
-    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(name.clone()), &view("retire-node:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!(r.from, Some(("retire-node".to_string(), "DrainNode".to_string())));
+    assert_eq!(r.from, Some(("retire-node".to_string(), "StopNode".to_string())));
+    // A SeatTransfer receipt is a retired step: refused by name under any target, never folded.
     for (kind, op, steps) in [
         (WorkflowKind::Delete(name.clone()), "retire-node:mesh1.rpc.3", vec!["NodeDeleting", "SeatTransfer"]),
         (WorkflowKind::Stop(name.clone()), "stop-node:mesh1.rpc.3", vec!["SeatTransfer"]),
+        (WorkflowKind::Stop(admin.clone()), "stop-node:mesh1.admin.2", vec!["SeatTransfer"]),
     ] {
         assert_eq!(rafka_node_admin_client::fold(&kind, &view(op, steps), 1).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.into(), step: "SeatTransfer".into() }, "{kind:?}");
     }
@@ -971,13 +990,13 @@ fn every_pipeline_step_is_named_by_the_client() {
 /// the stopped predecessor a rename left there, or one whose exit is proven (the fabric-primary
 /// admits nothing else at a `.old` path), so its workflow is NodeDeleting, TerminateRuntime,
 /// NodeDeleted, Complete. A caller that lost the stream after `NodeDeleting` resumes at
-/// TerminateRuntime, never at a drain that delete never runs; a stop-half receipt under it is
+/// TerminateRuntime, never at a stop that delete never runs; a stop-half receipt under it is
 /// refused by name. A bare path's delete keeps its stop half (a live birth's runs it).
 #[test]
 fn a_dot_old_delete_resumes_after_node_deleting_at_terminate_runtime() {
     let view = |op: &str, steps: Vec<&str>| -> rafka_node_admin_client::BuildView {
         serde_json::from_value(json!({
-            "build_id": "bld-1", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
+            "build_id": "3qcfk1kq47m9", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
             "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": op, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
             "last_failure": null, "reason": "delete"
         }))
@@ -989,12 +1008,12 @@ fn a_dot_old_delete_resumes_after_node_deleting_at_terminate_runtime() {
     let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("retire-node:mesh1.rpc.3.old", vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Deleted), Frame::Complete]);
     assert_eq!(
-        rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("retire-node:mesh1.rpc.3.old", vec!["NodeDeleting", "DrainNode"]), 1).unwrap_err(),
-        CallEnd::UnrecognisedReceipt { operation: "retire-node:mesh1.rpc.3.old".into(), step: "DrainNode".into() }
+        rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("retire-node:mesh1.rpc.3.old", vec!["NodeDeleting", "StopNode"]), 1).unwrap_err(),
+        CallEnd::UnrecognisedReceipt { operation: "retire-node:mesh1.rpc.3.old".into(), step: "StopNode".into() }
     );
     let bare: rafka_mesh_entity::PathName = "mesh1.rpc.3".parse().unwrap();
     let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(bare), &view("retire-node:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
-    assert_eq!(r.from, Some(("retire-node".to_string(), "DrainNode".to_string())), "a bare path's delete keeps its stop half");
+    assert_eq!(r.from, Some(("retire-node".to_string(), "StopNode".to_string())), "a bare path's delete keeps its stop half");
 }
 
 /// One attempt's run as an executor streams it to the fabric-primary: its frames, then its end.
@@ -1008,21 +1027,21 @@ impl InnerStream for Script {
 }
 
 /// The executor of a restart of `mesh1.rpc.1`, attempt by attempt. The first run is lost once its
-/// `DrainNode` frame has reached the fabric-primary: the receipt lived in the lost executor's own
+/// `StopNode` frame has reached the fabric-primary: the receipt lived in the lost executor's own
 /// log alone (its broadcast never left), so no Build log the successor reads holds it, and the
-/// executor's exact runtime is proven exited. The next run holds no `DrainNode` receipt: it
+/// executor's exact runtime is proven exited. The next run holds no `StopNode` receipt: it
 /// reissues that uncertain step (node-rpc-envelope.md "Caller execution and certainty") and runs
 /// the restart to its end.
-struct LostAfterDrainNode {
+struct LostAfterStopNode {
     runs: Mutex<u32>,
     proofs: Arc<crate::loopback::Proofs>,
 }
 
 #[async_trait::async_trait]
-impl Dispatcher for LostAfterDrainNode {
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+impl Dispatcher for LostAfterStopNode {
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, _context: rafka_node_rpc_contract::context::CallContext, _intent: Vec<Vec<u8>>, _plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         use rafka_node_rpc_contract::build::BuildReply;
-        let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.0.clone(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
+        let step = |operation: &str, step: &str| InnerItem::Frame(BuildReply::Step { build_id: build_id.to_string(), attempt, operation: format!("{operation}:mesh1.rpc.1"), step: step.into() });
         let run = {
             let mut runs = self.runs.lock().unwrap();
             *runs += 1;
@@ -1030,17 +1049,15 @@ impl Dispatcher for LostAfterDrainNode {
         };
         let items = if run == 1 {
             self.proofs.exited.lock().unwrap().insert(executor.to_string());
-            vec![step("restart-node", "NodeRestarting"), step("restart-node", "DrainNode"), InnerItem::Broke(format!("{executor} was lost after its DrainNode receipt"))]
+            vec![step("restart-node", "NodeRestarting"), step("restart-node", "StopNode"), InnerItem::Broke(format!("{executor} was lost after its StopNode receipt"))]
         } else {
             vec![
-                step("restart-node", "DrainNode"),
-                step("restart-node", "AwaitNodeDrained"),
                 step("restart-node", "StopNode"),
                 step("restart-node", "AwaitNodeLeft"),
                 step("restart-node", "StartNode"),
                 step("restart-node", "WaitForNodeReady"),
                 step("restart-node", "Complete"),
-                InnerItem::Frame(BuildReply::Complete { build_id: build_id.0.clone(), attempt }),
+                InnerItem::Frame(BuildReply::Complete { build_id: build_id.to_string(), attempt }),
             ]
         };
         Dispatched::Stream(Box::new(Script(items.into())))
@@ -1048,30 +1065,30 @@ impl Dispatcher for LostAfterDrainNode {
 }
 
 /// CONTRACT (node-rpc-envelope.md "Caller execution and certainty": a changing call streams each
-/// completed step's event once): the executor of a restart is lost after its `DrainNode` frame
+/// completed step's event once): the executor of a restart is lost after its `StopNode` frame
 /// reached the caller and before that receipt reached any Build log the successor reads. The
-/// successor's attempt reissues `DrainNode` (an uncertain step to it) and writes its own receipt:
+/// successor's attempt reissues `StopNode` (an uncertain step to it) and writes its own receipt:
 /// two receipts of one step, one per attempt, each a frame under its own receipt key. The caller's
 /// stream reads them as the client's receipt fold does, per step the latest attempt deciding, so
-/// `node.draining` is delivered once and every other event of the restart once, in order.
+/// `node.connections.deleted` is delivered once and every other event of the restart once, in order.
 #[test]
 fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one_event_to_the_caller() {
     let cap = capture();
     let frames = cap.run(async {
         let rig = Arc::new(Rig::new());
         let proofs = Arc::new(crate::loopback::Proofs::default());
-        let script = Arc::new(LostAfterDrainNode { runs: Mutex::new(0), proofs: proofs.clone() });
+        let script = Arc::new(LostAfterStopNode { runs: Mutex::new(0), proofs: proofs.clone() });
         let door = door_via(&rig, Duration::from_secs(60), move |_| script, proofs).await;
         let served = serve(door).await;
         let mut stream = nodes_over(&served.carrier).restart(&"mesh1.rpc.1".parse().unwrap()).await.expect("the fabric-primary accepts the restart");
-        let (frames, end) = drain(&mut stream, Duration::from_secs(10)).await;
+        let (frames, end) = collect_frames(&mut stream, Duration::from_secs(10)).await;
         assert!(end.is_none(), "the stream ends with its terminal frame: {end:?} after {frames:?}");
         frames
     });
     let events: Vec<NodeEvent> = frames.iter().filter_map(|f| if let Frame::Event(e) = f { Some(*e) } else { None }).collect();
     assert_eq!(
         events,
-        [NodeEvent::Restarting, NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Joined, NodeEvent::Started, NodeEvent::Restarted],
+        [NodeEvent::Restarting, NodeEvent::ConnectionsDeleted, NodeEvent::Stopped, NodeEvent::Joined, NodeEvent::Started, NodeEvent::Restarted],
         "every event of the restart once, in order: {frames:?}"
     );
     assert_eq!(frames.last(), Some(&Frame::Complete));
@@ -1080,5 +1097,36 @@ fn a_step_a_successor_attempt_completes_again_after_its_executor_was_lost_is_one
     let lost: Vec<_> = spans_named(&spans, "rdm.node_admin.build.update.via-dispatch").into_iter().filter(|s| s["attributes"]["outcome"] == "executor-lost").collect();
     assert_eq!(lost.len(), 1, "the first attempt's executor was lost: {spans:?}");
     assert_eq!(spans_named(&spans, "rdm.node_admin.build.update.via-departure-proven").len(), 1, "its departure was proven before the successor's attempt");
-    assert_eq!(spans_named(&spans, "rdm.node_admin.node.draining.via-reply-frame").len(), 1, "node.draining was delivered once");
+    assert_eq!(spans_named(&spans, "rdm.node_admin.node.connections.deleted.via-reply-frame").len(), 1, "node.connections.deleted was delivered once");
+}
+
+/// CONTRACT: a Build call asked of a node-admin that does not hold the fabric-primary seat is refused
+/// `not-fabric-primary`, naming the fabric-primary that admin sees, before either door admits anything,
+/// and the refusal has its own span as every other Build refusal has (one honest name per reason,
+/// `rdm.node_admin.build.reject.via-<reason>`): `rdm.node_admin.build.reject.via-not-fabric-primary` carrying the
+/// call's route, the refusing admin and the fabric-primary it named. No `build.create` or `build.update`
+/// span opens: nothing was admitted.
+#[test]
+fn a_build_call_to_an_admin_without_the_fabric_seat_is_refused_under_its_own_reject_span_naming_the_fabric_primary() {
+    let cap = capture();
+    let end = cap.run(async {
+        let rig = Arc::new(Rig::new());
+        let served = serve(door_without_the_seat(&rig).await).await;
+        served.carrier.create(rafka_node_rpc_contract::build::BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }).await.err()
+    });
+    match &end {
+        Some(CallEnd::Rejected { reason, detail }) => {
+            assert_eq!(reason, "not-fabric-primary", "the admin without the seat refuses by name: {detail}");
+            assert!(detail.contains("names mesh1.admin.1"), "the refusal names the fabric-primary the admin sees: {detail}");
+        }
+        other => panic!("a Build call to an admin without the fabric-primary seat ends Rejected not-fabric-primary, not {other:?}"),
+    }
+    let spans = cap.spans();
+    let refused = spans_named(&spans, "rdm.node_admin.build.reject.via-not-fabric-primary");
+    assert_eq!(refused.len(), 1, "the refusal has its own reject span: {spans:?}");
+    let a = &refused[0]["attributes"];
+    assert_eq!((a["route"].as_str(), a["node"].as_str(), a["fabric_primary"].as_str()), (Some("build.create"), Some("mesh1.admin.2"), Some("mesh1.admin.1")), "the reject span names the call, the refusing admin and the fabric-primary it named: {}", refused[0]);
+    for door in ["rdm.node_admin.build.create.via-node-rpc", "rdm.node_admin.build.update.via-node-rpc"] {
+        assert!(spans_named(&spans, door).is_empty(), "nothing was admitted: no {door} span: {spans:?}");
+    }
 }

@@ -43,6 +43,12 @@ impl BuildStateAdapter for Losing {
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
     }
+    async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.inner.list_active().await
     }
@@ -64,7 +70,7 @@ impl BuildStateAdapter for Losing {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
-    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &rafka_node_admin_core::model::PathName, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
     async fn mesh_deleted_of(&self, node_id: &rafka_node_admin_core::model::NodeId, incarnation: &rafka_node_admin_core::model::IncarnationId) -> Result<Option<(rafka_node_admin_core::build::BuildId, u32, String)>, BuildStateError> {

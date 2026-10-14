@@ -283,6 +283,8 @@ impl LiveNodeResolver {
                 Some(n) => current(n),
                 None => Err(ResolveFailure::Unknown),
             },
+            // An endpoint target names a process no record holds: the client dials it as named.
+            NodeTarget::Endpoint { .. } => Err(ResolveFailure::Unknown),
         }
     }
 }
@@ -290,6 +292,10 @@ impl LiveNodeResolver {
 impl NodeResolver for LiveNodeResolver {
     fn resolve(&self, target: &NodeTarget) -> Result<ResolvedNode, ResolveFailure> {
         self.resolve_at(target, Instant::now())
+    }
+
+    fn by_endpoint(&self, endpoint: &iroh::PublicKey) -> Option<ResolvedNode> {
+        LiveNodeResolver::by_endpoint(self, endpoint)
     }
 
     fn changes(&self) -> Option<tokio::sync::watch::Receiver<u64>> {

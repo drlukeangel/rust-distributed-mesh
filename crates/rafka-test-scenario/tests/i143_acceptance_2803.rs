@@ -66,7 +66,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.0;
+    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
 
     // The lost mesh: the one whose admins do not hold the fabric seat.
@@ -81,7 +81,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     let victim_id = before.iter().find(|n| s(&n["name"]) == window_victim).map(|n| s(&n["node_id"])).expect("the member's node id");
 
     // Control goes through the fabric primary's advertised API, which the fault never touches.
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_holder).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
+    estate.enter(&Estate::path(&fabric_holder)).await;
 
     // The fault: both admins at once, then, with the mesh admin-less, one ordinary member.
     let mut killed = Vec::new();
@@ -113,7 +113,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         let estate = &estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births.clone());
         async move {
-            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId(accepted.clone())).await.expect("build.get of the accepted Build");
+            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
             let later = b.phase == rafka_node_rpc_contract::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len();
             (later && reborn).then_some(b)
@@ -121,7 +121,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     })
     .await;
     let after = values(&estate.settled_views(&shape).await);
-    assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build: Fabric.build_id is unchanged");
+    assert_eq!(estate.accepted_build_id().await, accepted, "no new topology Build: the current build_id is unchanged");
     assert_eq!(estate.mesh_view(lost).await.id.expect("the lost mesh still has its id").to_string(), lost_mesh_id, "{lost} recovered under its own MeshId");
     let (old, new) = (births(&before), births(&after));
     for (name, inc) in &old {
@@ -132,7 +132,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         }
     }
 
-    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
+    estate.enter_fabric_primary().await;
     estate.stop().await;
     let spans = estate.spans();
     let attr = |sp: &Value, k: &str| s(&sp["attributes"][k]);
@@ -172,15 +172,17 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
     assert_eq!(recovery.len(), 1, "the dead member is recovered once, keyed on its exited birth: {recovery:?}");
     assert!(attr(recovery[0], "submitter").starts_with(&format!("{lost}.admin.")), "by its own mesh's new primary: {recovery:?}");
     assert_eq!(attr(recovery[0], "build_id"), accepted, "under the same Build: {recovery:?}");
+    // The recovery's steps are the ones in its submit's own trace (R-BI7: the mesh-primary runs it in
+    // its mesh's drift lane, whose attempt number also names an attempt of the fabric lane).
     let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step")
         .into_iter()
-        .filter(|sp| attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted && attr(sp, "attempt") == attr(recovery[0], "attempt") && attr(sp, "outcome") == "complete")
+        .filter(|sp| sp["trace_id"] == recovery[0]["trace_id"] && attr(sp, "node") == window_victim && attr(sp, "build_id") == accepted && attr(sp, "attempt") == attr(recovery[0], "attempt") && attr(sp, "outcome") == "complete")
         .map(|sp| attr(sp, "step"))
         .collect();
     for step in ["NodeDeleting", "NodeDeleted", "DeployRuntime", "WaitForNodeReady", "Complete"] {
         assert!(victim_steps.iter().any(|n| n == step), "the recovery ran {step} for {window_victim}: {victim_steps:?}");
     }
-    for step in ["DrainNode", "StopNode"] {
+    for step in ["DeleteConnections", "StopNode"] {
         assert!(!victim_steps.iter().any(|n| n == step), "no RPC to the exited process: {step} ran for {window_victim}: {victim_steps:?}");
     }
     let gone = !std::path::Path::new(&format!("/proc/{victim_pid}")).exists() || std::fs::read_to_string(format!("/proc/{victim_pid}/stat")).unwrap_or_default().contains(") Z ");
@@ -206,7 +208,9 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         .collect();
     assert!(!creates.is_empty(), "the second admin of {lost} was created after the first: {creates:?}");
     for c in &creates {
-        let executor = reconciles.iter().find(|r| attr(r, "attempt") == attr(c, "attempt")).map(|r| attr(r, "executor")).expect("the create ran inside a reconcile");
+        // The reconcile the create ran in is the one in its own trace: a drift lane's attempt number
+        // also names an attempt of the fabric lane (R-BI7).
+        let executor = reconciles.iter().find(|r| r["trace_id"] == c["trace_id"] && attr(r, "attempt") == attr(c, "attempt")).map(|r| attr(r, "executor")).expect("the create ran inside a reconcile");
         assert_eq!(executor, recovery_admin, "{} was created by the new mesh primary, not by {fabric_holder}", attr(c, "node"));
     }
 
@@ -251,7 +255,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     std::fs::create_dir_all(&dir).unwrap();
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
-    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.0;
+    let accepted = estate.reconcile_shape("fabric1", &shape).await.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
     // The fault falls on an established fabric: the person's admin restarts from the Fabric record the
     // fabric-primary writes at the state commit, so the fabric is ready-for-traffic first.
@@ -292,11 +296,11 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
     assert_eq!(killed.len(), 5, "the member died with no admin running: {killed:?}");
 
     // The person starts one node-admin on the former fabric primary's data dir.
-    let base = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
-    estate.admin = base;
+    let restarted = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.enter(&restarted).await;
     let after = values(&estate.settles_to(&shape, Duration::from_secs(240)).await);
 
-    assert_eq!(estate.accepted_build_id().await, accepted, "no new Build: Fabric.build_id is unchanged");
+    assert_eq!(estate.accepted_build_id().await, accepted, "no new Build: the current build_id is unchanged");
     for (mesh, id) in &mesh_ids {
         assert_eq!(&estate.mesh_view(mesh).await.id.expect("the mesh still has its id").to_string(), id, "{mesh} recovered under its own MeshId");
     }
@@ -306,7 +310,7 @@ async fn fabric_recovery_restarts_one_admin_and_restores_every_missing_admin() {
         if name.contains(".admin.") || *name == window_victim {
             assert_ne!(&new[name], inc, "{name}: a new birth");
             if *name == holder {
-                assert_eq!(new_ids[name], old_ids[name], "{name}: the restarted admin is the same node");
+                assert_ne!(new_ids[name], old_ids[name], "{name}: the admin started on the fabric-primary's data dir is a new node over it (R-SB1; fabric-recovery.md)");
             }
         } else {
             assert_eq!(&new[name], inc, "{name}: an ordinary member that lives is preserved, never re-created");
@@ -394,8 +398,8 @@ async fn fabric_recovery_with_no_running_node_adopts_the_holders_own_clock() {
     estate.kill_bootstrap();
     assert!(estate.live_runtimes().is_empty(), "no runtime of the fabric is left: {:?}", estate.live_runtimes());
 
-    let base = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
-    estate.admin = base;
+    let restarted = estate.restart_admin_with(std::path::Path::new(&holder_dir), &[("RDM_MESH_PRIMARY", "1"), ("RDM_FABRIC_PRIMARY", "1")]);
+    estate.enter(&restarted).await;
     let after = estate.settles_to(&shape, Duration::from_secs(240)).await;
     assert_eq!(after.len(), 6);
 

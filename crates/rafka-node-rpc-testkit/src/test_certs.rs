@@ -80,7 +80,7 @@ impl CertSigner for TestCertSigner {
     fn issue_member(&self, birth: &BirthIdentity, now_ms: u64) -> Result<Vec<u8>, CertRefusal> {
         Ok(TestMemberCert {
             node_id: birth.node_id.to_string(),
-            incarnation: birth.incarnation.0.clone(),
+            incarnation: birth.incarnation.to_string(),
             name: birth.name.to_string(),
             mesh: birth.mesh.clone(),
             endpoint_key: birth.endpoint_key.0.clone(),

@@ -9,7 +9,8 @@ use rafka_mesh_entity::connections::NodeConnection;
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, NodeKind, PathName};
-use rafka_node_admin_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeMeta, NodeRpc, NodeSelector, NodeStatus, Nodes, TagFilter};
+use rafka_node_admin_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeRpc, NodeSelector, NodeStatus, Nodes, TagFilter};
+use rafka_node_rpc_contract::status::TagScope;
 use rafka_node_rpc_contract::status::StatusReply;
 use rafka_node_admin_core::admin::{start_with, AdminConfig};
 use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
@@ -175,33 +176,43 @@ fn labels(l: &[&str]) -> BTreeSet<String> {
     l.iter().map(|s| s.to_string()).collect()
 }
 
-/// CONTRACT (R-TG1, Luke 2026-10-12; node-rpc-envelope.md node.get: "a node's tags are a set of
-/// labels in its meta (set through node.update), and a tag filter names a label, matching every node
-/// that carries it, read through the node store's tags index"; node-update.md step 7: "A change that
-/// touches no name completes after the row is written"): a caller's `node.update` of the Day-0
-/// admin's record with tags {rabbit, red}, its name unchanged, ends `NodeUpdated`; `node.get` of its
-/// id answers those tags; `node.get` with `Any {rabbit}` and with `All {rabbit, red}` answers the
-/// admin, and with `All {rabbit, blue}` or `Any {blue}` nothing. A second put with tags {red} drops
-/// rabbit: `Any {rabbit}` answers nothing, `Any {red}` the admin, and its id answers {red}. A put whose
-/// tags are not a tag set (`Rabbit`) reaching the mesh-primary is refused `RejectedTags` naming the
-/// label, and nothing changes. The mesh-primary's `via-update-node` span names the labels that
-/// arrived and left; each tag read's `via-get` span names `select=tags`, its filter, its labels and
-/// one index read per label. What must NOT happen: a put's tags lost, a dropped label still selecting
-/// the node, or a tag read that reads anything but the tags index.
+/// CONTRACT (R-TG1, Luke 2026-10-12; node-rpc-envelope.md node.tags: "`node.tags.create { label |
+/// [labels] }` adds one label or a list; `node.tags.delete { All | [labels] }` removes every label or
+/// the named ones ... Each label is its own keyed row (label, node id) in the node store's tags index.
+/// Create is a blind put of that key, so creating a label the node already carries is ignored and
+/// writes no duplicate; delete tombstones the named keys"; node.get: "the tag filter names a label,
+/// matches every node that carries it, and is read through the node store's tags index"; proposal
+/// node-properties-own-commands.md §1, §3): a caller's `node.tags.create {rabbit, red}` of the Day-0
+/// admin ends `TagsCreated` carrying nothing already; `node.get` of its id answers those tags; `Any
+/// {rabbit}` and `All {rabbit, red}` answer the admin, `All {rabbit, blue}` and `Any {blue}` nothing.
+/// `node.tags.create {red}` again ends `TagsCreated` naming red as already carried, and nothing
+/// changes. `node.tags.delete {rabbit, green}` ends `TagsDeleted` naming green as not carried, and
+/// rabbit no longer selects the admin. A create whose label is not a label (`Rabbit`) reaching the
+/// mesh-primary is refused `RejectedTags` naming it, and nothing changes. `node.tags.delete { All }`
+/// leaves the admin no label and selected by none. The mesh-primary's `via-writer` spans name the
+/// labels that arrived and left; each tag read's `via-get` span names `select=tags`, its filter, its
+/// labels and one index read per label. What must NOT happen: a label lost, a removed label still
+/// selecting the node, a duplicate row for a label already carried, or a tag read that reads anything
+/// but the tags index.
 #[test]
-fn a_node_update_sets_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_tags_index() {
-    if crate::own_process::delegated(module_path!(), "a_node_update_sets_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_tags_index") {
+fn node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_tags_index() {
+    if crate::own_process::delegated(module_path!(), "node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_tags_index") {
         return;
     }
-    let cap = crate::common::capture("a_node_update_sets_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_tags_index");
+    let cap = crate::common::capture("node_tags_create_and_delete_set_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_tags_index");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let dir = std::env::temp_dir().join(format!("node-tags-{}", NodeId::mint()));
         let running = start_with(day0_config(&dir), Wiring { fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         let me = running.digest.lock().unwrap().clone();
+        // A tags command is refused until the initial fabric has first reached ready-for-traffic (states.md "The
+        // initial fabric before ready-for-traffic"): the admin is ready in both seats, and the fabric is ready.
         tokio::time::timeout(WRONG, async {
             loop {
-                let ready = running.control.topology.read().await.births().any(|n| n.node_id == me.node.node_id && n.status == rafka_node_admin_core::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
+                let t = running.control.topology.read().await;
+                let ready = t.fabric.status == rafka_node_admin_core::model::ScopeStatus::ReadyForTraffic
+                    && t.births().any(|n| n.node_id == me.node.node_id && n.status == rafka_node_admin_core::model::NodeStatus::ReadyForTraffic && n.is_primary && n.is_fabric_primary);
+                drop(t);
                 if ready {
                     return;
                 }
@@ -209,7 +220,7 @@ fn a_node_update_sets_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_ta
             }
         })
         .await
-        .expect("the admin's view never held it ready in both seats");
+        .expect("the admin's view never held it ready in both seats under a ready-for-traffic fabric");
         let admin = ResolvedNode { node_id: me.node.node_id.clone(), name: me.node.name.clone(), endpoint_id: me.node.endpoint_id.0.parse().unwrap(), incarnation: me.node.incarnation.clone(), transport_addr: me.node.transport_addr };
         let (client, _endpoint) = caller(&[admin]).await;
         let nodes = Nodes::new(BuildCarrier::new(client.clone(), me.node.name.clone()));
@@ -218,61 +229,59 @@ fn a_node_update_sets_a_nodes_tags_and_node_get_answers_it_by_tag_through_the_ta
             let nodes = nodes.clone();
             async move { nodes.get(&NodeSelector::Tags(f.clone())).await.unwrap_or_else(|e| panic!("node.get of {f:?}: {e}")).into_iter().map(|n| n.node_id).collect::<Vec<_>>() }
         };
-        let view = by_id().await;
-        let got = view.first().cloned().expect("node.get lists the admin by its id");
-        let held = NodeMeta {
-            node_id: got.node_id.clone(),
-            incarnation: got.incarnation_id.clone(),
-            endpoint: got.endpoint_id.clone(),
-            transport_addr: got.transport_addr,
-            exe: None,
-            runtime: got.deployment_id.clone(),
-            status: got.status,
-            name: got.name.clone(),
-            mesh: got.mesh.clone(),
-            kind: got.kind,
-            otel_debug: false,
-            tags: got.tags.clone(),
-        };
-        assert!(held.tags.is_empty(), "a node born with no tags carries none: {got:#?}");
+        let got = by_id().await.first().cloned().expect("node.get lists the admin by its id");
+        assert!(got.tags.is_empty(), "a node born with no tags carries none: {got:#?}");
         let route = rafka_node_rpc::RouteChoice::Direct;
         let mine = vec![me.node.node_id.clone()];
+        let birth = ExactBirth { target: NodeTarget::ExactNode(me.node.node_id.clone()), node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() };
+        let created = |already: &[&str]| StatusReply::TagsCreated { node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone(), already_carried: labels(already) };
+        let deleted = |not: &[&str]| StatusReply::TagsDeleted { node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone(), not_carried: labels(not) };
 
-        // The put: tags {rabbit, red}, the name unchanged.
-        let body = NodeMeta { tags: labels(&["rabbit", "red"]), ..held.clone() };
-        let reply = nodes.update(&held, &body, &me.node.node_id, &route).await.expect("node.update answered");
-        assert_eq!(reply, StatusReply::NodeUpdated { node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() });
-        assert_eq!(by_id().await[0].tags, labels(&["rabbit", "red"]), "node.get of the admin's id answers the tags the put set");
+        // node.tags.create {rabbit, red}.
+        let reply = nodes.tags_create(&birth, &me.node.node_id, &route, &labels(&["rabbit", "red"])).await.expect("node.tags.create answered");
+        assert_eq!(reply, created(&[]));
+        assert_eq!(by_id().await[0].tags, labels(&["rabbit", "red"]), "node.get of the admin's id answers the labels created");
         assert_eq!(by_tags(TagFilter::Any(labels(&["rabbit"]))).await, mine, "Any {{rabbit}} answers the admin");
         assert_eq!(by_tags(TagFilter::All(labels(&["rabbit", "red"]))).await, mine, "All {{rabbit, red}} answers the admin");
         assert!(by_tags(TagFilter::All(labels(&["rabbit", "blue"]))).await.is_empty(), "All {{rabbit, blue}} answers nothing: the admin carries no blue");
         assert!(by_tags(TagFilter::Any(labels(&["blue"]))).await.is_empty(), "Any {{blue}} answers nothing");
 
-        // A second put drops rabbit.
-        let again = NodeMeta { tags: labels(&["red"]), ..body.clone() };
-        let reply = nodes.update(&body, &again, &me.node.node_id, &route).await.expect("node.update answered");
-        assert_eq!(reply, StatusReply::NodeUpdated { node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() });
-        assert!(by_tags(TagFilter::Any(labels(&["rabbit"]))).await.is_empty(), "Any {{rabbit}} answers nothing once the put dropped rabbit");
-        assert_eq!(by_tags(TagFilter::Any(labels(&["red", "rabbit"]))).await, mine, "Any {{red, rabbit}} answers the admin once");
-        assert_eq!(by_id().await[0].tags, labels(&["red"]), "node.get of the admin's id answers the tags the last put set");
+        // A label the node already carries is ignored and named.
+        let reply = nodes.tags_create(&birth, &me.node.node_id, &route, &labels(&["red"])).await.expect("node.tags.create answered");
+        assert_eq!(reply, created(&["red"]), "red is already carried");
+        assert_eq!(by_id().await[0].tags, labels(&["rabbit", "red"]), "nothing changes");
 
-        // A put whose tags are not a tag set, past the typed object's own check, is refused by the
-        // mesh-primary naming the label, and nothing changes.
-        let birth = ExactBirth { target: NodeTarget::ExactNode(me.node.node_id.clone()), node_id: me.node.node_id.clone(), incarnation: me.node.incarnation.clone() };
-        let refused = NodeRpc::new(&client).node_update(&me.node.node_id, &route, &birth, &me.node.name, &labels(&["Rabbit"]), &rafka_node_rpc::CallOptions::default()).await.expect("a typed reply");
+        // node.tags.delete {rabbit, green}: green is not carried.
+        let reply = nodes.tags_delete(&birth, &me.node.node_id, &route, &TagScope::Labels(labels(&["rabbit", "green"]))).await.expect("node.tags.delete answered");
+        assert_eq!(reply, deleted(&["green"]));
+        assert!(by_tags(TagFilter::Any(labels(&["rabbit"]))).await.is_empty(), "Any {{rabbit}} answers nothing once rabbit is deleted");
+        assert_eq!(by_tags(TagFilter::Any(labels(&["red", "rabbit"]))).await, mine, "Any {{red, rabbit}} answers the admin once");
+        assert_eq!(by_id().await[0].tags, labels(&["red"]), "node.get of the admin's id answers the label left");
+
+        // A create whose label is not a label, past the typed object's own check, is refused by the
+        // mesh-primary naming it, and nothing changes.
+        let refused = NodeRpc::new(&client).tags_create(&me.node.node_id, &route, &birth, &labels(&["Rabbit"]), &rafka_node_rpc::CallOptions::default()).await.expect("a typed reply");
         assert!(matches!(&refused, StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "refused naming the label: {refused:?}");
-        assert_eq!(by_id().await[0].tags, labels(&["red"]), "a refused put changes nothing");
+        assert_eq!(by_id().await[0].tags, labels(&["red"]), "a refused create changes nothing");
+
+        // node.tags.delete { All }.
+        let reply = nodes.tags_delete(&birth, &me.node.node_id, &route, &TagScope::All).await.expect("node.tags.delete answered");
+        assert_eq!(reply, deleted(&[]));
+        assert!(by_id().await[0].tags.is_empty(), "the admin carries no label");
+        assert!(by_tags(TagFilter::Any(labels(&["red"]))).await.is_empty(), "Any {{red}} answers nothing");
 
         running.leave().await;
         let _ = std::fs::remove_dir_all(&dir);
     });
     let named = |name: &str| spans.0.lock().unwrap().values().filter(|(n, _, _)| n == name).map(|(_, parent, f)| (parent.clone(), f.clone())).collect::<Vec<_>>();
     let at = |f: &std::collections::BTreeMap<String, String>, k: &str| f.get(k).cloned().unwrap_or_default();
-    let updates = named("rdm.node_admin.node.update.via-update-node");
-    let outcomes: Vec<(String, String, String)> = updates.iter().map(|(_, f)| (at(f, "outcome"), at(f, "tags_arrived"), at(f, "tags_left"))).collect();
-    assert!(outcomes.contains(&("node-updated".into(), "rabbit,red".into(), "".into())), "the first put's labels arrived: {outcomes:?}");
-    assert!(outcomes.contains(&("node-updated".into(), "".into(), "rabbit".into())), "the second put's rabbit left: {outcomes:?}");
-    assert!(outcomes.iter().any(|(o, _, _)| o == "rejected-tags"), "the non-label put was refused: {outcomes:?}");
+    let creates: Vec<(String, String, String)> = named("rdm.node_admin.node.tags.create.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "arrived"), at(f, "already_carried"))).collect();
+    assert!(creates.contains(&("tags-created".into(), "rabbit,red".into(), "".into())), "the first create's labels arrived: {creates:?}");
+    assert!(creates.contains(&("tags-created".into(), "".into(), "red".into())), "the second create wrote nothing new: {creates:?}");
+    assert!(creates.iter().any(|(o, _, _)| o == "rejected-tags"), "the non-label create was refused: {creates:?}");
+    let deletes: Vec<(String, String, String)> = named("rdm.node_admin.node.tags.delete.via-writer").iter().map(|(_, f)| (at(f, "outcome"), at(f, "left"), at(f, "not_carried"))).collect();
+    assert!(deletes.contains(&("tags-deleted".into(), "rabbit".into(), "green".into())), "the named delete removed rabbit: {deletes:?}");
+    assert!(deletes.contains(&("tags-deleted".into(), "red".into(), "".into())), "the All delete removed red: {deletes:?}");
     let reads = named("rdm.node_admin.node.serve.via-get");
     let tag_reads: Vec<(String, String, String, String)> = reads.iter().filter(|(_, f)| at(f, "select") == "tags").map(|(_, f)| (at(f, "filter"), at(f, "labels"), at(f, "index_reads"), at(f, "nodes"))).collect();
     assert!(tag_reads.contains(&("all".into(), "rabbit,red".into(), "2".into(), "1".into())), "All {{rabbit, red}}: two index reads, one node: {tag_reads:?}");
@@ -290,14 +299,14 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("node-reads-rpc-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
         let name: PathName = "mesh1.rpc.1".parse().unwrap();
         let dir = root.join(name.to_string());
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
@@ -314,6 +323,7 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
             store_dir: store.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let seams: Arc<OnceLock<Seams>> = Arc::default();
@@ -330,7 +340,12 @@ fn an_rpc_node_answers_its_held_connections_by_the_ids_its_delete_names() {
         while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
             heard.changed().await.unwrap();
         }
-        seams.connections.drain().await;
+        // The node originates a data-plane connection to its admin: a Direct entry of its log.
+        match seams.client.call::<rafka_node_rpc_contract::ping::Ping>(&NodeTarget::ExactNode(admin.launcher.node_id.clone()), &rafka_node_rpc_contract::ping::PingRequest::Ping { payload: b"the node reaches its admin".to_vec() }, &rafka_node_rpc::CallOptions::default()).await.0 {
+            rafka_node_rpc_contract::outcome::RpcOutcome::Reply(_) => {}
+            other => panic!("the node's data-plane ping did not end in a reply: {other:?}"),
+        }
+        seams.connections.observations_landed().await;
 
         let (d, _) = book.get(launch.node_id.as_str()).unwrap();
         let rpc = ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr };

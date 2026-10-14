@@ -13,7 +13,7 @@
 //! - The application work is behind two hooks: `sync_state` (state-sync) and `traffic_opened`
 //!   (one notice, gating nothing). What a node writes at commit-state is behind [`RoundActions`].
 
-use crate::accepted::{AcceptedStore, FabricTopology};
+use crate::accepted::FabricTopology;
 use crate::admin::Records;
 use crate::build_claim::AttemptContexts;
 use crate::build_state::BuildStateAdapter;
@@ -69,13 +69,13 @@ impl RoundActions for NoScratchpad {
 /// "names the accepted Build's PLANNED births"). `key_build` is the round's own Build as this admin's
 /// log holds it, read only when it is another Build than the accepted one.
 pub(crate) fn superseded_by(key: &RoundKey, accepted: &crate::build_state::BuildProjection, key_build: Option<&crate::build_state::BuildProjection>) -> Option<String> {
-    if accepted.build_id.0 == key.build_id {
+    if accepted.build_id.as_str() == key.build_id {
         return (accepted.attempt > key.attempt).then(|| format!("the accepted Build {} is at attempt {}, past this round's attempt {}", key.build_id, accepted.attempt, key.attempt));
     }
     // Another Build: superseded only by one accepted after the round's own. A round of a Build this
-    // admin's log has not learned, or of one accepted after the Build it holds, came ahead of the pointer.
+    // admin's log has not learned, or of one accepted after the Build it holds, came ahead of this admin's log.
     let own = key_build?;
-    (own.submitted_at_ms < accepted.submitted_at_ms).then(|| format!("Build {} (accepted at {} ms) was accepted after this round's Build {} (accepted at {} ms)", accepted.build_id.0, accepted.submitted_at_ms, key.build_id, own.submitted_at_ms))
+    (own.submitted_at_ms < accepted.submitted_at_ms).then(|| format!("Build {} (accepted at {} ms) was accepted after this round's Build {} (accepted at {} ms)", accepted.build_id.as_str(), accepted.submitted_at_ms, key.build_id, own.submitted_at_ms))
 }
 
 /// Withdraw from `declarer` every round completion `accepted` (the Build this admin holds accepted)
@@ -94,14 +94,21 @@ pub(crate) async fn withdraw_superseded_completions(declarer: &Declarer, me: &Pa
 /// pointer (the same answer [`superseded_by`] gives it). A Build that cannot be read leaves the
 /// question open, and says so by name: it is neither superseded nor known to be current.
 async fn round_superseded_by(round: &RoundKey, accepted: &crate::build_state::BuildProjection, builds: &dyn BuildStateAdapter, node: &str) -> Option<String> {
-    if accepted.build_id.0 == round.build_id {
+    if accepted.build_id.as_str() == round.build_id {
         return superseded_by(round, accepted, None);
     }
-    let own = match builds.read_build(&crate::build::BuildId(round.build_id.clone())).await {
-        Ok(own) => Some(own),
-        Err(crate::build_state::BuildStateError::UnknownBuild(_)) => None,
-        Err(e) => {
-            tracing::info_span!("rdm.node_admin.fabric.reject.via-round-build-unreadable", node, round = round.kind.command(), build_id = %round.build_id, attempt = round.attempt, accepted_build_id = %accepted.build_id, error = %e)
+    let read = match crate::build::BuildId::parse(&round.build_id) {
+        Err(e) => Err(format!("the round names Build {:?}, which is not a Crockford id: {e}", round.build_id)),
+        Ok(id) => match builds.read_build(&id).await {
+            Ok(own) => Ok(Some(own)),
+            Err(crate::build_state::BuildStateError::UnknownBuild(_)) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        },
+    };
+    let own = match read {
+        Ok(own) => own,
+        Err(error) => {
+            tracing::info_span!("rdm.node_admin.fabric.reject.via-round-build-unreadable", node, round = round.kind.command(), build_id = %round.build_id, attempt = round.attempt, accepted_build_id = %accepted.build_id, error = %error)
                 .in_scope(|| tracing::info!("the round's Build cannot be read: whether the accepted Build moved past the round is not known"));
             None
         }
@@ -237,8 +244,6 @@ pub(crate) struct RoundEnv {
     pub topology: Arc<RwLock<Topology>>,
     /// The process's Node RPC client.
     pub client: Arc<NodeRpcClient>,
-    /// The accepted Build pointer.
-    pub accepted: Arc<AcceptedStore>,
     /// The Build log.
     pub builds: Arc<dyn BuildStateAdapter>,
     /// The attempts' observability contexts.
@@ -331,7 +336,7 @@ impl FabricRounds {
         };
         let frame = crate::fabric_state::hook_frame(key, up, node_id.clone(), incarnation.clone(), &self.env.me.to_string(), gossip.membership.clock().now_rafka_ms());
         let kind = if up { key.kind.completion() } else { key.kind.command() };
-        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.env.me, round = key.kind.command(), hook = kind, subject_id = %node_id, incarnation_id = %incarnation.0, build_id = %key.build_id, attempt = key.attempt, channels = "mesh,backbone", bound = true, "otel.kind" = "internal");
+        let span = tracing::info_span!("rdm.node_admin.fabric.update.via-round-hook", node = %self.env.me, round = key.kind.command(), hook = kind, subject_id = %node_id, incarnation_id = %incarnation.as_str(), build_id = %key.build_id, attempt = key.attempt, channels = "mesh,backbone", bound = true, "otel.kind" = "internal");
         async {
             match gossip.backbone.publish_command_hook(&frame).await {
                 Ok(()) => tracing::info!("the round hook was published on the mesh channel and the backbone"),
@@ -434,9 +439,39 @@ impl FabricRounds {
         }
     }
 
+    /// A Build this fabric-primary has just accepted (states.md, Resize and roll: "A resize or roll puts
+    /// the fabric back to pending"): when the current Build's topology is not the one the fabric climbs
+    /// under, the fabric is back to pending now, inside the acceptance and before its door answers, and
+    /// the status loop is woken to send the state at once. No read after the answer pairs the accepted
+    /// Build with the state the previous topology's climb reached. A climb that holds no topology yet
+    /// takes the current Build at its own next step. Whether the fabric went back to pending.
+    pub async fn accepted(self: &Arc<Self>) -> bool {
+        let mut climb = self.climb.lock().await;
+        if climb.tracked.is_none() {
+            return false;
+        }
+        let reset = match self.env.builds.current().await {
+            Ok(Some(build)) => self.resized(&mut climb, &build),
+            Ok(None) => false,
+            Err(e) => {
+                self.block(&mut climb, &[unreadable(&e)], "the acceptance reads the current Build");
+                false
+            }
+        };
+        if reset {
+            self.climb_wake.notify_one();
+        }
+        reset
+    }
+
     async fn step_ready(self: &Arc<Self>, climb: &mut Climb) {
-        let Some(build) = self.env.accepted.current(&*self.env.builds).await else { return };
-        self.resized(climb, &build);
+        match self.env.builds.current().await {
+            Ok(Some(build)) => {
+                self.resized(climb, &build);
+            }
+            Ok(None) => {}
+            Err(e) => self.block(climb, &[unreadable(&e)], "ready-for-traffic reads the current Build"),
+        }
     }
 
     fn fabric_book_reset(&self) {
@@ -469,7 +504,10 @@ impl FabricRounds {
     }
 
     async fn step_pending(self: &Arc<Self>, climb: &mut Climb, view: &Topology) {
-        let accepted = self.env.accepted.current(&*self.env.builds).await;
+        let accepted = match self.env.builds.current().await {
+            Ok(b) => b,
+            Err(e) => return self.block(climb, &[unreadable(&e)], "state-sync names the current Build"),
+        };
         let blockers = self.entry_blockers(view, accepted.as_ref().map(|b| &b.topology));
         if !blockers.is_empty() {
             self.block(climb, &blockers, "state-sync waits for every mesh to be ready-for-traffic");
@@ -511,9 +549,10 @@ impl FabricRounds {
     }
 
     async fn step_state_sync(self: &Arc<Self>, climb: &mut Climb) {
-        let Some(build) = self.env.accepted.current(&*self.env.builds).await else {
-            self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "sync_state names the accepted Build");
-            return;
+        let build = match self.env.builds.current().await {
+            Ok(Some(build)) => build,
+            Ok(None) => return self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "sync_state names the accepted Build"),
+            Err(e) => return self.block(climb, &[unreadable(&e)], "sync_state names the current Build"),
         };
         if self.resized(climb, &build) {
             return;
@@ -591,9 +630,10 @@ impl FabricRounds {
     }
 
     async fn step_state_commit(self: &Arc<Self>, climb: &mut Climb, view: &Topology) {
-        let Some(build) = self.env.accepted.current(&*self.env.builds).await else {
-            self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "commit-state names the accepted Build");
-            return;
+        let build = match self.env.builds.current().await {
+            Ok(Some(build)) => build,
+            Ok(None) => return self.block(climb, &[Missing { who: "build".into(), why: "no-accepted-build" }], "commit-state names the accepted Build"),
+            Err(e) => return self.block(climb, &[unreadable(&e)], "commit-state names the current Build"),
         };
         if self.resized(climb, &build) {
             return;
@@ -630,6 +670,14 @@ impl FabricRounds {
                 climb.key = Some(RoundKey { kind: RoundKind::OpenTraffic, ..key });
             }
             Phase::Open => {
+                // The fact is durable before anything acts on it: the fabric-primary's own mesh's
+                // ready-for-traffic row first, then the state, which latches the fact and lets the door
+                // admit workflows; the declarer applies the event at every other mesh primary after.
+                if let Err(why) = self.put_ready_row(&parent).await {
+                    let missing = [Missing { who: self.env.me.mesh.clone(), why: "ready-row-unwritten" }];
+                    self.block(climb, &missing, &format!("ready-for-traffic puts the fabric-primary's ready-for-traffic row on the store root first ({why})"));
+                    return;
+                }
                 self.enter(climb, FabricState::ReadyForTraffic);
                 let notice = RoundKey { kind: RoundKind::OpenTraffic, ..key };
                 if !climb.notified {
@@ -643,6 +691,25 @@ impl FabricRounds {
         }
     }
 
+    /// The fabric-primary's own ready-for-traffic row, put among its mesh's status rows on the store root
+    /// before it enters ready-for-traffic (`Records::put_ready_row`), under one span in the climb. `Err`
+    /// names what refused it: the fabric stays where it is and nothing is latched.
+    async fn put_ready_row(&self, parent: &tracing::Span) -> Result<(), String> {
+        let span = tracing::info_span!(parent: parent, "rdm.node_admin.fabric.update.via-ready-row-put", node = %self.env.me, fabric_id = %self.env.fabric_id, mesh = %self.env.me.mesh, outcome = tracing::field::Empty, detail = tracing::field::Empty, "otel.kind" = "internal");
+        let put = self.env.records.put_ready_row(&self.env.fabric_id).instrument(span.clone()).await;
+        match &put {
+            Ok(reply) => {
+                span.record("outcome", reply.name());
+                span.in_scope(|| tracing::info!("the fabric-primary's ready-for-traffic row is on the store root: the fabric may enter ready-for-traffic"));
+            }
+            Err(why) => {
+                span.record("outcome", "refused").record("detail", why.as_str());
+                span.in_scope(|| tracing::info!("the fabric-primary's ready-for-traffic row could not be put: the fabric does not enter ready-for-traffic"));
+            }
+        }
+        put.map(|_| ())
+    }
+
     /// One turn of a fabric-level round: open its checklist, command the mesh primaries not yet
     /// commanded as their exact birth, run this admin's own mesh as its mesh primary. The planned
     /// births not checked in, named; empty is complete.
@@ -651,10 +718,12 @@ impl FabricRounds {
             tracing::info_span!(parent: parent, "rdm.node_admin.fabric.update.via-round-opened", node = %self.env.me, round = key.kind.command(), build_id = %key.build_id, attempt = key.attempt, "otel.kind" = "internal")
                 .in_scope(|| tracing::info!("the fabric-primary opened a round"));
         }
-        let accepted = self.env.accepted.current(&*self.env.builds).await;
-        let meshes: Vec<String> = match &accepted {
-            Some(b) => b.topology.meshes.keys().cloned().collect(),
-            None => view.meshes.iter().map(|m| m.name.clone()).collect(),
+        // A builds store that cannot be read plans nothing: the round stays open, named, and is
+        // never planned from the view in its place.
+        let meshes: Vec<String> = match self.env.builds.current().await {
+            Ok(Some(b)) => b.topology.meshes.keys().cloned().collect(),
+            Ok(None) => view.meshes.iter().map(|m| m.name.clone()).collect(),
+            Err(e) => return vec![unreadable(&e)],
         };
         let mut planned = BTreeMap::new();
         let mut unresolved = Vec::new();
@@ -693,8 +762,13 @@ impl FabricRounds {
                     tracing::info!("no traffic_opened notice is registered");
                     return;
                 };
-                let build = crate::build::BuildId(round.1.clone());
-                let context = contexts.get(&build, round.2).await.ok().flatten().unwrap_or_default();
+                let context = match crate::build::BuildId::parse(&round.1) {
+                    Ok(build) => contexts.get(&build, round.2).await.ok().flatten().unwrap_or_default(),
+                    Err(e) => {
+                        tracing::info!(build_id = %round.1, error = %e, "the round's Build id is not a Crockford id: no call context is held for it");
+                        Default::default()
+                    }
+                };
                 hook(StateSyncRound { fabric_id: round.0.clone(), build_id: round.1.clone(), attempt: round.2, operation: RoundKind::OpenTraffic.operation(&round.0), context }).await;
                 tracing::info!("the application was told the fabric opened traffic");
             }
@@ -767,13 +841,26 @@ impl FabricRounds {
                 self.mesh_book.close(key);
                 return;
             }
-            let accepted = self.env.accepted.current(&*self.env.builds).await;
-            // A round the accepted Build moved past commands nothing more and owes no completion: the
-            // round of the accepted Build and attempt is the one its primaries run now.
+            // A builds store that cannot be read plans nothing this turn, named: the planned births
+            // are never taken from the view in its place.
+            let accepted = match self.env.builds.current().await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::info_span!("rdm.node_admin.fabric.reject.via-build-store-unreadable", node = %self.env.me, round = key.kind.command(), mesh = %mesh, error = %e, "otel.kind" = "internal")
+                        .in_scope(|| tracing::info!("the current Build could not be read: this mesh round plans nothing until it can"));
+                    tokio::select! {
+                        _ = book_tick.changed() => {}
+                        _ = view_tick.changed() => {}
+                    }
+                    continue;
+                }
+            };
+            // A round the current Build moved past commands nothing more and owes no completion: the
+            // round of the current Build and attempt is the one its primaries run now.
             if let Some(b) = &accepted {
                 if let Some(why) = round_superseded_by(key, b, &*self.env.builds, &self.env.me.to_string()).await {
                     round_span.record("superseded_by", why.as_str());
-                    tracing::info!(superseded_by = %why, "the accepted Build moved past this round: it commands nothing more and owes no completion");
+                    tracing::info!(superseded_by = %why, "the current Build moved past this round: it commands nothing more and owes no completion");
                     self.mesh_book.close(key);
                     return;
                 }
@@ -841,7 +928,15 @@ impl FabricRounds {
         if self.env.declarer.round_completions().is_empty() {
             return;
         }
-        let Some(accepted) = self.env.accepted.current(&*self.env.builds).await else { return };
+        let accepted = match self.env.builds.current().await {
+            Ok(Some(b)) => b,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.fabric.reject.via-build-store-unreadable", node = %self.env.me, error = %e, "otel.kind" = "internal")
+                    .in_scope(|| tracing::info!("the current Build could not be read: no completion is withdrawn this tick"));
+                return;
+            }
+        };
         withdraw_superseded_completions(&self.env.declarer, &self.env.me, &accepted, &*self.env.builds).await;
     }
 
@@ -853,10 +948,10 @@ impl FabricRounds {
     }
 
     /// A round op addressed to this admin, decided from `view`. `own` answers it as a plain member.
-    pub async fn serve(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
+    pub async fn serve(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
         let Some(op) = RoundOp::of(req) else { return StatusReply::NotReady { reason: format!("{} is not a round op", req.op()) } };
         let me = self.env.me.to_string();
-        let reply = if op.is_down { self.serve_down(view, sender, req, &op, own).await } else { self.serve_up(view, req, &op) };
+        let reply = if op.is_down { self.serve_down(view, sender, peer, req, &op, own).await } else { self.serve_up(view, req, &op) };
         tracing::info_span!(
             "rdm.node_admin.status.update.via-round-op",
             node = %me,
@@ -877,13 +972,14 @@ impl FabricRounds {
     /// fabric-primary; any other admin takes it as a member and checks in with its mesh's primary
     /// (fabric-state-commit.md: "Each member checks in with its primary, node → mesh-primary →
     /// fabric-primary"). The fabric-primary carries rounds down and is not a receiver of one.
-    async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
+    #[allow(clippy::too_many_arguments)]
+    async fn serve_down(self: &Arc<Self>, view: &Topology, sender: Option<&Node>, peer: Option<iroh::PublicKey>, req: &StatusRequest, op: &RoundOp<'_>, own: Option<&Arc<crate::node_self::NodeSelf>>) -> StatusReply {
         let Some(me) = view.own(&self.env.node_id) else {
             return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "a view holding this admin".into() } };
         };
-        if *op.node_id != me.node_id {
-            return StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } };
-        }
+        // Answered by the admin the call reached (R-RX5: no receiver refuses a downward call for the
+        // node id it names); the exact birth it names is checked, so a call that reached another
+        // birth is refused naming the one held.
         if let Some(held) = me.incarnation_id.as_ref().filter(|h| *h != op.incarnation) {
             return StatusReply::RejectedStaleIncarnation { held: held.clone() };
         }
@@ -900,9 +996,7 @@ impl FabricRounds {
         if me.is_primary {
             // This admin is a mesh primary: it runs its mesh's round and reports to the fabric-primary.
             let key = op.key();
-            if let Some(from) = sender {
-                self.env.wake.addressed_by(&from.node_id);
-            }
+            self.env.wake.addressed_by(sender.map(|n| &n.node_id), peer);
             if self.mesh_book.open(&key) {
                 self.spawn_mesh_driver(key, true, tracing::Span::current());
                 StatusReply::Applied
@@ -995,6 +1089,12 @@ async fn run_sync_state(hook: Option<SyncState>, me: PathName, sent: StateSyncRo
     *progress.lock().unwrap() = Progress::Answered(answer);
 }
 
+/// The blocker a builds store that could not be read names: the store's own error, never read as
+/// "no accepted Build".
+fn unreadable(e: &crate::build_state::BuildStateError) -> Missing {
+    Missing { who: format!("build ({e})"), why: "build-store-unreadable" }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1024,30 +1124,30 @@ mod tests {
     /// it: a later attempt of the same Build, or a Build accepted after the round's own. A round of the
     /// accepted Build and attempt is current, and so is a round ahead of what this admin holds (an
     /// attempt it has not seen claimed, a Build accepted after the one it holds, or one its log has not
-    /// learned): the command that opened it came ahead of the pointer. Must NOT happen: a superseded
+    /// learned): the command that opened it came ahead of this admin's log. Must NOT happen: a superseded
     /// round still commanding (gate red, tree b24a4303, fabric_states__rounds: bld-9abb attempt 1's
     /// mesh round, trace 95adb727, sent commit-state to mesh1.admin.2 at 816848 after the two-mesh
     /// Build bld-7c91 attempt 2 was accepted and its own round's commit-state was applied at 816816,
     /// trace a04036d1).
     #[tokio::test]
-    async fn a_round_the_accepted_build_moved_past_is_superseded_and_a_round_ahead_of_this_admins_pointer_is_not() {
+    async fn a_round_the_current_build_moved_past_is_superseded_and_a_round_ahead_of_this_admins_log_is_not() {
         use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
         let builds = MemoryBuildStateAdapter::new();
         let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
-        let (one, two) = (crate::build::BuildId("bld-one".into()), crate::build::BuildId("bld-two".into()));
+        let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
         for (b, at) in [(&one, 1_000), (&two, 2_000)] {
             builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
         }
         let (b1, b2) = (builds.read_build(&one).await.unwrap(), builds.read_build(&two).await.unwrap());
         let fabric = FabricId::mint();
-        let key = |b: &crate::build::BuildId, attempt: u32| RoundKey { kind: RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: b.0.clone(), attempt };
+        let key = |b: &crate::build::BuildId, attempt: u32| RoundKey { kind: RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: b.to_string(), attempt };
         let (one_at_1, one_at_2, two_at_1) = (BuildProjection { attempt: 1, ..b1.clone() }, BuildProjection { attempt: 2, ..b1.clone() }, BuildProjection { attempt: 1, ..b2.clone() });
         assert_eq!(superseded_by(&key(&one, 1), &one_at_1, None), None, "the accepted Build and attempt: current");
         assert!(superseded_by(&key(&one, 1), &one_at_2, None).is_some(), "a later attempt of the same Build supersedes the round");
         assert_eq!(superseded_by(&key(&one, 3), &one_at_2, None), None, "an attempt ahead of the one this admin holds: its command came first");
         assert!(superseded_by(&key(&one, 1), &two_at_1, Some(&one_at_1)).is_some(), "a Build accepted after the round's own supersedes it");
-        assert_eq!(superseded_by(&key(&two, 1), &one_at_1, Some(&two_at_1)), None, "a round of a Build accepted after the one this admin holds: its pointer lags");
-        assert_eq!(superseded_by(&key(&crate::build::BuildId("bld-unlearned".into()), 1), &two_at_1, None), None, "a round of a Build this admin's log has not learned: its command came ahead");
+        assert_eq!(superseded_by(&key(&two, 1), &one_at_1, Some(&two_at_1)), None, "a round of a Build accepted after the one this admin holds: its log lags");
+        assert_eq!(superseded_by(&key(&crate::build::BuildId::parse("wvwg5gsy0868").unwrap(), 1), &two_at_1, None), None, "a round of a Build this admin's log has not learned: its command came ahead");
     }
 
     /// CONTRACT (node-rpc-envelope.md, "Fabric status rounds": "The round is scoped to the accepted
@@ -1064,7 +1164,7 @@ mod tests {
         use crate::build_state::{BuildAccepted, BuildProjection, MemoryBuildStateAdapter};
         let builds = MemoryBuildStateAdapter::new();
         let topology = FabricTopology { fabric: "fabric1".into(), meshes: BTreeMap::new() };
-        let (one, two) = (crate::build::BuildId("bld-one".into()), crate::build::BuildId("bld-two".into()));
+        let (one, two) = (crate::build::BuildId::parse("vm0khprh5mtj").unwrap(), crate::build::BuildId::parse("amrrv6tggykq").unwrap());
         for (b, at) in [(&one, 1_000), (&two, 2_000)] {
             builds.publish_accepted(&BuildAccepted { build_id: b.clone(), topology: topology.clone(), submitted_change: None, submitted_at_ms: at }).await.unwrap();
         }
@@ -1074,11 +1174,11 @@ mod tests {
         let declarer = Declarer::new();
         let owe = |build: &str, attempt: u32| {
             let round = RoundKey { kind: RoundKind::StateCommit, fabric_id: fabric.clone(), build_id: build.to_string(), attempt };
-            declarer.owe_in(Key::round(&round), Authority::FabricPrimary, round.kind.up(&round, NodeId::mint(), IncarnationId("inc".into())), None);
+            declarer.owe_in(Key::round(&round), Authority::FabricPrimary, round.kind.up(&round, NodeId::mint(), IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("inc")).unwrap()), None);
             Key::round(&round)
         };
-        let (earlier_attempt, earlier_build) = (owe("bld-two", 1), owe("bld-one", 2));
-        let (current, ahead, unlearned) = (owe("bld-two", 2), owe("bld-two", 3), owe("bld-unlearned", 1));
+        let (earlier_attempt, earlier_build) = (owe("amrrv6tggykq", 1), owe("vm0khprh5mtj", 2));
+        let (current, ahead, unlearned) = (owe("amrrv6tggykq", 2), owe("amrrv6tggykq", 3), owe("wvwg5gsy0868", 1));
         assert_eq!(declarer.owed(), 5);
 
         let capture = crate::span_capture::Capture::new("i143-s42-round-superseded");
@@ -1092,7 +1192,7 @@ mod tests {
         // Each withdrawal is one span naming the completion and why the round is superseded.
         let spans = capture.named("rdm.node_admin.status.remove.via-round-superseded");
         assert_eq!(spans.len(), 2, "one span per withdrawn completion: {spans:?}");
-        for (key, why) in [(&earlier_attempt, "is at attempt 2, past this round's attempt 1"), (&earlier_build, "was accepted after this round's Build bld-one")] {
+        for (key, why) in [(&earlier_attempt, "is at attempt 2, past this round's attempt 1"), (&earlier_build, "was accepted after this round's Build vm0khprh5mtj")] {
             let span = spans.iter().find(|s| s.attributes.get("key") == Some(&format!("{key:?}"))).unwrap_or_else(|| panic!("no span names {key:?}: {spans:?}"));
             assert!(span.attributes.get("superseded_by").is_some_and(|a| a.contains(why)), "{key:?} is withdrawn because {why}: {span:?}");
             eprintln!("span {} trace_id={} {:?}", span.name, span.trace_id, span.attributes);

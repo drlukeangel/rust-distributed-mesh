@@ -12,7 +12,7 @@ use rafka_node_admin_core::accepted::FabricTopology;
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::model::*;
-use rafka_node_admin_core::node_rows::NodeRows;
+use rafka_node_admin_core::node_rows::{ClaimFor, NodeRows};
 use rafka_node_admin_core::storage::{MemoryNodesStorage, NodeRow, NodesStorage};
 use rafka_node_admin_core::topology::Topology;
 use serde_json::{json, Value};
@@ -94,7 +94,6 @@ async fn install(records: &Records, view: &RwLock<Topology>, f: impl FnOnce(&mut
     f(&mut t);
     records.install_projected(view, || t.clone()).await;
 }
-
 /// The writer of `mesh1`'s rows, its primary `mesh1.admin.2`, over `storage`, its view the fixture
 /// view, fed by the `Records` its view installs go through.
 struct MeshPrimary {
@@ -120,7 +119,7 @@ async fn held(mp: &MeshPrimary, name: &str) -> Node {
 }
 
 fn row_of(n: &Node) -> NodeRow {
-    NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone(), tags: Default::default(), allocated: None }
+    NodeRow { name: n.name.clone(), node_id: n.node_id.clone(), status: n.status, config: n.config.clone(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }
 }
 
 /// CONTRACT: `node.delete` leaves the node's row at its `path.name` with status `Deleted`, its
@@ -138,7 +137,7 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record_and_config() {
         mp.rows.deleted(&victim, "retire-node:mesh1.rpc.1").await.expect("the mesh primary writes the Deleted row");
         (storage.node_row_at(&victim.name).await.unwrap(), victim.node_id)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: Default::default(), allocated: None }), "the row says Deleted and keeps the record and the config");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }), "the row says Deleted and keeps the record and the config");
     let spans = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
@@ -146,16 +145,19 @@ fn a_deleted_node_leaves_a_deleted_row_with_its_record_and_config() {
 }
 
 /// CONTRACT (R-TG1: tags are labels in the node's meta; node-decommission.md step 3: the `Deleted`
-/// row keeps the record and its config; the node store's tags index names only nodes that carry a
-/// label): a node whose row carries tags {rabbit, red} is deleted by its mesh's writer, which holds no
-/// record of the row yet: the `Deleted` row keeps the tags with the record and the config, and the
-/// tags index names the node under neither label. A node then created at that `path.name` is seeded
-/// the config and carries no tag. What must NOT happen: a deleted node still selected by a label, the
-/// tags dropped from the `Deleted` row, or a new node inheriting the deleted node's labels.
+/// row keeps the record and its config; proposal node-properties-own-commands.md §1, tags: "set by
+/// the create spec (may be empty); inherited with the config on recover (from the Deleted row at the
+/// claim) and on replace"): a node whose row carries tags {rabbit, red} is deleted by its mesh's
+/// writer, which holds no record of the row yet: the `Deleted` row keeps the tags with the record and
+/// the config, and the tags index names the node under neither label. A plain `node.create` at that
+/// `path.name` (not a recovery: no exited birth taken over) is seeded the config and carries its
+/// create spec's tags, none: the labels index no node. What must NOT happen: a deleted node still
+/// selected by a label, the tags dropped from the `Deleted` row, or a plain create inheriting the
+/// deleted node's labels (only a recovery's claim inherits them).
 #[test]
-fn a_deleted_nodes_row_keeps_its_tags_and_the_tags_index_names_it_under_none() {
+fn a_deleted_nodes_row_keeps_its_tags_and_a_plain_create_at_its_name_inherits_none() {
     let cap = capture();
-    let (row, born_row, victim, rabbit, red) = cap.run(async {
+    let (row, born_row, victim, rabbit, red, born, after) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let mp = mesh_primary(&storage);
         let victim = held(&mp, "mesh1.rpc.1").await;
@@ -166,13 +168,20 @@ fn a_deleted_nodes_row_keeps_its_tags_and_the_tags_index_names_it_under_none() {
         let row = storage.node_row_at(&victim.name).await.unwrap();
         let (rabbit, red) = (storage.tagged("rabbit").await.unwrap(), storage.tagged("red").await.unwrap());
         let born = NodeId::mint();
-        mp.rows.claim(&victim.name, &born, "create-node:mesh1.rpc.1", None).await.expect("a node created at the Deleted row's path.name claims it");
-        (row, storage.node_row_at(&victim.name).await.unwrap(), victim.node_id, rabbit, red)
+        mp.rows.claim(&victim.name, &born, "create-node:mesh1.rpc.1", None, ClaimFor::Create).await.expect("a node created at the Deleted row's path.name claims it");
+        let after = (storage.tagged("rabbit").await.unwrap(), storage.tagged("red").await.unwrap());
+        (row, storage.node_row_at(&victim.name).await.unwrap(), victim.node_id, rabbit, red, born, after)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: ["rabbit".to_string(), "red".to_string()].into(), allocated: None }), "the Deleted row keeps the record, the config and the tags");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: victim.clone(), status: NodeStatus::Deleted, config: tier("gold"), tags: ["rabbit".to_string(), "red".to_string()].into(), allocated: None, renamed_from: None, inherited_by: None }), "the Deleted row keeps the record, the config and the tags");
     assert!(rabbit.is_empty() && red.is_empty(), "the tags index names the deleted node under neither label: rabbit {rabbit:?}, red {red:?}");
     let born_row = born_row.expect("the new node's row");
-    assert_eq!((born_row.config, born_row.tags.len()), (tier("gold"), 0), "the new node is seeded the config and carries no tag");
+    assert_eq!((born_row.config, born_row.tags), (tier("gold"), Default::default()), "a plain create is seeded the config and carries its create spec's tags, none");
+    assert!(after.0.is_empty() && after.1.is_empty(), "the labels index no node after a plain create's claim: rabbit {:?}, red {:?}", after.0, after.1);
+    let claims: Vec<Value> = cap.spans_named("rdm.node_admin.node.create.via-node-row").into_iter().filter(|s| s["attributes"]["node_id"] == born.as_str()).collect();
+    assert_eq!(claims.len(), 1, "{claims:#?}");
+    let c = &claims[0]["attributes"];
+    assert_eq!((c["moment"].as_str(), c["seeded_from"].as_str(), c["tags"].as_str(), c["outcome"].as_str()), (Some("claim"), Some(victim.as_str()), Some(""), Some("row-seeded")), "{c:#?}");
+    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row moment=claim subject=mesh1.rpc.1 node_id={born} seeded_from={victim} tags= outcome=row-seeded", claims[0]["trace_id"].as_str().unwrap_or(""));
     let spans = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
@@ -190,13 +199,13 @@ fn a_node_created_at_a_deleted_rows_name_carries_its_config() {
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
-        mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "create-node:mesh1.rpc.2", None).await.expect("the name is free of live rows");
+        mp.rows.claim(&"mesh1.rpc.2".parse().unwrap(), &born, "create-node:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
         (storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("silver"), tags: Default::default(), allocated: None }), "the new birth holds the row and the Deleted row's config");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }), "the new birth holds the row and the Deleted row's config");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     assert_eq!(spans.len(), 1, "{spans:#?}");
     let a = &spans[0]["attributes"];
@@ -216,10 +225,10 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
     let (deleted, next_row, born) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let name: PathName = "mesh1.rpc.2".parse().unwrap();
-        storage.put_node_row(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let born = NodeId::mint();
-        mp.rows.claim(&name, &born, "create-node:mesh1.rpc.2", None).await.expect("the name is free of live rows");
+        mp.rows.claim(&name, &born, "create-node:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the name is free of live rows");
         // The executor's record of the birth it created: no config on it.
         let mut record = Node::allocated(name.clone());
         record.node_id = born.clone();
@@ -227,7 +236,7 @@ fn a_deleted_row_carries_the_config_the_writer_holds_not_the_executors_empty_rec
         mp.rows.deleted(&record, "retire-node:mesh1.rpc.2").await.expect("the Deleted row is written");
         let deleted = storage.node_row_at(&name).await.unwrap();
         let next = NodeId::mint();
-        mp.rows.claim(&name, &next, "create-node:mesh1.rpc.2", None).await.expect("the Deleted row holds no name");
+        mp.rows.claim(&name, &next, "create-node:mesh1.rpc.2", None, ClaimFor::Create).await.expect("the Deleted row holds no name");
         (deleted, storage.node_row_at(&name).await.unwrap(), born)
     });
     assert_eq!(deleted.map(|r| (r.node_id, r.status, r.config)), Some((born.clone(), NodeStatus::Deleted, tier("silver"))), "the Deleted row keeps the config the writer holds for the birth");
@@ -249,7 +258,7 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothi
     let (row, born, held) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let mp = mesh_primary(&storage);
-        let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None };
+        let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         storage.put_node_row(&held).await.unwrap().unwrap();
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
@@ -266,6 +275,38 @@ fn a_birth_at_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothi
     eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.rpc.2 outcome=name-held over another live node's row", ours[0]["trace_id"].as_str().unwrap_or(""));
 }
 
+/// CONTRACT (R-OW1 item 2: "No bypass; a conflicting holder is NameHeld, never overwritten"): the
+/// Day-0 claim of the bootstrap admin's own `path.name` is the create door's insert-and-fail. A name
+/// another live node's row holds is refused `NameHeld` naming the holder, and the holder's row stays
+/// exactly as it was; a free name is written `Pending` under the admin's node.id. One `via-node-row`
+/// span each, `moment` `claim`, operation `fabric-create`.
+#[test]
+fn a_day0_claim_of_a_name_another_live_nodes_row_holds_is_refused_name_held_and_nothing_is_written() {
+    let cap = capture();
+    let name: PathName = "mesh1.admin.1".parse().unwrap();
+    let (refused, row, held, written, me) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let held = NodeRow { name: name.clone(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
+        storage.put_node_row(&held).await.unwrap().unwrap();
+        let me = NodeId::mint();
+        let refused = rafka_node_admin_core::node_rows::claim_day0_name(&*storage, &name, &me).await;
+        let row = storage.node_row_at(&name).await.unwrap();
+        let free = Arc::new(MemoryNodesStorage::default());
+        let written = rafka_node_admin_core::node_rows::claim_day0_name(&*free, &name, &me).await;
+        (refused, row, held, written, me)
+    });
+    assert!(matches!(&refused, Err(rafka_node_admin_core::node_rows::RowRefused::NameHeld(h)) if h.by == held.node_id), "{refused:?}");
+    assert_eq!(row, Some(held.clone()), "the holder's row stands; nothing of the Day-0 admin is written");
+    assert!(matches!(&written, Ok(rafka_node_admin_core::node_rows::Claimed::Written { row, seeded_from: None }) if row.node_id == me && row.status == NodeStatus::Pending), "{written:?}");
+    let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+    let ours: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["node_id"] == me.as_str()).collect();
+    assert_eq!(ours.len(), 2, "{spans:#?}");
+    let outcomes: Vec<(Option<&str>, Option<&str>, Option<&str>)> = ours.iter().map(|s| (s["attributes"]["moment"].as_str(), s["attributes"]["operation"].as_str(), s["attributes"]["outcome"].as_str())).collect();
+    assert_eq!(outcomes, vec![(Some("claim"), Some("fabric-create"), Some("name-held")), (Some("claim"), Some("fabric-create"), Some("row-written"))], "{ours:#?}");
+    assert!(ours[0]["attributes"]["detail"].as_str().is_some_and(|d| d.contains(held.node_id.as_str())), "the refusal names the holder: {:#?}", ours[0]);
+    eprintln!("trace {}: rdm.node_admin.node.create.via-node-row subject=mesh1.admin.1 operation=fabric-create outcome=name-held over another live node's row", ours[0]["trace_id"].as_str().unwrap_or(""));
+}
+
 /// CONTRACT: a birth no create of the writer claimed (one made before the writer took its mesh's
 /// seat) gets its row when the writer's view first holds it, from the record it holds (ops-naming
 /// "Node data": "writes the whole row from that held record"), seeded from the `Deleted` row at its
@@ -276,14 +317,14 @@ fn a_birth_no_create_claimed_gets_its_row_seeded_when_the_writers_view_holds_it(
     let (row, born, old) = cap.run(async {
         let storage = Arc::new(MemoryNodesStorage::default());
         let old = NodeId::mint();
-        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: old.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }).await.unwrap().unwrap();
         let mp = mesh_primary(&storage);
         let birth = node("mesh1.rpc.2", false, false);
         let born = birth.node_id.clone();
         install(&mp.records, &mp.view, move |v| v.nodes.push(birth)).await;
         (storage.node_row_at(&"mesh1.rpc.2".parse().unwrap()).await.unwrap(), born, old)
     });
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None }), "the birth holds the row and the Deleted row's config");
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: born.clone(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }), "the birth holds the row and the Deleted row's config");
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let rpc2: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["subject"] == "mesh1.rpc.2").collect();
     assert_eq!(rpc2.len(), 1, "{spans:#?}");
@@ -309,7 +350,7 @@ fn a_seat_taken_rebuilds_the_rows_and_never_overwrites_a_row_its_node_holds() {
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
-        let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None };
+        let written = NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         storage.put_node_row(&written).await.unwrap().unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
@@ -350,7 +391,7 @@ fn a_seat_taken_over_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its
         let topology = Arc::new(RwLock::new(before.clone()));
         records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
         // The rename its mesh's former primary wrote while the node was stopped: the row moved to `.old`.
-        let renamed = NodeRow { name: rpc1.name.renamed(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None };
+        let renamed = NodeRow { name: rpc1.name.renamed(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         storage.put_node_row(&renamed).await.unwrap().unwrap();
         install(&records, &topology, |t| {
             for n in t.nodes.iter_mut() {
@@ -366,6 +407,53 @@ fn a_seat_taken_over_a_view_older_than_a_rename_leaves_the_renamed_nodes_row_its
     let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     let outcome = |name: &str| spans.iter().filter(|s| s["attributes"]["subject"] == name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
     assert_eq!(outcome("mesh1.rpc.1"), vec!["row-held-by-node"], "{spans:#?}");
+}
+
+/// CONTRACT (proposal node-properties-own-commands.md §2.1 Claim and move: "a row whose
+/// `renamed_from` key still holds the same node id has a pending release, and the writer releases it
+/// ... It runs wherever a writer meets the row: ... a mesh-primary's rebuild from its mesh's rows after
+/// a seat change (R13)"; §2.4: "The writer that wrote the put may be gone; the row carries everything
+/// the next one needs"; §7: "the writer lost between the put and the release: a successor
+/// mesh-primary's rebuild finds the row's `renamed_from` still held by the same node id and releases
+/// it"): a lost writer's rename of `mesh1.rpc.1` to `mesh1.rpc.9` put the row at `mesh1.rpc.9` carrying
+/// `renamed_from: mesh1.rpc.1` and never released `mesh1.rpc.1`. An admin taking mesh1's seat, whose
+/// view still lists the node at `mesh1.rpc.1`, rebuilds: it reads the node's row through the id index
+/// at `mesh1.rpc.9`, releases `mesh1.rpc.1`, and writes no row at the view's name. One
+/// `rdm.node_admin.node.name.update.via-pending-release` span says `released` with `moment=rebuild`;
+/// the rebuild's `via-node-row` span for the node says `row-held-by-node`. What must NOT happen: the old
+/// key left held by the node, or a row put back at `mesh1.rpc.1`.
+#[test]
+fn a_seat_taken_rebuild_finishes_a_lost_writers_pending_release() {
+    let cap = capture();
+    let (old, new) = cap.run(async {
+        let storage = Arc::new(MemoryNodesStorage::default());
+        let me: PathName = "mesh1.admin.1".parse().unwrap();
+        let records = Records::default();
+        let before = view();
+        let topology = Arc::new(RwLock::new(before.clone()));
+        records.set_rows(Arc::new(NodeRows::new(me.clone(), before.node(&me).expect("the admin is in the view").node_id.clone(), topology.clone(), storage.clone())));
+        let rpc1 = before.nodes.iter().find(|n| n.name.to_string() == "mesh1.rpc.1").cloned().unwrap();
+        let to: PathName = "mesh1.rpc.9".parse().unwrap();
+        // The lost writer's two writes: the row at its old key, then the put at the new key; no release.
+        storage.put_node_row(&NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }).await.unwrap().unwrap();
+        storage.put_node_row(&NodeRow { name: to.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Leaving, config: tier("gold"), tags: Default::default(), allocated: None, renamed_from: Some(rpc1.name.clone()), inherited_by: None }).await.unwrap().unwrap();
+        install(&records, &topology, |t| {
+            for n in t.nodes.iter_mut() {
+                n.is_primary = n.name.to_string() == "mesh1.admin.1";
+            }
+        })
+        .await;
+        (storage.node_row_at(&rpc1.name).await.unwrap(), storage.node_row_at(&to).await.unwrap())
+    });
+    assert_eq!(old, None, "the rebuild released the old key the lost writer left held");
+    assert_eq!(new.map(|r| r.renamed_from), Some(Some("mesh1.rpc.1".parse().unwrap())), "the row at the new key stands as written");
+    let releases = cap.spans_named("rdm.node_admin.node.name.update.via-pending-release");
+    let seen: Vec<_> = releases.iter().map(|s| (s["attributes"]["from"].as_str().unwrap_or("").to_string(), s["attributes"]["moment"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
+    assert_eq!(seen, vec![("mesh1.rpc.1".to_string(), "rebuild".to_string(), "released".to_string())], "{releases:#?}");
+    let rows = cap.spans_named("rdm.node_admin.node.create.via-node-row");
+    let outcome = |name: &str| rows.iter().filter(|s| s["attributes"]["subject"] == name).map(|s| s["attributes"]["outcome"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+    assert_eq!(outcome("mesh1.rpc.1"), vec!["row-held-by-node"], "{rows:#?}");
+    println!("trace {}: rdm.node_admin.node.name.update.via-pending-release from=mesh1.rpc.1 to=mesh1.rpc.9 moment=rebuild outcome=released", releases[0]["trace_id"].as_str().unwrap_or(""));
 }
 
 type Rebuilt = (BTreeMap<String, Option<NodeRow>>, Option<NodeStatus>, NodeId, NodeId, NodeId, NodeId, String);
@@ -387,9 +475,9 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
         let (old_pred, deleted_pred) = (NodeId::mint(), NodeId::mint());
         // P's writes, as its seat made them.
         for row in [
-            NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None },
-            NodeRow { name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None },
-            NodeRow { name: "mesh1.rpc.3".parse().unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None },
+            NodeRow { name: rpc1.name.clone(), node_id: rpc1.node_id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None },
+            NodeRow { name: "mesh1.rpc.2.old".parse().unwrap(), node_id: old_pred.clone(), status: NodeStatus::Deleted, config: tier("bronze"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None },
+            NodeRow { name: "mesh1.rpc.3".parse().unwrap(), node_id: deleted_pred.clone(), status: NodeStatus::Deleted, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None },
         ] {
             p_store.put_node_row(&row).await.unwrap().unwrap();
         }
@@ -435,10 +523,10 @@ async fn rebuild_over_one_root(trace_id: String) -> Rebuilt {
 /// holds mesh1.rpc.1 ready-for-traffic while its row says Draining.
 #[test]
 fn a_seat_taken_rebuilds_from_the_shared_root_and_holds_the_predecessors_rows() {
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let (rows, view_status, succ, fresh, old_pred, deleted_pred, trace_id) = cap.run(async {
         let root_span = tracing::info_span!("rdm.test.node.create.via-shared-root-rebuild");
-        let trace_id = crate::mesh_leave_resume::trace_id(&root_span);
+        let trace_id = crate::mesh_delete_resume::trace_id(&root_span);
         tracing::Instrument::instrument(rebuild_over_one_root(trace_id), root_span).await
     });
     println!("trace_id={trace_id}");
@@ -463,10 +551,10 @@ fn a_node_lets_go_only_of_its_own_row() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let dir = std::env::temp_dir().join(format!("node-rows-claim-{}", NodeId::mint()));
-        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&dir, &rafka_node_admin_core::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rafka_node_admin_core::model::IncarnationId("test".into())).await.unwrap()))];
+        let stores: Vec<(&str, Arc<dyn NodesStorage>)> = vec![("memory", Arc::new(MemoryNodesStorage::default())), ("file", Arc::new(rafka_node_admin_core::storage::FileNodesStorage::open(&dir, &rafka_node_admin_core::store_root::StoreRoot::at(&dir.join("store")), "mesh1", &rafka_node_admin_core::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap()))];
         for (kind, store) in stores {
             let id = NodeId::mint();
-            let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None };
+            let held = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: id.clone(), status: NodeStatus::Draining, config: tier("platinum"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
             store.put_node_row(&held).await.unwrap().unwrap();
             assert!(!store.release_node_row(&held.name, &NodeId::mint()).await.unwrap(), "{kind}: another node lets go of nothing here");
             assert_eq!(store.node_row_at(&held.name).await.unwrap(), Some(held.clone()), "{kind}: a release by another node leaves the row");
@@ -563,17 +651,26 @@ mod writer {
         eprintln!("trace {}: rdm.node_admin.node.create.via-node-row node=mesh1.admin.2 subject=mesh1.rpc.2 outcome=row-written; the fabric-primary mesh1.admin.1 wrote none", ours[0]["trace_id"].as_str().unwrap_or(""));
     }
 
-    /// CONTRACT: no node writes its own row (R12): an admin that takes its mesh's seat (and the
-    /// fabric seat) rebuilds the rows of its mesh's members from its view, every member but itself.
+    /// CONTRACT (R-OW1, ruling text item 1: "The mesh-primary writes every row in its mesh, including its
+    /// own"; item 5: a seat transfer makes the successor the writer of every row of the mesh, the
+    /// predecessor's included, and rewrites nothing): an admin that takes its mesh's seat (and the
+    /// fabric seat) rebuilds the rows of its mesh's members from its view, its own birth included: its
+    /// own row, absent, is written (`subject = mesh1.admin.1`, `node = mesh1.admin.1`, `row-written`)
+    /// under its own node.id. A row a member already holds is left as it is. What must NOT happen: a
+    /// mesh-primary that writes every member's row but its own, so its mesh's primary holds no row.
     #[test]
-    fn an_admin_that_takes_its_meshs_seat_writes_every_members_row_but_its_own() {
+    fn an_admin_that_takes_its_meshs_seat_writes_every_members_row_its_own_included() {
         let cap = capture();
-        let (own, others) = cap.run(async {
+        let (own, me_id, others, held_before, held_after) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let mut before = view();
             for n in before.nodes.iter_mut() {
                 n.is_fabric_primary = n.name.to_string() == "mesh1.admin.2";
             }
+            let rpc = before.node(&"mesh1.rpc.1".parse().unwrap()).unwrap().clone();
+            let held = NodeRow { config: tier("silver"), ..row_of(&rpc) };
+            storage.put_node_row(&held).await.unwrap().unwrap();
+            let me_id = before.node(&"mesh1.admin.1".parse().unwrap()).unwrap().node_id.clone();
             let (records, topology) = writer_of("mesh1.admin.1", &before, &storage);
             install(&records, &topology, |v| {
                 for n in v.nodes.iter_mut() {
@@ -584,13 +681,22 @@ mod writer {
             })
             .await;
             let own = storage.node_row_at(&"mesh1.admin.1".parse().unwrap()).await.unwrap();
-            let others = [storage.node_row_at(&"mesh1.admin.2".parse().unwrap()).await.unwrap(), storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap()];
-            (own, others)
+            let others = storage.node_row_at(&"mesh1.admin.2".parse().unwrap()).await.unwrap();
+            let after = storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap();
+            (own, me_id, others, held, after)
         });
-        assert_eq!(own, None, "the admin writes no row of its own");
-        assert!(others.iter().all(Option::is_some), "every other member's row is written: {others:?}");
+        assert_eq!(own.map(|r| r.node_id), Some(me_id.clone()), "the mesh-primary writes its own row");
+        assert!(others.is_some(), "every other member's row is written");
+        assert_eq!(held_after, Some(held_before), "a row its node holds is never rewritten");
         let spans = cap.spans_named("rdm.node_admin.node.create.via-node-row");
-        assert!(spans.iter().all(|s| s["attributes"]["subject"] != "mesh1.admin.1"), "{spans:#?}");
+        let ours: Vec<&Value> = spans.iter().filter(|s| s["attributes"]["subject"] == "mesh1.admin.1").collect();
+        assert_eq!(ours.len(), 1, "{spans:#?}");
+        assert_eq!(
+            (ours[0]["attributes"]["node"].as_str(), ours[0]["attributes"]["node_id"].as_str(), ours[0]["attributes"]["moment"].as_str(), ours[0]["attributes"]["outcome"].as_str()),
+            (Some("mesh1.admin.1"), Some(me_id.as_str()), Some("arrival"), Some("row-written")),
+            "{ours:#?}"
+        );
+        eprintln!("trace {}: rdm.node_admin.node.create.via-node-row node=mesh1.admin.1 subject=mesh1.admin.1 moment=arrival outcome=row-written", ours[0]["trace_id"].as_str().unwrap_or(""));
     }
 
     /// Launches nothing: each spawn is counted and refused, so a create that reaches
@@ -651,10 +757,11 @@ mod writer {
             data_root: data_root.clone(),
             store_dir: data_root.join("store"),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let (joins, builds) = (Joins::default(), MemoryBuildStateAdapter::new());
         // The Build the create runs for: a run over a Build its node holds no fact of is refused at its start.
-        let build_id = BuildId("build-node-rows".into());
+        let build_id = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows")).unwrap();
         let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build_id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
         rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds: &builds, template: &template, timeouts: Timeouts::default() };
@@ -674,7 +781,7 @@ mod writer {
         let cap = capture();
         let (err, spawned, row, held) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
-            let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None };
+            let held = NodeRow { name: "mesh1.rpc.2".parse().unwrap(), node_id: NodeId::mint(), status: NodeStatus::ReadyForTraffic, config: tier("silver"), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
             storage.put_node_row(&held).await.unwrap().unwrap();
             let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
             let provider = Counted::default();
@@ -737,6 +844,12 @@ mod writer {
         async fn read_build(&self, id: &BuildId) -> Result<rafka_node_admin_core::build_state::BuildProjection, rafka_node_admin_core::build_state::BuildStateError> {
             self.inner.read_build(id).await
         }
+        async fn current_build(&self) -> Result<rafka_node_admin_core::build_state::CurrentBuild, rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.current_build().await
+        }
+        async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, rafka_node_admin_core::build_state::BuildStateError> {
+            self.inner.newest_accepted_at_ms().await
+        }
         async fn list_active(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildProjection>, rafka_node_admin_core::build_state::BuildStateError> {
             self.inner.list_active().await
         }
@@ -758,7 +871,7 @@ mod writer {
         async fn facts(&self) -> Result<Vec<rafka_node_admin_core::build_state::BuildFact>, rafka_node_admin_core::build_state::BuildStateError> {
             self.inner.facts().await
         }
-        async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
+        async fn recovery_of(&self, path: &PathName, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
             self.inner.recovery_of(path, node_id, incarnation).await
         }
         async fn mesh_deleted_of(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<(BuildId, u32, String)>, rafka_node_admin_core::build_state::BuildStateError> {
@@ -786,6 +899,7 @@ mod writer {
             data_root: data_root.clone(),
             store_dir: data_root.join("store"),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer: &Unheard, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
@@ -815,7 +929,7 @@ mod writer {
             let (records, _view) = writer_of("mesh1.admin.2", &view(), &storage);
             let provider = Counted::default();
             let builds = MemoryBuildStateAdapter::new();
-            let (build, other) = (BuildId("build-node-rows-5".into()), BuildId("build-node-rows-6".into()));
+            let (build, other) = (BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-5")).unwrap(), BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-6")).unwrap());
             for id in [&build, &other] {
                 let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: id.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
                 rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&builds, &accepted).await.unwrap();
@@ -829,11 +943,11 @@ mod writer {
             let identity = serde_json::json!({ "node_id": x, "incarnation": IncarnationId::mint(), "supersedes": null, "deployment_id": rafka_node_admin_core::model::DeploymentId::mint() });
             rafka_node_admin_core::build_state::BuildStateAdapter::append_step_receipt(
                 &builds,
-                &rafka_node_admin_core::build_state::BuildStepReceipt { build_id: other.clone(), attempt: 1, operation: "create-node:mesh1.rpc.6".into(), step: "AllocateIdentity".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: Some(identity), executor: None },
+                &rafka_node_admin_core::build_state::BuildStepReceipt { mesh: None, build_id: other.clone(), attempt: 1, operation: "create-node:mesh1.rpc.6".into(), step: "AllocateIdentity".into(), outcome: rafka_node_admin_core::build_state::StepOutcome::Complete, output: Some(identity), executor: None },
             )
             .await
             .unwrap();
-            storage.put_node_row(&NodeRow { name: "mesh1.rpc.6".parse().unwrap(), node_id: x.clone(), status: NodeStatus::Pending, config: BTreeMap::new(), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+            storage.put_node_row(&NodeRow { name: "mesh1.rpc.6".parse().unwrap(), node_id: x.clone(), status: NodeStatus::Pending, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }).await.unwrap().unwrap();
             let rerun_after_claim = create_attempt(&records, &provider, &builds, &other, "mesh1.rpc.6", 2).await;
             (lost_before_receipt, rerun_after_loss, x, rerun_after_claim)
         });
@@ -942,6 +1056,7 @@ mod writer {
             data_root: data_root.to_path_buf(),
             store_dir: data_root.join("store"),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         let joins = Joins::default();
         let pipeline = DeploymentPipeline { provider, joins: &joins, observer, sink: records, lifecycle: &NoLifecycleEvents, builds, template: &template, timeouts: Timeouts::default() };
@@ -971,7 +1086,7 @@ mod writer {
         let (a_identity, b_err, found, spawned, row) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-lost-after-claim-{}", NodeId::mint()));
-            let build = BuildId("build-node-rows-7".into());
+            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-7")).unwrap();
             let (a_builds, b_builds) = (Arc::new(MemoryBuildStateAdapter::new()), MemoryBuildStateAdapter::new());
             for builds in [&*a_builds, &b_builds] {
                 let accepted = BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
@@ -1012,8 +1127,8 @@ mod writer {
         let deployment = a_identity["deployment_id"].as_str().expect("A's identity names its deployment").to_string();
         let b_err = b_err.expect_err("B's attempt fails where this provider launches nothing");
         assert!(b_err.contains("DeployRuntime") && !b_err.contains("name-held"), "B continues A's create past its claim and reaches DeployRuntime: {b_err}");
-        assert_eq!(spawned.iter().map(|d| d.0.clone()).collect::<Vec<_>>(), vec![deployment.clone()], "B launches A's exact deployment, never a new one");
-        assert!(found.iter().any(|d| d.0 == deployment), "the provider was asked for A's exact deployment before anything was launched: {found:?}");
+        assert_eq!(spawned.iter().map(|d| d.to_string()).collect::<Vec<_>>(), vec![deployment.clone()], "B launches A's exact deployment, never a new one");
+        assert!(found.iter().any(|d| d.as_str() == deployment), "the provider was asked for A's exact deployment before anything was launched: {found:?}");
         assert_eq!(row, None, "B's create failed after its claim (this provider launches nothing) and withdrew that birth's claim, as every create failing after its claim does: {row:?}");
         let claims = cap.spans_named("rdm.node_admin.node.create.via-node-row");
         let rpc7: Vec<(String, String)> = claims.iter().filter(|s| s["attributes"]["subject"] == "mesh1.rpc.7" && s["attributes"]["moment"] == "claim").map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
@@ -1090,7 +1205,7 @@ mod writer {
         let (a_identity, b_err, terminated, spawned) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-launched-by-the-lost-{}", NodeId::mint()));
-            let build = BuildId("build-node-rows-8".into());
+            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-8")).unwrap();
             let (a_builds, b_builds) = (Arc::new(MemoryBuildStateAdapter::new()), MemoryBuildStateAdapter::new());
             for builds in [&*a_builds, &b_builds] {
                 let accepted = BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
@@ -1125,9 +1240,9 @@ mod writer {
         let deployment = a_identity["deployment_id"].as_str().expect("A's identity names its deployment").to_string();
         let b_err = b_err.expect_err("B's attempt fails where this provider launches nothing");
         assert!(b_err.contains("DeployRuntime") && !b_err.contains("name-held"), "B decides a new birth and reaches DeployRuntime: {b_err}");
-        assert_eq!(terminated.iter().map(|d| d.0.clone()).collect::<Vec<_>>(), vec![deployment.clone()], "the lost executor's runtime is stopped through its exact handle");
+        assert_eq!(terminated.iter().map(|d| d.to_string()).collect::<Vec<_>>(), vec![deployment.clone()], "the lost executor's runtime is stopped through its exact handle");
         assert_eq!(spawned.len(), 1, "{spawned:?}");
-        assert_ne!(spawned[0].0, deployment, "B launches a deployment of its own, never the lost executor's");
+        assert_ne!(spawned[0].as_str(), deployment, "B launches a deployment of its own, never the lost executor's");
         let settled = cap.spans_named("rdm.node_admin.node.resolve.via-claimed-allocation");
         assert_eq!(settled.iter().map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect::<Vec<_>>(), vec![(x.clone(), "launched-by-lost-executor".to_string())], "{settled:#?}");
         let claims = cap.spans_named("rdm.node_admin.node.create.via-node-row");
@@ -1199,14 +1314,14 @@ mod writer {
         let (a_identity, b_err, spawned) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-launched-exited-{}", NodeId::mint()));
-            let build = BuildId("build-node-rows-9".into());
+            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-9")).unwrap();
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.9", &data_root).await;
             let b_builds = MemoryBuildStateAdapter::new();
             let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
             rafka_node_admin_core::build_state::BuildStateAdapter::publish_accepted(&b_builds, &accepted).await.unwrap();
             let (b_records, _b_view) = writer_of("mesh1.admin.2", &view(), &storage);
             // A launched the birth and it exited: the provider proves it.
-            let proving = Proving { exited: Mutex::new(Some(DeploymentId(a_identity["deployment_id"].as_str().unwrap().to_string()))), ..Proving::default() };
+            let proving = Proving { exited: Mutex::new(Some(DeploymentId::parse(a_identity["deployment_id"].as_str().unwrap()).unwrap())), ..Proving::default() };
             let b_err = create_attempt_over(&b_records, &proving, &Unheard, &b_builds, &build, "mesh1.rpc.9", 2, &data_root).await;
             let _ = std::fs::remove_dir_all(&data_root);
             (a_identity, b_err, proving.spawned.into_inner().unwrap())
@@ -1216,7 +1331,7 @@ mod writer {
         let b_err = b_err.expect_err("B's attempt fails where this provider launches nothing");
         assert!(b_err.contains("DeployRuntime") && !b_err.contains("name-held"), "B decides a new birth and reaches DeployRuntime: {b_err}");
         assert_eq!(spawned.len(), 1, "{spawned:?}");
-        assert_ne!(spawned[0].0, deployment, "B launches a deployment of its own, never the exited birth's again");
+        assert_ne!(spawned[0].as_str(), deployment, "B launches a deployment of its own, never the exited birth's again");
         let claims = cap.spans_named("rdm.node_admin.node.create.via-node-row");
         let rpc9: Vec<(String, String)> = claims.iter().filter(|s| s["attributes"]["subject"] == "mesh1.rpc.9" && s["attributes"]["moment"] == "claim").map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
         assert!(rpc9.len() == 2 && rpc9[0] == (x.clone(), "row-written".to_string()) && rpc9[1].0 != x && rpc9[1].1 == "row-written", "A's claim, then a new birth's once A's is withdrawn: {rpc9:?}");
@@ -1274,7 +1389,7 @@ mod writer {
         let (a_identity, b_err, spawned) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-exited-before-record-{}", NodeId::mint()));
-            let build = BuildId("build-node-rows-11".into());
+            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-11")).unwrap();
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.11", &data_root).await;
             // A launched the birth and its process exited before it wrote its runtime record: the data
             // dir holds the provider's deployment record of A's deployment, naming a pid that is gone.
@@ -1300,7 +1415,7 @@ mod writer {
         let b_err = b_err.expect_err("B's attempt fails where this provider launches nothing");
         assert!(b_err.contains("DeployRuntime") && !b_err.contains("name-held"), "B decides a new birth and reaches DeployRuntime: {b_err}");
         assert_eq!(spawned.len(), 1, "{spawned:?}");
-        assert_ne!(spawned[0].0, deployment, "B launches a deployment of its own, never the exited birth's again");
+        assert_ne!(spawned[0].as_str(), deployment, "B launches a deployment of its own, never the exited birth's again");
         let claims = cap.spans_named("rdm.node_admin.node.create.via-node-row");
         let rpc11: Vec<(String, String)> = claims.iter().filter(|s| s["attributes"]["subject"] == "mesh1.rpc.11" && s["attributes"]["moment"] == "claim").map(|s| (s["attributes"]["node_id"].as_str().unwrap_or("").to_string(), s["attributes"]["outcome"].as_str().unwrap_or("").to_string())).collect();
         assert!(rpc11.len() == 2 && rpc11[0] == (x.clone(), "row-written".to_string()) && rpc11[1].0 != x && rpc11[1].1 == "row-written", "A's claim, then a new birth's once A's is withdrawn: {rpc11:?}");
@@ -1323,13 +1438,13 @@ mod writer {
         let (a_identity, record, b_err, spawned, after, handle) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-launched-running-{}", NodeId::mint()));
-            let build = BuildId("build-node-rows-12".into());
+            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-12")).unwrap();
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.12", &data_root).await;
             // A launched the birth: its process runs, and the provider's launch record names it.
             let dir = data_root.join(format!("mesh1.rpc.12-{}", a_identity["node_id"].as_str().unwrap()));
             let spec = ResolvedNodeLaunch {
                 node: "mesh1.rpc.12".parse().unwrap(),
-                deployment_id: DeploymentId(a_identity["deployment_id"].as_str().unwrap().to_string()),
+                deployment_id: DeploymentId::parse(a_identity["deployment_id"].as_str().unwrap()).unwrap(),
                 executable: "/bin/sleep".into(),
                 args: vec!["300".into()],
                 env: Default::default(),
@@ -1361,7 +1476,7 @@ mod writer {
         let b_err = b_err.expect_err("B's attempt fails where this provider launches nothing");
         assert!(b_err.contains("DeployRuntime") && !b_err.contains("name-held"), "B decides a new birth and reaches DeployRuntime: {b_err}");
         assert_eq!(spawned.len(), 1, "{spawned:?}");
-        assert_ne!(spawned[0].0, deployment, "B launches a deployment of its own, never the lost executor's");
+        assert_ne!(spawned[0].as_str(), deployment, "B launches a deployment of its own, never the lost executor's");
         assert_eq!(after.unwrap(), rafka_node_admin_core::deployment::provider::Found::Exited, "A's process was stopped through its record");
         let stopped = cap.spans_named("rdm.node_admin.deployment.reject.via-lost-executor");
         assert_eq!(stopped.iter().map(|s| s["attributes"]["deployment_id"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>(), vec![deployment.clone()], "{stopped:#?}");
@@ -1381,7 +1496,7 @@ mod writer {
         let (a_identity, b_err, terminated, spawned, row) = cap.run(async {
             let storage = Arc::new(MemoryNodesStorage::default());
             let data_root = std::env::temp_dir().join(format!("node-rows-launched-joined-{}", NodeId::mint()));
-            let build = BuildId("build-node-rows-10".into());
+            let build = BuildId::parse(&rafka_mesh_entity::fixture_crockford60("build-node-rows-10")).unwrap();
             let a_identity = lost_after_claim(&storage, &build, "mesh1.rpc.10", &data_root).await;
             let b_builds = MemoryBuildStateAdapter::new();
             let accepted = rafka_node_admin_core::build_state::BuildAccepted { build_id: build.clone(), topology: FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 };
@@ -1438,36 +1553,42 @@ mod writer {
 /// The recovery of `mesh1.rpc.1` (node-recovery.md steps 3-4) as its executor, `mesh1`'s primary
 /// `mesh1.admin.2`, writes it (R13): its node.delete of the exited birth (`retire-node:<path>`)
 /// writes the row `Deleted` inside its `NodeDeleted` step, and its node.create at the same
-/// `path.name` (`create-node:<path>`) claims it, `before` or after that `Deleted` row. Returns the
-/// row at `mesh1.rpc.1`, the exited node and the new one.
-async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId) {
+/// `path.name` (`create-node:<path>`, over the exited birth: a recovery's claim) claims it, `before`
+/// or after that `Deleted` row. Returns the
+/// row at `mesh1.rpc.1`, the exited node, the new one, and the nodes the tags index names under the
+/// exited row's label `blue` once the claim is written (nothing runs after it).
+async fn recovered(new_claimed_first: bool) -> (Option<NodeRow>, NodeId, NodeId, std::collections::BTreeSet<NodeId>) {
     let (delete, create) = ("retire-node:mesh1.rpc.1", "create-node:mesh1.rpc.1");
     let storage = Arc::new(MemoryNodesStorage::default());
     let mp = mesh_primary(&storage);
     let exited = held(&mp, "mesh1.rpc.1").await;
     // The exited birth's row, as its create claimed it.
-    storage.put_node_row(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: Default::default(), allocated: None }).await.unwrap().unwrap();
+    storage.put_node_row(&NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: exited.node_id.clone(), status: NodeStatus::ReadyForTraffic, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, inherited_by: None }).await.unwrap().unwrap();
     let born = NodeId::mint();
     if new_claimed_first {
-        mp.rows.claim(&exited.name, &born, create, None).await.expect_err("the exited node's live row holds the name");
+        mp.rows.claim(&exited.name, &born, create, None, ClaimFor::Recovery).await.expect_err("the exited node's live row holds the name");
     }
     mp.rows.deleted(&exited, delete).await.expect("the executor writes the Deleted row inside NodeDeleted");
-    mp.rows.claim(&exited.name, &born, create, None).await.expect("the Deleted row holds no name");
-    (storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap(), exited.node_id, born)
+    mp.rows.claim(&exited.name, &born, create, None, ClaimFor::Recovery).await.expect("the Deleted row holds no name");
+    (storage.node_row_at(&"mesh1.rpc.1".parse().unwrap()).await.unwrap(), exited.node_id, born, storage.tagged("blue").await.unwrap())
 }
 
 /// CONTRACT (node-recovery.md step 3: "the node's mesh-primary writes the row with status Deleted";
-/// step 4: "Its config is seeded from the Deleted row at that path.name"): a recovery's
-/// `NodeDeleted` leaves the exited node's row `Deleted`, so the new node created at the same
-/// `path.name` claims it, seeded from it: the new node id, its status, the exited node's config.
+/// step 4: "Its config is seeded from the Deleted row at that path.name"; proposal
+/// node-properties-own-commands.md §8: the claim "seeds config and tags from that Deleted row and
+/// writes the tags index entries under the successor's id"): a recovery's `NodeDeleted` leaves the
+/// exited node's row `Deleted`, so the new node created at the same `path.name` claims it, seeded
+/// from it: the new node id, its status, the exited node's config and tags, the tags indexed under
+/// the new id once the claim is written, nothing after it.
 /// One `delete.via-node-row` span (`row-deleted`) and one `create.via-node-row` span
 /// (`row-seeded`, seeded from the exited node) name the two writes. The writer is the recovery's
 /// executor, the mesh's primary (R13), and its claim writes the new node `Pending`.
 #[test]
 fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_seeded() {
     let cap = capture();
-    let (row, exited, born) = cap.run(recovered(false));
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None }), "the new node holds the row, seeded from the exited node's");
+    let (row, exited, born, blue) = cap.run(recovered(false));
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, inherited_by: None }), "the new node holds the row, seeded from the exited node's config and tags");
+    assert_eq!(blue, [born.clone()].into(), "the claim indexed the label under the new node's id, the exited node's left with its Deleted row");
     let deleted = cap.spans_named("rdm.node_admin.node.delete.via-node-row");
     assert_eq!(deleted.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(exited.as_str()), Some("row-deleted"))], "{deleted:#?}");
     let created = cap.spans_named("rdm.node_admin.node.create.via-node-row");
@@ -1481,8 +1602,9 @@ fn a_recovered_nodes_row_is_deleted_and_the_new_node_at_its_path_name_claims_it_
 #[test]
 fn a_recovered_node_claimed_before_the_exited_ones_deleted_row_is_refused_name_held_then_seeded() {
     let cap = capture();
-    let (row, exited, born) = cap.run(recovered(true));
-    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: Default::default(), allocated: None }), "the new node holds the row once the name is free");
+    let (row, exited, born, blue) = cap.run(recovered(true));
+    assert_eq!(row, Some(NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: born.clone(), status: NodeStatus::Pending, config: tier("gold"), tags: ["blue".to_string()].into(), allocated: None, renamed_from: None, inherited_by: None }), "the new node holds the row once the name is free, with the exited node's config and tags");
+    assert_eq!(blue, [born.clone()].into(), "the label is indexed under the new node's id only");
     let created = cap.spans_named("rdm.node_admin.node.create.via-node-row");
     assert_eq!(created.iter().map(|s| (s["attributes"]["node_id"].as_str(), s["attributes"]["outcome"].as_str())).collect::<Vec<_>>(), vec![(Some(born.as_str()), Some("name-held")), (Some(born.as_str()), Some("row-seeded"))], "{created:#?}");
     assert_eq!(created[1]["attributes"]["seeded_from"].as_str(), Some(exited.as_str()));

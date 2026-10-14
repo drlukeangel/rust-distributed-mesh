@@ -2,24 +2,25 @@
 //! (the typed-harness ruling: new tests drive the mesh through the typed objects, await reply
 //! streams and typed facts, and never read a REST string or sleep-poll for a Build).
 //!
-//! The handles start at the node-admin the estate asks (`Estate::admin`): reads answer from that
-//! admin's view, and a Build call it does not own follows the redirect to the fabric-primary. The
-//! control API is the handover that names that admin and its birth, once per control base; every
-//! call after it goes over Node RPC (ops-naming step 0; the handover itself is finding 15).
+//! The handles start at the node-admin the estate asks (`Estate::admin`, a `path.name`): reads answer
+//! from that admin's view, and a Build call it does not own follows the redirect to the fabric-primary.
+//! The handover reaches that admin once per entry, with no listing read: an admin the estate started
+//! printed its own birth (`rafka_node_admin_client::BIRTH_LINE`), and any other admin is dialled by the
+//! birth a view the estate read over Node RPC lists for it.
 
 use crate::estate::Estate;
 use rafka_node_admin_client::{LaunchKind as NodeKind, PathName};
 use rafka_node_admin_client::{
-    Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshSelector, MeshView, Meshes, NodeAdminClient, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
+    birth_of_view, Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
 use std::sync::Arc;
 
-/// The handover of one control base: the client over Node RPC that reaches the fabric's admins, and
-/// the admin the base names.
+/// The handover of one entry admin: the client over Node RPC that reaches the fabric's admins, and the
+/// admin it starts at. `stale` is set when a read ended: the next call reads the views first.
 pub(crate) struct Wire {
-    base: String,
     peers: Arc<Peers>,
     entry: PathName,
+    stale: bool,
 }
 
 /// A Build that ran to its `Complete` frame.
@@ -34,36 +35,84 @@ pub struct Reconciled {
 }
 
 impl Estate {
-    /// The carrier of the typed objects: it starts at the node-admin `Estate::admin` names. A
-    /// change of `Estate::admin` is a new handover.
+    /// The carrier of the typed objects: it starts at the node-admin `Estate::admin`. A change of
+    /// `Estate::admin` is a new handover.
     pub async fn carrier(&self) -> BuildCarrier {
         let mut wire = self.wire.lock().await;
-        if wire.as_ref().is_none_or(|w| w.base != self.admin) {
-            let peers = match wire.take() {
-                Some(w) => w.peers,
-                None => Arc::new(Peers::of(&[]).await),
+        if wire.as_ref().is_none_or(|w| w.stale || w.entry != self.admin) {
+            // A handover after a read ended (`rehandover`) reads the views first: the entry admin may
+            // hold a new birth.
+            let (peers, after_an_ending) = match wire.take() {
+                Some(w) => (w.peers, w.stale),
+                None => (Arc::new(Peers::of(&[]).await), false),
             };
-            // The control base names the admin; the admin answers over Node RPC once its row carries the
-            // birth that is running (an admin a test just started on a former seat's data dir lists its
-            // old birth until it has rejoined), so the handover reads the listing until the admin it names
-            // answers `fabric.get` under the birth the listing gives.
-            let admin = NodeAdminClient::new(self.admin.clone());
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
-            let entry = loop {
-                let views = admin.nodes().await.unwrap_or_else(|e| panic!("the handover: the admin at {} lists no nodes: {e}", self.admin));
-                peers.learn_known(&views);
-                let entry = views.iter().find(|n| n.admin_api_base.as_deref() == Some(self.admin.as_str())).map(|n| n.name.clone()).unwrap_or_else(|| panic!("the handover: no node-admin of {} advertises the control base {}", self.fabric_id, self.admin));
-                let answers = tokio::time::timeout(std::time::Duration::from_secs(2), Fabrics::new(peers.carrier_at(entry.clone())).get()).await;
-                if matches!(answers, Ok(Ok(_))) {
-                    break entry;
-                }
-                assert!(tokio::time::Instant::now() < deadline, "the handover: {entry} (the admin at {}) does not answer fabric.get over Node RPC within 120 s; last: {answers:?}", self.admin);
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            };
-            *wire = Some(Wire { base: self.admin.clone(), peers, entry });
+            self.reach_entry(&peers, after_an_ending).await;
+            *wire = Some(Wire { peers, entry: self.admin.clone(), stale: false });
         }
         let w = wire.as_ref().expect("the handover was made");
         w.peers.carrier_at(w.entry.clone())
+    }
+
+    /// Make the node-admin `Estate::admin` reachable on `peers`. A birth an admin this estate started
+    /// printed is learned once, as printed: it is that process's own birth, which its door opens for
+    /// (node-rpc-envelope.md, "Node RPC readiness gate": the router answers NotReady until then), so the
+    /// handover waits until it answers `fabric.get`. `relearn` reads the views of every node-admin the
+    /// estate knows first.
+    async fn reach_entry(&self, peers: &Peers, relearn: bool) {
+        let printed = self.learn_printed(peers);
+        if relearn {
+            self.relearn(peers).await;
+        }
+        if let Some(birth) = printed.iter().find(|birth| birth.name == self.admin) {
+            self.await_door(peers, &self.admin, birth).await;
+        }
+    }
+
+    /// Learn, once, the births the admins this estate started printed. Returns what was learned.
+    fn learn_printed(&self, peers: &Peers) -> Vec<MeshNode> {
+        let printed = std::mem::take(&mut *self.printed.lock().unwrap());
+        for birth in &printed {
+            peers.learn_birth(birth).unwrap_or_else(|e| panic!("the handover: {} (node {}) printed a birth that cannot be dialled: {e}", birth.name, birth.node_id));
+        }
+        printed
+    }
+
+    /// Wait until the admin `entry`, which printed `birth`, answers `fabric.get` over Node RPC: its door
+    /// opens for its own birth (node-rpc-envelope.md, "Node RPC readiness gate": the router answers
+    /// NotReady until then).
+    async fn await_door(&self, peers: &Peers, entry: &PathName, birth: &MeshNode) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            let answer = tokio::time::timeout(std::time::Duration::from_secs(2), Fabrics::new(peers.carrier_at(entry.clone())).get()).await;
+            if matches!(answer, Ok(Ok(_))) {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "the handover: {entry} (node {}, incarnation {}, the birth it printed) does not answer fabric.get over Node RPC within 120 s; last: {answer:?}", birth.node_id, birth.incarnation.as_str());
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Read `node.get` at every node-admin the estate knows of, each answering for this Fabric within
+    /// its bound, and learn what each lists.
+    async fn relearn(&self, peers: &Peers) {
+        let admins: Vec<PathName> = self.births.lock().unwrap().keys().cloned().collect();
+        for admin in admins {
+            if let Some(views) = node_views_of(peers, &admin, &self.fabric_id).await {
+                self.note(peers, &views);
+            }
+        }
+    }
+
+    /// Make the nodes of `views` reachable on `peers` and hold the birth each live node-admin of them
+    /// advertises.
+    fn note(&self, peers: &Peers, views: &[NodeView]) {
+        peers.learn_known(views);
+        let mut births = self.births.lock().unwrap();
+        for n in views.iter().filter(|n| n.kind == NodeKind::NodeAdmin && !matches!(n.status, NodeStatus::Dead | NodeStatus::Deleted)) {
+            if let Some(birth) = birth_of_view(n) {
+                births.insert(n.name.clone(), birth);
+            }
+        }
     }
 
     /// A carrier whose calls start at the node-admin `admin`: its reads answer from that admin's view.
@@ -80,24 +129,44 @@ impl Estate {
     /// `node.get` of every node of every mesh `admin` holds, as that admin's view holds them, `None`
     /// when it does not answer for this Fabric within 2 s.
     pub async fn node_views_at(&self, admin: &PathName) -> Option<Vec<NodeView>> {
-        let carrier = self.carrier_at(admin).await;
-        let f = self.fabric_view_at(admin).await?;
-        let nodes = Nodes::new(carrier);
-        let mut all = Vec::new();
-        for mesh in f.meshes.iter().filter(|m| !m.nodes.is_empty()) {
-            all.extend(tokio::time::timeout(std::time::Duration::from_secs(2), nodes.get(&NodeSelector::Mesh(mesh.name.clone()))).await.ok()?.ok()?);
-        }
-        Some(all)
+        node_views_of(self.peers().await.as_ref(), admin, &self.fabric_id).await
     }
 
-    /// Forget the handover of the control base: the next call reads the admin's listing again. A wait on the
-    /// view does this when a read ends, because the admin the estate asks may have been reborn under the
-    /// base it advertises (a restarted node-admin takes its seat back with a new birth), and the listing
-    /// the control API gives is the only place the estate learns the new one.
+    /// Forget the handover of the entry admin: the next call makes it again, reading the views of every
+    /// node-admin the estate knows first. A wait on the view does this when a read ends, because the admin
+    /// the estate asks may hold a new birth at its name (a restarted node-admin takes its seat back with a
+    /// new birth), which a view of a live admin lists.
     async fn rehandover(&self) {
         if let Some(w) = self.wire.lock().await.as_mut() {
-            w.base.clear();
+            w.stale = true;
         }
+    }
+
+    /// Point the typed objects at the node-admin `admin`, by name. Its birth is already on `Peers` (an admin
+    /// this estate started printed it; any other is listed by a view the estate read), and the entry it
+    /// leaves is forgotten: a node-admin that died is never asked again. An admin that printed its birth
+    /// just now is waited for until its door opens.
+    pub async fn enter(&mut self, admin: &PathName) {
+        let peers = self.peers().await;
+        let printed = self.learn_printed(&peers);
+        match printed.iter().rev().find(|birth| birth.name == *admin) {
+            Some(birth) => self.await_door(&peers, admin, birth).await,
+            None => {
+                let views = node_views_of(&peers, admin, &self.fabric_id).await.unwrap_or_else(|| panic!("enter: {admin} does not answer node.get for {} over Node RPC; admins held: {:?}", self.fabric_id, self.births.lock().unwrap().keys().collect::<Vec<_>>()));
+                self.note(&peers, &views);
+            }
+        }
+        if self.admin != *admin {
+            self.births.lock().unwrap().remove(&self.admin);
+        }
+        self.admin = admin.clone();
+        *self.wire.lock().await = Some(Wire { peers, entry: admin.clone(), stale: false });
+    }
+
+    /// Point the typed objects at the fabric-primary the entry admin's `fabric.get` names.
+    pub async fn enter_fabric_primary(&mut self) {
+        let holder = self.fabric_view().await.fabric_primary.expect("fabric.get names the fabric-primary");
+        self.enter(&holder).await;
     }
 
     /// The admin the typed objects start at.
@@ -109,7 +178,7 @@ impl Estate {
     /// Make the nodes of `views` reachable by the typed objects.
     async fn learn(&self, views: &[NodeView]) {
         if let Some(w) = self.wire.lock().await.as_ref() {
-            w.peers.learn_known(views);
+            self.note(&w.peers, views);
         }
     }
 
@@ -251,6 +320,23 @@ impl Estate {
         all
     }
 
+    /// The view once it holds exactly `names`, every one ready-for-traffic, as `node.get` reads it at the
+    /// admin the estate asks. The answering admin learns a node another admin created by gossip, so its
+    /// view converges a moment after the Build's terminal frame (a wait on the view, bounded by `within`,
+    /// naming the last view when it does not settle).
+    pub async fn settles_to_named(&self, names: &std::collections::BTreeSet<String>, within: std::time::Duration) -> Vec<NodeView> {
+        self.until_view(&format!("the view holds exactly {names:?}, every node ready-for-traffic"), within, |views| {
+            let have: std::collections::BTreeSet<String> = views.iter().map(|n| n.name.to_string()).collect();
+            (&have == names && views.iter().all(|n| n.status == NodeStatus::ReadyForTraffic)).then(|| views.to_vec())
+        })
+        .await
+    }
+
+    /// `views` as the JSON each serializes to: the shape the cells record.
+    pub fn values(views: &[NodeView]) -> Vec<serde_json::Value> {
+        views.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect()
+    }
+
     /// The view once the fabric has recovered to `meshes` after a fault: every `(mesh, node_admin, rpc_node)`
     /// cohort holds exactly its count of nodes, every one ready-for-traffic. No stream announces it: the
     /// recovery is the rectifier's (a later attempt of the accepted Build, or a person's admin on a former
@@ -271,6 +357,20 @@ impl Estate {
         .await
     }
 
+    /// The view once every `(mesh, kind)` cohort of the fabric holds exactly its count of nodes in `want`, every
+    /// one ready-for-traffic: the view of the whole fabric, every mesh and kind named, as `node.get` reads it at
+    /// the admin the estate asks. `within` bounds the wait and a view that does not settle is named.
+    pub async fn settles_to_counts(&self, want: std::collections::BTreeMap<(String, NodeKind), usize>, within: std::time::Duration) -> Vec<NodeView> {
+        self.until_view(&format!("the view settles on {want:?}, every node ready-for-traffic"), within, |views| {
+            let mut have: std::collections::BTreeMap<(String, NodeKind), usize> = std::collections::BTreeMap::new();
+            for n in views {
+                *have.entry((n.mesh.clone(), n.kind)).or_default() += 1;
+            }
+            (have == want && views.iter().all(|n| n.status == NodeStatus::ReadyForTraffic)).then(|| views.to_vec())
+        })
+        .await
+    }
+
     /// Wait until the node `witness` holds the exact birth the admin's view lists for `node` (same node id,
     /// same incarnation): a node learns a peer's birth by gossip, not from the admin's settled view, so
     /// a call through a witness is made only once the witness's own held view of the mesh holds the birth
@@ -279,6 +379,14 @@ impl Estate {
         let (witness_view, birth) = (self.node_view(witness).await, self.node_view(node).await);
         let incarnation = birth.incarnation_id.clone().unwrap_or_else(|| panic!("{node} has no birth to hold: {birth:?}"));
         self.peers().await.fact(&witness_view, &birth.mesh, &format!("{witness} holds incarnation {incarnation:?} of {node}"), |v| v.birth(&birth.node_id).is_some_and(|d| d.node.incarnation == incarnation)).await;
+    }
+
+    /// Wait until the node `witness` retains the departure of `node_id` in its held view of `mesh`
+    /// (`node.topology.get`): a node learns a departure by gossip or from the retained aggregate, never
+    /// from a reply stream it holds, so the witness reports it and one that never does is named.
+    pub async fn holds_departure(&self, witness: &str, mesh: &str, node_id: &str) {
+        let witness_view = self.node_view(witness).await;
+        self.peers().await.fact(&witness_view, mesh, &format!("{witness} retains the departure of {node_id}"), |v| v.departed.iter().any(|d| d.node_id.as_str() == node_id)).await;
     }
 
     /// Wait for the answering admin's node view to hold a state no stream announces: `check` reads the
@@ -302,6 +410,26 @@ impl Estate {
                 }
             };
             assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what}; last view: {last}");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// [`Self::until_view`] at the node-admin `admin`: `check` reads what `node.get` of every mesh that admin
+    /// holds lists, as that admin's own view holds it, until it yields `Some`. An admin that does not answer
+    /// for this Fabric within 2 s is a read that ended, and the wait goes on to its own bound.
+    pub async fn until_view_at<T>(&self, admin: &PathName, what: &str, within: std::time::Duration, mut check: impl FnMut(&[NodeView]) -> Option<T>) -> T {
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let last = match self.node_views_at(admin).await {
+                Some(views) => {
+                    if let Some(v) = check(&views) {
+                        return v;
+                    }
+                    format!("{:?}", views.iter().map(|n| format!("{}={:?}/{}", n.name, n.status, n.node_id)).collect::<Vec<_>>())
+                }
+                None => format!("{admin} did not answer node.get for {}", self.fabric_id),
+            };
+            assert!(tokio::time::Instant::now() < deadline, "timed out after {within:?} waiting for: {what} (as {admin} holds its view); last view: {last}");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
@@ -378,30 +506,30 @@ impl Estate {
 
     /// The attempt the accepted Build `build_id` has reached, as `build.get` reads it.
     pub async fn attempt_of_build(&self, build_id: &str) -> u64 {
-        u64::from(self.builds_obj().await.get(&BuildId(build_id.into())).await.unwrap_or_else(|e| panic!("build.get of {build_id}: {e}")).attempt)
+        u64::from(self.builds_obj().await.get(&BuildId::parse(build_id).unwrap_or_else(|e| panic!("build.get of {build_id}: {e}"))).await.unwrap_or_else(|e| panic!("build.get of {build_id}: {e}")).attempt)
     }
 
-    /// `build.create` of `spec`, accepted: the stream of the Build that runs it. The Build the fabric
-    /// holds may still be reconciling (the Day-0 Build, or an earlier call's): its own stream says when
-    /// it is done, and `spec` is accepted after it.
+    /// `build.create` of `spec`, accepted: the stream of the Build that runs it. A cell that does not
+    /// test a refusal never has a submit refused: the estate's birth followed the Day-0 Build to its
+    /// terminal frame, and a cell follows each Build it started (`Estate::follow`) before it submits the
+    /// next, so a refusal here, a Build in progress included, is a defect of the cell and panics naming
+    /// the spec and the refusal.
     pub async fn submit(&self, spec: &BuildSpec) -> BuildStream {
-        match self.try_submit(spec).await {
+        match Builds::new(self.carrier().await).create(spec).await {
             Ok(stream) => stream,
             Err(e) => panic!("the fabric-primary refused build.create {spec:?}: {e}"),
         }
     }
 
-    /// [`Self::submit`], the refusal returned by name.
-    pub async fn try_submit(&self, spec: &BuildSpec) -> Result<BuildStream, CallEnd> {
-        let carrier = self.carrier().await;
-        let builds = Builds::new(carrier.clone());
-        match builds.create(spec).await {
-            Err(CallEnd::BuildInProgress { current }) => {
-                let mut running = carrier.resubmit(&current, 1).await.unwrap_or_else(|e| panic!("the fabric-primary does not stream the Build {current} it is reconciling: {e}"));
-                Self::until_complete(&mut running).await;
-                builds.create(spec).await
-            }
-            other => other,
+    /// `build.create` of `change` (a change of the accepted Build the carrier carries without a
+    /// [`BuildSpec`]: a replace, a mesh removal), accepted: the stream of the Build that runs it. A cell
+    /// that does not test a refusal never has a submit refused: the Build it started itself is followed to
+    /// its terminal frame (`Estate::follow`) before the next change is submitted, so a refusal here, a
+    /// Build in progress included, is a defect of the cell and panics naming the change and the refusal.
+    pub async fn submit_change(&self, change: Change) -> BuildStream {
+        match self.carrier().await.create(change.clone()).await {
+            Ok(stream) => stream,
+            Err(e) => panic!("the fabric-primary refused {change:?}: {e}"),
         }
     }
 
@@ -475,12 +603,17 @@ impl Estate {
 
     /// The node client the typed objects share: what a peer node holds of its mesh, by `Peers::fact`.
     pub async fn peers(&self) -> Arc<Peers> {
+        // The client outlives the entry admin: a read at a named admin (`fabric_view_at`, `node_views_at`) is made
+        // after the entry died, and only the first call, which has no client yet, needs the handover.
+        if let Some(w) = self.wire.lock().await.as_ref() {
+            return w.peers.clone();
+        }
         self.carrier().await;
         self.wire.lock().await.as_ref().expect("the handover was made").peers.clone()
     }
 
     /// Every frame of a workflow stream, to its end.
-    pub async fn drain(stream: &mut WorkflowStream) -> Vec<Frame> {
+    pub async fn frames_of(stream: &mut WorkflowStream) -> Vec<Frame> {
         let mut frames = Vec::new();
         while let Some(f) = stream.next().await {
             frames.push(f.unwrap_or_else(|e| panic!("the workflow stream broke: {e}")));
@@ -492,11 +625,23 @@ impl Estate {
     /// the call opened.
     pub async fn complete(stream: &mut WorkflowStream) -> Accepted {
         let accepted = stream.accepted().clone();
-        let frames = Self::drain(stream).await;
+        let frames = Self::frames_of(stream).await;
         match frames.last() {
             Some(Frame::Complete) => accepted,
             other => panic!("Build {} attempt {}: the workflow did not complete: {other:?} of {frames:?}", accepted.build_id, accepted.attempt),
         }
+    }
+
+    /// A workflow call the fabric-primary accepted, awaited to its `Complete`: a refusal is a defect of the
+    /// cell and `what` names the call.
+    pub async fn workflow(what: &str, call: Result<WorkflowStream, CallEnd>) -> Accepted {
+        let mut stream = call.unwrap_or_else(|end| panic!("the fabric-primary refused {what}: {end}"));
+        Self::complete(&mut stream).await
+    }
+
+    /// `name` as a path.name; a name that is not one is a defect of the cell.
+    pub fn path(name: &str) -> PathName {
+        name.parse().unwrap_or_else(|e| panic!("{name} is not a path.name: {e:?}"))
     }
 
     /// Re-learn every node the admin lists, so the typed objects reach births the last Build made.
@@ -533,4 +678,16 @@ pub async fn fabric_view_of(peers: &Peers, admin: &PathName, fabric_id: &str) ->
     let fabrics = Fabrics::new(peers.carrier_at(admin.clone()));
     let f = tokio::time::timeout(std::time::Duration::from_secs(2), fabrics.get()).await.ok()?.ok()?;
     (f.id.to_string() == fabric_id).then_some(f)
+}
+
+/// `node.get` of every node of every mesh `admin` holds, over `peers`, as that admin's view holds them:
+/// `None` when it does not answer for the Fabric `fabric_id` within 2 s a call.
+pub async fn node_views_of(peers: &Peers, admin: &PathName, fabric_id: &str) -> Option<Vec<NodeView>> {
+    let f = fabric_view_of(peers, admin, fabric_id).await?;
+    let nodes = Nodes::new(peers.carrier_at(admin.clone()));
+    let mut all = Vec::new();
+    for mesh in f.meshes.iter().filter(|m| !m.nodes.is_empty()) {
+        all.extend(tokio::time::timeout(std::time::Duration::from_secs(2), nodes.get(&NodeSelector::Mesh(mesh.name.clone()))).await.ok()?.ok()?);
+    }
+    Some(all)
 }

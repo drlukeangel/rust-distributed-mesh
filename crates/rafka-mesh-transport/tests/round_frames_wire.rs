@@ -16,8 +16,8 @@ fn hook(operation: &str, publisher: &str) -> RoundHook {
     RoundHook {
         fabric_id: FabricId::parse("04raj09p3zp7").unwrap(),
         node_id: NodeId::parse("0123456789ab").unwrap(),
-        incarnation: IncarnationId("birth".into()),
-        build_id: "bld_1".into(),
+        incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(),
+        build_id: "66h8qrqvaajk".into(),
         attempt: 1,
         operation: operation.into(),
         publisher: publisher.into(),
@@ -25,8 +25,8 @@ fn hook(operation: &str, publisher: &str) -> RoundHook {
     }
 }
 
-// fabric_id "04raj09p3zp7", node_id "0123456789ab", incarnation "birth", build_id "bld_1", attempt 1.
-const SUBJECT: &str = "0c 303472616a30397033 7a7037  0c 303132333435363738396162  05 6269727468  05 626c645f31  01";
+// fabric_id "04raj09p3zp7", node_id "0123456789ab", incarnation "birth", build_id "66h8qrqvaajk", attempt 1.
+const SUBJECT: &str = "0c 303472616a30397033 7a7037  0c 303132333435363738396162  0c 397763707266677776746879  0c 363668387172717661616a6b  01";
 // operation: length 25, the verb and colon, the fabric id.
 const COMMIT: &str = "19 636f6d6d69742d73746174653a 303472616a303970337a7037";
 const OPEN: &str = "19 6f70656e2d747261666669633a 303472616a303970337a7037";
@@ -55,7 +55,7 @@ fn fabric_round_hook_frames_match_the_frozen_wire_schema() {
     }
     // The frames that existed keep their positions.
     assert_eq!(Frame::NodeDrained { op: rafka_mesh_entity::LifecycleOp {
-        build_id: "bld_1".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId("birth".into()), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 300 },
+        build_id: "66h8qrqvaajk".into(), attempt: 1, operation: "drain-node:mesh1.rpc.1".into(), node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(), name: "mesh1.rpc.1".parse().unwrap(), event_at_rafka_ms: 300 },
         forwarded_by: None }.encode()[0], 13);
 }
 

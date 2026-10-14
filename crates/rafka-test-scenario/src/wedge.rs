@@ -15,7 +15,7 @@
 //!             re-attempted nor re-born
 //! release     the injection was released and the hold ended
 //! recovery    the work the cut held completed, and its progress marker moved past the stall
-//! reconciled  every final-state check holds (receipts once, one runtime, the pointer, the ledger)
+//! reconciled  every final-state check holds (receipts once, one runtime, the current Build, the ledger)
 //! dispatches  no call reached a birth after that birth was superseded
 //! ```
 //!
@@ -75,7 +75,6 @@ pub enum Family {
     BuildStep,
     DeploymentStep,
     AcceptedBuildPersistence,
-    FabricPointerCatchUp,
     BuildInProgressRefusal,
     RuntimeFactProduction,
     RuntimeFactPublication,
@@ -95,13 +94,12 @@ pub enum Family {
 }
 
 impl Family {
-    pub const ALL: [Family; 22] = [
+    pub const ALL: [Family; 21] = [
         Family::RequestPreSend,
         Family::RequestPostApply,
         Family::BuildStep,
         Family::DeploymentStep,
         Family::AcceptedBuildPersistence,
-        Family::FabricPointerCatchUp,
         Family::BuildInProgressRefusal,
         Family::RuntimeFactProduction,
         Family::RuntimeFactPublication,
@@ -127,7 +125,6 @@ impl Family {
             Family::BuildStep => "build-step",
             Family::DeploymentStep => "deployment-step",
             Family::AcceptedBuildPersistence => "accepted-build-persistence",
-            Family::FabricPointerCatchUp => "fabric-pointer-catch-up",
             Family::BuildInProgressRefusal => "build-in-progress-refusal",
             Family::RuntimeFactProduction => "runtime-fact-production",
             Family::RuntimeFactPublication => "runtime-fact-publication",

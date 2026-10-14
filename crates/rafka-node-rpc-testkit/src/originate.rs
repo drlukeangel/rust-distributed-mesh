@@ -292,6 +292,8 @@ pub struct Seams {
     pub connections: Arc<ConnectionsWriter>,
     /// The storage fault the door arms and releases.
     pub fault: Arc<StorageFault>,
+    /// The name this birth holds now: every door names the node by it, per call.
+    pub name: crate::held_name::HeldName,
 }
 
 /// Serve the door on this node's own seams, with the testkit's default carrier policy ([`POLICY`]).
@@ -304,10 +306,12 @@ pub fn serve(b: ServerBuilder, seams: Seams, launch: &Launch) -> ServerBuilder {
 /// (`rafka_mesh_entity::connections::resolve`). A shape whose carriers are not `rpc_node`s (a
 /// gateway carrying for a compute) declares its own kind here.
 pub fn serve_with_policy(b: ServerBuilder, seams: Seams, launch: &Launch, policy: CarrierPolicy) -> ServerBuilder {
-    let by = AnsweredBy { node_id: launch.node_id.to_string(), node: launch.name.to_string(), incarnation_id: launch.incarnation.to_string() };
-    let own: PathName = launch.name.clone();
+    let (node_id, incarnation_id) = (launch.node_id.to_string(), launch.incarnation.to_string());
     b.serve::<Originate, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: OriginateRequest| {
-        let (by, seams, own) = (by.clone(), seams.clone(), own.clone());
+        // The node answers and routes under the name it holds at this call (R12).
+        let own: PathName = seams.name.now();
+        let by = AnsweredBy { node_id: node_id.clone(), node: own.to_string(), incarnation_id: incarnation_id.clone() };
+        let seams = seams.clone();
         async move {
             Ok(match req {
                 OriginateRequest::Call { destination, op } => call(&by, &seams, &own, &destination, op, policy).await,
@@ -428,7 +432,7 @@ async fn record_proxy(by: &AnsweredBy, seams: &Seams, destination: &str, carrier
     for _ in 0..failed_attempts {
         seams.connections.direct_failed(&dest, "testkit seed: the direct dial ended NotSent");
     }
-    seams.connections.drain().await;
+    seams.connections.observations_landed().await;
     let end = |n: &rafka_node_rpc::ResolvedNode| ConnectionEnd { name: n.name.clone(), node_id: n.node_id.clone(), incarnation: Some(n.incarnation.clone()) };
     let row = NodeConnection {
         id: rafka_mesh_entity::ConnectionId::mint(),
@@ -465,7 +469,7 @@ mod tests {
     use rafka_mesh_entity::{IncarnationId, NodeId};
 
     fn end(kind: NodeKind, ordinal: u32, inc: &str) -> ConnectionEnd {
-        ConnectionEnd { name: PathName { mesh: "mesh1".into(), kind, ordinal, old: false, new: false }, node_id: NodeId::mint(), incarnation: Some(IncarnationId(inc.into())) }
+        ConnectionEnd { name: PathName { mesh: "mesh1".into(), kind, ordinal, old: false, new: false }, node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap()) }
     }
 
     fn row(source: &ConnectionEnd, destination: &ConnectionEnd, kind: ConnectionKind, carrier: Option<&ConnectionEnd>, at: u64) -> NodeConnection {

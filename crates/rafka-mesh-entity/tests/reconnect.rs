@@ -10,7 +10,7 @@ use rafka_mesh_entity::{IncarnationId, NodeId, NodeKind, PathName};
 const RPC: CarrierPolicy = CarrierPolicy::Forwardable { carrier_kind: NodeKind::RpcNode };
 
 fn end(ordinal: u32, incarnation: &str) -> ConnectionEnd {
-    ConnectionEnd { name: PathName { mesh: "mesh1".into(), kind: NodeKind::RpcNode, ordinal, old: false, new: false }, node_id: NodeId::mint(), incarnation: Some(IncarnationId(incarnation.into())) }
+    ConnectionEnd { name: PathName { mesh: "mesh1".into(), kind: NodeKind::RpcNode, ordinal, old: false, new: false }, node_id: NodeId::mint(), incarnation: Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(incarnation)).unwrap()) }
 }
 
 fn held_for(own: &ConnectionEnd) -> ConnectionsHeld {
@@ -57,9 +57,9 @@ fn after_a_restart_the_backoff_is_reconstructed_from_the_latest_failed_row_not_r
     let latest = failing_series(&own, &dest);
     assert_eq!(latest.recovery.map(|r| (r.recovery_epoch, r.attempt_ordinal)), Some((1, 3)), "one epoch, ordinal counted from 1");
 
-    let before = reconnect_plan(&single(&own, &latest), |_| Some(IncarnationId("d1".into())));
+    let before = reconnect_plan(&single(&own, &latest), |_| Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("d1")).unwrap()));
     // A restart: a fresh projection handed the same latest row.
-    let after = reconnect_plan(&single(&own, &latest), |_| Some(IncarnationId("d1".into())));
+    let after = reconnect_plan(&single(&own, &latest), |_| Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("d1")).unwrap()));
     assert_eq!(before, after);
     let want = 1000 + reconnect_backoff(3) + deterministic_jitter(&own.name, &dest.name, 3);
     assert_eq!(after[0].due_ms, want);
@@ -81,7 +81,7 @@ fn a_series_for_a_superseded_destination_process_is_not_owed() {
     let (own, dest) = (end(1, "o1"), end(3, "d1"));
     let latest = failing_series(&own, &dest);
     let h = single(&own, &latest);
-    assert!(reconnect_plan(&h, |_| Some(IncarnationId("d2".into()))).is_empty());
+    assert!(reconnect_plan(&h, |_| Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("d2")).unwrap())).is_empty());
     assert_eq!(reconnect_plan(&h, |_| None).len(), 1, "an unknown current process keeps the series");
 }
 

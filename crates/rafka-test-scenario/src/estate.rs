@@ -6,6 +6,7 @@
 
 use rafka_node_admin_client::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated, ENV_EXECUTABLE_BINDINGS, ENV_EXECUTABLE_CANDIDATE};
 use rafka_node_admin_client::LaunchKind as NodeKind;
+use rafka_node_admin_client::{birth_of_line, MeshNode, BIRTH_LINE};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -57,30 +58,49 @@ pub fn bin_dir() -> PathBuf {
     }
 }
 
-/// Start a `rafka-node-admin` with `env` and wait for the control API base it advertises.
-fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, String) {
+/// What a started node-admin prints before it serves: the birth its Node RPC door serves under
+/// (`rafka_node_admin_client::BIRTH_LINE`), then its control base. The receiver gets the birth once the
+/// base line is read, or the refusal of an admin that printed its base and no birth (or a birth that
+/// does not decode). The reader goes on reading the pipe after it.
+fn read_announcement(stdout: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<Result<MeshNode, String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut birth: Option<Result<MeshNode, String>> = None;
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(b) = birth_of_line(&line) {
+                birth = Some(b);
+            } else if let Some(base) = line.strip_prefix("RDM_NODE_ADMIN_API_BASE=") {
+                let base = base.trim().to_string();
+                let _ = tx.send(match birth.take() {
+                    Some(Ok(b)) => Ok(b),
+                    Some(Err(e)) => Err(e),
+                    None => Err(format!("printed its control base {base} and no birth ({BIRTH_LINE}) before it")),
+                });
+            }
+        }
+    });
+    rx
+}
+
+/// Start a `rafka-node-admin` with `env` and wait for what it prints before it serves: the birth it
+/// runs under.
+fn spawn_admin(exe: &Path, env: &[(&str, String)], what: &str) -> (Child, MeshNode) {
     let mut cmd = Command::new(exe);
     for (k, v) in env {
         cmd.env(k, v);
     }
     let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap_or_else(|e| panic!("spawn {what}: {e}"));
-    let stdout = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(base) = line.strip_prefix("RDM_NODE_ADMIN_API_BASE=") {
-                let _ = tx.send(base.trim().to_string());
-            }
-        }
-    });
-    let Ok(base) = rx.recv_timeout(Duration::from_secs(30)) else {
-        // No Estate exists yet to stop it: the process is stopped here, before the refusal.
-        let status = child.try_wait().ok().flatten().map(|s| s.to_string()).unwrap_or_else(|| "still running; killed".into());
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("{what} never advertised RDM_NODE_ADMIN_API_BASE within 30 s (pid {}, {status})", child.id());
+    let rx = read_announcement(child.stdout.take().unwrap());
+    let refusal = match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(Ok(birth)) => return (child, birth),
+        Ok(Err(e)) => format!("{what} {e}"),
+        Err(_) => format!("{what} never advertised RDM_NODE_ADMIN_API_BASE within 30 s"),
     };
-    (child, base)
+    // No Estate exists yet to stop it: the process is stopped here, before the refusal.
+    let status = child.try_wait().ok().flatten().map(|s| s.to_string()).unwrap_or_else(|| "still running; killed".into());
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("{refusal} (pid {}, {status})", child.id());
 }
 
 fn docker(args: &[&str]) -> Result<String, String> {
@@ -122,7 +142,7 @@ pub const RUNTIME_IMAGE: &str = rafka_chaos::container_faults::RUNTIME_IMAGE;
 /// is given an address on it, and it drives the host's Docker daemon through its socket. The
 /// returned child is the attached `docker run`; the container is labelled like every container of
 /// the fabric, so the estate stops and removes it with them.
-fn spawn_admin_in_container(env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf]) -> (Child, String, String) {
+fn spawn_admin_in_container(env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf]) -> (Child, MeshNode, String) {
     spawn_admin_in_container_within(env, root, evidence, node, exe, read_dirs, ADVERTISE_WITHIN, "docker").unwrap_or_else(|e| panic!("{}", e.message))
 }
 
@@ -189,7 +209,7 @@ pub fn remove_fabric(fabric_id: &str, artifacts: Option<&Path>) -> Vec<String> {
 /// give-up: `docker create` is awaited to completion (never abandoned in flight), then the
 /// container is started attached. `program` is the Docker client for those two calls. When `within` passes before the API base is advertised, the
 /// start is killed and everything labelled with the fabric, plus its network, is removed.
-pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf], within: Duration, program: &str) -> Result<(Child, String, String), GiveUp> {
+pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path, evidence: &Path, node: &str, exe: &Path, read_dirs: &[PathBuf], within: Duration, program: &str) -> Result<(Child, MeshNode, String), GiveUp> {
     let begun = Instant::now();
     let fabric_id = mint_fabric_id();
     let network = format!("rafka-{fabric_id}");
@@ -276,20 +296,14 @@ pub fn spawn_admin_in_container_within(mut env: Vec<(&str, String)>, root: &Path
     }
     let started = Instant::now();
     let mut child = Command::new(program).args(["start", "-a", &name]).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().expect("docker start the Day-0 node-admin");
-    let stdout = child.stdout.take().unwrap();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(base) = line.strip_prefix("RDM_NODE_ADMIN_API_BASE=") {
-                let _ = tx.send(base.trim().to_string());
-            }
-        }
-    });
-    let Ok(base) = rx.recv_timeout(within.saturating_sub(begun.elapsed())) else {
-        return Err(give_up(format!("never advertised RDM_NODE_ADMIN_API_BASE within {within:?}"), Some(child)));
+    let rx = read_announcement(child.stdout.take().unwrap());
+    let birth = match rx.recv_timeout(within.saturating_sub(begun.elapsed())) {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => return Err(give_up(e, Some(child))),
+        Err(_) => return Err(give_up(format!("never advertised RDM_NODE_ADMIN_API_BASE within {within:?}"), Some(child))),
     };
-    eprintln!("[container] {name} advertised {base} {:?} after docker start", started.elapsed());
-    Ok((child, base, fabric_id))
+    eprintln!("[container] {name} advertised its birth {} {:?} after docker start", birth.name, started.elapsed());
+    Ok((child, birth, fabric_id))
 }
 
 pub fn binary(name: &str) -> PathBuf {
@@ -307,13 +321,11 @@ pub fn binary(name: &str) -> PathBuf {
 }
 
 /// The package that builds `name`, for the rebuild command a refusal names.
-fn package_of(name: &str) -> &'static str {
+pub(crate) fn package_of(name: &str) -> &'static str {
     match name {
         "rafka-node-admin" => "rafka-node-admin-core",
         "rafka-rpc-probe" | "rafka-rpc-node" | "faulted-node-admin" => "rafka-node-rpc-testkit",
-        "rafka-broker" => "rafka-broker",
-        "rafka-gateway" => "rafka-gateway",
-        "rafka-compute" => "rafka-compute",
+        "rafka-node" => "rafka-node-base",
         _ => "<the package of this binary>",
     }
 }
@@ -475,7 +487,8 @@ pub fn estate_store_dir(root: &Path) -> PathBuf {
     root.join("store")
 }
 
-fn estate_root(test: &str) -> PathBuf {
+/// A fresh root for one run of `test`: an estate, or a cell that starts a node-admin of its own.
+pub fn estate_root(test: &str) -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!("i143-{test}-{}-{n}", std::process::id()))
@@ -519,7 +532,8 @@ rm -rf "$root"
 "#;
 
 impl EstateScope {
-    fn begin(root: &Path) -> Self {
+    /// The scope of `root`: its reaper starts now, and dropping the scope removes the root.
+    pub fn begin(root: &Path) -> Self {
         use std::os::unix::process::CommandExt;
         let mut cmd = Command::new("sh");
         cmd.args(["-c", REAPER, "estate-reaper", &std::process::id().to_string(), &root.display().to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -549,7 +563,9 @@ pub struct Estate {
     pub root: PathBuf,
     pub artifacts: PathBuf,
     pub evidence: PathBuf,
-    pub admin: String,
+    /// The node-admin the estate enters at: the typed objects start at it, and a probe is given its birth
+    /// ([`Self::entry_birth`]). [`Estate::enter`] changes it.
+    pub admin: rafka_node_admin_client::PathName,
     /// This estate's Fabric id. Control addresses are loopback ports that other estates on the
     /// host reuse once a runtime dies: an admin answers for this estate only when its view names
     /// this id ([`Self::fabric_at`]).
@@ -561,16 +577,22 @@ pub struct Estate {
     seed: Option<u64>,
     /// Admins this estate restarted on their own data dirs.
     restarted: Vec<Child>,
-    http: reqwest::Client,
-    /// The handover of the typed objects (`crate::typed`): made once per control base.
+    /// The handover of the typed objects (`crate::typed`): made once per entry admin.
     pub(crate) wire: tokio::sync::Mutex<Option<crate::typed::Wire>>,
+    /// The births the admins this estate started printed, not yet learned by the typed objects
+    /// (`crate::typed`, the handover learns each once).
+    pub(crate) printed: std::sync::Mutex<Vec<MeshNode>>,
+    /// The birth each live node-admin `path.name` holds now, as an admin this estate started printed it
+    /// or a view the estate read lists it: the admins the estate reads views of, and the entry a probe is
+    /// given ([`Self::entry_birth`]).
+    pub(crate) births: std::sync::Mutex<std::collections::BTreeMap<rafka_node_admin_client::PathName, MeshNode>>,
     /// Dropped last: stops the reaper and removes the root.
     _scope: EstateScope,
 }
 
 impl Estate {
     /// Start the first node-admin of `fabric` (bootstrap selects the provider)
-    /// and wait for its advertised control API base.
+    /// and wait for the birth it prints.
     pub async fn bootstrap(owner: Owner, fabric: &str, mesh: &str) -> Self {
         refuse_built_ins_in_consumer_mode("Estate::bootstrap");
         Self::born(owner, fabric, mesh, None, &[]).await
@@ -639,25 +661,36 @@ impl Estate {
         };
         // A container fabric's Day-0 admin runs in a container of that fabric, so every admin of
         // the fabric is a container a successor can control in the same Docker domain.
-        let (child, admin, container_fabric) = if owner.provider == "container" {
+        let (child, birth, container_fabric) = if owner.provider == "container" {
             let read_dirs = external.as_ref().map(ExternalLaunch::read_dirs).unwrap_or_default();
             spawn_admin_in_container(env, &root, &evidence, &format!("{mesh}.admin.1"), &admin_exe, &read_dirs)
         } else {
-            let (c, a) = spawn_admin(&admin_exe, &env, "bootstrap node-admin");
-            (c, a, String::new())
+            let (c, b) = spawn_admin(&admin_exe, &env, "bootstrap node-admin");
+            (c, b, String::new())
         };
         // A container fabric's id is the one minted for its network: the estate holds it from
         // birth, so a panic before the fabric answers still removes the fabric's containers.
-        let mut estate = Self { owner, root, artifacts, evidence, admin, fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), http: reqwest::Client::new(), wire: tokio::sync::Mutex::new(None), _scope: scope };
+        let mut estate = Self { owner, root, artifacts, evidence, admin: birth.name.clone(), fabric_id: container_fabric, bootstrap: Some(child), external, seed: None, restarted: Vec::new(), wire: tokio::sync::Mutex::new(None), printed: std::sync::Mutex::new(Vec::new()), births: Default::default(), _scope: scope };
+        estate.hold_printed(birth);
         estate.write_manifest();
         // Topology is accepted only by the fabric-primary: the bootstrap admin is one once it is
-        // Ready and elected, not when its API first answers.
-        estate.fabric_id = wait_for("the bootstrap admin holds the fabric", Duration::from_secs(30), || async {
-            let f = estate.get("/api/fabric").await.1;
-            f["fabric_primary"].as_str()?;
-            f["id"].as_str().filter(|i| !i.is_empty()).map(String::from)
+        // Ready and elected, not when it first answers. `fabric.get` at it names the seat, the Fabric
+        // and the current Build, which is the Day-0 Build it accepted at its start (its own mesh with
+        // one node-admin, R-BI3).
+        let (fabric_id, day_zero) = wait_for("the bootstrap admin holds the fabric", Duration::from_secs(30), || async {
+            let f = estate.try_fabric_view().await.ok()?;
+            f.fabric_primary.as_ref()?;
+            Some(f.id.to_string()).filter(|i| !i.is_empty()).map(|id| (id, f.build_id))
         })
         .await;
+        estate.fabric_id = fabric_id;
+        // The estate started the Day-0 Build by starting its admin, so it follows that Build to its
+        // terminal frame before a cell submits anything: a cell's first build.create is never refused
+        // for a Build in progress it did not start.
+        let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
+        let id = rafka_node_admin_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
+        let mut stream = estate.carrier().await.resubmit(&id, 1).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));
+        Self::until_complete(&mut stream).await;
         estate
     }
 
@@ -668,7 +701,7 @@ impl Estate {
             &json!({
                 "product": o.product, "feature": o.feature, "subfeature": o.subfeature,
                 "rung": o.rung, "provider": o.provider, "test": o.test,
-                "seed": self.seed, "control_api": self.admin,
+                "seed": self.seed, "entry_admin": self.admin.to_string(),
                 "executable_bindings": self.external.as_ref().map(|x| json!({ "mode": "explicit", "binding_file": x.file, "receipt": x.validated.receipt() })).unwrap_or_else(|| json!({ "mode": "built-in" })),
             }),
         );
@@ -693,192 +726,6 @@ impl Estate {
         writeln!(f, "{entry}").unwrap();
     }
 
-    /// `GET base/api/fabric`, only when the admin at `base` answers for this estate's Fabric.
-    pub async fn fabric_at(&self, base: &str) -> Option<Value> {
-        own_fabric_at(base, &self.fabric_id).await
-    }
-
-    pub async fn get(&self, path: &str) -> (u16, Value) {
-        let r = self.http.get(format!("{}{path}", self.admin)).send().await.expect("control API reachable");
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// `GET path` on another admin's control API (`base`).
-    pub async fn http_get(&self, base: &str, path: &str) -> (u16, Value) {
-        let r = self.http.get(format!("{base}{path}")).send().await.expect("control API reachable");
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// `POST base+path` with `body`: status and the JSON body (or `Null`).
-    pub async fn http_post(&self, base: &str, path: &str, body: &Value) -> (u16, Value) {
-        let r = self.http.post(format!("{base}{path}")).json(body).send().await.unwrap_or_else(|e| panic!("POST {base}{path}: {e}"));
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// `POST` to this estate's entry admin, as is.
-    pub async fn post_raw(&self, path: &str, body: &Value) -> (u16, Value) {
-        self.http_post(&self.admin, path, body).await
-    }
-
-    /// `DELETE base+path`, as is.
-    pub async fn delete_at(&self, base: &str, path: &str) -> (u16, Value) {
-        let r = self.http.delete(format!("{base}{path}")).send().await.unwrap_or_else(|e| panic!("DELETE {base}{path}: {e}"));
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// `DELETE` at this estate's entry admin, as is.
-    pub async fn delete_raw(&self, path: &str) -> (u16, Value) {
-        let r = self.http.delete(format!("{}{path}", self.admin)).send().await.expect("control API reachable");
-        let status = r.status().as_u16();
-        (status, r.json().await.unwrap_or(Value::Null))
-    }
-
-    /// A topology request: what an operator does. Topology is accepted only by the current
-    /// fabric-primary, one Build at a time, so the request goes to the fabric control endpoint
-    /// the entry admin advertises, follows the seat if it answers `rejected-not-authority`, and
-    /// waits out a Build still reconciling (`build-in-progress`, or `attempt-taken`: the number the
-    /// request computed was opened first for the Build's own drift attempt), for up to two minutes. Every
-    /// other answer is returned as is.
-    async fn topology_request(&self, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
-        let deadline = Instant::now() + Duration::from_secs(120);
-        let mut last = (0u16, Value::Null);
-        loop {
-            let advertised = self.get("/api/fabric").await.1["admin_api_base"].as_str().filter(|b| !b.is_empty()).map(String::from);
-            let base = match advertised {
-                Some(b) if self.fabric_at(&b).await.is_some() => b,
-                _ => self.admin.clone(),
-            };
-            // Removing a node: the authority removes a birth it sees, so give its view the moment
-            // gossip needs to hear a node another Mesh just created.
-            if method == "DELETE" {
-                if let Some(name) = path.strip_prefix("/api/nodes/") {
-                    let seen_by = Instant::now() + Duration::from_secs(10);
-                    while Instant::now() < seen_by {
-                        let v = self.http_get(&base, "/api/nodes").await.1;
-                        if v["nodes"].as_array().is_some_and(|ns| ns.iter().any(|n| n["name"] == name && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect")))) {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
-                }
-            }
-            let r = match (method, body) {
-                ("DELETE", _) => self.http.delete(format!("{base}{path}")).send().await,
-                (_, Some(b)) => self.http.post(format!("{base}{path}")).json(b).send().await,
-                _ => self.http.post(format!("{base}{path}")).send().await,
-            };
-            if let Ok(r) = r {
-                let status = r.status().as_u16();
-                let v = r.json().await.unwrap_or(Value::Null);
-                let waits = status == 409 && matches!(v["error"].as_str(), Some("rejected-not-authority") | Some("build-in-progress") | Some("attempt-taken"));
-                if !waits {
-                    return (status, v);
-                }
-                last = (status, v);
-            }
-            assert!(Instant::now() < deadline, "{method} {path}: no fabric-primary accepted it within 120s; last answer: {} {}", last.0, last.1);
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
-    }
-
-    pub async fn post(&self, path: &str, body: &Value) -> (u16, Value) {
-        if path.starts_with("/api/build") || path.starts_with("/api/nodes") || path.starts_with("/api/meshes") {
-            return self.topology_request("POST", path, Some(body)).await;
-        }
-        self.post_raw(path, body).await
-    }
-
-    pub async fn delete(&self, path: &str) -> (u16, Value) {
-        if path.starts_with("/api/nodes") || path.starts_with("/api/meshes") {
-            return self.topology_request("DELETE", path, None).await;
-        }
-        self.delete_raw(path).await
-    }
-
-    /// Wait until Build `id` is `complete`; a `failed` Build fails the test.
-    pub async fn await_build(&self, id: &str, within: Duration) -> Value {
-        wait_for(&format!("build {id} complete"), within, || async {
-            let (_, b) = self.get(&format!("/api/builds?id={id}")).await;
-            match b["state"].as_str() {
-                Some("complete") => Some(b),
-                Some("failed") => panic!("build {id} failed: {b:#}"),
-                _ => None,
-            }
-        })
-        .await
-    }
-
-    /// The attempt a 202 named: the one its request opened (attempt 1 for an accepted Build).
-    pub fn attempt_of(accepted: &Value) -> u64 {
-        accepted["attempt"].as_u64().unwrap_or_else(|| panic!("the 202 names the attempt it opened: {accepted}"))
-    }
-
-    /// Wait until attempt `attempt` of Build `id` is complete, where `attempt` is the one the
-    /// request that opened it answered 202 with. The Build's reported attempt must have reached
-    /// `attempt` and that attempt must have converged; a Build still reporting an earlier
-    /// attempt's `complete` is not yet this attempt's. A failed attempt fails the test with the
-    /// Build JSON.
-    pub async fn await_attempt(&self, id: &str, attempt: u64, within: Duration) -> Value {
-        wait_for(&format!("build {id} attempt {attempt} complete"), within, || async {
-            let (_, b) = self.get(&format!("/api/builds?id={id}")).await;
-            attempt_verdict(id, attempt, &b)
-        })
-        .await
-    }
-
-    pub async fn nodes(&self) -> Vec<Value> {
-        let (status, v) = self.get("/api/nodes").await;
-        assert_eq!(status, 200, "GET /api/nodes: {v}");
-        v["nodes"].as_array().cloned().unwrap_or_default()
-    }
-
-    /// `GET /api/nodes` from the admin serving `base` (another admin's view).
-    pub async fn nodes_at(&self, base: &str) -> Vec<Value> {
-        let r = self.http.get(format!("{base}/api/nodes")).send().await.expect("control API reachable");
-        assert_eq!(r.status().as_u16(), 200, "GET {base}/api/nodes");
-        let v: Value = r.json().await.unwrap_or(Value::Null);
-        v["nodes"].as_array().cloned().unwrap_or_default()
-    }
-
-    /// The view once every cohort holds exactly its desired count of nodes
-    /// (`(mesh, node_admin, rpc_node)`), every one ready for traffic. A
-    /// Build's shape is counts, not paths: shrink retires non-primaries, so
-    /// which ordinals remain depends on where the seats are.
-    pub async fn settled_shape(&self, meshes: &[(&str, u32, u32)], within: Duration) -> Vec<Value> {
-        let want: std::collections::BTreeMap<(String, String), usize> = meshes
-            .iter()
-            .flat_map(|(m, a, r)| [((m.to_string(), "node_admin".to_string()), *a as usize), ((m.to_string(), "rpc_node".to_string()), *r as usize)])
-            .collect();
-        self.settled_counts(want, within).await
-    }
-
-    /// The view once every `(mesh, kind)` cohort holds exactly its count of nodes, every one ready
-    /// for traffic.
-    pub async fn settled_counts(&self, want: std::collections::BTreeMap<(String, String), usize>, within: Duration) -> Vec<Value> {
-        let until = Instant::now() + within;
-        loop {
-            let nodes = self.nodes().await;
-            let mut have: std::collections::BTreeMap<(String, String), usize> = std::collections::BTreeMap::new();
-            for n in &nodes {
-                *have.entry((n["mesh"].as_str().unwrap_or("").into(), n["kind"].as_str().unwrap_or("").into())).or_default() += 1;
-            }
-            if have == want && nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
-                return nodes;
-            }
-            if Instant::now() >= until {
-                panic!("the view never settled on {want:?} within {within:?}; last view: {have:?}: {nodes:#?}");
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// `node`'s data dir. Only the admin that launched a node advertises it,
-    /// and that is whichever admin executed its creation, so every live
-    /// admin's view is asked.
     /// The fabric's store root, `<estate store_dir>/<fabric id>/` (R14): the one fabric directory the
     /// estate's store_dir holds beside the fabrics' name index (`fabrics/`, R-FN1).
     pub fn fabric_store_root(&self) -> PathBuf {
@@ -901,21 +748,6 @@ impl Estate {
         self.fabric_store_root().join("connections").join(node)
     }
 
-    pub async fn data_dir_of(&self, node: &str) -> String {
-        let bases: Vec<String> = std::iter::once(self.admin.clone())
-            .chain(self.nodes().await.iter().filter(|n| n["kind"] == "node_admin" && n["status"] == "ready-for-traffic").filter_map(|n| n["admin_api_base"].as_str().map(String::from)))
-            .collect();
-        for base in bases {
-            let Ok(r) = self.http.get(format!("{base}/api/nodes")).timeout(Duration::from_secs(2)).send().await else { continue };
-            let v: Value = r.json().await.unwrap_or(Value::Null);
-            let dir = v["nodes"].as_array().into_iter().flatten().find(|n| n["name"] == node).and_then(|n| n["data_dir"].as_str().map(String::from));
-            if let Some(dir) = dir {
-                return dir;
-            }
-        }
-        panic!("no live admin advertises {node}'s data dir")
-    }
-
     /// The pid of `node`'s runtime: its process (process provider: its `deployment.json`), or its
     /// container's init as the host sees it (container provider).
     pub async fn pid_of(&self, node: &str) -> u64 {
@@ -935,54 +767,9 @@ impl Estate {
         assert!(ok, "kill -9 {pid} ({node})");
     }
 
-    /// The view once it holds exactly `names`, every one ready for traffic.
-    /// A Build can complete on another admin (a mesh's own primary) before
-    /// this admin hears the last member it created: the view converges
-    /// within gossip delay, and a view that does not within `within` fails.
-    pub async fn settled(&self, names: &std::collections::BTreeSet<String>, within: Duration) -> Vec<Value> {
-        let deadline = Instant::now() + within;
-        loop {
-            let nodes = self.nodes().await;
-            let have: std::collections::BTreeSet<String> = nodes.iter().filter_map(|n| n["name"].as_str().map(str::to_string)).collect();
-            if &have == names && nodes.iter().all(|n| n["status"] == "ready-for-traffic") {
-                return nodes;
-            }
-            if Instant::now() >= deadline {
-                let seen: Vec<String> = nodes.iter().map(|n| format!("{}={}", n["name"], n["status"])).collect();
-                panic!("the view never settled on {names:?} within {within:?}; last view: {seen:?}");
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    /// Wait until the node at `witness` (a probe target such as `path:mesh1.gateway.1`) holds the
-    /// birth the admin's view lists for `node` (same node id, same incarnation). A node learns a
-    /// peer's birth by gossip, not from the admin's settled view: a call through a witness is made
-    /// only once the witness's own resolver holds the birth it will call.
-    pub async fn witness_holds(&self, witness: &str, node: &str) {
-        let birth = self.node(node).await;
-        let (id, incarnation) = (birth["node_id"].as_str().unwrap_or_default().to_string(), birth["incarnation_id"].as_str().unwrap_or_default().to_string());
-        let exact = format!("exact:{id}");
-        wait_for(&format!("{witness} holds incarnation {incarnation} of {node}"), Duration::from_secs(30), || async {
-            let r = self.probe(&["resolve", "--target", witness, "--query", &exact]);
-            (r["reply"]["resolution"] == "found" && r["reply"]["incarnation_id"] == incarnation.as_str()).then_some(())
-        })
-        .await;
-    }
-
-    pub async fn node(&self, name: &str) -> Value {
-        self.node_opt(name).await.unwrap_or_else(|| panic!("no node {name}"))
-    }
-
-    /// The node at `name` if the view lists it now. A departed birth leaves the view before its
-    /// replacement's record appears, so a wait on a path uses this, never [`Self::node`].
-    pub async fn node_opt(&self, name: &str) -> Option<Value> {
-        self.nodes().await.into_iter().find(|n| n["name"] == name)
-    }
-
     /// Run one probe invocation and record it in the RPC ledger.
     pub fn probe(&self, args: &[&str]) -> Value {
-        self.probe_handle().run(&self.admin, args).unwrap_or_else(|e| panic!("{e}"))
+        self.probe_handle().run(&self.entry_birth(), args).unwrap_or_else(|e| panic!("{e}"))
     }
 
     /// What a probe invocation needs of this estate, owned: a traffic task issues probes while the
@@ -1013,102 +800,59 @@ impl Estate {
         std::fs::write(self.artifacts.join("trace-url.txt"), format!("{base}/trace/{trace_id}\n")).unwrap();
     }
 
-    /// Stop the whole estate through the runtime-administration route of the
-    /// admin that holds the fabric now (as `self.admin` sees it: drift
-    /// recovery can move the fabric back to a recovered mesh) and wait until
-    /// every runtime of the estate has exited. Every process flushes its
-    /// evidence on exit, so read `spans()` after this.
+    /// Stop the whole estate through its own provider and wait until every runtime of it has exited:
+    /// the test's teardown, not a fabric operation (no op on the wire begins it). Every admin the estate
+    /// started, every runtime an admin launched (the pid its `deployment.json` names) and every
+    /// container of its Fabric is sent SIGTERM at once, and each leaves as a local stop does
+    /// (`rdm.mesh.node.delete.via-signal`), its evidence flushed as it exits, so read `spans()` after
+    /// this. A runtime an admin launched while the others were leaving is told the same. One still
+    /// running when the bound passes (a node's leave: its Leaving linger and its transport close, plus
+    /// the grace of one stop) is named and killed, so a stop never hangs on it.
     pub async fn stop(&mut self) {
-        let entry = self.admin.clone();
-        let (_, fabric) = self.get("/api/fabric").await;
-        if let Some(holder) = fabric["admin_api_base"].as_str().filter(|b| !b.is_empty()) {
-            if self.fabric_at(holder).await.is_some() {
-                self.admin = holder.to_string();
-            }
-        }
-        // Only the fabric-primary accepts the shutdown, and the seat can still be moving when the
-        // test asks: follow the advertised fabric control endpoint until one accepts, and name the
-        // last refusal rather than waiting on a shutdown nobody began.
+        let mut told = self.terminate(&[]);
         let until = Instant::now() + Duration::from_secs(30);
-        let mut last: (u16, Value);
         loop {
-            // The shutdown goes only to an admin of this estate's Fabric: a dead admin's port can
-            // already belong to another estate's admin.
-            let r = match self.fabric_at(&self.admin).await {
-                Some(_) => self.http.post(format!("{}/api/shutdown", self.admin)).json(&json!({})).send().await.map_err(|e| e.to_string()),
-                None => Err(format!("{} does not answer for Fabric {}", self.admin, self.fabric_id)),
-            };
-            let refused_or_gone = match r {
-                Ok(r) => {
-                    let status = r.status().as_u16();
-                    let body = r.json().await.unwrap_or(Value::Null);
-                    if status == 202 {
-                        break;
-                    }
-                    last = (status, body);
-                    true
+            for c in self.restarted.iter_mut().chain(self.bootstrap.as_mut()) {
+                let _ = c.try_wait();
+            }
+            told.extend(self.terminate(&told));
+            let running: Vec<u32> = told.iter().copied().filter(|p| runs(*p)).collect();
+            let containers = self.live_containers();
+            if running.is_empty() && containers.is_empty() {
+                break;
+            }
+            if Instant::now() >= until {
+                eprintln!("estate stop: still running when the stop bound passed, killed: pids {running:?}, containers {containers:?}");
+                for p in &running {
+                    let _ = Command::new("kill").args(["-9", &p.to_string()]).status();
                 }
-                Err(e) => {
-                    last = (0, Value::String(e));
-                    true
+                for (_, id) in &containers {
+                    let _ = docker(&["kill", id]);
                 }
-            };
-            // The advertised holder refused or is gone: ask the entry admin, then every admin it
-            // lists, who holds the fabric now.
-            if refused_or_gone {
-                let mut candidates = vec![entry.clone()];
-                let entry_is_ours = self.fabric_at(&entry).await.is_some();
-                if let Some(r) = if entry_is_ours { self.http.get(format!("{entry}/api/nodes")).timeout(Duration::from_secs(2)).send().await.ok() } else { None } {
-                    let v: Value = r.json().await.unwrap_or(Value::Null);
-                    candidates.extend(v["nodes"].as_array().into_iter().flatten().filter(|n| n["kind"] == "node_admin" && !matches!(n["status"].as_str(), Some("dead" | "pending-reconnect"))).filter_map(|n| n["admin_api_base"].as_str().map(String::from)));
-                }
-                for c in candidates {
-                    let Some(f) = self.fabric_at(&c).await else { continue };
-                    if let Some(base) = f["admin_api_base"].as_str().filter(|b| !b.is_empty() && *b != self.admin) {
-                        self.admin = base.to_string();
-                        break;
-                    }
-                }
+                break;
             }
-            assert!(Instant::now() < until, "no admin accepted /api/shutdown within 30s; last answer from {}: {} {}", self.admin, last.0, last.1);
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        // The bootstrap admin is stopped by the shutdown like any other admin; one still running
-        // when the bound passes is named and killed, so a stop never hangs on it. The bound covers
-        // the drain bound a stopper waits on (`shutdown::drain_bound`) plus the grace of one stop.
-        let until = Instant::now() + Duration::from_secs(30);
-        let mut bootstrap = self.bootstrap.take();
-        if let Some(c) = bootstrap.as_mut() {
-            while Instant::now() < until && c.try_wait().ok().flatten().is_none() {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            if c.try_wait().ok().flatten().is_none() {
-                // Its control API may already be closed (it closes before the Leaving linger ends):
-                // the view is evidence when it answers, never a condition of the stop.
-                let fabric = match self.http.get(format!("{}/api/fabric", self.admin)).timeout(Duration::from_secs(2)).send().await {
-                    Ok(r) => r.json::<Value>().await.unwrap_or(Value::Null),
-                    Err(e) => Value::String(format!("control API closed: {e}")),
-                };
-                eprintln!("estate stop: bootstrap admin pid {} still ran when the shutdown bound passed; killed. Its fabric view: {fabric}", c.id());
-                let _ = c.kill();
-                let _ = c.wait();
-            }
-        }
-        // A restarted admin is stopped by the shutdown like any other; one still running when the
-        // bound passes is named and killed, so a stop never hangs on it.
-        for mut c in std::mem::take(&mut self.restarted) {
-            while Instant::now() < until && c.try_wait().ok().flatten().is_none() {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            if c.try_wait().ok().flatten().is_none() {
-                eprintln!("estate stop: restarted admin pid {} still ran when the shutdown bound passed; killed", c.id());
-                let _ = c.kill();
-                let _ = c.wait();
-            }
-        }
-        while Instant::now() < until && (!self.live_runtimes().is_empty() || !self.live_containers().is_empty()) {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        for mut c in std::mem::take(&mut self.restarted).into_iter().chain(self.bootstrap.take()) {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    /// Send SIGTERM to every process of this estate not in `told` (the admins it started and every
+    /// runtime an admin launched) and to every container of its Fabric: each leaves as a local stop
+    /// does. The pids it signalled.
+    fn terminate(&self, told: &[u32]) -> Vec<u32> {
+        let pids: Vec<u32> = self.restarted.iter().map(Child::id).chain(self.bootstrap.as_ref().map(Child::id)).chain(self.live_runtimes().into_iter().map(|(_, p)| p)).filter(|p| !told.contains(p) && runs(*p)).collect();
+        for p in &pids {
+            let _ = Command::new("kill").args(["-TERM", &p.to_string()]).status();
+        }
+        if told.is_empty() {
+            for (_, id) in self.live_containers() {
+                let _ = docker(&["kill", "--signal", "TERM", &id]);
+            }
+        }
+        pids
     }
 
     /// The bootstrap admin's process id while the estate still holds it. The bootstrap runtime is
@@ -1124,15 +868,15 @@ impl Estate {
 
     /// Start a node-admin on `data_dir` it ran on before: it finds its own row in nodes.storage and
     /// restarts as the same logical node. Only the operator's environment is given (provider,
-    /// binaries, evidence); identity, Mesh and Fabric come from its storage. Returns its control
-    /// API base.
-    pub fn restart_admin(&mut self, data_dir: &Path) -> String {
+    /// binaries, evidence); identity, Mesh and Fabric come from its storage. Returns its
+    /// `path.name`.
+    pub fn restart_admin(&mut self, data_dir: &Path) -> rafka_node_admin_client::PathName {
         self.restart_admin_with(data_dir, &[])
     }
 
     /// [`Self::restart_admin`] with more operator environment (the recovery flags
     /// `RDM_MESH_PRIMARY` and `RDM_FABRIC_PRIMARY`).
-    pub fn restart_admin_with(&mut self, data_dir: &Path, operator_env: &[(&str, &str)]) -> String {
+    pub fn restart_admin_with(&mut self, data_dir: &Path, operator_env: &[(&str, &str)]) -> rafka_node_admin_client::PathName {
         let mut env = vec![
             ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
             ("RDM_DATA_DIR", data_dir.display().to_string()),
@@ -1153,30 +897,25 @@ impl Estate {
                 binary("rafka-node-admin")
             }
         };
-        let (child, base) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
+        let (child, birth) = spawn_admin(&exe, &env, &format!("restarted node-admin on {}", data_dir.display()));
         self.restarted.push(child);
-        base
+        let name = birth.name.clone();
+        self.hold_printed(birth);
+        name
     }
 
-    /// Stop every runtime of this estate with a local signal (SIGTERM), as an operator does when
-    /// no admin can stop the fabric, and wait for them.
-    pub async fn stop_locally(&mut self) {
-        let mut pids: Vec<u32> = self.restarted.iter().map(|c| c.id()).chain(self.bootstrap.as_ref().map(|c| c.id())).collect();
-        pids.extend(self.live_runtimes().into_iter().map(|(_, p)| p));
-        for p in &pids {
-            let _ = std::process::Command::new("kill").args(["-TERM", &p.to_string()]).status();
-        }
-        let until = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < until && pids.iter().any(|p| Path::new(&format!("/proc/{p}")).exists() && !std::fs::read_to_string(format!("/proc/{p}/stat")).unwrap_or_default().contains(") Z ")) {
-            for c in self.restarted.iter_mut().chain(self.bootstrap.as_mut()) {
-                let _ = c.try_wait();
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        for mut c in std::mem::take(&mut self.restarted).into_iter().chain(self.bootstrap.take()) {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
+    /// Hold the birth an admin this estate started printed: the typed objects learn it at their next
+    /// handover, and a probe can enter at it now.
+    fn hold_printed(&self, birth: MeshNode) {
+        self.births.lock().unwrap().insert(birth.name.clone(), birth.clone());
+        self.printed.lock().unwrap().push(birth);
+    }
+
+    /// The birth of the node-admin the estate enters at (`Estate::admin`): what a probe is given
+    /// (`--admin-birth`). An entry whose birth the estate never held is named with every birth it holds.
+    pub fn entry_birth(&self) -> MeshNode {
+        let births = self.births.lock().unwrap();
+        births.get(&self.admin).cloned().unwrap_or_else(|| panic!("the entry {} has no birth this estate holds; births held: {:?}", self.admin, births.keys().collect::<Vec<_>>()))
     }
 
     /// SIGKILL `pid` (a fault: it flushes nothing) and wait until it is gone.
@@ -1259,7 +998,7 @@ impl Estate {
         for e in std::fs::read_dir(&self.root).into_iter().flatten().flatten() {
             let Ok(raw) = std::fs::read_to_string(e.path().join("deployment.json")) else { continue };
             let Some(pid) = serde_json::from_str::<Value>(&raw).ok().and_then(|v| v["pid"].as_u64()) else { continue };
-            if Path::new(&format!("/proc/{pid}")).exists() && !std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z ") {
+            if runs(pid as u32) {
                 out.push((e.path(), pid as u32));
             }
         }
@@ -1294,29 +1033,21 @@ impl Drop for Estate {
                 eprintln!("estate drop: {} runtime(s) still alive under {} after 10 sweeps: {left:?}", left.len(), e.root.display());
             }
         };
-        if self.bootstrap.is_none() {
-            sweep(self);
+        // A failed run: every process of the estate is told to stop (SIGTERM, so its evidence flushes)
+        // and given the time to leave before it is forced.
+        let told = self.terminate(&[]);
+        let until = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < until && told.iter().any(|p| runs(*p)) {
+            for c in self.restarted.iter_mut().chain(self.bootstrap.as_mut()) {
+                let _ = c.try_wait();
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
         if let Some(mut c) = self.bootstrap.take() {
-            // Best-effort fabric shutdown on a failed run, then the bootstrap process.
-            if let Some(hostport) = self.admin.strip_prefix("http://") {
-                if let Ok(mut s) = std::net::TcpStream::connect(hostport.trim_end_matches('/')) {
-                    let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
-                    let _ = write!(
-                        s,
-                        "POST /api/shutdown HTTP/1.1\r\nHost: {hostport}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
-                    );
-                }
-            }
-            // Give it the time to stop what it started before forcing it.
-            let until = Instant::now() + Duration::from_secs(20);
-            while Instant::now() < until && matches!(c.try_wait(), Ok(None)) {
-                std::thread::sleep(Duration::from_millis(100));
-            }
             let _ = c.kill();
             let _ = c.wait();
-            sweep(self);
         }
+        sweep(self);
         // Admins this estate restarted on their own data dirs are its children too, and run under
         // no deployment of any admin: a failed run leaves them unless they are killed here, and
         // whatever they launched with them.
@@ -1329,6 +1060,11 @@ impl Drop for Estate {
         self.remove_containers();
         keep_node_logs(&self.root, &self.artifacts);
     }
+}
+
+/// Whether process `pid` runs: it exists and is no zombie.
+fn runs(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists() && !std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default().contains(") Z ")
 }
 
 /// Does this process environment (`/proc/<pid>/environ`, NUL-separated) name `root` as its estate:
@@ -1361,8 +1097,9 @@ fn kill_estate_processes(root: &Path) {
     }
 }
 
-/// One estate's probe door: runs `rafka-rpc-probe` against an admin's node view and appends the
-/// invocation to the estate's RPC ledger (`rpc-ledger.jsonl`).
+/// One estate's probe door: runs `rafka-rpc-probe` entered at a node-admin's birth (it reads that
+/// admin's view over Node RPC) and appends the invocation to the estate's RPC ledger
+/// (`rpc-ledger.jsonl`).
 #[derive(Clone)]
 pub struct ProbeHandle {
     evidence: PathBuf,
@@ -1371,11 +1108,12 @@ pub struct ProbeHandle {
 }
 
 impl ProbeHandle {
-    /// One probe invocation through the admin at `admin`. `Err` names an invocation that printed
-    /// no JSON line at all; a probe that printed a line (a typed outcome, or `Refused`) is `Ok`.
-    pub fn run(&self, admin: &str, args: &[&str]) -> Result<Value, String> {
+    /// One probe invocation entered at the node-admin birth `admin`. `Err` names an invocation that
+    /// printed no JSON line at all; a probe that printed a line (a typed outcome, or `Refused`) is `Ok`.
+    pub fn run(&self, admin: &MeshNode, args: &[&str]) -> Result<Value, String> {
+        let birth = serde_json::to_string(admin).map_err(|e| format!("the birth of {} does not serialize: {e}", admin.name))?;
         let mut cmd = Command::new(binary("rafka-rpc-probe"));
-        cmd.arg("--admin").arg(admin).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
+        cmd.arg("--admin-birth").arg(birth).args(args).env("RDM_EVIDENCE_DIR", &self.evidence);
         if let Some(gw) = &self.bind {
             cmd.env("RDM_PROBE_BIND", gw);
         }
@@ -1456,68 +1194,6 @@ pub fn descends_from(spans: &[Value], child: &Value, ancestor: &Value) -> bool {
     false
 }
 
-/// `GET base/api/fabric`, only when the admin at `base` answers within 2s and its view names the
-/// Fabric `fabric_id`. A loopback control port freed by a dead runtime is reused by other estates
-/// on the host, so an answer from an address is never taken as this Fabric's on its own.
-pub async fn own_fabric_at(base: &str, fabric_id: &str) -> Option<Value> {
-    let r = reqwest::Client::new().get(format!("{base}/api/fabric")).timeout(Duration::from_secs(2)).send().await.ok()?;
-    if !r.status().is_success() {
-        return None;
-    }
-    let f: Value = r.json().await.ok()?;
-    (f["id"].as_str() == Some(fabric_id)).then_some(f)
-}
-
-/// What one reading of Build `id` says about attempt `attempt`: its converged Build, or nothing
-/// yet. A failed attempt panics with the Build JSON.
-pub fn attempt_verdict(id: &str, attempt: u64, b: &Value) -> Option<Value> {
-    // The Build reports the highest attempt claimed; a reading below the awaited attempt is an
-    // earlier attempt's state (its `complete` included), never this attempt's.
-    if b["attempt"].as_u64()? < attempt {
-        return None;
-    }
-    match b["state"].as_str() {
-        Some("complete") => Some(b.clone()),
-        Some("failed") => panic!("build {id} failed: {b:#}"),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod attempt_verdict_tests {
-    use super::*;
-
-    fn at(state: &str, attempt: u64) -> Value {
-        json!({"build_id": "b", "state": state, "attempt": attempt})
-    }
-
-    /// CONTRACT: a reading that still carries the previous attempt's `complete` is not the
-    /// awaited attempt's verdict, and neither is the opened-but-unclaimed or running reading.
-    #[test]
-    fn the_previous_attempts_complete_is_not_the_awaited_attempts_verdict() {
-        assert!(attempt_verdict("b", 2, &at("complete", 1)).is_none(), "the previous attempt's complete");
-        assert!(attempt_verdict("b", 2, &at("pending", 1)).is_none(), "opened, not yet claimed");
-        assert!(attempt_verdict("b", 2, &at("running", 2)).is_none(), "claimed, running");
-    }
-
-    /// CONTRACT: the awaited attempt converging, or a later one, is the verdict.
-    #[test]
-    fn the_awaited_attempt_or_a_later_one_complete_is_the_verdict() {
-        assert!(attempt_verdict("b", 2, &at("complete", 2)).is_some());
-        assert!(attempt_verdict("b", 2, &at("complete", 3)).is_some());
-    }
-
-    /// CONTRACT: a failed awaited attempt fails the test carrying the Build; an earlier attempt's
-    /// failure is not this attempt's.
-    #[test]
-    fn a_failed_awaited_attempt_panics_with_the_build_and_an_earlier_failure_does_not() {
-        assert!(attempt_verdict("b", 2, &at("failed", 1)).is_none());
-        let e = std::panic::catch_unwind(|| attempt_verdict("b", 2, &at("failed", 2))).expect_err("a failed attempt fails the test");
-        let msg = e.downcast_ref::<String>().cloned().unwrap_or_default();
-        assert!(msg.contains("build b failed") && msg.contains("\"attempt\": 2"), "{msg}");
-    }
-}
-
 #[cfg(test)]
 mod spawn_tests {
     /// CONTRACT: a test that births a second estate in the same process gets its own root, and
@@ -1574,7 +1250,7 @@ mod spawn_tests {
         assert!(!left, "the reaper left the node running 30 s after its owner was killed");
     }
 
-    /// CONTRACT: a node-admin that never advertises its control API is refused by name, and the
+    /// CONTRACT: a node-admin that never names its application contact is refused by name, and the
     /// refusal leaves nothing running: no Estate exists yet to stop it. What must NOT happen: a
     /// panic that leaves the process alive.
     #[test]

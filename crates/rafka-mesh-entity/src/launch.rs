@@ -6,6 +6,7 @@ use crate::{FabricId, IncarnationId, MeshId, NodeId, PathName};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// The fabric's name.
 pub const ENV_FABRIC: &str = "RDM_FABRIC";
@@ -41,6 +42,11 @@ pub const ENV_MESH_ISSUER: &str = "RDM_MESH_ISSUER";
 pub const ENV_MESH_PRIMARY: &str = "RDM_MESH_PRIMARY";
 /// A person-started node-admin must recover the fabric (total loss); implies `RDM_MESH_PRIMARY`.
 pub const ENV_FABRIC_PRIMARY: &str = "RDM_FABRIC_PRIMARY";
+/// The bound of a `node.connections.delete { All }` at the node, standalone or inside a stop
+/// (node-connections-delete.md step 5), in whole milliseconds.
+pub const ENV_CONNECTIONS_DELETE_DEADLINE: &str = "RDM_CONNECTIONS_DELETE_DEADLINE_MS";
+/// The bound of a `node.connections.delete { All }` when the launch environment names none.
+pub const DEFAULT_CONNECTIONS_DELETE_DEADLINE: Duration = Duration::from_millis(5000);
 
 /// The node-admin that deployed a birth: the target of its `JoinNode`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +94,10 @@ pub struct Launch {
     /// The issuing material a new mesh's first node-admin is launched with (opaque bytes, never
     /// parsed here). `None` for every other birth and for an app configured with no certs.
     pub mesh_issuer: Option<Vec<u8>>,
+    /// The bound of a `node.connections.delete { All }` at this birth, standalone or inside a stop
+    /// (`RDM_CONNECTIONS_DELETE_DEADLINE_MS`): the eligible work in flight is let finish until it
+    /// passes, then the closure answers `Deadline`.
+    pub connections_delete_deadline: Duration,
 }
 
 /// Lowercase hex of `bytes`.
@@ -121,6 +131,15 @@ pub fn decode_flag(name: &str, v: Option<String>) -> Result<bool> {
 }
 
 
+/// The connections-delete bound `raw` spells in whole milliseconds; absent or blank is
+/// [`DEFAULT_CONNECTIONS_DELETE_DEADLINE`]; anything else is refused by name.
+pub fn decode_connections_delete_deadline(raw: Option<&str>) -> Result<Duration> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(DEFAULT_CONNECTIONS_DELETE_DEADLINE),
+        Some(v) => v.parse::<u64>().map(Duration::from_millis).map_err(|e| format!("{ENV_CONNECTIONS_DELETE_DEADLINE} `{v}` is not a whole number of milliseconds: {e}")),
+    }
+}
+
 /// `control=127.0.0.1:41002,...`
 pub fn encode_listeners(listeners: &[(String, SocketAddr)]) -> String {
     listeners.iter().map(|(n, a)| format!("{n}={a}")).collect::<Vec<_>>().join(",")
@@ -147,7 +166,7 @@ pub fn decode_launcher(s: &str) -> Result<Launcher> {
     Ok(Launcher {
         name: name.parse().map_err(|e| format!("{ENV_LAUNCHER} name: {e}"))?,
         node_id: NodeId::parse(node_id).map_err(|e| format!("{ENV_LAUNCHER} node id: {e}"))?,
-        incarnation: IncarnationId(incarnation.to_string()),
+        incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("{ENV_LAUNCHER} incarnation: {e}"))?,
     })
 }
 
@@ -171,13 +190,13 @@ impl Launch {
         m.insert(ENV_FABRIC_ID.into(), self.fabric_id.to_string());
         m.insert(ENV_NODE_NAME.into(), self.name.to_string());
         m.insert(ENV_NODE_ID.into(), self.node_id.to_string());
-        m.insert(ENV_INCARNATION.into(), self.incarnation.0.clone());
+        m.insert(ENV_INCARNATION.into(), self.incarnation.to_string());
         if let Some(s) = &self.supersedes {
-            m.insert(ENV_SUPERSEDES.into(), s.0.clone());
+            m.insert(ENV_SUPERSEDES.into(), s.to_string());
         }
         m.insert(ENV_TRANSPORT_ADDR.into(), self.bind_addr.to_string());
         if let Some(l) = &self.launcher {
-            m.insert(ENV_LAUNCHER.into(), format!("{},{},{}", l.name, l.node_id, l.incarnation.0));
+            m.insert(ENV_LAUNCHER.into(), format!("{},{},{}", l.name, l.node_id, l.incarnation));
         }
         m.insert(ENV_LISTENERS.into(), encode_listeners(&self.listeners));
         m.insert(ENV_SEEDS.into(), self.seeds.iter().map(|(k, a)| format!("{k}@{a}")).collect::<Vec<_>>().join(","));
@@ -189,6 +208,7 @@ impl Launch {
         if let Some(issuer) = self.mesh_issuer.as_ref().filter(|b| !b.is_empty()) {
             m.insert(ENV_MESH_ISSUER.into(), encode_hex(issuer));
         }
+        m.insert(ENV_CONNECTIONS_DELETE_DEADLINE.into(), self.connections_delete_deadline.as_millis().to_string());
         m
     }
 
@@ -201,8 +221,8 @@ impl Launch {
             fabric_id: FabricId::parse(&req(ENV_FABRIC_ID)?).map_err(|e| format!("{ENV_FABRIC_ID}: {e}"))?,
             name: req(ENV_NODE_NAME)?.parse().map_err(|e| format!("{ENV_NODE_NAME}: {e}"))?,
             node_id: NodeId::parse(&req(ENV_NODE_ID)?).map_err(|e| format!("{ENV_NODE_ID}: {e}"))?,
-            incarnation: IncarnationId(req(ENV_INCARNATION)?),
-            supersedes: get(ENV_SUPERSEDES).filter(|s| !s.is_empty()).map(IncarnationId),
+            incarnation: IncarnationId::parse(&req(ENV_INCARNATION)?).map_err(|e| format!("{ENV_INCARNATION}: {e}"))?,
+            supersedes: get(ENV_SUPERSEDES).filter(|s| !s.is_empty()).map(|s| IncarnationId::parse(&s).map_err(|e| format!("{ENV_SUPERSEDES}: {e}"))).transpose()?,
             bind_addr: req(ENV_TRANSPORT_ADDR)?.parse().map_err(|e| format!("{ENV_TRANSPORT_ADDR}: {e}"))?,
             listeners: decode_listeners(&get(ENV_LISTENERS).unwrap_or_default())?,
             launcher: get(ENV_LAUNCHER).filter(|v| !v.trim().is_empty()).map(|v| decode_launcher(&v)).transpose()?,
@@ -211,6 +231,7 @@ impl Launch {
             store_dir: PathBuf::from(req(ENV_STORE_DIR)?),
             mesh_id: get(ENV_MESH_ID).filter(|s| !s.trim().is_empty()).map(|s| MeshId::parse(&s).map_err(|e| format!("{ENV_MESH_ID}: {e}"))).transpose()?,
             mesh_issuer: get(ENV_MESH_ISSUER).filter(|s| !s.trim().is_empty()).map(|s| decode_hex(ENV_MESH_ISSUER, s.trim())).transpose()?,
+            connections_delete_deadline: decode_connections_delete_deadline(get(ENV_CONNECTIONS_DELETE_DEADLINE).as_deref())?,
         })
     }
 }
@@ -236,6 +257,7 @@ mod tests {
             store_dir: "/tmp/store".into(),
             mesh_id: Some(MeshId::mint()),
             mesh_issuer: Some(vec![0x00, 0xab, 0xff]),
+            connections_delete_deadline: Duration::from_millis(750),
         };
         let env = l.to_env();
         assert_eq!(Launch::from_env(|k| env.get(k).cloned()).unwrap(), l);
@@ -256,6 +278,16 @@ mod tests {
         // A launch that carries no issuer sets no variable.
         let none = Launch { mesh_issuer: None, ..l.clone() }.to_env();
         assert!(!none.contains_key(ENV_MESH_ISSUER));
+        // The connections-delete bound rides the launch: absent or blank is the default, a value that
+        // is no whole number of milliseconds is refused by name.
+        assert_eq!(env.get(ENV_CONNECTIONS_DELETE_DEADLINE).map(String::as_str), Some("750"));
+        let mut unset = env.clone();
+        unset.remove(ENV_CONNECTIONS_DELETE_DEADLINE);
+        assert_eq!(Launch::from_env(|k| unset.get(k).cloned()).unwrap().connections_delete_deadline, DEFAULT_CONNECTIONS_DELETE_DEADLINE);
+        unset.insert(ENV_CONNECTIONS_DELETE_DEADLINE.into(), " ".into());
+        assert_eq!(Launch::from_env(|k| unset.get(k).cloned()).unwrap().connections_delete_deadline, DEFAULT_CONNECTIONS_DELETE_DEADLINE);
+        unset.insert(ENV_CONNECTIONS_DELETE_DEADLINE.into(), "5s".into());
+        assert!(Launch::from_env(|k| unset.get(k).cloned()).unwrap_err().starts_with("RDM_CONNECTIONS_DELETE_DEADLINE_MS `5s` is not a whole number of milliseconds"));
         // A launched node's product ids are canonical or refused by name.
         for (k, v, says) in [(ENV_NODE_ID, "f".repeat(32), "node id"), (ENV_FABRIC_ID, "fabric1".into(), "fabric id"), (ENV_MESH_ID, "4f14".into(), "mesh id")] {
             let mut bad = env.clone();

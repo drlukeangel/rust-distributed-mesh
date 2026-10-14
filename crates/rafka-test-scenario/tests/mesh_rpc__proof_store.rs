@@ -1,7 +1,6 @@
 //! i143.e7.s3 process E2E: the testkit proof store on op `0x70`.
 //!
-//! From public surfaces (node-admin's control API and `rafka-rpc-probe` over
-//! real Node RPC) and the estate's span evidence only:
+//! From the typed objects, `rafka-rpc-probe` over real Node RPC and the estate's span evidence only:
 //! 1. Every op answers its typed result and names where it ran: node id, path,
 //!    mesh and incarnation.
 //! 2. A same-node restart keeps the store: the new incarnation of the same
@@ -14,7 +13,9 @@
 //!    replacement.
 //! 5. A key or value over its limit is refused by name, and writes nothing.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use crate::build_log;
+use rafka_node_admin_client::NodeStatus;
+use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -45,14 +46,12 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replacement() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 2}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    estate.settled_shape(&[("mesh1", 1, 2)], Duration::from_secs(30)).await;
+    estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
+    estate.settled_views(&[("mesh1", 1, 2)]).await;
     let path = format!("path:{NODE}");
 
     // 1. Typed results, each naming where it ran.
-    let first = estate.node(NODE).await;
+    let first = estate.node_value(NODE).await;
     let exact_first = format!("exact:{}", first["node_id"].as_str().unwrap());
     landed_on(&estate.probe(&["put", "--target", &path, "--key", "41", "--value", "before-restart"]), &first, "put");
     let got = estate.probe(&["get", "--target", &exact_first, "--key", "41"]);
@@ -69,7 +68,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     assert_eq!(gone["reply"]["result"], json!({"found": false}), "the key was already deleted: {gone}");
     // The other rpc node holds none of it.
     let other = estate.probe(&["get", "--target", "path:mesh1.rpc.2", "--key", "41"]);
-    landed_on(&other, &estate.node("mesh1.rpc.2").await, "get");
+    landed_on(&other, &estate.node_value("mesh1.rpc.2").await, "get");
     assert_eq!(other["reply"]["result"], json!({"found": false}));
 
     // 5. Limits, refused by name; nothing is written.
@@ -79,15 +78,14 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     let absent = estate.probe(&["get", "--target", &path, "--key", &"k".repeat(256)]);
     assert_eq!(absent["reply"]["result"], json!({"found": false}));
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 2. A same-node restart keeps the store.
-    let (status, r) = estate.post(&format!("/api/nodes/{NODE}/restart"), &json!({})).await;
-    assert_eq!(status, 202, "{r}");
-    estate.await_attempt(r["build_id"].as_str().unwrap(), Estate::attempt_of(&r), Duration::from_secs(120)).await;
-    let restarted = wait_for("the restarted birth is ready", Duration::from_secs(60), || async {
-        let n = estate.node_opt(NODE).await?;
-        (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
-    })
-    .await;
+    let mut restart = estate.nodes_obj().await.restart(&NODE.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of {NODE}: {e}"));
+    Estate::complete(&mut restart).await;
+    let restarted = estate
+        .until_node(NODE, "the restarted birth is ready", Duration::from_secs(60), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).map(|n| serde_json::to_value(n).expect("a view serializes")))
+        .await;
     assert_eq!(restarted["node_id"], first["node_id"], "a restart keeps the logical node");
     assert_eq!(restarted["incarnation_id"], first["incarnation_id"], "and the birth: the process was stopped and started, never replaced");
     let kept = estate.probe(&["get", "--target", &exact_first, "--key", "41"]);
@@ -96,28 +94,33 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
 
     // 3. A killed node is recovered by its mesh-primary over its inherited data dir: a new logical
     //    node at the same path.name, with the same endpoint key, that keeps the store.
-    let data_dir = estate.data_dir_of(NODE).await;
+    let data_dir = estate.data_dir(NODE).await;
+    let accepted = estate.accepted_build_id().await;
+    // The recovery is an attempt of mesh1's drift lane (R-BI7: the mesh-primary runs it in its own
+    // mesh's lane, numbered there; the Build's own attempt is the fabric lane's, the restart's above).
+    let lane_before = build_log::projection(&build_log::log_read(&estate.carrier().await, &accepted).await.unwrap_or_else(|end| panic!("{end}")), &accepted).and_then(|b| b.lanes.get("mesh1").map(|l| u64::from(l.attempt))).unwrap_or(0);
     estate.kill_node(NODE).await;
-    let recovered = wait_for("the recovered node holds the path", crate::node_recovery_due(), || async {
-        let n = estate.node_opt(NODE).await?;
-        (n["status"] == "ready-for-traffic" && n["node_id"] != first["node_id"]).then_some(n)
-    })
-    .await;
+    let recovered = estate
+        .until_node(NODE, "the recovered node holds the path", crate::node_recovery_due(), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (n["status"] == "ready-for-traffic" && n["node_id"] != first["node_id"]).then_some(n)
+        })
+        .await;
     assert_ne!(recovered["incarnation_id"], first["incarnation_id"], "recovery creates a new node.id and incarnation");
     assert_eq!(recovered["endpoint_id"], first["endpoint_id"], "the same endpoint key, loaded from the inherited data dir");
-    assert_eq!(estate.data_dir_of(NODE).await, data_dir, "the inherited data dir");
+    assert_eq!(estate.data_dir(NODE).await, data_dir, "the inherited data dir");
     let inherited = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&inherited, &recovered, "get");
     assert_eq!(inherited["reply"]["result"], json!({"found": true, "value": "before-restart"}), "the recovered node serves the store it inherited: {inherited}");
 
+    // The recovery is an attempt of the accepted Build; the node holding the path is that attempt's work, not its end.
+    // One Build at a time: the replace below is submitted once the recovery attempt has completed.
+    build_log::lane_attempt_complete(&estate.carrier().await, &accepted, "mesh1", lane_before + 1, Duration::from_secs(60)).await;
+
     // 4. The replace recipe does not inherit it: the successor's data dir is its own.
     let exact_recovered = format!("exact:{}", recovered["node_id"].as_str().unwrap());
     {
-        use rafka_node_admin_client::{Frame, NodeAdminClient, NodeSelector, Peers};
         use rafka_node_rpc_contract::build::RecipeStep;
-        let peers = Peers::of(&[]).await;
-        let nodes = peers.nodes(NodeAdminClient::new(estate.admin.clone())).await.expect("the fabric-primary is named");
-        peers.learn(&nodes.get(&NodeSelector::Mesh("mesh1".into())).await.expect("node.get"));
         let node: rafka_mesh_entity::PathName = NODE.parse().unwrap();
         let recipe = vec![
             RecipeStep::Create { node: node.successor() },
@@ -128,24 +131,15 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
             RecipeStep::Start { node: node.clone() },
             RecipeStep::Delete { node: node.renamed() },
         ];
-        let mut stream = nodes.recipe(recipe).await.expect("the replace recipe was accepted");
-        loop {
-            match stream.next().await {
-                Some(Ok(f)) if f.is_terminal() => {
-                    assert_eq!(f, Frame::Complete, "the replace recipe completes");
-                    break;
-                }
-                Some(Ok(_)) => {}
-                Some(Err(e)) => panic!("the recipe's stream broke: {e}"),
-                None => panic!("the recipe's stream ended with no terminal frame"),
-            }
-        }
+        let mut stream = estate.nodes_obj().await.recipe(recipe).await.expect("the replace recipe was accepted");
+        Estate::complete(&mut stream).await;
     }
-    let replacement = wait_for("a new logical node holds the path", Duration::from_secs(60), || async {
-        let n = estate.node_opt(NODE).await?;
-        (n["status"] == "ready-for-traffic" && n["node_id"] != recovered["node_id"]).then_some(n)
-    })
-    .await;
+    let replacement = estate
+        .until_node(NODE, "a new logical node holds the path", Duration::from_secs(60), |n| {
+            let n = serde_json::to_value(n?).expect("a view serializes");
+            (n["status"] == "ready-for-traffic" && n["node_id"] != recovered["node_id"]).then_some(n)
+        })
+        .await;
     assert_ne!(replacement["endpoint_id"], recovered["endpoint_id"], "a planned replacement is a new node with a new endpoint key");
     let fresh = estate.probe(&["get", "--target", &path, "--key", "41"]);
     landed_on(&fresh, &replacement, "get");
@@ -156,12 +150,9 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     // birth's departure, so the other rpc node answers Gone for the old id, the new holder for
     // the path, and Unknown for an id nobody ever saw.
     let other = "path:mesh1.rpc.2";
-    let gone = wait_for("mesh1.rpc.2 holds the old birth's departure", Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", other, "--query", &exact_recovered]);
-        (r["reply"]["resolution"] == "gone").then_some(r)
-    })
-    .await;
-    assert_eq!(gone["outcome"], "Reply", "{gone}");
+    estate.holds_departure("mesh1.rpc.2", "mesh1", recovered["node_id"].as_str().unwrap()).await;
+    let gone = estate.probe(&["resolve", "--target", other, "--query", &exact_recovered]);
+    assert_eq!((gone["outcome"].as_str(), gone["reply"]["resolution"].as_str()), (Some("Reply"), Some("gone")), "mesh1.rpc.2 holds the old birth's departure: {gone}");
     // The admin holds the old birth as the replacement's predecessor until the departure is
     // published, and it is published after the replacement is ready: the admin's view is
     // current-only once the departure has been heard, so the probe's own resolver can only say
@@ -174,7 +165,7 @@ async fn the_proof_store_survives_a_restart_and_a_recovery_and_never_a_replaceme
     assert_eq!(holder["reply"]["node_id"], replacement["node_id"], "the path's current holder is the replacement: {holder}");
     let never = estate.probe(&["resolve", "--target", other, "--query", &format!("exact:{}", rafka_mesh_entity::NodeId::mint())]);
     assert_eq!(never["reply"]["resolution"], "unknown", "{never}");
-    estate.artifact("nodes-after.json", &json!(estate.nodes().await));
+    estate.artifact("nodes-after.json", &json!(estate.node_values().await));
     estate.artifact("exact-old.json", &json!({"probe": old, "node": gone, "holder": holder, "never": never}));
 
     estate.stop().await;

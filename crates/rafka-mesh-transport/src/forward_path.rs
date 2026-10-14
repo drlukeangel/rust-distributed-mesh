@@ -61,25 +61,41 @@ impl ForwardPath {
     /// Decide what `source_mesh` moving to `version` puts into the mesh, and queue it behind every
     /// frame queued before it.
     pub(crate) fn source(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: u64) {
+        let _ = self.source_with_clock(me, source_mesh, publisher, version, full, || now_ms);
+    }
+
+    /// Decide what `source_mesh` moving to `version` puts into the mesh, reading `now_ms` inside
+    /// the forwarder lock so no replay or concurrent forward can interleave between the clock read
+    /// and the forwarder's version update, and queue it behind every frame queued before it.
+    pub(crate) fn source_with_clock(&self, me: &str, source_mesh: &str, publisher: &PublisherId, version: u64, full: &Full, now_ms: impl FnOnce() -> u64) -> u64 {
         let mut forwarder = self.forwarder.lock().unwrap();
-        let Some(epoch) = forwarder.role() else { return };
+        let now_ms = now_ms();
+        let Some(epoch) = forwarder.role() else { return now_ms };
         let out = forwarder.source(me, source_mesh, publisher, version, full, now_ms);
         if matches!(out, Forward::Nothing(_)) {
-            return;
+            return now_ms;
         }
         self.enqueue(Job::Forwarded { me: me.to_string(), epoch, source: Some((source_mesh.to_string(), publisher.clone(), version)), out });
+        now_ms
     }
 
     /// The first publication of every source in `held` (taking the seat, or owing a full): one
     /// decision, queued behind every frame queued before it.
     pub(crate) fn fulls(&self, me: &str, node_mesh: &str, reason: &'static str, held: &[(String, PublisherId, u64, Full)], now_ms: u64) {
+        let _ = self.fulls_with_clock(me, node_mesh, reason, held, || now_ms);
+    }
+
+    /// [`Self::fulls`], reading `now_ms` inside the forwarder lock.
+    pub(crate) fn fulls_with_clock(&self, me: &str, node_mesh: &str, reason: &'static str, held: &[(String, PublisherId, u64, Full)], now_ms: impl FnOnce() -> u64) -> u64 {
         let mut forwarder = self.forwarder.lock().unwrap();
-        let Some(epoch) = forwarder.role() else { return };
+        let now_ms = now_ms();
+        let Some(epoch) = forwarder.role() else { return now_ms };
         let frames = forwarder.fulls(me, held, now_ms);
         let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
         tracing::info_span!("rdm.mesh.membership.update.via-forwarded-full", node = %me, mesh = %node_mesh, reason, sources = held.len(), chunks = frames.len(), bytes)
             .in_scope(|| tracing::info!("the full of every source put into this mesh, loads omitted"));
         self.enqueue(Job::Forwarded { me: me.to_string(), epoch, source: None, out: Forward::Full(frames) });
+        now_ms
     }
 
     /// Take (`true`) or lose (`false`) the forwarder role: this mesh's primary. A forwarder that
@@ -572,7 +588,7 @@ mod tests {
         let path = ForwardPath::new(Arc::default(), Arc::default(), rec.sink());
         path.set_role(true);
         let (p, q) = (publisher(), publisher());
-        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::Members { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: None, topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, departed: dep }).len();
+        let chunks = crate::snapshot::chunks_of(&big(10), |d, i, dep, ci, cc| Frame::Members { mesh: "mesh1".into(), publisher: p.clone(), forwarded_by: Some("mesh2.admin.1".into()), topology_version: 10, published_at_rafka_ms: 1, snapshot_id: 1, chunk_index: ci, chunk_count: cc, digests: d, in_flight: i, departed: dep }).len();
         assert!(chunks > 1, "the full spans {chunks} chunks");
         path.source("mesh2.admin.1", "mesh1", &p, 10, &big(10), 1);
         path.source("mesh2.admin.1", "mesh3", &q, 5, &source_at(&ids, 5), 2);

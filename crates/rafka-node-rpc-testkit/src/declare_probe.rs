@@ -144,7 +144,7 @@ impl NodeProtocol for DeclareProbe {
 /// Serve the probe: the node declares through its own process client, filled in `client` once
 /// the node runs.
 pub fn serve(b: ServerBuilder, client: Arc<OnceLock<crate::node_rpc::ProcessNodeRpc>>, launch: &Launch) -> ServerBuilder {
-    let (own_id, own_inc) = (launch.node_id.to_string(), launch.incarnation.0.clone());
+    let (own_id, own_inc) = (launch.node_id.to_string(), launch.incarnation.to_string());
     b.serve::<DeclareProbe, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: DeclareRequest| {
         let (client, own_id, own_inc) = (client.clone(), own_id.clone(), own_inc.clone());
         async move {
@@ -162,7 +162,10 @@ pub fn serve(b: ServerBuilder, client: Arc<OnceLock<crate::node_rpc::ProcessNode
                 Ok(id) => id,
                 Err(e) => return Ok(DeclareReply::BadTarget { reason: format!("node id: {e}") }),
             };
-            let incarnation = rafka_mesh_entity::IncarnationId(incarnation.unwrap_or(own_inc));
+            let incarnation = match rafka_mesh_entity::IncarnationId::parse(&incarnation.unwrap_or(own_inc)) {
+                Ok(id) => id,
+                Err(e) => return Ok(DeclareReply::BadTarget { reason: format!("incarnation: {e}") }),
+            };
             let declare = StatusRequest::DeclareNodeState { node_id, incarnation, state };
             let (out, _) = rpc.client.call::<Status>(&target, &declare, &CallOptions::default()).await;
             let (reply, reason) = match &out {

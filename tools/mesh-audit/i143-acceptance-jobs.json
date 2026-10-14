@@ -12,10 +12,10 @@
           "dir": "target/i143-acceptance/2938/process/source_restart_hydrates_proxy_routes_first_call_without_rediscovery"
         },
         {
-          "name": "source_accepts_inbound_direct_retires_proxy_before_cutback",
+          "name": "source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2938.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accepts_inbound_direct_retires_proxy_before_cutback/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2938::source_accepts_inbound_direct_retires_proxy_before_cutback -- --exact",
-          "dir": "target/i143-acceptance/2938/process/source_accepts_inbound_direct_retires_proxy_before_cutback"
+          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2938::source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback -- --exact",
+          "dir": "target/i143-acceptance/2938/process/source_accept_wakes_its_own_dial_whose_direct_retires_proxy_before_cutback"
         }
       ]
     },
@@ -280,7 +280,7 @@
         {
           "name": "scenario_runner_launches_explicit_external_binary_set",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
-          "command": "MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2776::scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2776::scenario_runner_launches_explicit_external_binary_set -- --exact",
           "dir": "target/i143-acceptance/2776/process/scenario_runner_launches_explicit_external_binary_set"
         }
       ]
@@ -292,7 +292,7 @@
         {
           "name": "scenario_runner_launches_explicit_external_binary_set",
           "source": "crates/rafka-test-scenario/tests/i143_acceptance_2776.rs",
-          "command": "MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2776::scenario_runner_launches_explicit_external_binary_set -- --exact",
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set/estate cargo test -p rafka-test-scenario --test main i143_acceptance_2776::scenario_runner_launches_explicit_external_binary_set -- --exact",
           "dir": "target/i143-acceptance/2776/container/scenario_runner_launches_explicit_external_binary_set"
         }
       ]
@@ -353,20 +353,20 @@
       "cells": [
         {
           "name": "network_scheduler_replays_incomplete_send_as_not_sent",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2781.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2781::network_scheduler_replays_incomplete_send_as_not_sent -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__scheduler_replay.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__scheduler_replay::network_scheduler_replays_incomplete_send_as_not_sent -- --exact",
           "dir": "target/i143-acceptance/2781/unit/network_scheduler_replays_incomplete_send_as_not_sent"
         },
         {
           "name": "network_scheduler_replays_lost_reply_as_indeterminate",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2781.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2781::network_scheduler_replays_lost_reply_as_indeterminate -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__scheduler_replay.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__scheduler_replay::network_scheduler_replays_lost_reply_as_indeterminate -- --exact",
           "dir": "target/i143-acceptance/2781/unit/network_scheduler_replays_lost_reply_as_indeterminate"
         },
         {
           "name": "pool_scheduler_supersedes_birth_preserves_current_sibling",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2781.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2781::pool_scheduler_supersedes_birth_preserves_current_sibling -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__scheduler_replay.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__scheduler_replay::pool_scheduler_supersedes_birth_preserves_current_sibling -- --exact",
           "dir": "target/i143-acceptance/2781/unit/pool_scheduler_supersedes_birth_preserves_current_sibling"
         }
       ]
@@ -377,14 +377,14 @@
       "cells": [
         {
           "name": "failpoint_explorer_before_apply_proves_not_sent_or_unapplied",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2780.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2780::failpoint_explorer_before_apply_proves_not_sent_or_unapplied -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__apply_cuts.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__apply_cuts::failpoint_explorer_before_apply_proves_not_sent_or_unapplied -- --exact",
           "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_before_apply_proves_not_sent_or_unapplied"
         },
         {
           "name": "failpoint_explorer_after_apply_lost_reply_proves_indeterminate",
-          "source": "crates/rafka-node-rpc/tests/i143_acceptance_2780.rs",
-          "command": "cargo test -p rafka-node-rpc --test main i143_acceptance_2780::failpoint_explorer_after_apply_lost_reply_proves_indeterminate -- --exact",
+          "source": "crates/rafka-test-scenario/tests/node_rpc__apply_cuts.rs",
+          "command": "cargo test -p rafka-test-scenario --test main node_rpc__apply_cuts::failpoint_explorer_after_apply_lost_reply_proves_indeterminate -- --exact",
           "dir": "target/i143-acceptance/2780/unit/failpoint_explorer_after_apply_lost_reply_proves_indeterminate"
         }
       ]
@@ -551,8 +551,8 @@
       "cells": [
         {
           "name": "digest_receiver_orders_same_birth_by_sequence_with_stalled_clock",
-          "source": "crates/rafka-mesh-entity/tests/i143_acceptance_2899.rs",
-          "command": "cargo test -p rafka-mesh-entity --test main i143_acceptance_2899::digest_receiver_orders_same_birth_by_sequence_with_stalled_clock -- --exact",
+          "source": "crates/rafka-test-scenario/tests/mesh_membership__digest_sequence.rs",
+          "command": "cargo test -p rafka-test-scenario --test main mesh_membership__digest_sequence::digest_receiver_orders_same_birth_by_sequence_with_stalled_clock -- --exact",
           "dir": "target/i143-acceptance/2899/unit/digest_receiver_orders_same_birth_by_sequence_with_stalled_clock"
         }
       ]
@@ -908,10 +908,10 @@
       "layer": "chaos-process",
       "cells": [
         {
-          "name": "mock_role_restarts_preserve_identity_and_replace_birth",
+          "name": "mock_role_restarts_preserve_identity_and_birth",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_replace_birth"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_role_restarts_preserve_identity_and_birth -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-process/mock_role_restarts_preserve_identity_and_birth"
         },
         {
           "name": "mock_node_replacement_creates_distinct_logical_identity",
@@ -932,10 +932,10 @@
       "layer": "chaos-container",
       "cells": [
         {
-          "name": "mock_role_restarts_preserve_identity_and_replace_birth",
+          "name": "mock_role_restarts_preserve_identity_and_birth",
           "source": "crates/rafka-test-scenario/tests/rshape_burn_in.rs",
-          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_replace_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_role_restarts_preserve_identity_and_replace_birth -- --exact",
-          "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_replace_birth"
+          "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=container RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_birth/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_role_restarts_preserve_identity_and_birth -- --exact",
+          "dir": "target/i143-rshape/i143-rshape-lifecycle-chaos-container/mock_role_restarts_preserve_identity_and_birth"
         },
         {
           "name": "mock_node_replacement_creates_distinct_logical_identity",

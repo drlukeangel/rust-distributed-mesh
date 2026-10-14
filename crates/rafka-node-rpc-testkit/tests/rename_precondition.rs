@@ -3,14 +3,14 @@
 //! `node.connections.delete { scope: All }` closes every one of them, writing each drop under the
 //! node's current name, before the name can move.
 //!
-//! CONTRACT: `mesh1.rpc.1.new` joins its admin and is dialled by its peer `mesh1.rpc.2`, so its own
-//! connections log holds a `connected` entry to each. Drained (`DrainNode`), it is told
-//! `ApplyNodeName { mesh1.rpc.1 }` and answers `Busy` naming both routes, holding nothing. Its admin's
+//! CONTRACT: `mesh1.rpc.1.new` originates a data-plane connection to its admin and one to its peer
+//! `mesh1.rpc.2`, so its own connections log holds a `connected` entry to each. Told
+//! `ApplyNodeName { mesh1.rpc.1 }`, it answers `Busy` naming both routes, holding nothing. Its admin's
 //! `DeleteConnections { All }` answers `ConnectionsDeleted` closing both routes' open entries and
 //! holding none, each drop written under `mesh1.rpc.1.new`; the same `ApplyNodeName` then answers
 //! `Applied`. No `connected` entry under `mesh1.rpc.1.new` is the latest of its pair after the
-//! rename, and the next entry the node writes (its peer dials it again) names `mesh1.rpc.1`. What must
-//! NOT happen: a drained node that still holds connections takes another name, a route left open
+//! rename, and the next entry the node writes (it dials its peer again) names `mesh1.rpc.1`. What must
+//! NOT happen: a node that still holds connections takes another name, a route left open
 //! under the name it gave up, or a drop written under another name.
 
 use crate::common::admin_side_serving;
@@ -40,12 +40,12 @@ fn kept_log(store: &std::path::Path, fabric: &FabricId, name: &PathName) -> Vec<
 }
 
 #[test]
-fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_are_deleted() {
-    let cap = crate::common::capture("a_drained_node_holding_connections_is_refused_its_name_until_its_connections_are_deleted");
+fn a_node_holding_connections_is_refused_its_name_until_its_connections_are_deleted() {
+    let cap = crate::common::capture("a_node_holding_connections_is_refused_its_name_until_its_connections_are_deleted");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("rename-precondition-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -57,7 +57,7 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
         let launch_of = |name: &PathName| {
             let dir = root.join(name.to_string());
             std::fs::create_dir_all(&dir).unwrap();
-            RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+            RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
             let key = node::load_or_mint_key(&dir).unwrap();
             let launch = Launch {
                 fabric: "fabric1".into(),
@@ -74,6 +74,7 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
                 store_dir: store.clone(),
                 mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
                 mesh_issuer: None,
+                connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             };
             admin.deployed(&launch, &key);
             launch
@@ -91,7 +92,7 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
             (running, seams.get().cloned().expect("the node handed its seams"))
         };
         let (renamed_node, renamed_seams) = start(renamed.clone()).await;
-        let (peer_node, peer_seams) = start(peer.clone()).await;
+        let (peer_node, _peer_seams) = start(peer.clone()).await;
 
         // Both births are held ready by the admin, and the peer holds the renamed one.
         let book = &admin.observer.membership.book;
@@ -112,18 +113,20 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
             node_digests.changed().await.unwrap();
         }
 
-        // The peer dials the node: the node holds a route to its admin (its join) and to its peer.
-        match peer_seams.client.call::<Ping>(&NodeTarget::ExactNode(renamed.node_id.clone()), &PingRequest::Ping { payload: b"before the drain".to_vec() }, &CallOptions::default()).await.0 {
-            RpcOutcome::Reply(_) => {}
-            other => panic!("the peer's ping did not end in a reply: {other:?}"),
+        // The node originates a data-plane connection to its admin and one to its peer: it holds a
+        // route to each.
+        for (to, what) in [(admin.launcher.node_id.clone(), "the node reaches its admin"), (peer.node_id.clone(), "the node reaches its peer")] {
+            match renamed_seams.client.call::<Ping>(&NodeTarget::ExactNode(to), &PingRequest::Ping { payload: what.as_bytes().to_vec() }, &CallOptions::default()).await.0 {
+                RpcOutcome::Reply(_) => {}
+                other => panic!("{what}: the ping did not end in a reply: {other:?}"),
+            }
         }
-        renamed_seams.connections.drain().await;
+        renamed_seams.connections.observations_landed().await;
         let before = kept_log(&store, &fabric, &born);
         for dest in ["mesh1.admin.1", "mesh1.rpc.2"] {
             assert!(before.iter().any(|e| e.source.name == born && e.destination.name.to_string() == dest), "the node holds a route to {dest}: {before:#?}");
         }
 
-        // The drain: the node is not ready for traffic, and still holds both routes.
         let (d, _) = book.get(renamed.node_id.as_str()).unwrap();
         admin.observer.resolver.insert(ResolvedNode { node_id: d.node.node_id.clone(), name: d.node.name.clone(), endpoint_id: d.node.endpoint_id.0.parse().unwrap(), incarnation: d.node.incarnation.clone(), transport_addr: d.node.transport_addr });
         let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
@@ -137,39 +140,27 @@ fn a_drained_node_holding_connections_is_refused_its_name_until_its_connections_
                 }
             }
         };
-        let drain = StatusRequest::DrainNode { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), build_id: "bld_rename".into(), attempt: 1, operation: format!("drain-node:{born}") };
-        assert_eq!(call(drain).await, StatusReply::Applied, "the drain is admitted");
-        // The node's own state: its heartbeat carries no status (gossip.md §3.1 `Digest`).
-        tokio::time::timeout(Duration::from_secs(30), async {
-            while *renamed_node.status.lock().unwrap() != MemberStatus::Draining {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .expect("the admitted drain leaves the node Draining");
-
-        // Told its name while it holds both routes: Busy naming them, nothing held.
+        // Told its name while it holds both routes: refused naming each by its entry's id, nothing held.
         let apply = StatusRequest::ApplyNodeName { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), name: taken.to_string() };
+        let holding: Vec<_> = renamed_seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
+        assert_eq!(holding.len(), 2, "the node holds its two routes: {holding:?}");
         let busy = call(apply.clone()).await;
-        assert!(
-            matches!(&busy, StatusReply::Busy { reason } if reason.contains("mesh1.admin.1") && reason.contains("mesh1.rpc.2")),
-            "a drained node holding its routes keeps its name, Busy naming each route: {busy:?}"
-        );
+        assert_eq!(busy, StatusReply::BusyHoldingConnections { connections: holding }, "a node holding its routes keeps its name, naming each connection");
         assert_eq!(renamed_seams.connections.own().name, born, "the node holds the name it had");
 
         // node.connections.delete { All }: every route closed, each drop under the name it holds.
         let open_ids: Vec<_> = renamed_seams.connections.held_routes().await.into_iter().map(|r| r.id).collect();
         let deleted = call(StatusRequest::DeleteConnections { node_id: renamed.node_id.clone(), incarnation: renamed.incarnation.clone(), scope: ConnectionScope::All }).await;
-        let StatusReply::ConnectionsDeleted { closed, not_open, held } = &deleted else { panic!("the cut ends node.connections.deleted: {deleted:?}") };
+        let StatusReply::ConnectionsDeleted { closed, not_open, held, .. } = &deleted else { panic!("the cut ends node.connections.deleted: {deleted:?}") };
         assert!(open_ids.iter().all(|id| closed.contains(id)) && not_open.is_empty() && held.is_empty(), "every open entry is closed and none held: open {open_ids:?}, {deleted:?}");
 
         // The same apply now takes the name.
         assert_eq!(call(apply).await, StatusReply::Applied, "with no connection held the name moves");
         assert_eq!(renamed_seams.connections.own().name, taken, "the node holds its new name");
 
-        // Its peer dials it again: the node's next entry names the name it holds.
-        let _ = peer_seams.client.call::<Ping>(&NodeTarget::ExactNode(renamed.node_id.clone()), &PingRequest::Ping { payload: b"after the rename".to_vec() }, &CallOptions::default()).await;
-        renamed_seams.connections.drain().await;
+        // It dials its peer again: the node's next entry names the name it holds.
+        let _ = renamed_seams.client.call::<Ping>(&NodeTarget::ExactNode(peer.node_id.clone()), &PingRequest::Ping { payload: b"after the rename".to_vec() }, &CallOptions::default()).await;
+        renamed_seams.connections.observations_landed().await;
         let log = kept_log(&store, &fabric, &born);
         let mut wrong: Vec<String> = Vec::new();
         let mut latest: std::collections::BTreeMap<(String, String, String), &NodeConnection> = Default::default();

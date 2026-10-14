@@ -13,7 +13,7 @@
 //! the entire wire stream is format-homogeneous (no fixed u32 boundary that
 //! would waste 3 bytes on every small payload).
 //!
-//! ## Tag namespace (see `docs/architecture/mesh.md`)
+//! ## Tag namespace (see `docs/architecture/node-rpc-envelope.md`)
 //!
 //! - `0x00`        — reserved / sentinel
 //! - `0x01..=0x0F` — control plane (pointer pulls, auth pushes, gossip fetches)

@@ -1,28 +1,12 @@
 //! Functional: the probe closes its one socket before it exits, whatever the call did.
 //!
 //! A `--via` call whose exact target the admin's view does not hold sends nothing: the probe's
-//! endpoint is bound and never used. An endpoint dropped open makes iroh abort the process
+//! endpoint is bound, reads the entry admin's view, and carries no call. An endpoint dropped open makes iroh abort the process
 //! ungracefully, and the probe's span file (`rdm.node_rpc.proof_store.resolve.via-probe` and all)
 //! is lost with it, so a scenario that reads the call's trace id from that file finds none.
 
-use rafka_mesh_entity::NodeId;
-use std::io::{Read, Write};
-use std::net::TcpListener;
-
-/// A one-route admin: every request is answered with the same node view.
-fn serve_view(view: String) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let mut stream = stream;
-            let mut buf = [0u8; 4096];
-            let _ = stream.read(&mut buf);
-            let _ = write!(stream, "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{view}", view.len());
-        }
-    });
-    base
-}
+use crate::common::admin_view::{node, serve_on_own_runtime};
+use rafka_mesh_entity::{IncarnationId, NodeId};
 
 /// CONTRACT: a probe asked to carry a call through a resolvable carrier to an exact node its view
 /// does not hold prints `NotSent` with the `via-peer` route, exits without the iroh "dropped
@@ -30,18 +14,13 @@ fn serve_view(view: String) -> String {
 /// directory. What must NOT happen: an empty span file, or the ungraceful-abort line on stderr.
 #[test]
 fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
-    let carrier = NodeId::mint().to_string();
     let key = iroh::SecretKey::generate().public().to_string();
-    let view = serde_json::json!({"nodes": [{
-        "node_id": carrier, "name": "mesh1.gateway.1", "endpoint_id": key, "transport_addr": "127.0.0.1:9", "incarnation_id": "c0ffee00c0ffee00c0ffee00c0ffee00",
-    }]})
-    .to_string();
-    let admin = serve_view(view);
+    let (rt, admin) = serve_on_own_runtime(vec![node("mesh1.gateway.1", &NodeId::mint(), Some(key), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
     let evidence = std::env::temp_dir().join(format!("rdm-probe-close-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
     let ghost = NodeId::mint().to_string();
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
-        .args(["--admin", &admin, "put", "--target", &format!("exact:{ghost}"), "--key", "k", "--value", "v", "--via", "path:mesh1.gateway.1"])
+        .args(["--admin-birth", &admin.birth_arg(), "put", "--target", &format!("exact:{ghost}"), "--key", "k", "--value", "v", "--via", "path:mesh1.gateway.1"])
         .env("RDM_EVIDENCE_DIR", &evidence)
         .output()
         .unwrap();
@@ -57,6 +36,7 @@ fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
         .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
         .collect();
     assert!(spans.contains("rdm.node_rpc.proof_store.resolve.via-probe"), "the probe left no via-probe span; evidence dir holds: {spans:?}");
+    rt.block_on(admin.shutdown());
     let _ = std::fs::remove_dir_all(&evidence);
 }
 
@@ -67,17 +47,13 @@ fn probe_with_unresolved_target_via_carrier_leaves_its_span() {
 /// with no typed outcome, an exit status 2, the ungraceful-abort line, or a lost span file.
 #[test]
 fn probe_with_unresolved_carrier_sends_nothing_and_leaves_its_span() {
-    let present = NodeId::mint().to_string();
+    let present = NodeId::mint();
     let key = iroh::SecretKey::generate().public().to_string();
-    let view = serde_json::json!({"nodes": [{
-        "node_id": present, "name": "mesh1.broker.1", "endpoint_id": key, "transport_addr": "127.0.0.1:9", "incarnation_id": "c0ffee00c0ffee00c0ffee00c0ffee00",
-    }]})
-    .to_string();
-    let admin = serve_view(view);
+    let (rt, admin) = serve_on_own_runtime(vec![node("mesh1.broker.1", &present, Some(key), Some("127.0.0.1:9".parse().unwrap()), Some(IncarnationId::mint()))]);
     let evidence = std::env::temp_dir().join(format!("rdm-probe-close-carrier-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&evidence);
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_rafka-rpc-probe"))
-        .args(["--admin", &admin, "put", "--target", &format!("exact:{present}"), "--key", "k", "--value", "v", "--via", "path:mesh1.gateway.9"])
+        .args(["--admin-birth", &admin.birth_arg(), "put", "--target", &format!("exact:{present}"), "--key", "k", "--value", "v", "--via", "path:mesh1.gateway.9"])
         .env("RDM_EVIDENCE_DIR", &evidence)
         .output()
         .unwrap();
@@ -95,5 +71,6 @@ fn probe_with_unresolved_carrier_sends_nothing_and_leaves_its_span() {
         .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
         .collect();
     assert!(spans.contains("rdm.node_rpc.proof_store.resolve.via-probe"), "the probe left no via-probe span; evidence dir holds: {spans:?}");
+    rt.block_on(admin.shutdown());
     let _ = std::fs::remove_dir_all(&evidence);
 }

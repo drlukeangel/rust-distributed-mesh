@@ -276,7 +276,7 @@ impl ConnectionsHeld {
     /// Whether `end` names a process membership does not hold now: its node departed, another
     /// node holds its path, or the node is here under another birth. An end naming no process is
     /// judged only on departure; a node membership does not hold is not judged.
-    fn end_superseded(&self, end: &ConnectionEnd) -> Option<bool> {
+    pub fn end_superseded(&self, end: &ConnectionEnd) -> Option<bool> {
         let m = self.membership.as_ref()?;
         match m.birth(&end.node_id, &end.name) {
             Birth::Current(now) => Some(end.incarnation.as_ref().is_some_and(|named| *named != now)),
@@ -537,7 +537,7 @@ pub fn select_carrier(
     let current = freshest.destination.incarnation.clone();
     let mut eligible: Vec<&NodeConnection> = named.into_iter().filter(|e| e.destination.incarnation == current).collect();
     eligible.sort_by(|a, b| a.source.name.cmp(&b.source.name));
-    let current = current.map(|c| c.0).unwrap_or_default();
+    let current = current.map(|c| c.to_string()).unwrap_or_default();
     let at = spread(&own.to_string(), &destination.to_string(), &current) % eligible.len() as u64;
     let edge = eligible[at as usize].clone();
     Ok(Some(CarrierChoice { carrier: edge.source.name.clone(), edge }))

@@ -1,4 +1,4 @@
-//! i143.e4.s10 detection acceptance (rafka-v2 #2803; fabric-node-lifecycle-events-ops-gossip.md
+//! i143.e4.s10 detection acceptance (rafka-v2 #2803; docs/architecture/lifecycles/node-recovery.md
 //! "Mesh Recovery" -> "Detection: the peer-mesh investigation"), PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2803-detect-process`, which exports `I143_ACCEPTANCE_DIR`
 //! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's
@@ -89,14 +89,14 @@ async fn fixture(cell: &str) -> Fixture {
     let mut estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let shape = [("mesh1", 2, 3), ("mesh2", 2, 3)];
     let built = estate.reconcile_shape("fabric1", &shape).await;
-    let accepted = built.build_id.0.clone();
+    let accepted = built.build_id.to_string();
     let before = values(&estate.settled_views(&shape).await);
     let fabric_primary = before.iter().find(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).expect("one fabric primary");
     let lost = if fabric_primary.starts_with("mesh1.") { "mesh2" } else { "mesh1" }.to_string();
     let lost_mesh_id = estate.mesh_view(&lost).await.id.expect("the lost mesh has its id").to_string();
     let attempt_before = estate.attempt_of_build(&accepted).await;
     // Control goes through the fabric primary's advertised API, which no fault here touches.
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fabric_primary).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
+    estate.enter(&Estate::path(&fabric_primary)).await;
     // The fault falls on an established fabric: a cut that falls while the commit-state or
     // open-traffic round runs holds that round on the planned birth it cuts (states.md, "The round
     // checklist"), so the cells that assert the fabric stays ready start from ready-for-traffic.
@@ -270,7 +270,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
         let estate = &f.estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births_w.clone());
         async move {
-            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId(accepted.clone())).await.expect("build.get of the accepted Build");
+            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
             let later = b.phase == rafka_node_rpc_contract::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
             (later && reborn).then_some(b)
@@ -307,7 +307,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     })
     .await;
     let seat_moved = seat_lost_or_five(&f.estate.spans()).1;
-    assert_eq!(f.estate.accepted_build_id().await, f.accepted, "no new Build: Fabric.build_id is unchanged");
+    assert_eq!(f.estate.accepted_build_id().await, f.accepted, "no new Build: the current build_id is unchanged");
     assert_eq!(f.estate.mesh_view(&f.lost).await.id.expect("the lost mesh still has its id").to_string(), f.lost_mesh_id, "{} is reborn under its own MeshId", f.lost);
     let new_births = births(&after);
     for m in &survivors {
@@ -315,8 +315,6 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
     }
 
     let fp = f.fabric_primary.clone();
-    let fabric_admin = f.estate.admin.clone();
-    f.estate.admin = fabric_admin;
     let story_end = f.stop().await;
     let spans = f.estate.spans();
     let last_heard_ms = f.unheard_since_ms(&spans).unwrap_or_else(|| panic!("{fp} tracked {} as unheard (via-unheard names the last backbone receipt)", f.lost));
@@ -674,7 +672,7 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
     for m in &lost {
         mesh_ids.insert(m.clone(), estate.mesh_view(m).await.id.expect("the mesh has its id").to_string());
     }
-    estate.admin = before.iter().find(|n| s(&n["name"]) == fp).map(|n| s(&n["admin_api_base"])).filter(|b| !b.is_empty()).expect("the fabric primary advertises its control API");
+    estate.enter(&Estate::path(&fp)).await;
     let old = births(&before);
     for (path, pid) in estate.live_runtimes() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -698,8 +696,6 @@ async fn two_peer_meshes_lost_together_are_investigated_and_reborn_independently
         assert_eq!(estate.mesh_view(m).await.id.expect("the mesh still has its id").to_string(), mesh_ids[m], "{m} is reborn under its own MeshId");
     }
     let _ = after;
-    let fabric_admin = estate.admin.clone();
-    estate.admin = fabric_admin;
     estate.stop().await;
     let spans = estate.spans();
     for m in &lost {

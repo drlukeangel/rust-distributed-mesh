@@ -1,7 +1,7 @@
 //! i143.e11.s3 process E2E: the role binaries on the base are born by node-admin as
 //! `NodeKind::{Broker, Gateway, Compute}` path.names (PRD §13.1).
 //!
-//! One fresh fabric; one `POST /api/build` asks for `{node_admin: 1, broker: 1, gateway: 1,
+//! One fresh fabric; one `build.create` asks for `{node_admin: 1, broker: 1, gateway: 1,
 //! compute: 1}`; from public surfaces only:
 //! - the Build completes and every desired node is `ready-for-traffic` under its kind;
 //! - every role cohort has exactly one primary; the fabric exactly one fabric primary;
@@ -10,38 +10,43 @@
 //! - a second Build without the compute retires `mesh1.compute.1` under that Build, and the
 //!   other roles keep their birth.
 
-use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
+use crate::build_log;
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeView};
+use rafka_test_scenario::estate::{wait_for, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-fn owner() -> Owner {
+fn owner(test: &str) -> Owner {
     Owner {
         product: "mesh".into(),
         feature: "mesh-shapes".into(),
         subfeature: "role-build".into(),
         rung: "SN".into(),
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
-        test: "roles_are_born_by_build_under_their_kind".into(),
+        test: test.into(),
+    }
+}
+
+fn kind_of(kind: &str) -> NodeKind {
+    match kind {
+        "broker" => NodeKind::Broker,
+        "gateway" => NodeKind::Gateway,
+        "compute" => NodeKind::Compute,
+        other => panic!("{other} is not a role kind"),
     }
 }
 
 /// `(kind, count)` of mesh1 beside its one node-admin.
 async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, Vec<Value>) {
-    let mut mesh = json!({"name": "mesh1", "node_admin": 1});
-    for (kind, n) in roles {
-        mesh[*kind] = json!(n);
-    }
-    let (status, accepted) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh]})).await;
-    assert_eq!(status, 202, "{label}: {accepted}");
-    let build_id = accepted["build_id"].as_str().unwrap().to_string();
-    let build = estate.await_build(&build_id, Duration::from_secs(120)).await;
-    estate.artifact(&format!("build-{label}.json"), &build);
+    let mesh = MeshDesired::of("mesh1", std::iter::once((NodeKind::NodeAdmin, 1)).chain(roles.iter().map(|(kind, n)| (kind_of(kind), *n))));
+    let build_id = estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh] }).await.build_id.to_string();
+    estate.artifact(&format!("build-{label}.json"), &build_log::build_value(&estate.carrier().await, &build_id).await);
     let mut want: BTreeSet<String> = ["mesh1.admin.1".to_string()].into();
     for (kind, n) in roles {
         want.extend((1..=*n).map(|i| format!("mesh1.{kind}.{i}")));
     }
-    let nodes = estate.settled(&want, Duration::from_secs(15)).await;
+    let nodes = Estate::values(&estate.settles_to_named(&want, Duration::from_secs(15)).await);
     for n in &nodes {
         let name = n["name"].as_str().unwrap();
         let kind = name.split('.').nth(1).unwrap();
@@ -54,7 +59,7 @@ async fn build(estate: &Estate, label: &str, roles: &[(&str, u32)]) -> (String, 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn roles_are_born_by_build_under_their_kind() {
-    let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
+    let mut estate = Estate::bootstrap(owner("roles_are_born_by_build_under_their_kind"), "fabric1", "mesh1").await;
     let roles = [("broker", 1), ("gateway", 1), ("compute", 1)];
     let (first, nodes) = build(&estate, "roles", &roles).await;
     estate.artifact("nodes.json", &json!(nodes));
@@ -76,8 +81,16 @@ async fn roles_are_born_by_build_under_their_kind() {
     assert_eq!(fabric_primaries[0]["kind"], "node_admin");
 
     // Every node, whatever its kind, publishes its own CPU and RAM in its mesh digest, and the
-    // node-admin's view serves it.
-    for n in &nodes {
+    // node-admin's view serves it. The load travels on the node's own digest only (the primary's
+    // aggregate omits loads, rafka-mesh-transport membership.rs `publish`), so the view serves it once
+    // this admin has heard that digest, which can follow the status the aggregate carried.
+    let names: BTreeSet<String> = nodes.iter().map(|n| n["name"].as_str().unwrap().to_string()).collect();
+    let loaded: Vec<Value> = wait_for("every node's own digest, with its load, in the admin's view", Duration::from_secs(15), || async {
+        let now = Estate::values(&estate.settles_to_named(&names, Duration::from_secs(15)).await);
+        now.iter().all(|n| n["load"]["ram_used_bytes"].as_u64().is_some_and(|b| b > 0)).then_some(now)
+    })
+    .await;
+    for n in &loaded {
         let l = &n["load"];
         assert!(l["ram_used_bytes"].as_u64().is_some_and(|b| b > 0), "{} carries its resident memory: {n}", n["name"]);
         assert!(l["ram_budget_bytes"].as_u64() >= l["ram_used_bytes"].as_u64(), "{} memory ceiling: {n}", n["name"]);
@@ -88,14 +101,9 @@ async fn roles_are_born_by_build_under_their_kind() {
     // The same digest carries the node's mesh-channel counts (R-L2): it has heard the members of
     // its mesh, holds a gossip neighbour, and has sent and decoded membership frames.
     // A digest is a periodic sample: the Build is ready on declarations, before every member has
-    // published a sample taken after the others joined. Read /api/nodes until the samples are in.
-    let sampled = |ns: &[Value]| ns.iter().all(|n| n["gossip"]["neighbours"].as_u64().is_some_and(|k| k >= 1) && n["gossip"]["frames_received"].as_u64().is_some_and(|f| f >= 1) && n["gossip"]["frames_sent"].as_u64().is_some_and(|f| f >= 1));
-    let mut gossip_nodes = estate.nodes().await;
-    let until = std::time::Instant::now() + Duration::from_secs(15);
-    while !sampled(&gossip_nodes) && std::time::Instant::now() < until {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        gossip_nodes = estate.nodes().await;
-    }
+    // published a sample taken after the others joined. Read `node.get` until the samples are in.
+    let sampled = |ns: &[NodeView]| ns.iter().all(|n| n.gossip.as_ref().is_some_and(|g| g.neighbours >= 1 && g.frames_received >= 1 && g.frames_sent >= 1));
+    let gossip_nodes = Estate::values(&estate.until_view("every node published a digest sampled after the others joined", Duration::from_secs(15), |views| sampled(views).then(|| views.to_vec())).await);
     estate.artifact("nodes-gossip.json", &json!(gossip_nodes));
     for n in &gossip_nodes {
         let g = &n["gossip"];
@@ -110,6 +118,8 @@ async fn roles_are_born_by_build_under_their_kind() {
         ns.iter().map(|n| (n["name"].as_str().unwrap().to_string(), n["incarnation_id"].as_str().unwrap_or("").to_string())).collect()
     };
     let before = births(&nodes);
+    // The initial fabric refuses a shrink until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     let (second, after) = build(&estate, "without-compute", &[("broker", 1), ("gateway", 1)]).await;
     let after = births(&after);
     assert!(!after.contains_key("mesh1.compute.1"));
@@ -121,7 +131,7 @@ async fn roles_are_born_by_build_under_their_kind() {
     estate.stop().await;
     let spans = estate.spans();
     let accepted = |id: &str| {
-        named(&spans, "rdm.node_admin.build.create.via-rest")
+        named(&spans, "rdm.node_admin.build.create.via-node-rpc")
             .into_iter()
             .find(|s| s["attributes"]["build_id"] == id)
             .unwrap_or_else(|| panic!("no span accepted build {id}"))
@@ -157,4 +167,50 @@ async fn roles_are_born_by_build_under_their_kind() {
         .clone();
     assert!(descends_from(&spans, &delete, &second_accepted), "the compute's removal descends from the second Build");
     estate.record_trace_url(first_accepted["trace_id"].as_str().unwrap_or(""));
+}
+
+/// The one node executable of node-admin's built-in set: every node_type but `node_admin` runs it.
+const NODE_EXECUTABLE: &str = "rafka-node";
+
+/// CONTRACT: with no explicit executable binding, node-admin's process provider launches its
+/// built-in set, which is two executables: the node-admin and the one node executable. A broker, a
+/// gateway and a compute born by one Build each run that one executable, and each boots as the
+/// node_type its launch names: the boot span (`rdm.mesh.node.create.via-deployment`) names the
+/// executable the process runs and the kind it took from its launch, and runs under the
+/// DeployRuntime step that launched it. No product role binary is launched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_build_with_no_executable_binding_launches_every_role_from_the_one_node_executable() {
+    let mut estate = Estate::bootstrap(owner("a_build_with_no_executable_binding_launches_every_role_from_the_one_node_executable"), "fabric1", "mesh1").await;
+    let roles = [("broker", 1), ("gateway", 1), ("compute", 1)];
+    let (build_id, nodes) = build(&estate, "roles", &roles).await;
+    estate.artifact("nodes.json", &json!(nodes));
+    estate.stop().await;
+
+    let spans = estate.spans();
+    let accepted = named(&spans, "rdm.node_admin.build.create.via-node-rpc")
+        .into_iter()
+        .find(|s| s["attributes"]["build_id"] == build_id.as_str())
+        .unwrap_or_else(|| panic!("no span accepted build {build_id}"))
+        .clone();
+    let mut launched = BTreeMap::new();
+    for (kind, _) in &roles {
+        let node = format!("mesh1.{kind}.1");
+        let step = named(&spans, "rdm.node_admin.deployment.update.via-step")
+            .into_iter()
+            .find(|s| s["attributes"]["node"] == node.as_str() && s["attributes"]["step"] == "DeployRuntime" && s["attributes"]["build_id"] == build_id.as_str())
+            .unwrap_or_else(|| panic!("no DeployRuntime step for {node}"))
+            .clone();
+        assert!(descends_from(&spans, &step, &accepted), "{node}'s launch runs under the Build that asked for it");
+        let boot = named(&spans, "rdm.mesh.node.create.via-deployment")
+            .into_iter()
+            .find(|s| s["attributes"]["node"] == node.as_str())
+            .unwrap_or_else(|| panic!("{node} wrote no boot span"))
+            .clone();
+        assert!(descends_from(&spans, &boot, &step), "{node} booted under the DeployRuntime step that launched it");
+        assert_eq!(boot["attributes"]["executable"], NODE_EXECUTABLE, "{node} runs the one node executable of the built-in set: {boot}");
+        assert_eq!(boot["attributes"]["kind"], *kind, "{node} booted as the node_type its launch names: {boot}");
+        launched.insert(node, (boot["attributes"]["executable"].clone(), boot["attributes"]["kind"].clone(), boot["trace_id"].clone()));
+    }
+    estate.artifact("launched.json", &json!(launched));
+    estate.record_trace_url(accepted["trace_id"].as_str().unwrap_or(""));
 }

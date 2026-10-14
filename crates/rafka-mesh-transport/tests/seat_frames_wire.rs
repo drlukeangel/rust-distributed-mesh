@@ -16,7 +16,7 @@ fn node() -> NodeId {
 }
 
 fn holder(epoch: u64) -> SeatHolder {
-    SeatHolder { mesh: "m".into(), node_id: node(), incarnation: IncarnationId("i".into()), epoch }
+    SeatHolder { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), epoch }
 }
 
 /// CONTRACT: `Seated` is variant 8 and `Concern` variant 9 of the membership frame, appended after
@@ -25,12 +25,12 @@ fn holder(epoch: u64) -> SeatHolder {
 /// variant inserted before the end, or a self-describing encoding.
 #[test]
 fn seat_frames_match_the_frozen_wire_schema() {
-    // 08 = Seated; 01 = FabricPrimary; 01 6d = "m"; 0c + 12 ASCII bytes = the NodeId; 01 69 = "i"; 02 = epoch.
+    // 08 = Seated; 01 = FabricPrimary; 01 6d = "m"; 0c + 12 ASCII bytes = the NodeId; 0c <fixture("i")> = the incarnation; 02 = epoch.
     let node_hex = "0c 303472616a303970337a7037";
     let fixtures = [
-        (Frame::Seated { seat: Seat::FabricPrimary, holder: holder(2) }, format!("08 01 016d {node_hex} 0169 02")),
-        (Frame::Seated { seat: Seat::MeshPrimary, holder: holder(300) }, format!("08 00 016d {node_hex} 0169 ac02")),
-        (Frame::Concern { seat: Seat::FabricPrimary, node_id: node(), incarnation: IncarnationId("i".into()), observer: "o".into() }, format!("09 01 {node_hex} 0169 016f")),
+        (Frame::Seated { seat: Seat::FabricPrimary, holder: holder(2) }, format!("08 01 016d {node_hex} 0c79727a34396a333033796834 02")),
+        (Frame::Seated { seat: Seat::MeshPrimary, holder: holder(300) }, format!("08 00 016d {node_hex} 0c79727a34396a333033796834 ac02")),
+        (Frame::Concern { seat: Seat::FabricPrimary, node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), observer: "o".into() }, format!("09 01 {node_hex} 0c79727a34396a333033796834 016f")),
     ];
     for (frame, hex) in fixtures {
         assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
@@ -39,7 +39,7 @@ fn seat_frames_match_the_frozen_wire_schema() {
     // The frames that existed keep their positions.
     assert_eq!(Frame::FabricStatus { fabric: rafka_mesh_entity::FabricId::parse("04raj09p3zp7").unwrap(), status: "s".into(), publisher: "p".into(), forwarded_by: None, changed_at_rafka_ms: 1 }.encode()[0], 7);
     // A seat this build does not know is refused by name, never read as a prefix.
-    let e = Frame::decode(&bytes("08 02 016d 0c 303472616a303970337a7037 0169 02")).unwrap_err().to_string();
+    let e = Frame::decode(&bytes("08 02 016d 0c 303472616a303970337a7037 0c79727a34396a333033796834 02")).unwrap_err().to_string();
     assert!(e.contains("postcard decode"), "{e}");
 }
 
@@ -67,12 +67,12 @@ fn a_seat_book_holds_the_superseding_record_and_replays_what_it_holds() {
 fn new_fabric_primary_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
     let frame = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:54474".parse().unwrap(), admin_api_base: Some("h".into()) };
-    // 11 = variant 17; holder 016d {node} 0169 08; 0165 = "e"; 00 7f000001 caa903 = 127.0.0.1:54474; 01 0168 = Some("h").
-    let hex = format!("11 016d {node_hex} 0169 08 0165 00 7f000001 caa903 01 0168");
+    // 11 = variant 17; holder 016d {node} 0c79727a34396a333033796834 08; 0165 = "e"; 00 7f000001 caa903 = 127.0.0.1:54474; 01 0168 = Some("h").
+    let hex = format!("11 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 caa903 01 0168");
     assert_eq!(frame.encode(), bytes(&hex));
     assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
     let none = Frame::NewFabricPrimary { holder: holder(8), endpoint_id: "e".into(), transport_addr: "127.0.0.1:80".parse().unwrap(), admin_api_base: None };
-    assert_eq!(none.encode(), bytes(&format!("11 016d {node_hex} 0169 08 0165 00 7f000001 50 00")));
+    assert_eq!(none.encode(), bytes(&format!("11 016d {node_hex} 0c79727a34396a333033796834 08 0165 00 7f000001 50 00")));
     assert_eq!(Frame::MeshLeft { mesh_id: rafka_mesh_entity::MeshId::parse("04raj09p3zp7").unwrap(), build_id: "b".into(), attempt: 1, operation: "o".into(), receipt_manifest: "m".into(), publisher: "p".into(), event_at_rafka_ms: 1, forwarded_by: None }.encode()[0], 16);
 }
 
@@ -92,51 +92,70 @@ fn a_new_fabric_primarys_contacts_attach_only_to_the_holder_the_book_holds() {
     assert_eq!(book.fabric_contacts(), None, "the contacts belonged to the epoch-8 holder, not the one that replaced it");
 }
 
-fn seated_together(mesh_epoch: u64, fabric_epoch: u64) -> Frame {
-    use rafka_mesh_entity::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
-    use rafka_mesh_entity::LifecycleOp;
-    let op = LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId("i".into()), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 };
-    let birth = HandoverBirth { mesh: "m".into(), node_id: node(), incarnation: IncarnationId("i".into()) };
-    Frame::SeatedTogether {
-        op,
-        successor: holder(mesh_epoch),
-        seats: vec![CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: "m".into() }, holder: birth.clone(), epoch: mesh_epoch }, CommittedSeat { seat: TransferSeat::FabricPrimary, holder: birth, epoch: fabric_epoch }],
-    }
+fn op() -> rafka_mesh_entity::LifecycleOp {
+    rafka_mesh_entity::LifecycleOp { build_id: "b".into(), attempt: 1, operation: "o".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap(), name: "m.admin.1".parse().unwrap(), event_at_rafka_ms: 1 }
 }
 
-/// CONTRACT (gossip.md, "Seated-together seat transfer"): `SeatedTogether` is variant 23, the next
-/// after `NodeStopped` (22): the transfer's lifecycle op (the holder's drain, stop, restart or
-/// replace), the successor and every committed seat. What must NOT happen: a field moved, a variant
-/// inserted before the end.
+/// Both seats of mesh `m`, committed to the birth `m`/`node()`/`i` at their epochs.
+fn both(mesh_epoch: u64, fabric_epoch: u64) -> Vec<rafka_mesh_entity::seat::transfer::CommittedSeat> {
+    use rafka_mesh_entity::seat::transfer::{CommittedSeat, HandoverBirth, Seat as TransferSeat};
+    let birth = HandoverBirth { mesh: "m".into(), node_id: node(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() };
+    vec![CommittedSeat { seat: TransferSeat::MeshPrimary { mesh: "m".into() }, holder: birth.clone(), epoch: mesh_epoch }, CommittedSeat { seat: TransferSeat::FabricPrimary, holder: birth, epoch: fabric_epoch }]
+}
+
+fn primary_updated(mesh_epoch: u64, fabric_epoch: u64) -> Frame {
+    Frame::PrimaryUpdated { op: op(), seats: both(mesh_epoch, fabric_epoch) }
+}
+
+/// CONTRACT (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part C3 edit 6:
+/// "two announcements on the mesh channel and the backbone, 'primary updating' before the row and
+/// 'primary updated' after `node.primary.updated`, each naming operation, cohort, both exact births
+/// and the epochs"): `PrimaryUpdated` is variant 23, where the retired `SeatedTogether` stood, the next
+/// after `NodeStopped` (22): the update's lifecycle op (its subject is the holder the seat moved from)
+/// and every committed seat (its cohort, the successor's exact birth, the committed epoch). What must
+/// NOT happen: a field moved, a variant inserted before the end.
 #[test]
-fn seated_together_matches_the_frozen_wire_schema() {
+fn primary_updated_matches_the_frozen_wire_schema() {
     let node_hex = "0c 303472616a303970337a7037";
-    // 17 = variant 23; op: 0162 01 016f {node} 0169 09"m.admin.1" 01; successor 016d {node} 0169 04;
-    // seats (node-rpc-envelope.md CommittedSeat): 02 | MeshPrimary=1 { 016d } birth 016d {node} 0169
-    // epoch 04 | FabricPrimary=0 birth 016d {node} 0169 epoch 09.
-    let hex = format!("17 0162 01 016f {node_hex} 0169 09 6d2e61646d696e2e31 01  016d {node_hex} 0169 04  02 01 016d 016d {node_hex} 0169 04 00 016d {node_hex} 0169 09");
-    assert_eq!(seated_together(4, 9).encode(), bytes(&hex));
+    // 17 = variant 23; op: 0162 01 016f {node} 0c79727a34396a333033796834 09"m.admin.1" 01; seats: 02 | MeshPrimary=1 { 016d }
+    // birth 016d {node} 0c79727a34396a333033796834 epoch 04 | FabricPrimary=0 birth 016d {node} 0c79727a34396a333033796834 epoch 09.
+    let hex = format!("17 0162 01 016f {node_hex} 0c79727a34396a333033796834 09 6d2e61646d696e2e31 01  02 01 016d 016d {node_hex} 0c79727a34396a333033796834 04 00 016d {node_hex} 0c79727a34396a333033796834 09");
+    assert_eq!(primary_updated(4, 9).encode(), bytes(&hex));
     assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
 }
 
-/// CONTRACT (R-EL1a): the seats a transfer committed are held together under one lock, so no reader
-/// sees one moved and the other not; a stale transfer moves neither; and a primary replays them as
-/// the one `SeatedTogether` while both are still the records it holds (two `Seated` frames would
-/// re-open the window between the two installs at a neighbour that came up).
+/// CONTRACT (the same edit): `PrimaryUpdating` is variant 24, the next after `PrimaryUpdated` (23),
+/// with the same fields: the op naming the current holder and every seat that is updating, each at
+/// the epoch it would take, naming the successor's exact birth. What must NOT happen: a field moved,
+/// a variant inserted before the end.
+#[test]
+fn primary_updating_matches_the_frozen_wire_schema() {
+    let node_hex = "0c 303472616a303970337a7037";
+    let frame = Frame::PrimaryUpdating { op: op(), seats: both(5, 9) };
+    let hex = format!("18 0162 01 016f {node_hex} 0c79727a34396a333033796834 09 6d2e61646d696e2e31 01  02 01 016d 016d {node_hex} 0c79727a34396a333033796834 05 00 016d {node_hex} 0c79727a34396a333033796834 09");
+    assert_eq!(frame.encode(), bytes(&hex));
+    assert_eq!(Frame::decode(&bytes(&hex)).unwrap().encode(), bytes(&hex));
+    assert_eq!(primary_updated(1, 1).encode()[0], 23, "PrimaryUpdated keeps its position");
+}
+
+/// CONTRACT (proposal Part C2, Q1: "the one row of C1 commits both seats to NA2 at their next epochs,
+/// which makes NA2 mesh-primary and fabric-primary at the same boundary"): the seats one update
+/// committed are held together under one lock, so no reader sees one moved and the other not; a stale
+/// update moves neither; and a primary replays them as the one `PrimaryUpdated` while both are still
+/// the records it holds (two `Seated` frames would re-open the window between the two installs at a
+/// neighbour that came up).
 #[test]
 fn a_seat_book_holds_seats_together_and_replays_them_together() {
     let book = SeatBook::default();
     book.take(Seat::MeshPrimary, &holder(3));
     book.take(Seat::FabricPrimary, &holder(8));
-    let Frame::SeatedTogether { op, successor, seats } = seated_together(4, 9) else { unreachable!() };
-    assert!(book.take_together(&op, &successor, &seats, false).iter().all(|t| matches!(t, SeatTaken::Held { .. })));
+    assert!(book.take_together(&op(), &both(4, 9)).iter().all(|t| matches!(t, SeatTaken::Held { .. })));
     assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(9))));
-    assert_eq!(book.held_frames().iter().map(Frame::encode).collect::<Vec<_>>(), vec![seated_together(4, 9).encode()], "both seats replay as the one transfer");
-    // A later record of one seat supersedes the transfer: the records replay one by one again.
+    assert_eq!(book.held_frames().iter().map(Frame::encode).collect::<Vec<_>>(), vec![primary_updated(4, 9).encode()], "both seats replay as the one update");
+    // A later record of one seat supersedes the update: the records replay one by one again.
     book.take(Seat::FabricPrimary, &holder(10));
     assert_eq!(book.held_frames().iter().map(Frame::encode).collect::<Vec<_>>(), vec![Frame::Seated { seat: Seat::MeshPrimary, holder: holder(4) }.encode(), Frame::Seated { seat: Seat::FabricPrimary, holder: holder(10) }.encode()]);
-    // An older transfer moves neither seat.
-    let Frame::SeatedTogether { op, successor, seats } = seated_together(2, 2) else { unreachable!() };
-    assert!(book.take_together(&op, &successor, &seats, false).iter().all(|t| matches!(t, SeatTaken::Refused { .. })));
+    // An older update moves neither seat.
+    assert!(book.take_together(&op(), &both(2, 2)).iter().all(|t| matches!(t, SeatTaken::Refused { .. })));
     assert_eq!((book.mesh("m"), book.fabric()), (Some(holder(4)), Some(holder(10))));
 }

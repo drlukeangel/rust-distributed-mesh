@@ -26,7 +26,7 @@
 //! The authority is a real Day-0 node-admin in this process; it launches the second admin and the rpc
 //! node, and commands their stops and starts over Node RPC, so each start after a stop joins it back
 //! through its call (node-start.md step 2). Its own process: the cell holds process-wide state (the
-//! parking flag) and sets the gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
+//! parking flag).
 
 use rafka_mesh_entity::launch::{Launch, Launcher};
 use rafka_mesh_entity::runtime::RuntimeFact;
@@ -39,8 +39,6 @@ use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use std::time::Duration;
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
 
@@ -78,7 +76,7 @@ fn passing() -> Hydration {
 fn launch_by(root: &Running, name: &str, dir: &std::path::Path, listeners: Vec<(String, std::net::SocketAddr)>) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(dir).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     Launch {
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
@@ -94,6 +92,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path, listeners: Vec<(
         store_dir: dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 
@@ -124,7 +123,7 @@ async fn until_ready(what: &str, digest: impl Fn() -> MeshDigest) {
 }
 
 fn stop(launch: &Launch) -> StatusRequest {
-    StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_start_sequence".into(), attempt: 1, operation: format!("stop-node:{}", launch.name) }
+    StatusRequest::StopNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 1, operation: format!("stop-node:{}", launch.name) }
 }
 
 /// `req` sent by `root` over Node RPC to the birth `launch` names, as a commanding node-admin sends
@@ -138,7 +137,7 @@ async fn command(root: &Running, launch: &Launch, req: &StatusRequest) -> Status
 }
 
 fn start(launch: &Launch) -> StatusRequest {
-    StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "bld_start_sequence".into(), attempt: 2, operation: format!("start-node:{}", launch.name) }
+    StatusRequest::StartNode { node_id: launch.node_id.clone(), incarnation: launch.incarnation.clone(), build_id: "am93paxn71zh".into(), attempt: 2, operation: format!("start-node:{}", launch.name) }
 }
 
 /// The start steps of `node` that are children of a span named `root`, in the order they began:
@@ -169,9 +168,6 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
     if crate::own_process::delegated(module_path!(), "every_start_path_runs_the_same_start_steps_in_the_same_order") {
         return;
     }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
-    }
     let cap = crate::common::capture("every_start_path_runs_the_same_start_steps_in_the_same_order");
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
@@ -184,6 +180,13 @@ fn every_start_path_runs_the_same_start_steps_in_the_same_order() {
         let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
+        tokio::time::timeout(WRONG, async {
+            while root.membership.seats().mesh("mesh1").is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the Day-0 admin takes mesh1's primary seat");
 
         // A node-admin's first start: launched by the root.
         let admin_launch = launch_by(&root, "mesh1.admin.2", &admin_dir, vec![("control".into(), "127.0.0.1:0".parse().unwrap())]);

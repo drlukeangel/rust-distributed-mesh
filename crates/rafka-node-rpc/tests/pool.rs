@@ -1,7 +1,7 @@
 //! i143.e6.s2 functional: the scoped pool, keyed by process birth (PRD §1.19–20, §14;
 //! node-rpc-rdm-ownership.md §8–§9).
 //!
-//! Pool identity is `(scope, peer, incarnation)`: a connection is to a process birth. The fence in
+//! Pool identity is `(scope, peer, incarnation)`: a connection is to a process birth. The target in
 //! the framing names the node: every call to a birth shares the connection, and a new incarnation
 //! evicts it. Every cell runs over real
 //! Iroh endpoints on 127.0.0.1. A dial that must stay in flight targets a "blackhole": a UDP
@@ -64,7 +64,7 @@ async fn node() -> Node {
                 }
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let router = Router::builder(ep).accept(rafka_node_rpc::ALPN, server.clone()).spawn();
     let resolved = ResolvedNode { node_id, name: "mesh1.rpc.1".parse().unwrap(), endpoint_id: key.public(), transport_addr: addr, incarnation };
@@ -240,7 +240,7 @@ async fn three_reply_deadlines_leave_the_pooled_connection_in_place_and_reused()
     }
     assert!(next_out.reply().is_some(), "{next_out:?}");
     assert!(next.reused && next.connection == first.connection, "the next call is answered on the same pooled connection: {next:?}");
-    assert_eq!(next.node_id, r.node_id);
+    assert_eq!(next.node_id, Some(r.node_id.clone()));
     assert_eq!(r.client.pooled().len(), 1, "the one connection is still pooled");
     assert_eq!(calls.len(), 4, "three late calls and the answered one: {rows:?}");
 }
@@ -272,51 +272,14 @@ async fn a_new_incarnation_evicts_its_predecessors_connection_without_a_failed_c
     let mut r = rig(n.resolved.clone()).await;
     let (_, before) = r.ping().await;
     // Same key, same address: only the process birth changed in the caller's view.
-    // The fence says nothing about the birth, so the same process answers; what matters here is
+    // The target says nothing about the birth, so the same process answers; what matters here is
     // the pool: the predecessor's connection is gone and the call rode a new one.
     r.record.incarnation = IncarnationId::mint();
     r.resolver.insert(r.record.clone());
     let (out, after) = r.ping().await;
     assert!(out.reply().is_some(), "{out:?}");
     assert!(!after.reused && after.connection != before.connection, "it rode a connection of the new birth");
-    assert!(r.client.pooled().iter().all(|k| k.incarnation == r.record.incarnation));
-}
-
-/// CONTRACT: a dial is shared by every caller of a birth, and each caller's own budget bounds its
-/// own wait. A caller that joins a dial another caller started, with a longer budget, is not
-/// ended by the starter's shorter one: the starter ends `NotSent(Deadline)` at its own deadline
-/// and the joiner is answered once the network lets the dial complete.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_caller_joining_a_dial_is_not_ended_by_the_starters_shorter_budget() {
-    use rafka_test_scenario::sim::{Mode, Tap};
-    let n = node().await;
-    let tap = Tap::start(n.resolved.transport_addr).await.unwrap();
-    tap.set_to_server(Mode::Drop);
-    let mut behind = n.resolved.clone();
-    behind.transport_addr = tap.addr();
-    let r = rig(behind).await;
-    let short = CallOptions { budget: Budget::Split { send: Duration::from_millis(300), reply: Duration::from_secs(1) }, ..Default::default() };
-    let rr = &r;
-    let tapr = &tap;
-    let ((starter, starter_ended_ms), (joiner, joiner_ended_ms)) = tokio::join!(
-        async {
-            let started = Instant::now();
-            let out = rr.client.call::<Ping>(&rr.target, &echo(b"starter"), &short).await.0;
-            let ended = started.elapsed().as_millis();
-            // The network heals once the starter's budget is spent.
-            tapr.set_to_server(Mode::Pass);
-            (out, ended)
-        },
-        async {
-            until_dialing(&rr.client).await;
-            let started = Instant::now();
-            let out = rr.client.call::<Ping>(&rr.target, &echo(b"joiner"), &CallOptions::default()).await.0;
-            (out, started.elapsed().as_millis())
-        }
-    );
-    assert!(matches!(&starter, RpcOutcome::NotSent(x) if *x.reason() == NotSentReason::Deadline), "the starter ends at its own deadline: {starter:?}");
-    assert!(starter_ended_ms >= 300, "the starter waited its whole budget: {starter_ended_ms} ms");
-    assert!(joiner.reply().is_some(), "the joiner holds a 10 s budget; the starter's 300 ms does not end it (ended after {joiner_ended_ms} ms): {joiner:?} tap to_server (forwarded, held, dropped) = {:?}", tap.stats().to_server.snapshot());
+    assert!(r.client.pooled().iter().all(|k| k.incarnation.as_ref() == Some(&r.record.incarnation)));
 }
 
 /// What the client told its source-owned connections writer, in order.
@@ -325,13 +288,13 @@ struct Told(Mutex<Vec<String>>);
 
 impl rafka_node_rpc::ConnectionObserver for Told {
     fn direct_connected(&self, n: &ResolvedNode) {
-        self.0.lock().unwrap().push(format!("connected {}", n.incarnation.0));
+        self.0.lock().unwrap().push(format!("connected {}", n.incarnation.as_str()));
     }
     fn direct_failed(&self, n: &ResolvedNode, reason: &str) {
-        self.0.lock().unwrap().push(format!("failed {} ({reason})", n.incarnation.0));
+        self.0.lock().unwrap().push(format!("failed {} ({reason})", n.incarnation.as_str()));
     }
     fn direct_broken(&self, n: &ResolvedNode, reason: &str) {
-        self.0.lock().unwrap().push(format!("broken {} ({reason})", n.incarnation.0));
+        self.0.lock().unwrap().push(format!("broken {} ({reason})", n.incarnation.as_str()));
     }
 }
 
@@ -391,7 +354,7 @@ async fn three_reply_deadlines_report_nothing_broken_to_the_connections_writer()
         assert_eq!(ev.unwrap().connection, first.connection, "call {i} rode the pooled connection");
     }
     let told = told.0.lock().unwrap().clone();
-    assert_eq!(told, vec![format!("connected {}", r.record.incarnation.0)], "the dial's connected, once, and nothing broken: {told:?}");
+    assert_eq!(told, vec![format!("connected {}", r.record.incarnation.as_str())], "the dial's connected, once, and nothing broken: {told:?}");
     assert_eq!(r.client.pooled().len(), 1, "the connection is still pooled");
 }
 
@@ -415,7 +378,7 @@ async fn a_connection_closed_under_a_committed_call_is_evicted_and_reported_brok
         while ServerStats::get(&stats.dispatched) == before {
             tokio::task::yield_now().await;
         }
-        n._server.close_connections_except(None, "test.cut")
+        n._server.close_connections_except(&[], "test.cut")
     };
     let ((out, _), closed) = tokio::join!(held, cut);
     assert_eq!(closed, 1, "the peer closed the one connection");

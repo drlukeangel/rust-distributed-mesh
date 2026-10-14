@@ -5,7 +5,9 @@
 //! hold that mesh's primary seat. It checks the cap, writes the node's whole row from what it holds (a
 //! blind put of the `path.name` key; it never reads the store on the write path), tells the exact
 //! birth directly, within its mesh, with `ApplyNodeConfig`, which the node holds and carries in its
-//! next digest, and answers `node.config.updated` only after that apply answered. A caller that cannot
+//! next digest, and answers `node.config.updated` only after that apply answered. A stopped node is
+//! told nothing and the command completes on the row: the node gets its config back in its join
+//! answer at its next start (node-rpc-envelope.md "Node properties"). A caller that cannot
 //! reach the mesh-primary directly reaches it through a carrier (Forward `0x1A`). A single call, never
 //! a Build, and never refused because a Build runs: updates go through this one door one at a time.
 
@@ -38,21 +40,21 @@ impl NodeConfigs {
         Self { client, own, one_at_a_time: tokio::sync::Mutex::new(()), written }
     }
 
-    /// The client this door tells births through: the mesh-primary's node.update tells a birth its
-    /// name through it as well (`crate::node_update`).
+    /// The client this door tells births through: the mesh-primary's node.name.update tells a birth its
+    /// name through it as well (`crate::node_name_update`).
     pub fn client(&self) -> &NodeRpcClient {
         &self.client
     }
 
-    /// The record this admin's writer of its mesh's rows holds: node.update puts its rows through it
+    /// The record this admin's writer of its mesh's rows holds: node.name.update puts its rows through it
     /// as this door does, so each row carries every field the writer knows.
     pub fn written(&self) -> &Arc<crate::node_rows::WrittenRows> {
         &self.written
     }
 
-    /// The turn of one change to a node record at this mesh-primary (node-update.md "Config update":
+    /// The turn of one change to a node record at this mesh-primary (node-config-update.md:
     /// "every change to a node record goes through its mesh-primary's one held record, one at a
-    /// time"): this door's puts and node.update's take it.
+    /// time"): this door's puts and node.name.update's take it.
     pub async fn one_at_a_time(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.one_at_a_time.lock().await
     }
@@ -68,7 +70,7 @@ impl NodeConfigs {
             node = %me,
             subject = tracing::field::Empty,
             node_id = %node_id,
-            incarnation_id = %incarnation.0,
+            incarnation_id = %incarnation.as_str(),
             keys = config.len(),
             tags = tracing::field::Empty,
             row_status = tracing::field::Empty,
@@ -117,9 +119,22 @@ impl NodeConfigs {
             Some(_) => {}
         }
         let _one = self.one_at_a_time.lock().await;
-        // The row carries the node's tags as this writer knows them: a config put changes the config.
-        let tags = match self.written.known_row(storage, &subject.mesh, node_id).await {
-            Ok(row) => row.map(|r| r.tags).unwrap_or_default(),
+        // The row carries the node's tags as this writer knows them, and, while it stands at the same
+        // key, the key a rename moved it from (its pending release stays the row's) and the successor
+        // that inherited it (its labels stay out of the tags index): a config put changes the config.
+        let (tags, renamed_from, inherited_by) = match self.written.known_row(storage, &subject.mesh, node_id).await {
+            Ok(row) => {
+                // A writer that meets the row finishes the release a rename left pending (proposal
+                // node-properties-own-commands.md §2.1); one that fails again stays pending, named on its span.
+                if let Some(r) = &row {
+                    let _ = crate::node_rows::finish_release(storage, me, r, "config-put").await;
+                }
+                row.map(|r| {
+                    let here = r.name == subject.name;
+                    (r.tags, r.renamed_from.filter(|_| here), r.inherited_by.filter(|_| here))
+                })
+                .unwrap_or_default()
+            }
             Err(why) => {
                 let detail = format!("{me}: {why}: the row of {} is not written without the tags it carries", subject.name);
                 span.record("detail", detail.as_str());
@@ -127,7 +142,7 @@ impl NodeConfigs {
             }
         };
         span.record("tags", crate::node_rows::labels(&tags).as_str());
-        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None };
+        let row = NodeRow { name: subject.name.clone(), node_id: node_id.clone(), status: subject.status, config: config.clone(), tags, allocated: None, renamed_from, inherited_by };
         let refused = match storage.put_node_row(&row).await {
             Ok(Ok(())) => {
                 self.written.hold(&row);
@@ -139,6 +154,13 @@ impl NodeConfigs {
         if let Some(detail) = refused {
             span.record("detail", detail.as_str());
             return StatusReply::config_row_refused(&subject.name.to_string(), &detail);
+        }
+        // A stopped node is told nothing: its config is a field of its row, and it gets it back in its
+        // join answer at its next start (node-rpc-envelope.md "Node properties"), as node.name.update
+        // completes a stopped node on the row.
+        if subject.parked {
+            span.record("apply", "stopped");
+            return StatusReply::ConfigUpdated { node_id: node_id.clone(), incarnation: incarnation.clone() };
         }
         // The node applies it. This admin as the subject applies it in-process, through what holds
         // its config (the same hand-off its `ApplyNodeConfig` door uses); any other member of its

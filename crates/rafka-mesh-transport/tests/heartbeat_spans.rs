@@ -58,55 +58,40 @@ fn num(s: &Value, k: &str) -> u64 {
     s["attributes"][k].as_str().and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
-fn spans_of(dir: &std::path::Path) -> Vec<Value> {
-    let mine = format!(".{}-", std::process::id());
-    let mut spans = Vec::new();
-    for e in std::fs::read_dir(dir).unwrap().flatten() {
-        let n = e.file_name().to_string_lossy().to_string();
-        if n.ends_with(".spans.jsonl") && n.contains(&mine) {
-            spans.extend(std::fs::read_to_string(e.path()).unwrap().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
-        }
-    }
-    spans
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
-    if crate::own_process::delegated(module_path!(), "node_publish_loop_marks_heartbeat_and_stale_member_in_spans") {
+#[test]
+fn node_publish_loop_marks_heartbeat_and_stale_member_in_spans() {
+    if crate::own_process::delegated_with_env(module_path!(), "node_publish_loop_marks_heartbeat_and_stale_member_in_spans", &[("RDM_STALENESS_MS", Some(std::ffi::OsStr::new("2000")))]) {
         return;
     }
-    let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/restore-lost/heartbeat");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-    std::env::set_var("RDM_STALENESS_MS", "2000");
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-heartbeat");
+    let dir = crate::evidence_dir();
+    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-mesh-transport-heartbeat").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let (a, b) = (node().await, node().await);
+        rafka_mesh_transport::membership::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
+        let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
+        let ma = Membership::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", rafka_mesh_transport::clock::os_clock(), vec![]).await.unwrap();
+        let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
+        let mb = Membership::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", rafka_mesh_transport::clock::os_clock(), vec![seed]).await.unwrap();
+        let (da, db) = (digest("mesh1.rpc.1", &a.ep), digest("mesh1.rpc.2", &b.ep));
+        let pa = ma.publish_every(Duration::from_millis(500), move || da.clone());
+        let pb = mb.publish_every(Duration::from_millis(500), move || db.clone());
 
-    let (a, b) = (node().await, node().await);
-    rafka_mesh_transport::membership::learn_addresses(&b.ep, &[iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).map(|s| std::net::SocketAddr::from(([127, 0, 0, 1], s.port()))).unwrap())]).unwrap();
-    let (fab, mesh_id) = (FabricId::parse("fab000000001").unwrap(), MeshId::mint());
-    let ma = Membership::join(&a.gossip, &a.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.1", rafka_mesh_transport::clock::os_clock(), vec![]).await.unwrap();
-    let seed = iroh::EndpointAddr::new(a.ep.id()).with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], a.ep.bound_sockets().into_iter().find(|s| s.is_ipv4()).unwrap().port())));
-    let mb = Membership::join(&b.gossip, &b.ep, &fab, "mesh1", &mesh_id, "mesh1.rpc.2", rafka_mesh_transport::clock::os_clock(), vec![seed]).await.unwrap();
-    let (da, db) = (digest("mesh1.rpc.1", &a.ep), digest("mesh1.rpc.2", &b.ep));
-    let pa = ma.publish_every(Duration::from_millis(500), move || da.clone());
-    let pb = mb.publish_every(Duration::from_millis(500), move || db.clone());
+        // Past one heartbeat period, so each loop has marked twice; then B falls silent past the floor.
+        tokio::time::sleep(rafka_mesh_transport::membership::HEARTBEAT_EVERY + Duration::from_millis(1500)).await;
+        pb.abort();
+        tokio::time::sleep(Duration::from_millis(3500)).await;
+        pa.abort();
 
-    // Past one heartbeat period, so each loop has marked twice; then B falls silent past the floor.
-    tokio::time::sleep(rafka_mesh_transport::membership::HEARTBEAT_EVERY + Duration::from_millis(1500)).await;
-    pb.abort();
-    tokio::time::sleep(Duration::from_millis(3500)).await;
-    pa.abort();
-    drop(telemetry);
-
-    let spans = spans_of(&dir);
-    let beats: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-heartbeat" && s["attributes"]["node"] == "mesh1.rpc.1").collect();
-    // ~6.5 s of 500 ms digests is 13 publishes: the heartbeat is the 5 s cadence, not the digest cadence.
-    assert_eq!(beats.len(), 2, "heartbeat spans of mesh1.rpc.1: {beats:#?}");
-    let last = beats.iter().max_by_key(|s| num(s, "digest_seq")).unwrap();
-    assert_eq!(num(last, "peer_count"), 1, "the heartbeat counts the other member, not itself: {last}");
-    assert!(num(last, "wall_time_ms") > 0 && last["attributes"].get("clock_skew_ms").is_some(), "{last}");
-    assert!(last["parent_span_id"] == "", "a heartbeat is a root span: {last}");
-    let stale: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-member-stale" && s["attributes"]["node"] == "mesh1.rpc.1").collect();
-    assert_eq!(stale.len(), 1, "one span names the member that fell silent: {stale:#?}");
-    assert_eq!(stale[0]["attributes"]["member"], "mesh1.rpc.2");
+        let spans = capture.spans().expect("the cell's spans reached its evidence file");
+        let beats: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.node.update.via-heartbeat" && s["attributes"]["node"] == "mesh1.rpc.1").collect();
+        // ~6.5 s of 500 ms digests is 13 publishes: the heartbeat is the 5 s cadence, not the digest cadence.
+        assert_eq!(beats.len(), 2, "heartbeat spans of mesh1.rpc.1: {beats:#?}");
+        let last = beats.iter().max_by_key(|s| num(s, "digest_seq")).unwrap();
+        assert_eq!(num(last, "peer_count"), 1, "the heartbeat counts the other member, not itself: {last}");
+        assert!(num(last, "wall_time_ms") > 0 && last["attributes"].get("clock_skew_ms").is_some(), "{last}");
+        assert!(last["parent_span_id"] == "", "a heartbeat is a root span: {last}");
+        let stale: Vec<&Value> = spans.iter().filter(|s| s["name"] == "rdm.mesh.membership.update.via-member-stale" && s["attributes"]["node"] == "mesh1.rpc.1").collect();
+        assert_eq!(stale.len(), 1, "one span names the member that fell silent: {stale:#?}");
+        assert_eq!(stale[0]["attributes"]["member"], "mesh1.rpc.2");
+    });
 }

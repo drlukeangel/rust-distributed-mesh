@@ -97,10 +97,10 @@ async fn seat_taken_over_one_root(trace_id: String) -> Taken {
 /// and the counts folded.
 #[test]
 fn a_seat_taker_folds_the_mesh_status_rows_and_a_non_holder_folds_none() {
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let t = cap.run(async {
         let root_span = tracing::info_span!("rdm.test.status.resolve.via-seat-taken");
-        let trace_id = crate::mesh_leave_resume::trace_id(&root_span);
+        let trace_id = crate::mesh_delete_resume::trace_id(&root_span);
         tracing::Instrument::instrument(seat_taken_over_one_root(trace_id), root_span).await
     });
     println!("status_seat_fold trace_id={}", t.trace_id);
@@ -170,10 +170,10 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
     use rafka_mesh_entity::MemberStatus;
     use rafka_mesh_transport::membership::{Backbone, Membership};
     use rafka_node_rpc_contract::status::{StatusReply, StatusRequest};
-    let cap = crate::mesh_leave_resume::capture();
+    let cap = crate::mesh_delete_resume::capture();
     let (trace_id, after_take, rpc2_heard, projected, declared, after_declare) = cap.run(async {
         let root_span = tracing::info_span!("rdm.test.status.update.via-seat-fold");
-        let trace_id = crate::mesh_leave_resume::trace_id(&root_span);
+        let trace_id = crate::mesh_delete_resume::trace_id(&root_span);
         tracing::Instrument::instrument(
             async move {
                 let dir = std::env::temp_dir().join(format!("status-seat-adopt-{}", NodeId::mint()));
@@ -231,7 +231,7 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                     republish: Arc::new(std::sync::OnceLock::new()),
                     commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
                     own: Arc::new(std::sync::OnceLock::new()),
-                    leaver: Arc::new(std::sync::OnceLock::new()),
+                    mesh_deleter: Arc::new(std::sync::OnceLock::new()),
                     hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     wake: Default::default(),
                     rounds: Default::default(),
@@ -242,7 +242,8 @@ fn a_seat_taker_adopts_the_folded_member_statuses_into_its_book_and_projection()
                     row_moved: Default::default(),
                     loads: None,
                     book: Some(membership.book.clone()),
-                    accepted: std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test")),
+                    builds: std::sync::Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
+                    first_ready: Default::default(),
                 };
                 let declared = authority.apply(Some(rpc1.clone()), &StatusRequest::DeclareNodeState { node_id: rpc1.node_id.clone(), incarnation: rpc1.incarnation_id.clone().unwrap(), state: NodeState::ReadyForTraffic }).await;
                 let after_declare = status(&rpc1);

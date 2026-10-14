@@ -91,7 +91,7 @@ now() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 case "$LAYER" in
     process|container|fast|fast-process|fast-container|chaos-process|chaos-container|soak-process|soak-container)
         if [ -z "${I143_ACCEPTANCE_SKIP_BUILD:-}" ]; then
-            if ! cargo build -p rafka-node-admin-core -p rafka-node-rpc-testkit -p rafka-consumer-fixture --bins > "$JOBS_DIR/$JOB.build.log" 2>&1; then
+            if ! cargo build -p rafka-node-admin-core -p rafka-node-rpc-testkit -p rafka-node-base --bins > "$JOBS_DIR/$JOB.build.log" 2>&1; then
                 refuse "$JOB: the estate binaries did not build (see $JOBS_DIR/$JOB.build.log)"
                 exit 1
             fi

@@ -4,12 +4,13 @@
 //!
 //! CONTRACT: a stopped node is commanded by an admin it never heard of (the admin created after its
 //! predecessor's loss, whose digest a parked node cannot hear). Its `stop-node` naming the exact birth
-//! is answered `Stopped` with the receipt that parked it, and its probe `CurrentParked`: the fence is
-//! the target node id and the op, never the caller. The direction refusals stay: a command naming
-//! another birth of the node is `RejectedStaleIncarnation`, and one naming another node is
-//! `ReceiverNotPrimary { needed: "the subject node itself" }`. What must NOT happen: a refusal that
-//! names the caller (`SenderNotSubject`, or a `ReceiverNotPrimary` decided by who sent it). The
-//! node's decision span names the caller it holds no digest of by its endpoint.
+//! is answered `Stopped` with the receipt that parked it, and its probe `CurrentParked`: the target is
+//! the op and the exact birth the request names, never the caller. A command naming another birth
+//! of the node is `RejectedStaleIncarnation`; one naming another node id with this birth's
+//! incarnation is answered by the birth it reached (R-UC1a, R-RX5: no receiver refuses a call for
+//! the node id it names). What must NOT happen: a refusal that names the caller (`SenderNotSubject`,
+//! or a `ReceiverNotPrimary` decided by who sent it or by the node id the call names). The node's
+//! decision span names the caller it holds no digest of by its endpoint.
 //!
 //! Its own process: the cell holds process-wide state (the parking flag).
 
@@ -18,7 +19,7 @@ use rafka_mesh_entity::runtime::RuntimeFact;
 use rafka_mesh_entity::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
 use rafka_node_rpc::{CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
-use rafka_node_rpc_contract::status::{DrainReceipt, NotAuthority, Status, StatusReply, StatusRequest};
+use rafka_node_rpc_contract::status::{ConnectionsReceipt, Status, StatusReply, StatusRequest};
 use rafka_node_rpc_testkit::node;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,7 +44,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let admin = crate::common::admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
         let dir = std::env::temp_dir().join(format!("no-caller-check-{}", NodeId::mint()));
         std::fs::create_dir_all(&dir).unwrap();
-        RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
         let key = node::load_or_mint_key(&dir).unwrap();
         let launch = Launch {
             fabric: "fabric1".into(),
@@ -60,6 +61,7 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
             store_dir: dir.clone(),
             mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         };
         admin.deployed(&launch, &key);
         let _running = node::start(&launch, |b, _| b).await.expect("the node comes up");
@@ -80,14 +82,14 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         admin.observer.resolver.insert(resolved.clone());
         let target = NodeTarget::ExactNode(born.node.node_id.clone());
         let (node_id, incarnation) = (born.node.node_id.clone(), born.node.incarnation.clone());
-        let stop = |attempt: u32, incarnation: &IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "bld_stranger".into(), attempt, operation: "stop-node:mesh1.rpc.1".into() };
+        let stop = |attempt: u32, incarnation: &IncarnationId| StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), attempt, operation: "stop-node:mesh1.rpc.1".into() };
         let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
 
         // The admin the node knows stops it: the node parks, and hears no digest from now on.
-        let parked = call(&admin.observer.client, &target, &stop(1, &incarnation)).await;
-        assert!(matches!(parked, StatusReply::Stopped { receipt: DrainReceipt::Established { .. } }), "{parked:?}");
+        let stopped = call(&admin.observer.client, &target, &stop(1, &incarnation)).await;
+        assert!(matches!(stopped, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{stopped:?}");
 
-        // An admin the parked node never heard of: a fresh endpoint key, in no digest the node holds.
+        // An admin the stopped node never heard of: a fresh endpoint key, in no digest the node holds.
         let stranger_key = iroh::SecretKey::generate();
         let stranger_endpoint = stranger_key.public().to_string();
         assert!(book.all().iter().all(|d| d.node.endpoint_id.0 != stranger_key.public().to_string()), "the stranger is in no digest");
@@ -96,16 +98,17 @@ fn a_stopped_node_answers_a_stop_and_a_probe_from_an_admin_it_never_heard_of() {
         let stranger = NodeRpcClient::new(rafka_node_rpc::endpoint::bind(stranger_key, "127.0.0.1:0".parse().unwrap()).await.unwrap(), resolver).with_caller_system("rdm");
 
         // Its stop naming the exact birth is answered as the known admin's was: stopping a stopped birth is done.
-        assert_eq!(call(&stranger, &target, &stop(2, &incarnation)).await, parked, "a stopped endpoint answers anyone who reaches it");
+        assert_eq!(call(&stranger, &target, &stop(2, &incarnation)).await, stopped, "a stopped endpoint answers anyone who reaches it");
         // Its probe is answered for the subject: parked.
         assert!(matches!(call(&stranger, &target, &probe).await, StatusReply::CurrentParked { .. }), "the probe is decided for the subject, not the caller");
 
-        // The direction refusals stay, decided by the request and the receiver, never the caller.
+        // The exact birth the request names is checked: another birth of the node is refused naming the one held.
         let stale = IncarnationId::mint();
         assert_eq!(call(&stranger, &target, &stop(3, &stale)).await, StatusReply::RejectedStaleIncarnation { held: incarnation.clone() });
-        let another = StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: incarnation.clone(), build_id: "bld_stranger".into(), attempt: 4, operation: "stop-node:mesh1.rpc.9".into() };
+        // The node id the request names is never a reason to refuse: the birth the call reached answers it.
+        let another = StatusRequest::StopNode { node_id: NodeId::mint(), incarnation: incarnation.clone(), build_id: "k8wmccyepcgk".into(), attempt: 4, operation: "stop-node:mesh1.rpc.9".into() };
         let reply = call(&stranger, &NodeTarget::ExactNode(node_id.clone()), &another).await;
-        assert_eq!(reply, StatusReply::RejectedNotAuthority { why: NotAuthority::ReceiverNotPrimary { needed: "the subject node itself".into() } }, "{reply:?}");
+        assert_eq!(reply, stopped, "a stop naming another node id is answered by the birth it reached, as the stop of a stopped birth: {reply:?}");
 
         // The node's own decision span names the stop it answered the stranger, and names the
         // stranger by the one fact the node holds of it: its endpoint.

@@ -15,8 +15,8 @@
 //!
 //! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
 
+use crate::held_name::HeldName;
 use rafka_mesh_entity::launch::Launch;
-use rafka_mesh_entity::PathName;
 use rafka_node_rpc::{HandlerFault, PeerContext, ServerBuilder};
 use rafka_node_rpc_contract::catalog::OpOwner;
 use rafka_node_rpc_contract::outcome::{MalformedKind, ReplyKind};
@@ -461,34 +461,20 @@ pub struct ApplyCuts {
     pub applied: AtomicU64,
 }
 
-/// Serve `store` (opened from `launch`'s data dir), outside any membership: every reply's
-/// provenance names this birth under its launch name, the only name such a server can hold.
-pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch) -> ServerBuilder {
-    serve_with_cuts(b, store, launch, Arc::new(ApplyCuts::default()))
-}
-
-/// [`serve`] for a running node: every reply's provenance names this birth under the name the node
-/// holds when it serves (`held`; R12: the node owns its name, which a stopped node's `node.update`
-/// moves and its join answer hands it, a live one's `ApplyNodeName` gives it), never the name it was
-/// launched under.
-pub fn serve_holding(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, held: impl Fn() -> PathName + Send + Sync + 'static) -> ServerBuilder {
-    serve_named(b, store, launch, Arc::new(ApplyCuts::default()), Arc::new(held))
+/// Serve `store` (opened from `launch`'s data dir). Every reply's provenance
+/// names this birth, by the name it holds at that call (`name`).
+pub fn serve(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, name: &HeldName) -> ServerBuilder {
+    serve_with_cuts(b, store, launch, name, Arc::new(ApplyCuts::default()))
 }
 
 /// [`serve`], with the handler crossing `cuts` before and after its apply.
-pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, cuts: Arc<ApplyCuts>) -> ServerBuilder {
-    let name = launch.name.clone();
-    serve_named(b, store, launch, cuts, Arc::new(move || name.clone()))
-}
-
-fn serve_named(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, cuts: Arc<ApplyCuts>, held: Arc<dyn Fn() -> PathName + Send + Sync>) -> ServerBuilder {
-    let (node_id, incarnation) = (launch.node_id.to_string(), launch.incarnation.to_string());
+pub fn serve_with_cuts(b: ServerBuilder, store: Arc<FileProofStore>, launch: &Launch, name: &HeldName, cuts: Arc<ApplyCuts>) -> ServerBuilder {
+    let (node_id, mesh, incarnation, name) = (launch.node_id.to_string(), launch.name.mesh.clone(), launch.incarnation.to_string(), name.clone());
     b.serve::<ProofStore, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ProofRequest| {
-        let name = held();
         let at = Provenance {
             node_id: node_id.clone(),
-            node: name.to_string(),
-            mesh: name.mesh.clone(),
+            node: name.now().to_string(),
+            mesh: mesh.clone(),
             incarnation_id: incarnation.clone(),
             op: req.op(),
         };

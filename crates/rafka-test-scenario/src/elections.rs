@@ -1,10 +1,13 @@
-//! The expected election outcome, computed from a public view alone
-//! (`GET /api/nodes`). An rpc, gateway or other cohort's primary is its ready member with the
-//! lowest `node_id`. A node-admin seat (a mesh primary, the fabric primary) is held by its holder
-//! until that holder is proven unable to hold it (ruling R-A2), so a view alone cannot name it:
-//! [`seats_as_expected`] checks that exactly one holder is advertised per cohort and that the
-//! fabric primary is a mesh primary, and [`seats_kept`] checks that a holder that is still present
-//! in a later view still holds its seat.
+//! The expected election outcome, computed from a public view alone (`node.get`). Every seat, a
+//! node-admin cohort's (the mesh primary), the fabric primary's and every other cohort's (rpc,
+//! gateway, ...), is held by its holder until that holder yields it or its exact birth is proven gone
+//! (rafka-v2 docs/architecture/fabric-node-lifecycle-elections.md §5: "For every seat: a living holder
+//! keeps its seat; a lower-NodeId candidate that later becomes Ready never displaces it"; "a restarted
+//! node is a candidate for a later vacancy and never displaces the holder"), so a view alone cannot
+//! name a holder: [`seats_as_expected`] checks that exactly one holder is advertised per cohort with a
+//! ready member and that the fabric primary is a mesh primary, and [`seats_kept`] checks that a holder
+//! still present and live in a later view still holds its seat. [`expected_primaries`] is the seat a
+//! vacancy goes to: the lowest ReadyForTraffic NodeId of the cohort.
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -16,7 +19,10 @@ fn s(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
 
-/// The expected primary (path) of every cohort that has a ready member.
+/// The lowest ready NodeId (its path) of every cohort that has a ready member: the node a vacancy of
+/// the cohort's seat goes to (elections §5: "a holder that yields or whose exact birth is proven gone
+/// hands the seat to the lowest ReadyForTraffic NodeId of its own mesh"), never one that displaces a
+/// living holder.
 pub fn expected_primaries(nodes: &[Value]) -> BTreeMap<Cohort, String> {
     let mut best: BTreeMap<Cohort, (String, String)> = BTreeMap::new();
     for n in nodes.iter().filter(|n| n["status"] == "ready-for-traffic") {
@@ -46,25 +52,15 @@ pub fn advertised_fabric_primaries(nodes: &[Value]) -> Vec<String> {
     nodes.iter().filter(|n| n["is_fabric_primary"] == true).map(|n| s(&n["name"])).collect()
 }
 
-/// Whether the view advertises the seats the rules allow: an rpc, gateway or other cohort with a
-/// ready member advertises exactly the lowest ready NodeId; a node-admin cohort with a ready
-/// member advertises exactly one primary, a member of the cohort (the holder, whichever it is);
-/// and exactly one fabric primary is advertised, a node-admin that is also its mesh's primary.
+/// Whether the view advertises the seats the rules allow: every cohort with a ready member
+/// advertises exactly one primary, a member of the cohort (its holder, whichever it is: a view alone
+/// cannot name it, elections §5), no cohort advertises two, and exactly one fabric primary is
+/// advertised, a node-admin that is also its mesh's primary.
 pub fn seats_as_expected(nodes: &[Value]) -> Result<(), String> {
-    let want = expected_primaries(nodes);
-    let have = advertised_primaries(nodes);
-    for (c, p) in &have {
-        if c.1 == "node_admin" {
-            let ready = nodes.iter().any(|n| s(&n["mesh"]) == c.0 && n["kind"] == "node_admin" && n["status"] == "ready-for-traffic");
-            if (ready && p.len() != 1) || p.len() > 1 {
-                return Err(format!("cohort {c:?}: advertised {p:?}, expected exactly one holder"));
-            }
-            continue;
-        }
-        match want.get(c) {
-            Some(w) if p.as_slice() == [w.clone()] => {}
-            None if p.is_empty() => {}
-            w => return Err(format!("cohort {c:?}: advertised {p:?}, expected {w:?}")),
+    for (c, p) in &advertised_primaries(nodes) {
+        let ready = nodes.iter().any(|n| s(&n["mesh"]) == c.0 && s(&n["kind"]) == c.1 && n["status"] == "ready-for-traffic");
+        if (ready && p.len() != 1) || p.len() > 1 {
+            return Err(format!("cohort {c:?}: advertised {p:?}, expected exactly one holder"));
         }
     }
     let fp = advertised_fabric_primaries(nodes);
@@ -75,10 +71,11 @@ pub fn seats_as_expected(nodes: &[Value]) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether every seat `before` advertised for a birth that `after` still shows is still held by
-/// that birth: a holder that lives keeps its seat, and a lower NodeId never displaces it.
+/// Whether every seat `before` advertised for a birth that `after` still shows live is still held
+/// by that birth, for every cohort and the fabric seat: a holder that lives keeps its seat, and a
+/// lower NodeId, a newcomer or a restarted node never displaces it (elections §5).
 pub fn seats_kept(before: &[Value], after: &[Value]) -> Result<(), String> {
-    for b in before.iter().filter(|n| n["kind"] == "node_admin" && (n["is_primary"] == true || n["is_fabric_primary"] == true)) {
+    for b in before.iter().filter(|n| n["is_primary"] == true || n["is_fabric_primary"] == true) {
         let Some(a) = after.iter().find(|n| n["name"] == b["name"] && n["incarnation_id"] == b["incarnation_id"]) else { continue };
         if a["status"] == "ready-for-traffic" || a["status"] == "pending-reconnect" {
             for seat in ["is_primary", "is_fabric_primary"] {

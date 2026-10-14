@@ -5,8 +5,8 @@
 //! journal and serves it over `FetchBuildFacts` (op `0x1F`; `BuildFactsDoor::serve`, build.md "Each
 //! node-admin keeps its own Build journal"), so a cell that asks what one exact admin holds reads that
 //! admin's log here: [`log_read`] is the one read, [`log_fact`] awaits a typed fact of it through the
-//! client's `await_fact`, and [`build_fact`] awaits a fact of the Build the log folds to (the view
-//! `GET /api/builds?id=` served: `build_state::fold` over the same log).
+//! client's `await_fact`, and [`build_fact`] awaits a fact of the Build the log folds to
+//! (`build_state::fold` over the same log).
 //!
 //! It lives in the test binary every cell links, not in `src/typed.rs`: the facts' types and the read
 //! are the node-admin core's, and the scenario crate's shipped code reaches RDM only through the public
@@ -16,7 +16,7 @@
 use rafka_node_admin_client::{await_fact, BuildCarrier, CallEnd};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_facts_read::{fetch_build_facts, FetchFailure};
-use rafka_node_admin_core::build_state::{fold, BuildFact, BuildProjection, StepOutcome};
+use rafka_node_admin_core::build_state::{fold, BuildFact, BuildProjection, BuildState, StepOutcome};
 use rafka_node_rpc::NodeTarget;
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ fn log_read_ended(failure: FetchFailure) -> CallEnd {
 /// An admin that holds no fact of the Build ends the call `Indeterminate` (`unknown build`), naming it.
 pub async fn log_read(carrier: &BuildCarrier, id: &str) -> Result<Vec<BuildFact>, CallEnd> {
     let target = NodeTarget::CurrentPath(carrier.fabric_primary().clone());
-    fetch_build_facts(carrier.client(), &target, &BuildId(id.into())).await.map(|fetched| fetched.facts).map_err(log_read_ended)
+    fetch_build_facts(carrier.client(), &target, &BuildId::parse(id).unwrap()).await.map(|fetched| fetched.facts).map_err(log_read_ended)
 }
 
 /// Await the typed fact `holds` of Build `id` in the Build log of the node-admin `carrier` starts at.
@@ -52,7 +52,7 @@ pub async fn log_fact(carrier: &BuildCarrier, id: &str, fact: &str, within: Dura
 
 /// Build `id` as `facts` fold it, `None` while they hold no acceptance of it.
 pub fn projection(facts: &[BuildFact], id: &str) -> Option<BuildProjection> {
-    fold(facts).remove(&BuildId(id.into()))
+    fold(facts).remove(&BuildId::parse(id).unwrap())
 }
 
 /// Await the fact `holds` of the Build `id` as the Build log of the node-admin `carrier` starts at folds
@@ -80,4 +80,50 @@ pub async fn build_value(carrier: &BuildCarrier, id: &str) -> serde_json::Value 
     let facts = log_read(carrier, id).await.unwrap_or_else(|end| panic!("the Build log of {at} does not hold Build {id}: {end}"));
     let build = projection(&facts, id).unwrap_or_else(|| panic!("the Build log of {at} holds {} facts of Build {id} and no acceptance of it", facts.len()));
     serde_json::to_value(build).expect("a Build view serializes")
+}
+
+/// Await attempt `attempt`, or a later one, of Build `id` complete in the Build log of the node-admin
+/// `carrier` starts at: the Build reports the highest attempt claimed, so a reading below `attempt` is an
+/// earlier attempt's state (its `complete` included), never this attempt's. A Build that log folds to
+/// `failed` at `attempt` or later fails the cell with the Build; an admin whose log does not fold to it within
+/// `within` ends the call naming the fact, the admin and the Build it last held.
+pub async fn attempt_complete(carrier: &BuildCarrier, id: &str, attempt: u64, within: Duration) -> BuildProjection {
+    build_fact(carrier, id, &format!("attempt {attempt} complete"), within, |b| {
+        if u64::from(b.attempt) < attempt {
+            return false;
+        }
+        match b.state {
+            BuildState::Complete => true,
+            BuildState::Failed => panic!("Build {id} failed: {b:#?}"),
+            _ => false,
+        }
+    })
+    .await
+    .unwrap_or_else(|end| panic!("{end}"))
+}
+
+/// Await attempt `attempt`, or a later one, of `mesh`'s drift lane of Build `id` complete in the Build
+/// log of the node-admin `carrier` starts at (R-BI7: a mesh-primary's recovery is an attempt of its
+/// mesh's lane, numbered per mesh; the Build's own state and attempt are the fabric lane's). A lane that
+/// folds to `failed` at `attempt` or later fails the cell with the Build.
+pub async fn lane_attempt_complete(carrier: &BuildCarrier, id: &str, mesh: &str, attempt: u64, within: Duration) -> BuildProjection {
+    build_fact(carrier, id, &format!("attempt {attempt} of {mesh}'s lane complete"), within, |b| {
+        let Some(lane) = b.lanes.get(mesh) else { return false };
+        if u64::from(lane.attempt) < attempt {
+            return false;
+        }
+        match lane.state {
+            BuildState::Complete => true,
+            BuildState::Failed => panic!("attempt {} of {mesh}'s lane of Build {id} failed: {b:#?}", lane.attempt),
+            _ => false,
+        }
+    })
+    .await
+    .unwrap_or_else(|end| panic!("{end}"))
+}
+
+/// [`build_value`] as the soak driver reads a Build (`rafka_test_scenario::soak::BuildRead`): the Build as the
+/// Build log of the admin the estate asks holds it, as the JSON the projection serializes to.
+pub fn build_read<'a>(estate: &'a rafka_test_scenario::estate::Estate, id: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send + 'a>> {
+    Box::pin(async move { build_value(&estate.carrier().await, id).await })
 }

@@ -30,6 +30,7 @@ testkit-skew = []
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
+ctor = "0.2"
 
 [[test]]
 name = "main"

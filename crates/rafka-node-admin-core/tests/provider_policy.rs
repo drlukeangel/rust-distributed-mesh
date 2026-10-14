@@ -5,19 +5,16 @@
 //! refused by name when its own value disagrees); a Build that names a
 //! provider is refused and publishes nothing.
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use http_body_util::BodyExt;
-use rafka_node_admin_core::build_state::{BuildStateAdapter, MemoryBuildStateAdapter};
+use rafka_node_admin_core::build_state::MemoryBuildStateAdapter;
 use rafka_node_admin_core::deployment::provider::{FabricPolicy, PolicyRefusal};
-use rafka_node_admin_core::http::{router, ControlPlane};
+use rafka_node_admin_core::control_plane::ControlPlane;
 use rafka_node_admin_core::model::*;
 use rafka_node_admin_core::topology::Topology;
-use serde_json::{json, Value};
+use rafka_node_rpc_contract::status::StatusReply;
+use serde_json::Value;
 use std::sync::Arc;
-use tower::ServiceExt;
 
-async fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuildStateAdapter>) {
+async fn first_admin(spawn_type: Option<&str>) -> (Arc<MemoryBuildStateAdapter>, Arc<ControlPlane>) {
     let policy = FabricPolicy::bootstrap(spawn_type).expect("bootstrap");
     let mut admin = Node::allocated("mesh1.admin.1".parse().unwrap());
     admin.status = NodeStatus::ReadyForTraffic;
@@ -31,20 +28,17 @@ async fn first_admin(spawn_type: Option<&str>) -> (axum::Router, Arc<MemoryBuild
     };
     let builds = Arc::new(MemoryBuildStateAdapter::new());
     let accepted = rafka_node_admin_core::accepted::AcceptedStore::seeded(&*builds, topology.fabric.id.clone(), rafka_node_admin_core::accepted::FabricTopology::of_observed(&topology), "mesh1.admin.1").await.unwrap();
-    (router(Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), topology, crate::adopted_time())), axum::Router::new()), builds)
+    let cp = Arc::new(ControlPlane::new(builds.clone(), accepted, "mesh1.admin.1".parse().unwrap(), topology, crate::adopted_time()));
+    (builds, cp)
 }
 
-async fn call(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let req = Request::builder()
-        .method(method)
-        .uri(uri)
-        .header("content-type", "application/json")
-        .body(body.map(|b| Body::from(b.to_string())).unwrap_or_else(Body::empty))
-        .unwrap();
-    let res = app.clone().oneshot(req).await.unwrap();
-    let s = res.status();
-    let b = res.into_body().collect().await.unwrap().to_bytes();
-    (s, serde_json::from_slice(&b).unwrap_or(Value::Null))
+/// What `fabric.get` answers at the admin `cp` serves (`StatusRequest::GetFabric`, answered from its view by
+/// `views::fabric_answer`), as the JSON the view serializes to.
+async fn fabric_get(cp: &ControlPlane) -> Value {
+    match rafka_node_admin_core::views::fabric_answer(&cp.me, &*cp.topology.read().await, None) {
+        StatusReply::Fabric { fabric } => serde_json::to_value(fabric).expect("a view serializes"),
+        other => panic!("fabric.get answered {other:?}"),
+    }
 }
 
 /// A joining admin reads the fabric's provider from the advertised view.
@@ -55,8 +49,8 @@ fn policy_from_view(view: &Value) -> FabricPolicy {
 
 #[tokio::test]
 async fn a_second_admin_inherits_the_fabric_policy_or_refuses_by_name() {
-    let (first, _) = first_admin(Some("container")).await;
-    let (_, view) = call(&first, "GET", "/api/fabric", None).await;
+    let (_, cp) = first_admin(Some("container")).await;
+    let view = fabric_get(&cp).await;
     assert_eq!(view["provider"], "container");
     let established = policy_from_view(&view);
     assert_eq!(FabricPolicy::inherit(established, None).unwrap().provider, ProviderKind::Container, "unset inherits");
@@ -71,20 +65,3 @@ async fn an_unknown_provider_never_bootstraps_a_fabric() {
     assert_eq!(FabricPolicy::bootstrap(Some("vm")), Err(PolicyRefusal::UnknownProvider { value: "vm".into() }));
 }
 
-#[tokio::test]
-async fn a_build_carrying_a_provider_is_refused_and_publishes_nothing() {
-    let (app, builds) = first_admin(None).await;
-    let seed = builds.facts().await.unwrap().len();
-    for body in [
-        json!({"fabric": "fabric1", "provider": "container", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]}),
-        json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3, "provider": "process"}]}),
-    ] {
-        let (s, v) = call(&app, "POST", "/api/build", Some(body)).await;
-        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
-        assert_eq!(v["error"], "provider-mismatch");
-        assert!(v["detail"].as_str().unwrap().contains("Process"), "names the fabric's policy: {v}");
-    }
-    assert_eq!(builds.facts().await.unwrap().len(), seed, "a refused Build publishes nothing");
-    let (s, _) = call(&app, "POST", "/api/build", Some(json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 3}]}))).await;
-    assert_eq!(s, StatusCode::ACCEPTED, "the same Build without a provider is accepted");
-}

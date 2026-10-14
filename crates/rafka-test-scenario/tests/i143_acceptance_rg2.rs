@@ -120,6 +120,6 @@ async fn ordinary_nodes_hold_peer_mesh_topology_through_quiet_and_cut() {
         "ordinary_nodes": ordinary, "ordinary_silent_in_cut": ordinary_during.len(), "ordinary_silent_after_heal": ordinary_after.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
-    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
+    estate.enter_fabric_primary().await;
     estate.stop().await;
 }

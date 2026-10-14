@@ -204,7 +204,7 @@ mod tests {
             (JoinReply::Joined { answer: vec![1, 2, 3] }, ReplyKind::Success),
             (JoinReply::JoinMismatch { field: "incarnation".into(), deployed: "a".into(), reported: "b".into() }, ReplyKind::ProtocolRefusal),
             (JoinReply::NotAuthority { primary: Some("mesh1.admin.1".into()) }, ReplyKind::ProtocolRefusal),
-            (JoinReply::DeploymentAbandoned { build_id: "bld-1".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId("i".into()) }, ReplyKind::ProtocolRefusal),
+            (JoinReply::DeploymentAbandoned { build_id: "3qcfk1kq47m9".into(), attempt: 2, node_id: NodeId::parse("0123456789ab").unwrap(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() }, ReplyKind::ProtocolRefusal),
             (JoinReply::CertRefused { name: "signer-down".into(), detail: "no key".into() }, ReplyKind::ProtocolRefusal),
             (Join::peer_unresolved("p".into()), ReplyKind::PeerUnresolved),
             (Join::not_ready("n".into()), ReplyKind::NotReady),

@@ -143,8 +143,8 @@ fn fake_node_digest(spec: &ResolvedNodeLaunch, runtime: Option<rafka_mesh_entity
             name: env("RDM_NODE_NAME").parse().unwrap(),
             endpoint_id: rafka_mesh_entity::EndpointId(key.public().to_string()),
             transport_addr: "127.0.0.1:34567".parse().unwrap(),
-            incarnation: IncarnationId(env("RDM_INCARNATION_ID")),
-            supersedes: spec.env.get("RDM_SUPERSEDES").filter(|s| !s.is_empty()).cloned().map(IncarnationId),
+            incarnation: IncarnationId::parse(&env("RDM_INCARNATION_ID")).unwrap(),
+            supersedes: spec.env.get("RDM_SUPERSEDES").filter(|s| !s.is_empty()).map(|s| IncarnationId::parse(s).unwrap()),
             runtime,
         },
         status: rafka_mesh_entity::MemberStatus::Pending,
@@ -272,6 +272,7 @@ fn executor(fleet: &Fleet, data_root: &std::path::Path, key: &str) -> Executor {
             data_root: data_root.to_path_buf(),
             store_dir: data_root.to_path_buf(),
             mesh_issuer: None,
+            connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
         },
         joins,
     }
@@ -388,6 +389,7 @@ fn successor_executor_redecides_outputs_owned_by_lost_incarnation() {
         let unborn = "mesh1.rpc.4".parse::<PathName>().unwrap();
         let build_unborn = accepted_build(&builds).await;
         let decided = rafka_node_admin_core::build_state::BuildStepReceipt {
+            mesh: None,
             build_id: build_unborn.clone(),
             attempt: 1,
             operation: format!("create-node:{unborn}"),

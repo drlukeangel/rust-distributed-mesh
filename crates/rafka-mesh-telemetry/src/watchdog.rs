@@ -150,8 +150,13 @@ fn read_c_string(addr: u64) -> Option<String> {
 }
 
 /// Start the watchdog on the current tokio runtime; `None` outside one.
+///
+/// The OS thread inherits no thread-scoped subscriber, so it reports through the dispatcher in
+/// force where `spawn` is called (the process's global default in a node; a test's own, scoped to
+/// its thread, in a test). Each report enters that dispatcher for the one event only.
 pub fn spawn() -> Option<()> {
     let handle = tokio::runtime::Handle::try_current().ok()?;
+    let dispatch = tracing::dispatcher::get_default(|d| d.clone());
     let origin = Instant::now();
     let beat = Arc::new(AtomicU64::new(0));
     let b = beat.clone();
@@ -193,7 +198,9 @@ pub fn spawn() -> Option<()> {
                                     .stdout(std::process::Stdio::null())
                                     .stderr(std::process::Stdio::null())
                                     .spawn();
-                                tracing::warn!(step = "runtime-stall-profile", path = %out, started = r.is_ok(), "profiling the stalled runtime's busy workers");
+                                tracing::dispatcher::with_default(&dispatch, || {
+                                    tracing::warn!(step = "runtime-stall-profile", path = %out, started = r.is_ok(), "profiling the stalled runtime's busy workers");
+                                });
                             }
                         }
                         stalled = Some((last, runqueue_wait_ms(), vec![states]));
@@ -206,20 +213,25 @@ pub fn spawn() -> Option<()> {
                     Some((from, rq0, samples)) => {
                         let stall_ms = last.saturating_sub(*from);
                         if frozen_ms > 0 {
-                            tracing::info!(
-                                step = "process-frozen",
-                                stall_ms,
-                                frozen_ms,
-                                "the whole process was not running for {frozen_ms} ms (stopped from outside); the runtime itself did not stall"
-                            );
+                            tracing::dispatcher::with_default(&dispatch, || {
+                                tracing::info!(
+                                    step = "process-frozen",
+                                    stall_ms,
+                                    frozen_ms,
+                                    "the whole process was not running for {frozen_ms} ms (stopped from outside); the runtime itself did not stall"
+                                );
+                            });
                         } else {
-                            tracing::warn!(
-                                step = "runtime-stall",
-                                stall_ms,
-                                runqueue_wait_ms = runqueue_wait_ms().saturating_sub(*rq0),
-                                threads = %samples.join(" | "),
-                                "the async runtime ran nothing for {stall_ms} ms"
-                            );
+                            let runqueue_wait_ms = runqueue_wait_ms().saturating_sub(*rq0);
+                            tracing::dispatcher::with_default(&dispatch, || {
+                                tracing::warn!(
+                                    step = "runtime-stall",
+                                    stall_ms,
+                                    runqueue_wait_ms,
+                                    threads = %samples.join(" | "),
+                                    "the async runtime ran nothing for {stall_ms} ms"
+                                );
+                            });
                         }
                         stalled = None;
                         frozen_ms = 0;

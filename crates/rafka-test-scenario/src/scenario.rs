@@ -140,9 +140,13 @@ impl Scenario {
         self.meshes.iter().any(|m| m.name == mesh && (1..=m.rpc_node).contains(&n))
     }
 
-    /// The `POST /api/build` body for this scenario's shape.
-    pub fn build_request(&self) -> serde_json::Value {
-        serde_json::json!({ "fabric": self.fabric, "meshes": self.meshes })
+    /// The fabric this scenario's shape reconciles to: what its `build.create` carries.
+    pub fn desired(&self) -> rafka_node_admin_client::FabricDesired {
+        use rafka_node_admin_client::LaunchKind as NodeKind;
+        rafka_node_admin_client::FabricDesired {
+            fabric: self.fabric.clone(),
+            meshes: self.meshes.iter().map(|m| rafka_node_admin_client::MeshDesired::of(m.name.clone(), [(NodeKind::NodeAdmin, m.node_admin), (NodeKind::RpcNode, m.rpc_node)])).collect(),
+        }
     }
 }
 

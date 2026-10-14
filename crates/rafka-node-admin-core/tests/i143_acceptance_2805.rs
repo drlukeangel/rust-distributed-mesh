@@ -182,7 +182,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         republish: Arc::new(OnceLock::new()),
         commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
         own: Arc::new(OnceLock::new()),
-        leaver: Arc::new(OnceLock::new()),
+        mesh_deleter: Arc::new(OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         rounds: Default::default(),
@@ -193,7 +193,8 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
         row_moved: Default::default(),
         loads: None,
         book: None,
-        accepted: std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test")),
+        first_ready: Default::default(),
+        builds: std::sync::Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
     });
     let slot: Arc<OnceLock<Arc<StatusAuthority>>> = Arc::new(OnceLock::new());
     let _ = slot.set(authority.clone());
@@ -204,7 +205,7 @@ async fn rig_with(me: Birth, others: &[&Birth], mesh_ids: BTreeMap<String, MeshI
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let server = rafka_node_admin_core::status_rpc::serve(core, slot)
         .with_ready_gate(ready.clone())
-        .seal(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().0 })
+        .seal(ServedBirth { node_id: me.node.node_id.to_string(), incarnation: me.node.incarnation_id.clone().unwrap().to_string() })
         .unwrap();
     let ep = me.endpoint().await;
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
@@ -343,7 +344,9 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let subject = birth("mesh1.admin.2", NodeKind::NodeAdmin, "mesh1", false, false);
     let (node_id, incarnation) = (subject.node.node_id.clone(), subject.node.incarnation_id.clone().unwrap());
     let rig = rig(subject, &[&executor], BTreeMap::new()).await;
-    let command = |inc: IncarnationId| StatusRequest::DrainNode { node_id: node_id.clone(), incarnation: inc, build_id: "bld_2805".into(), attempt: 1, operation: "drain-node:mesh1.admin.2".into() };
+    // The node command: node.connections.delete { All } to the exact birth (DrainNode is a reserved
+    // position, refused by name before any birth is checked).
+    let command = |inc: IncarnationId| StatusRequest::DeleteConnections { node_id: node_id.clone(), incarnation: inc, scope: rafka_node_rpc_contract::status::ConnectionScope::All };
 
     // Healthy control before draining: a ping is served.
     let c = client_of(&rig, &executor).await;
@@ -380,9 +383,9 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     let (lost, _) = c.call::<Status>(&target, &command(incarnation.clone()), &CallOptions { budget: Budget::Overall(Duration::from_millis(800)), ..Default::default() }).await;
     let indeterminate = command_admission(&lost);
     assert!(matches!(indeterminate, CommandAdmission::Indeterminate { .. }), "{indeterminate:?}");
-    // Deadline: the retire pipeline's AwaitNodeDrained over an admitted command that never completes.
+    // Deadline: the retire pipeline's AwaitNodeLeft over an admitted command that never completes.
     let deadline = deadline_arm().await;
-    assert_eq!(deadline, Completion::Deadline);
+    assert_eq!(deadline, Completion::Deadline {});
 
     let spans = capture.spans();
     let commands = spans.iter().filter(|s| s["name"] == "rdm.node_admin.status.update.via-command").count();
@@ -406,7 +409,7 @@ async fn draining_status_door(capture: &Capture, cell: &str, dir: &std::path::Pa
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
 
-/// The retire pipeline run to its AwaitNodeDrained over a birth that admits the drain and never
+/// The retire pipeline run to its AwaitNodeLeft over a birth that admits the stop and never
 /// completes it: the step's receipt is the arm.
 async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completion {
     use rafka_node_admin_core::build::BuildId;
@@ -444,11 +447,11 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     #[async_trait::async_trait]
     impl NodeObserver for NeverDrained {
         async fn send_command(&self, _: &Node, _: rafka_node_admin_core::node_commands::NodeCommand, _: &rafka_node_admin_core::deployment::pipeline::CommandContext) -> rafka_node_admin_core::deployment::pipeline::CommandAdmission {
-            rafka_node_admin_core::deployment::pipeline::CommandAdmission::Admitted
+            rafka_node_admin_core::deployment::pipeline::CommandAdmission::Admitted {}
         }
         async fn await_completion(&self, _: &Node, _: rafka_node_admin_core::node_commands::NodeCommand, _: &rafka_node_admin_core::deployment::pipeline::CommandContext, within: Duration) -> rafka_node_admin_core::deployment::pipeline::Completion {
             tokio::time::sleep(within).await;
-            rafka_node_admin_core::deployment::pipeline::Completion::Deadline
+            rafka_node_admin_core::deployment::pipeline::Completion::Deadline {}
         }
         async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<rafka_node_admin_core::deployment::pipeline::Publication> {
             None
@@ -476,7 +479,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         })
         .await
         .unwrap();
-    builds.claim_attempt(&rafka_node_admin_core::build_state::BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&rafka_node_admin_core::build_state::BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     let node = birth("mesh1.rpc.1", NodeKind::RpcNode, "mesh1", false, false).node;
     let template = LaunchTemplate {
         fabric: "fabric1".into(),
@@ -488,6 +491,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         data_root: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-2805-{}", NodeId::mint())),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let joins = rafka_node_admin_core::join::Joins::default();
     let pipeline = DeploymentPipeline {
@@ -498,7 +502,7 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
         lifecycle: &NoLifecycleEvents,
         builds: &builds,
         template: &template,
-        timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
+        timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle {
         deployment_id: rafka_node_admin_core::model::DeploymentId::mint(),
@@ -510,17 +514,17 @@ async fn deadline_arm() -> rafka_node_admin_core::deployment::pipeline::Completi
     };
     let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle, exit: None };
     let _ = pipeline.retire(&req).await;
-    // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the drain
-    // command (DrainNode), its completion wait (AwaitNodeDrained: the deadline arm); and never
+    // The drawing's order, as far as this birth lets the retire go: NodeDeleting, the stop
+    // command (StopNode), its completion wait (AwaitNodeLeft: the deadline arm); and never
     // NodeDeleted, because the provider never proves the runtime dead.
     let view = builds.read_build(&build_id).await.unwrap();
     let order: Vec<&str> = view.steps.iter().map(|s| s.step.as_str()).collect();
     let pos = |name: &str| order.iter().position(|s| *s == name);
-    let (deleting, marked, waited) = (pos(RetireStep::NodeDeleting.name()), pos(RetireStep::DrainNode.name()), pos(RetireStep::AwaitNodeDrained.name()));
-    assert!(deleting.is_some() && deleting < marked && marked < waited, "NodeDeleting, then the drain, then its result: {order:?}");
+    let (deleting, marked, waited) = (pos(RetireStep::NodeDeleting.name()), pos(RetireStep::StopNode.name()), pos(RetireStep::AwaitNodeLeft.name()));
+    assert!(deleting.is_some() && deleting < marked && marked < waited, "NodeDeleting, then the stop, then its result: {order:?}");
     assert!(pos(RetireStep::NodeDeleted.name()).is_none(), "no NodeDeleted without the provider's proof of death: {order:?}");
     let step = &view.steps[waited.unwrap()];
-    serde_json::from_value(step.output.clone().expect("AwaitNodeDrained records its arm")).unwrap()
+    serde_json::from_value(step.output.clone().expect("AwaitNodeLeft records its arm")).unwrap()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -585,6 +589,9 @@ impl StatusStorage for Refusing {
     }
     async fn fabric_events(&self) -> Result<Vec<rafka_node_admin_core::status_storage::FabricEventRow>, rafka_node_admin_core::record_store::StorageError> {
         self.inner.fabric_events().await
+    }
+    async fn fabric_events_of(&self, mesh: &str) -> Result<Vec<rafka_node_admin_core::status_storage::FabricEventRow>, rafka_node_admin_core::record_store::StorageError> {
+        self.inner.fabric_events_of(mesh).await
     }
     async fn put_node_declared(&self, row: &rafka_node_admin_core::status_storage::NodeDeclaredRow) -> Result<(), rafka_node_admin_core::record_store::StorageError> {
         self.check()?;

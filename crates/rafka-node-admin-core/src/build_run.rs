@@ -17,6 +17,12 @@
 //!   and is never a step outcome.
 //! - **a cut call cancels nothing.** The run is its own task; the stream is a view of its
 //!   [`RunLog`]. Only a failed step or a fence ends an attempt.
+//! - **a run is a turn of the admin's park gate** (park_gate.rs). A run served for a call begins
+//!   its turn at its own wait point, before it runs anything: while the admin is stopped it waits
+//!   there, and a stop's quiesce waits for a run already past it, so nothing a run does follows the
+//!   stop's cut. A run the admin's own drive pass dispatches to itself begins its turn under the
+//!   pass's ([`crate::park_gate::Turn::under`]): it never waits at the gate for the pass that waits
+//!   on it.
 
 use crate::build::BuildId;
 use crate::build_state::{AttemptOutcome, BuildFact, BuildProjection, BuildState, BuildStateAdapter, BuildStateError, BuildStepReceipt, LocalBuildLog, StepOutcome};
@@ -69,7 +75,7 @@ pub struct RunLog {
 
 impl RunLog {
     fn new(build_id: &BuildId, attempt: u32) -> Arc<Self> {
-        Arc::new(Self { build_id: build_id.0.clone(), attempt, state: Mutex::new(RunState::default()), wake: Notify::new() })
+        Arc::new(Self { build_id: build_id.to_string(), attempt, state: Mutex::new(RunState::default()), wake: Notify::new() })
     }
 
     /// A step's `Complete` receipt is durable: its frame. A repeat of a step already framed is
@@ -176,34 +182,36 @@ impl RunReader {
     }
 }
 
-/// The runs this admin holds, by `(build_id, attempt)`.
+/// The runs this admin holds, by `(build_id, lane, attempt)`: `None` the fabric lane, `Some(mesh)`
+/// that mesh's drift lane (R-BI7), whose numbering is its own.
 #[derive(Default)]
 pub struct AttemptRuns {
-    runs: Mutex<HashMap<(String, u32), Arc<RunLog>>>,
+    runs: Mutex<HashMap<(String, Option<String>, u32), Arc<RunLog>>>,
     tasks: Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
 impl AttemptRuns {
-    /// The run of `attempt` of `build_id`, when this admin is running it.
-    pub fn get(&self, build_id: &BuildId, attempt: u32) -> Option<Arc<RunLog>> {
-        self.runs.lock().unwrap().get(&(build_id.0.clone(), attempt)).cloned()
+    /// The run of `attempt` of `build_id` in `lane`, when this admin is running it.
+    pub fn get(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> Option<Arc<RunLog>> {
+        self.runs.lock().unwrap().get(&(build_id.to_string(), lane.map(str::to_string), attempt)).cloned()
     }
 
-    /// The run of `attempt`: the one held, or a new one (`true`).
-    fn begin(&self, build_id: &BuildId, attempt: u32) -> (Arc<RunLog>, bool) {
+    /// The run of `attempt` in `lane`: the one held, or a new one (`true`).
+    fn begin(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) -> (Arc<RunLog>, bool) {
         let mut runs = self.runs.lock().unwrap();
-        match runs.get(&(build_id.0.clone(), attempt)) {
+        let key = (build_id.to_string(), lane.map(str::to_string), attempt);
+        match runs.get(&key) {
             Some(log) => (log.clone(), false),
             None => {
                 let log = RunLog::new(build_id, attempt);
-                runs.insert((build_id.0.clone(), attempt), log.clone());
+                runs.insert(key, log.clone());
                 (log, true)
             }
         }
     }
 
-    fn end(&self, build_id: &BuildId, attempt: u32) {
-        self.runs.lock().unwrap().remove(&(build_id.0.clone(), attempt));
+    fn end(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32) {
+        self.runs.lock().unwrap().remove(&(build_id.to_string(), lane.map(str::to_string), attempt));
     }
 
     fn track(&self, task: tokio::task::AbortHandle) {
@@ -245,11 +253,17 @@ impl BuildStateAdapter for FramedBuilds {
     async fn open_attempt(&self, opened: &crate::build_state::AttemptOpened) -> Result<(), BuildStateError> {
         self.inner.open_attempt(opened).await
     }
-    async fn publish_fabric(&self, record: &crate::fabric_storage::FabricRecord) -> Result<(), BuildStateError> {
+    async fn publish_fabric(&self, record: &crate::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
         self.inner.publish_fabric(record).await
     }
     async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
         self.inner.read_build(build_id).await
+    }
+    async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
     }
     async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
         self.inner.list_active().await
@@ -262,7 +276,7 @@ impl BuildStateAdapter for FramedBuilds {
     }
     async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
         self.inner.append_step_receipt(receipt).await?;
-        if let Some(run) = self.runs.get(&receipt.build_id, receipt.attempt) {
+        if let Some(run) = self.runs.get(&receipt.build_id, receipt.mesh.as_deref(), receipt.attempt) {
             match &receipt.outcome {
                 StepOutcome::Complete => run.step(&receipt.operation, &receipt.step),
                 StepOutcome::Failed { reason } => run.failed_step(&receipt.operation, &receipt.step, reason),
@@ -276,7 +290,7 @@ impl BuildStateAdapter for FramedBuilds {
     async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
         self.inner.facts().await
     }
-    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
         self.inner.recovery_of(path, node_id, incarnation).await
     }
     async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
@@ -288,9 +302,157 @@ impl BuildStateAdapter for FramedBuilds {
     async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
         self.inner.forget(build_id).await
     }
-    async fn note_blocked(&self, build_id: &BuildId, attempt: u32, operation: &str, step: &str, reason: &str) {
-        if let Some(run) = self.runs.get(build_id, attempt) {
+    async fn note_blocked(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
+        if let Some(run) = self.runs.get(build_id, lane, attempt) {
             run.blocked(operation, step, reason);
+        }
+    }
+}
+
+/// The Build state as one mesh's drift lane writes and reads it (R-BI7 caveat 2: attempts are
+/// scoped per mesh; the claim key is `(build_id, mesh, attempt)`): every open, claim and receipt
+/// written through it carries the lane (`mesh: Some(mesh)`), and a Build read through it is read in
+/// the lane ([`BuildProjection::in_lane`]). The executor and its pipelines write and read an
+/// attempt's facts through one handle; a drift attempt's run hands them this one, so they keep the
+/// lane's numbering and receipts and never touch the fabric lane's. Every other read is the Build's.
+pub struct LaneBuilds {
+    inner: Arc<dyn BuildStateAdapter>,
+    lane: String,
+}
+
+impl LaneBuilds {
+    /// `inner` as `mesh`'s drift lane.
+    pub fn new(inner: Arc<dyn BuildStateAdapter>, mesh: &str) -> Self {
+        Self { inner, lane: mesh.to_string() }
+    }
+
+    /// `builds` for an attempt of `lane`: itself for the fabric lane, else as that mesh's drift lane.
+    pub fn of(builds: &Arc<dyn BuildStateAdapter>, lane: Option<&str>) -> Arc<dyn BuildStateAdapter> {
+        match lane {
+            None => builds.clone(),
+            Some(mesh) => Arc::new(Self::new(builds.clone(), mesh)),
+        }
+    }
+
+    fn lane(&self) -> Option<String> {
+        Some(self.lane.clone())
+    }
+}
+
+#[async_trait::async_trait]
+impl BuildStateAdapter for LaneBuilds {
+    async fn publish_accepted(&self, accepted: &crate::build_state::BuildAccepted) -> Result<(), BuildStateError> {
+        self.inner.publish_accepted(accepted).await
+    }
+    async fn open_attempt(&self, opened: &crate::build_state::AttemptOpened) -> Result<(), BuildStateError> {
+        self.inner.open_attempt(&crate::build_state::AttemptOpened { mesh: self.lane(), ..opened.clone() }).await
+    }
+    async fn publish_fabric(&self, record: &crate::fabric_storage::FabricIdentity) -> Result<(), BuildStateError> {
+        self.inner.publish_fabric(record).await
+    }
+    async fn read_build(&self, build_id: &BuildId) -> Result<BuildProjection, BuildStateError> {
+        Ok(self.inner.read_build(build_id).await?.in_lane(Some(&self.lane)))
+    }
+    async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, BuildStateError> {
+        self.inner.current_build().await
+    }
+    async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, BuildStateError> {
+        self.inner.newest_accepted_at_ms().await
+    }
+    async fn current(&self) -> Result<Option<BuildProjection>, BuildStateError> {
+        self.inner.current().await
+    }
+    async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
+        self.inner.list_active().await
+    }
+    async fn claim_attempt(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<crate::build_state::ClaimOutcome, BuildStateError> {
+        self.inner.claim_attempt(&crate::build_state::BuildAttemptClaim { mesh: self.lane(), ..claim.clone() }).await
+    }
+    /// A drift attempt's claimant is its executor, the mesh's own primary (R-BI7 caveat 2): an adopted
+    /// claim that names none names it.
+    async fn adopt_claim(&self, claim: &crate::build_state::BuildAttemptClaim) -> Result<(), BuildStateError> {
+        let claimant = claim.claimant.clone().or_else(|| Some(claim.executor.clone()));
+        self.inner.adopt_claim(&crate::build_state::BuildAttemptClaim { mesh: self.lane(), claimant, ..claim.clone() }).await
+    }
+    async fn append_step_receipt(&self, receipt: &BuildStepReceipt) -> Result<(), BuildStateError> {
+        self.inner.append_step_receipt(&BuildStepReceipt { mesh: self.lane(), ..receipt.clone() }).await
+    }
+    async fn append_attempt_receipt(&self, receipt: &crate::build_state::BuildAttemptReceipt) -> Result<(), BuildStateError> {
+        self.inner.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { mesh: self.lane(), ..receipt.clone() }).await
+    }
+    async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
+        self.inner.facts().await
+    }
+    async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
+        self.inner.recovery_of(path, node_id, incarnation).await
+    }
+    async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
+        self.inner.mesh_deleted_of(node_id, incarnation).await
+    }
+    async fn exits_owed(&self, build_id: &crate::build::BuildId, mesh: &str) -> Result<Vec<crate::build_state::OwedExit>, BuildStateError> {
+        self.inner.exits_owed(build_id, mesh).await
+    }
+    async fn forget(&self, build_id: &BuildId) -> Result<(), BuildStateError> {
+        self.inner.forget(build_id).await
+    }
+    async fn note_blocked(&self, build_id: &BuildId, _lane: Option<&str>, attempt: u32, operation: &str, step: &str, reason: &str) {
+        self.inner.note_blocked(build_id, Some(&self.lane), attempt, operation, step, reason).await
+    }
+}
+
+/// A run of an attempt this admin holds itself while it acts as a step of the Build outside the
+/// executor (the holder's own node.primary.update, run from its drive: the approved proposal
+/// node-primary-update-fabric-mesh-and-node-type.md, Part C1 step 1, "as a step of the Build"; build.md
+/// "A live run is reattached, never re-claimed"). A call for the attempt while it is held reattaches to
+/// it and reads its terminal once [`HeldRun::finish`] says it.
+pub struct HeldRun {
+    build_id: BuildId,
+    attempt: u32,
+    log: Arc<RunLog>,
+    runs: Arc<AttemptRuns>,
+    builds: Arc<dyn BuildStateAdapter>,
+    finished: bool,
+}
+
+impl HeldRun {
+    /// The attempt ended with `terminal`: its verdict receipt first, on this admin's own Build state as
+    /// an executor's run writes it, so a call that reads the attempt after the run ends finds the
+    /// verdict; then `at_verdict`, what the verdict's writer does at the verdict (the release of the
+    /// mesh's in-flight row the attempt's claim took, R-BI7 caveat 3), before any reader learns the
+    /// attempt ended; then the terminal frame to every reader; then the run is no longer held. A
+    /// verdict that cannot be recorded ends the attempt `Failed` naming why, with no verdict and no
+    /// `at_verdict` (the mesh stays held by the attempt), as an executor's run does.
+    pub async fn finish(mut self, terminal: BuildReply, at_verdict: impl std::future::Future<Output = ()>) {
+        let outcome = match &terminal {
+            BuildReply::HandedOff { to, .. } => Some(AttemptOutcome::HandedOff { to: to.clone() }),
+            BuildReply::Complete { .. } => Some(AttemptOutcome::Converged),
+            BuildReply::Failed { reason, .. } => Some(AttemptOutcome::Failed { reason: reason.clone() }),
+            _ => None,
+        };
+        let terminal = match outcome {
+            Some(outcome) => match self.builds.append_attempt_receipt(&crate::build_state::BuildAttemptReceipt { build_id: self.build_id.clone(), attempt: self.attempt, outcome, mesh: None }).await {
+                Ok(()) => {
+                    at_verdict.await;
+                    terminal
+                }
+                Err(e) => BuildReply::Failed { build_id: self.build_id.to_string(), attempt: self.attempt, operation: String::new(), step: "attempt".into(), reason: bounded_reason(format!("recording attempt {}: {e}", self.attempt)) },
+            },
+            None => terminal,
+        };
+        self.log.finish(terminal);
+        self.runs.end(&self.build_id, None, self.attempt);
+        self.finished = true;
+    }
+}
+
+impl Drop for HeldRun {
+    /// A held run dropped unfinished (its task ended or was aborted): every reader reads a named
+    /// `NotReady`, never a stream that waits forever, and the attempt has no verdict, so a later call
+    /// starts it here.
+    fn drop(&mut self) {
+        if !self.finished {
+            self.log.finish(BuildReply::NotReady { reason: format!("attempt {} of Build {} was held by its run on this admin, which ended before it said the attempt's terminal", self.attempt, self.build_id) });
+            self.runs.end(&self.build_id, None, self.attempt);
         }
     }
 }
@@ -330,6 +492,8 @@ pub struct RunDoor {
     /// This admin's own Build log, where the intent a call carries is absorbed before the attempt
     /// is planned.
     pub local: Arc<dyn LocalBuildLog>,
+    /// This admin's park gate (park_gate.rs): a stopped admin's tasks are held at it.
+    pub gate: crate::park_gate::ParkGate,
 }
 
 impl RunDoor {
@@ -337,15 +501,36 @@ impl RunDoor {
     /// the Build's intent the fabric-primary carried (empty for a run it makes itself) and `plan`
     /// the run it planned: the operations this admin runs.
     pub async fn attempt_run(&self, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+        self.attempt_run_in(None, build_id, attempt, executor, context, intent, plan).await
+    }
+
+    /// [`Self::attempt_run`] for `attempt` of `lane`: `None` the fabric lane (the fabric-primary's
+    /// call on `0x20`), `Some(mesh)` that mesh's drift lane, which this admin runs as the mesh's own
+    /// primary (R-BI7): the attempt is read, run and receipted in the lane, numbered in the lane.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn attempt_run_in(&self, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+        self.serve(None, lane, build_id, attempt, executor, context, intent, plan).await
+    }
+
+    /// [`Self::attempt_run`] for the fabric-primary's own drive pass dispatching the attempt to this
+    /// admin, in the pass's `turn`: the run begins its own turn under it, at once, parked gate or not
+    /// (the pass waits on the run; a run waiting at the gate for it would hold the stop's quiesce).
+    pub async fn attempt_run_under(&self, turn: &crate::park_gate::Turn, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+        self.serve(Some(turn), None, build_id, attempt, executor, context, intent, plan).await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn serve(&self, under: Option<&crate::park_gate::Turn>, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         let span = tracing::info_span!(
             "rdm.node_admin.build.serve.via-attempt-run",
             node = %self.me,
             build_id = %build_id,
+            lane = lane.unwrap_or("fabric"),
             attempt,
             executor,
             outcome = tracing::field::Empty,
         );
-        let attached = self.attach_or_start(build_id, attempt, executor, context, intent, plan).instrument(span.clone()).await;
+        let attached = self.attach_or_start(under, lane, build_id, attempt, executor, context, intent, plan).instrument(span.clone()).await;
         span.record(
             "outcome",
             match &attached {
@@ -362,13 +547,23 @@ impl RunDoor {
         attached
     }
 
-    async fn attach_or_start(&self, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
+    /// Hold the run of `attempt` of `build_id` on this admin while the Build's own step runs outside
+    /// the executor ([`HeldRun`]): a call for the attempt reattaches to it. The holder's seat update
+    /// is a topology attempt, so the run is the fabric lane's (`None`). `None` when a run of the
+    /// attempt is already held here.
+    pub fn hold(&self, build_id: &BuildId, attempt: u32) -> Option<HeldRun> {
+        let (log, created) = self.runs.begin(build_id, None, attempt);
+        created.then(|| HeldRun { build_id: build_id.clone(), attempt, log, runs: self.runs.clone(), builds: self.builds.clone(), finished: false })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn attach_or_start(&self, under: Option<&crate::park_gate::Turn>, lane: Option<&str>, build_id: &BuildId, attempt: u32, executor: &str, context: &CallContext, intent: &[Vec<u8>], plan: &RunPlan) -> Attached {
         if executor != self.me.to_string() {
             tracing::info_span!("rdm.node_admin.build.reject.via-not-executor", node = %self.me, build_id = %build_id, attempt, named = executor)
                 .in_scope(|| tracing::info!("the claim names another admin as the executor"));
             return Attached::Refused(BuildReply::NotExecutor { named: executor.to_string(), recipient: self.me.to_string() });
         }
-        if let Some(log) = self.runs.get(build_id, attempt) {
+        if let Some(log) = self.runs.get(build_id, lane, attempt) {
             let (replay, reader) = log.attach();
             return Attached::Live { disposition: Disposition::Reattached, replay, reader };
         }
@@ -382,36 +577,56 @@ impl RunDoor {
             }
         }
         self.local.absorb_facts(&facts).await;
+        // The attempt is read in its lane: a drift attempt's number, executor and state are its
+        // mesh's lane's, never the fabric lane's.
         let p = match self.builds.read_build(build_id).await {
-            Ok(p) => p,
-            Err(BuildStateError::UnknownBuild(_)) => return Attached::Refused(BuildReply::UnknownBuild { build_id: build_id.0.clone() }),
+            Ok(p) => p.in_lane(lane),
+            Err(BuildStateError::UnknownBuild(_)) => return Attached::Refused(BuildReply::UnknownBuild { build_id: build_id.to_string() }),
             Err(e) => return Attached::Refused(BuildReply::NotReady { reason: format!("{}: Build {build_id} could not be read: {e}", self.me) }),
         };
         let held = p.attempt == attempt && p.executor.as_deref() == Some(executor);
         let next = p.attempt + 1 == attempt && p.state != BuildState::Complete;
         if held && p.state != BuildState::Running {
-            return self.ended(build_id, attempt, &p).await;
+            return self.ended(build_id, lane, attempt, &p).await;
         }
         if !(held || next) {
             tracing::info_span!("rdm.node_admin.build.reject.via-stale-claim", node = %self.me, build_id = %build_id, attempt, held_attempt = p.attempt, held_executor = p.executor.as_deref().unwrap_or(""))
                 .in_scope(|| tracing::info!("the claim is not the current folded attempt of this admin's projection"));
             return Attached::Refused(BuildReply::StaleClaim { held_attempt: p.attempt, held_executor: p.executor.clone(), carried_attempt: attempt });
         }
-        let (log, created) = self.runs.begin(build_id, attempt);
+        let (log, created) = self.runs.begin(build_id, lane, attempt);
         if !created {
             let (replay, reader) = log.attach();
             return Attached::Live { disposition: Disposition::Reattached, replay, reader };
         }
         let reader = log.reader();
-        let (exec, runs, build_id, context, plan) = (self.exec.clone(), self.runs.clone(), build_id.clone(), context.clone(), plan.clone());
+        // The run's turn of the admin's gate: under the drive pass that dispatched it here, begun now;
+        // for a served call, begun by the run itself at its wait point, before it runs anything.
+        let gated = tracing::info_span!("rdm.node_admin.build.serve.via-run-turn", node = %self.me, build_id = %build_id, lane = lane.unwrap_or("fabric"), attempt, turn = tracing::field::Empty);
+        let held = under.map(|t| t.under("build-run"));
+        let gate = self.gate.clone();
+        let (exec, runs, build_id, context, plan, lane) = (self.exec.clone(), self.runs.clone(), build_id.clone(), context.clone(), plan.clone(), lane.map(str::to_string));
         let run = log.clone();
         let task = tokio::spawn(
             {
                 let runs = runs.clone();
                 async move {
-                    let r = exec.run_attempt(&build_id, attempt, &context, &plan).await;
+                    let _turn = match held {
+                        Some(t) => {
+                            gated.record("turn", "under-drive-pass");
+                            t
+                        }
+                        None => {
+                            let waited = gate.is_parked();
+                            let t = gate.turn("build-run").instrument(gated.clone()).await;
+                            gated.record("turn", if waited { "waited-for-start" } else { "begun" });
+                            t
+                        }
+                    };
+                    drop(gated);
+                    let r = exec.run_attempt(&build_id, lane.as_deref(), attempt, &context, &plan).await;
                     run.finish(terminal_of(&build_id, &r, run.last_failed_step()));
-                    runs.end(&build_id, attempt);
+                    runs.end(&build_id, lane.as_deref(), attempt);
                 }
             }
             .with_current_subscriber(),
@@ -420,8 +635,9 @@ impl RunDoor {
         Attached::Live { disposition: Disposition::Started, replay: Vec::new(), reader }
     }
 
-    /// The attempt has its verdict and no run here: its `Complete` receipts, then its terminal.
-    async fn ended(&self, build_id: &BuildId, attempt: u32, p: &BuildProjection) -> Attached {
+    /// The attempt of `lane` has its verdict and no run here: its `Complete` receipts, then its
+    /// terminal, read from the facts of that lane alone.
+    async fn ended(&self, build_id: &BuildId, lane: Option<&str>, attempt: u32, p: &BuildProjection) -> Attached {
         let facts = match self.builds.facts().await {
             Ok(f) => f,
             Err(e) => return Attached::Refused(BuildReply::NotReady { reason: format!("{}: the facts of Build {build_id} could not be read: {e}", self.me) }),
@@ -431,25 +647,25 @@ impl RunDoor {
         let mut verdict = None;
         for f in facts.iter().filter(|f| f.build_id() == build_id) {
             match f {
-                BuildFact::Step(s) if s.attempt == attempt => match &s.outcome {
+                BuildFact::Step(s) if s.attempt == attempt && s.mesh.as_deref() == lane => match &s.outcome {
                     StepOutcome::Complete => {
-                        let frame = BuildReply::Step { build_id: build_id.0.clone(), attempt, operation: s.operation.clone(), step: s.step.clone() };
+                        let frame = BuildReply::Step { build_id: build_id.to_string(), attempt, operation: s.operation.clone(), step: s.step.clone() };
                         if !replay.contains(&frame) {
                             replay.push(frame);
                         }
                     }
                     StepOutcome::Failed { reason } => failed = Some((s.operation.clone(), s.step.clone(), reason.clone())),
                 },
-                BuildFact::Attempt(a) if a.attempt == attempt && verdict.is_none() => verdict = Some(a.outcome.clone()),
+                BuildFact::Attempt(a) if a.attempt == attempt && a.mesh.as_deref() == lane && verdict.is_none() => verdict = Some(a.outcome.clone()),
                 _ => {}
             }
         }
         let terminal = match verdict {
-            Some(AttemptOutcome::Converged) => BuildReply::Complete { build_id: build_id.0.clone(), attempt },
-            Some(AttemptOutcome::HandedOff { to }) => BuildReply::HandedOff { build_id: build_id.0.clone(), attempt, to },
+            Some(AttemptOutcome::Converged) => BuildReply::Complete { build_id: build_id.to_string(), attempt },
+            Some(AttemptOutcome::HandedOff { to }) => BuildReply::HandedOff { build_id: build_id.to_string(), attempt, to },
             Some(AttemptOutcome::Failed { reason }) => {
                 let (operation, step, _) = failed.unwrap_or_else(|| (String::new(), "attempt".into(), String::new()));
-                BuildReply::Failed { build_id: build_id.0.clone(), attempt, operation, step, reason: bounded_reason(reason) }
+                BuildReply::Failed { build_id: build_id.to_string(), attempt, operation, step, reason: bounded_reason(reason) }
             }
             None => {
                 return Attached::Refused(BuildReply::NotReady { reason: format!("{}: attempt {attempt} of Build {build_id} is {:?} with no verdict receipt and no run here", self.me, p.state) });
@@ -459,11 +675,101 @@ impl RunDoor {
     }
 }
 
+/// What a mesh-primary's own recovery of its member came to (R-BI7; node-recovery.md as R-BI7 moves
+/// it: "the mesh-primary opens the recovery attempt of the current Build itself: claim on its mesh's
+/// rows, then run; no call to the fabric-primary").
+#[derive(Debug)]
+pub enum Recovered {
+    /// The recovery was opened and claimed at this admin's door and ran here to `terminal`
+    /// (`Complete`, or `Failed` naming the step).
+    Ran {
+        /// The attempt the recovery is.
+        opened: crate::control_plane::Opened,
+        /// The attempt's terminal frame.
+        terminal: BuildReply,
+    },
+    /// The exited birth was recovered already, by this attempt: nothing was opened or run.
+    AlreadyApplied(crate::control_plane::Opened),
+}
+
+/// Why a mesh-primary's own recovery did not run to a terminal.
+#[derive(Debug)]
+pub enum RecoveryNotRun {
+    /// This admin's door refused the open, by name.
+    Refused(crate::control_plane::Refusal),
+    /// The attempt was opened and claimed, and its run was refused, by name.
+    RunRefused {
+        /// The attempt.
+        opened: crate::control_plane::Opened,
+        /// The refusal.
+        reply: BuildReply,
+    },
+    /// The attempt's run ended without its terminal.
+    Broke {
+        /// The attempt.
+        opened: crate::control_plane::Opened,
+        /// Why.
+        why: String,
+    },
+}
+
+/// The mesh-primary's own recovery of the exited birth `(node_id, incarnation)` at `path` (R-BI7;
+/// node-recovery.md as R-BI7 moves it: "the mesh-primary opens the recovery attempt of the current
+/// Build itself: claim on its mesh's rows, then run; no call to the fabric-primary"): opened and
+/// claimed at `control` (this admin's door) on the mesh's rows, planned from the lane's receipts
+/// (only what is left of node.delete, then node.create), run through `door` (this admin's
+/// executor) in the mesh's lane and followed to its terminal. Its verdict is the executor's receipt,
+/// on this admin's Build log and the Build topic, where the fabric-primary learns it; at the verdict
+/// this admin, which took the mesh's in-flight row for the attempt, releases it (R-BI7 caveat 3:
+/// "one attempt in flight per mesh"). An attempt with no verdict (its run refused or broken) keeps
+/// the mesh held, named in the error.
+pub async fn run_recovery(control: &crate::control_plane::ControlPlane, door: &RunDoor, route: &'static str, path: PathName, node_id: crate::model::NodeId, incarnation: crate::model::IncarnationId) -> Result<Recovered, RecoveryNotRun> {
+    match control.open_recovery(route, path, node_id, incarnation).await {
+        Ok(crate::control_plane::Recovery::Opened(o)) => run_opened_recovery(control, door, o).await,
+        Ok(crate::control_plane::Recovery::AlreadyApplied(o)) => Ok(Recovered::AlreadyApplied(o)),
+        Err(r) => Err(RecoveryNotRun::Refused(r)),
+    }
+}
+
+/// The run of the recovery attempt `opened`, which `control` opened and claimed in its mesh's lane
+/// ([`run_recovery`] after the open): planned from the lane's receipts, run through `door`, followed
+/// to its terminal, and the mesh's in-flight row released at the verdict.
+pub async fn run_opened_recovery(control: &crate::control_plane::ControlPlane, door: &RunDoor, opened: crate::control_plane::Opened) -> Result<Recovered, RecoveryNotRun> {
+    let lane = opened.mesh.as_deref();
+    let Some(mesh) = opened.mesh.clone() else {
+        return Err(RecoveryNotRun::Broke { why: format!("{}: attempt {} of {} is a fabric-lane attempt: a recovery runs in its mesh's drift lane", door.me, opened.attempt, opened.build_id), opened });
+    };
+    let p = match control.builds.read_build(&opened.build_id).await {
+        Ok(p) => p.in_lane(lane),
+        Err(e) => return Err(RecoveryNotRun::Broke { why: format!("{}: Build {} could not be read to plan attempt {} of mesh {mesh}'s lane: {e}; the attempt holds mesh {mesh}", door.me, opened.build_id, opened.attempt), opened }),
+    };
+    let observed = control.topology.read().await.clone();
+    let plan = RunPlan { operations: crate::accepted::plan_for_build(&p, &observed).operations, hand_off_to: None };
+    let context = crate::build_claim::current_context();
+    let terminal = match door.attempt_run_in(lane, &opened.build_id, opened.attempt, &door.me.to_string(), &context, &[], &plan).await {
+        Attached::Refused(reply) => return Err(RecoveryNotRun::RunRefused { opened, reply }),
+        Attached::Ended { terminal, .. } => terminal,
+        Attached::Live { mut reader, .. } => loop {
+            match reader.next().await {
+                Some(t @ (BuildReply::Complete { .. } | BuildReply::Failed { .. } | BuildReply::HandedOff { .. })) => break t,
+                Some(_) => continue,
+                None => return Err(RecoveryNotRun::Broke { why: format!("{}: the run of attempt {} of {} in mesh {mesh}'s lane ended without its terminal; the attempt holds mesh {mesh}", door.me, opened.attempt, opened.build_id), opened }),
+            }
+        },
+    };
+    let row = crate::mesh_claims::InFlight { build_id: opened.build_id.clone(), lane: opened.mesh.clone(), attempt: opened.attempt, claimant: control.me.to_string() };
+    if let Err(e) = control.claims.release(&mesh, &row).await {
+        tracing::info_span!("rdm.node_admin.build.reject.via-in-flight-unreleased", build_id = %opened.build_id, lane = %mesh, attempt = opened.attempt, mesh = %mesh, node = %control.me, error = %e)
+            .in_scope(|| tracing::info!("the attempt ended and its mesh's in-flight row could not be released: the mesh stays held by it"));
+    }
+    Ok(Recovered::Ran { opened, terminal })
+}
+
 /// The terminal frame an attempt's end is: `Complete`, `Failed` naming the step, or `HandedOff`.
 pub fn terminal_of(build_id: &BuildId, r: &Reconciled, failed: Option<(String, String, String)>) -> BuildReply {
     match r {
-        Reconciled::Converged { attempt, .. } => BuildReply::Complete { build_id: build_id.0.clone(), attempt: *attempt },
-        Reconciled::HandedOff { attempt, to, .. } => BuildReply::HandedOff { build_id: build_id.0.clone(), attempt: *attempt, to: to.clone() },
+        Reconciled::Converged { attempt, .. } => BuildReply::Complete { build_id: build_id.to_string(), attempt: *attempt },
+        Reconciled::HandedOff { attempt, to, .. } => BuildReply::HandedOff { build_id: build_id.to_string(), attempt: *attempt, to: to.clone() },
         Reconciled::Failed { attempt, operation, reason } => {
             // The step a receipt names is the one that failed when its operation is the attempt's.
             // The reason is the attempt's own, word for word the verdict receipt's.
@@ -471,7 +777,7 @@ pub fn terminal_of(build_id: &BuildId, r: &Reconciled, failed: Option<(String, S
                 Some((op, step, _)) if operation.is_empty() || op == *operation => step,
                 _ => "attempt".to_string(),
             };
-            BuildReply::Failed { build_id: build_id.0.clone(), attempt: *attempt, operation: operation.clone(), step, reason: bounded_reason(reason.clone()) }
+            BuildReply::Failed { build_id: build_id.to_string(), attempt: *attempt, operation: operation.clone(), step, reason: bounded_reason(reason.clone()) }
         }
     }
 }
@@ -481,7 +787,7 @@ mod tests {
     use super::*;
 
     fn id() -> BuildId {
-        BuildId("bld-run".into())
+        BuildId::parse("vhpqxdbt5w2g").unwrap()
     }
 
     fn names(frames: &[BuildReply]) -> Vec<&'static str> {
@@ -516,7 +822,7 @@ mod tests {
         let (replay, _) = log.attach();
         assert_eq!(names(&replay), vec!["step", "step"], "the step that completed cleared its blocker");
 
-        log.finish(BuildReply::Complete { build_id: id().0, attempt: 3 });
+        log.finish(BuildReply::Complete { build_id: id().to_string(), attempt: 3 });
         assert_eq!(reader.next().await.unwrap().name(), "complete");
         assert!(reader.next().await.is_none(), "nothing follows the terminal");
     }
@@ -529,7 +835,7 @@ mod tests {
         let failed = Some(("create-node:mesh1.rpc.2".to_string(), "WaitForMeshJoin".to_string(), "no join".to_string()));
         assert_eq!(
             terminal_of(&id(), &r, failed),
-            BuildReply::Failed { build_id: "bld-run".into(), attempt: 2, operation: "create-node:mesh1.rpc.2".into(), step: "WaitForMeshJoin".into(), reason: "create-node:mesh1.rpc.2: WaitForMeshJoin failed: no join".into() }
+            BuildReply::Failed { build_id: "vhpqxdbt5w2g".into(), attempt: 2, operation: "create-node:mesh1.rpc.2".into(), step: "WaitForMeshJoin".into(), reason: "create-node:mesh1.rpc.2: WaitForMeshJoin failed: no join".into() }
         );
         let other = Some(("create-node:mesh1.rpc.9".to_string(), "DeployRuntime".to_string(), "other".to_string()));
         assert!(matches!(terminal_of(&id(), &r, other), BuildReply::Failed { step, .. } if step == "attempt"), "a failed receipt of another operation is not this attempt's step");
@@ -551,6 +857,12 @@ mod tests {
         async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
             self.0.read_build(id).await
         }
+        async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+            self.0.current_build().await
+        }
+        async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
+            self.0.newest_accepted_at_ms().await
+        }
         async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
             self.0.list_active().await
         }
@@ -569,7 +881,7 @@ mod tests {
         async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
             self.0.facts().await
         }
-        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
+        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, Option<String>, u32, String)>, BuildStateError> {
             self.0.recovery_of(path, node_id, incarnation).await
         }
         async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(crate::build::BuildId, u32, String)>, BuildStateError> {
@@ -597,6 +909,12 @@ mod tests {
         async fn read_build(&self, id: &BuildId) -> Result<BuildProjection, BuildStateError> {
             self.0.read_build(id).await
         }
+        async fn current_build(&self) -> Result<crate::build_state::CurrentBuild, crate::build_state::BuildStateError> {
+            self.0.current_build().await
+        }
+        async fn newest_accepted_at_ms(&self) -> Result<Option<u64>, crate::build_state::BuildStateError> {
+            self.0.newest_accepted_at_ms().await
+        }
         async fn list_active(&self) -> Result<Vec<BuildProjection>, BuildStateError> {
             self.0.list_active().await
         }
@@ -615,7 +933,7 @@ mod tests {
         async fn facts(&self) -> Result<Vec<BuildFact>, BuildStateError> {
             panic!("the whole fact log was read for a lookup")
         }
-        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
+        async fn recovery_of(&self, path: &crate::model::PathName, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, Option<String>, u32, String)>, BuildStateError> {
             self.0.recovery_of(path, node_id, incarnation).await
         }
         async fn mesh_deleted_of(&self, node_id: &crate::model::NodeId, incarnation: &crate::model::IncarnationId) -> Result<Option<(BuildId, u32, String)>, BuildStateError> {
@@ -641,17 +959,17 @@ mod tests {
         let deleted = rafka_mesh_entity::LifecycleOp { build_id: id().to_string(), attempt: 2, operation: format!("retire-node:{path}"), node_id: node_id.clone(), incarnation: incarnation.clone(), name: path.clone(), event_at_rafka_ms: 1 };
         for (operation, step, output) in [("retire-node", "NodeDeleted", Some(serde_json::to_value(&deleted).unwrap())), ("retire-node", "Complete", None)] {
             memory
-                .append_step_receipt(&BuildStepReceipt { build_id: id(), attempt: 2, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
+                .append_step_receipt(&BuildStepReceipt { mesh: None, build_id: id(), attempt: 2, operation: format!("{operation}:{path}"), step: step.into(), outcome: StepOutcome::Complete, output, executor: Some("mesh1.admin.1".into()) })
                 .await
                 .unwrap();
         }
         let framed = FramedBuilds::new(Arc::new(NoScan(memory)), Arc::new(AttemptRuns::default()));
-        assert_eq!(framed.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((id(), 2, format!("retire-node:{path}"))), "the exited birth's deleting workflow, by its key");
+        assert_eq!(framed.recovery_of(&path, &node_id, &incarnation).await.unwrap(), Some((id(), None, 2, format!("retire-node:{path}"))), "the exited birth's deleting workflow, by its key");
         assert_eq!(framed.recovery_of(&path, &node_id, &crate::model::IncarnationId::mint()).await.unwrap(), None, "another birth of the node was not recovered");
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: id(), attempt, operation: "create-node:mesh1.rpc.2".into(), step: step.into(), outcome, output: None, executor: Some("mesh1.admin.1".into()) }
+        BuildStepReceipt { mesh: None, build_id: id(), attempt, operation: "create-node:mesh1.rpc.2".into(), step: step.into(), outcome, output: None, executor: Some("mesh1.admin.1".into()) }
     }
 
     /// CONTRACT: a step frame is made only after the step's `Complete` receipt has been appended on
@@ -660,7 +978,7 @@ mod tests {
     #[tokio::test]
     async fn a_step_frame_follows_its_appended_receipt_and_never_precedes_or_replaces_it() {
         let runs = Arc::new(AttemptRuns::default());
-        let (log, _) = runs.begin(&id(), 1);
+        let (log, _) = runs.begin(&id(), None, 1);
         let mut reader = log.reader();
         let memory = Arc::new(MemoryBuildStateAdapter::new());
         let ok = FramedBuilds::new(memory.clone(), runs.clone());
@@ -671,7 +989,7 @@ mod tests {
         let failing = FramedBuilds::new(Arc::new(FailingAppend(memory.clone())), runs.clone());
         assert!(failing.append_step_receipt(&receipt(1, "PrepareStorage", StepOutcome::Complete)).await.is_err());
         ok.append_step_receipt(&receipt(1, "PrepareNetwork", StepOutcome::Failed { reason: "no port".into() })).await.unwrap();
-        log.finish(BuildReply::Complete { build_id: id().0, attempt: 1 });
+        log.finish(BuildReply::Complete { build_id: id().to_string(), attempt: 1 });
         assert_eq!(reader.next().await.unwrap().name(), "complete", "an append that failed and a failed step made no step frame");
         assert_eq!(log.last_failed_step(), Some(("create-node:mesh1.rpc.2".into(), "PrepareNetwork".into(), "no port".into())), "the failed step is kept for the terminal to name");
     }
@@ -680,7 +998,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl crate::executor::OperationRunner for Nothing {
-        async fn run(&self, _: &BuildId, _: u32, _: &crate::build::BuildOperation) -> Result<(), String> {
+        async fn run(&self, _: &BuildId, _lane: Option<&str>, _: u32, _: &crate::build::BuildOperation) -> Result<(), crate::executor::RunEnd> {
             Ok(())
         }
     }
@@ -700,7 +1018,7 @@ mod tests {
             nodes: vec![admin],
         }));
         let exec = Arc::new(BuildExecutor { executor: me.into(), builds: builds.clone(), topology, runner: Arc::new(Nothing) });
-        (RunDoor { me: me.parse().unwrap(), builds, exec, runs, local: memory.clone() }, memory)
+        (RunDoor { me: me.parse().unwrap(), builds, exec, runs, local: memory.clone(), gate: crate::park_gate::ParkGate::new() }, memory)
     }
 
     async fn accepted(memory: &MemoryBuildStateAdapter) {
@@ -725,8 +1043,8 @@ mod tests {
             Attached::Refused(BuildReply::NotExecutor { named, recipient }) if named == "mesh2.admin.1" && recipient == "mesh1.admin.1"
         ));
         // Attempt 1 is claimed and converged; attempt 4 is ahead of the Build, attempt 0 behind it.
-        memory.claim_attempt(&BuildAttemptClaim { build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
-        memory.append_attempt_receipt(&BuildAttemptReceipt { build_id: id(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
+        memory.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        memory.append_attempt_receipt(&BuildAttemptReceipt { mesh: None, build_id: id(), attempt: 1, outcome: AttemptOutcome::Converged }).await.unwrap();
         for carried in [4u32, 0] {
             assert_eq!(
                 match door.attempt_run(&id(), carried, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await {
@@ -749,7 +1067,7 @@ mod tests {
         accepted(&memory).await;
         let ctx = CallContext::default();
         // The fabric-primary won attempt 1 for this admin and died before calling it.
-        memory.claim_attempt(&BuildAttemptClaim { build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+        memory.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: id(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
         let Attached::Live { disposition, mut reader, .. } = door.attempt_run(&id(), 1, "mesh1.admin.1", &ctx, &[], &RunPlan::default()).await else { panic!("the claimed attempt is started") };
         assert_eq!(disposition, Disposition::Started);
         let mut last = None;

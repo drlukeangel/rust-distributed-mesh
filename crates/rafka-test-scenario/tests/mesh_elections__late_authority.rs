@@ -13,11 +13,12 @@
 //!   before it commits Ready;
 //! - does not displace the living holder, which keeps every seat it held;
 //! - fills the seats when the holder is lost (the mesh's lowest ready NodeId), and restarts and
-//!   retires births A launched, through its own control API, from their published runtimes, with
-//!   A's receipts nowhere.
+//!   retires births A launched, through its own `node.restart` and `node.delete`, from their published
+//!   runtimes, with A's receipts nowhere.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
-use serde_json::{json, Value};
+use rafka_node_admin_client::{CallEnd, LaunchKind as NodeKind, NodeSpec, NodeStatus};
+use rafka_test_scenario::estate::{named, Estate, Owner};
+use serde_json::Value;
 use std::time::Duration;
 
 fn owner() -> Owner {
@@ -29,24 +30,6 @@ fn owner() -> Owner {
         provider: std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into()),
         test: "a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births".into(),
     }
-}
-
-fn s(v: &Value) -> String {
-    v.as_str().unwrap_or_default().to_string()
-}
-
-/// One topology request, accepted by whichever admin holds the fabric now (the estate follows
-/// the seat), run to convergence.
-async fn build(estate: &Estate, method: &str, path: &str, body: Value) -> String {
-    let (status, a) = match method {
-        "POST" => estate.post(path, &body).await,
-        _ => estate.delete(path).await,
-    };
-    assert_eq!(status, 202, "{method} {path}: {a}");
-    let id = s(&a["build_id"]);
-    // Every admin holds the fabric's Build facts: any of them can be asked.
-    estate.await_attempt(&id, Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    id
 }
 
 /// The share of the 60-bit id space below `id` (canonical Crockford, most significant first),
@@ -65,106 +48,96 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     // from the upper 70%.
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     for _ in 0..5 {
-        let me = wait_for("the bootstrap admin lists itself", Duration::from_secs(30), || async {
-            estate.nodes().await.into_iter().find(|n| n["name"] == "mesh1.admin.1" && !n["node_id"].as_str().unwrap_or_default().is_empty())
-        })
-        .await;
-        if share_below(&s(&me["node_id"])) >= 0.3 {
+        let me = estate.until_node("mesh1.admin.1", "the bootstrap admin lists itself", Duration::from_secs(30), |n| n.cloned()).await;
+        if share_below(&me.node_id.to_string()) >= 0.3 {
             break;
         }
         estate.stop().await;
         estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
     }
-    let base = estate.admin.clone();
+    let incumbent_admin = Estate::path("mesh1.admin.1");
     // Build A: three rpc nodes, launched by the bootstrap admin. The accepted Build is never
-    // history: it is forgotten only once a later Build holds the pointer.
-    let a = build(&estate, "POST", "/api/build", json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "rpc_node": 3}]})).await;
-    let nodes = estate.settled_shape(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
-    let incumbent = nodes.iter().find(|n| n["name"] == "mesh1.admin.1").cloned().unwrap();
-    let a_births: Vec<Value> = nodes.iter().filter(|n| n["kind"] == "rpc_node").cloned().collect();
-    let (status, v) = estate.delete_raw(&format!("/api/builds?id={a}")).await;
-    assert_eq!(status, 409, "the accepted Build is never history: {v}");
+    // history: it is forgotten only once a later Build is current.
+    let a = estate.reconcile_shape("fabric1", &[("mesh1", 1, 3)]).await.build_id;
+    let nodes = estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
+    let incumbent = nodes.iter().find(|n| n.name == incumbent_admin).cloned().unwrap();
+    let a_births: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::RpcNode).cloned().collect();
+    let refused = estate.builds_obj().await.delete(&a).await;
+    assert!(matches!(&refused, Err(CallEnd::Rejected { reason, .. }) if reason == "cannot-delete"), "the accepted Build is never history: {refused:?}");
 
+    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Births until one draws a lower NodeId than the incumbent's.
     let mut late = None;
     for _ in 0..30 {
-        build(&estate, "POST", "/api/nodes/spawn", json!({"mesh": "mesh1", "kind": "node_admin"})).await;
-        let nodes = estate.settled_shape(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
-        let born = nodes.iter().find(|n| n["kind"] == "node_admin" && n["name"] != "mesh1.admin.1").cloned().unwrap();
-        if s(&born["node_id"]) < s(&incumbent["node_id"]) {
+        Estate::workflow("node.create of a node-admin in mesh1", estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::NodeAdmin }).await).await;
+        let nodes = estate.settles_to(&[("mesh1", 2, 3)], Duration::from_secs(30)).await;
+        let born = nodes.iter().find(|n| n.kind == NodeKind::NodeAdmin && n.name != incumbent_admin).cloned().unwrap();
+        if born.node_id.to_string() < incumbent.node_id.to_string() {
             late = Some(born);
             break;
         }
-        build(&estate, "DELETE", &format!("/api/nodes/{}", s(&born["name"])), Value::Null).await;
-        estate.settled_shape(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
+        Estate::workflow(&format!("node.delete of {}", born.name), estate.nodes_obj().await.delete(&born.name).await).await;
+        estate.settles_to(&[("mesh1", 1, 3)], Duration::from_secs(30)).await;
     }
     let late = late.unwrap_or_else(|| {
         panic!(
             "none of 30 births drew a NodeId below the incumbent {} (it holds {:.0}% of the space below it)",
-            s(&incumbent["node_id"]),
-            share_below(&s(&incumbent["node_id"])) * 100.0
+            incumbent.node_id,
+            share_below(&incumbent.node_id.to_string()) * 100.0
         )
     });
-    let late_name = s(&late["name"]);
-    let late_base = s(&late["admin_api_base"]);
+    let late_name = late.name.clone();
 
     // A lower NodeId never displaces a living holder: the incumbent keeps every seat, seen from
     // both admins, for several gossip rounds.
     for _ in 0..12 {
-        for api in [&base, &late_base] {
-            let view = estate.nodes_at(api).await;
-            let held = |name: &str| view.iter().find(|n| n["name"] == name).map(|n| (n["is_primary"] == true, n["is_fabric_primary"] == true));
-            assert_eq!(held("mesh1.admin.1"), Some((true, true)), "the incumbent keeps both seats ({api}): {view:#?}");
-            assert_eq!(held(&late_name), Some((false, false)), "the lower NodeId holds none ({api}): {view:#?}");
+        for admin in [&incumbent_admin, &late_name] {
+            let view = estate.node_views_at(admin).await.unwrap_or_else(|| panic!("{admin} does not answer node.get"));
+            let held = |name: &rafka_node_admin_client::PathName| view.iter().find(|n| n.name == *name).map(|n| (n.is_primary, n.is_fabric_primary));
+            assert_eq!(held(&incumbent_admin), Some((true, true)), "the incumbent keeps both seats ({admin}): {view:#?}");
+            assert_eq!(held(&late_name), Some((false, false)), "the lower NodeId holds none ({admin}): {view:#?}");
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     // A is history on the admin that ran it, and leaves; the late admin never held it.
-    let (status, v) = estate.delete_at(&base, &format!("/api/builds?id={a}")).await;
-    assert_eq!(status, 204, "{v}");
+    estate.builds_obj().await.delete(&a).await.unwrap_or_else(|e| panic!("A leaves history on the admin that ran it: {e}"));
     // The holder is lost (R-P1 permits killing the fabric primary): the mesh's lowest ready NodeId
     // fills both seats, and the late admin is it.
     estate.kill_bootstrap();
-    estate.admin = late_base.clone();
-    wait_for("the late admin fills the mesh and the fabric seats", Duration::from_secs(60), || async {
-        let n = estate.node_opt(&late_name).await?;
-        (n["is_primary"] == true && n["is_fabric_primary"] == true).then_some(())
-    })
-    .await;
-    assert_eq!(estate.get(&format!("/api/builds?id={a}")).await.0, 404, "A's history is nowhere");
+    estate.enter(&late_name).await;
+    estate.until_node(&late_name.to_string(), "the late admin fills the mesh and the fabric seats", Duration::from_secs(60), |n| n.filter(|n| n.is_primary && n.is_fabric_primary).map(|_| ())).await;
+    let unknown = estate.builds_obj().await.get(&a).await;
+    assert!(matches!(&unknown, Err(CallEnd::Rejected { reason, .. }) if reason == "unknown-build"), "A's history is nowhere: {unknown:?}");
 
     // It restarts and retires A's births.
     let (restarted, retired) = (a_births[0].clone(), a_births[1].clone());
-    build(&estate, "POST", &format!("/api/nodes/{}/restart", s(&restarted["name"])), Value::Null).await;
-    let after = wait_for("the restarted node is ready and no longer parked", Duration::from_secs(30), || async {
-        let n = estate.node_opt(&s(&restarted["name"])).await?;
-        (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
-    })
-    .await;
-    assert_eq!(after["node_id"], restarted["node_id"], "a restart keeps the NodeId");
-    build(&estate, "DELETE", &format!("/api/nodes/{}", s(&retired["name"])), Value::Null).await;
-    wait_for("the retired birth leaves the view", Duration::from_secs(30), || async {
-        estate.nodes().await.iter().all(|n| n["name"] != retired["name"] || n["incarnation_id"] != retired["incarnation_id"]).then_some(())
-    })
-    .await;
+    Estate::workflow(&format!("node.restart of {}", restarted.name), estate.nodes_obj().await.restart(&restarted.name).await).await;
+    let after = estate.until_node(&restarted.name.to_string(), "the restarted node is ready again after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).cloned()).await;
+    assert_eq!(after.node_id, restarted.node_id, "a restart keeps the NodeId");
+    Estate::workflow(&format!("node.delete of {}", retired.name), estate.nodes_obj().await.delete(&retired.name).await).await;
+    estate
+        .until_view("the retired birth leaves the view", Duration::from_secs(30), |views| views.iter().all(|n| n.name != retired.name || n.incarnation_id != retired.incarnation_id).then_some(()))
+        .await;
 
     estate.stop().await;
+    let (late, restarted, retired) = (serde_json::to_value(&late).unwrap(), serde_json::to_value(&restarted).unwrap(), serde_json::to_value(&retired).unwrap());
+    let late_name = late_name.to_string();
     let spans = estate.spans();
     let at = |sp: &Value| sp["start_unix_nano"].as_u64().unwrap();
-    // Before Ready: Fabric.build_id (the fabric-primary's row on the fabric's store root, R14) and
-    // every held birth's runtime.
+    // Before Ready: the current Build and every held birth's runtime.
     let ready = named(&spans, "rdm.mesh.node.update.via-ready")
         .into_iter()
         .find(|sp| sp["attributes"]["node"] == late_name.as_str() && sp["attributes"]["incarnation_id"] == late["incarnation_id"])
         .cloned()
         .expect("the late admin is ready");
-    let pointer = ready["attributes"]["build_id"].as_str().unwrap_or_default().to_string();
+    let current = ready["attributes"]["build_id"].as_str().unwrap_or_default().to_string();
     assert!(
-        !pointer.is_empty()
-            && named(&spans, "rdm.node_admin.fabric.update.via-build-accepted")
+        !current.is_empty()
+            && named(&spans, "rdm.node_admin.build.create.via-accepted")
                 .into_iter()
-                .any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == pointer.as_str() && at(sp) < at(&ready)),
-        "it held Fabric.build_id before Ready: {ready}"
+                .any(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["build_id"] == current.as_str() && at(sp) < at(&ready)),
+        "it held the current build_id before Ready: {ready}"
     );
     let held = ready["attributes"]["runtime_facts_held"].as_str().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
     assert!(held >= 4, "it held the incumbent's and A's three births' runtimes before Ready: {held}");

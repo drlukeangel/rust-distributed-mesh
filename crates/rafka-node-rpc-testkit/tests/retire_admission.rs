@@ -82,7 +82,7 @@ impl DeploymentProvider for Stubborn<'_> {
 
 fn timeouts() -> Timeouts {
     Timeouts {
-        drain: Duration::from_secs(3),
+        completion: Duration::from_secs(3),
         ..Timeouts::default()
     }
 }
@@ -151,7 +151,7 @@ fn a_retire_completes_on_the_exact_runtimes_exit_when_every_departure_is_lost() 
             })
             .await;
         let terminal = retired.unwrap_or_else(|e| panic!("the retired runtime exited: its commands were completed and its exit proven, whatever the fabric last heard: {e:?}"));
-        assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (created.node.node_id.as_str(), created.node.incarnation_id.as_ref().map(|i| i.0.as_str())), "the terminal receipt names the retired birth: {terminal:?}");
+        assert_eq!((terminal.node_id.as_str(), Some(terminal.incarnation_id.as_str())), (created.node.node_id.as_str(), created.node.incarnation_id.as_ref().map(|i| i.as_str())), "the terminal receipt names the retired birth: {terminal:?}");
         assert!(exited(&process, &created.handle).await);
         let _ = std::fs::remove_dir_all(&template.data_root);
     })
@@ -227,20 +227,18 @@ fn a_predecessors_exit_never_stands_for_its_successors_commands() {
                 exit: None,
             })
             .await;
-        // B is live and admits its node-admin: its drain-node was admitted and its stop-node answered
-        // `stopped`, and its node-drained call reached the commanding side. A's exit counts for nothing:
+        // B is live and admits its node-admin: its stop-node answered `stopped`, the completion the
+        // commanding side awaits. A's exit counts for nothing:
         // every command and every proof is on B's own birth and handle.
         retired.unwrap_or_else(|e| panic!("retire B: {e}"));
         assert!(matches!(process.inspect(&b.handle).await, DeploymentStatus::Exited { .. }), "B's own runtime is terminal");
         let steps = builds.read_build(&build).await.unwrap().steps;
         let output = |name: &str| steps.iter().find(|r| r.step == name).and_then(|r| r.output.clone()).unwrap_or_else(|| panic!("{name} receipted with an output"));
-        let admission: CommandAdmission = serde_json::from_value(output("DrainNode")).unwrap();
-        assert!(matches!(admission, CommandAdmission::Admitted), "B admitted DrainNode: {admission:?}");
         let admission: CommandAdmission = serde_json::from_value(output("StopNode")).unwrap();
         assert!(matches!(admission, CommandAdmission::Stopped { .. }), "B answered StopNode left: {admission:?}");
-        for step in ["AwaitNodeDrained", "AwaitNodeLeft"] {
+        for step in ["AwaitNodeLeft"] {
             let completion: Completion = serde_json::from_value(output(step)).unwrap();
-            assert!(matches!(completion, Completion::Received), "B's {step} completion call reached the commanding side: {completion:?}");
+            assert!(matches!(completion, Completion::Received {}), "B's {step} completion call reached the commanding side: {completion:?}");
         }
     })
 }

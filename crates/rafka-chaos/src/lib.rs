@@ -3,7 +3,8 @@
 //!
 //! - [`process_faults`]: kill, stop and continue of ONE exact process runtime, or a burst kill of several, read from the
 //!   runtime record its birth published; refused by name when the pid is not that runtime.
-//! - [`netfault`]: UDP between two sets of loopback ports dropped with `iptables`, until dropped.
+//! - [`netfault`]: UDP between two sets of loopback ports dropped by an nftables table the installing
+//!   process owns, until dropped or until that process ends.
 //! - [`link_faults`]: a node set partitioned from the rest, a link flapped on a schedule and inbound
 //!   UDP dropped to one node, by node name, never a protected node.
 //! - [`disk_faults`]: a bounded filler allocated in ONE node's own data dir, removed on heal.

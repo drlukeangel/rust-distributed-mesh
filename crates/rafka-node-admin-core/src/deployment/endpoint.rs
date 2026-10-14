@@ -28,9 +28,9 @@ pub struct KindSpec {
 /// An rpc node: the one transport, no listener.
 pub const RPC_NODE: KindSpec = KindSpec { listeners: &[] };
 
-/// A node-admin: its mesh transport (gossip and the Node RPC declarations it applies as an
-/// authority) and its control API (HTTP).
-pub(crate) const NODE_ADMIN: KindSpec = KindSpec { listeners: &["control"] };
+/// A node-admin: its mesh transport (gossip and Node RPC), no other listener: RDM opens no HTTP
+/// listener (rdm-crate-and-test-layout.md §2).
+pub(crate) const NODE_ADMIN: KindSpec = KindSpec { listeners: &[] };
 
 /// What a node kind binds and serves.
 pub(crate) fn spec_for(kind: crate::model::NodeKind) -> &'static KindSpec {

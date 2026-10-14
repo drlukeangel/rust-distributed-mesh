@@ -2,9 +2,10 @@
 //!
 //! The child half of each cell is this same test binary re-run with `RDM_OUTAGE_CHILD` set: it
 //! initialises telemetry against the broken collector, emits spans and log lines from a
-//! multi-threaded runtime, drains and exits the way a node does. The parent half asserts what the
-//! outside sees: the child ends within its bound, its emitting never waited, and its stderr names
-//! the outage once, not once per span.
+//! multi-threaded runtime, flushes and exits the way a node does. The parent half starts the child
+//! with the collector endpoint and a private evidence directory in its environment, and asserts
+//! what the outside sees: the child ends within its bound, its emitting never waited, and its
+//! stderr names the outage once, not once per span.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -21,8 +22,6 @@ async fn outage_child() {
     if std::env::var(CHILD).is_err() {
         return;
     }
-    let evidence = std::env::temp_dir().join(format!("rdm-outage-evidence-{}", std::process::id()));
-    std::env::set_var("RDM_EVIDENCE_DIR", &evidence);
     let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rdm-outage-child");
     let started = Instant::now();
     for i in 0..SPANS {
@@ -36,17 +35,20 @@ async fn outage_child() {
     rafka_mesh_telemetry::flush_before_exit();
     drop(telemetry);
     println!("DRAINED_MS={}", started.elapsed().as_millis());
-    let _ = std::fs::remove_dir_all(&evidence);
     std::process::exit(0);
 }
 
-/// Run the child against `endpoint`; its exit time, stdout and stderr.
+/// Run the child against `endpoint`; its exit time, stdout and stderr. The child writes its spans
+/// to an evidence directory this call names and removes.
 fn run_child(endpoint: &str) -> (Duration, String, String) {
+    static CHILDREN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let evidence = std::env::temp_dir().join(format!("rdm-outage-evidence-{}-{}", std::process::id(), CHILDREN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let mut child = Command::new(std::env::current_exe().unwrap())
         // The child runs this test alone: its libtest name carries the module path of this file.
         .args(["--exact", &format!("{}::outage_child", module_path!().split_once("::").expect("a module of the test crate").1), "--nocapture"])
         .env(CHILD, "1")
         .env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+        .env("RDM_EVIDENCE_DIR", &evidence)
         .env_remove("RUST_LOG")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -79,6 +81,7 @@ fn run_child(endpoint: &str) -> (Duration, String, String) {
     };
     let took = started.elapsed();
     let (out, err) = (out_reader.join().unwrap(), err_reader.join().unwrap());
+    let _ = std::fs::remove_dir_all(&evidence);
     assert!(!killed, "the child was still running after {took:?}; it never exited: stdout={out} stderr tail={}", &err[err.len().saturating_sub(600)..]);
     assert!(status.success(), "the child failed: {status:?}\n{out}\n{err}");
     (took, out, err)

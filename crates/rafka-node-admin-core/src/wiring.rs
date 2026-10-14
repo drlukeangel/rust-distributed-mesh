@@ -30,6 +30,17 @@ pub trait LeaveSeam: Send + Sync {
     fn withholds(&self, node: &str, announcement: u32, channel: &'static str) -> bool;
 }
 
+/// Whether an executable that IS a node-admin withholds one of its final aggregates or leadership
+/// announcements from a channel (R-NS2: "Final aggregates and leadership announcements are best-effort
+/// dissemination. A stop does not wait for their delivery"): its backbone asks it before each send of
+/// an announcement `rafka_mesh_transport::membership::Withhold` names, on each channel (`"backbone"` or
+/// `"mesh"`); a `true` answer skips that one send and nothing else: the frame, the topic and the
+/// delivery path are untouched. The product passes none, so every announcement is sent.
+pub trait AnnouncementSeam: Send + Sync {
+    /// Whether `node` withholds `announcement` from `channel`.
+    fn withholds(&self, node: &str, announcement: &'static str, channel: &'static str) -> bool;
+}
+
 /// Whether an executable that IS a node-admin withholds the catch-up it sends a neighbour that came
 /// up on the Build topic (the shutdown in force, the Fabric record and the active Builds' facts).
 /// The NeighborUp task asks it once per neighbour, before it sends anything; a `true` answer skips
@@ -38,6 +49,16 @@ pub trait LeaveSeam: Send + Sync {
 pub trait CatchUpSeam: Send + Sync {
     /// Whether the catch-up of `node` to `neighbour` is withheld.
     fn withholds(&self, node: &str, neighbour: &str) -> bool;
+}
+
+/// Where a joining node-admin's start waits before it makes its topology read (op `0x1E`, node-start.md
+/// step 4): the start asks it once, after the join and the hook and before the read, and goes on when it
+/// returns. The read, its frames and the authority it goes to are untouched. The product passes none, so
+/// the read is made at once.
+#[async_trait::async_trait]
+pub trait ReadSeam: Send + Sync {
+    /// Returns when the start of `node` may make its topology read of `authority`.
+    async fn before_topology_read(&self, node: &str, authority: &str);
 }
 
 /// Adds an app's own Node RPC ops to the server a node-admin seals, before it seals: the app clones
@@ -119,7 +140,11 @@ pub struct Wiring {
     pub catch_up_seam: Option<Arc<dyn CatchUpSeam>>,
     /// Asked by the leave before each announcement publish.
     pub leave_seam: Option<Arc<dyn LeaveSeam>>,
-    /// Wraps `fabric.storage` before the accepted-Build pointer and the shutdown control take it.
+    /// Asked by the backbone before each final aggregate or leadership announcement it sends.
+    pub announcement_seam: Option<Arc<dyn AnnouncementSeam>>,
+    /// Asked by a joining admin's start before it makes its topology read.
+    pub read_seam: Option<Arc<dyn ReadSeam>>,
+    /// Wraps `fabric.storage` before the Fabric identity holder and the shutdown control take it.
     pub fabric_storage: Option<Wrap<dyn FabricStorage>>,
     /// Wraps the Build state the control routes, the executor, the deployment pipelines and the
     /// drift check all use.

@@ -67,8 +67,8 @@ impl ExportRuntime {
         })
     }
 
-    /// Enter the export runtime's context: exporters built inside it create their connections
-    /// (tonic's channel worker) on this runtime.
+    /// Enter the export runtime's context: exporters built inside it run their requests and the
+    /// HTTP client's connection tasks on this runtime.
     pub fn enter(&self) -> tokio::runtime::EnterGuard<'_> {
         self.handle.enter()
     }
@@ -237,11 +237,11 @@ pub fn bounded(what: &str, jobs: Vec<Box<dyn FnOnce() + Send>>) {
 }
 
 /// Which `tracing` events the exporter's own machinery may put in a log, a span or the collector:
-/// none of the SDK's, tonic's or the HTTP stack's, bar the SDK's one-time WARN that names a full
+/// none of the SDK's or the HTTP stack's (hyper, h2, tower), bar the SDK's one-time WARN that names a full
 /// queue. An export failure reaches stderr as the single line [`WatchedSpans`]/[`WatchedLogs`]
 /// print per outage transition, and never re-enters the pipeline that failed.
 pub(crate) fn admits_source(meta: &tracing::Metadata<'_>) -> bool {
     let t = meta.target();
-    let internal = t.starts_with("opentelemetry") || t.starts_with("tonic") || t.starts_with("h2") || t.starts_with("hyper") || t.starts_with("tower") || t.starts_with("reqwest");
+    let internal = t.starts_with("opentelemetry") || t.starts_with("h2") || t.starts_with("hyper") || t.starts_with("tower") || t.starts_with("reqwest");
     !(internal && !(t.starts_with("opentelemetry") && *meta.level() == tracing::Level::WARN))
 }

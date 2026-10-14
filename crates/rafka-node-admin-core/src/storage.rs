@@ -254,7 +254,7 @@ pub struct RuntimeRow {
 impl RuntimeRow {
     /// The row's key: the birth it describes.
     pub fn key(&self) -> String {
-        format!("{}--{}", self.node_id, self.incarnation_id.0)
+        format!("{}--{}", self.node_id, self.incarnation_id.as_str())
     }
 }
 
@@ -276,8 +276,8 @@ pub struct NodeRow {
     pub status: crate::model::NodeStatus,
     /// The application's own key/values on the node (capped: [`rafka_mesh_entity::check_config`]).
     pub config: BTreeMap<String, String>,
-    /// The node's tag labels (R-TG1): caller-owned meta set through `node.update`, each one a row
-    /// of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
+    /// The node's tag labels (R-TG1), set through `node.tags.create` / `node.tags.delete`, each one a
+    /// row of the tags index while the row is live. A `Deleted` row keeps them, as it keeps the config;
     /// a row written before tags existed carries none.
     #[serde(default)]
     pub tags: BTreeSet<String>,
@@ -291,6 +291,23 @@ pub struct NodeRow {
     /// launch and carries none; a row written before allocations existed carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allocated: Option<Allocation>,
+    /// The `path.name` a rename moved this row from (proposal node-properties-own-commands.md §2.1
+    /// "Claim and move"), written by the put at the new key. While the key it names still holds this
+    /// row's node, the release of that key is pending and the writer that meets the row releases it
+    /// (`crate::node_rows::finish_release`); once that key no longer holds the node it says nothing,
+    /// so it is never cleared. A row no rename wrote carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renamed_from: Option<PathName>,
+    /// The successor that took this row's config and tags at a replace's cutover (node-replace.md
+    /// step 4; proposal node-properties-own-commands.md §8, replace: the successor "inherits config
+    /// and tags from the retained predecessor row at the cutover rename ... and the predecessor's index
+    /// entries gone"), written on the retained predecessor's row once the successor's row stands at the
+    /// name. The row keeps its tags, as a `Deleted` row does, and the tags index holds none of them:
+    /// every label leaves with that write and none arrives with a later write at the same key. A
+    /// rename of the row writes none: the node takes a name again (node-replace.md "Rollback" step 2).
+    /// A row no cutover marked carries none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_by: Option<NodeId>,
 }
 
 /// The identity a create's `AllocateIdentity` decided for the birth its claim names (beside the
@@ -312,15 +329,16 @@ pub struct Allocation {
 impl NodeRow {
     /// The labels the tags index holds for this row's node once the row is written over `previous`,
     /// the row it replaces at its key, split into (leaving, arriving): a label the node's previous
-    /// row carried and this one does not, or every label of a `Deleted` row, leaves; every label of
-    /// a live row arrives. A previous row of another node (a `Deleted` row a new node takes over)
-    /// changes nothing: its labels left when it turned `Deleted`.
+    /// row carried and this one does not, or every label of a `Deleted` row or of a row a successor
+    /// inherited ([`Self::inherited_by`]), leaves; every label of any other live row arrives. A
+    /// previous row of another node (a `Deleted` row a new node takes over) changes nothing: its labels
+    /// left when it turned `Deleted`.
     fn tag_moves(&self, previous: Option<&NodeRow>) -> (BTreeSet<String>, BTreeSet<String>) {
         let held: BTreeSet<String> = previous.filter(|p| p.node_id == self.node_id).map(|p| p.tags.clone()).unwrap_or_default();
-        match self.status {
-            crate::model::NodeStatus::Deleted => (held.union(&self.tags).cloned().collect(), BTreeSet::new()),
-            _ => (held.difference(&self.tags).cloned().collect(), self.tags.clone()),
+        if self.status == crate::model::NodeStatus::Deleted || self.inherited_by.is_some() {
+            return (held.union(&self.tags).cloned().collect(), BTreeSet::new());
         }
+        (held.difference(&self.tags).cloned().collect(), self.tags.clone())
     }
 }
 
@@ -440,7 +458,7 @@ impl NodesStorage for MemoryNodesStorage {
         Ok(self.runtimes.lock().unwrap().values().cloned().collect())
     }
     async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.0)).cloned())
+        Ok(self.runtimes.lock().unwrap().get(&format!("{}--{}", node_id, incarnation.as_str())).cloned())
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         Ok(self.own.lock().unwrap().clone())
@@ -838,7 +856,7 @@ impl NodesStorage for FileNodesStorage {
         self.runtimes.list(RUNTIME_FORMAT).await
     }
     async fn runtime(&self, node_id: &NodeId, incarnation: &IncarnationId) -> Result<Option<RuntimeRow>, StorageError> {
-        self.runtimes.read(&format!("{}--{}", node_id, incarnation.0), RUNTIME_FORMAT).await
+        self.runtimes.read(&format!("{}--{}", node_id, incarnation.as_str()), RUNTIME_FORMAT).await
     }
     async fn own(&self) -> Result<Option<NodeRecord>, StorageError> {
         self.own.read("self", NODE_FORMAT).await
@@ -1177,7 +1195,7 @@ mod tests {
     }
 
     fn row(name: &str) -> NodeRow {
-        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None }
+        NodeRow { name: name.parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None }
     }
 
     /// CONTRACT (CLAUDE.md read rule: a lookup by id that cannot read the store's own key reads the
@@ -1370,6 +1388,34 @@ mod tests {
         assert!(files("mesh1", "green").is_empty(), "nothing of the cut-off label is written");
     }
 
+    /// CONTRACT (proposal node-properties-own-commands.md §8, replace: the successor inherits the
+    /// retained predecessor row's tags at the cutover, "and the predecessor's index entries gone"):
+    /// between the cutover's put of the successor at the name and its mark, both nodes carry the label;
+    /// the retained row put again with `inherited_by` keeps its tags and the tags index names none of
+    /// them for it; a later put at the same key carrying the field (a tags or config write) indexes
+    /// none again, an added label included, while the successor stays named.
+    #[tokio::test]
+    async fn a_row_a_successor_inherited_keeps_its_tags_and_holds_none_in_the_tags_index() {
+        let d = crate::record_store::tempdir("tags-inherited");
+        let store = d.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        let root = crate::store_root::StoreRoot::open(&store, &crate::model::FabricId::mint()).unwrap();
+        let n1 = FileNodesStorage::open(&d.join("mesh1.admin.1"), &root, "mesh1", &IncarnationId::mint()).await.unwrap();
+        root.scratchpad().expect("a root without the Fabric row opens with a scratchpad").publish().await.unwrap();
+        let tags = |l: &[&str]| l.iter().map(|t| t.to_string()).collect::<BTreeSet<String>>();
+        let (pred, succ) = (NodeId::mint(), NodeId::mint());
+        let old = NodeRow { node_id: pred.clone(), tags: tags(&["rabbit"]), ..row("mesh1.rpc.1.old") };
+        n1.put_node_row(&old).await.unwrap().unwrap();
+        n1.put_node_row(&NodeRow { node_id: succ.clone(), tags: tags(&["rabbit"]), ..row("mesh1.rpc.1") }).await.unwrap().unwrap();
+        assert_eq!(n1.tagged("rabbit").await.unwrap(), [pred.clone(), succ.clone()].into(), "between the cutover's put and its mark both carry the label");
+        let marked = NodeRow { inherited_by: Some(succ.clone()), ..old.clone() };
+        n1.put_node_row(&marked).await.unwrap().unwrap();
+        assert_eq!(n1.tagged("rabbit").await.unwrap(), [succ.clone()].into(), "the retained row's label left the index");
+        assert_eq!(n1.node_row_at(&old.name).await.unwrap(), Some(marked.clone()), "the retained row keeps its tags and names who inherited it");
+        n1.put_node_row(&NodeRow { tags: tags(&["rabbit", "red"]), ..marked.clone() }).await.unwrap().unwrap();
+        assert_eq!((n1.tagged("rabbit").await.unwrap(), n1.tagged("red").await.unwrap()), ([succ.clone()].into(), BTreeSet::new()), "a later write of the inherited row indexes none of its labels");
+    }
+
     /// CONTRACT (R14 items 1 and 9; acceptance "an ordinary node's connections rows land under
     /// `connections/<node>/` in the shared root and the successor mesh-primary reads them there";
     /// states.md, Rounds): before the fabric's first state-commit a node holds its connections rows
@@ -1434,8 +1480,8 @@ mod tests {
         let row = |inc: &str| RuntimeRow {
             node_id: NodeId::mint(),
             name: "mesh1.admin.2".parse().unwrap(),
-            incarnation_id: IncarnationId(inc.into()),
-            runtime: rafka_mesh_entity::RuntimeFact::of_this_process("dep-1").unwrap(),
+            incarnation_id: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap(),
+            runtime: rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap(),
             data_dir: Some("/tmp/x".into()),
         };
         let (a, b) = (row("i1"), row("i2"));
@@ -1445,7 +1491,7 @@ mod tests {
         n.put_runtime(&b).await.unwrap();
         n.put_runtime(&a).await.unwrap();
         let mut held = FileNodesStorage::open(&d, &root, "mesh1", &IncarnationId::mint()).await.unwrap().runtimes().await.unwrap();
-        held.sort_by_key(|r| r.incarnation_id.0.clone());
+        held.sort_by_key(|r| r.incarnation_id.to_string());
         assert_eq!(held, [a.clone(), b.clone()], "two births, two rows; a repeated put is the same row");
         std::fs::write(d.join("nodes/runtimes").join(format!("{}.json", a.key())), br#"{"format":"node-runtime/9","record":{}}"#).unwrap();
         assert!(matches!(n.runtimes().await, Err(StorageError::Unrecognised { .. })));
@@ -1475,7 +1521,7 @@ mod tests {
     /// thread keeps running meanwhile, and the read answers the row.
     #[test]
     fn a_node_row_read_waits_on_the_disk_off_the_runtime_thread() {
-        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None };
+        let row = NodeRow { name: "mesh1.rpc.1".parse().unwrap(), node_id: NodeId::mint(), status: crate::model::NodeStatus::ReadyForTraffic, config: BTreeMap::new(), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         let name = row.name.clone();
         let (ran, read) = runtime_runs_while_a_row_is_read(row.clone(), move |s| Box::pin(async move { s.node_row_at(&name).await }));
         assert!(ran, "the runtime thread ran while the row read waited on the disk");
@@ -1488,7 +1534,7 @@ mod tests {
     /// read: the runtime's only thread keeps running, and the list answers the row.
     #[test]
     fn a_list_of_records_waits_on_the_disk_off_the_runtime_thread() {
-        let row = RuntimeRow { node_id: NodeId::mint(), name: "mesh1.admin.2".parse().unwrap(), incarnation_id: IncarnationId("i1".into()), runtime: rafka_mesh_entity::RuntimeFact::of_this_process("dep-1").unwrap(), data_dir: Some("/tmp/x".into()) };
+        let row = RuntimeRow { node_id: NodeId::mint(), name: "mesh1.admin.2".parse().unwrap(), incarnation_id: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i1")).unwrap(), runtime: rafka_mesh_entity::RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap(), data_dir: Some("/tmp/x".into()) };
         let bytes = serde_json::to_vec(&serde_json::json!({ "format": RUNTIME_FORMAT, "record": row })).unwrap();
         let (ran, listed) = runtime_runs_while_a_file_is_read("nodes/runtimes", &row.key(), bytes, move |s| Box::pin(async move { s.runtimes().await }));
         assert!(ran, "the runtime thread ran while the list waited on the disk");
@@ -1523,7 +1569,7 @@ mod tests {
     async fn a_second_nodes_row_at_a_held_name_is_refused_by_the_adapter_and_nothing_is_written() {
         let d = crate::record_store::tempdir("storage-claim");
         let name: PathName = "mesh1.rpc.1".parse().unwrap();
-        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None };
+        let row = |node_id: &NodeId, status: crate::model::NodeStatus, tier: &str| NodeRow { name: name.clone(), node_id: node_id.clone(), status, config: BTreeMap::from([("tier".to_string(), tier.to_string())]), tags: Default::default(), allocated: None, renamed_from: None, inherited_by: None };
         let check = async |n: &dyn NodesStorage, store: &str| {
             let (first, second) = (NodeId::mint(), NodeId::mint());
             let held = row(&first, crate::model::NodeStatus::ReadyForTraffic, "gold");

@@ -138,6 +138,24 @@ impl PathName {
     pub fn base(&self) -> Self {
         Self { old: false, new: false, ..self.clone() }
     }
+
+    /// The node's path: everything of the `path.name` before its name (`mesh1.rpc` of
+    /// `mesh1.rpc.2.old`).
+    pub fn path(&self) -> String {
+        format!("{}.{}", self.mesh, self.kind.segment())
+    }
+
+    /// The node's name: the `path.name` after its path (`2.old` of `mesh1.rpc.2.old`).
+    pub fn name(&self) -> String {
+        let s = self.to_string();
+        s[self.path().len() + 1..].to_string()
+    }
+
+    /// The `path.name` of the name `name` at this node's path: the index key `<path>.<name>`, the
+    /// path never moving. Refused by name when the join is not a `path.name` this build keys.
+    pub fn with_name(&self, name: &str) -> Result<Self, PathNameError> {
+        format!("{}.{name}", self.path()).parse()
+    }
 }
 
 impl FromStr for PathName {
@@ -222,5 +240,19 @@ mod tests {
         assert_eq!(new.renamed().to_string(), "mesh1.rpc.2.old", "one suffix at most");
         assert_eq!(old.successor().to_string(), "mesh1.rpc.2.new", "one suffix at most");
         assert_eq!("mesh1.rpc.2.new.old".parse::<PathName>(), Err(PathNameError::Shape("mesh1.rpc.2.new.old".into())));
+    }
+
+    /// CONTRACT (proposal node-properties-own-commands.md §2.1 Entry: a rename carries the name only;
+    /// Luke 2026-10-12: path and name are two fields, `path.name` only their index-key join): the path
+    /// is the `path.name` before its name and the name the rest; a name joined at a node's path keeps
+    /// that path, and a join this build cannot key is refused by name.
+    #[test]
+    fn a_name_joined_at_a_path_keeps_the_path() {
+        let held: PathName = "mesh1.rpc.2.old".parse().unwrap();
+        assert_eq!((held.path(), held.name()), ("mesh1.rpc".to_string(), "2.old".to_string()));
+        assert_eq!(held.with_name("9").unwrap().to_string(), "mesh1.rpc.9");
+        assert_eq!(held.with_name("2").unwrap(), held.base());
+        assert_eq!(held.with_name("rpc.2"), Err(PathNameError::Suffix("mesh1.rpc.rpc.2".into())));
+        assert_eq!(held.with_name("2.older"), Err(PathNameError::Suffix("mesh1.rpc.2.older".into())));
     }
 }

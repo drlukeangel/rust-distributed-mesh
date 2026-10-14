@@ -106,7 +106,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
     assert_eq!(estate.owner.provider, provider, "the cell runs on its provider");
     let root = estate.root.clone();
     let cfg = Config::mm(seed, secs, rafka_mesh_transport::membership::staleness_floor(), rafka_mesh_transport::membership::backbone_gossip_interval(), tickle_round());
-    let driver = Driver::new(estate, cfg).await;
+    let driver = Driver::new(estate, cfg, crate::build_log::build_read).await;
     let progress = driver.progress();
     // The run is its own task: a panic inside it still leaves the seed and the executed sequence.
     let joined = tokio::spawn(driver.run()).await;
@@ -139,13 +139,6 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
         }
     }
     let mut violations: Vec<String> = Vec::new();
-    // No stale-slot dispatch: a request a 425 refused was never served in its trace.
-    let stale: Vec<&Value> = named(&spans, "rdm.node_rpc.connection.reject.via-stale-target").into_iter().filter(|sp| sp["attributes"].get("receiver_node_id").is_some()).collect();
-    for sp in &stale {
-        if spans.iter().any(|x| x["trace_id"] == sp["trace_id"] && x["name"] == "rdm.node_rpc.request.serve.via-direct") {
-            violations.push(format!("a stale fence was dispatched: {sp}"));
-        }
-    }
     // The path RAN: the operations reached handlers, the topology actions ran as Build attempts.
     let served = named(&spans, "rdm.node_rpc.proof_store.serve.via-request").len();
     let reconciles = named(&spans, "rdm.node_admin.build.update.via-reconcile").len();
@@ -185,7 +178,6 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
             "exported_spans": spans.len(),
             "proof_store_serve_spans": served,
             "build_attempt_spans": reconciles,
-            "stale_target_refusals": stale.len(),
             "fault_backend_spans": fault_spans.len(),
             "wedge_verdict_spans": verdicts.len(),
         },
@@ -214,7 +206,7 @@ async fn soak_cell(cell: &'static str, provider: &'static str, layer: &'static s
 /// replace and hand-off as Builds the node-admin rectifier executes, and kills and holds of exact
 /// runtimes on the process provider. After every action the estate converges (the Build's receipts
 /// name the new birth, every live admin holds the same births) and the invariants hold: one current
-/// birth per path, one fabric-primary, `Fabric.build_id` held, no peer mesh unheard, the seats
+/// birth per path, one fabric-primary, the current build_id held, no peer mesh unheard, the seats
 /// equal the public candidates', every rpc node reachable on its current birth, no Build minted
 /// for drift, a held runtime comes back as the same birth, a retired node is never dispatched.
 /// At the end every issued operation is accounted: issued = Reply + NotSent + Unserved +

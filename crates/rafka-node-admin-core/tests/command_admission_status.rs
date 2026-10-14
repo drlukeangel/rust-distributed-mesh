@@ -38,7 +38,7 @@ fn member(fabric: &FabricId, name: &str, seq: u64) -> MeshDigest {
 }
 
 fn op(d: &MeshDigest, operation: &str) -> LifecycleOp {
-    LifecycleOp { build_id: "bld_admission".into(), attempt: 1, operation: operation.into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
+    LifecycleOp { build_id: "3vzt99cnx0xe".into(), attempt: 1, operation: operation.into(), node_id: d.node.node_id.clone(), incarnation: d.node.incarnation.clone(), name: d.node.name.clone(), event_at_rafka_ms: 1 }
 }
 
 // @feature: node-lifecycle
@@ -59,7 +59,7 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     let membership = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", Arc::new(time.clone()), vec![]).await.unwrap();
     let backbone = Backbone::join(&gossip, &ep, &membership, "mesh1", "mesh1.admin.1", IncarnationId::mint(), vec![]).await.unwrap();
     backbone.set_mesh_primary(true);
-    let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: "mesh1.admin.1".parse().unwrap(), leaver: std::sync::Arc::new(std::sync::OnceLock::new()) };
+    let lifecycle = GossipLifecycle { membership: membership.clone(), backbone: backbone.clone(), me: "mesh1.admin.1".parse().unwrap(), mesh_deleter: std::sync::Arc::new(std::sync::OnceLock::new()), project: None };
 
     let rpc = member(&fabric, "mesh1.rpc.1", 10);
     assert!(membership.book.record(rpc.clone()), "the member's heartbeat is held");
@@ -68,8 +68,8 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     let projected = |d: &MeshDigest| backbone.own_members(&membership).into_iter().find(|m| m.node.node_id == d.node.node_id).map(|m| m.status);
     assert_eq!(status(&rpc), Some(MemberStatus::ReadyForTraffic));
 
-    lifecycle.draining(&op(&rpc, "drain-node:mesh1.rpc.1")).await;
-    assert_eq!(status(&rpc), Some(MemberStatus::Draining), "the drain's admission sets the member connections-deleting");
+    lifecycle.connections_deleting(&op(&rpc, "node.connections.delete:mesh1.rpc.1")).await;
+    assert_eq!(status(&rpc), Some(MemberStatus::Draining), "the admission of node.connections.delete {{ All }} sets the member connections-deleting");
     assert_eq!(projected(&rpc), Some(MemberStatus::Draining), "the member projection carries it");
 
     lifecycle.leaving(&op(&rpc, "stop-node:mesh1.rpc.1")).await;
@@ -77,7 +77,7 @@ async fn the_mesh_primary_sets_its_members_draining_and_leaving_at_the_commands_
     assert_eq!(projected(&rpc), Some(MemberStatus::Leaving), "the member projection carries it");
 
     let peer = member(&fabric, "mesh2.rpc.1", 10);
-    lifecycle.draining(&op(&peer, "drain-node:mesh2.rpc.1")).await;
+    lifecycle.connections_deleting(&op(&peer, "node.connections.delete:mesh2.rpc.1")).await;
     assert_eq!(status(&peer), None, "a member of another mesh is not this primary's to set");
 }
 
@@ -136,7 +136,7 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         republish: Arc::new(std::sync::OnceLock::new()),
         commands: Arc::new(rafka_node_admin_core::node_commands::CommandBook::default()),
         own: Arc::new(std::sync::OnceLock::new()),
-        leaver: Arc::new(std::sync::OnceLock::new()),
+        mesh_deleter: Arc::new(std::sync::OnceLock::new()),
         hold_next_reply: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         wake: Default::default(),
         rounds: Default::default(),
@@ -147,7 +147,8 @@ async fn a_members_applied_report_sets_its_status_in_its_mesh_primarys_book() {
         row_moved: Default::default(),
         loads: None,
         book: Some(membership.book.clone()),
-        accepted: std::sync::Arc::new(rafka_node_admin_core::accepted::AcceptedStore::new(std::sync::Arc::new(rafka_node_admin_core::fabric_storage::MemoryFabricStorage::new()), "test")),
+        first_ready: Default::default(),
+        builds: std::sync::Arc::new(rafka_node_admin_core::build_state::MemoryBuildStateAdapter::new()),
     };
     let status = || membership.book.get(member.node.node_id.as_str()).map(|(h, _)| h.status);
     let declare = |state| StatusRequest::DeclareNodeState { node_id: member.node.node_id.clone(), incarnation: member.node.incarnation.clone(), state };

@@ -214,9 +214,10 @@ impl TopologyDoor {
                 }
                 answered += 1;
             }
-            // The seat records this node holds: who holds the fabric seat and each mesh's, so the
-            // reader computes no seat before it knows them (ruling R-A2).
+            // The seat records this node holds: who holds the fabric seat, each mesh's and each other
+            // cohort's, so the reader computes no seat before it knows them (ruling R-A2).
             let mut records: Vec<(rafka_mesh_entity::Seat, rafka_mesh_entity::SeatHolder)> = self.membership.seats().meshes().into_values().map(|h| (rafka_mesh_entity::Seat::MeshPrimary, h)).collect();
+            records.extend(self.membership.seats().cohorts().into_iter().map(|((_, kind), h)| (rafka_mesh_entity::Seat::Cohort(kind), h)));
             records.extend(self.membership.seats().fabric().map(|h| (rafka_mesh_entity::Seat::FabricPrimary, h)));
             let seat_records = records.len() as u64;
             for (seat, holder) in records {

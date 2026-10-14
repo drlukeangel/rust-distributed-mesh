@@ -63,6 +63,85 @@ impl FabricState {
     }
 }
 
+/// Whether the initial fabric has first reached ready-for-traffic (states.md, "The initial fabric
+/// before ready-for-traffic"). Once true it stays true: a resize or roll puts the fabric back to
+/// pending, and the rows it already published to the store root stay there. One handle is shared by
+/// everything on an admin that refuses a workflow until it is true.
+///
+/// The durable fact is the ready-for-traffic Fabric event's row (`crate::status_storage::FabricEventRow`).
+/// The initial fabric first reaching ready-for-traffic is the fabric-primary's one fact (states.md: "The
+/// fabric-primary declares fabric state through the completed rounds"): it puts the row among its own
+/// mesh's status rows as the first act of entering ready-for-traffic, before it latches or admits
+/// anything, then applies the event at every other mesh primary. An admin of any mesh reads the row among
+/// its own mesh's rows, else among the fabric-primary's mesh's rows on the store root, so a command the
+/// fabric-primary admitted once the fabric was ready finds the fact wherever it lands. The Fabric row on
+/// the store root is published at the first state-commit, before that, and is not the signal.
+#[derive(Debug, Clone, Default)]
+pub struct FirstReady(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl FirstReady {
+    /// A fabric that has not reached ready-for-traffic.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that the fabric is ready-for-traffic, and why this admin knows: `because` is told once, the
+    /// first time (`rdm.node_admin.fabric.update.via-first-ready`).
+    pub fn reach(&self, because: &'static str) {
+        if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            tracing::info_span!("rdm.node_admin.fabric.update.via-first-ready", reason = because, "otel.kind" = "internal")
+                .in_scope(|| tracing::info!("this admin knows the fabric has first reached ready-for-traffic: workflows a caller submits are admitted as usual"));
+        }
+    }
+
+    /// Read the durable fact once: the status rows of this admin's mesh, else those of the
+    /// fabric-primary's mesh `fabric_primary_mesh` (the mesh the seat book names the fabric seat's holder
+    /// in; `None` when it names none), hold the ready-for-traffic event of `fabric_id`. A read that fails
+    /// is the caller's to refuse by name.
+    pub async fn read_from(&self, status: &dyn crate::status_storage::StatusStorage, fabric_id: &crate::model::FabricId, fabric_primary_mesh: Option<&str>) -> Result<(), crate::record_store::StorageError> {
+        let ready = crate::status_rpc::event_key(&rafka_node_rpc_contract::status::FabricEvent::ReadyForTraffic);
+        let holds = |rows: &[crate::status_storage::FabricEventRow]| rows.iter().any(|row| row.fabric_id == *fabric_id && row.event == ready);
+        if holds(&status.fabric_events().await?) {
+            self.reach(READY_ROW_ON_ROOT);
+            return Ok(());
+        }
+        if let Some(mesh) = fabric_primary_mesh {
+            if holds(&status.fabric_events_of(mesh).await?) {
+                self.reach(READY_ROW_OF_FABRIC_PRIMARY);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the fabric has reached ready-for-traffic at some time, or holds it `now`.
+    pub fn reached(&self, now: crate::model::ScopeStatus) -> bool {
+        self.0.load(std::sync::atomic::Ordering::SeqCst) || matches!(now, crate::model::ScopeStatus::ReadyForTraffic | crate::model::ScopeStatus::Degraded)
+    }
+
+    /// Whether the initial fabric `fabric_id` has first reached ready-for-traffic, decided on the durable
+    /// fact (states.md, "The initial fabric before ready-for-traffic"): what this admin already knows (or
+    /// `now`, its view's fabric status), else a point read of the ready-for-traffic row among `status`, its
+    /// mesh's status rows on the store root, else among the rows of the fabric-primary's mesh
+    /// `fabric_primary_mesh`, which hold the fact from the moment the fabric-primary entered
+    /// ready-for-traffic, while the fabric state this admin hears by gossip, and its own mesh's row, can
+    /// still lag it. A read that fails is the caller's to refuse by name.
+    pub async fn reached_on_root(&self, status: &dyn crate::status_storage::StatusStorage, fabric_id: &crate::model::FabricId, now: crate::model::ScopeStatus, fabric_primary_mesh: Option<&str>) -> Result<bool, crate::record_store::StorageError> {
+        if self.reached(now) {
+            return Ok(true);
+        }
+        self.read_from(status, fabric_id, fabric_primary_mesh).await?;
+        Ok(self.reached(now))
+    }
+}
+
+/// Why an admin knows the fabric first reached ready-for-traffic when its root holds the fact.
+pub const READY_ROW_ON_ROOT: &str = "ready-for-traffic-row-on-store-root";
+
+/// Why an admin knows the fabric first reached ready-for-traffic when the fabric-primary's mesh's status
+/// rows on the root hold the row the fabric-primary put as it entered ready-for-traffic, before the
+/// admin's own mesh's row is put.
+pub const READY_ROW_OF_FABRIC_PRIMARY: &str = "ready-for-traffic-row-of-the-fabric-primary-on-store-root";
+
 /// Which of the two rounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum RoundKind {
@@ -492,13 +571,13 @@ mod tests {
     fn a_check_in_counts_only_as_the_planned_birth_of_the_open_round() {
         let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
         let book = RoundBook::default();
-        let k = key("bld_1", 1, &fabric);
+        let k = key("66h8qrqvaajk", 1, &fabric);
         let up = |build: &str, attempt: u32, inc: &IncarnationId| RoundKind::StateCommit.up(&key(build, attempt, &fabric), node.clone(), inc.clone());
         fn sender<'a>(_node: &'a NodeId, held: &'a IncarnationId) -> Option<(Option<&'a IncarnationId>, &'static str)> {
             Some((Some(held), "mesh2.admin.1"))
         }
 
-        let early = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("bld_1", 1, &inc));
+        let early = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc));
         assert!(matches!(&early, StatusReply::NotReady { reason } if reason.contains("no open commit-state round")), "a check-in before the down op: {early:?}");
 
         book.open(&k);
@@ -506,16 +585,16 @@ mod tests {
         assert!(!book.complete(&k));
         assert_eq!(book.missing(&k), vec![Missing { who: "mesh2.admin.1".into(), why: "no-check-in" }]);
 
-        let foreign = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("bld_9", 1, &inc));
-        assert!(matches!(&foreign, StatusReply::NotReady { reason } if reason.contains("field build_id: round holds bld_1, reported bld_9")), "{foreign:?}");
-        let old = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("bld_1", 2, &inc));
+        let foreign = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("t9ktgq6zvxtt", 1, &inc));
+        assert!(matches!(&foreign, StatusReply::NotReady { reason } if reason.contains("field build_id: round holds 66h8qrqvaajk, reported t9ktgq6zvxtt")), "{foreign:?}");
+        let old = book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 2, &inc));
         assert!(matches!(&old, StatusReply::NotReady { reason } if reason.contains("field attempt: round holds 1, reported 2")), "{old:?}");
         let other = IncarnationId::mint();
-        assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &other), &up("bld_1", 1, &inc)), StatusReply::RejectedStaleIncarnation { held: other.clone() });
-        assert_eq!(book.check_in("mesh1.admin.1", None, &up("bld_1", 1, &inc)), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a subject the view does not hold");
+        assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &other), &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedStaleIncarnation { held: other.clone() });
+        assert_eq!(book.check_in("mesh1.admin.1", None, &up("66h8qrqvaajk", 1, &inc)), StatusReply::RejectedNotAuthority { why: NotAuthority::SubjectUnknown }, "a subject the view does not hold");
 
-        assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("bld_1", 1, &inc)), StatusReply::Applied);
-        assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("bld_1", 1, &inc)), StatusReply::AlreadyApplied);
+        assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc)), StatusReply::Applied);
+        assert_eq!(book.check_in("mesh1.admin.1", sender(&node, &inc), &up("66h8qrqvaajk", 1, &inc)), StatusReply::AlreadyApplied);
         assert!(book.complete(&k));
 
         let reborn = IncarnationId::mint();
@@ -532,7 +611,7 @@ mod tests {
     fn a_check_in_for_a_subject_the_view_does_not_hold_is_subject_unknown() {
         let (fabric, node, inc) = (FabricId::mint(), NodeId::mint(), IncarnationId::mint());
         let book = RoundBook::default();
-        let k = key("bld_1", 1, &fabric);
+        let k = key("66h8qrqvaajk", 1, &fabric);
         book.open(&k);
         book.expect(&k, planned(&node, &inc, "mesh2.admin.1"), Vec::new());
         let up = RoundKind::StateCommit.up(&k, node.clone(), inc.clone());
@@ -554,7 +633,7 @@ mod tests {
     /// A book holding an open round whose checklist names `n` (as `inc`), the command to it out and then not delivered.
     fn undelivered(typed: bool, status: NodeStatus) -> (RoundBook, RoundKey, Node, IncarnationId) {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let (book, k, n) = (RoundBook::default(), key("bld_1", 1, &fabric), target(&inc, status));
+        let (book, k, n) = (RoundBook::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, status));
         book.open(&k);
         book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
         assert_eq!(book.take_due(&k, &view_of(vec![n.clone()])).len(), 1);
@@ -568,7 +647,7 @@ mod tests {
     fn a_planned_birth_is_commanded_once_per_exact_birth() {
         let (fabric, a, b) = (FabricId::mint(), IncarnationId::mint(), IncarnationId::mint());
         let book = RoundBook::default();
-        let k = key("bld_1", 1, &fabric);
+        let k = key("66h8qrqvaajk", 1, &fabric);
         let n = target(&a, NodeStatus::ReadyForTraffic);
         book.open(&k);
         book.expect(&k, planned(&n.node_id, &a, "mesh2.admin.1"), Vec::new());
@@ -650,7 +729,7 @@ mod tests {
     #[test]
     fn an_address_that_arrives_while_the_command_is_out_sends_it_again_once_the_call_ends_undelivered() {
         let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
-        let (book, k, n) = (RoundBook::default(), key("bld_1", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
+        let (book, k, n) = (RoundBook::default(), key("66h8qrqvaajk", 1, &fabric), target(&inc, NodeStatus::ReadyForTraffic));
         book.open(&k);
         book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
         let view = view_of(vec![n.clone()]);

@@ -91,7 +91,7 @@ async fn docker(args: &[&str]) -> Result<String, String> {
 
 /// One launch's container: fixed by node and deployment id, so a re-run finds it.
 fn container_name(spec: &ResolvedNodeLaunch) -> String {
-    format!("rafka-{}-{}", docker_safe(&spec.node.to_string()), docker_safe(&spec.deployment_id.0))
+    format!("rafka-{}-{}", docker_safe(&spec.node.to_string()), docker_safe(&spec.deployment_id.as_str()))
 }
 
 /// Every address a container holds on `network` right now (`docker network inspect`). `Err`
@@ -118,7 +118,7 @@ const LAUNCH_FILE: &str = "container-launch.json";
 /// Write the launch record of `deployment` in `data_dir`. A blocking call: run it on the blocking
 /// pool.
 fn record_launch(data_dir: &Path, deployment: &crate::model::DeploymentId) -> Result<(), String> {
-    super::provider::write_launch_record(data_dir, LAUNCH_FILE, &serde_json::json!({ "deployment_id": deployment.0 }))
+    super::provider::write_launch_record(data_dir, LAUNCH_FILE, &serde_json::json!({ "deployment_id": deployment.as_str() }))
 }
 
 /// Whether the launch record in `data_dir` names `deployment`: `false` when none was written or it
@@ -132,7 +132,7 @@ fn recorded_launch(data_dir: &Path, deployment: &crate::model::DeploymentId) -> 
         Err(e) => return Err(format!("{}: {e}", file.display())),
     };
     let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| format!("{}: {e}", file.display()))?;
-    Ok(v.get("deployment_id").and_then(|d| d.as_str()) == Some(deployment.0.as_str()))
+    Ok(v.get("deployment_id").and_then(|d| d.as_str()) == Some(deployment.as_str()))
 }
 
 /// What a container's Docker status says of its launch ([`ContainerDeploymentProvider::find`]).
@@ -295,42 +295,6 @@ pub fn netns_udp_sockets(pid: u32) -> Result<Vec<SocketAddr>, String> {
         .collect();
     out.sort();
     Ok(out)
-}
-
-/// Does process `pid` itself hold a socket at `addr` (`udp`, or a `tcp` listener)? The socket's
-/// inode in the namespace table is matched against the process's own descriptors, so a port held
-/// by another process (a squatter, or an earlier birth) never passes for this runtime's.
-#[cfg(test)]
-pub(crate) fn process_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
-    let path = format!("/proc/{pid}/net/{table}");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
-    let inodes: Vec<String> = text
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let cols: Vec<&str> = line.split_whitespace().collect();
-            if let Some(want) = state {
-                if cols.get(3) != Some(&want) {
-                    return None;
-                }
-            }
-            let (ip, port) = cols.get(1)?.split_once(':')?;
-            let (ip, port) = (u32::from_str_radix(ip, 16).ok()?, u16::from_str_radix(port, 16).ok()?);
-            let ip = IpAddr::from(ip.to_ne_bytes());
-            (port == addr.port() && (ip == addr.ip() || ip.is_unspecified())).then(|| cols.get(9).map(|s| s.to_string())).flatten()
-        })
-        .collect();
-    if inodes.is_empty() {
-        return Ok(false);
-    }
-    let fds = format!("/proc/{pid}/fd");
-    let held = std::fs::read_dir(&fds)
-        .map_err(|e| format!("{fds}: {e}"))?
-        .flatten()
-        .filter_map(|e| std::fs::read_link(e.path()).ok())
-        .filter_map(|l| l.to_str().map(String::from))
-        .any(|l| inodes.iter().any(|i| l == format!("socket:[{i}]")));
-    Ok(held)
 }
 
 fn netns_table_holds(pid: u32, table: &str, addr: SocketAddr, state: Option<&str>) -> Result<bool, String> {
@@ -506,7 +470,7 @@ impl ContainerDeploymentProvider {
 
     fn container_of<'a>(&self, handle: &'a DeploymentHandle) -> Result<&'a str, DeployError> {
         handle.container.as_deref().ok_or_else(|| DeployError::Terminate {
-            deployment: handle.deployment_id.0.clone(),
+            deployment: handle.deployment_id.to_string(),
             reason: "the handle names no container".into(),
         })
     }
@@ -619,7 +583,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
 
     async fn terminate(&self, handle: &DeploymentHandle, mode: TerminationMode) -> Result<(), DeployError> {
         let name = self.container_of(handle)?;
-        let err = |reason: String| DeployError::Terminate { deployment: handle.deployment_id.0.clone(), reason };
+        let err = |reason: String| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason };
         let grace = match mode {
             TerminationMode::Graceful { grace } => grace.as_secs().max(1),
             TerminationMode::Immediate => 0,
@@ -668,7 +632,7 @@ impl DeploymentProvider for ContainerDeploymentProvider {
         if self.inspect(handle).await == DeploymentStatus::Running {
             docker(&["kill", "--signal", "TERM", name])
                 .await
-                .map_err(|reason| DeployError::Terminate { deployment: handle.deployment_id.0.clone(), reason })?;
+                .map_err(|reason| DeployError::Terminate { deployment: handle.deployment_id.to_string(), reason })?;
         }
         Ok(())
     }
@@ -725,21 +689,6 @@ impl DeploymentProvider for ContainerDeploymentProvider {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn a_socket_is_held_only_by_the_process_whose_descriptor_it_is() {
-        let me = std::process::id();
-        let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-        let addr = udp.local_addr().unwrap();
-        assert_eq!(super::process_holds(me, "udp", addr, None), Ok(true), "our own UDP socket");
-        let tcp = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let taddr = tcp.local_addr().unwrap();
-        assert_eq!(super::process_holds(me, "tcp", taddr, Some("0A")), Ok(true), "our own TCP listener");
-        // The same ports, asked of a process that is not us (pid 1 holds neither): false, never a
-        // host-wide "someone holds it".
-        assert_eq!(super::process_holds(1, "udp", addr, None).unwrap_or(false), false);
-        drop(udp);
-        assert_eq!(super::process_holds(me, "udp", addr, None), Ok(false), "released: nobody holds it");
-    }
 
     use super::*;
 
@@ -861,7 +810,7 @@ mod tests {
     /// relaunch a birth that ran.
     #[test]
     fn a_launch_record_says_a_launch_ran_only_when_it_names_it_and_an_unreadable_one_is_refused() {
-        let dir = std::env::temp_dir().join(format!("container-launch-record-{}", crate::model::DeploymentId::mint().0));
+        let dir = std::env::temp_dir().join(format!("container-launch-record-{}", crate::model::DeploymentId::mint().as_str()));
         std::fs::create_dir_all(&dir).unwrap();
         let (this, other) = (crate::model::DeploymentId::mint(), crate::model::DeploymentId::mint());
         assert_eq!(recorded_launch(&dir, &this), Ok(false), "no record: never launched");

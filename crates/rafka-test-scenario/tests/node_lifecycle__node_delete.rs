@@ -1,7 +1,7 @@
 //! i143 process E2E: removing one node is a lifecycle op with two events (i143.e6.s10).
 //!
 //! From public surfaces and span evidence only, on an MM estate: mesh1 (two admins, two rpc
-//! nodes) and mesh2 (one admin, two rpc nodes). `DELETE /api/nodes/mesh2.rpc.2` reaches the
+//! nodes) and mesh2 (one admin, two rpc nodes). `node.delete` of mesh2.rpc.2 reaches the
 //! fabric-primary, which accepts a Build without the node; mesh2's primary claims the attempt
 //! and executes the retirement.
 //!
@@ -18,11 +18,14 @@
 //!    endpoint key; a later spec can inherit them"): the victim's data dir and its endpoint key
 //!    stay, and no step of the delete releases storage.
 
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, ScopeStatus};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};
 use std::time::Duration;
 
 const VICTIM: &str = "mesh2.rpc.2";
+const WITNESS_NODE: &str = "mesh1.rpc.1";
 const WITNESS: &str = "path:mesh1.rpc.1";
 
 fn owner(test: &str) -> Owner {
@@ -47,49 +50,48 @@ fn resolution(r: &Value) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hears() {
     let mut estate = Estate::bootstrap(owner("deleting_a_node_is_a_pre_notice_then_a_proven_departure"), "fabric1", "mesh1").await;
-    let (status, a) = estate
-        .post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 2, "rpc_node": 2}, {"name": "mesh2", "node_admin": 1, "rpc_node": 2}]}))
-        .await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(180)).await;
-    let before = estate.settled_shape(&[("mesh1", 2, 2), ("mesh2", 1, 2)], Duration::from_secs(60)).await;
+    let shape = |a1: u32, r1: u32, a2: u32, r2: u32| FabricDesired {
+        fabric: "fabric1".into(),
+        meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, a1), (NodeKind::RpcNode, r1)]), MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, a2), (NodeKind::RpcNode, r2)])],
+    };
+    estate.reconcile(&shape(2, 2, 1, 2)).await;
+    let before = Estate::values(&estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 1, 2)]).await);
     let victim = before.iter().find(|n| n["name"] == VICTIM).cloned().unwrap();
     let (victim_id, victim_inc) = (s(&victim["node_id"]), s(&victim["incarnation_id"]));
     let exact_victim = format!("exact:{victim_id}");
     estate.artifact("nodes-before.json", &json!(before));
 
     // The peer mesh's rpc node holds mesh2's nodes through the forwarded aggregate.
-    let found = wait_for("mesh1.rpc.1 resolves mesh2.rpc.2", Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
-        (resolution(&r) == "found").then_some(r)
-    })
-    .await;
+    estate.witness_holds_birth(WITNESS_NODE, VICTIM).await;
+    let found = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
+    assert_eq!(resolution(&found), "found", "{found}");
     assert_eq!(found["reply"]["incarnation_id"], victim["incarnation_id"], "{found}");
-    assert!(before.iter().all(|n| n["routable"] == true), "every live node is routable before the delete: {before:#?}");
+    // States.md "Routing": application routing selects a birth only while it is ready-for-traffic and its
+    // mesh is ready-for-traffic.
+    let meshes = estate.fabric_view().await.meshes;
+    assert!(before.iter().all(|n| n["status"] == "ready-for-traffic") && meshes.iter().all(|m| m.status == ScopeStatus::ReadyForTraffic), "every live node is routable before the delete: {before:#?} {meshes:?}");
     // The victim's data dir, read while an admin still advertises it.
-    let victim_dir = std::path::PathBuf::from(estate.data_dir_of(VICTIM).await);
+    let victim_dir = std::path::PathBuf::from(estate.data_dir(VICTIM).await);
     assert!(victim_dir.join("node-key").is_file(), "the victim's data dir holds its endpoint key before the delete: {victim_dir:?}");
 
+    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // 1. The removal.
-    let (status, d) = estate.delete(&format!("/api/nodes/{VICTIM}")).await;
-    assert_eq!(status, 202, "{d}");
-    let build_id = s(&d["build_id"]);
+    let mut removal = estate.nodes_obj().await.delete(&VICTIM.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {VICTIM}: {e}"));
     // The pre-notice is read from each receiver's overlay span below, not from a poll: the window
-    // in which the node is live and not routable is the drain and stop legs, and a poll's cadence
+    // in which the node is live and not routable is the stop leg, and a poll's cadence
     // is not evidence of it.
-    estate.await_build(&build_id, Duration::from_secs(120)).await;
-    let after = estate.settled_shape(&[("mesh1", 2, 2), ("mesh2", 1, 1)], Duration::from_secs(60)).await;
+    let build_id = Estate::complete(&mut removal).await.build_id.to_string();
+    let after = Estate::values(&estate.settled_views(&[("mesh1", 2, 2), ("mesh2", 1, 1)]).await);
     assert!(after.iter().all(|n| n["name"] != VICTIM), "the current topology no longer lists the node: {after:#?}");
     estate.artifact("nodes-after.json", &json!(after));
     // 4. node-delete.md step 3: "Retain the data dir, node-identity.json and endpoint key."
     assert!(victim_dir.is_dir(), "the delete keeps the victim's data dir: {victim_dir:?}");
     assert!(victim_dir.join("node-key").is_file(), "the delete keeps the victim's endpoint key in its data dir: {victim_dir:?}");
 
-    let gone = wait_for("mesh1.rpc.1 holds the departure", Duration::from_secs(30), || async {
-        let r = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
-        (resolution(&r) == "gone").then_some(r)
-    })
-    .await;
+    estate.holds_departure(WITNESS_NODE, "mesh2", &victim_id).await;
+    let gone = estate.probe(&["resolve", "--target", WITNESS, "--query", &exact_victim]);
+    assert_eq!(resolution(&gone), "gone", "{gone}");
     let path = estate.probe(&["resolve", "--target", WITNESS, "--query", &format!("path:{VICTIM}")]);
     assert_eq!(resolution(&path), "unknown", "the path has no holder: {path}");
     let survivor = estate.probe(&["resolve", "--target", WITNESS, "--query", "path:mesh2.rpc.1"]);
@@ -99,28 +101,22 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     estate.artifact("resolutions.json", &json!({"gone": gone, "path": path, "survivor": survivor, "never": never}));
 
     // 2. A node born after the events learns the departure from the retained aggregate.
-    let (status, sp) = estate.post("/api/nodes/spawn", &json!({"mesh": "mesh1", "kind": "rpc_node"})).await;
-    assert_eq!(status, 202, "{sp}");
-    estate.await_build(sp["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let late = estate.settled_shape(&[("mesh1", 2, 3), ("mesh2", 1, 1)], Duration::from_secs(60)).await;
+    let mut spawn = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh1".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh1: {e}"));
+    Estate::complete(&mut spawn).await;
+    let late = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 1)]).await);
     let newcomer = late.iter().find(|n| n["mesh"] == "mesh1" && n["kind"] == "rpc_node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
-    let late_gone = wait_for("the newcomer holds the departure it never heard as an event", Duration::from_secs(45), || async {
-        let r = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer["name"])), "--query", &exact_victim]);
-        (resolution(&r) == "gone").then_some(r)
-    })
-    .await;
+    estate.holds_departure(&s(&newcomer["name"]), "mesh2", &victim_id).await;
+    let late_gone = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer["name"])), "--query", &exact_victim]);
+    assert_eq!(resolution(&late_gone), "gone", "the newcomer holds the departure it never heard as an event: {late_gone}");
     // And one born into the executor's own mesh, which learns it from its own primary's
     // overlays rather than a forwarded aggregate.
-    let (status, sp2) = estate.post("/api/nodes/spawn", &json!({"mesh": "mesh2", "kind": "rpc_node"})).await;
-    assert_eq!(status, 202, "{sp2}");
-    estate.await_build(sp2["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    let late2 = estate.settled_shape(&[("mesh1", 2, 3), ("mesh2", 1, 2)], Duration::from_secs(60)).await;
+    let mut spawn2 = estate.nodes_obj().await.create(&NodeSpec { mesh: "mesh2".into(), kind: NodeKind::RpcNode }).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.create of an rpc node in mesh2: {e}"));
+    Estate::complete(&mut spawn2).await;
+    let late2 = Estate::values(&estate.settled_views(&[("mesh1", 2, 3), ("mesh2", 1, 2)]).await);
     let newcomer2 = late2.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "rpc_node" && before.iter().all(|b| b["node_id"] != n["node_id"])).cloned().unwrap();
-    let own_mesh_gone = wait_for("the newcomer in the executor's own mesh holds the departure", Duration::from_secs(45), || async {
-        let r = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer2["name"])), "--query", &exact_victim]);
-        (resolution(&r) == "gone").then_some(r)
-    })
-    .await;
+    estate.holds_departure(&s(&newcomer2["name"]), "mesh2", &victim_id).await;
+    let own_mesh_gone = estate.probe(&["resolve", "--target", &format!("path:{}", s(&newcomer2["name"])), "--query", &exact_victim]);
+    assert_eq!(resolution(&own_mesh_gone), "gone", "the newcomer in the executor's own mesh holds the departure: {own_mesh_gone}");
     estate.artifact("late-joiner.json", &json!({"peer_mesh": late_gone, "own_mesh": own_mesh_gone}));
 
     estate.stop().await;
@@ -162,79 +158,71 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
         .expect("the runtime was terminated and inspected");
     assert!(start(deleted[0]) > terminal, "the departure follows the terminal proof");
     assert!(start(deleting[0]) < start(deleted[0]));
-    // The drain and stop legs (node-drain.md, node-stop.md): the executor's drain-node reached the
-    // exact birth (the victim's own `via-drain-node`), after the pre-notice; the victim called
-    // node-drained back and the executor accepted it; then stop-node, the victim's `via-stop-node`,
-    // its node-left call accepted by the executor, all before the terminal proof.
-    let drained_at = named(&spans, "rdm.node_admin.status.update.via-drain-node")
+    // The stop leg (node-stop.md steps 2-3): after the pre-notice the executor's stop-node reached the
+    // exact birth (the victim's own `via-stop-node`); inside it the victim ran its whole
+    // node.connections.delete { All }, then its own transport cut; its reply `stopped` is the
+    // stop's completion (no node-left call is made), all before the terminal proof.
+    let stop_span = named(&spans, "rdm.node_admin.status.update.via-stop-node")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == VICTIM)
-        .map(start)
-        .min()
-        .expect("the victim served drain-node");
-    assert!(drained_at > start(deleting[0]) && drained_at < terminal, "the drain lands between the pre-notice and the terminal proof");
-    let stopped_at = named(&spans, "rdm.node_admin.status.update.via-stop-node")
-        .into_iter()
-        .filter(|sp| sp["attributes"]["node"] == VICTIM)
-        .map(start)
-        .min()
+        .min_by_key(|sp| start(sp))
+        .cloned()
         .expect("the victim served stop-node");
-    let node_drained_at = named(&spans, "rdm.node_admin.status.update.via-completion-accepted")
+    let stopped_at = start(&stop_span);
+    assert_eq!(s(&stop_span["attributes"]["receipt"]), "established", "the victim's All let its in-flight work reach zero: {stop_span}");
+    let all = named(&spans, "rdm.node_admin.node.connections.delete.via-stop")
         .into_iter()
-        .filter(|sp| sp["attributes"]["op"] == "node-drained" && sp["attributes"]["subject"] == victim_id.as_str() && sp["attributes"]["outcome"] == "applied")
+        .filter(|sp| sp["attributes"]["node"] == VICTIM)
+        .cloned()
+        .collect::<Vec<Value>>();
+    assert_eq!(all.len(), 1, "the victim's stop ran its node.connections.delete {{ All }} once: {all:#?}");
+    assert_eq!(all[0]["parent_span_id"], stop_span["span_id"], "the All is the stop's own step, inside its via-stop-node: {}", all[0]);
+    let all_at = start(&all[0]);
+    let all_end = all[0]["end_unix_nano"].as_u64().unwrap_or(u64::MAX);
+    assert!(all_at > start(deleting[0]) && all_at < terminal, "the All lands between the pre-notice and the terminal proof");
+    let cut_at = named(&spans, "rdm.node_admin.node.update.via-stop-transport-cut")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == VICTIM)
         .map(start)
         .min()
-        .expect("the executor accepted no node-drained from the victim");
-    // `left` is the reply of the stop-node call itself: the command-sent span records `left` when the
+        .expect("the victim's stop cut its own transport");
+    // `left` is the reply of the stop-node call itself: the command-sent span records `stopped` when the
     // reply arrived, and no node-left call is made.
     let left_at = named(&spans, "rdm.node_admin.node.update.via-command-sent")
         .into_iter()
         .filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["command"] == "stop-node" && sp["attributes"]["admission"] == "stopped")
         .map(start)
         .min()
-        .expect("the victim answered stop-node left");
+        .expect("the victim answered stop-node stopped");
     assert!(named(&spans, "rdm.node_admin.status.update.via-completion-accepted").into_iter().all(|sp| sp["attributes"]["op"] != "node-left"), "no node-left call is made: left rides the stop reply");
-    assert!(drained_at < node_drained_at && node_drained_at < stopped_at, "stop-node follows the accepted node-drained: drain {drained_at} drained {node_drained_at} stop {stopped_at}");
-    assert!(stopped_at < left_at && left_at < terminal, "left is answered before the terminal proof: stop {stopped_at} left {left_at} terminal {terminal}");
+    assert!(stopped_at < all_at && all_end <= cut_at, "the transport cut follows the whole All: stop {stopped_at} All {all_at}..{all_end} cut {cut_at}");
+    assert!(left_at < terminal, "left is answered before the terminal proof: left {left_at} terminal {terminal}");
     // The mesh primary publishes the departure from that reply, before the runtime exits.
     let published = named(&spans, "rdm.node_admin.node.update.via-node-stopped").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).map(start).min().expect("the executor published NodeStopped from the left reply");
     assert!(left_at <= published && published < terminal, "NodeStopped follows left and precedes the terminal proof");
     let victim_steps: Vec<String> = named(&spans, "rdm.node_admin.deployment.update.via-step").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["build_id"] == build_id).map(|sp| s(&sp["attributes"]["step"])).collect();
     assert!(!victim_steps.iter().any(|st| st == "ReleaseStorage"), "no step of the delete releases storage: {victim_steps:?}");
-    for step in ["DrainNode", "AwaitNodeDrained", "StopNode", "AwaitNodeLeft"] {
+    // The All is the node's own, inside its stop: the delete composes no separate DeleteConnections step.
+    assert!(!victim_steps.iter().any(|st| st == "DeleteConnections"), "the delete composes no DeleteConnections step beside the stop: {victim_steps:?}");
+    for step in ["StopNode", "AwaitNodeLeft"] {
         let done = named(&spans, "rdm.node_admin.deployment.update.via-step")
             .into_iter()
             .find(|sp| sp["attributes"]["step"] == step && sp["attributes"]["node"] == VICTIM && sp["attributes"]["outcome"] == "complete")
             .unwrap_or_else(|| panic!("{step} completed on the executor"));
         assert!(start(done) < terminal, "{step} precedes termination");
     }
-    // The command hooks: node-draining and node-leaving, which the owning mesh-admin authors, are heard
+    // The command hook: node-leaving, which the owning mesh-admin authors at the StopNode step, is heard
     // by the other nodes of the fabric; the node authors no node-left frame (it gossips nothing for its
-    // stop).
+    // stop), and nothing publishes node-draining or node-drained (reserved frame positions).
     assert_eq!(named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-left" && sp["attributes"]["subject"] == VICTIM).count(), 0, "no node-left frame of the victim is heard by anyone");
-    for kind in ["node-draining", "node-leaving"] {
-        let heard = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] != VICTIM).count();
-        assert!(heard >= 1, "{kind} for the victim was heard by another node: {heard}");
+    let heard = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == "node-leaving" && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] != VICTIM).count();
+    assert!(heard >= 1, "node-leaving for the victim was heard by another node: {heard}");
+    for kind in ["node-draining", "node-drained"] {
+        let reserved = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame").into_iter().filter(|sp| sp["attributes"]["kind"] == kind && sp["attributes"]["subject"] == VICTIM).count();
+        assert_eq!(reserved, 0, "no {kind} frame of the victim is published or heard");
     }
-    // The completion hook is the victim's own (gossip.md "Node-draining and node-leaving events": "The
-    // node-drained upward call runs NodeDrained in the sending node after eligible in-flight work
-    // reaches zero. The node publishes the event on its own mesh channel."). What the doc makes certain
-    // is the publication and the call, not a peer's receipt: "the directed calls are the certainty"
-    // (gossip.md §10), and NodeDrained rides no aggregate (§7: only NodeDeleting and NodeDeleted are
-    // retained, in `in_flight` and `departed`; "No event is retried by the application and no second
-    // delivery mechanism exists"). The victim's stop cuts its gossip neighbours right after the drain
-    // (node-stop.md step 3), so a peer holds the frame only if iroh-gossip pushed it before the cut.
-    // The victim takes its own frame on its mesh channel, hands it to gossip, and calls node-drained at
-    // the executor, which accepted it (asserted above).
-    let own_hook: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-lifecycle-frame")
-        .into_iter()
-        .filter(|sp| sp["attributes"]["kind"] == "node-drained" && sp["attributes"]["subject"] == VICTIM && sp["attributes"]["node"] == VICTIM)
-        .collect();
-    assert_eq!(own_hook.len(), 1, "the victim published its node-drained once: {own_hook:#?}");
-    assert_eq!((s(&own_hook[0]["attributes"]["via"]), s(&own_hook[0]["attributes"]["forwarded_by"])), ("mesh-channel".to_string(), String::new()), "on its own mesh channel, as its author: {}", own_hook[0]);
-    let call: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && sp["attributes"]["completion"] == "node-drained").collect();
-    assert_eq!(call.len(), 1, "the victim made one node-drained completion call: {call:#?}");
-    assert_eq!((s(&call[0]["attributes"]["hook"]), s(&call[0]["attributes"]["answer"])), ("published".to_string(), "applied".to_string()), "the hook went to gossip before the call, which the executor applied: {}", call[0]);
+    let stop_calls: Vec<&Value> = named(&spans, "rdm.node_admin.status.update.via-completion-call").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM && ["node-left", "node-drained"].iter().any(|c| sp["attributes"]["completion"] == *c)).collect();
+    assert!(stop_calls.is_empty(), "the victim makes no completion call for its stop, its reply is the completion: {stop_calls:#?}");
     let heard_deleting = named(&spans, "rdm.mesh.membership.update.via-node-deleting").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     let heard_deleted = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|sp| sp["attributes"]["node"] == VICTIM).count();
     // The victim's own mesh hears the pre-notice on its channel. A peer mesh gets it only inside a backbone
@@ -258,4 +246,80 @@ async fn deleting_a_node_is_a_pre_notice_then_a_proven_departure_every_mesh_hear
     let mut asked = vec![s(&newcomer["name"]), s(&newcomer2["name"])];
     asked.sort();
     assert_eq!(births, asked, "the only births after the delete are the two asked for");
+}
+
+fn unix_nanos() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("after the epoch").as_nanos() as u64
+}
+
+/// CONTRACT (node-delete.md step 4: "The surviving executor emits node.deleted on the caller stream
+/// from the Exited evidence and records the complete delete receipt. The exited node cannot publish
+/// its own terminal proof or serve that stream"; "NodeDeleting / NodeDeleted are peer
+/// dissemination"): mesh1 (one admin, one rpc node) and mesh2 (two admins, two rpc nodes), every
+/// node-admin the testkit's faulted node-admin. `node.delete` of mesh2.rpc.2 is executed by mesh2's
+/// primary P. The fault door holds P at the `deleted` event cut: the victim's runtime is proven
+/// terminal and the NodeDeleted receipt (its row Deleted inside) is durable, and NodeDeleted is not
+/// yet published. Once mesh2's other admin NA2 holds that receipt in its own Build log, P is killed
+/// at the hold. The surviving executor publishes NodeDeleted for the victim's exact birth, the peer
+/// mesh's rpc node retains the departure, and the removal's caller stream ends Complete. Must NOT
+/// happen: the deleted birth held in a view for good because the one executor that would have
+/// published its departure exited between the receipt and the publish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publish_is_published_by_the_surviving_executor() {
+    const SETTLE: Duration = Duration::from_secs(120);
+    let test = "a_delete_whose_executor_exits_between_its_deleted_receipt_and_the_publish";
+    let sha = candidate_sha();
+    let estate = Estate::bootstrap_external(owner(test), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
+    let shape = [("mesh1", 1, 1), ("mesh2", 2, 2)];
+    estate.reconcile_shape("fabric1", &shape).await;
+    estate.settles_to(&shape, Duration::from_secs(90)).await;
+    // The initial fabric refuses the removal of a node until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(SETTLE).await;
+    let nodes = estate.node_values().await;
+    let fp = s(&nodes.iter().find(|n| n["is_fabric_primary"] == true).expect("a fabric-primary")["name"]);
+    assert!(!fp.starts_with("mesh2."), "the fabric-primary is not in mesh2: {fp}");
+    let p = nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["is_primary"] == true).cloned().expect("mesh2's primary");
+    let p_name = s(&p["name"]);
+    let na2 = s(&nodes.iter().find(|n| n["mesh"] == "mesh2" && n["kind"] == "node_admin" && n["name"] != p["name"]).expect("mesh2's other node-admin")["name"]);
+    let victim = nodes.iter().find(|n| n["name"] == VICTIM).cloned().expect("the victim");
+    let (victim_id, victim_inc) = (s(&victim["node_id"]), s(&victim["incarnation_id"]));
+    estate.witness_holds_birth(WITNESS_NODE, VICTIM).await;
+
+    let door = Door::at(&estate, &p_name).await;
+    door.arm("deleted-unpublished", json!({"kind": "event", "event": "deleted", "node": VICTIM})).await;
+    let mut removal = estate.nodes_obj().await.delete(&VICTIM.parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of {VICTIM}: {e}"));
+    let held = door.wait_held("deleted-unpublished").await;
+    let (build, attempt) = (s(&held["hit"]["build_id"]), held["hit"]["attempt"].as_u64().expect("the held event names its attempt"));
+    assert_eq!((s(&held["hit"]["operation"]), s(&held["hit"]["incarnation_id"])), (format!("retire-node:{VICTIM}"), victim_inc.clone()), "P holds the victim's NodeDeleted publish: {held}");
+    // NA2 heard the NodeDeleted receipt on the Build topic: in its own log the receipt is durable.
+    let deleted_receipt = |b: &Value| {
+        let mut steps = b["steps"].as_array().cloned().unwrap_or_default();
+        for lane in b["lanes"].as_object().map(|l| l.values().cloned().collect::<Vec<_>>()).unwrap_or_default() {
+            steps.extend(lane["steps"].as_array().cloned().unwrap_or_default());
+        }
+        steps.iter().any(|r| r["operation"] == format!("retire-node:{VICTIM}").as_str() && r["step"] == "NodeDeleted" && r["attempt"] == json!(attempt) && r["outcome"] == "complete")
+    };
+    crate::build_log::build_fact(&estate.carrier_at(&Estate::path(&na2)).await, &build, &format!("the NodeDeleted receipt of {VICTIM} at attempt {attempt}"), SETTLE, |pr| deleted_receipt(&serde_json::to_value(pr).expect("a Build view serializes")))
+        .await
+        .unwrap_or_else(|end| panic!("{end}"));
+    let killed_at = unix_nanos();
+    estate.kill_node(&p_name).await;
+
+    // The surviving executor publishes the departure of the exact birth.
+    let published = wait_for(&format!("a surviving executor publishes NodeDeleted for {VICTIM} ({victim_id}) after {p_name} exited"), SETTLE, || async {
+        named(&estate.spans(), "rdm.node_admin.node.delete.via-node-deleted")
+            .into_iter()
+            .find(|sp| sp["attributes"]["node_id"] == victim_id.as_str() && sp["start_unix_nano"].as_u64().unwrap_or(0) > killed_at)
+            .cloned()
+    })
+    .await;
+    assert_eq!((s(&published["attributes"]["incarnation_id"]), s(&published["attributes"]["build_id"])), (victim_inc.clone(), build.clone()), "the departure names the exact birth and the removal's Build: {published}");
+    estate.holds_departure(WITNESS_NODE, "mesh2", &victim_id).await;
+    let end = Estate::complete(&mut removal).await;
+    eprintln!(
+        "s78 B: {p_name} held at the deleted cut of {VICTIM} (attempt {attempt} of {build}) and killed; {na2} survives; NodeDeleted published trace {} span {} attempt {}; {WITNESS_NODE} holds the departure; removal complete {:?}",
+        s(&published["trace_id"]), s(&published["span_id"]), s(&published["attributes"]["attempt"]), end.build_id,
+    );
+    estate.record_trace_url(published["trace_id"].as_str().unwrap_or(""));
+    estate.shutdown().await;
 }

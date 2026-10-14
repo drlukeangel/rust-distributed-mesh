@@ -201,8 +201,11 @@ impl BuildStream {
 
 /// The refusal `reply` is, as the call ends.
 fn refusal(reply: BuildReply) -> CallEnd {
-    if let BuildReply::BuildInProgress { current_build_id } = &reply {
-        return CallEnd::BuildInProgress { current: BuildId(current_build_id.clone()) };
+    if let BuildReply::BuildInProgress { current_build_id, .. } = &reply {
+        return match BuildId::parse(current_build_id) {
+            Ok(current) => CallEnd::BuildInProgress { current },
+            Err(e) => CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("the fabric-primary answered BuildInProgress naming a Build id that is not a Crockford id: {e}") },
+        };
     }
     let detail = match &reply {
         BuildReply::NotFabricPrimary { fabric_primary } => format!("the receiver is not the fabric-primary; it sees {}", fabric_primary.as_deref().unwrap_or("none")),
@@ -210,7 +213,16 @@ fn refusal(reply: BuildReply) -> CallEnd {
         BuildReply::StaleClaim { held_attempt, held_executor, carried_attempt } => format!("the recipient holds attempt {held_attempt} for {}, the call carried {carried_attempt}", held_executor.as_deref().unwrap_or("no executor")),
         BuildReply::UnknownBuild { build_id } => format!("the fabric-primary holds no fact of Build {build_id}"),
         BuildReply::Rejected { reason, detail } => format!("{reason}: {detail}"),
-        BuildReply::BuildInProgress { current_build_id } => format!("Build {current_build_id} is still reconciling; one Build at a time"),
+        BuildReply::BuildInProgress { current_build_id, mesh, held_by } => match mesh {
+            Some(mesh) => format!("an attempt of Build {current_build_id} holds mesh {mesh} (claimed by {}); one attempt in flight per mesh", held_by.as_deref().unwrap_or("no recorded claimant")),
+            None => format!("Build {current_build_id} is still reconciling; one Build at a time"),
+        },
+        BuildReply::NotClaimant { mesh, fabric_primary, mesh_primary } => format!(
+            "the receiver may not claim on mesh {}: a topology attempt is the fabric-primary's ({}), a drift attempt the mesh-primary's ({})",
+            mesh.as_deref().unwrap_or("unknown"),
+            fabric_primary.as_deref().unwrap_or("none seen"),
+            mesh_primary.as_deref().unwrap_or("none seen")
+        ),
         BuildReply::AttemptTaken { detail } => detail.clone(),
         BuildReply::Fenced { node, by } => format!("{node} no longer holds the fabric-primary seat: the committed seat row moved it ({by})"),
         BuildReply::CannotDelete { build_id, reason } => format!("Build {build_id} stays in history: {reason}"),
@@ -267,7 +279,9 @@ impl BuildCarrier {
             };
             match (first, stream) {
                 (BuildReply::Started { build_id, attempt, disposition }, Some(stream)) => {
-                    return Ok(BuildStream { stream, _carrier: self.clone(), build_id: BuildId(build_id), attempt, disposition, seen: HashSet::new(), ended: false });
+                    let build_id = BuildId::parse(&build_id)
+                        .map_err(|e| CallEnd::Rejected { reason: "malformed-build-id".into(), detail: format!("the fabric-primary started a Build under an id that is not a Crockford id: {e}") })?;
+                    return Ok(BuildStream { stream, _carrier: self.clone(), build_id, attempt, disposition, seen: HashSet::new(), ended: false });
                 }
                 (BuildReply::NotFabricPrimary { fabric_primary: Some(named) }, _) => match named.parse::<PathName>() {
                     Ok(next) if !asked.contains(&next) => target = next,
@@ -287,12 +301,12 @@ impl BuildCarrier {
     /// `build.create` for a Build the caller already holds the id of: never a second Build. The
     /// stream carries the frames of `from_attempt` and later attempts.
     pub async fn resubmit(&self, build_id: &BuildId, from_attempt: u32) -> Result<BuildStream, CallEnd> {
-        self.open(BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: build_id.0.clone(), from_attempt } }).await
+        self.open(BuildRequest::Create { submit: BuildSubmit::Resubmit { build_id: build_id.to_string(), from_attempt } }).await
     }
 
     /// `build.get`: the Build and its receipts, for reattachment after a cut.
     pub async fn get(&self, build_id: &BuildId) -> Result<BuildReceipts, CallEnd> {
-        let mut stream = self.open(BuildRequest::Get { build_id: build_id.0.clone() }).await?;
+        let mut stream = self.open(BuildRequest::Get { build_id: build_id.to_string() }).await?;
         let mut steps = Vec::new();
         let mut header = None;
         while let Some(frame) = stream.next().await {
@@ -313,7 +327,7 @@ impl BuildCarrier {
 
     /// `build.delete`: a finished Build leaves history.
     pub async fn delete(&self, build_id: &BuildId) -> Result<(), CallEnd> {
-        let mut stream = self.open(BuildRequest::Delete { build_id: build_id.0.clone() }).await?;
+        let mut stream = self.open(BuildRequest::Delete { build_id: build_id.to_string() }).await?;
         match stream.next().await {
             Some(Ok(BuildFrame::Deleted)) => Ok(()),
             Some(Ok(other)) => Err(CallEnd::Rejected { reason: "unexpected-frame".into(), detail: format!("a build.delete stream carried {other:?}") }),
@@ -364,16 +378,16 @@ mod tests {
                 let g = g.clone();
                 async move {
                     let gone = |e| HandlerFault::invariant_broken(format!("{e:?}"));
-                    let mut sink = sink.started(BuildReply::Started { build_id: "bld-1".into(), attempt: 3, disposition: Disposition::Created }).await.map_err(gone)?;
+                    let mut sink = sink.started(BuildReply::Started { build_id: "cq2tyb03krac".into(), attempt: 3, disposition: Disposition::Created }).await.map_err(gone)?;
                     // The frames after `Started` are written once the caller holds only the stream.
                     g.notified().await;
                     for step in ["AllocateIdentity", "WaitForMeshJoin", "Complete"] {
-                        sink.data(BuildReply::Step { build_id: "bld-1".into(), attempt: 3, operation: "create-node:mesh1.admin.1.new".into(), step: step.into() }).await.map_err(gone)?;
+                        sink.data(BuildReply::Step { build_id: "cq2tyb03krac".into(), attempt: 3, operation: "create-node:mesh1.admin.1.new".into(), step: step.into() }).await.map_err(gone)?;
                     }
-                    Ok(BuildReply::SeatMoved { build_id: "bld-1".into(), fabric_primary: Some("mesh1.admin.2".into()) })
+                    Ok(BuildReply::SeatMoved { build_id: "cq2tyb03krac".into(), fabric_primary: Some("mesh1.admin.2".into()) })
                 }
             })
-            .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+            .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
             .unwrap();
         let key = iroh::SecretKey::generate();
         let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
@@ -385,7 +399,7 @@ mod tests {
         let cep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
         let carrier = BuildCarrier::new(Arc::new(NodeRpcClient::new(cep, resolver).with_caller_system("rdm")), fp);
         let mut stream = carrier.create(BuildChange::Stop { node: "mesh1.admin.1".parse().unwrap() }).await.expect("the call was accepted");
-        assert_eq!((stream.build_id().0.as_str(), stream.attempt()), ("bld-1", 3));
+        assert_eq!((stream.build_id().as_str(), stream.attempt()), ("cq2tyb03krac", 3));
         drop(carrier);
         go.notify_one();
         // A loopback frame arrives in milliseconds; the bound only names what arrived if it never does.

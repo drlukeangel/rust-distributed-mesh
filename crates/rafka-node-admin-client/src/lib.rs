@@ -18,12 +18,14 @@ mod peers;
 mod workflow;
 
 pub use build_stream::{BuildCarrier, BuildFrame, BuildReceipts, BuildStream, Change, MeshCounts, StartDisposition};
-pub use calls::{CallEnd, DrainContext, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
+pub use calls::{CallEnd, ExactBirth, HeldView, NodeRpc, StartContext, StopContext};
 pub use names::{BuildOp, FabricOp, MeshOp, NodeEvent, NodeOp, NodeStep};
 pub use objects::{
-    await_fact, BuildPreset, BuildSpec, Builds, Fabrics, MeshSelector, Meshes, MetaField, MetaFieldIsRdmOwned, NameHeld, NodeMeta, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
+    await_fact, BuildPreset, BuildSpec, Builds, Fabrics, MeshSelector, Meshes, NameHeld, NodeSelector, NodeSpec, Nodes, TagFilter, Traffic,
 };
-pub use peers::Peers;
+pub use peers::{birth_of_line, birth_of_view, Peers, BIRTH_LINE};
+/// A node's birth, as a node-admin prints it at start ([`BIRTH_LINE`]).
+pub use rafka_mesh_entity::MeshNode;
 pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, WorkflowKind, WorkflowStream};
 
 
@@ -38,16 +40,9 @@ pub use rafka_mesh_entity::PathName;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// A Build's id as node-admin returns it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct BuildId(pub String);
-
-impl fmt::Display for BuildId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+/// A Build's id as node-admin returns it: the one Crockford id type (R-BI5), refused by name when
+/// it is anything else.
+pub use rafka_mesh_entity::BuildId;
 
 /// One mesh's desired counts (`POST /api/meshes`, and inside a fabric Build).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,152 +194,15 @@ pub struct Accepted {
     pub attempt: u32,
 }
 
-#[derive(Deserialize)]
-struct NodeList {
-    nodes: Vec<NodeView>,
-}
+#[cfg(test)]
+mod tests {
+    use super::BuildId;
 
-#[derive(Deserialize, Default)]
-struct RefusalBody {
-    #[serde(default)]
-    error: String,
-    #[serde(default)]
-    detail: String,
-}
-
-/// A client of one node-admin's control API.
-#[derive(Debug, Clone)]
-pub struct NodeAdminClient {
-    base: String,
-    http: reqwest::Client,
-}
-
-impl NodeAdminClient {
-    /// `base` is what node-admin advertises (`RDM_NODE_ADMIN_API_BASE`).
-    pub fn new(base: impl Into<String>) -> Self {
-        Self { base: base.into().trim_end_matches('/').to_string(), http: reqwest::Client::new() }
-    }
-
-    /// The control API base this client calls.
-    pub fn base(&self) -> &str {
-        &self.base
-    }
-
-    async fn send<T: serde::de::DeserializeOwned>(&self, req: reqwest::RequestBuilder, url: &str) -> Result<T, ClientError> {
-        let transport = |reason: String| ClientError::Transport { url: url.to_string(), reason, request_written: true };
-        let res = req.send().await.map_err(|e| ClientError::Transport { url: url.to_string(), reason: e.to_string(), request_written: !(e.is_connect() || e.is_builder()) })?;
-        let status = res.status();
-        let bytes = res.bytes().await.map_err(|e| transport(e.to_string()))?;
-        if !status.is_success() {
-            let body: RefusalBody = serde_json::from_slice(&bytes).unwrap_or_default();
-            return Err(ClientError::Refused { status: status.as_u16(), error: body.error, detail: body.detail });
-        }
-        let bytes = if bytes.is_empty() { &b"null"[..] } else { &bytes[..] };
-        serde_json::from_slice(bytes).map_err(|e| transport(format!("undecodable answer: {e}")))
-    }
-
-    async fn get<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        let url = format!("{}{path}", self.base);
-        self.send(self.http.get(&url), &url).await
-    }
-
-    async fn post<T: serde::de::DeserializeOwned>(&self, path: &str, body: Option<serde_json::Value>) -> Result<T, ClientError> {
-        let url = format!("{}{path}", self.base);
-        let req = self.http.post(&url);
-        let req = match body {
-            Some(b) => req.json(&b),
-            None => req,
-        };
-        self.send(req, &url).await
-    }
-
-    async fn delete<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<T, ClientError> {
-        let url = format!("{}{path}", self.base);
-        self.send(self.http.delete(&url), &url).await
-    }
-
-    /// `POST /api/nodes/spawn`: add one node of `kind` to `mesh`.
-    pub async fn spawn(&self, mesh: &str, kind: NodeKind) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.post("/api/nodes/spawn", Some(serde_json::json!({ "mesh": mesh, "kind": kind }))).await?;
-        Ok(a)
-    }
-
-    /// `DELETE /api/nodes/{name}`.
-    pub async fn remove(&self, node: &PathName) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.delete(&format!("/api/nodes/{node}")).await?;
-        Ok(a)
-    }
-
-    /// `POST /api/nodes/{name}/restart`.
-    pub async fn restart(&self, node: &PathName) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.post(&format!("/api/nodes/{node}/restart"), None).await?;
-        Ok(a)
-    }
-
-    /// `POST /api/nodes/{name}/drain`: open an attempt that drains the exact live birth.
-    pub async fn drain(&self, node: &PathName) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.post(&format!("/api/nodes/{node}/drain"), None).await?;
-        Ok(a)
-    }
-
-    /// `POST /api/nodes/{name}/stop`: open an attempt that stops the exact live birth.
-    pub async fn stop(&self, node: &PathName) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.post(&format!("/api/nodes/{node}/stop"), None).await?;
-        Ok(a)
-    }
-
-    /// `GET /api/connections`: the connection facts the answering admin holds.
-    pub async fn connections(&self) -> Result<ConnectionsView, ClientError> {
-        self.get("/api/connections").await
-    }
-
-    /// `POST /api/build`: reconcile the whole fabric to `desired`.
-    pub async fn build(&self, desired: &FabricDesired) -> Result<Accepted, ClientError> {
-        let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string(), request_written: false })?;
-        let a: Accepted = self.post("/api/build", Some(body)).await?;
-        Ok(a)
-    }
-
-    /// `GET /api/builds?id=`.
-    pub async fn build_view(&self, id: &BuildId) -> Result<BuildView, ClientError> {
-        self.get(&format!("/api/builds?id={id}")).await
-    }
-
-    /// `DELETE /api/builds?id=`: drop a finished Build from history.
-    pub async fn forget(&self, id: &BuildId) -> Result<(), ClientError> {
-        self.delete::<serde_json::Value>(&format!("/api/builds?id={id}")).await.map(|_| ())
-    }
-
-    /// `GET /api/nodes`.
-    pub async fn nodes(&self) -> Result<Vec<NodeView>, ClientError> {
-        Ok(self.get::<NodeList>("/api/nodes").await?.nodes)
-    }
-
-    /// `GET /api/meshes/{id|name}`.
-    pub async fn mesh(&self, id_or_name: &str) -> Result<MeshView, ClientError> {
-        self.get(&format!("/api/meshes/{id_or_name}")).await
-    }
-
-    /// `GET /api/fabric`.
-    pub async fn fabric(&self) -> Result<FabricView, ClientError> {
-        self.get("/api/fabric").await
-    }
-
-    /// `POST /api/meshes`.
-    pub async fn create_mesh(&self, desired: &MeshDesired) -> Result<Accepted, ClientError> {
-        let body = serde_json::to_value(desired).map_err(|e| ClientError::Transport { url: self.base.clone(), reason: e.to_string(), request_written: false })?;
-        let a: Accepted = self.post("/api/meshes", Some(body)).await?;
-        Ok(a)
-    }
-
-    /// `DELETE /api/meshes/{id|name}`.
-    pub async fn remove_mesh(&self, id_or_name: &str) -> Result<Accepted, ClientError> {
-        let a: Accepted = self.delete(&format!("/api/meshes/{id_or_name}")).await?;
-        Ok(a)
-    }
-
-    /// `POST /api/shutdown`: runtime administration, not a Build.
-    pub async fn shutdown(&self) -> Result<(), ClientError> {
-        self.post::<serde_json::Value>("/api/shutdown", None).await.map(|_| ())
+    /// R-BI5: a Build id the client reads is a Crockford id; a stored `bld-<24 hex>` value is refused by name.
+    #[test]
+    fn a_stored_bld_hex_build_id_is_refused_by_name() {
+        let old = "bld-0123456789abcdef01234567";
+        let e = serde_json::from_str::<BuildId>(&format!("\"{old}\"")).unwrap_err().to_string();
+        assert!(e.contains("build id") && e.contains(old), "{e}");
     }
 }

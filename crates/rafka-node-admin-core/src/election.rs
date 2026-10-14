@@ -1,4 +1,4 @@
-//! Elections (`docs/architecture/node-lifecycle-elections.md` in rafka-v2; ruling R-A2).
+//! Elections (`docs/architecture/fabric-node-lifecycle-elections.md`; ruling R-A2).
 //!
 //! An election is a projection of converged facts, not a voting protocol: no ballot, term, quorum,
 //! timer or election message exists. A seat stays with its holder until that holder is proven
@@ -10,7 +10,7 @@
 //! - A holder that lives keeps its seat. A lower NodeId never displaces it. Lives means the record's
 //!   exact birth is in the view, not replaced by a later birth of its NodeId, and not proven gone,
 //!   whatever its status: a `Draining`, `Leaving` or `Restarting` holder keeps the seat until its
-//!   explicit yield (a new holder record, SeatedTogether) is held (R-EL1). Silent (`PendingReconnect`),
+//!   explicit yield (a new holder record, PrimaryUpdated) is held (R-EL1). Silent (`PendingReconnect`),
 //!   an observer-inferred `Dead` and an unheard route are NOT proof: the holder keeps the seat.
 //! - A holder whose record names a birth this view has not heard keeps its seat vacant for it.
 //! - A holder that yields, or whose exact birth is proven gone, hands the seat to its own mesh:
@@ -24,8 +24,8 @@
 //! - A seat with no record (a fabric's first election) is filled by the lowest Ready NodeId.
 //!
 //! Ready time, ordinal, path, mesh name, MeshId, FabricId, incarnation order and transport identity
-//! are not election inputs. The other cohorts (rpc, gateway, ...) are elected by the lowest Ready
-//! NodeId alone.
+//! are not election inputs. Every other cohort (rpc, gateway, ...) is elected by the same rules over
+//! its own holder record (`Incumbency::cohorts`), which its mesh's primary writes (R-MT1 Q3).
 //!
 //! The hierarchy:
 //! - node-type (cohort) election: a cohort is the members of one kind in one mesh; node-admin owns
@@ -71,10 +71,6 @@ pub fn elect(candidates: &[Candidate<'_>]) -> Option<usize> {
     (0..candidates.len()).filter(|&i| candidates[i].ready).min_by_key(|&i| candidates[i].node_id)
 }
 
-fn candidate(n: &Node) -> Candidate<'_> {
-    Candidate { node_id: &n.node_id, ready: n.status == NodeStatus::ReadyForTraffic }
-}
-
 /// What an election takes beside the nodes: the seat holders this observer holds, and the births
 /// proven gone.
 #[derive(Debug, Clone, Default)]
@@ -83,6 +79,11 @@ pub struct Incumbency {
     pub fabric: Option<SeatHolder>,
     /// Each mesh's node-admin primary holder record, by mesh name.
     pub meshes: BTreeMap<String, SeatHolder>,
+    /// The holder record of every other (mesh, node type) cohort's primary seat, by (mesh, kind)
+    /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md Part B1: "Every (mesh,
+    /// node_type) cohort elects its primary by the one rule of elections §4.1 and §5: a living holder
+    /// keeps its seat"). Written by the mesh's primary, the cohort's one row writer (R-MT1 Q3).
+    pub cohorts: BTreeMap<(String, NodeKind), SeatHolder>,
     /// Exact births proven gone, by incarnation (an incarnation names one birth of one node): the
     /// provider found their runtime exited, a departure was heard, or a later birth announced it
     /// replaced them. Silence, an unreachable path and an observer-inferred `Dead` are never in it.
@@ -142,21 +143,19 @@ pub fn resolve_with(nodes: &mut [Node], inc: &Incumbency) {
     for (i, n) in nodes.iter().enumerate() {
         cohorts.entry((n.mesh.clone(), n.kind)).or_default().push(i);
     }
-    // Mesh primary of each mesh: the node-admin cohort's seat. Every other cohort: lowest Ready.
+    // Every cohort by the one rule: its recorded holder while it lives, vacant while the view has not
+    // heard the recorded birth, else the lowest Ready. The node-admin cohort's seat is the mesh primary.
     let mut winners = Vec::new();
     let mut mesh_primary: BTreeMap<String, usize> = BTreeMap::new();
     for ((mesh, kind), members) in &cohorts {
-        let winner = if *kind == NodeKind::NodeAdmin {
-            match inc.meshes.get(mesh) {
-                Some(h) => match holding(nodes, h, inc) {
-                    Holding::Living(i) if nodes[i].mesh == *mesh && nodes[i].kind == NodeKind::NodeAdmin => Some(i),
-                    Holding::Unseen => None,
-                    _ => lowest_ready(nodes, members, inc),
-                },
-                None => lowest_ready(nodes, members, inc),
-            }
-        } else {
-            lowest_ready(nodes, members, inc)
+        let record = if *kind == NodeKind::NodeAdmin { inc.meshes.get(mesh) } else { inc.cohorts.get(&(mesh.clone(), *kind)) };
+        let winner = match record {
+            Some(h) => match holding(nodes, h, inc) {
+                Holding::Living(i) if nodes[i].mesh == *mesh && nodes[i].kind == *kind => Some(i),
+                Holding::Unseen => None,
+                _ => lowest_ready(nodes, members, inc),
+            },
+            None => lowest_ready(nodes, members, inc),
         };
         if let Some(i) = winner {
             winners.push(i);
@@ -195,16 +194,118 @@ fn fabric_seat(nodes: &[Node], inc: &Incumbency, mesh_primary: &BTreeMap<String,
     lowest_primary(Some(h.mesh.as_str()))
 }
 
-/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it (the
-/// explicit committed handover of fabric-node-lifecycle-elections.md section 4.4): the departing
-/// mesh holds no candidate, and the fabric record is the one the hand-over vacates, so the lowest
-/// Ready mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh
-/// primary: the handover is blocked.
+/// The fabric-primary the leadership calculation seats once `mesh` is excluded from it (proposal Part
+/// C2 search step 2: "the lowest NodeId among the other ReadyForTraffic mesh-primaries"): the excluded
+/// mesh holds no candidate, and the fabric record is the one the update vacates, so the lowest Ready
+/// mesh primary of another mesh wins. `None` when no other mesh has an eligible Ready mesh primary.
 pub fn fabric_successor_excluding(nodes: &[Node], inc: &Incumbency, mesh: &str) -> Option<Node> {
     let mut hypothetical: Vec<Node> = nodes.iter().filter(|n| n.mesh != mesh).cloned().collect();
-    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), lost: inc.lost.clone() };
+    let vacated = Incumbency { fabric: None, meshes: inc.meshes.clone(), cohorts: inc.cohorts.clone(), lost: inc.lost.clone() };
     resolve_with(&mut hypothetical, &vacated);
     hypothetical.into_iter().find(|n| n.is_fabric_primary)
+}
+
+/// The successor a yielding holder computes for its cohort seat (R-MT1, node.primary.update: "the MP
+/// determines who is the next MP"; fabric-node-lifecycle-elections.md §4.1 and §5: "a holder that yields
+/// ... hands the seat to the lowest ReadyForTraffic NodeId of its own mesh"): the lowest Ready node of
+/// `holder`'s (mesh, kind) cohort other than `holder`, not proven gone. `None` when no other node of
+/// its type can take the seat.
+pub fn cohort_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Option<Node> {
+    let members: Vec<usize> = nodes.iter().enumerate().filter(|(_, n)| n.mesh == holder.mesh && n.kind == holder.kind && n.node_id != holder.node_id).map(|(i, _)| i).collect();
+    lowest_ready(nodes, &members, inc).map(|i| nodes[i].clone())
+}
+
+/// The node type of the node-admin cohort as the no-successor refusal names it (proposal Part A1:
+/// "`node-admin` is the one value RDM gives meaning to"); every node carries its own `node_type` from
+/// e12.s41, and the cohort is read from the parsed kind until then.
+pub const NODE_ADMIN_TYPE: &str = "node-admin";
+
+/// The `node_type` of the `kind` cohort as Q7's refusal names it: [`NODE_ADMIN_TYPE`] for the
+/// node-admin cohort, the kind's name with `-` for `_` for every other (`rpc-node`, `broker`, ...),
+/// the tag-label grammar of proposal Part A1 (Q5).
+pub fn node_type_of(kind: crate::model::NodeKind) -> &'static str {
+    match kind {
+        NodeKind::NodeAdmin => NODE_ADMIN_TYPE,
+        NodeKind::RpcNode => "rpc-node",
+        NodeKind::Broker => "broker",
+        NodeKind::Gateway => "gateway",
+        NodeKind::Compute => "compute",
+    }
+}
+
+/// The successor the mesh-primary's pre-check names for a commanded node.primary.update of `holder`'s
+/// cohort seat, a cohort that is not node-admin (proposal Part C1 step 2: "the cohort election over the
+/// holder's cohort with the holder excluded names a ReadyForTraffic successor"): the lowest Ready node of
+/// `holder`'s (mesh, kind) cohort other than `holder`. `Err` is Q7's exact text naming its type and mesh.
+pub fn commanded_cohort_successor(nodes: &[Node], inc: &Incumbency, holder: &Node) -> Result<Node, String> {
+    cohort_successor(nodes, inc, holder).ok_or_else(|| no_secondary(node_type_of(holder.kind), &holder.mesh))
+}
+
+/// Which seats a commanded node.primary.update moves from its holder (the approved proposal
+/// node-primary-update-fabric-mesh-and-node-type.md, Part C).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moving {
+    /// node.primary.update of the holder's mesh-primary seat.
+    MeshSeat,
+    /// The holder holds both seats and both move in one row to its same-mesh successor (Q1: "the one
+    /// row of C1 commits both seats to NA2 at their next epochs").
+    BothSeats,
+    /// node.fabric-primary.update with the holder's own mesh excluded (C2 search step 2, mesh.delete):
+    /// the mesh seat does not move.
+    FabricSeatOutside,
+}
+
+impl Moving {
+    /// The seats as a span names them.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::MeshSeat => "mesh-primary",
+            Self::BothSeats => "mesh-primary+fabric-primary",
+            Self::FabricSeatOutside => "fabric-primary",
+        }
+    }
+    /// The mesh-primary seat moves.
+    pub fn mesh_seat(self) -> bool {
+        matches!(self, Self::MeshSeat | Self::BothSeats)
+    }
+    /// The fabric-primary seat moves.
+    pub fn fabric_seat(self) -> bool {
+        matches!(self, Self::BothSeats | Self::FabricSeatOutside)
+    }
+}
+
+/// Q7's refusal of a cohort with no other node of its type (Luke 2026-10-12): `cannot transfer: no
+/// secondary of type <node_type> in mesh <mesh>`.
+pub fn no_secondary(node_type: &str, mesh: &str) -> String {
+    format!("cannot transfer: no secondary of type {node_type} in mesh {mesh}")
+}
+
+/// C2 search step 3's refusal of the fabric seat, naming both searches: `cannot transfer fabric seat:
+/// no other node-admin ReadyForTraffic in mesh <mesh>, no other mesh-primary ReadyForTraffic`.
+pub fn no_fabric_successor(mesh: &str) -> String {
+    format!("cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh {mesh}, no other mesh-primary ReadyForTraffic")
+}
+
+/// The successor the writer's pre-check names for a commanded transfer of `holder`'s seats (proposal
+/// Part C1 step 2: "the cohort election over the holder's cohort with the holder excluded names a
+/// ReadyForTraffic successor"; C2 "Successor search for the commanded transfer": "1. the holder's own
+/// mesh: the lowest ReadyForTraffic node-admin NodeId there ... 2. only when that mesh has none, or it
+/// is the departing mesh under mesh.delete: the lowest NodeId among the other ReadyForTraffic
+/// mesh-primaries; 3. neither found: refused by name"). `Err` is the refusal's exact text (Q7): the
+/// mesh seat with no secondary names its type and mesh; the fabric seat with neither search finding
+/// one names both. A holder of both seats whose mesh has no secondary while another mesh's primary is
+/// Ready cannot move its mesh seat: Q7's mesh text. The ordinary election is untouched by this search.
+pub fn commanded_successor(nodes: &[Node], inc: &Incumbency, holder: &Node, moving: Moving) -> Result<Node, String> {
+    let admin = Node { kind: NodeKind::NodeAdmin, ..holder.clone() };
+    match moving {
+        Moving::MeshSeat => cohort_successor(nodes, inc, &admin).ok_or_else(|| no_secondary(NODE_ADMIN_TYPE, &holder.mesh)),
+        Moving::BothSeats => match cohort_successor(nodes, inc, &admin) {
+            Some(n) => Ok(n),
+            None if fabric_successor_excluding(nodes, inc, &holder.mesh).is_none() => Err(no_fabric_successor(&holder.mesh)),
+            None => Err(no_secondary(NODE_ADMIN_TYPE, &holder.mesh)),
+        },
+        Moving::FabricSeatOutside => fabric_successor_excluding(nodes, inc, &holder.mesh).ok_or_else(|| no_fabric_successor(&holder.mesh)),
+    }
 }
 
 /// A seat's holder as a span names it.
@@ -520,21 +621,21 @@ mod tests {
     fn born(path: &str, node_id: &str, inc: &str, status: NodeStatus) -> Node {
         let mut n = Node::allocated(path.parse().unwrap());
         n.node_id = id(node_id);
-        n.incarnation_id = Some(IncarnationId(inc.into()));
+        n.incarnation_id = Some(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap());
         n.status = status;
         n
     }
 
     fn holder(mesh: &str, node_id: &str, inc: &str, epoch: u64) -> SeatHolder {
-        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId(inc.into()), epoch }
+        SeatHolder { mesh: mesh.into(), node_id: id(node_id), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap(), epoch }
     }
 
     fn incumbency(fabric: SeatHolder, meshes: &[SeatHolder]) -> Incumbency {
-        Incumbency { fabric: Some(fabric), meshes: meshes.iter().map(|h| (h.mesh.clone(), h.clone())).collect(), lost: HashSet::new() }
+        Incumbency { fabric: Some(fabric), meshes: meshes.iter().map(|h| (h.mesh.clone(), h.clone())).collect(), cohorts: BTreeMap::new(), lost: HashSet::new() }
     }
 
     fn lose(inc: &mut Incumbency, _node_id: &str, incarnation: &str) {
-        inc.lost.insert(IncarnationId(incarnation.into()));
+        inc.lost.insert(IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(incarnation)).unwrap());
     }
 
     fn fabric_name(nodes: &[Node]) -> Option<String> {
@@ -748,5 +849,65 @@ mod tests {
         let mut fresh = vec![born("mesh2.admin.1", "900000000000", "b1", Ready), born("mesh2.admin.2", "200000000000", "b2", Ready)];
         resolve_with(&mut fresh, &Incumbency::default());
         assert_eq!(mesh_primary(&fresh, "mesh2").as_deref(), Some("mesh2.admin.2"));
+    }
+
+    // ---- Every cohort keeps a seat record (proposal Part B1, R-MT1: "same for NA as it is for RPC node"). ----
+
+    fn rpc_primary(nodes: &[Node], mesh: &str) -> Option<String> {
+        nodes.iter().find(|n| n.is_primary && n.mesh == mesh && n.kind == NodeKind::RpcNode).map(|n| n.name.to_string())
+    }
+
+    fn with_rpc_seat(seat: SeatHolder) -> Incumbency {
+        let mut inc = incumbency(holder("mesh1", "900000000000", "a1", 1), &[holder("mesh1", "900000000000", "a1", 1)]);
+        inc.cohorts.insert((seat.mesh.clone(), NodeKind::RpcNode), seat);
+        inc
+    }
+
+    /// CONTRACT (Part B1, elections §5 "a living holder keeps its seat; a lower-NodeId candidate that
+    /// later becomes Ready never displaces it"): an rpc cohort whose seat record names a living birth
+    /// keeps that holder against a lower Ready NodeId of the cohort, as the node-admin cohort does.
+    /// Must NOT happen: the cohort recomputed to its lowest Ready NodeId each round, so a seat that
+    /// node.primary.update moved to mesh1.rpc.2 falls back to mesh1.rpc.1 on the next projection.
+    #[test]
+    fn a_living_rpc_cohort_holder_keeps_its_seat_over_a_lower_ready_node_id() {
+        let inc = with_rpc_seat(holder("mesh1", "500000000000", "r2", 2));
+        let mut nodes = vec![born("mesh1.admin.1", "900000000000", "a1", Ready), born("mesh1.rpc.1", "100000000000", "r1", Ready), born("mesh1.rpc.2", "500000000000", "r2", Ready)];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.2"), "the recorded living holder keeps the rpc seat");
+        // Its status never yields it (R-EL1): a Draining, Leaving or Restarting holder keeps it.
+        for status in [Draining, Leaving, Restarting, PendingReconnect] {
+            nodes[2].status = status;
+            resolve_with(&mut nodes, &inc);
+            assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.2"), "{status:?}");
+        }
+    }
+
+    /// CONTRACT (module docs, "A holder whose record names a birth this view has not heard keeps its
+    /// seat vacant for it"): an rpc cohort's record naming a birth this view has not heard leaves the
+    /// cohort with no primary. Must NOT happen: the lowest Ready rpc node advertised as primary while
+    /// the record names another living holder.
+    #[test]
+    fn an_rpc_cohort_seat_whose_recorded_holder_is_unheard_stays_vacant_for_it() {
+        let inc = with_rpc_seat(holder("mesh1", "500000000000", "r2", 2));
+        let mut nodes = vec![born("mesh1.admin.1", "900000000000", "a1", Ready), born("mesh1.rpc.1", "100000000000", "r1", Ready)];
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(rpc_primary(&nodes, "mesh1"), None);
+    }
+
+    /// CONTRACT (elections §5: "a holder that yields or whose exact birth is proven gone hands the seat
+    /// to the lowest ReadyForTraffic NodeId of its own mesh"; "restart preserves NodeId; a restarted
+    /// node ... never displaces the holder"): the recorded rpc holder proven gone, or replaced by a later
+    /// birth of its NodeId, hands the seat to the cohort's lowest Ready NodeId.
+    #[test]
+    fn an_rpc_cohort_holder_proven_gone_or_restarted_hands_the_seat_to_the_lowest_ready() {
+        let mut inc = with_rpc_seat(holder("mesh1", "100000000000", "r1", 2));
+        let mut nodes = vec![born("mesh1.admin.1", "900000000000", "a1", Ready), born("mesh1.rpc.1", "100000000000", "r1", Ready), born("mesh1.rpc.2", "500000000000", "r2", Ready), born("mesh1.rpc.3", "300000000000", "r3", Ready)];
+        lose(&mut inc, "100000000000", "r1");
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.3"), "proven gone: the lowest Ready of the rest");
+        let inc = with_rpc_seat(holder("mesh1", "500000000000", "r2", 2));
+        nodes[2] = born("mesh1.rpc.2", "500000000000", "r9", Ready);
+        resolve_with(&mut nodes, &inc);
+        assert_eq!(rpc_primary(&nodes, "mesh1").as_deref(), Some("mesh1.rpc.1"), "a later birth of the holder's NodeId holds no seat");
     }
 }

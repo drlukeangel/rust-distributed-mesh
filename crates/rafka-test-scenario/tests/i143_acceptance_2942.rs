@@ -88,13 +88,13 @@ async fn retire_mesh1(test: &str) -> Retired {
         };
         pids.push((name, pid));
     }
+    // The Build retires mesh1, a mesh.delete, which the initial fabric refuses until it has first reached
+    // ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Control moves to mesh2 before mesh1 goes.
-    estate.admin = before
-        .iter()
-        .find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic)
-        .and_then(|n| n.admin_api_base.clone())
-        .expect("a ready mesh2 admin");
-    let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.0;
+    let mesh2_admin = before.iter().find(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic).map(|n| n.name.clone()).expect("a ready mesh2 admin");
+    estate.enter(&mesh2_admin).await;
+    let b = estate.reconcile_shape("fabric1", &[mesh("mesh2")]).await.build_id.to_string();
     // mesh.deleted leaves mesh1's last admin alive; its end is its own node.delete.
     let left: Vec<NodeView> = estate
         .until_view("mesh1's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
@@ -104,9 +104,9 @@ async fn retire_mesh1(test: &str) -> Retired {
         .await;
     let last = left[0].name.to_string();
     let last_id = before.iter().find(|n| n.name.to_string() == last).map(|n| n.node_id.to_string()).unwrap();
-    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
+    estate.enter_fabric_primary().await;
     let mut delete = estate.nodes_obj().await.delete(&last.parse().unwrap()).await.unwrap_or_else(|e| panic!("the node.delete of mesh1's last admin {last} was refused: {e}"));
-    let c = Estate::complete(&mut delete).await.build_id.0;
+    let c = Estate::complete(&mut delete).await.build_id.to_string();
     estate.settled_views(&[mesh("mesh2")]).await;
     for (name, pid) in &pids {
         assert!(!alive(*pid), "{name}'s runtime is gone once the mesh.delete and the last admin's node.delete are complete");
@@ -162,7 +162,7 @@ async fn a_stopped_last_admin_announces_nothing_and_its_executor_proves_its_exit
     // The stopped node's own legs: its stop's cut, then nothing said by it on any channel, no
     // Draining and no Leaving announcement; its transport closes.
     let mine = |name: &str| -> Vec<&Value> { named(&spans, name).into_iter().filter(|sp| sp["attributes"]["node"] == last.as_str()).collect() };
-    let cut = mine("rdm.node_admin.node.connections.delete.via-stop-cut");
+    let cut = mine("rdm.node_admin.node.update.via-stop-transport-cut");
     assert_eq!(cut.len(), 1, "{last}'s stop cut its connections once: {cut:?}");
     let cut_at = start(cut[0]);
     let announced: Vec<&Value> = mine("rdm.mesh.node.update.via-leave-announcement");

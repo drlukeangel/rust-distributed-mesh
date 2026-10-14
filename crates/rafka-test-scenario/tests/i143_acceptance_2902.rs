@@ -5,7 +5,7 @@
 //! cell's name) at the test cadence (staleness 3 s, gossip 500 ms).
 //!
 //! The estate: two meshes of two node-admins and two rpc nodes each, settled through a Build. All
-//! UDP between the two meshes' processes is dropped (`iptables`, `crate::netfault::Partition`); no
+//! UDP between the two meshes' processes is dropped (an nftables table, `crate::netfault::Partition`); no
 //! process is cut from a member of its own mesh. The held-member repair of `gossip.md` §6 is read
 //! from the `rdm.mesh.connection.update.via-refeed` spans (`reason = stale-held-member`) and from
 //! the views of every admin.
@@ -156,6 +156,8 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
     let shape = [("mesh1", 2, 2), ("mesh2", 2, 2)];
     estate.reconcile_shape("fabric1", &shape).await;
     let nodes: Vec<Value> = estate.settled_views(&shape).await.iter().map(|n| serde_json::to_value(n).expect("a view serializes")).collect();
+    // The initial fabric refuses a node delete until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Every admin of both meshes holds all eight members ready before anything is cut.
     let everyone: Vec<String> = nodes.iter().map(|n| s(&n["name"])).collect();
     let admins: Vec<(String, String)> = nodes.iter().filter(|n| n["kind"] == "node_admin").map(|n| (s(&n["name"]), s(&n["mesh"]))).collect();
@@ -440,6 +442,6 @@ async fn partitioned_meshes_rejoin_with_neighbors_preserve_live_births() {
         "spans_read": spans.len(),
     });
     std::fs::write(dir.join("result.json"), serde_json::to_vec_pretty(&result).unwrap()).unwrap();
-    estate.admin = estate.fabric_view().await.admin_api_base.expect("the fabric-primary advertises its control base");
+    estate.enter_fabric_primary().await;
     estate.stop().await;
 }

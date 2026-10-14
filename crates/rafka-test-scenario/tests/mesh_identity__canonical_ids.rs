@@ -1,9 +1,11 @@
 //! i143.e4.s15 process E2E: canonical Crockford60 product ids (rafka-v2 #2842).
 //!
-//! From the control API and the evidence only, on an MM fabric:
+//! From the typed objects and the evidence only, on an MM fabric:
 //! - the Fabric, Mesh and Node views carry canonical 12-char Crockford ids
 //!   (no 32-char hex product id), every admin names the same Fabric id, and a
 //!   node's transport identity is never its product identity;
+//! - a node's incarnation and a Build's id are canonical Crockford ids too (R-BI5: one id type,
+//!   never hex), and the Digest a peer mesh's admin hears from a restarted birth names its incarnation and node as such;
 //! - every birth's ready span names its node, mesh and fabric ids with
 //!   `id_format = "crockford60"`, equal to the views';
 //! - a restart keeps NodeId and FabricId under a new incarnation, and a second restart of the
@@ -12,8 +14,9 @@
 //!   created again gets a new MeshId, a node removed and created again at the
 //!   same path a new NodeId; the Fabric keeps its id throughout.
 
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
-use serde_json::{json, Value};
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes, NodeStatus};
+use rafka_test_scenario::estate::{named, Estate, Owner};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -40,88 +43,101 @@ fn canonical(what: &str, v: &Value) -> String {
     id
 }
 
-fn shape(meshes: &[&str], rpc: u32) -> Value {
-    json!({"fabric": "fabric1", "meshes": meshes.iter().map(|m| json!({"name": m, "node_admin": 2, "rpc_node": rpc})).collect::<Vec<_>>()})
+fn shape(meshes: &[&str], rpc: u32) -> FabricDesired {
+    FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|m| MeshDesired::of(*m, [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, rpc)])).collect() }
 }
 
 fn names(meshes: &[&str], rpc: u32) -> BTreeSet<String> {
     meshes.iter().flat_map(|m| (1..=2).map(move |i| format!("{m}.admin.{i}")).chain((1..=rpc).map(move |i| format!("{m}.rpc.{i}")))).collect()
 }
 
-async fn build(estate: &Estate, body: &Value) {
-    let (status, a) = estate.post("/api/build", body).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+async fn build(estate: &Estate, body: &FabricDesired) {
+    let accepted = estate.reconcile(body).await;
+    canonical("build id", &Value::String(accepted.build_id.to_string()));
 }
 
-async fn get(base: &str, path: &str) -> Value {
-    reqwest::get(format!("{base}{path}")).await.unwrap().json().await.unwrap()
+fn json_of<T: serde::Serialize>(v: &T) -> Value {
+    serde_json::to_value(v).expect("a view serializes")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecycle() {
     let mut estate = Estate::bootstrap(owner("every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecycle"), "fabric1", "mesh1").await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;
-    let nodes = estate.settled(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await;
+    let nodes = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await);
 
     // Views: canonical ids, one Fabric id, distinct mesh ids.
-    let (_, fabric) = estate.get("/api/fabric").await;
+    let fabric = json_of(&estate.fabric_view().await);
     let fabric_id = canonical("fabric id", &fabric["id"]);
     let mesh_ids: BTreeMap<String, String> =
         fabric["meshes"].as_array().unwrap().iter().map(|m| (s(&m["name"]), canonical("mesh id", &m["id"]))).collect();
     assert_eq!(mesh_ids.len(), 2);
     assert_ne!(mesh_ids["mesh1"], mesh_ids["mesh2"]);
     for (mesh, id) in &mesh_ids {
-        let (_, by_name) = estate.get(&format!("/api/meshes/{mesh}")).await;
-        let (_, by_id) = estate.get(&format!("/api/meshes/{id}")).await;
+        let meshes = estate.meshes_obj().await;
+        let by_name = meshes.get(&MeshSelector::Mesh(mesh.clone())).await.unwrap_or_else(|e| panic!("mesh.get {mesh}: {e}"));
+        let by_id = meshes.get(&MeshSelector::Mesh(id.clone())).await.unwrap_or_else(|e| panic!("mesh.get {id}: {e}"));
         assert_eq!(by_name, by_id, "a mesh resolves by name or by id");
     }
     let node_ids: BTreeMap<String, String> = nodes.iter().map(|n| (s(&n["name"]), canonical("node id", &n["node_id"]))).collect();
     assert_eq!(node_ids.values().collect::<BTreeSet<_>>().len(), node_ids.len(), "node ids are distinct");
     for n in &nodes {
+        canonical("incarnation id", &n["incarnation_id"]);
+    }
+    for n in &nodes {
         let transport = s(&n["endpoint_id"]);
         assert!(!transport.is_empty() && transport != s(&n["node_id"]) && transport != fabric_id, "transport identity is not product identity: {n}");
     }
     for admin in nodes.iter().filter(|n| n["kind"] == "node_admin") {
-        let own = get(&s(&admin["admin_api_base"]), "/api/fabric").await;
+        let own = json_of(&estate.fabric_view_at(&s(&admin["name"]).parse().unwrap()).await.unwrap_or_else(|| panic!("{} does not answer fabric.get for this Fabric", admin["name"])));
         assert_eq!(s(&own["id"]), fabric_id, "{} names the Fabric by the same id", admin["name"]);
     }
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Restart keeps NodeId, FabricId and the incarnation: the process is stopped and started.
     let before = nodes.iter().find(|n| n["name"] == "mesh2.rpc.2").unwrap().clone();
-    let (status, a) = estate.post("/api/nodes/mesh2.rpc.2/restart", &json!({})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_attempt(a["build_id"].as_str().unwrap(), Estate::attempt_of(&a), Duration::from_secs(120)).await;
-    let after = wait_for("mesh2.rpc.2 ready after its restart", Duration::from_secs(30), || async {
-        let n = estate.node_opt("mesh2.rpc.2").await?;
-        (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
-    })
-    .await;
+    let mut restart = estate.nodes_obj().await.restart(&"mesh2.rpc.2".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.restart of mesh2.rpc.2: {e}"));
+    let a = Estate::complete(&mut restart).await;
+    let after = estate
+        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).map(json_of))
+        .await;
     assert_eq!(after["node_id"], before["node_id"], "restart keeps the node id");
     assert_eq!(after["incarnation_id"], before["incarnation_id"], "restart keeps the incarnation");
 
     // A second restart of the same node is a later attempt of the same Build: the first
     // restart's finished run hands it nothing, so it restarts the node again.
-    let (status, again) = estate.post("/api/nodes/mesh2.rpc.2/restart", &json!({})).await;
-    assert_eq!(status, 202, "{again}");
-    assert_eq!(again["build_id"], a["build_id"], "a restart is an attempt of the accepted Build: {again}");
-    estate.await_attempt(again["build_id"].as_str().unwrap(), Estate::attempt_of(&again), Duration::from_secs(120)).await;
-    let third = wait_for("mesh2.rpc.2 ready after its second restart", Duration::from_secs(30), || async {
-        let n = estate.node_opt("mesh2.rpc.2").await?;
-        (n["status"] == "ready-for-traffic" && n["parked"] == false).then_some(n)
-    })
-    .await;
+    let mut restart = estate.nodes_obj().await.restart(&"mesh2.rpc.2".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused the second node.restart of mesh2.rpc.2: {e}"));
+    let again = Estate::complete(&mut restart).await;
+    assert_eq!(again.build_id, a.build_id, "a restart is an attempt of the accepted Build: {again:?}");
+    let third = estate
+        .until_node("mesh2.rpc.2", "mesh2.rpc.2 ready after its second restart", Duration::from_secs(30), |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked).map(json_of))
+        .await;
     assert_eq!(third["node_id"], before["node_id"], "a second restart keeps the node id");
     assert_eq!(third["incarnation_id"], before["incarnation_id"], "and the incarnation");
-    let restart_build = s(&again["build_id"]);
+    // What mesh1.admin.1, a node-admin of the peer mesh, holds of the restarted birth: its own view,
+    // from the newest version of mesh2's projection it installed (gossip.md §3.1, `Members`:
+    // "Receivers install the complete snapshot atomically"). The Digest it holds names the node and
+    // the incarnation the views show, as Crockford ids.
+    let held = estate
+        .until_view_at(&"mesh1.admin.1".parse().unwrap(), "mesh1.admin.1 holds the restarted mesh2.rpc.2 ready, same node and incarnation", Duration::from_secs(30), |views| {
+            views
+                .iter()
+                .find(|n| n.name.to_string() == "mesh2.rpc.2" && n.status == NodeStatus::ReadyForTraffic)
+                .map(json_of)
+                .filter(|n| n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"])
+        })
+        .await;
+    canonical("heard Digest incarnation_id", &held["incarnation_id"]);
+    canonical("heard Digest node_id", &held["node_id"]);
+    let restart_build = again.build_id.to_string();
 
     // Replacement of a node: removed, then created again at the same path.
     let replaced = node_ids["mesh1.rpc.2"].clone();
-    let (status, a) = estate.delete("/api/nodes/mesh1.rpc.2").await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    let mut removal = estate.nodes_obj().await.delete(&"mesh1.rpc.2".parse().unwrap()).await.unwrap_or_else(|e| panic!("the fabric-primary refused node.delete of mesh1.rpc.2: {e}"));
+    Estate::complete(&mut removal).await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;
-    let regrown = estate.settled(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await;
+    let regrown = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await);
     let new_id = canonical("node id", &regrown.iter().find(|n| n["name"] == "mesh1.rpc.2").unwrap()["node_id"]);
     assert_ne!(new_id, replaced, "a recreated node is a new logical node");
 
@@ -129,35 +145,34 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
     // mesh2's last admin alive; its end is its own node.delete (mesh-delete.md steps 5-7), and only
     // that delete releases its name (R-MN1).
     build(&estate, &shape(&["mesh1"], 2)).await;
-    let last = wait_for("mesh2's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), || async {
-        let nodes = estate.nodes().await;
-        let mesh2: Vec<String> = nodes.iter().filter(|n| n["mesh"] == "mesh2").map(|n| s(&n["name"])).collect();
-        let alive = nodes.iter().any(|n| n["mesh"] == "mesh2" && n["status"] == "ready-for-traffic");
-        (mesh2.len() == 1 && alive).then(|| mesh2[0].clone())
-    })
-    .await;
-    let (status, d) = estate.delete(&format!("/api/nodes/{last}")).await;
-    assert_eq!(status, 202, "the node.delete of mesh2's last admin {last}: {d}");
-    estate.await_build(d["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
-    estate.settled(&names(&["mesh1"], 2), Duration::from_secs(30)).await;
+    let last = estate
+        .until_view("mesh2's last admin alive after mesh.deleted, its members deleted", Duration::from_secs(60), |views| {
+            let mesh2: Vec<String> = views.iter().filter(|n| n.mesh == "mesh2").map(|n| n.name.to_string()).collect();
+            let alive = views.iter().any(|n| n.mesh == "mesh2" && n.status == NodeStatus::ReadyForTraffic);
+            (mesh2.len() == 1 && alive).then(|| mesh2[0].clone())
+        })
+        .await;
+    let mut last_delete = estate.nodes_obj().await.delete(&last.parse().unwrap()).await.unwrap_or_else(|e| panic!("the node.delete of mesh2's last admin {last} was refused: {e}"));
+    Estate::complete(&mut last_delete).await;
+    estate.settles_to_named(&names(&["mesh1"], 2), Duration::from_secs(30)).await;
     build(&estate, &shape(&["mesh1", "mesh2"], 2)).await;
-    let recreated = estate.settled(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await;
+    let recreated = Estate::values(&estate.settles_to_named(&names(&["mesh1", "mesh2"], 2), Duration::from_secs(30)).await);
     // R-NS1 item 1 + states.md ("A mesh id is never reissued; dead is final ... a mesh created again
     // under that name is a new mesh with a new id"): the removed mesh2 was Dead, and Dead belongs to its
     // id. No admin's view states the new mesh2 Dead.
     for n in recreated.iter().filter(|n| n["kind"] == "node_admin") {
-        let m = get(&s(&n["admin_api_base"]), "/api/meshes/mesh2").await;
-        assert_ne!(s(&m["status"]), "dead", "{} states the recreated mesh2 Dead: {m}", s(&n["name"]));
+        let carrier = estate.carrier_at(&s(&n["name"]).parse().unwrap()).await;
+        let m = json_of(&Meshes::new(carrier).get(&MeshSelector::Mesh("mesh2".into())).await.unwrap_or_else(|e| panic!("mesh.get mesh2 at {}: {e}", n["name"])));
+        assert_ne!(s(&m[0]["status"]), "dead", "{} states the recreated mesh2 Dead: {m}", s(&n["name"]));
     }
-    let (_, fabric_after) = estate.get("/api/fabric").await;
+    let fabric_after = json_of(&estate.fabric_view().await);
     assert_eq!(s(&fabric_after["id"]), fabric_id, "the Fabric keeps its id for its lifetime");
     let m2 = fabric_after["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh2").unwrap().clone();
     let m1 = fabric_after["meshes"].as_array().unwrap().iter().find(|m| m["name"] == "mesh1").unwrap().clone();
     assert_ne!(canonical("mesh id", &m2["id"]), mesh_ids["mesh2"], "a mesh created again is a new mesh");
     assert_eq!(s(&m1["id"]), mesh_ids["mesh1"], "an untouched mesh keeps its id");
 
-    let (_, fabric) = estate.get("/api/fabric").await;
-    estate.admin = s(&fabric["admin_api_base"]);
+    estate.enter_fabric_primary().await;
     estate.stop().await;
 
     // The span evidence is read only now: every process flushes its spans on exit (`Estate::stop`),
@@ -171,10 +186,44 @@ async fn every_product_identity_is_canonical_and_kept_or_reminted_by_its_lifecyc
             .unwrap_or_else(|| panic!("{} reports ready", n["name"]));
         let a = &ready["attributes"];
         assert_eq!(a["id_format"], "crockford60");
+        canonical("ready span incarnation_id", &a["incarnation_id"]);
         assert_eq!(s(&a["node_id"]), s(&n["node_id"]));
         assert_eq!(s(&a["fabric_id"]), fabric_id);
         assert_eq!(s(&a["mesh_id"]), mesh_ids[&s(&n["mesh"])]);
     }
+
+    // The second restart's return reached the peer mesh's admin. mesh2's primary authored the
+    // birth's ReadyForTraffic (`from-node-started`), and its next publication round bumped mesh2's
+    // topology_version (gossip.md §3.1, `Members`: "at once on a material change"). mesh1.admin.1
+    // installed that version of mesh2's projection or a later one: a receiver holds the newest
+    // version it installed, and a snapshot overtaken by a later one is ignored in the gossip receive
+    // path (gossip.md receiver rules: `Members` order by `published_at_rafka_ms`, then
+    // `topology_version`). So the peer is owed the restart's return, never each state between.
+    // The publisher is matched too: the recreated mesh2's primary starts its versions again.
+    let returned_at = named(&spans, "rdm.mesh.membership.update.from-node-started")
+        .into_iter()
+        .filter(|sp| {
+            let a = &sp["attributes"];
+            a["member"] == "mesh2.rpc.2" && a["incarnation_id"] == after["incarnation_id"] && a["status"] == "ReadyForTraffic"
+        })
+        .max_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0))
+        .unwrap_or_else(|| panic!("mesh2's primary authored the restarted mesh2.rpc.2's ReadyForTraffic at incarnation {}", after["incarnation_id"]));
+    let returned_ns = returned_at["start_unix_nano"].as_u64().unwrap_or(0);
+    let bumped = named(&spans, "rdm.mesh.backbone.update.via-topology-version")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == returned_at["attributes"]["node"] && sp["attributes"]["mesh"] == "mesh2" && sp["start_unix_nano"].as_u64().unwrap_or(0) >= returned_ns)
+        .min_by_key(|sp| sp["start_unix_nano"].as_u64().unwrap_or(0))
+        .unwrap_or_else(|| panic!("{} bumped mesh2's topology_version after the second restart's return", returned_at["attributes"]["node"]));
+    let (publisher, version) = (s(&bumped["attributes"]["publisher"]), s(&bumped["attributes"]["topology_version"]).parse::<u64>().expect("a topology_version is a number"));
+    let installed: Vec<String> = named(&spans, "rdm.mesh.membership.update.via-snapshot-installed")
+        .into_iter()
+        .filter(|sp| sp["attributes"]["node"] == "mesh1.admin.1" && sp["attributes"]["mesh"] == "mesh2" && s(&sp["attributes"]["publisher"]) == publisher)
+        .map(|sp| s(&sp["attributes"]["topology_version"]))
+        .collect();
+    assert!(
+        installed.iter().any(|v| v.parse::<u64>().is_ok_and(|v| v >= version)),
+        "mesh1.admin.1 installed mesh2's projection by {publisher} at topology_version {version} (the second restart's return) or later: it installed {installed:?}"
+    );
 
     // The removed mesh2's last admin published MeshStatus Dead while it lived, and it left with MeshLeft;
     // after that nothing publishes mesh2 Dead: the recreated mesh2's primary authors its new mesh's own

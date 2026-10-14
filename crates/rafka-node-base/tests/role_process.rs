@@ -27,9 +27,10 @@ struct RoleProcess {
     _dir: tempdir::Dir,
 }
 
-async fn born(role: Role, name: &str) -> RoleProcess {
+/// The role is the node_type `name`'s launch names ([`Role::of`]), as the one node executable takes it.
+async fn born(name: &str) -> RoleProcess {
     let dir = tempdir::Dir::new();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(dir.path()).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir.path()).unwrap();
     let key = node::load_or_mint_key(dir.path()).unwrap();
     // The admin that deployed this birth: it takes the node's JoinNode and serves its topology.
     let fabric_id = FabricId::mint();
@@ -49,10 +50,12 @@ async fn born(role: Role, name: &str) -> RoleProcess {
         store_dir: dir.path().to_path_buf(),
         mesh_id: Some(MeshId::parse(TEST_MESH_ID).unwrap()),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     launcher.deployed(&launch, &key);
+    let role = Role::of(&launch);
     let oracles = rafka_node_base::Oracles::open(&launch).unwrap();
-    let running = node::start_with_client(&launch, |b, resolver, client| oracles.serve(compose(role, &launch.node_id.to_string(), b, client), &launch, resolver)).await.unwrap();
+    let running = node::start_with_seams(&launch, |b, seams| oracles.serve(compose(role, &launch.node_id.to_string(), b, seams.client), &launch, seams.resolver, &seams.name)).await.unwrap();
     let _ = oracles.declare_client.set(running.node_rpc.clone());
     RoleProcess { running, _launcher: launcher, launch, key, _dir: dir }
 }
@@ -76,7 +79,7 @@ impl RoleProcess {
 
 #[tokio::test]
 async fn a_role_process_serves_core_ping_on_its_one_endpoint() {
-    let broker = born(Role::broker(), "mesh1.broker.1").await;
+    let broker = born("mesh1.broker.1").await;
     assert_eq!(broker.running.routers.len(), 1, "one Iroh endpoint carries gossip and Node RPC");
     let (client, target) = broker.peer().await;
     let (out, _) = client.call::<Ping>(&target, &PingRequest::Ping { payload: b"role".to_vec() }, &CallOptions::default()).await;
@@ -86,7 +89,7 @@ async fn a_role_process_serves_core_ping_on_its_one_endpoint() {
 
 #[tokio::test]
 async fn a_tag_the_catalog_does_not_hold_is_unserved_421() {
-    let gateway = born(Role::gateway(), "mesh1.gateway.1").await;
+    let gateway = born("mesh1.gateway.1").await;
     let absent = 0x6E;
     assert!(gateway.running.server.catalog().lookup(absent).is_none());
     let (client, target) = gateway.peer().await;
@@ -103,7 +106,7 @@ async fn a_tag_the_catalog_does_not_hold_is_unserved_421() {
 
 #[tokio::test]
 async fn the_products_adapter_is_catalogued_and_unserved_on_the_node_rpc_alpn() {
-    let compute = born(Role::compute(), "mesh1.compute.1").await;
+    let compute = born("mesh1.compute.1").await;
     let adapter = &LEGACY_ADAPTERS[0];
     let held = compute.running.server.catalog().lookup(adapter.op).expect("the adapter is catalogued");
     assert_eq!(held.owner, OpOwner::Product(adapter.owner.into()), "sealed under the ledger's owner");
@@ -148,8 +151,8 @@ mod tempdir {
 #[tokio::test]
 async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute() {
     use rafka_node_base::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
-    let broker = born(Role::broker(), "mesh1.broker.1").await;
-    let compute = born(Role::compute(), "mesh1.compute.1").await;
+    let broker = born("mesh1.broker.1").await;
+    let compute = born("mesh1.compute.1").await;
     let (client, target) = broker.peer().await;
     let (out, _) = client.call::<BrokerData>(&target, &BrokerDataRequest::Append { key: "k".into(), value: b"v1".to_vec() }, &CallOptions::default()).await;
     let served_by = broker.launch.node_id.to_string();
@@ -174,8 +177,8 @@ async fn the_product_family_round_trips_to_a_broker_and_is_unserved_at_a_compute
 #[tokio::test]
 async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
     use rafka_node_base::families::{BrokerData, BrokerDataReply, BrokerDataRequest, PROOF_FAULT, PROOF_HANG};
-    let broker = born(Role::broker(), "mesh1.broker.1").await;
-    let gateway = born(Role::gateway(), "mesh1.gateway.1").await;
+    let broker = born("mesh1.broker.1").await;
+    let gateway = born("mesh1.gateway.1").await;
     // The gateway's live resolver learns the broker's birth, as membership would feed it.
     let addr = broker.running.routers[0].endpoint().bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();
     gateway.running.node_rpc.resolver.apply(
@@ -231,7 +234,7 @@ async fn a_gateways_call_to_a_broker_carries_the_four_certainty_outcomes() {
 async fn a_malformed_traceparent_is_dropped_and_the_call_is_unchanged() {
     use rafka_node_base::families::{BrokerData, BrokerDataReply, BrokerDataRequest};
     use rafka_node_rpc_contract::context::CallContext;
-    let broker = born(Role::broker(), "mesh1.broker.1").await;
+    let broker = born("mesh1.broker.1").await;
     let (client, target) = broker.peer().await;
     let opts = CallOptions {
         context: Some(CallContext { caller_system: Some("rdm".into()), traceparent: Some("not-a-traceparent".into()), tracestate: None, baggage: None }),

@@ -35,7 +35,7 @@ async fn settled_waits_for_the_replies_dispatched_before_it_and_for_no_later_one
                 Ok(PingReply::Pong { payload })
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let ep = rafka_node_rpc::endpoint::bind(key.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = ep.bound_sockets().into_iter().find(|a| a.is_ipv4()).unwrap();

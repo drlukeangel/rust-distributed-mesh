@@ -65,15 +65,11 @@ struct Recorded {
 impl NodeObserver for Recorded {
     async fn send_command(&self, node: &Node, cmd: NodeCommand, _: &CommandContext) -> CommandAdmission {
         self.sent.lock().unwrap().push(format!("{cmd:?} to {}", node.name));
-        CommandAdmission::Admitted
+        CommandAdmission::Admitted {}
     }
     async fn await_completion(&self, node: &Node, cmd: NodeCommand, _: &CommandContext, _: Duration) -> Completion {
         self.sent.lock().unwrap().push(format!("await {cmd:?} from {}", node.name));
-        Completion::Received
-    }
-    async fn transfer_seats(&self, node: &Node, _: &CommandContext) -> Result<rafka_node_admin_core::fabric_handover::SeatTransferOutcome, String> {
-        self.sent.lock().unwrap().push(format!("transfer seats of {}", node.name));
-        Err("a stopped birth holds no seat".into())
+        Completion::Received {}
     }
     async fn joined(&self, _: &NodeId, _: &IncarnationId) -> Option<Publication> {
         None
@@ -95,9 +91,8 @@ impl TopologySink for Discard {
 /// control"; node-stop.md 6: "Delete proceeds to external exact runtime exit proof instead"): the
 /// delete of a stopped birth (Leaving, parked) records `NodeDeleting`, then `TerminateRuntime` (the
 /// provider's stop and its `Exited` inspection of the exact runtime), then `NodeDeleted`, and
-/// `Complete`. Must NOT happen: a drain, a stop or a seat transfer sent again to the stopped birth,
-/// or any of their receipts (`SeatTransfer`, `DrainNode`, `AwaitNodeDrained`, `StopNode`,
-/// `AwaitNodeLeft`), or a step that releases storage (`ReleaseStorage`: node-delete.md step 3,
+/// `Complete`. Must NOT happen: a stop sent again to the stopped birth, or any of its receipts
+/// (`StopNode`, `AwaitNodeLeft`), or a step that releases storage (`ReleaseStorage`: node-delete.md step 3,
 /// "Retain the data dir, node-identity.json and endpoint key").
 #[tokio::test]
 async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof() {
@@ -111,7 +106,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         .publish_accepted(&BuildAccepted { build_id: build_id.clone(), topology: rafka_node_admin_core::accepted::FabricTopology::root("fabric1", "mesh1", rafka_node_admin_core::model::MeshId::parse("meshd0000001").unwrap()), submitted_change: None, submitted_at_ms: 0 })
         .await
         .unwrap();
-    builds.claim_attempt(&BuildAttemptClaim { build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
+    builds.claim_attempt(&BuildAttemptClaim { claimant: None, mesh: None, build_id: build_id.clone(), attempt: 1, executor: "mesh1.admin.1".into() }).await.unwrap();
     let mut node = Node::allocated("mesh1.rpc.1".parse().unwrap());
     node.node_id = NodeId::mint();
     node.incarnation_id = Some(IncarnationId::mint());
@@ -128,6 +123,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         data_root: std::env::temp_dir().join(format!("i143-3072-delete-{}", NodeId::mint())),
         store_dir: std::env::temp_dir().join(format!("i143-3072-delete-store-{}", NodeId::mint())),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     };
     let (provider, observer, joins) = (Exits::default(), Recorded::default(), rafka_node_admin_core::join::Joins::default());
     let pipeline = DeploymentPipeline {
@@ -138,7 +134,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         lifecycle: &NoLifecycleEvents,
         builds: &builds,
         template: &template,
-        timeouts: Timeouts { drain: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
+        timeouts: Timeouts { completion: Duration::from_millis(300), stop_grace: Duration::from_millis(300), ..Timeouts::default() },
     };
     let handle = DeploymentHandle { deployment_id: DeploymentId::mint(), provider: ProviderKind::Process, pid: None, start: None, container: None, domain: Some("i143-3072-delete".into()) };
     let req = RetireRequest { build_id: build_id.clone(), attempt: 1, node, handle: handle.clone(), exit: None };
@@ -167,7 +163,7 @@ async fn a_stopped_nodes_delete_goes_straight_to_the_exact_runtimes_exit_proof()
         .filter(|s| s.name == "rdm.node_admin.deployment.update.via-step")
         .filter_map(|s| s.attributes.iter().find(|kv| kv.key.as_str() == "step").map(|kv| kv.value.to_string()))
         .collect();
-    assert!(!steps.iter().any(|s| s == RetireStep::DrainNode.name() || s == RetireStep::StopNode.name()), "no drain or stop step span: {steps:?}");
+    assert!(!steps.iter().any(|s| s == RetireStep::StopNode.name()), "no stop step span: {steps:?}");
     assert!(steps.iter().any(|s| s == RetireStep::TerminateRuntime.name()), "{steps:?}");
     assert!(!steps.iter().any(|s| s == "ReleaseStorage"), "no step span releases storage: {steps:?}");
 }

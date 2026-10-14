@@ -4,6 +4,21 @@
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
 
+/// The binary's process environment, set once, here, before `main` and before any thread exists
+/// (one binary is one process): a cell never sets or removes a variable. The gate's cadence
+/// (`tools/test-runner/src/lib.rs` CADENCE): every node a cell starts in this process reads it once
+/// (`rafka_mesh_entity::cadence`). Each value is set only where the environment the binary was
+/// started with names none, so a cell whose process needs another value is started as its own
+/// process with that value in its environment (`own_process::delegated_with_env`) and keeps it.
+#[ctor::ctor]
+fn process_env() {
+    for (k, v) in [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")] {
+        if std::env::var_os(k).is_none() {
+            std::env::set_var(k, v);
+        }
+    }
+}
+
 mod common;
 mod container_pipeline;
 mod hydrate_before_ready;
@@ -14,6 +29,8 @@ mod member_cert;
 mod member_cert_admin;
 mod pipeline_rerun;
 mod probe_endpoint_close;
+mod probe_entry_admin;
+mod probe_view_entry;
 mod probe_root_span;
 mod process_pipeline;
 mod process_pipeline_failure;
@@ -26,7 +43,7 @@ mod status_probe_apply;
 mod park_start;
 mod rejoin_commander;
 mod gossip_shutdown_once;
-mod mesh_leave_member;
+mod mesh_delete_member;
 mod rig_teardown;
 mod apply_node_name;
 mod rejoin_name;
@@ -35,9 +52,11 @@ mod transport_diag;
 mod connections_rename;
 mod rename_precondition;
 mod connections_delete;
+mod connections_all;
 mod no_caller_check;
 mod node_reads;
 mod node_start_sequence;
 mod admin_top_up;
 mod admin_start_declares;
 mod admin_boot_name;
+mod process_env;

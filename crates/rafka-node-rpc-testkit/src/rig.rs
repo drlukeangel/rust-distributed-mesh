@@ -72,7 +72,7 @@ impl NodeObserver for LiveMesh {
         // never the Ping alone and never its heartbeat.
         match self.membership.book.get(node.node_id.as_str()).filter(|(d, _)| node.incarnation_id.as_ref() == Some(&d.node.incarnation)) {
             Some((d, _)) if d.status == rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic => {}
-            Some((d, _)) => return Err(format!("{} is held {:?}, not ready-for-traffic: the admin side has not taken its node.started", node.name, d.status)),
+            Some((d, _)) => return Err(format!("{} is held {:?}, not ready-for-traffic: the member status the admin side holds for the birth is {:?}", node.name, d.status, self.membership.book.member_status(&node.node_id, &d.node.incarnation))),
             None => return Err(format!("no digest from {} for this birth", node.name)),
         }
         let target = self.echo_target(node)?;
@@ -345,6 +345,14 @@ pub async fn admin_side_silent_as(ip: std::net::IpAddr, primary: &AdminSide, nam
     admin_side_taking_joins_seated(ip, &primary.fabric, name, true, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs(), SideSeat::Silent { seed }).await
 }
 
+/// [`admin_side_silent_as`] whose `JoinNode` door is never opened: a node that joins it is answered
+/// `NotReady` by name, always, so a join to it is never accepted.
+pub async fn admin_side_silent_deaf_as(ip: std::net::IpAddr, primary: &AdminSide, name: &str) -> AdminSide {
+    let key: iroh::PublicKey = primary.seed.0.parse().expect("the primary's endpoint id is an iroh key");
+    let seed = iroh::EndpointAddr::new(key).with_ip_addr(primary.seed.1);
+    admin_side_taking_joins_seated(ip, &primary.fabric, name, false, None, |b| b, rafka_mesh_entity::digest::MemberStatus::ReadyForTraffic, no_certs(), SideSeat::Silent { seed }).await
+}
+
 /// [`admin_side`] whose `JoinNode` door is never opened: a launched node's join is answered
 /// `NotReady` by name, always.
 pub async fn admin_side_deaf_to_joins(ip: std::net::IpAddr, fabric: &FabricId) -> AdminSide {
@@ -490,17 +498,17 @@ async fn admin_side_taking_joins_seated(ip: std::net::IpAddr, fabric: &FabricId,
                         };
                         return Ok(StatusReply::Applied);
                     }
-                    let (R::NodeDrained { incarnation, .. } | R::NodeLeft { incarnation, .. }) = &req else {
-                        return Ok(StatusReply::NotReady { reason: "the admin side serves completion calls, round check-ins and declarations only".into() });
-                    };
-                    let incarnation = incarnation.clone();
-                    Ok(rafka_node_admin_core::node_commands::accept_completion(&commands, &receiver, Some((Some(&incarnation), "the commanded birth")), "", &req))
+                    match &req {
+                        R::DrainNode { .. } | R::NodeDrained { .. } => Ok(rafka_node_admin_core::node_commands::refuse_reserved(&receiver, "", &req)),
+                        R::NodeLeft { .. } => Ok(rafka_node_admin_core::node_commands::refuse_node_left(&receiver, "the commanded birth", "", &req)),
+                        _ => Ok(StatusReply::NotReady { reason: "the admin side serves round check-ins and declarations only".into() }),
+                    }
                 }
             })
         }
     };
     let rpc_server = serve_app(serve_commands(rafka_node_admin_core::topology_read::serve(rafka_node_admin_core::join::serve(rafka_node_rpc::ServerBuilder::new(), join_slot), topology_slot.clone())))
-        .seal(rafka_node_rpc::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.0.clone() })
+        .seal(rafka_node_rpc::ServedBirth { node_id: admin_node_id.to_string(), incarnation: admin_incarnation.to_string() })
         .expect("the admin side's catalog seals");
     let router = Router::builder(admin_ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).accept(rafka_node_rpc::ALPN, rpc_server).spawn();
     let addr: SocketAddr = admin_ep.bound_sockets().into_iter().find(|a| a.ip() == ip).unwrap();

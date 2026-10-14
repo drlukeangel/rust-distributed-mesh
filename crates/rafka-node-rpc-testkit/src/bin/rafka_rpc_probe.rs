@@ -2,21 +2,24 @@
 //! (PRD §6: no in-process shortcut).
 //!
 //! ```text
-//! rafka-rpc-probe --admin <base> get    --target exact:<node_id>|path:<path.name> --key <k>
-//! rafka-rpc-probe --admin <base> put    --target ... --key <k> --value <v>
-//! rafka-rpc-probe --admin <base> delete --target ... --key <k>
-//! rafka-rpc-probe --admin <base> cas    --target ... --key <k> [--expected <v>] [--value <v>]
-//! rafka-rpc-probe --admin <base> topology --target ... [--mesh <name>] [--since <node>|<incarnation>|<version>]
+//! rafka-rpc-probe --admin-birth <birth> get    --target exact:<node_id>|path:<path.name> --key <k>
+//! rafka-rpc-probe --admin-birth <birth> put    --target ... --key <k> --value <v>
+//! rafka-rpc-probe --admin-birth <birth> delete --target ... --key <k>
+//! rafka-rpc-probe --admin-birth <birth> cas    --target ... --key <k> [--expected <v>] [--value <v>]
+//! rafka-rpc-probe --admin-birth <birth> topology --target ... [--mesh <name>] [--since <node>|<incarnation>|<version>]
 //! ```
 //!
-//! The target is resolved from the admin's node view at the dial cut:
+//! `<birth>` is the entry node-admin's birth, the JSON it prints on its birth line
+//! (`rafka_node_admin_client::BIRTH_LINE`). The probe reads that admin's view over Node RPC
+//! (`fabric.get`, then `node.get` for each mesh the fabric lists) and resolves the target from it:
 //! `exact:` is exactly that logical node and never follows a replacement;
 //! `path:` is whoever holds the path now. `cas` without `--expected` expects
 //! the key absent; without `--value` it deletes. It prints one JSON line:
 //! `{"outcome": "Reply"|"NotSent"|"Unserved"|"Indeterminate", ...}`; a
 //! `Reply` carries the executing node's provenance and the typed result.
 
-use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
+use rafka_mesh_entity::{IncarnationId, MeshNode, NodeId, PathName};
+use rafka_node_admin_client::{BuildCarrier, Fabrics, NodeSelector, NodeView, Nodes};
 use rafka_node_rpc::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rafka_node_rpc_contract::outcome::RpcOutcome;
 use rafka_node_rpc_testkit::proof_store::{ProofReply, ProofRequest, ProofStore};
@@ -24,7 +27,8 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 struct Args {
-    admin: String,
+    /// The entry node-admin's birth: the probe reads that admin's view.
+    admin_birth: MeshNode,
     op: String,
     target: String,
     key: String,
@@ -60,7 +64,7 @@ struct Args {
 }
 
 fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
-    let (mut admin, mut op, mut target, mut key, mut value, mut expected, mut via) = (None, None, None, None, None, None, None);
+    let (mut admin_birth, mut op, mut target, mut key, mut value, mut expected, mut via) = (None, None, None, None, None, None, None);
     let mut no_route = false;
     let mut cut_before_finish = false;
     let (mut to, mut state, mut as_node_id, mut as_incarnation) = (None, None, None, None);
@@ -71,7 +75,7 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     while let Some(a) = it.next() {
         let mut take = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
-            "--admin" => admin = Some(take("--admin")?),
+            "--admin-birth" => admin_birth = Some(take("--admin-birth")?),
             "--target" => target = Some(take("--target")?),
             "--key" => key = Some(take("--key")?),
             "--value" => value = Some(take("--value")?),
@@ -98,8 +102,10 @@ fn parse(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         }
     }
     let is_declare = matches!(op.as_deref(), Some("declare" | "topology"));
+    let admin_birth = admin_birth.ok_or("--admin-birth is required")?;
+    let admin_birth: MeshNode = serde_json::from_str(&admin_birth).map_err(|e| format!("--admin-birth {admin_birth:?} is not a node-admin's birth: {e}"))?;
     Ok(Args {
-        admin: admin.ok_or("--admin is required")?,
+        admin_birth,
         op: op.ok_or("an op (get, put, delete, cas, resolve, declare) is required")?,
         target: target.ok_or("--target is required")?,
         key: if is_declare { key.unwrap_or_default() } else { key.ok_or("--key is required")? },
@@ -141,14 +147,7 @@ async fn run_declare(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         "leaving" => NodeState::Leaving,
         other => return Err(format!("--state {other:?} is not a node state")),
     };
-    let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
-    let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
-    let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
-        resolver.insert(n);
-    }
-    let ep = bind_endpoint().await?;
-    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+    let (client, _) = enter(&a.admin_birth).await?;
     let req = DeclareRequest::Declare { to, state, node_id: a.as_node_id.clone(), incarnation: a.as_incarnation.clone() };
     let (out, _) = client.call::<DeclareProbe>(target, &req, &CallOptions::default()).await;
     // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
@@ -180,22 +179,71 @@ fn target(spec: &str) -> Result<NodeTarget, String> {
     }
 }
 
-/// Every node in the admin's view that can be dialled.
-fn resolved(view: &Value) -> Vec<ResolvedNode> {
-    view["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|n| {
-            Some(ResolvedNode {
-                node_id: NodeId::parse(n["node_id"].as_str()?).ok()?,
-                name: n["name"].as_str()?.parse().ok()?,
-                endpoint_id: n["endpoint_id"].as_str()?.parse().ok()?,
-                transport_addr: n["transport_addr"].as_str()?.parse().ok()?,
-                incarnation: IncarnationId(n["incarnation_id"].as_str()?.to_string()),
-            })
-        })
-        .collect()
+/// The probe's one client, entered at the node-admin `admin`: the endpoint is bound, the admin's birth
+/// is put in the resolver, and then every node the admin's view holds that can be dialled
+/// ([`views_of`], [`resolved`]). A birth whose endpoint is no Iroh key is refused by name before
+/// anything is bound. A read that fails, or a view node with a value its field does not read, refuses
+/// the call by name, and the endpoint is closed first: an endpoint dropped open aborts the process
+/// ungracefully and its span file is lost.
+async fn enter(admin: &MeshNode) -> Result<(Arc<NodeRpcClient>, Arc<StaticResolver>), String> {
+    let endpoint_id = admin.endpoint_id.0.parse::<iroh::PublicKey>().map_err(|e| format!("--admin-birth names {} (node {}) at the endpoint {:?}, no Iroh key: {e}", admin.name, admin.node_id, admin.endpoint_id.0))?;
+    let resolver = Arc::new(StaticResolver::new());
+    resolver.insert(ResolvedNode { node_id: admin.node_id.clone(), name: admin.name.clone(), endpoint_id, transport_addr: admin.transport_addr, incarnation: admin.incarnation.clone() });
+    let client = Arc::new(NodeRpcClient::new(bind_endpoint().await?, resolver.clone()).with_caller_system("rdm"));
+    let read = async { resolved(&views_of(&client, &admin.name).await?) };
+    match read.await {
+        Ok(nodes) => {
+            for n in nodes {
+                resolver.insert(n);
+            }
+            Ok((client, resolver))
+        }
+        Err(e) => {
+            client.endpoint().close().await;
+            Err(e)
+        }
+    }
+}
+
+/// Every node the node-admin `admin` holds in its view: `fabric.get`, then `node.get` for each mesh the
+/// fabric lists with nodes, read from that admin. A read that does not answer is refused naming the
+/// admin, the read and how it ended.
+async fn views_of(client: &Arc<NodeRpcClient>, admin: &PathName) -> Result<Vec<NodeView>, String> {
+    let carrier = BuildCarrier::new(client.clone(), admin.clone());
+    let fabric = Fabrics::new(carrier.clone()).get().await.map_err(|e| format!("fabric.get at the entry admin {admin}: {e}"))?;
+    let nodes = Nodes::new(carrier);
+    let mut all = Vec::new();
+    for mesh in fabric.meshes.iter().filter(|m| !m.nodes.is_empty()) {
+        all.extend(nodes.get(&NodeSelector::Mesh(mesh.name.clone())).await.map_err(|e| format!("node.get of mesh {} at the entry admin {admin}: {e}", mesh.name))?);
+    }
+    Ok(all)
+}
+
+/// Every node of `views` that can be dialled.
+///
+/// A node the admin holds with no endpoint, address or incarnation yet (created, not born) is not
+/// dialable and is left out, as an event naming it and the fields it lacks. An endpoint that is present
+/// and is no Iroh key refuses the whole call naming the node, the field, the value and the parse error:
+/// a reader that does not recognise a value never drops it.
+fn resolved(views: &[NodeView]) -> Result<Vec<ResolvedNode>, String> {
+    let mut out = Vec::new();
+    for n in views {
+        let endpoint_id = match n.endpoint_id.as_deref() {
+            None => None,
+            Some(v) => Some(v.parse::<iroh::PublicKey>().map_err(|e| format!("view node {} ({}): endpoint_id {v:?} does not parse: {e}", n.node_id, n.name))?),
+        };
+        match (endpoint_id, n.transport_addr, n.incarnation_id.clone()) {
+            (Some(endpoint_id), Some(transport_addr), Some(incarnation)) => out.push(ResolvedNode { node_id: n.node_id.clone(), name: n.name.clone(), endpoint_id, transport_addr, incarnation }),
+            (endpoint_id, transport_addr, incarnation) => {
+                let absent: Vec<&str> = [(endpoint_id.is_none(), "endpoint_id"), (transport_addr.is_none(), "transport_addr"), (incarnation.is_none(), "incarnation_id")]
+                    .into_iter()
+                    .filter_map(|(is_absent, field)| is_absent.then_some(field))
+                    .collect();
+                tracing::info!(node_id = %n.node_id, node = %n.name, absent = absent.join(","), "the admin's view holds this node with no value yet for these fields: it cannot be dialled");
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn request(a: &Args) -> Result<ProofRequest, String> {
@@ -256,14 +304,7 @@ async fn run(a: Args) -> Result<Value, String> {
         return run_originate(&a, &target).await;
     }
     let req = request(&a)?;
-    let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
-    let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
-    let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
-        resolver.insert(n);
-    }
-    let ep = bind_endpoint().await?;
-    let client = NodeRpcClient::new(ep, resolver.clone()).with_caller_system("rdm");
+    let (client, resolver) = enter(&a.admin_birth).await?;
     // The exact final target first; `--via` only decides how it is reached.
     // The exact final target first (a `path:` is the current holder); a target the view does
     // not hold is the client's own `NotSent(Resolve(..))`, never a refusal here.
@@ -359,14 +400,7 @@ async fn run_resolve(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         Some(("path", p)) => ProbeTarget::Path(p.to_string()),
         _ => return Err(format!("--query {:?} is neither exact:<node_id> nor path:<path.name>", a.key)),
     };
-    let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
-    let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
-    let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
-        resolver.insert(n);
-    }
-    let ep = bind_endpoint().await?;
-    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+    let (client, _) = enter(&a.admin_birth).await?;
     let req = ResolveRequest::Resolve { target: query };
     let (out, _) = client.call::<ResolveProbe>(target, &req, &CallOptions::default()).await;
     // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
@@ -430,14 +464,7 @@ async fn run_originate(a: &Args, target: &NodeTarget) -> Result<Value, String> {
         "fault" => OriginateRequest::ArmFault { refuse_index: a.refuse_index, refuse_history: a.refuse_history, pass_history: a.pass_history },
         _ => OriginateRequest::Snapshot,
     };
-    let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
-    let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
-    let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
-        resolver.insert(n);
-    }
-    let ep = bind_endpoint().await?;
-    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+    let (client, _) = enter(&a.admin_birth).await?;
     let opts = CallOptions { budget: rafka_node_rpc::Budget::Overall(std::time::Duration::from_secs(20)), ..CallOptions::default() };
     let (out, _) = client.call::<Originate>(target, &req, &opts).await;
     // The probe's one socket is closed before the process ends: an endpoint dropped open aborts the
@@ -482,19 +509,12 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
             let parts: Vec<&str> = s.split('|').collect();
             let [node, incarnation, version] = parts[..] else { return Err(format!("--since {s:?} is not <node>|<incarnation>|<version>")) };
             Some(SourceVersion {
-                publisher: rafka_mesh_entity::PublisherId { node: node.to_string(), incarnation: IncarnationId(incarnation.to_string()) },
+                publisher: rafka_mesh_entity::PublisherId { node: node.to_string(), incarnation: IncarnationId::parse(incarnation).map_err(|e| format!("--since incarnation: {e}"))? },
                 topology_version: version.parse().map_err(|e| format!("--since version {version:?}: {e}"))?,
             })
         }
     };
-    let url = format!("{}/api/nodes", a.admin.trim_end_matches('/'));
-    let view: Value = reqwest::get(&url).await.map_err(|e| format!("GET {url}: {e}"))?.json().await.map_err(|e| format!("GET {url}: {e}"))?;
-    let resolver = Arc::new(StaticResolver::new());
-    for n in resolved(&view) {
-        resolver.insert(n);
-    }
-    let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), probe_bind()).await.map_err(|e| format!("binding the probe's endpoint: {e}"))?;
-    let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
+    let (client, _) = enter(&a.admin_birth).await?;
     let req = TopologyRequest::GetTopology { mesh: a.mesh.clone(), since };
     let started = client.call_stream::<Topology>(target, &req, &CallOptions::default()).await;
     let mut frames = Vec::new();
@@ -505,12 +525,12 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
                 match item {
                     StreamItem::Frame(_, f) => frames.push(match f {
                         TopologyReply::Snapshot { mesh, publisher, topology_version, snapshot_id, chunk_index, chunk_count, digests, in_flight, departed } => json!({
-                            "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.0, "topology_version": topology_version,
+                            "frame": "snapshot", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version,
                             "snapshot_id": snapshot_id, "chunk_index": chunk_index, "chunk_count": chunk_count,
                             "members": digests.into_iter().map(|d| rafka_mesh_entity::MeshDigest::from(d).node.name.to_string()).collect::<Vec<_>>(),
                             "in_flight": in_flight.len(), "departed": departed.len(),
                         }),
-                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.0, "topology_version": topology_version}),
+                        TopologyReply::Unchanged { mesh, publisher, topology_version } => json!({"frame": "unchanged", "mesh": mesh, "publisher_node": publisher.node, "publisher_incarnation": publisher.incarnation.as_str(), "topology_version": topology_version}),
                         TopologyReply::End { meshes } => json!({"frame": "end", "meshes": meshes}),
                         other => json!({"frame": other.name(), "detail": format!("{other:?}")}),
                     }),
@@ -522,4 +542,84 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
     };
     client.endpoint().close().await;
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolved;
+    use rafka_mesh_entity::{IncarnationId, NodeId, PathName};
+    use rafka_node_admin_client::NodeView;
+    use rafka_node_rpc_contract::views::NodeStatus;
+
+    /// A node of `name` as an admin's view holds it: born when `endpoint`, `addr` and `incarnation`
+    /// are all given.
+    fn view(name: &str, endpoint: Option<&str>, addr: Option<&str>, incarnation: Option<IncarnationId>) -> NodeView {
+        let name: PathName = name.parse().unwrap();
+        NodeView {
+            kind: name.kind,
+            mesh: name.mesh.clone(),
+            name,
+            node_id: NodeId::mint(),
+            endpoint_id: endpoint.map(str::to_string),
+            incarnation_id: incarnation,
+            deployment_id: None,
+            provider: None,
+            data_dir: None,
+            status: NodeStatus::ReadyForTraffic,
+            is_primary: false,
+            is_fabric_primary: false,
+            admin_api_base: None,
+            transport_addr: addr.map(|a| a.parse().unwrap()),
+            listeners: Vec::new(),
+            declared: None,
+            parked: false,
+            load: None,
+            gossip: None,
+            tags: Default::default(),
+            config: Default::default(),
+        }
+    }
+
+    fn born(name: &str) -> NodeView {
+        view(name, Some(&iroh::SecretKey::generate().public().to_string()), Some("127.0.0.1:9"), Some(IncarnationId::mint()))
+    }
+
+    /// CONTRACT: a view whose nodes are all born resolves every one of them, in order.
+    #[test]
+    fn view_with_born_nodes_resolves_each() {
+        let views = [born("mesh1.rpc.1"), born("mesh1.rpc.2")];
+        let ids: Vec<NodeId> = resolved(&views).unwrap().into_iter().map(|n| n.node_id).collect();
+        assert_eq!(ids, views.iter().map(|v| v.node_id.clone()).collect::<Vec<_>>());
+    }
+
+    /// CONTRACT: a node whose endpoint is present and is no Iroh key refuses the whole call, and the
+    /// refusal names the node's id and path.name, the field, the value and the parse error. What must
+    /// NOT happen: the node vanishing while the readable ones resolve.
+    #[test]
+    fn view_node_with_unparseable_endpoint_refuses_naming_node_field_value_and_error() {
+        let bad = view("mesh1.rpc.2", Some("not-an-endpoint-id"), Some("127.0.0.1:9"), Some(IncarnationId::mint()));
+        let err = resolved(&[born("mesh1.rpc.1"), bad.clone()]).unwrap_err();
+        for part in [bad.node_id.to_string(), "mesh1.rpc.2".into(), "endpoint_id".into(), "\"not-an-endpoint-id\"".into(), "does not parse: ".into()] {
+            assert!(err.contains(&part), "the refusal names {part:?}: {err}");
+        }
+    }
+
+    /// CONTRACT: a node the admin holds as created and not yet born (endpoint, address and incarnation
+    /// all absent) is not dialable and is left out; it does not refuse the call, and the born nodes
+    /// beside it still resolve.
+    #[test]
+    fn view_with_an_unborn_node_leaves_it_out_and_resolves_the_rest() {
+        let readable = born("mesh1.rpc.1");
+        let nodes = resolved(&[view("mesh1.rpc.2", None, None, None), readable.clone()]).unwrap();
+        assert_eq!(nodes.into_iter().map(|n| n.node_id).collect::<Vec<_>>(), vec![readable.node_id]);
+    }
+
+    /// CONTRACT: an absent value beside an unreadable one does not hide it: a node with no incarnation
+    /// yet and an endpoint that is no Iroh key still refuses.
+    #[test]
+    fn view_node_with_an_absent_field_and_an_unparseable_one_refuses() {
+        let bad = view("mesh1.rpc.2", Some("not-an-endpoint-id"), Some("127.0.0.1:9"), None);
+        let err = resolved(&[bad.clone()]).unwrap_err();
+        assert!(err.contains(&bad.node_id.to_string()) && err.contains("endpoint_id"), "{err}");
+    }
 }

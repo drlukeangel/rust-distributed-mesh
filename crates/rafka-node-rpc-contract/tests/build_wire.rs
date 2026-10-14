@@ -20,8 +20,8 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::AddNode { mesh: "m".into(), node_kind: NodeKind::RpcNode }) }, "00 00 02 01 6d 01"),
         (BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Restart { node: "mesh1.rpc.1".parse().unwrap() }) }, "00 00 06 0b 6d657368312e7270632e31"),
         (
-            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: "mesh1.rpc.1".parse().unwrap(), node_id: rafka_mesh_entity::NodeId::parse("0123456789ab").unwrap(), incarnation: rafka_mesh_entity::IncarnationId("i".into()) }) },
-            "00 00 0a 0b 6d657368312e7270632e31 0c 303132333435363738396162 01 69",
+            BuildRequest::Create { submit: BuildSubmit::Change(BuildChange::Recover { node: "mesh1.rpc.1".parse().unwrap(), node_id: rafka_mesh_entity::NodeId::parse("0123456789ab").unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("i")).unwrap() }) },
+            "00 00 0a 0b 6d657368312e7270632e31 0c 303132333435363738396162 0c 79727a34396a333033796834",
         ),
         (
             BuildRequest::Create {
@@ -51,7 +51,7 @@ fn requests_match_the_frozen_four_variant_wire_schema() {
 }
 
 #[test]
-fn replies_match_the_frozen_twenty_five_variant_wire_schema() {
+fn replies_match_the_frozen_twenty_six_variant_wire_schema() {
     use BuildReply::*;
     let b = || "b".to_string();
     let s = |v: &str| v.to_string();
@@ -72,7 +72,8 @@ fn replies_match_the_frozen_twenty_five_variant_wire_schema() {
         (StaleClaim { held_attempt: 3, held_executor: None, carried_attempt: 2 }, "0b 03 00 02"),
         (UnknownBuild { build_id: b() }, "0c 01 62"),
         (Rejected { reason: s("r"), detail: s("d") }, "0d 01 72 01 64"),
-        (BuildInProgress { current_build_id: s("c") }, "0e 01 63"),
+        (BuildInProgress { current_build_id: s("c"), mesh: Some(s("m")), held_by: Some(s("h")) }, "0e 01 63 01 01 6d 01 01 68"),
+        (BuildInProgress { current_build_id: s("c"), mesh: None, held_by: None }, "0e 01 63 00 00"),
         (AttemptTaken { detail: s("d") }, "0f 01 64"),
         (Fenced { node: s("n"), by: s("b") }, "10 01 6e 01 62"),
         (CannotDelete { build_id: b(), reason: s("r") }, "11 01 62 01 72"),
@@ -84,13 +85,14 @@ fn replies_match_the_frozen_twenty_five_variant_wire_schema() {
         (Unauthorized { reason: s("u") }, "17 01 75"),
         (SeatMoved { build_id: b(), fabric_primary: Some(s("p")) }, "18 01 62 01 01 70"),
         (SeatMoved { build_id: b(), fabric_primary: None }, "18 01 62 00"),
+        (NotClaimant { mesh: Some(s("m")), fabric_primary: Some(s("p")), mesh_primary: None }, "19 01 01 6d 01 01 70 00"),
     ];
     for (r, hex) in fixtures {
         assert_eq!(Build::encode_reply(&r).unwrap(), bytes(hex), "{r:?}");
         assert_eq!(Build::decode_reply(&bytes(hex)).unwrap(), r);
     }
-    assert_eq!(Build::REPLY_VARIANTS, 25);
-    assert_eq!(Build::decode_reply(&[25]), Err(DecodeFailure::UnknownVariant));
+    assert_eq!(Build::REPLY_VARIANTS, 26);
+    assert_eq!(Build::decode_reply(&[26]), Err(DecodeFailure::UnknownVariant));
 }
 
 #[test]
@@ -122,7 +124,8 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
         StaleClaim { held_attempt: 1, held_executor: None, carried_attempt: 2 },
         UnknownBuild { build_id: "b".into() },
         Rejected { reason: "r".into(), detail: "d".into() },
-        BuildInProgress { current_build_id: "c".into() },
+        BuildInProgress { current_build_id: "c".into(), mesh: None, held_by: None },
+        NotClaimant { mesh: Some("m".into()), fabric_primary: None, mesh_primary: None },
         AttemptTaken { detail: "d".into() },
         Fenced { node: "n".into(), by: "b".into() },
         CannotDelete { build_id: "b".into(), reason: "r".into() },
@@ -134,10 +137,10 @@ fn every_frame_is_classified_for_stream_order_and_the_family_is_not_forwardable(
 
 #[test]
 fn a_failed_step_reason_within_the_senders_bound_fits_the_reply_frame_ceiling() {
-    let r = BuildReply::Failed { build_id: "bld-0123456789abcdef01234567".into(), attempt: u32::MAX, operation: "o".repeat(256), step: "s".repeat(256), reason: "r".repeat(16 * 1024) };
+    let r = BuildReply::Failed { build_id: "cq2tyb03krac".into(), attempt: u32::MAX, operation: "o".repeat(256), step: "s".repeat(256), reason: "r".repeat(16 * 1024) };
     assert!(Build::encode_reply(&r).unwrap().len() <= Build::MAX_REPLY_FRAME_BYTES);
     let q = BuildRequest::AttemptRun {
-        build_id: "bld-0123456789abcdef01234567".into(),
+        build_id: "cq2tyb03krac".into(),
         attempt: u32::MAX,
         executor: "mesh1.admin.1".into(),
         context: CallContext { caller_system: Some("rdm".into()), traceparent: Some("t".repeat(55)), tracestate: Some("s".repeat(512)), baggage: Some("b".repeat(8192)) },

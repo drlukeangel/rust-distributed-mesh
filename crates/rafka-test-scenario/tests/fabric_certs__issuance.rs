@@ -11,8 +11,9 @@
 //! spans, and the testkit's `rdm.testkit.cert.resolve.via-running-node` / `...via-launch` spans, in
 //! which each launched process records the bytes it holds.
 
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus, PathName};
 use rafka_node_rpc_testkit::test_certs::{TestMemberCert, TestMeshIssuer};
-use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
+use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -62,24 +63,20 @@ fn held_by(spans: &[Value], node: &str) -> Vec<(String, TestMemberCert)> {
 async fn every_join_is_issued_a_fresh_member_cert_and_a_new_meshs_first_admin_is_launched_with_its_issuer() {
     let sha = candidate_sha();
     let mut estate = Estate::bootstrap_external(owner(), "fabric1", "mesh1", &binding_set(&sha), &sha, &["rpc_node"]).await.expect("the faulted-admin binding set is accepted");
-    let mesh = |m: &str| json!({"name": m, "node_admin": 2, "rpc_node": 1});
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [mesh("mesh1"), mesh("mesh2")]})).await;
-    assert_eq!(status, 202, "{a}");
-    let create = s(&a["build_id"]);
-    estate.await_build(&create, SETTLE).await;
-    let want: std::collections::BTreeSet<String> = ["mesh1", "mesh2"].iter().flat_map(|m| [format!("{m}.admin.1"), format!("{m}.admin.2"), format!("{m}.rpc.1")]).collect();
-    estate.settled(&want, Duration::from_secs(30)).await;
+    let mesh1 = MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 2)]);
+    let mesh2 = MeshDesired::of("mesh2", [(NodeKind::NodeAdmin, 2), (NodeKind::RpcNode, 1)]);
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![mesh1, mesh2] }).await;
+    let want: std::collections::BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.rpc.1", "mesh1.rpc.2", "mesh2.admin.1", "mesh2.admin.2", "mesh2.rpc.1"].into_iter().map(str::to_string).collect();
+    estate.settles_to_named(&want, Duration::from_secs(30)).await;
 
     // Restart mesh1.rpc.1 through the Build: a new JoinNode of the same node.
-    let before = estate.node("mesh1.rpc.1").await;
-    let (status, restart) = estate.post("/api/nodes/mesh1.rpc.1/restart", &json!({})).await;
-    assert_eq!(status, 202, "{restart}");
-    estate.await_attempt(&s(&restart["build_id"]), Estate::attempt_of(&restart), SETTLE).await;
-    wait_for("mesh1.rpc.1 ready after its restart", SETTLE, || async {
-        let n = estate.node_opt("mesh1.rpc.1").await?;
-        (n["status"] == "ready-for-traffic" && n["parked"] == false && n["incarnation_id"] == before["incarnation_id"]).then_some(())
-    })
-    .await;
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    let before = estate.node_view("mesh1.rpc.1").await;
+    let path: PathName = "mesh1.rpc.1".parse().unwrap();
+    let mut restart = estate.nodes_obj().await.restart(&path).await.unwrap_or_else(|end| panic!("node.restart of mesh1.rpc.1 was refused: {end}"));
+    Estate::complete(&mut restart).await;
+    estate.until_node("mesh1.rpc.1", "mesh1.rpc.1 ready after its restart", SETTLE, |n| n.filter(|n| n.status == NodeStatus::ReadyForTraffic && !n.parked && n.incarnation_id == before.incarnation_id).map(|_| ())).await;
     estate.stop().await;
     let spans = estate.spans();
 

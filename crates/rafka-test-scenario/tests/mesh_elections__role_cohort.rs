@@ -1,19 +1,19 @@
 //! i143.e11.s4 process E2E: a role cohort's seat is the one election (PRD §11, §13.1).
 //!
 //! One fabric, `{node_admin: 1, broker: 3, gateway: 1, compute: 1}`. From public surfaces only:
-//! - every cohort's advertised primary is the one the canonical election computes from the
-//!   view's NodeIds and statuses (`seats_as_expected`), a role cohort like an rpc cohort;
+//! - every cohort advertises exactly one primary (`seats_as_expected`), a role cohort like an rpc
+//!   cohort;
 //! - kill the broker primary (SIGKILL): the next-lowest ready broker is announced by a
 //!   `rdm.mesh.election.resolve.via-recompute` span with `kind = broker`; the view's one broker
-//!   primary is the election's answer on the same sample (drift rebirths the path as a new NodeId
-//!   that wins or not by it) — read the way a product reads it, by `is_primary` on node-admin's
-//!   view (`rafka-node-admin-client` `nodes()`), never computed product-side.
+//!   primary is that successor, which keeps its seat over the birth drift recovery brings back at the
+//!   killed path whatever NodeId it drew (elections §5) — read the way a product reads it, by
+//!   `is_primary` on `node.get` (`Nodes::get`), never computed product-side.
 
-use rafka_node_admin_client::NodeAdminClient;
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
 use rafka_test_scenario::elections::{advertised_primaries, seats_as_expected, Cohort};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn owner() -> Owner {
     Owner {
@@ -35,26 +35,18 @@ fn live(nodes: &[Value]) -> Vec<Value> {
 }
 
 async fn settle(estate: &Estate, label: &str) -> Vec<Value> {
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let nodes = live(&estate.nodes().await);
-        if !nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && seats_as_expected(&nodes).is_ok() {
-            return nodes;
-        }
-        if Instant::now() > until {
-            panic!("{label}: the view did not settle on the computed seats in 30s: {nodes:#?}");
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    estate
+        .until_view(&format!("{label}: the view settles on the computed seats"), Duration::from_secs(30), |views| {
+            let nodes = live(&Estate::values(views));
+            (!nodes.is_empty() && nodes.iter().all(|n| n["status"] == "ready-for-traffic") && seats_as_expected(&nodes).is_ok()).then_some(nodes)
+        })
+        .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let desired = json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "broker": 3, "gateway": 1, "compute": 1}]});
-    let (status, accepted) = estate.post("/api/build", &desired).await;
-    assert_eq!(status, 202, "{accepted}");
-    estate.await_build(accepted["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 3), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
     let brokers: Cohort = ("mesh1".into(), "broker".into());
     let nodes = settle(&estate, "roles").await;
     assert_eq!(nodes.iter().filter(|n| n["kind"] == "broker").count(), 3, "{nodes:#?}");
@@ -71,8 +63,11 @@ async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
         .min_by(|a, b| a.1.cmp(&b.1))
         .unwrap();
     estate.kill_node(&killed).await;
-    let silence_bound = rafka_mesh_transport::membership::staleness_floor() * 2 + rafka_mesh_transport::membership::backbone_gossip_interval() * 2 + Duration::from_secs(10);
-    wait_for(&format!("{succ} ({succ_id}) announced as the broker successor to {killed_id}"), silence_bound, || async {
+    // The seat vacates only on the provider's exit proof, which node recovery takes at the killed
+    // birth's TRUE OFFLINE mark (elections §4.1, §5; `node_recovery_due`). The announcement names the
+    // winner it elected and the birth it replaced: the election's span is the only place that fact lives,
+    // so the span is awaited.
+    wait_for(&format!("{succ} ({succ_id}) announced as the broker successor to {killed_id}"), crate::node_recovery_due(), || async {
         named(&estate.spans(), "rdm.mesh.election.resolve.via-recompute")
             .iter()
             .any(|sp| {
@@ -84,20 +79,18 @@ async fn the_broker_cohort_elects_the_next_lowest_ready_node_id() {
     .await;
 
     // A product reads the seat from node-admin's view and never computes it. Drift recovery
-    // rebirths the killed path within seconds as a new NodeId that wins or not by it, so the seat
-    // is checked against the election's answer on the same sample, never against the announced
-    // successor alone: the one advertised broker primary is the lowest ready NodeId of that view,
-    // and the killed birth is no longer ready anywhere in it.
-    let client = NodeAdminClient::new(estate.admin.clone());
-    let view = wait_for("the view's one broker primary is the election's answer and the killed birth is gone", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), || async {
-        let view = client.nodes().await.ok()?;
-        let ready: Vec<_> = view.iter().filter(|n| n.mesh == "mesh1" && n.kind == rafka_mesh_entity::NodeKind::Broker && n.status == rafka_node_admin_client::NodeStatus::ReadyForTraffic).collect();
-        let advertised: Vec<_> = ready.iter().filter(|n| n.is_primary).collect();
-        let lowest = ready.iter().min_by(|a, b| a.node_id.to_string().cmp(&b.node_id.to_string()))?;
-        let killed_gone = !view.iter().any(|n| n.node_id.to_string() == killed_id && n.status == rafka_node_admin_client::NodeStatus::ReadyForTraffic);
-        (advertised.len() == 1 && advertised[0].node_id == lowest.node_id && killed_gone).then_some(view)
-    })
-    .await;
+    // brings a new birth back at the killed path within seconds, a new NodeId, a candidate for a later vacancy that
+    // never displaces the successor, whatever NodeId it drew (fabric-node-lifecycle-elections.md §5:
+    // "a living holder keeps its seat; a lower-NodeId candidate that later becomes Ready never
+    // displaces it"): the one advertised broker primary is the announced successor, and the killed
+    // birth is no longer ready anywhere in the view.
+    let view = estate
+        .until_view("the view's one broker primary is the announced successor and the killed birth is gone", rafka_mesh_transport::membership::staleness_floor() + Duration::from_secs(30), |view| {
+            let advertised: Vec<_> = view.iter().filter(|n| n.mesh == "mesh1" && n.kind == NodeKind::Broker && n.is_primary).collect();
+            let killed_gone = !view.iter().any(|n| n.node_id.to_string() == killed_id && n.status == NodeStatus::ReadyForTraffic);
+            (advertised.len() == 1 && advertised[0].node_id.to_string() == succ_id && killed_gone).then(|| view.to_vec())
+        })
+        .await;
     estate.artifact("view-after-kill.json", &json!({"killed": killed, "killed_id": killed_id, "successor": succ, "view": view}));
     estate.stop().await;
     let spans = estate.spans();

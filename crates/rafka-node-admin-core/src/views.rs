@@ -7,7 +7,7 @@
 //! bound is refused naming its size ([`StatusReply::within_reply_bound`]).
 //!
 //! The control API's routes answer from the same view and the same held connections
-//! (`crate::http`): the fold of what a node holds is written once, here.
+//! (`crate::control_plane`): the fold of what a node holds is written once, here.
 
 use crate::connections_writer::HeldConnections;
 use crate::model::{Node, PathName};
@@ -25,7 +25,7 @@ use std::sync::Arc;
 /// beside the view, never inside it (it changes every digest and never moves the topology).
 pub type Loads = Arc<dyn Fn() -> BTreeMap<String, (Option<NodeLoad>, Option<GossipStats>)> + Send + Sync>;
 
-fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
+pub(crate) fn node_status(s: crate::model::NodeStatus) -> NodeStatus {
     use crate::model::NodeStatus as S;
     match s {
         S::Pending => NodeStatus::Pending,
@@ -59,8 +59,8 @@ fn provider(p: crate::model::ProviderKind) -> ProviderKind {
     }
 }
 
-/// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried
-/// and the tags its row carries.
+/// `n` as a `node.get` answer carries it, with the load and gossip stats its latest digest carried,
+/// the tags its row carries and the config its digest carries (R-TG1: config rides the digest).
 pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, tags: BTreeSet<String>) -> NodeView {
     NodeView {
         name: n.name.clone(),
@@ -69,7 +69,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         node_id: n.node_id.clone(),
         endpoint_id: n.endpoint_id.as_ref().map(|e| e.0.clone()),
         incarnation_id: n.incarnation_id.clone(),
-        deployment_id: n.deployment_id.as_ref().map(|d| d.0.clone()),
+        deployment_id: n.deployment_id.as_ref().map(|d| d.to_string()),
         provider: n.provider.map(provider),
         data_dir: n.data_dir.clone(),
         status: node_status(n.status),
@@ -83,6 +83,7 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         load,
         gossip,
         tags,
+        config: n.config.clone(),
     }
 }
 

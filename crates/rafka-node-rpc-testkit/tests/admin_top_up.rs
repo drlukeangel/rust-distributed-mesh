@@ -1,7 +1,7 @@
 //! i143.e12.s52 (rafka-v2 #3082): a node-admin tops up a desynchronized mesh-channel source from its
 //! own Mesh's primary, as every receiver does.
 //!
-//! The design (rafka-v2 docs/architecture/gossip.md §3.3, "A version mismatch desynchronizes, and the
+//! The design (docs/architecture/gossip.md §3.3, "A version mismatch desynchronizes, and the
 //! node tops up"): "A receiver applies a delta only when it holds exactly `base_version` of that
 //! source and publisher. On a mismatch it marks that source's projection desynced, stops applying its
 //! deltas, and pulls the current full fabric topology from its own current mesh-primary with
@@ -12,8 +12,6 @@
 //! and never topped up: only the testkit node spawned the top-up. A non-primary serves its own mesh
 //! from its mesh-channel sources, and a desynchronized source is not served, so its topology door
 //! answered `unknown-mesh` for mesh1 until the run ended.
-//!
-//! Its own process: the cell sets the gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
 
 use iroh::protocol::Router;
 use rafka_mesh_entity::launch::{Launch, Launcher};
@@ -29,8 +27,6 @@ use rafka_node_rpc_testkit::hydrate_probe::{Mode, TestHydrator};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// The gate's cadence (`tools/test-runner/src/lib.rs` CADENCE).
-const CADENCE: [(&str, &str); 3] = [("RDM_STALENESS_MS", "3000"), ("RDM_GOSSIP_INTERVAL_MS", "500"), ("RDM_BACKBONE_INTERVAL_MS", "500")];
 /// What a step that ends at once on a correct node is given before the cell fails by name.
 const WRONG: Duration = Duration::from_secs(60);
 /// A top-up is one GetTopology to the primary, signalled by the gap itself: no cadence stands
@@ -53,7 +49,7 @@ fn day0_config(dir: &std::path::Path) -> AdminConfig {
 fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
     let d = root.digest.lock().unwrap().clone();
     std::fs::create_dir_all(dir).unwrap();
-    RuntimeFact::of_this_process("cell").unwrap().write_record(dir).unwrap();
+    RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(dir).unwrap();
     Launch {
         fabric: "fabric1".into(),
         fabric_id: d.fabric_id.clone(),
@@ -69,6 +65,7 @@ fn launch_by(root: &Running, name: &str, dir: &std::path::Path) -> Launch {
         store_dir: dir.to_path_buf(),
         mesh_id: d.mesh_id.clone(),
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 
@@ -144,12 +141,6 @@ async fn gossip_node() -> GossipNode {
 #[test]
 fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
     let cell = "a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary";
-    if crate::own_process::delegated(module_path!(), cell) {
-        return;
-    }
-    for (k, v) in CADENCE {
-        std::env::set_var(k, v);
-    }
     let cap = crate::common::capture(cell);
     let spans = cap.spans.clone();
     let dir = cap.dir.clone();
@@ -163,6 +154,7 @@ fn a_node_admin_tops_up_a_desynchronized_source_from_its_own_mesh_primary() {
         let root = start_with(day0_config(&root_dir), Wiring { hydration: Hydration::none(), fabric_hooks: FabricHooks::no_app_work(), ..Wiring::no_certs() }).await.expect("the Day-0 admin comes up");
         root.stop_reconciling();
         until_ready("the Day-0 admin", || root.digest.lock().unwrap().clone()).await;
+        until("the Day-0 admin to take mesh1's primary seat", WRONG, || root.membership.seats().mesh("mesh1").is_some()).await;
         let root_digest = root.digest.lock().unwrap().clone();
         let root_name = root_digest.node.name.to_string();
         let root_publisher = PublisherId { node: root_name.clone(), incarnation: root_digest.node.incarnation.clone() };

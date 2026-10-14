@@ -1,14 +1,15 @@
 //! The resolve probe: a testkit-only oracle on op `0x71` that answers what
 //! the executing node's own live resolver says about a target.
 //!
-//! The probe binary resolves from an admin's `/api/nodes` view, which is
-//! current-only: it can never say `Gone`. This protocol asks a real node,
+//! The probe binary resolves from its entry admin's view (`fabric.get`, `node.get`), which
+//! is current-only: it can never say `Gone`. This protocol asks a real node,
 //! whose `LiveNodeResolver` is fed by its own membership, so a scenario proves
 //! `Found` / `Gone` / `Unknown` where they are decided. Testkit range only
 //! ([`TESTKIT_OPS`]); never a product binary.
 //!
 //! [`TESTKIT_OPS`]: rafka_node_rpc_contract::catalog::TESTKIT_OPS
 
+use crate::held_name::HeldName;
 use rafka_mesh_entity::launch::Launch;
 use rafka_mesh_entity::{NodeId, PathName};
 use rafka_node_rpc::{LiveNodeResolver, NodeResolver, NodeTarget, PeerContext, ServerBuilder};
@@ -179,11 +180,13 @@ impl NodeProtocol for ResolveProbe {
     }
 }
 
-/// Serve the probe on this node's own live `resolver`.
-pub fn serve(b: ServerBuilder, resolver: Arc<LiveNodeResolver>, launch: &Launch) -> ServerBuilder {
-    let by = AnsweredBy { node_id: launch.node_id.to_string(), node: launch.name.to_string(), incarnation_id: launch.incarnation.to_string() };
+/// Serve the probe on this node's own live `resolver`; every reply names this birth by the name it
+/// holds at that call (`name`).
+pub fn serve(b: ServerBuilder, resolver: Arc<LiveNodeResolver>, launch: &Launch, name: &HeldName) -> ServerBuilder {
+    let (node_id, incarnation_id, name) = (launch.node_id.to_string(), launch.incarnation.to_string(), name.clone());
     b.serve::<ResolveProbe, _, _>(OpOwner::Testkit, move |_peer: PeerContext, req: ResolveRequest| {
-        let (by, resolver) = (by.clone(), resolver.clone());
+        let by = AnsweredBy { node_id: node_id.clone(), node: name.now().to_string(), incarnation_id: incarnation_id.clone() };
+        let resolver = resolver.clone();
         async move {
             let ResolveRequest::Resolve { target, .. } = req;
             let target = match &target {

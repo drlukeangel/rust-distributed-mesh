@@ -10,6 +10,7 @@
 //! 3. NoActiveRoute: `NotSent`, no connection opened, nothing served.
 //! 4. Selecting the other broker executes that broker; the first broker's store is untouched.
 
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -28,12 +29,10 @@ fn owner() -> Owner {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_at_all() {
     let mut estate = Estate::bootstrap(owner(), "fabric1", "mesh1").await;
-    let (status, a) = estate.post("/api/build", &json!({"fabric": "fabric1", "meshes": [{"name": "mesh1", "node_admin": 1, "broker": 2, "gateway": 2}]})).await;
-    assert_eq!(status, 202, "{a}");
-    estate.await_build(a["build_id"].as_str().unwrap(), Duration::from_secs(120)).await;
+    estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 1), (NodeKind::Broker, 2), (NodeKind::Gateway, 2)])] }).await;
     let want = ["mesh1.admin.1", "mesh1.broker.1", "mesh1.broker.2", "mesh1.gateway.1", "mesh1.gateway.2"].iter().map(|n| n.to_string()).collect();
-    estate.settled(&want, Duration::from_secs(30)).await;
-    let (b1, b2) = (estate.node("mesh1.broker.1").await, estate.node("mesh1.broker.2").await);
+    estate.settles_to_named(&want, Duration::from_secs(30)).await;
+    let (b1, b2) = (estate.node_value("mesh1.broker.1").await, estate.node_value("mesh1.broker.2").await);
     let (b1_id, b2_id) = (b1["node_id"].as_str().unwrap().to_string(), b2["node_id"].as_str().unwrap().to_string());
     let exact_b1 = format!("exact:{b1_id}");
 
@@ -46,7 +45,7 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     assert_eq!(direct["reply"]["result"], json!({"found": true, "value": "one"}));
 
     // 2. ViaPeer through gateway.2 to the same broker.
-    estate.witness_holds("path:mesh1.gateway.2", "mesh1.broker.1").await;
+    estate.witness_holds_birth("mesh1.gateway.2", "mesh1.broker.1").await;
     let carried = estate.probe(&["get", "--target", &exact_b1, "--via", "path:mesh1.gateway.2", "--key", "r1"]);
     assert_eq!((carried["outcome"].as_str(), carried["route"].as_str()), (Some("Reply"), Some("via-peer")), "{carried}");
     assert_eq!(carried["reply"]["executing_node"], b1_id, "the carrier reached exactly broker.1: {carried}");
@@ -84,7 +83,12 @@ async fn a_gateway_reaches_the_selected_broker_direct_via_a_peer_gateway_or_not_
     assert_eq!(none_t.len(), 1, "{none_t:?}");
     assert_eq!(none_t[0]["attributes"]["outcome"], "NotSent");
     let none_trace = &none_t[0]["trace_id"];
-    assert!(!spans.iter().any(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")), "no route: no connection was opened");
+    // The probe reads its entry admin's view over Node RPC (fabric.get, node.get) before it chooses a
+    // route: that read's dial, to the entry admin's birth, is the one connection of the trace, and the
+    // NoActiveRoute choice opens none.
+    let entry = estate.entry_birth();
+    let opened: Vec<&Value> = spans.iter().filter(|s| s["trace_id"] == *none_trace && s["name"].as_str().unwrap_or("").starts_with("rdm.node_rpc.connection")).collect();
+    assert!(opened.iter().all(|s| s["attributes"]["incarnation_id"] == entry.incarnation.as_str()), "no route: no connection was opened but the entry admin {}'s view read: {opened:?}", entry.name);
     assert!(served_in(&none_t).is_empty(), "no route: nothing served");
     let b2_served: Vec<_> = served.iter().filter(|s| s["attributes"]["incarnation_id"] == b2["incarnation_id"]).collect();
     assert_eq!(b2_served.len(), 1, "broker.2 served exactly the one call selected for it: {b2_served:?}");

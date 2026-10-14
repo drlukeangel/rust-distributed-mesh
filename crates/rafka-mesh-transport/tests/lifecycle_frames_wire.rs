@@ -19,16 +19,16 @@ fn mesh() -> MeshId {
 
 /// The publisher a status event names: mesh1's primary, birth `p-birth`.
 fn publisher() -> PublisherId {
-    PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId("p-birth".into()) }
+    PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("p-birth")).unwrap() }
 }
 
 fn op(operation: &str) -> LifecycleOp {
     LifecycleOp {
-        build_id: "bld_1".into(),
+        build_id: "66h8qrqvaajk".into(),
         attempt: 1,
         operation: operation.into(),
         node_id: NodeId::parse("0123456789ab").unwrap(),
-        incarnation: IncarnationId("birth".into()),
+        incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(),
         name: "mesh1.rpc.1".parse().unwrap(),
         event_at_rafka_ms: 300,
     }
@@ -41,10 +41,10 @@ fn op(operation: &str) -> LifecycleOp {
 #[test]
 fn node_command_frames_match_the_frozen_wire_schema() {
     let fixtures = [
-        (Frame::NodeDraining { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0a 05626c645f310116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 00"),
-        (Frame::NodeLeaving { op: op("stop-node:mesh1.rpc.1"), forwarded_by: Some("mesh2.admin.1".into()) }, "0b 05626c645f31011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 010d6d657368322e61646d696e2e31"),
-        (Frame::NodeLeft { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None }, "0c 05626c645f31011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 00"),
-        (Frame::NodeDrained { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0d 05626c645f310116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 00"),
+        (Frame::NodeDraining { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0a 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
+        (Frame::NodeLeaving { op: op("stop-node:mesh1.rpc.1"), forwarded_by: Some("mesh2.admin.1".into()) }, "0b 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 010d6d657368322e61646d696e2e31"),
+        (Frame::NodeLeft { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None }, "0c 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
+        (Frame::NodeDrained { op: op("drain-node:mesh1.rpc.1"), forwarded_by: None }, "0d 0c363668387172717661616a6b0116647261696e2d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00"),
     ];
     for (frame, hex) in fixtures {
         assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
@@ -91,9 +91,9 @@ fn a_peer_mesh_primary_forwards_node_command_frames_and_the_own_mesh_does_not() 
 #[test]
 fn mesh_leave_frames_match_the_frozen_wire_schema() {
     let fixtures = [
-        (Frame::MeshLeaving { mesh_id: mesh(), build_id: "bld_1".into(), attempt: 1, operation: OPERATION.into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None }, "0e0c31313233343536373839616205626c645f31011a73687574646f776e2d6d6573683a3131323334353637383961620d6d657368312e61646d696e2e31ac0200"),
-        (Frame::MeshLeave { mesh_id: mesh(), build_id: "bld_1".into(), attempt: 1, operation: OPERATION.into(), final_node_id: NodeId::parse("0123456789ab").unwrap(), final_incarnation: IncarnationId("birth".into()), receipt_manifest: "bld_1/1/other-members-exited".into(), publisher: "mesh2.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: Some("mesh3.admin.1".into()) }, "0f0c31313233343536373839616205626c645f31011a73687574646f776e2d6d6573683a3131323334353637383961620c3031323334353637383961620562697274681c626c645f312f312f6f746865722d6d656d626572732d6578697465640d6d657368322e61646d696e2e31ac02010d6d657368332e61646d696e2e31"),
-        (Frame::MeshLeft { mesh_id: mesh(), build_id: "bld_1".into(), attempt: 1, operation: OPERATION.into(), receipt_manifest: "bld_1/1/all-members-exited".into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None }, "100c31313233343536373839616205626c645f31011a73687574646f776e2d6d6573683a3131323334353637383961621a626c645f312f312f616c6c2d6d656d626572732d6578697465640d6d657368312e61646d696e2e31ac0200"),
+        (Frame::MeshLeaving { mesh_id: mesh(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: OPERATION.into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None }, "0e0c3131323334353637383961620c363668387172717661616a6b011a73687574646f776e2d6d6573683a3131323334353637383961620d6d657368312e61646d696e2e31ac0200"),
+        (Frame::MeshLeave { mesh_id: mesh(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: OPERATION.into(), final_node_id: NodeId::parse("0123456789ab").unwrap(), final_incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(), receipt_manifest: "66h8qrqvaajk/1/other-members-exited".into(), publisher: "mesh2.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: Some("mesh3.admin.1".into()) }, "0f0c3131323334353637383961620c363668387172717661616a6b011a73687574646f776e2d6d6573683a3131323334353637383961620c3031323334353637383961620c39776370726667777674687923363668387172717661616a6b2f312f6f746865722d6d656d626572732d6578697465640d6d657368322e61646d696e2e31ac02010d6d657368332e61646d696e2e31"),
+        (Frame::MeshLeft { mesh_id: mesh(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: OPERATION.into(), receipt_manifest: "66h8qrqvaajk/1/all-members-exited".into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None }, "100c3131323334353637383961620c363668387172717661616a6b011a73687574646f776e2d6d6573683a31313233343536373839616221363668387172717661616a6b2f312f616c6c2d6d656d626572732d6578697465640d6d657368312e61646d696e2e31ac0200"),
     ];
     for (frame, hex) in fixtures {
         assert_eq!(frame.encode(), bytes(&hex), "{frame:?}");
@@ -108,9 +108,9 @@ fn mesh_leave_frames_match_the_frozen_wire_schema() {
 #[test]
 fn a_peer_mesh_primary_forwards_mesh_frames_once_and_the_authors_mesh_does_not() {
     let authored = [
-        Frame::MeshLeaving { mesh_id: mesh(), build_id: "bld_1".into(), attempt: 1, operation: OPERATION.into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None },
-        Frame::MeshLeave { mesh_id: mesh(), build_id: "bld_1".into(), attempt: 1, operation: OPERATION.into(), final_node_id: NodeId::parse("0123456789ab").unwrap(), final_incarnation: IncarnationId("birth".into()), receipt_manifest: "m".into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None },
-        Frame::MeshLeft { mesh_id: mesh(), build_id: "bld_1".into(), attempt: 1, operation: OPERATION.into(), receipt_manifest: "m".into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None },
+        Frame::MeshLeaving { mesh_id: mesh(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: OPERATION.into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None },
+        Frame::MeshLeave { mesh_id: mesh(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: OPERATION.into(), final_node_id: NodeId::parse("0123456789ab").unwrap(), final_incarnation: IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("birth")).unwrap(), receipt_manifest: "m".into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None },
+        Frame::MeshLeft { mesh_id: mesh(), build_id: "66h8qrqvaajk".into(), attempt: 1, operation: OPERATION.into(), receipt_manifest: "m".into(), publisher: "mesh1.admin.1".into(), event_at_rafka_ms: 300, forwarded_by: None },
     ];
     for original in authored {
         let forwarded = forward_of(original.clone(), "mesh2.admin.1", "mesh2").expect("a peer mesh forwards it");
@@ -142,15 +142,15 @@ fn status_events_match_the_frozen_wire_schema_and_are_forwarded_with_their_publi
     let fixtures = [
         (
             Frame::NodeDeleting { op: op("retire-node:mesh1.rpc.1"), forwarded_by: None, publisher: publisher(), topology_version: 1 },
-            "03 05626c645f3101177265746972652d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 00 0d6d657368312e61646d696e2e3107702d6269727468 01",
+            "03 0c363668387172717661616a6b01177265746972652d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00 0d6d657368312e61646d696e2e310c793073657939677277367933 01",
         ),
         (
             Frame::NodeRestarting { op: op("restart-node:mesh1.rpc.1"), forwarded_by: Some("mesh2.admin.1".into()), publisher: publisher(), topology_version: 300 },
-            "05 05626c645f310118726573746172742d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 010d6d657368322e61646d696e2e31 0d6d657368312e61646d696e2e3107702d6269727468 ac02",
+            "05 0c363668387172717661616a6b0118726573746172742d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 010d6d657368322e61646d696e2e31 0d6d657368312e61646d696e2e310c793073657939677277367933 ac02",
         ),
         (
             Frame::NodeStopped { op: op("stop-node:mesh1.rpc.1"), forwarded_by: None, publisher: publisher(), topology_version: 300 },
-            "16 05626c645f31011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620562697274680b6d657368312e7270632e31ac02 00 0d6d657368312e61646d696e2e3107702d6269727468 ac02",
+            "16 0c363668387172717661616a6b011573746f702d6e6f64653a6d657368312e7270632e310c3031323334353637383961620c3977637072666777767468790b6d657368312e7270632e31ac02 00 0d6d657368312e61646d696e2e310c793073657939677277367933 ac02",
         ),
     ];
     for (frame, hex) in fixtures {

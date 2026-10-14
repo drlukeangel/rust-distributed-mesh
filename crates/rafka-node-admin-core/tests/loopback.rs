@@ -42,13 +42,10 @@ struct OwnReceipts {
 
 #[async_trait::async_trait]
 impl OperationRunner for OwnReceipts {
-    async fn run(&self, build: &BuildId, attempt: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), String> {
-        self.inner.run(build, attempt, op).await?;
-        let receipt = BuildStepReceipt { build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
-        self.builds.append_step_receipt(&receipt).await.map_err(|e| e.to_string())
-    }
-    async fn prepare(&self, build: &BuildId, attempt: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), String> {
-        self.inner.prepare(build, attempt, op).await
+    async fn run(&self, build: &BuildId, lane: Option<&str>, attempt: u32, op: &rafka_node_admin_core::build::BuildOperation) -> Result<(), rafka_node_admin_core::executor::RunEnd> {
+        self.inner.run(build, lane, attempt, op).await?;
+        let receipt = BuildStepReceipt { mesh: lane.map(str::to_string), build_id: build.clone(), attempt, operation: op.key(), step: "Complete".into(), outcome: StepOutcome::Complete, output: None, executor: None };
+        self.builds.append_step_receipt(&receipt).await.map_err(|e| e.to_string().into())
     }
 }
 
@@ -74,7 +71,8 @@ impl Loopback {
         self.lost.lock().unwrap().insert(executor.to_string());
     }
 
-    fn door(&self, executor: &PathName) -> Arc<RunDoor> {
+    /// `executor`'s own door for `build.attempt.run`: its view, its runner, the fixture's log or its own.
+    pub fn door(&self, executor: &PathName) -> Arc<RunDoor> {
         self.doors
             .lock()
             .unwrap()
@@ -86,10 +84,10 @@ impl Loopback {
                     let topology = self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone());
                     let runner = Arc::new(OwnReceipts { inner: self.runner.clone(), builds: framed.clone() });
                     let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: framed.clone(), topology, runner });
-                    return Arc::new(RunDoor { me: executor.clone(), builds: framed, exec, runs, local: own });
+                    return Arc::new(RunDoor { me: executor.clone(), builds: framed, exec, runs, local: own, gate: rafka_node_admin_core::park_gate::ParkGate::new() });
                 }
                 let exec = Arc::new(BuildExecutor { executor: executor.to_string(), builds: self.builds.clone(), topology: self.views.lock().unwrap().get(&executor.to_string()).cloned().unwrap_or_else(|| self.topology.clone()), runner: self.runner.clone() });
-                Arc::new(RunDoor { me: executor.clone(), builds: self.builds.clone(), exec, runs: Arc::new(AttemptRuns::default()), local: self.local.clone() })
+                Arc::new(RunDoor { me: executor.clone(), builds: self.builds.clone(), exec, runs: Arc::new(AttemptRuns::default()), local: self.local.clone(), gate: rafka_node_admin_core::park_gate::ParkGate::new() })
             })
             .clone()
     }
@@ -97,7 +95,10 @@ impl Loopback {
 
 #[async_trait::async_trait]
 impl Dispatcher for Loopback {
-    async fn dispatch(&self, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
+    fn hold(&self, me: &PathName, build_id: &BuildId, attempt: u32) -> Option<rafka_node_admin_core::build_run::HeldRun> {
+        self.door(me).hold(build_id, attempt)
+    }
+    async fn dispatch(&self, _turn: &rafka_node_admin_core::park_gate::Turn, executor: &PathName, build_id: &BuildId, attempt: u32, context: CallContext, intent: Vec<Vec<u8>>, plan: rafka_node_admin_core::executor::RunPlan) -> Dispatched {
         if self.lost.lock().unwrap().contains(&executor.to_string()) {
             return Dispatched::Unreached(format!("{executor} is gone: nothing answers at its address"));
         }

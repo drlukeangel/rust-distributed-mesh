@@ -7,19 +7,18 @@
 //!   -> MakeRuntimeFactAvailableToBirth -> WaitForBind
 //!   -> PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata -> WaitForMeshJoin
 //!   -> WaitForNodeReady -> Complete
-//! retire: DrainNode (drain-node to the exact birth; its receipt carries the CommandAdmission)
-//!   -> AwaitNodeDrained (bounded; a deadline is an arm, never a failure)
-//!   -> StopNode (stop-node, no implicit drain) -> AwaitNodeLeft (its `Stopped` reply, bounded, likewise)
+//! retire: StopNode (stop-node to the exact birth: its node.connections.delete { All }, then its
+//!   transport cut; the `Stopped` reply carries the All's ConnectionsReceipt)
+//!   -> AwaitNodeLeft (its `Stopped` reply, bounded; a deadline is an arm, never a failure)
 //!   -> TerminateRuntime (the provider's stop and exact inspection: only `Exited` is terminal proof)
 //!   -> RemoveTopologyMembership -> Complete
 //! delete of a crashed target: NodeDeleting -> TerminateRuntime (the exact exit proof, nothing sent)
 //!   -> NodeDeleted (from the mesh-primary's recorded exit proof) -> RemoveTopologyMembership -> Complete
-//! update: UpdateNode (node recovery's copy of the caller-owned meta, or a recipe's node.update of a
-//!   name through node.update's own core) -> Complete
+//! update: UpdateNode (a recipe's node.name.update of a name through node.name.update's own core) -> Complete
 //! ```
 //!
-//! Node recovery (node-recovery.md "Steps") is three operations of these, never a sequence of its
-//! own: the delete of the crashed target, the create over its data dir, the update. A recipe
+//! Node recovery (node-recovery.md "Steps") is two operations of these, never a sequence of its
+//! own: the delete of the crashed target, then the create over its data dir. A recipe
 //! (lifecycles/node-replace.md) is likewise its steps' own operations, in order.
 //!
 //! A removal releases identity, never storage: the data dir and its endpoint key stay
@@ -170,12 +169,10 @@ impl StartStep {
     }
 }
 
-/// The steps of node.update as a Build operation: node recovery's (node-recovery.md sequence step 6)
-/// and a recipe's.
+/// The steps of a recipe's `node.name.update` as a Build operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateStep {
-    /// The update itself: node recovery's copy of the caller-owned meta onto the new node, or a
-    /// recipe's name put (the frame name of node.update on 0x1B, node-update.md "Wire").
+    /// A recipe's name put.
     UpdateNode,
     /// The update is done.
     Complete,
@@ -217,10 +214,9 @@ pub enum RetireStep {
     /// The pre-notice (a removal only): the executor holds the operation; the node is
     /// found and not routable.
     NodeDeleting,
-    /// `drain-node` to the exact birth: refuse new work, finish eligible work, keep running.
-    DrainNode,
-    /// Wait, bounded, for the birth's `node-drained` completion call.
-    AwaitNodeDrained,
+    /// `node.connections.delete { All }` to the exact birth through its mesh-primary: graceful
+    /// closure of every open connection; the process keeps running.
+    DeleteConnections,
     /// `stop-node` to the exact birth: enter `Leaving` and shut down, with no implicit drain.
     StopNode,
     /// Wait, bounded, for node-left: the `Stopped` reply of the birth's `stop-node` call (R-ON1;
@@ -234,10 +230,6 @@ pub enum RetireStep {
     /// The pre-event of a restart: the executor holds `restart-node:<path>`; the birth is held
     /// through its Leaving until its later birth is heard.
     NodeRestarting,
-    /// A node-admin target only, before its drain or stop: when it holds a seat, TakeSeats to it
-    /// and the committed seats installed (node-drain.md step 0; node-rpc-envelope.md "TakeSeats").
-    /// Not in [`Self::ORDER`]: no other target runs it.
-    SeatTransfer,
     /// Remove the node from the local topology.
     RemoveTopologyMembership,
     /// The node is retired.
@@ -246,10 +238,8 @@ pub enum RetireStep {
 
 impl RetireStep {
     /// Every retire step in order.
-    pub const ORDER: [RetireStep; 9] = [
+    pub const ORDER: [RetireStep; 7] = [
         Self::NodeDeleting,
-        Self::DrainNode,
-        Self::AwaitNodeDrained,
         Self::StopNode,
         Self::AwaitNodeLeft,
         Self::TerminateRuntime,
@@ -264,9 +254,7 @@ impl RetireStep {
             Self::NodeDeleting => "NodeDeleting",
             Self::NodeDeleted => "NodeDeleted",
             Self::NodeRestarting => "NodeRestarting",
-            Self::SeatTransfer => "SeatTransfer",
-            Self::DrainNode => "DrainNode",
-            Self::AwaitNodeDrained => "AwaitNodeDrained",
+            Self::DeleteConnections => "DeleteConnections",
             Self::StopNode => "StopNode",
             Self::AwaitNodeLeft => "AwaitNodeLeft",
             Self::TerminateRuntime => "TerminateRuntime",
@@ -275,7 +263,6 @@ impl RetireStep {
         }
     }
 }
-
 /// Day 0: the externally started admin adopts its own runtime (PRD §5.3).
 /// One step of adopting the externally started admin's own runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,8 +344,8 @@ impl CurrentRuntimeAdoption {
         let mut a = Self { node: node.clone(), data_dir: data_dir.to_path_buf(), span, receipts: Vec::new(), fact: None };
         a.fact = a.step(AdoptStep::AdoptCurrentRuntime, |n| {
             match &container_domain {
-                Some(d) => RuntimeFact::of_this_container(&deployment_id.0, d),
-                None => RuntimeFact::of_this_process(&deployment_id.0),
+                Some(d) => RuntimeFact::of_this_container(&deployment_id.as_str(), d),
+                None => RuntimeFact::of_this_process(&deployment_id.as_str()),
             }
             .map(|f| (Some(f.clone()), RuntimeEvidence::of(&f)))
             .map_err(|e| format!("{n}: {e}"))
@@ -479,12 +466,6 @@ pub trait NodeObserver: Send + Sync {
     async fn send_command(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext) -> CommandAdmission {
         CommandAdmission::NotSent { reason: format!("this observer holds no Node RPC client to command {}", node.name) }
     }
-    /// The SeatTransfer step of a drain, stop, restart or delete of the node-admin `node`: TakeSeats
-    /// to it for every seat this admin's records say it holds, the committed seats installed from
-    /// the reply. A target that holds no seat transfers nothing.
-    async fn transfer_seats(&self, _node: &Node, _ctx: &CommandContext) -> Result<crate::fabric_handover::SeatTransferOutcome, String> {
-        Ok(crate::fabric_handover::SeatTransferOutcome::NotAHolder)
-    }
     /// Wait up to `within` for the commanded birth's completion at this admin: its `node-drained`
     /// call, or node-left, which is the `Stopped` reply of its `stop-node` call.
     async fn await_completion(&self, node: &Node, _cmd: crate::node_commands::NodeCommand, _ctx: &CommandContext, _within: Duration) -> Completion {
@@ -558,8 +539,11 @@ pub(crate) fn ready_prerequisites_missing(receipts: &[BuildStepReceipt], operati
 /// of this pipeline runs it: a delete retains the data dir and endpoint key (node-delete.md
 /// "Storage"). It stays the receipt's shape so the Build topic's positional layout
 /// ([`crate::wire`]) and a receipt an earlier build wrote still decode.
+///
+/// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
+/// even under `deny_unknown_fields`, and an empty field list refuses it. The JSON is the same.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "arm", rename_all = "kebab-case")]
+#[serde(tag = "arm", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum StorageDisposition {
     /// Released through the exact locator.
     Released {
@@ -567,28 +551,36 @@ pub enum StorageDisposition {
         locator: String,
     },
     /// `Persistent { on_retire: Preserve }`: left where it is.
-    Preserved,
-    /// The Build holds no meta for this path: left where it is, never destroyed on missing evidence.
-    PreservedNoMeta,
+    Preserved {},
+    /// The Build holds no path config for this path: left where it is, never destroyed on missing evidence.
+    PreservedNoMeta {},
 }
 
-/// What one directed command (`drain-node`, `stop-node`) established at the exact birth: the
-/// DrainNode / StopNode step's receipt. Admission is not completion.
+/// What one directed command (`node.connections.delete`, `stop-node`, `start-node`) established at
+/// the exact birth: its step's receipt. Admission is not completion.
+///
+/// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
+/// even under `deny_unknown_fields`, and an empty field list refuses it. The JSON is the same.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "arm", rename_all = "kebab-case")]
+#[serde(tag = "arm", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum CommandAdmission {
     /// The birth answered `Applied`.
-    Admitted,
+    Admitted {},
     /// The birth answered `AlreadyApplied`: the same operation was admitted before.
-    AlreadyAdmitted,
-    /// The birth answered `stop-node` with `Stopped`: it drained, cut its mesh connections and is
-    /// parked, and this is what its drain established.
+    AlreadyAdmitted {},
+    /// The birth answered `stop-node` with `Stopped`: its `node.connections.delete { All }`
+    /// completed, it cut its transport and is stopped, and this is what that `All` established.
     Stopped {
-        /// The drain's receipt.
-        receipt: rafka_node_rpc_contract::status::DrainReceipt,
+        /// The `All`'s receipt.
+        receipt: rafka_node_rpc_contract::status::ConnectionsReceipt,
+    },
+    /// The birth answered `node.connections.delete { All }` with `node.connections.deleted`.
+    ConnectionsDeleted {
+        /// What the closure established.
+        receipt: rafka_node_rpc_contract::status::ConnectionsReceipt,
     },
     /// The birth answered `start-node` with `Started`: it rejoined as itself.
-    Started,
+    Started {},
     /// The birth answered `start-node` with `StartFailed`: it is parked still, and nothing after
     /// `step` ran.
     StartFailed {
@@ -607,7 +599,7 @@ pub enum CommandAdmission {
         /// Why the outcome is unknown.
         reason: String,
     },
-    /// The birth, or the op fence, refused the call by name (a stale incarnation, an unserved op).
+    /// The birth, or the op, refused the call by name (a stale incarnation, an unserved op).
     Refused {
         /// The refusal's name.
         reply: String,
@@ -617,15 +609,16 @@ pub enum CommandAdmission {
 impl CommandAdmission {
     /// Whether the birth holds the command.
     pub fn admitted(&self) -> bool {
-        matches!(self, Self::Admitted | Self::AlreadyAdmitted | Self::Stopped { .. } | Self::Started)
+        matches!(self, Self::Admitted {} | Self::AlreadyAdmitted {} | Self::Stopped { .. } | Self::ConnectionsDeleted { .. } | Self::Started {})
     }
     /// The arm's name.
     pub fn name(&self) -> &'static str {
         match self {
-            Self::Admitted => "admitted",
-            Self::AlreadyAdmitted => "already-admitted",
+            Self::Admitted {} => "admitted",
+            Self::AlreadyAdmitted {} => "already-admitted",
             Self::Stopped { .. } => "stopped",
-            Self::Started => "started",
+            Self::ConnectionsDeleted { .. } => "connections-deleted",
+            Self::Started {} => "started",
             Self::StartFailed { .. } => "start-failed",
             Self::NotSent { .. } => "not-sent",
             Self::Indeterminate { .. } => "indeterminate",
@@ -641,10 +634,11 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
     use rafka_node_rpc_contract::status::StatusReply;
     match out {
         RpcOutcome::Reply(r) => match r.value() {
-            StatusReply::Applied => CommandAdmission::Admitted,
-            StatusReply::AlreadyApplied => CommandAdmission::AlreadyAdmitted,
-            StatusReply::Stopped { receipt } => CommandAdmission::Stopped { receipt: *receipt },
-            StatusReply::Started => CommandAdmission::Started,
+            StatusReply::Applied => CommandAdmission::Admitted {},
+            StatusReply::AlreadyApplied => CommandAdmission::AlreadyAdmitted {},
+            StatusReply::Stopped { receipt } => CommandAdmission::Stopped { receipt: receipt.clone() },
+            StatusReply::ConnectionsDeleted { receipt: Some(receipt), .. } => CommandAdmission::ConnectionsDeleted { receipt: receipt.clone() },
+            StatusReply::Started => CommandAdmission::Started {},
             StatusReply::StartFailed { step, reason } => CommandAdmission::StartFailed { step: step.clone(), reason: reason.clone() },
             other => CommandAdmission::Refused { reply: format!("{}: {other:?}", other.name()) },
         },
@@ -659,15 +653,18 @@ pub fn command_admission(out: &rafka_node_rpc_contract::outcome::RpcOutcome<rafk
 /// of its `stop-node` call) reached this admin: the
 /// AwaitNodeDrained / AwaitNodeLeft step's receipt. A missing completion is indeterminate, never
 /// success; the provider's terminal proof is what ends a stop.
+///
+/// An arm with no field is written `Arm {}`: an internally tagged enum ignores a field on a unit arm
+/// even under `deny_unknown_fields`, and an empty field list refuses it. The JSON is the same.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "arm", rename_all = "kebab-case")]
+#[serde(tag = "arm", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Completion {
     /// The matching completion call was accepted.
-    Received,
+    Received {},
     /// The lifecycle drain deadline passed with no completion call.
-    Deadline,
+    Deadline {},
     /// This deployment's own runtime exited before any completion call came.
-    RuntimeExited,
+    RuntimeExited {},
     /// The command was not admitted, so no completion was awaited.
     NotAwaited {
         /// Why: the admission arm.
@@ -679,6 +676,7 @@ pub enum Completion {
 /// runtime exited. It binds the node, the birth and the immutable runtime (by fingerprint, never a
 /// pid or container id), so a recycled pid or a reusable container name cannot satisfy it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TerminalReceipt {
     /// The node's `path.name`.
     pub node: String,
@@ -694,6 +692,7 @@ pub struct TerminalReceipt {
 
 /// An exact runtime by fingerprint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeProof {
     /// The deployment that ran the birth.
     pub deployment_id: String,
@@ -765,20 +764,25 @@ pub trait LifecycleEvents: Send + Sync {
     /// The exact birth answered `stop-node` with `stopped`: it is parked. The mesh primary publishes
     /// the departure as `NodeStopped` in its in-flight overlay; the node gossips nothing.
     async fn stopped(&self, op: &LifecycleOp);
+    /// The exact birth's `stop-node` completed (its `stopped` reply is held, whichever workflow
+    /// stopped it: a stop, a restart, a replace, a delete): from its stop's transport cut it says
+    /// nothing more. A former seat holder's committed update is said by its mesh's primary, its next
+    /// writer, from here (R-NS2).
+    async fn stop_completed(&self, op: &LifecycleOp);
     /// The stopped birth answered `start-node` with `Started`: this executor took its `node.joined`
     /// (`op` is the start's operation on that exact birth). Its stop ends here and nowhere else
     /// (node-start.md step 2), the birth is held `Pending`, and this mesh's projection says so.
     async fn joined(&self, op: &LifecycleOp);
     /// The accepted `drain-node` command's hook: `node-draining`, on the executor's own mesh
     /// channel and the backbone.
-    async fn draining(&self, op: &LifecycleOp);
+    async fn connections_deleting(&self, op: &LifecycleOp);
     /// The accepted `stop-node` command's hook: `node-leaving`, on the executor's own mesh channel
     /// and the backbone.
     async fn leaving(&self, op: &LifecycleOp);
-    /// The accepted `leave-mesh` command's hook: `mesh-leaving`, authored by the fabric-primary on
+    /// The accepted `delete-mesh` command's hook: `mesh-leaving`, authored by the fabric-primary on
     /// the backbone and its own mesh channel.
     async fn mesh_leaving(&self, event: &MeshLeaveEvent);
-    /// The `mesh-leave` handoff call's hook: authored by the still-running mesh-primary on the
+    /// The `mesh-deleted` handoff call's hook: authored by the still-running mesh-primary on the
     /// backbone and its own mesh channel.
     async fn mesh_leave(&self, event: &MeshLeaveEvent);
     /// The completed workflow's hook: `mesh-left`, authored by the fabric-primary after every exact
@@ -798,8 +802,9 @@ impl LifecycleEvents for NoLifecycleEvents {
     async fn deleted(&self, _op: &LifecycleOp) {}
     async fn restarting(&self, _op: &LifecycleOp) {}
     async fn stopped(&self, _op: &LifecycleOp) {}
+    async fn stop_completed(&self, _op: &LifecycleOp) {}
     async fn joined(&self, _op: &LifecycleOp) {}
-    async fn draining(&self, _op: &LifecycleOp) {}
+    async fn connections_deleting(&self, _op: &LifecycleOp) {}
     async fn leaving(&self, _op: &LifecycleOp) {}
     async fn mesh_leaving(&self, _event: &MeshLeaveEvent) {}
     async fn mesh_leave(&self, _event: &MeshLeaveEvent) {}
@@ -851,6 +856,9 @@ pub struct LaunchTemplate {
     /// The issuing material a new mesh's first node-admin is launched with: set on the template of
     /// that launch alone, from the signer's `issue_mesh_issuer`. `None` for every other launch.
     pub mesh_issuer: Option<Vec<u8>>,
+    /// The bound of a `node.connections.delete { All }` every launch carries: the launching admin's
+    /// own (`AdminConfig::connections_delete_deadline`).
+    pub connections_delete_deadline: Duration,
 }
 
 impl LaunchTemplate {
@@ -952,20 +960,6 @@ pub(crate) enum StopProof {
     Stopped,
 }
 
-/// A request for node recovery's node.update (node-recovery.md sequence step 6): the caller-owned
-/// meta of the exited birth copied onto the new node created at its path.name.
-#[derive(Debug, Clone)]
-pub struct UpdateRequest {
-    /// The Build.
-    pub build_id: BuildId,
-    /// The attempt.
-    pub attempt: u32,
-    /// The node updated: the one the create made at the exited birth's path.name.
-    pub node: Node,
-    /// The exited birth's record, whose caller-owned meta is copied.
-    pub from: Node,
-}
-
 /// A step that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineError {
@@ -990,10 +984,10 @@ pub struct Timeouts {
     pub join: Duration,
     /// How long `WaitForNodeReady` waits.
     pub ready: Duration,
-    /// How long `AwaitNodeDrained` and `AwaitNodeLeft` wait for a completion call.
-    pub drain: Duration,
-    /// Stop-ladder grace before a forced kill; longer than the node's own
-    /// drain deadline (node-rpc §35).
+    /// How long `AwaitNodeLeft` waits for the stop's reply.
+    pub completion: Duration,
+    /// Stop-ladder grace before a forced kill; longer than the node's own connections-delete bound
+    /// (its launch's `connections_delete_deadline`, node-rpc §35).
     pub stop_grace: Duration,
 }
 
@@ -1003,7 +997,7 @@ impl Default for Timeouts {
             bind: Duration::from_secs(20),
             join: Duration::from_secs(30),
             ready: Duration::from_secs(30),
-            drain: Duration::from_secs(10),
+            completion: Duration::from_secs(10),
             stop_grace: Duration::from_secs(8),
         }
     }
@@ -1011,6 +1005,7 @@ impl Default for Timeouts {
 
 /// Where a birth reported it bound: the addresses its own digest names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Bound {
     /// The transport address the birth bound.
     pub transport: SocketAddr,
@@ -1024,15 +1019,8 @@ impl Bound {
         if transport.ip().is_unspecified() || transport.port() == 0 {
             return Err(format!("it reported the transport address {transport}, which is not an address a peer can dial"));
         }
-        let mut listeners = Vec::new();
-        if let Some(base) = &d.admin_api_base {
-            let addr = base
-                .strip_prefix("http://")
-                .and_then(|a| a.parse::<SocketAddr>().ok())
-                .ok_or_else(|| format!("it reported the control API base {base:?}, which is not http://<ip>:<port>"))?;
-            listeners.push(("control".to_string(), addr));
-        }
-        Ok(Self { transport, listeners })
+        // A node-admin opens no HTTP listener (rdm-crate-and-test-layout.md §2): its `admin_api_base` is config.
+        Ok(Self { transport, listeners: Vec::new() })
     }
 }
 
@@ -1067,6 +1055,7 @@ pub struct Created {
 
 /// What `AllocateIdentity` decides.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Identity {
     node_id: NodeId,
     incarnation: IncarnationId,
@@ -1170,6 +1159,9 @@ impl DeploymentPipeline<'_> {
             attempt = run.attempt,
             outcome = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
+            io_calls = tracing::field::Empty,
+            io_queued_ms = tracing::field::Empty,
+            io_ms = tracing::field::Empty,
         );
         let started = Instant::now();
         if run.reusing {
@@ -1181,8 +1173,13 @@ impl DeploymentPipeline<'_> {
             }
             run.reusing = false;
         }
-        let r = work.instrument(span.clone()).await;
+        // Where the time of a step that took long went: its blocking calls' wait for a thread and their
+        // run on one, beside the elapsed time.
+        let (r, io) = crate::record_store::io_time(work.instrument(span.clone())).await;
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
+        if io.calls() > 0 {
+            span.record("io_calls", io.calls()).record("io_queued_ms", io.queued_ms()).record("io_ms", io.ran_ms());
+        }
         let (outcome, output) = match &r {
             Ok(v) => (StepOutcome::Complete, serde_json::to_value(v).ok().filter(|v| !v.is_null())),
             Err(reason) => (StepOutcome::Failed { reason: reason.clone() }, None),
@@ -1194,6 +1191,7 @@ impl DeploymentPipeline<'_> {
         let appended = self
             .builds
             .append_step_receipt(&BuildStepReceipt {
+                mesh: None,
                 build_id: run.build_id.clone(),
                 attempt: run.attempt,
                 operation: run.operation.clone(),
@@ -1333,7 +1331,7 @@ impl DeploymentPipeline<'_> {
             attempt = req.attempt,
             operation = %run.operation,
             node_id = %identity.node_id,
-            incarnation_id = %identity.incarnation.0,
+            incarnation_id = %identity.incarnation.as_str(),
             deployment_id = %identity.deployment_id,
             executor = %self.template.executor(),
             outcome = tracing::field::Empty,
@@ -1446,7 +1444,10 @@ impl DeploymentPipeline<'_> {
                 // claim is (`NodeRow::allocated`): a later run of this operation that never heard
                 // this one's receipts continues the same birth rather than being refused by it.
                 let allocated = crate::storage::Allocation { build_id: req.build_id.clone(), operation: run_operation.clone(), incarnation: id.incarnation.clone(), deployment_id: id.deployment_id.clone() };
-                rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated))
+                // A create over an exited birth's data dir is node recovery's (node-recovery.md step
+                // 4), whose claim inherits the Deleted row's tags with its config.
+                let of = if inherits { crate::node_rows::ClaimFor::Recovery } else { crate::node_rows::ClaimFor::Create };
+                rows.claim(&req.node, &id.node_id, &run_operation, Some(&allocated), of)
                     .await
                     .map_err(|e| format!("{}: the name claim refused the birth {}; nothing is launched: {e}", req.node, id.node_id))?;
                 *claiming = Some(id.node_id.clone());
@@ -1487,6 +1488,7 @@ impl DeploymentPipeline<'_> {
             store_dir: self.template.store_dir.clone(),
             mesh_id: self.template.env.get(rafka_mesh_entity::launch::ENV_MESH_ID).and_then(|v| rafka_mesh_entity::MeshId::parse(v).ok()),
             mesh_issuer: self.template.mesh_issuer.clone(),
+            connections_delete_deadline: self.template.connections_delete_deadline,
         };
         // The launch environment; its TRACEPARENT is taken inside the
         // DeployRuntime step, so the runtime's boot span is that step's child.
@@ -1556,7 +1558,7 @@ impl DeploymentPipeline<'_> {
         };
         self.step(run, CreateStep::RegisterExactRuntimeHandle.name(), async {
             let f = exact()?;
-            if f.deployment_id != id.deployment_id.0 {
+            if f.deployment_id != id.deployment_id.as_str() {
                 return Err(format!("{}: the handle realises deployment {}, not {}", req.node, f.deployment_id, id.deployment_id));
             }
             f.validate().map_err(|e| format!("{}: {e}", req.node))?;
@@ -1694,7 +1696,7 @@ impl DeploymentPipeline<'_> {
                             return Err(format!("runtime exited (code {code:?}) before it was Ready ({not_ready}): {detail}"));
                         }
                         if let Some(blocker) = self.observer.ready_blocker(&node).await {
-                            self.builds.note_blocked(run_build, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
+                            self.builds.note_blocked(run_build, None, run_attempt, &run_operation, CreateStep::WaitForNodeReady.name(), &blocker).await;
                         }
                         tokio::time::sleep(Duration::from_millis(100)).await
                     }
@@ -1705,18 +1707,30 @@ impl DeploymentPipeline<'_> {
         Ok(Created { node, handle })
     }
 
-    /// A standalone drain (node-drain.md): `drain-node:<path>` is the drain-node command, the wait for
-    /// the exact birth's `node-drained` and `Complete`, whose receipt names the birth. The process keeps
-    /// running; nothing stops it and nothing is deleted.
-    pub async fn drain(&self, req: &RetireRequest) -> Result<(), PipelineError> {
+    /// A standalone `node.connections.delete { All }` (node-connections-delete.md):
+    /// `node.connections.delete:<path>`. A node-admin target that held a seat had it moved by
+    /// node.primary.update before this runs (the fabric-primary's drive, `crate::executor::seat_move`);
+    /// the exact birth's mesh-primary sets connections-deleting at admission and holds the birth's
+    /// `node.connections.deleted` with its receipt. The process keeps running; nothing
+    /// stops it and nothing is deleted.
+    pub async fn delete_connections(&self, req: &RetireRequest) -> Result<(), PipelineError> {
         use tracing::Instrument;
-        let span = self.pipeline_span("drain", &req.build_id, &req.node.name, req.attempt);
+        let span = self.pipeline_span("node.connections.delete", &req.build_id, &req.node.name, req.attempt);
         async {
             let name = &req.node.name;
-            let mut run = self.begin(&req.build_id, req.attempt, name, format!("drain-node:{name}")).await?;
-            let mut node = req.node.clone();
-            self.seat_transfer_step(&mut run, &node).await?;
-            self.drain_steps_with(&mut run, &mut node, &req.handle, true).await?;
+            let mut run = self.begin(&req.build_id, req.attempt, name, format!("node.connections.delete:{name}")).await?;
+            let node = req.node.clone();
+            let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
+            let _: CommandAdmission = self
+                .step(&mut run, RetireStep::DeleteConnections.name(), async {
+                    let op = self.command_op(&ctx, &node)?;
+                    self.lifecycle.connections_deleting(&op).await;
+                    match self.observer.send_command(&node, crate::node_commands::NodeCommand::DeleteConnections, &ctx).await {
+                        a @ CommandAdmission::ConnectionsDeleted { .. } => Ok(a),
+                        other => Err(format!("{}: node.connections.delete {{ All }} ended {other:?}; no node.connections.deleted is held", node.name)),
+                    }
+                })
+                .await?;
             self.complete(&mut run).await
         }
         .instrument(span)
@@ -1735,7 +1749,6 @@ impl DeploymentPipeline<'_> {
             let name = &req.node.name;
             let mut run = self.begin(&req.build_id, req.attempt, name, format!("stop-node:{name}")).await?;
             let mut node = req.node.clone();
-            self.seat_transfer_step(&mut run, &node).await?;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: true }).await?;
             // The `Complete` receipt opens the birth's stopped period: it commits the stop's
             // lifecycle op, the exact birth and the rafka-time it stopped at, which the stopped-node
@@ -1794,8 +1807,6 @@ impl DeploymentPipeline<'_> {
             self.lifecycle.restarting(&op).await;
             // The stop of the live process: it parks and stays, and its `stopped` is the stop's
             // completion. `NodeRestarting` holds it, so no `NodeStopped` is published for it.
-            self.seat_transfer_step(&mut run, &node).await?;
-            self.drain_steps(&mut run, &mut node, &req.handle).await?;
             self.stop_steps_with(&mut run, &mut node, &req.handle, StopProof::Stopped, StopEnd::Park { publish_stopped: false }).await?;
             // The start of the same process.
             self.start_steps(&mut run, &mut node, &req.handle, &req.deployed).await?;
@@ -1814,6 +1825,12 @@ impl DeploymentPipeline<'_> {
     /// verified against it), `start-node` goes to the parked birth and its reply is `Started`, then
     /// the wait for the birth to report ready.
     async fn start_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, deployed: &Deployed) -> Result<(), PipelineError> {
+        self.start_steps_as(run, node, handle, deployed, [StartStep::StartNode.name(), CreateStep::WaitForNodeReady.name()]).await
+    }
+
+    /// [`Self::start_steps`] whose two steps are receipted as `steps` (the send, the readiness): a
+    /// replace's successor starts in the operation that created it, and its start's receipts are its own.
+    async fn start_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, deployed: &Deployed, steps: [&'static str; 2]) -> Result<(), PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Start, node);
         // Held while this start runs, however it ends; a deployment that never heard its birth is remembered abandoned.
@@ -1839,7 +1856,7 @@ impl DeploymentPipeline<'_> {
             event_at_rafka_ms: 0,
         });
         let admission: CommandAdmission = self
-            .step(run, StartStep::StartNode.name(), async {
+            .step(run, steps[0], async {
                 node.status = NodeStatus::Pending;
                 self.sink.publish(node.clone());
                 // node.joined is taken when the birth's join is admitted, before the birth can report
@@ -1867,7 +1884,7 @@ impl DeploymentPipeline<'_> {
                     }
                 };
                 match &admission {
-                    CommandAdmission::Started => {
+                    CommandAdmission::Started {} => {
                         // `start-node` answered `Started`: the birth rejoined. A start with no join to
                         // this executor admitted (its join door saw none) takes node.joined here.
                         if !joined || reported.borrow().is_none() {
@@ -1875,6 +1892,11 @@ impl DeploymentPipeline<'_> {
                         }
                         Ok(admission)
                     }
+                    // The reissue of the start that already brought this birth back (a later attempt
+                    // of the same Build, after its executor was lost): its node.joined and node.started
+                    // were taken when it ran; taking node.joined again would set the birth back to
+                    // Pending with no node.started to follow. Readiness is read next, as for any start.
+                    CommandAdmission::AlreadyAdmitted {} => Ok(admission),
                     CommandAdmission::StartFailed { step, reason } => Err(format!("{}: node.start failed at {step}: {reason}", node.name)),
                     other => Err(format!("{}: start-node was not answered Started ({other:?}); the birth is not known to have rejoined", node.name)),
                 }
@@ -1883,7 +1905,7 @@ impl DeploymentPipeline<'_> {
         let _ = admission;
         let until = Instant::now() + self.timeouts.ready;
         let _: () = self
-            .step(run, CreateStep::WaitForNodeReady.name(), async {
+            .step(run, steps[1], async {
                 loop {
                     match self.observer.ready(node).await {
                         Ok(()) => return Ok(()),
@@ -1967,9 +1989,9 @@ impl DeploymentPipeline<'_> {
                     reason: format!(
                         "{name}: the exit proof names birth {} at {}, the delete is of {} at {}",
                         exit.node_id,
-                        exit.incarnation_id.0,
+                        exit.incarnation_id.as_str(),
                         node.node_id,
-                        node.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")
+                        node.incarnation_id.as_ref().map(|i| i.as_str()).unwrap_or("no known birth")
                     ),
                 });
             }
@@ -2002,8 +2024,6 @@ impl DeploymentPipeline<'_> {
             // The two halves of the shutdown leg are separate operations (node-drain.md, node-stop.md):
             // drain-node and its node-drained, then stop-node, its node-left reply and the provider's
             // terminal proof.
-            self.seat_transfer_step(&mut run, &node).await?;
-            self.drain_steps(&mut run, &mut node, handle).await?;
             self.stop_steps_with(&mut run, &mut node, handle, StopProof::Lenient, StopEnd::Terminate { publish_stopped: true }).await?.expect("a stop that terminates yields the provider's receipt")
         };
         // The departure: the provider's inspection above is the proof. Nothing earlier (the
@@ -2020,7 +2040,7 @@ impl DeploymentPipeline<'_> {
                         attempt = req.attempt,
                         node = %name,
                         node_id = %exit.node_id,
-                        incarnation_id = %exit.incarnation_id.0,
+                        incarnation_id = %exit.incarnation_id.as_str(),
                         exit_code = exit.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
                         proof = %exit.proof,
                         observed_at_ms = exit.observed_at_ms,
@@ -2050,11 +2070,10 @@ impl DeploymentPipeline<'_> {
     /// The command identity for `cmd` on `node` in this run: the Build, the attempt and the
     /// operation (`drain-node:<path>` / `stop-node:<path>`).
     fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {
-        // A drain's operation key has one source: the `node.drain` object derives it, and the receipt, the wire request and the completion all carry that key.
         let operation = match cmd {
-            crate::node_commands::NodeCommand::Drain => rafka_node_admin_client::DrainContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
-            crate::node_commands::NodeCommand::Stop => rafka_node_admin_client::StopContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
-            crate::node_commands::NodeCommand::Start => rafka_node_admin_client::StartContext::new(rafka_node_admin_client::BuildId(run.build_id.to_string()), run.attempt, node.name.clone()).operation(),
+            crate::node_commands::NodeCommand::DeleteConnections => format!("node.connections.delete:{}", node.name),
+            crate::node_commands::NodeCommand::Stop => rafka_node_admin_client::StopContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
+            crate::node_commands::NodeCommand::Start => rafka_node_admin_client::StartContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
         };
         CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation }
     }
@@ -2089,68 +2108,6 @@ impl DeploymentPipeline<'_> {
         }
     }
 
-    /// SeatTransfer (node-drain.md step 0, node-stop.md "Seat holder"): before a node-admin target
-    /// drains, the seats it holds move to this executor by TakeSeats, once per run and under the
-    /// run's own operation, so an identical retry of the run sends the identical call.
-    /// A refusal fails the step by name and nothing is drained, a fabric seat included: it is never
-    /// taken by an executor of another mesh (`HandoverDoor::take_seats` refuses it). `OtherMesh` is a
-    /// holder of its own mesh's seat alone with no other admin in that mesh: the seat stays with it
-    /// until its birth is gone and the ordinary election seats the next.
-    async fn seat_transfer_step(&self, run: &mut Run<'_>, node: &Node) -> Result<(), PipelineError> {
-        if node.kind != crate::model::NodeKind::NodeAdmin {
-            return Ok(());
-        }
-        let ctx = CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation: run.operation.clone() };
-        let _: crate::fabric_handover::SeatTransferOutcome = self.step(run, RetireStep::SeatTransfer.name(), self.observer.transfer_seats(node, &ctx)).await?;
-        Ok(())
-    }
-
-    /// The drain half of a shutdown (node-drain.md): `drain-node` to the exact birth, then the
-    /// wait for its `node-drained` completion call. The birth stays running. The completion wait
-    /// ends at the lifecycle drain deadline (an arm, recorded) or at this runtime's exit.
-    pub(crate) async fn drain_steps(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle) -> Result<(), PipelineError> {
-        self.drain_steps_with(run, node, handle, false).await
-    }
-
-    /// [`Self::drain_steps`]; `strict` (a standalone drain) fails the wait step by name unless the
-    /// matching `node-drained` call was accepted: a command not admitted, an admission
-    /// acknowledgement, a deadline and an exit are each not drain completion (node-drain.md).
-    async fn drain_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, strict: bool) -> Result<(), PipelineError> {
-        use crate::node_commands::NodeCommand;
-        let ctx = self.command_context(run, NodeCommand::Drain, node);
-        node.status = NodeStatus::Draining;
-        let admission: CommandAdmission = self
-            .step(run, RetireStep::DrainNode.name(), async {
-                self.sink.publish(node.clone());
-                // The accepted command's hook, then the command.
-                let op = self.command_op(&ctx, node)?;
-                self.lifecycle.draining(&op).await;
-                Ok(self.observer.send_command(node, NodeCommand::Drain, &ctx).await)
-            })
-            .await?;
-        let _: Completion = self
-            .step(run, RetireStep::AwaitNodeDrained.name(), async {
-                if !admission.admitted() {
-                    // Admission is not drain completion, and a command the birth never held has
-                    // none to follow (node-drain.md): a standalone drain is not complete.
-                    if strict {
-                        return Err(format!("{}: drain-node was not admitted ({admission:?}); no node-drained can follow, the drain is not complete", node.name));
-                    }
-                    return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
-                }
-                let c = tokio::select! {
-                    c = self.observer.await_completion(node, NodeCommand::Drain, &ctx, self.timeouts.drain) => c,
-                    () = self.until_exited(handle) => Completion::RuntimeExited,
-                };
-                match (strict, &c) {
-                    (true, c) if *c != Completion::Received => Err(format!("{}: drain-node was admitted but no matching node-drained call was accepted ({c:?}); the drain is not complete", node.name)),
-                    _ => Ok(c),
-                }
-            })
-            .await?;
-        Ok(())
-    }
-
     /// The stop half of a shutdown (node-stop.md): `stop-node` to the exact birth (no implicit
     /// drain), the wait for node-left (the `Stopped` reply of that call), the mesh primary's
     /// `NodeStopped` from that matching reply, then, by `end`, the parked process or the provider's
@@ -2160,6 +2117,12 @@ impl DeploymentPipeline<'_> {
     /// birth's `stopped` reply received).
     /// `end` says what follows: the process parks, or the provider ends it.
     async fn stop_steps_with(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd) -> Result<Option<TerminalReceipt>, PipelineError> {
+        self.stop_steps_as(run, node, handle, proof, end, [RetireStep::StopNode.name(), RetireStep::AwaitNodeLeft.name()]).await
+    }
+
+    /// [`Self::stop_steps_with`] whose two steps are receipted as `steps` (the send, the left reply):
+    /// a replace stops two nodes in one operation, and each stop's receipts are its own.
+    async fn stop_steps_as(&self, run: &mut Run<'_>, node: &mut Node, handle: &DeploymentHandle, proof: StopProof, end: StopEnd, steps: [&'static str; 2]) -> Result<Option<TerminalReceipt>, PipelineError> {
         use crate::node_commands::NodeCommand;
         let ctx = self.command_context(run, NodeCommand::Stop, node);
         node.status = NodeStatus::Leaving;
@@ -2167,7 +2130,7 @@ impl DeploymentPipeline<'_> {
         // `stop-node` is held until the birth is parked, and its reply is `stopped`: the birth drained,
         // cut its mesh connections and entered Leaving. The command is `Stopped` or it is not complete.
         let admission: CommandAdmission = self
-            .step(run, RetireStep::StopNode.name(), async {
+            .step(run, steps[0], async {
                 self.sink.publish(node.clone());
                 let op = self.command_op(&ctx, node)?;
                 self.lifecycle.leaving(&op).await;
@@ -2175,7 +2138,7 @@ impl DeploymentPipeline<'_> {
             })
             .await?;
         let _: Completion = self
-            .step(run, RetireStep::AwaitNodeLeft.name(), async {
+            .step(run, steps[1], async {
                 if !admission.admitted() {
                     // A command the birth never held has no left reply to follow (node-stop.md): a
                     // standalone stop is not complete.
@@ -2184,17 +2147,30 @@ impl DeploymentPipeline<'_> {
                     }
                     return Ok(Completion::NotAwaited { admission: format!("{admission:?}") });
                 }
-                let c = tokio::select! {
-                    c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.drain) => c,
-                    () = self.until_exited(handle) => Completion::RuntimeExited,
+                // The stop's reply is its completion (node-stop.md: stop-node answers `Stopped` on its own
+                // call): a `StopNode` receipt that recorded `Stopped` is the left reply, whichever executor
+                // made the call. Only an admission without it waits for the reply.
+                let c = match &admission {
+                    CommandAdmission::Stopped { .. } => {
+                        crate::node_commands::completion_span(node, NodeCommand::Stop, &ctx, true);
+                        Completion::Received {}
+                    }
+                    _ => tokio::select! {
+                        c = self.observer.await_completion(node, NodeCommand::Stop, &ctx, self.timeouts.completion) => c,
+                        () = self.until_exited(handle) => Completion::RuntimeExited {},
+                    },
                 };
-                // The mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.
-                if publish_stopped && c == Completion::Received {
+                // The stop's completion: a former seat holder's update is said first (R-NS2), then the
+                // mesh primary publishes the departure from the matching `stopped`; the node gossips nothing.
+                if matches!(c, Completion::Received {}) {
                     let op = self.command_op(&ctx, node)?;
-                    self.lifecycle.stopped(&op).await;
+                    self.lifecycle.stop_completed(&op).await;
+                    if publish_stopped {
+                        self.lifecycle.stopped(&op).await;
+                    }
                 }
                 match (proof != StopProof::Lenient, &c) {
-                    (true, c) if *c != Completion::Received => Err(format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name)),
+                    (true, c) if *c != Completion::Received {} => Err(format!("{}: stop-node was admitted but its left reply was not received ({c:?}); the stop is not complete", node.name)),
                     _ => Ok(c),
                 }
             })
@@ -2271,7 +2247,7 @@ impl DeploymentPipeline<'_> {
             Ok(TerminalReceipt {
                 node: name.to_string(),
                 node_id: node.node_id.to_string(),
-                incarnation_id: node.incarnation_id.as_ref().map(|i| i.0.clone()).ok_or_else(|| format!("{name} has no known birth: the exit proves no birth"))?,
+                incarnation_id: node.incarnation_id.as_ref().map(|i| i.to_string()).ok_or_else(|| format!("{name} has no known birth: the exit proves no birth"))?,
                 runtime: handle.fact().as_ref().map(RuntimeProof::of),
                 exit_code,
             })
@@ -2285,20 +2261,10 @@ impl DeploymentPipeline<'_> {
         node.data_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| self.template.data_root.join(format!("{}-{}", node.name, node.node_id)))
     }
 
-    /// node.update of `req.node` in node recovery (node-recovery.md sequence step 6), as ONE
-    /// operation `update-node:<path>`: `UpdateNode`, the caller-owned meta of the exited birth
-    /// `req.from` copied onto the new node (only the caller-owned group moves:
-    /// `NodeMeta::with_caller_owned_of`), then `Complete`. The new node is the one its create made
-    /// at the exited birth's path.name, never the exited birth.
-    pub async fn update(&self, req: &UpdateRequest) -> Result<(), PipelineError> {
-        use tracing::Instrument;
-        let span = self.pipeline_span("update", &req.build_id, &req.node.name, req.attempt);
-        self.update_steps(req).instrument(span).await
-    }
-
-    /// node.update of the name of `node` as a recipe's step (node-update.md; lifecycles/node-replace.md
-    /// 3-4), as ONE operation `update-node:<path>`: `UpdateNode`, the update `put` (node.update's own
-    /// core at the node's mesh-primary, answered `NodeUpdated` or refused by name), then `Complete`.
+    /// node.name.update of the name of `node` as a recipe's step (node-name-update.md;
+    /// lifecycles/node-replace.md 3-4), as ONE operation `update-node:<path>`: `UpdateNode`, the
+    /// update `put` (node.name.update's own core at the node's mesh-primary, answered `NameUpdated`
+    /// or refused by name), then `Complete`.
     pub async fn update_name<F>(&self, build_id: &BuildId, attempt: u32, node: &PathName, put: F) -> Result<(), PipelineError>
     where
         F: std::future::Future<Output = Result<(), String>>,
@@ -2312,24 +2278,6 @@ impl DeploymentPipeline<'_> {
         }
         .instrument(span)
         .await
-    }
-
-    async fn update_steps(&self, req: &UpdateRequest) -> Result<(), PipelineError> {
-        let name = &req.node.name;
-        let mut run = self.begin(&req.build_id, req.attempt, name, format!("update-node:{name}")).await?;
-        let (onto, from) = (&req.node, &req.from);
-        self.step(&mut run, UpdateStep::UpdateNode.name(), async {
-            if onto.node_id == from.node_id || onto.incarnation_id.is_none() {
-                return Err(format!("{name}: node.update copies the exited birth {}'s caller-owned meta onto the node its create made there, and the node held at the path is {} at {}", from.node_id, onto.node_id, onto.incarnation_id.as_ref().map(|i| i.0.as_str()).unwrap_or("no known birth")));
-            }
-            // The caller-owned group as this admin's records hold it of the exited birth: the node
-            // record carries no caller-owned field, so the group is its default and nothing is written.
-            let copied = crate::node_update::meta_of(onto).with_caller_owned_of(&crate::node_update::meta_of(from));
-            tracing::info!(node = %name, from = %from.node_id, onto = %onto.node_id, otel_debug = copied.otel_debug, written = false, "node.update onto the new node: the caller-owned group of the exited birth as held, no row written");
-            Ok(())
-        })
-        .await?;
-        self.step(&mut run, UpdateStep::Complete.name(), async { Ok(()) }).await
     }
 }
 
@@ -2385,7 +2333,7 @@ mod tests {
     }
 
     fn receipt(attempt: u32, step: &str, outcome: StepOutcome) -> BuildStepReceipt {
-        BuildStepReceipt { build_id: BuildId("bld-1".into()), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
+        BuildStepReceipt { mesh: None, build_id: BuildId::parse("3qcfk1kq47m9").unwrap(), attempt, operation: "create-node:mesh1.rpc.1".into(), step: step.into(), outcome, output: None, executor: None }
     }
 
     #[test]

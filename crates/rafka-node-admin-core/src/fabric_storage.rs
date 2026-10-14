@@ -1,26 +1,33 @@
 //! `fabric.storage`: node-admin's Fabric control state behind a storage boundary
 //! (fabric-mesh-lifecycle.md §11.1, §13).
 //!
-//! It holds the Fabric's identity and pointer rows, the seat records and, once a fabric shutdown
-//! begins, the [`FabricShutdown`] record. `fabric/` on the fabric's store root has one writer, the
-//! fabric-primary (R14 item 2: "Fabric-primary: `fabric/`. ... Keys never overlap across writers"):
-//! it writes the identity, each pointer move, the seat records and the shutdown it initiates. Every
-//! other admin reads them there, and holds what it learns before the fabric's first state-commit
-//! (its join answer, the Build topic) as its own runtime state, never as a row here. A shutdown is
-//! never deleted while its Fabric lives, and an admin that starts on a store root holding one comes
-//! up frozen.
+//! It holds the Fabric's identity row and, once a fabric shutdown begins, the [`FabricShutdown`]
+//! record. The Fabric row carries no pointer to the newest Build (R-BI3): the
+//! current Build is read from the Build entities themselves
+//! ([`crate::build_state::BuildStateAdapter::current_build`]). `fabric/` on the fabric's store root
+//! has one writer, the fabric-primary (R14 item 2: "Fabric-primary: `fabric/`. ... Keys never
+//! overlap across writers"): it writes the identity and the shutdown it initiates.
+//! Every other admin reads them there, and holds the identity it learns before the fabric's first
+//! state-commit (its join answer, the Build topic) as its own runtime state, never as a row here. A
+//! shutdown is never deleted while its Fabric lives, and an admin that starts on a store root holding
+//! one comes up frozen.
 //!
-//! A handover of the fabric seat (`fabric_handover`) leaves one [`HandoverRow`] per stage it reached.
-//! A Build-driven seat transfer (TakeSeats) is ONE [`SeatTransferRow`] at the holder that committed
-//! it: every seat it moved, and the fence of the holder's authority at those epochs. The holder is
-//! always its own mesh's primary, so the row lives under that mesh's directory on the fabric's store
-//! root (`meshes/<holder mesh>/seat-transfers/`, the writer ladder): an executor that cannot reach a
-//! proven-lost holder point-reads it there (node-rpc-envelope.md, TakeSeats).
+//! node.primary.update and node.fabric-primary.update leave ONE [`SeatTransferRow`], written by the
+//! holder of the seats as its mesh's row writer (the approved proposal
+//! node-primary-update-fabric-mesh-and-node-type.md, Part C2: "The one committed row is the holder's
+//! transfer row under its own mesh on the fabric's shared store root,
+//! `meshes/<holder mesh>/seat-transfers/<operation>` ... whether one seat or both move; an outside
+//! successor of the fabric seat reads it there. The per-seat rows under `fabric/seats` go ... the
+//! leadership view is folded from the transfer rows"). The row is the commit and the fence: the
+//! holder's authority ends at its epochs, an identical call replays it, and a resuming executor or a
+//! restarted holder point-reads it there. The per-seat rows (`fabric/seats/`, `fabric-seat/1`) and the
+//! handover stages of the retired fabric.primary.update (`fabric/handovers/`, `fabric-handover/1`) are
+//! retired: a store root holding one is refused by name.
 //!
-//! The state is three kinds of row, each its own fact written on its own and never read back to be
-//! written again: the [`FabricIdentity`] (written once), one [`FabricPointer`] row per move of
-//! `Fabric.build_id` (a blind put ordered by the Build's submission time, folded to the newest by
-//! every reader), and the [`FabricShutdown`] (first one kept).
+//! The Fabric's own state is two kinds of row, each its own fact written on its own and never read
+//! back to be written again: the [`FabricIdentity`] (written once) and the [`FabricShutdown`] (first
+//! one kept). The pointer rows an older build wrote (`fabric/pointers/`, `fabric-pointer/1`) are
+//! retired: a store root holding one is refused by name.
 //!
 //! Two implementations: [`MemoryFabricStorage`] for runs that need no restart survival, and
 //! [`FileFabricStorage`], one record per file on the fabric's store root, each write a temp file,
@@ -33,19 +40,6 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::Mutex;
 
-/// The Fabric record as a reader sees it: the identity row and the newest pointer row folded. It
-/// is never written whole.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FabricRecord {
-    /// The fabric's minted id.
-    pub fabric_id: FabricId,
-    /// The fabric's name.
-    pub name: String,
-    /// The Build the pointer names, when one was accepted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub build_id: Option<crate::build::BuildId>,
-}
-
 /// The Fabric's immutable identity row: written once, by Day 0 or by the admin that first hears it,
 /// and never rewritten.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,27 +48,6 @@ pub struct FabricIdentity {
     pub fabric_id: FabricId,
     /// The fabric's name.
     pub name: String,
-}
-
-/// One pointer row: `Fabric.build_id` moved to `build_id`. `submitted_at_ms` is the Build's own
-/// submission time, the ordering key: a reader folds the rows to the greatest `(submitted_at_ms,
-/// build_id)`, so a row written late by a lagging writer never moves the pointer back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FabricPointer {
-    /// The Build the pointer moved to.
-    pub build_id: crate::build::BuildId,
-    /// When the Build was submitted, in milliseconds since the Unix epoch.
-    pub submitted_at_ms: u64,
-}
-
-impl FabricPointer {
-    pub(crate) fn order(&self) -> (u64, &str) {
-        (self.submitted_at_ms, self.build_id.0.as_str())
-    }
-
-    fn key(&self) -> String {
-        format!("{:020}-{}", self.submitted_at_ms, self.build_id.0)
-    }
 }
 
 /// What a claim of the fabric's name wrote.
@@ -115,50 +88,26 @@ fn claim_fabric_against(held: Option<&FabricIdentity>, identity: &FabricIdentity
     }
 }
 
-fn newest(rows: impl IntoIterator<Item = FabricPointer>) -> Option<FabricPointer> {
-    rows.into_iter().max_by(|a, b| a.order().cmp(&b.order()))
-}
-
-fn folded(identity: Option<FabricIdentity>, pointer: Option<FabricPointer>) -> Option<FabricRecord> {
-    identity.map(|i| FabricRecord { fabric_id: i.fabric_id, name: i.name, build_id: pointer.map(|p| p.build_id) })
-}
-
-/// One seat record this admin held: who held a seat, and from which epoch. Each is its own row
-/// (a blind put of its own key); a reader keeps, per seat and mesh, the one that supersedes the
-/// others, so a late write never moves a seat back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SeatRow {
-    /// The seat the record is for.
-    pub seat: rafka_mesh_entity::Seat,
-    /// The seat's holder.
-    pub holder: rafka_mesh_entity::SeatHolder,
-}
-
-impl SeatRow {
-    fn key(&self) -> String {
-        format!("{}-{}-{:020}-{}", self.seat.name(), self.holder.mesh, self.holder.epoch, self.holder.node_id)
-    }
-}
-
-/// The one row a seat holder writes when it commits a Build-driven seat transfer (node-rpc-envelope.md,
-/// "TakeSeats: Build-driven seat transfer"): every seat it moved to the executor at its next epoch,
-/// and the call it answered. The row is the fence and the commit: the holder's authority ends at
-/// these epochs, and an identical call replays this row. Its key is the operation.
+/// The one row the holder of the seats writes when it commits node.primary.update (proposal Part C1
+/// step 5: "The writer writes the one seat row at the next epoch(s) naming the successor. This is the
+/// commit"): every seat it moves to its successor at the next epoch, and the update it commits. The row
+/// is the commit and the fence: the holder's authority ends at these epochs, the successor installs
+/// from it, and an identical call replays it. Its key is the operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeatTransferRow {
-    /// The drain, stop, restart or replace operation the transfer precedes.
+    /// The update's operation identity (`node.primary.update:<build>:<operation>`), the row's key.
     pub operation: String,
     /// The fabric.
     pub fabric: String,
-    /// The Build whose attempt the executor won.
+    /// The Build whose stop, delete, restart, replace or connections delete the update precedes.
     pub build_id: String,
     /// That attempt.
     pub attempt: u32,
     /// The former holder: the exact birth that wrote the row.
     pub holder: rafka_node_rpc_contract::handover::HandoverBirth,
-    /// The executor that takes the seats.
+    /// The successor the holder's pre-check named, which installs from the row.
     pub successor: rafka_node_rpc_contract::handover::HandoverBirth,
-    /// The seats and epochs the call named.
+    /// The seats and the epochs the holder held them at.
     pub expected: Vec<rafka_node_rpc_contract::handover::SeatEpoch>,
     /// Every seat moved, at its committed epoch.
     pub seats: Vec<rafka_mesh_entity::seat::transfer::CommittedSeat>,
@@ -173,101 +122,6 @@ impl SeatTransferRow {
     fn key(&self) -> String {
         transfer_key(&self.operation)
     }
-
-    /// The seat records the row commits.
-    pub fn seat_rows(&self) -> impl Iterator<Item = SeatRow> + '_ {
-        self.seats.iter().map(|c| SeatRow { seat: c.seat.kind(), holder: c.record() })
-    }
-}
-
-/// The rows that stand: per seat (and per mesh for a mesh primary), the one that supersedes the rest.
-fn standing(rows: impl IntoIterator<Item = SeatRow>) -> Vec<SeatRow> {
-    let mut held: std::collections::BTreeMap<(rafka_mesh_entity::Seat, String), SeatRow> = Default::default();
-    for r in rows {
-        let key = (r.seat, if r.seat == rafka_mesh_entity::Seat::MeshPrimary { r.holder.mesh.clone() } else { String::new() });
-        match held.get(&key) {
-            Some(h) if !r.holder.supersedes(&h.holder) => {}
-            _ => {
-                held.insert(key, r);
-            }
-        }
-    }
-    held.into_values().collect()
-}
-
-/// How far one handover got at the admin that wrote the row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HandoverStage {
-    /// The incumbent recorded what it sent: nothing is confirmed.
-    Sent,
-    /// The successor committed the seat at `committed_epoch`: the completion is not acknowledged.
-    Committed {
-        /// The epoch the successor committed.
-        committed_epoch: u64,
-    },
-    /// The transfer is confirmed at `committed_epoch`.
-    Confirmed {
-        /// The epoch the confirmed transfer committed.
-        committed_epoch: u64,
-    },
-}
-
-impl HandoverStage {
-    fn rank(self) -> u8 {
-        match self {
-            Self::Sent => 0,
-            Self::Committed { .. } => 1,
-            Self::Confirmed { .. } => 2,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Sent => "sent",
-            Self::Committed { .. } => "committed",
-            Self::Confirmed { .. } => "confirmed",
-        }
-    }
-}
-
-/// One row per (handover operation, stage): the payload of the handover and how far it got. Each
-/// stage is its own row (a blind put of its own key); a reader keeps, per operation, the furthest
-/// stage, so a late write of an earlier stage never moves a handover back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HandoverRow {
-    /// The handover's operation identity.
-    pub operation: String,
-    /// The fabric's name.
-    pub fabric: String,
-    /// The fabric-primary that yields.
-    pub incumbent: rafka_node_rpc_contract::handover::HandoverBirth,
-    /// The mesh-primary that takes the seat.
-    pub successor: rafka_node_rpc_contract::handover::HandoverBirth,
-    /// The incumbent's seat epoch.
-    pub expected_epoch: u64,
-    /// How far the handover got.
-    pub stage: HandoverStage,
-}
-
-impl HandoverRow {
-    fn key(&self) -> String {
-        let operation: String = self.operation.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
-        format!("{operation}-{}", self.stage.name())
-    }
-}
-
-/// The rows that stand: per operation, the furthest stage.
-fn furthest(rows: impl IntoIterator<Item = HandoverRow>) -> Vec<HandoverRow> {
-    let mut held: std::collections::BTreeMap<String, HandoverRow> = Default::default();
-    for r in rows {
-        match held.get(&r.operation) {
-            Some(h) if h.stage.rank() >= r.stage.rank() => {}
-            _ => {
-                held.insert(r.operation.clone(), r);
-            }
-        }
-    }
-    held.into_values().collect()
 }
 
 /// A fabric shutdown in progress. `initiated_by` names the fabric-primary that began it;
@@ -287,15 +141,12 @@ pub struct FabricShutdown {
 /// Why a `fabric.storage` read or write failed.
 pub use crate::record_store::StorageError as FabricStorageError;
 
-/// node-admin's Fabric control state: three kinds of row, each written on its own and never read
-/// back to be written again.
+/// node-admin's Fabric control state: each kind of row written on its own and never read back to be
+/// written again.
 #[async_trait]
 pub trait FabricStorage: Send + Sync {
-    /// The identity row and the newest pointer row folded; `None` while no identity is held.
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError>;
-    /// The identity row and the newest pointer row, unfolded: what a reader folds with the pointer
-    /// it holds itself ([`crate::accepted::AcceptedStore`]).
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError>;
+    /// The Fabric's identity row; `None` while no identity is held.
+    async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError>;
     /// Claim the fabric's name for `identity.fabric_id` and keep `identity` as the Fabric's identity row:
     /// the claim is here, inside the adapter (node-identity-and-state.md §2.8): insert-and-fail on the
     /// fabric's `(path, name)`, at the path level above the per-fabric roots (R-FN1:
@@ -309,24 +160,14 @@ pub trait FabricStorage: Send + Sync {
     /// it is. Returns whether it went. The hook s59's fabric.delete calls; nothing else releases a
     /// fabric's name.
     async fn release_name(&self, identity: &FabricIdentity) -> Result<bool, FabricStorageError>;
-    /// Put the pointer row for one move: a blind put of its own key.
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError>;
     /// The shutdown held, when one is.
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError>;
     /// Hold `shutdown` if none is held (insert-and-fail on its key): the first shutdown held is
     /// kept, a later one never replaces it, and it is never removed. Returns the record now held.
     async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError>;
-    /// Put the row for one seat record: a blind put of its own key.
-    async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError>;
-    /// The seat records that stand: per seat and mesh, the one that supersedes the others.
-    async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError>;
-    /// Put the row for one stage of one handover operation: a blind put of its own key.
-    async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError>;
-    /// The handovers this admin took part in: per operation, the furthest stage.
-    async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError>;
-    /// Put the one row of a seat transfer this admin committed, under its own mesh (the row's
-    /// holder's): a blind put of its own key (the operation). The caller refuses another payload for
-    /// the operation before it writes.
+    /// Put the one row of a node.primary.update this admin committed as the holder, under its own mesh
+    /// (the row's holder's): a blind put of its own key (the operation). The caller refuses another
+    /// payload for the operation before it writes.
     async fn put_seat_transfer(&self, row: &SeatTransferRow) -> Result<(), FabricStorageError>;
     /// The seat-transfer row the primary of `holder_mesh` committed for `operation`: a point read of
     /// its key; `None` when none was ever written (the transfer never happened).
@@ -339,10 +180,7 @@ pub trait FabricStorage: Send + Sync {
 #[derive(Debug, Default)]
 pub struct MemoryFabricStorage {
     identity: Mutex<Option<FabricIdentity>>,
-    pointers: Mutex<Vec<FabricPointer>>,
     shutdown: Mutex<Option<FabricShutdown>>,
-    seats: Mutex<Vec<SeatRow>>,
-    handovers: Mutex<Vec<HandoverRow>>,
     transfers: Mutex<Vec<SeatTransferRow>>,
 }
 
@@ -355,12 +193,8 @@ impl MemoryFabricStorage {
 
 #[async_trait]
 impl FabricStorage for MemoryFabricStorage {
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        let (identity, pointer) = self.fabric_rows().await?;
-        Ok(folded(identity, pointer))
-    }
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
-        Ok((self.identity.lock().unwrap().clone(), newest(self.pointers.lock().unwrap().iter().cloned())))
+    async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        Ok(self.identity.lock().unwrap().clone())
     }
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         // The look and the insert are one step under the identity's lock.
@@ -380,36 +214,11 @@ impl FabricStorage for MemoryFabricStorage {
         }
         Ok(ours)
     }
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        let mut rows = self.pointers.lock().unwrap();
-        rows.retain(|r| r.key() != pointer.key());
-        rows.push(pointer.clone());
-        Ok(())
-    }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         Ok(self.shutdown.lock().unwrap().clone())
     }
     async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
         Ok(self.shutdown.lock().unwrap().get_or_insert_with(|| shutdown.clone()).clone())
-    }
-    async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError> {
-        let mut rows = self.seats.lock().unwrap();
-        rows.retain(|r| r.key() != row.key());
-        rows.push(row.clone());
-        Ok(())
-    }
-    async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
-        let transfers: Vec<SeatRow> = self.transfers.lock().unwrap().iter().flat_map(|t| t.seat_rows().collect::<Vec<_>>()).collect();
-        Ok(standing(self.seats.lock().unwrap().iter().cloned().chain(transfers)))
-    }
-    async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError> {
-        let mut rows = self.handovers.lock().unwrap();
-        rows.retain(|r| r.key() != row.key());
-        rows.push(row.clone());
-        Ok(())
-    }
-    async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError> {
-        Ok(furthest(self.handovers.lock().unwrap().iter().cloned()))
     }
     async fn put_seat_transfer(&self, row: &SeatTransferRow) -> Result<(), FabricStorageError> {
         let mut rows = self.transfers.lock().unwrap();
@@ -428,37 +237,39 @@ impl FabricStorage for MemoryFabricStorage {
 
 /// The directory inside the fabric's store root.
 pub const FABRIC_DIR: &str = "fabric";
-const POINTERS_DIR: &str = "fabric/pointers";
-const SEATS_DIR: &str = "fabric/seats";
-const SEAT_FORMAT: &str = "fabric-seat/1";
-const HANDOVERS_DIR: &str = "fabric/handovers";
-const HANDOVER_FORMAT: &str = "fabric-handover/1";
+/// The retired pointer rows (`fabric-pointer/1`, one per move of the pointer an older build kept on
+/// the Fabric row): a store root holding one is refused by name (R-BI3).
+const RETIRED_POINTERS_DIR: &str = "fabric/pointers";
+const RETIRED_POINTER_FORMAT: &str = "fabric-pointer/1";
+/// The retired per-seat rows (`fabric-seat/1`): the leadership view is folded from the transfer rows.
+const RETIRED_SEATS_DIR: &str = "fabric/seats";
+const RETIRED_SEAT_FORMAT: &str = "fabric-seat/1";
+/// The retired stages of fabric.primary.update (`fabric-handover/1`): node.fabric-primary.update
+/// leaves one transfer row.
+const RETIRED_HANDOVERS_DIR: &str = "fabric/handovers";
+const RETIRED_HANDOVER_FORMAT: &str = "fabric-handover/1";
 /// Under `meshes/<holder mesh>/` on the store root: the seat-transfer rows that mesh's primary committed.
 const TRANSFERS_DIR: &str = "seat-transfers";
 const TRANSFER_FORMAT: &str = "fabric-seat-transfer/1";
 const IDENTITY_KEY: &str = "identity";
 const SHUTDOWN_KEY: &str = "shutdown";
-/// The retired whole-record file (`fabric.json`, format `fabric-record/1`): identity and pointer in
+/// The retired whole-record file (`fabric.json`, format `fabric-record/1`): identity and a Build in
 /// one row. A data dir holding it is refused by name.
 const RETIRED_RECORD_KEY: &str = "fabric";
 const IDENTITY_FORMAT: &str = "fabric-identity/1";
 /// A fabric's claim of its name at `<store_dir>/fabrics/<name>` (R-FN1): the claiming Fabric's identity.
 const NAME_FORMAT: &str = "fabric-name/1";
-const POINTER_FORMAT: &str = "fabric-pointer/1";
 const SHUTDOWN_FORMAT: &str = "fabric-shutdown/1";
 
-/// One row per file under `<store root>/fabric/` (`crate::store_root`): `identity.json`, `shutdown.json`, and one
-/// `pointers/<submitted_at_ms>-<build_id>.json` per pointer move (`crate::record_store`); the
-/// seat-transfer rows under `<store root>/meshes/<holder mesh>/seat-transfers/`.
+/// One row per file under `<store root>/fabric/` (`crate::store_root`): `identity.json` and
+/// `shutdown.json` (`crate::record_store`); the seat-transfer rows under
+/// `<store root>/meshes/<holder mesh>/seat-transfers/`.
 #[derive(Debug)]
 pub struct FileFabricStorage {
     /// `<store_dir>/fabrics/`: the fabrics' name index above the per-fabric roots (R-FN1), where this
     /// fabric's claim of its name is the first of its rows.
     names: crate::record_store::FileRecords,
     records: crate::record_store::FileRecords,
-    pointers: crate::record_store::FileRecords,
-    seats: crate::record_store::FileRecords,
-    handovers: crate::record_store::FileRecords,
     /// `<store root>/meshes/`: each mesh's seat-transfer rows under it.
     meshes_dir: std::path::PathBuf,
     /// The store root: the seat-transfer stores open on it as they are first used.
@@ -471,8 +282,7 @@ pub struct FileFabricStorage {
     seat: SeatSlot,
 }
 
-/// The fabric seat source a [`FileFabricStorage`] reads before it puts a pointer, and when its
-/// held `fabric/` rows are published.
+/// The fabric seat source a [`FileFabricStorage`] reads when its held `fabric/` rows are published.
 #[derive(Default, Clone)]
 struct SeatSlot(std::sync::Arc<std::sync::OnceLock<crate::fabric_builds::SeatSource>>);
 
@@ -482,7 +292,7 @@ impl SeatSlot {
     /// not.
     fn open(&self, writer: &crate::model::IncarnationId) -> Result<(), String> {
         match self.0.get().map(|s| (s.read)()) {
-            None => Err(format!("fabric-primary seat: this writer ({}) has no fabric seat record to read, so it cannot show it holds the seat", writer.0)),
+            None => Err(format!("fabric-primary seat: this writer ({}) has no fabric seat record to read, so it cannot show it holds the seat", writer.as_str())),
             Some(crate::fabric_builds::SeatRecord::Moved { by, to }) => Err(format!("fabric-primary seat: {by}; the holder is {}", to.as_deref().unwrap_or("a birth whose path.name is not known here"))),
             Some(crate::fabric_builds::SeatRecord::Open { .. }) => Ok(()),
         }
@@ -507,15 +317,15 @@ impl FileFabricStorage {
         if records.holds(RETIRED_RECORD_KEY).await? {
             return Err(FabricStorageError::Unrecognised {
                 file: own_data_dir.join(FABRIC_DIR).join("fabric.json").display().to_string(),
-                reason: format!("the whole-record format fabric-record/1 is retired; this build reads {IDENTITY_FORMAT} and {POINTER_FORMAT} rows"),
+                reason: format!("the whole-record format fabric-record/1 is retired; this build reads {IDENTITY_FORMAT} rows"),
             });
         }
+        refuse_retired(&own_data_dir.join(RETIRED_POINTERS_DIR), &format!("the pointer row format {RETIRED_POINTER_FORMAT} is retired: the Fabric row carries no pointer to the newest Build, and the current Build is read from the builds store")).await?;
+        refuse_retired(&own_data_dir.join(RETIRED_SEATS_DIR), &format!("the per-seat row format {RETIRED_SEAT_FORMAT} is retired: the leadership view is folded from the seat-transfer rows under meshes/<holder mesh>/seat-transfers/")).await?;
+        refuse_retired(&own_data_dir.join(RETIRED_HANDOVERS_DIR), &format!("the handover stage format {RETIRED_HANDOVER_FORMAT} is retired: node.fabric-primary.update leaves one seat-transfer row under its holder's mesh")).await?;
         Ok(Self {
             names,
             records,
-            pointers: root.records(own_data_dir, POINTERS_DIR, writer).await?,
-            seats: root.records(own_data_dir, SEATS_DIR, writer).await?,
-            handovers: root.records(own_data_dir, HANDOVERS_DIR, writer).await?,
             meshes_dir: own_data_dir.join("meshes"),
             root: root.clone(),
             writer: writer.clone(),
@@ -524,10 +334,10 @@ impl FileFabricStorage {
         })
     }
 
-    /// The committed fabric seat record this writer reads before it puts a pointer (set once). The
-    /// `fabric/` rows it holds in its scratchpad (its Fabric identity, pointers and seat records,
-    /// written while it held the fabric seat) are published only while the record still says it
-    /// does; a writer whose seat moved before the publication drops them, named (R14 item 2).
+    /// The committed fabric seat record this writer reads (set once). The `fabric/` rows it holds in
+    /// its scratchpad (its Fabric identity, written while it held the fabric seat)
+    /// are published only while the record still says it does; a writer whose seat moved before the
+    /// publication drops them, named (R14 item 2).
     pub fn set_seat_source(&self, seat: crate::fabric_builds::SeatSource) {
         let _ = self.seat.0.set(seat);
         for store in self.fabric_primary_records() {
@@ -561,26 +371,19 @@ impl FileFabricStorage {
         Ok(meshes)
     }
 
-    /// The records the fabric-primary seat writes (R14 item 2): the fabric's claim of its name, the
-    /// Fabric identity and shutdown, its pointers and the seat records. What a seat transfer moving that seat cuts off, and what a
-    /// publication writes only while the committed fabric seat record names this writer. Handover
-    /// rows are each party's own stage (node-rpc-envelope.md, TakeFabricPrimary: the successor
-    /// durably commits the transfer before it answers), and seat-transfer rows live under the
-    /// holder's own mesh.
-    pub fn fabric_primary_records(&self) -> [&crate::record_store::FileRecords; 4] {
-        [&self.names, &self.records, &self.pointers, &self.seats]
+    /// The records the fabric-primary seat writes (R14 item 2): the fabric's claim of its name, and
+    /// the Fabric identity and shutdown. What a node.fabric-primary.update moving that seat cuts off,
+    /// and what a publication writes only while the committed fabric seat record names this writer.
+    /// Seat-transfer rows live under the holder's own mesh.
+    pub fn fabric_primary_records(&self) -> [&crate::record_store::FileRecords; 2] {
+        [&self.names, &self.records]
     }
 }
 
 #[async_trait]
 impl FabricStorage for FileFabricStorage {
-    async fn fabric(&self) -> Result<Option<FabricRecord>, FabricStorageError> {
-        let (identity, pointer) = self.fabric_rows().await?;
-        Ok(folded(identity, pointer))
-    }
-    async fn fabric_rows(&self) -> Result<(Option<FabricIdentity>, Option<FabricPointer>), FabricStorageError> {
-        let identity = self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await?;
-        Ok((identity, newest(self.pointers.list::<FabricPointer>(POINTER_FORMAT).await?)))
+    async fn fabric(&self) -> Result<Option<FabricIdentity>, FabricStorageError> {
+        self.records.read(IDENTITY_KEY, IDENTITY_FORMAT).await
     }
     async fn claim_identity(&self, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
         // R-FN1: the fabric's (path, name) claim, an insert-and-fail at `<store_dir>/fabrics/<name>`
@@ -604,34 +407,12 @@ impl FabricStorage for FileFabricStorage {
         }
         Ok(ours)
     }
-    async fn put_pointer(&self, pointer: &FabricPointer) -> Result<(), FabricStorageError> {
-        // The fabric-primary alone writes `fabric/` (R14 item 2): the committed fabric seat record
-        // is read under the store's write lock before the put is held or reaches the store root. It
-        // is open to this birth when it names it, names none (Day 0, before any record) or names a
-        // birth proven gone.
-        let file = format!("{}/{}.json", POINTERS_DIR, pointer.key());
-        let seat = || self.seat.open(&self.writer).map_err(|reason| crate::record_store::StorageError::NotSeatHolder { file: file.clone(), reason });
-        self.pointers.write_gated(&pointer.key(), POINTER_FORMAT, pointer, seat).await
-    }
     async fn shutdown(&self) -> Result<Option<FabricShutdown>, FabricStorageError> {
         self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT).await
     }
     async fn put_shutdown(&self, shutdown: &FabricShutdown) -> Result<FabricShutdown, FabricStorageError> {
         self.records.insert(SHUTDOWN_KEY, SHUTDOWN_FORMAT, shutdown).await?;
         self.records.read(SHUTDOWN_KEY, SHUTDOWN_FORMAT).await?.ok_or_else(|| FabricStorageError::Io { file: "shutdown.json".into(), reason: "the shutdown row vanished after its insert".into() })
-    }
-    async fn put_seat(&self, row: &SeatRow) -> Result<(), FabricStorageError> {
-        self.seats.write(&row.key(), SEAT_FORMAT, row).await
-    }
-    async fn seats(&self) -> Result<Vec<SeatRow>, FabricStorageError> {
-        let transfers: Vec<SeatRow> = self.seat_transfers().await?.iter().flat_map(|t| t.seat_rows().collect::<Vec<_>>()).collect();
-        Ok(standing(self.seats.list::<SeatRow>(SEAT_FORMAT).await?.into_iter().chain(transfers)))
-    }
-    async fn put_handover(&self, row: &HandoverRow) -> Result<(), FabricStorageError> {
-        self.handovers.write(&row.key(), HANDOVER_FORMAT, row).await
-    }
-    async fn handovers(&self) -> Result<Vec<HandoverRow>, FabricStorageError> {
-        Ok(furthest(self.handovers.list::<HandoverRow>(HANDOVER_FORMAT).await?))
     }
     async fn put_seat_transfer(&self, row: &SeatTransferRow) -> Result<(), FabricStorageError> {
         self.transfers_of(&row.holder.mesh).await?.write(&row.key(), TRANSFER_FORMAT, row).await
@@ -653,6 +434,27 @@ impl FabricStorage for FileFabricStorage {
 /// (this Fabric's own: `Held`; another Fabric's: refused, naming it). Held before the fabric's first
 /// state-commit, the claim is decided again at the publication against the row then standing at the
 /// key. A key that is not one path segment is refused by name: it names no row of the store.
+/// A store root an older build left rows of a retired format in `dir` on is refused by name, the
+/// first row named and `reason` saying what retired it (the pointer rows, R-BI3; the per-seat rows and
+/// the handover stages, proposal Part C2). An empty or absent directory holds no row.
+async fn refuse_retired(dir: &std::path::Path, reason: &str) -> Result<(), FabricStorageError> {
+    let (dir, reason) = (dir.to_path_buf(), reason.to_string());
+    crate::record_store::blocking_io(move || {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(FabricStorageError::Io { file: dir.display().to_string(), reason: e.to_string() }),
+        };
+        let mut rows: Vec<std::path::PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+        rows.sort();
+        match rows.first() {
+            None => Ok(()),
+            Some(row) => Err(FabricStorageError::Unrecognised { file: row.display().to_string(), reason }),
+        }
+    })
+    .await
+}
+
 async fn claimed_insert(records: &crate::record_store::FileRecords, key: &str, format: &str, identity: &FabricIdentity) -> Result<Result<FabricClaim, FabricNameHeld>, FabricStorageError> {
     if key.is_empty() || key.starts_with('.') || key.contains(['/', '\\']) {
         return Err(FabricStorageError::Io { file: format!("{}/{key}", records.store_name()), reason: format!("the fabric name {key:?} is not one path segment, so it keys no claim of the fabric's name") });
@@ -677,7 +479,7 @@ mod tests {
     async fn a_held_shutdown_is_never_replaced_or_removed() {
         for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, {
             let d = tempdir();
-            Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap())
+            Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())
         }] {
             assert_eq!(s.shutdown().await.unwrap(), None);
             assert_eq!(s.put_shutdown(&shutdown()).await.unwrap(), shutdown());
@@ -686,95 +488,16 @@ mod tests {
         }
     }
 
-    fn seat_row(seat: rafka_mesh_entity::Seat, mesh: &str, node: &str, epoch: u64) -> SeatRow {
-        SeatRow {
-            seat,
-            holder: rafka_mesh_entity::SeatHolder { mesh: mesh.into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId(format!("i{epoch}")), epoch },
-        }
-    }
-
-    /// CONTRACT (R-A2): the seat records that stand are the superseding one per seat and mesh,
-    /// whatever order they were written in, and a file store reloads them. What must NOT happen: a
-    /// late write of an older record moving a seat back.
+    /// CONTRACT (proposal Part C2: "The one committed row is the holder's transfer row under its own
+    /// mesh on the fabric's shared store root, `meshes/<holder mesh>/seat-transfers/<operation>` ...
+    /// whether one seat or both move"): a node.primary.update moving both seats is ONE row in the
+    /// `fabric-seat-transfer/1` shape, keyed by its operation under the holder's mesh, and a reopened
+    /// store reads it back. A format this build does not know is refused.
     #[tokio::test]
-    async fn the_seat_records_that_stand_are_the_superseding_ones_whatever_the_write_order() {
+    async fn a_seat_transfer_is_one_row_under_its_holders_mesh() {
         use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::model::IncarnationId("test".into())).await.unwrap())] {
-            assert!(s.seats().await.unwrap().is_empty());
-            for row in [
-                seat_row(FabricPrimary, "mesh1", "100000000000", 3),
-                seat_row(FabricPrimary, "mesh2", "200000000000", 5),
-                seat_row(FabricPrimary, "mesh1", "100000000000", 1),
-                seat_row(MeshPrimary, "mesh1", "100000000000", 1),
-                seat_row(MeshPrimary, "mesh2", "200000000000", 2),
-            ] {
-                s.put_seat(&row).await.unwrap();
-            }
-            let standing = s.seats().await.unwrap();
-            assert_eq!(standing.len(), 3);
-            assert!(standing.contains(&seat_row(FabricPrimary, "mesh2", "200000000000", 5)));
-            assert!(standing.contains(&seat_row(MeshPrimary, "mesh1", "100000000000", 1)));
-            assert!(standing.contains(&seat_row(MeshPrimary, "mesh2", "200000000000", 2)));
-        }
-        let d = tempdir();
-        FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap().put_seat(&seat_row(FabricPrimary, "mesh1", "100000000000", 7)).await.unwrap();
-        assert_eq!(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap().seats().await.unwrap(), vec![seat_row(FabricPrimary, "mesh1", "100000000000", 7)]);
-    }
-
-    fn handover_row(operation: &str, stage: HandoverStage) -> HandoverRow {
-        let birth = |mesh: &str, node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: mesh.into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId(inc.into()) };
-        HandoverRow { operation: operation.into(), fabric: "fabric1".into(), incumbent: birth("mesh1", "100000000000", "i1"), successor: birth("mesh2", "200000000000", "i2"), expected_epoch: 7, stage }
-    }
-
-    /// CONTRACT (fabric-primary-handover.md, step 6): a handover leaves one row per stage, each a
-    /// blind put of its own key, and a reader keeps the furthest stage per operation whatever the
-    /// write order: a late write of an earlier stage never moves a handover back. A file store
-    /// reloads the rows and refuses a format it does not recognise by name.
-    #[tokio::test]
-    async fn the_handover_rows_that_stand_are_the_furthest_stage_whatever_the_write_order() {
-        let d = tempdir();
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap())] {
-            assert!(s.handovers().await.unwrap().is_empty());
-            for row in [
-                handover_row("fabric-primary-handover:a", HandoverStage::Confirmed { committed_epoch: 8 }),
-                handover_row("fabric-primary-handover:a", HandoverStage::Committed { committed_epoch: 8 }),
-                handover_row("fabric-primary-handover:a", HandoverStage::Sent),
-                handover_row("fabric-primary-handover:b", HandoverStage::Sent),
-                handover_row("fabric-primary-handover:b", HandoverStage::Committed { committed_epoch: 8 }),
-            ] {
-                s.put_handover(&row).await.unwrap();
-            }
-            assert_eq!(
-                s.handovers().await.unwrap(),
-                vec![handover_row("fabric-primary-handover:a", HandoverStage::Confirmed { committed_epoch: 8 }), handover_row("fabric-primary-handover:b", HandoverStage::Committed { committed_epoch: 8 })]
-            );
-        }
-        assert_eq!(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap().handovers().await.unwrap().len(), 2, "a reopened store reads the rows back");
-        let f = d.join(FABRIC_DIR).join("handovers").join("fabric-primary-handover_a-sent.json");
-        std::fs::write(&f, br#"{"format":"fabric-handover/9","record":{}}"#).unwrap();
-        assert!(matches!(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap().handovers().await, Err(FabricStorageError::Unrecognised { .. })), "an unknown format is refused by name");
-    }
-
-    /// CONTRACT: the committed-stage row of a handover is stored in this exact shape (format
-    /// `fabric-handover/1`); a build that cannot read it refuses by name.
-    #[tokio::test]
-    async fn a_handover_row_is_stored_in_the_fabric_handover_one_shape() {
-        let d = tempdir();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
-        s.put_handover(&handover_row("fabric-primary-handover:m1", HandoverStage::Committed { committed_epoch: 8 })).await.unwrap();
-        let text = std::fs::read_to_string(d.join(FABRIC_DIR).join("handovers").join("fabric-primary-handover_m1-committed.json")).unwrap();
-        let expected = r#"{"format":"fabric-handover/1","record":{"operation":"fabric-primary-handover:m1","fabric":"fabric1","incumbent":{"mesh":"mesh1","node_id":"100000000000","incarnation":"i1"},"successor":{"mesh":"mesh2","node_id":"200000000000","incarnation":"i2"},"expected_epoch":7,"stage":{"Committed":{"committed_epoch":8}}}}"#;
-        assert_eq!(text, expected);
-    }
-
-    /// CONTRACT (R-EL1a): a seat transfer is ONE row in the `fabric-seat-transfer/1` shape, keyed by
-    /// its operation; the seats it commits are what the standing seats fold (superseding an older
-    /// seat row), and a reopened store reads it back. A format this build does not know is refused.
-    #[tokio::test]
-    async fn a_seat_transfer_is_one_row_the_standing_seats_fold() {
-        use rafka_mesh_entity::Seat::{FabricPrimary, MeshPrimary};
-        let birth = |node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId(inc.into()) };
-        let n = |epoch: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse("200000000000").unwrap(), incarnation: rafka_mesh_entity::IncarnationId("n".into()), epoch };
+        let birth = |node: &str, inc: &str| rafka_node_rpc_contract::handover::HandoverBirth { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse(node).unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60(inc)).unwrap() };
+        let n = |epoch: u64| rafka_mesh_entity::SeatHolder { mesh: "mesh1".into(), node_id: rafka_mesh_entity::NodeId::parse("200000000000").unwrap(), incarnation: rafka_mesh_entity::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("n")).unwrap(), epoch };
         let row = SeatTransferRow {
             operation: "drain-node:mesh1.admin.1".into(),
             fabric: "fabric1".into(),
@@ -786,13 +509,10 @@ mod tests {
             seats: vec![rafka_mesh_entity::seat::transfer::CommittedSeat::of(MeshPrimary, &n(4)), rafka_mesh_entity::seat::transfer::CommittedSeat::of(FabricPrimary, &n(8))],
         };
         let d = tempdir();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
-        s.put_seat(&seat_row(MeshPrimary, "mesh1", "100000000000", 3)).await.unwrap();
+        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         s.put_seat_transfer(&row).await.unwrap();
-        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
+        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(reopened.seat_transfers().await.unwrap(), vec![row.clone()]);
-        let standing = reopened.seats().await.unwrap();
-        assert!(standing.contains(&SeatRow { seat: MeshPrimary, holder: n(4) }) && standing.contains(&SeatRow { seat: FabricPrimary, holder: n(8) }), "{standing:?}");
         // The holder's mesh holds the row (R-SR1=A): a point read of its key there, none elsewhere.
         assert_eq!(reopened.seat_transfer("mesh1", "drain-node:mesh1.admin.1").await.unwrap(), Some(row.clone()));
         assert_eq!(reopened.seat_transfer("mesh2", "drain-node:mesh1.admin.1").await.unwrap(), None);
@@ -808,15 +528,13 @@ mod tests {
     #[tokio::test]
     async fn the_file_storage_reloads_what_it_wrote_and_refuses_an_unknown_format_by_name() {
         let d = tempdir();
-        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
+        let s = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         // The fabric seat holder: no seat record governs this fixture's writer.
         s.set_seat_source(crate::fabric_builds::SeatSource::unrecorded());
-        let fabric = FabricRecord { fabric_id: FabricId::mint(), name: "fabric1".into(), build_id: Some(crate::build::BuildId("bld-2".into())) };
-        assert_eq!(s.claim_identity(&FabricIdentity { fabric_id: fabric.fabric_id.clone(), name: fabric.name.clone() }).await.unwrap(), Ok(FabricClaim::Written));
-        s.put_pointer(&FabricPointer { build_id: crate::build::BuildId("bld-2".into()), submitted_at_ms: 20 }).await.unwrap();
-        s.put_pointer(&FabricPointer { build_id: crate::build::BuildId("bld-1".into()), submitted_at_ms: 10 }).await.unwrap();
+        let fabric = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
+        assert_eq!(s.claim_identity(&fabric).await.unwrap(), Ok(FabricClaim::Written));
         s.put_shutdown(&shutdown()).await.unwrap();
-        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap();
+        let reopened = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap();
         assert_eq!(reopened.fabric().await.unwrap(), Some(fabric));
         assert_eq!(reopened.shutdown().await.unwrap(), Some(shutdown()));
         std::fs::write(d.join(FABRIC_DIR).join("shutdown.json"), br#"{"format":"fabric-shutdown/9","record":{}}"#).unwrap();
@@ -830,8 +548,37 @@ mod tests {
         let d = tempdir();
         std::fs::create_dir_all(d.join(FABRIC_DIR)).unwrap();
         std::fs::write(d.join(FABRIC_DIR).join("fabric.json"), br#"{"format":"fabric-record/1","record":{}}"#).unwrap();
-        let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId("test".into())).await.unwrap_err();
+        let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap_err();
         assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("fabric.json") && reason.contains("fabric-record/1")), "{err}");
+    }
+
+    /// CONTRACT (proposal Part C2: "The per-seat rows under `fabric/seats` go"; Part D: the handover
+    /// stages of fabric.primary.update go; CLAUDE.md: "a reader that does not RECOGNISE a value must
+    /// REFUSE with a named reason"): a store root an older build left a per-seat row (`fabric/seats/`,
+    /// `fabric-seat/1`) or a handover stage (`fabric/handovers/`, `fabric-handover/1`) on is refused by
+    /// name, the row and the retired format named, and is never read as a root with no seat rows.
+    #[tokio::test]
+    async fn the_file_storage_refuses_a_retired_seat_or_handover_row_by_name() {
+        for (dir, file, format) in [("seats", "fabric-primary--00000000000000000007-100000000000.json", "fabric-seat/1"), ("handovers", "fabric-primary-handover_a-sent.json", "fabric-handover/1")] {
+            let d = tempdir();
+            std::fs::create_dir_all(d.join(FABRIC_DIR).join(dir)).unwrap();
+            std::fs::write(d.join(FABRIC_DIR).join(dir).join(file), format!(r#"{{"format":"{format}","record":{{}}}}"#)).unwrap();
+            let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap_err();
+            assert!(matches!(&err, FabricStorageError::Unrecognised { file: f, reason } if f.ends_with(file) && reason.contains(format)), "{err}");
+        }
+    }
+
+    /// CONTRACT (R-BI3: "The Fabric row carries no pointer to the newest Build"): the pointer rows
+    /// (`fabric/pointers/`, format `fabric-pointer/1`) are retired. A store root an older build left
+    /// them on is refused by name, the row and the retired format named, and is never read as a
+    /// Fabric with no pointer.
+    #[tokio::test]
+    async fn the_file_storage_refuses_a_retired_pointer_row_by_name() {
+        let d = tempdir();
+        std::fs::create_dir_all(d.join(FABRIC_DIR).join("pointers")).unwrap();
+        std::fs::write(d.join(FABRIC_DIR).join("pointers").join("00000000000000000010-bld-1.json"), br#"{"format":"fabric-pointer/1","record":{"build_id":"3qcfk1kq47m9","submitted_at_ms":10}}"#).unwrap();
+        let err = FileFabricStorage::open(&crate::store_root::StoreRoot::at(&d), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap_err();
+        assert!(matches!(&err, FabricStorageError::Unrecognised { file, reason } if file.ends_with("00000000000000000010-bld-1.json") && reason.contains("fabric-pointer/1")), "{err}");
     }
 
     /// CONTRACT (node-identity-and-state.md §2.8: the fabric-primary claims the fabric's name "by
@@ -841,13 +588,13 @@ mod tests {
     /// The memory store and the file store each run their own check.
     #[tokio::test]
     async fn the_fabric_name_is_claimed_once_in_the_adapter_for_both_stores() {
-        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::model::IncarnationId("test".into())).await.unwrap())] {
+        for s in [Box::new(MemoryFabricStorage::new()) as Box<dyn FabricStorage>, Box::new(FileFabricStorage::open(&crate::store_root::StoreRoot::at(&tempdir()), &crate::model::IncarnationId::parse(&rafka_mesh_entity::fixture_crockford60("test")).unwrap()).await.unwrap())] {
             let first = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             let other = FabricIdentity { fabric_id: FabricId::mint(), name: "fabric1".into() };
             assert_eq!(s.claim_identity(&first).await.unwrap(), Ok(FabricClaim::Written));
             assert_eq!(s.claim_identity(&first).await.unwrap(), Ok(FabricClaim::Held), "the same Fabric claiming again writes nothing");
             assert_eq!(s.claim_identity(&other).await.unwrap(), Err(FabricNameHeld { name: "fabric1".into(), by: first.fabric_id.clone() }), "another Fabric's claim is refused naming the holder");
-            assert_eq!(s.fabric_rows().await.unwrap().0, Some(first.clone()), "the held identity is never rewritten");
+            assert_eq!(s.fabric().await.unwrap(), Some(first.clone()), "the held identity is never rewritten");
         }
     }
 

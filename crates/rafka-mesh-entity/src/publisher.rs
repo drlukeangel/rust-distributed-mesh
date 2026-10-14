@@ -16,6 +16,6 @@ pub struct PublisherId {
 
 impl std::fmt::Display for PublisherId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{}", self.node, self.incarnation.0)
+        write!(f, "{}@{}", self.node, self.incarnation)
     }
 }

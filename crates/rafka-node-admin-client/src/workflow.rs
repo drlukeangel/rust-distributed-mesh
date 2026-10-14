@@ -22,7 +22,7 @@
 use crate::names::{NodeEvent, NodeOp, NodeStep};
 use crate::build_stream::{BuildFrame, BuildReceipts, BuildStream};
 use crate::{Accepted, BuildId, BuildView, CallEnd, StepView};
-use rafka_mesh_entity::{NodeKind, PathName};
+use rafka_mesh_entity::PathName;
 use rafka_node_rpc_contract::build::{RecipeStep, StepResult};
 
 /// A frame of a workflow's reply stream.
@@ -84,6 +84,9 @@ pub enum WorkflowKind {
     Restart(PathName),
     /// `node.delete` of this node: `retire-node:<path.name>`.
     Delete(PathName),
+    /// `node.connections.delete { All }` of this node: `node.connections.delete:<path.name>`. The
+    /// process keeps running.
+    DeleteConnections(PathName),
     /// A recipe: one Build of node primitives, each step its own op's operation, in order
     /// (`BuildChange::Recipe`; build.md §1, lifecycles/node-replace.md).
     Recipe(Vec<RecipeStep>),
@@ -118,14 +121,6 @@ impl Row {
             None => kind.operation_matches(self.operation, key),
         }
     }
-}
-
-/// The SeatTransfer row under `operation`, a row of the workflow only when `target` is a node-admin:
-/// the pipeline moves a node-admin target's seats to the executor by TakeSeats before it drains or
-/// stops (`seat_transfer_step`, decided by the target's kind); any other target has no such step,
-/// and so its workflow has no such row.
-fn seat_transfer_row(operation: &'static str, node_step: NodeStep, target: &PathName) -> Option<Row> {
-    (target.kind == NodeKind::NodeAdmin).then(|| row(operation, "SeatTransfer", node_step, &[], false))
 }
 
 /// The create leg, in pipeline order, under the operation prefix `op`; `last` is what the
@@ -163,18 +158,17 @@ macro_rules! start_rows {
     };
 }
 
-/// The shutdown leg of `target` under `operation`, from its drain to its `stopped` (the stop half of
-/// a delete under `retire-node`, the stop of a restart under `restart-node`); its SeatTransfer row
-/// exists for a node-admin target alone.
-fn shutdown_rows(operation: &'static str, target: &PathName) -> Vec<Row> {
-    let mut rows: Vec<Row> = seat_transfer_row(operation, NodeStep::Drain, target).into_iter().collect();
-    rows.extend([
-        row(operation, "DrainNode", NodeStep::Drain, &[NodeEvent::Draining], false),
-        row(operation, "AwaitNodeDrained", NodeStep::Drain, &[NodeEvent::Drained], false),
+/// The shutdown leg of `target` under `operation`: its stop call, whose one reply carries its
+/// `node.connections.delete { All }` receipt, to its `stopped` (the stop half of a delete under
+/// `retire-node`, the stop of a restart under `restart-node`). A seat holder's seats move by
+/// node.primary.update before the operation is dispatched, never as a step of it (the approved
+/// proposal node-primary-update-fabric-mesh-and-node-type.md, Part D: the SeatTransfer step goes), so
+/// a node-admin target's rows are any target's.
+fn shutdown_rows(operation: &'static str) -> Vec<Row> {
+    vec![
         row(operation, "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
         row(operation, "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
-    ]);
-    rows
+    ]
 }
 
 /// The rows of one recipe step, in pipeline order, each keyed to the step's exact operation. Each
@@ -182,11 +176,11 @@ fn shutdown_rows(operation: &'static str, target: &PathName) -> Vec<Row> {
 fn recipe_step_rows(step: &RecipeStep) -> Vec<Row> {
     let mut rows: Vec<Row> = match step {
         RecipeStep::Create { .. } => create_rows!("create-node", &[NodeEvent::Created]).into(),
-        RecipeStep::Stop { node } => stop_rows(node),
+        RecipeStep::Stop { .. } => stop_rows(),
         RecipeStep::Update { .. } => vec![row("update-node", "UpdateNode", NodeStep::Update, &[], false), row("update-node", "Complete", NodeStep::Update, &[NodeEvent::Updated], false)],
         RecipeStep::Start { .. } => start_rows!("start-node", &[], NodeStep::Start).into(),
         // node.delete's own workflow, whatever the node's name: a stopped birth's runs no stop half.
-        RecipeStep::Delete { node } => delete_rows(node),
+        RecipeStep::Delete { .. } => delete_rows(),
     };
     for r in &mut rows {
         r.terminal = false;
@@ -206,24 +200,22 @@ fn recipe_node_step(step: &RecipeStep) -> NodeStep {
     }
 }
 
-/// The stop's rows under `stop-node`: its one call drains, cuts the mesh connections and answers
-/// `stopped`, so its receipts announce all four events, and no runtime exits.
-fn stop_rows(n: &PathName) -> Vec<Row> {
-    let mut rows: Vec<Row> = seat_transfer_row("stop-node", NodeStep::Stop, n).into_iter().collect();
-    rows.extend([
-        row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::Draining, NodeEvent::Drained, NodeEvent::ConnectionsDeleted], false),
+/// The stop's rows under `stop-node`: its one call deletes the node's connections, cuts its
+/// transport and answers `stopped`: its receipts announce both events, and no runtime exits.
+fn stop_rows() -> Vec<Row> {
+    vec![
+        row("stop-node", "StopNode", NodeStep::Stop, &[NodeEvent::ConnectionsDeleted], false),
         row("stop-node", "AwaitNodeLeft", NodeStep::Stop, &[NodeEvent::Stopped], false),
         row("stop-node", "Complete", NodeStep::Stop, &[], true),
-    ]);
-    rows
+    ]
 }
 
 /// node.delete's rows under its one key, `retire-node`: a live birth's drains and stops first; an
 /// already stopped or proven-exited birth's runs no stop half and leaves no membership to remove
 /// (`stop_half`), the same operation.
-fn delete_rows(n: &PathName) -> Vec<Row> {
+fn delete_rows() -> Vec<Row> {
     let mut rows = vec![row("retire-node", "NodeDeleting", NodeStep::Delete, &[], false)];
-    rows.extend(shutdown_rows("retire-node", n).into_iter().map(|r| Row { stop_half: true, ..r }));
+    rows.extend(shutdown_rows("retire-node").into_iter().map(|r| Row { stop_half: true, ..r }));
     rows.extend([
         row("retire-node", "TerminateRuntime", NodeStep::Stop, &[], false),
         row("retire-node", "NodeDeleted", NodeStep::Delete, &[NodeEvent::Deleted], false),
@@ -242,6 +234,7 @@ impl WorkflowKind {
             Self::Start(_) => NodeOp::Start,
             Self::Restart(_) => NodeOp::Restart,
             Self::Delete(_) => NodeOp::Delete,
+            Self::DeleteConnections(_) => NodeOp::ConnectionsDelete,
             Self::Recipe(_) => return None,
         })
     }
@@ -273,21 +266,27 @@ impl WorkflowKind {
     fn rows(&self) -> Vec<Row> {
         match self {
             Self::Create => create_rows!("create-node", &[NodeEvent::Created]).into(),
-            Self::Stop(n) => stop_rows(n),
+            Self::Stop(_) => stop_rows(),
             Self::Start(_) => start_rows!("start-node", &[], NodeStep::Start).into(),
             // A restart is one operation: the birth is held, drains and stops (it parks), then the
             // same process starts, and its one `Complete` ends it.
-            Self::Restart(n) => {
+            Self::Restart(_) => {
                 let mut rows = vec![row("restart-node", "NodeRestarting", NodeStep::Restart, &[NodeEvent::Restarting], false)];
-                rows.extend(shutdown_rows("restart-node", n));
+                rows.extend(shutdown_rows("restart-node"));
                 rows.extend(start_rows!("restart-node", &[NodeEvent::Restarted], NodeStep::Restart));
                 rows
             }
+            // A standalone node.connections.delete { All }: one call to the exact birth through its
+            // mesh-primary, and its `Complete`. Nothing stops the process and nothing is deleted.
+            Self::DeleteConnections(_) => vec![
+                row("node.connections.delete", "DeleteConnections", NodeStep::ConnectionsDelete, &[NodeEvent::ConnectionsDeleted], false),
+                row("node.connections.delete", "Complete", NodeStep::ConnectionsDelete, &[], true),
+            ],
             // node.delete of a `<path>.old` path acts only on the stopped predecessor a rename left
             // there, or one whose exit is proven (the fabric-primary admits nothing else there): its
             // stop half is already done and is no row of its workflow.
-            Self::Delete(n) if n.old => delete_rows(n).into_iter().filter(|r| !r.stop_half).collect(),
-            Self::Delete(n) => delete_rows(n),
+            Self::Delete(n) if n.old => delete_rows().into_iter().filter(|r| !r.stop_half).collect(),
+            Self::Delete(_) => delete_rows(),
             // A recipe's rows are its steps' own, each keyed to its exact operation; only the last
             // row of the last step ends the workflow.
             Self::Recipe(steps) => {
@@ -304,7 +303,7 @@ impl WorkflowKind {
     fn operation_matches(&self, prefix: &str, key: &str) -> bool {
         match self {
             Self::Create => prefix == "create-node" && key.starts_with("create-node:"),
-            Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) => key == format!("{prefix}:{n}"),
+            Self::Stop(n) | Self::Start(n) | Self::Restart(n) | Self::Delete(n) | Self::DeleteConnections(n) => key == format!("{prefix}:{n}"),
             Self::Recipe(steps) => steps.iter().any(|s| key == format!("{prefix}:{}", s.node())),
         }
     }
@@ -317,6 +316,7 @@ impl WorkflowKind {
             Self::Start(_) => NodeStep::Start,
             Self::Restart(_) => NodeStep::Restart,
             Self::Delete(_) => NodeStep::Delete,
+            Self::DeleteConnections(_) => NodeStep::ConnectionsDelete,
             Self::Recipe(steps) => steps.iter().find(|s| key.split_once(':').is_some_and(|(_, p)| p == s.node().to_string())).map(recipe_node_step).unwrap_or(NodeStep::Create),
         }
     }
@@ -472,7 +472,7 @@ impl WorkflowStream {
     /// was submitted and closed with the stream.
     pub(crate) fn new(inner: BuildStream, kind: WorkflowKind, span: tracing::Span) -> Self {
         let accepted = Accepted { build_id: inner.build_id().clone(), attempt: inner.attempt() };
-        span.record("build_id", accepted.build_id.0.as_str());
+        span.record("build_id", accepted.build_id.as_str());
         span.record("attempt", accepted.attempt);
         Self { inner, kind, accepted, span, started: false, ended: false, queued: Default::default(), delivered: Default::default() }
     }

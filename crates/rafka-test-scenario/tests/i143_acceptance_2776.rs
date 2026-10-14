@@ -5,12 +5,13 @@
 //! `RDM_ARTIFACTS_DIR` (feature `i143-2776`, test the cell's name).
 
 use rafka_mesh_entity::NodeKind;
-use rafka_node_admin_client::binding::{sha256_file, Binding, BindingError, BindingSet, Candidate};
+use rafka_node_admin_client::binding::{sha256_file, BindingError, BindingSet};
 use rafka_node_admin_client::{FabricDesired, MeshDesired};
-use rafka_test_scenario::estate::{descends_from, named, Estate, Owner, RUNTIME_IMAGE};
+use rafka_test_scenario::estate::{binding_set_from_build_manifest, descends_from, named, Estate, Owner, ENV_CONSUMER_BIN_DIR, RUNTIME_IMAGE};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 fn provider() -> String {
     std::env::var("MESH_SPAWN_TYPE").unwrap_or_else(|_| "process".into())
@@ -43,32 +44,16 @@ fn candidate_sha() -> String {
 
 // ---- the explicit external binary set ----------------------------------------------------------
 
-/// The four consumer executables, by launch id (built by `-p rafka-consumer-fixture`).
-fn consumer_executables() -> [(&'static str, PathBuf); 4] {
-    let exe = |name: &str| {
-        let p = rafka_test_scenario::estate::bin_dir().join(name);
-        assert!(p.exists(), "RED: consumer executable `{name}` is not built at {} (cargo build -p rafka-consumer-fixture)", p.display());
-        p
-    };
-    [("node_admin", exe("consumer-node-admin")), ("broker", exe("consumer-broker")), ("gateway", exe("consumer-gateway")), ("compute", exe("consumer-compute"))]
-}
-
-/// The complete, true binding set of the consumer executables for the run's provider.
-fn consumer_set(sha: &str) -> BindingSet {
-    let container = provider() == "container";
-    BindingSet {
-        candidate: Candidate { sha: sha.into(), build: "consumer-fixture".into() },
-        launch_ids: consumer_executables().iter().map(|(id, _)| id.to_string()).collect(),
-        bindings: consumer_executables()
-            .iter()
-            .map(|(id, path)| Binding {
-                launch_id: id.to_string(),
-                executable: path.canonicalize().unwrap(),
-                sha256: sha256_file(path).unwrap(),
-                image: container.then(|| RUNTIME_IMAGE.to_string()),
-            })
-            .collect(),
-    }
+/// The complete, true binding set of the demo's four executables (`rshape-node-admin`,
+/// `rshape-broker`, `rshape-gateway`, `rshape-compute`) for the run's provider: the consumer build
+/// manifest `scripts/i143-rshape-build-consumer.sh` wrote, resolved against the directory
+/// `RDM_RSHAPE_CONSUMER_BIN_DIR` names. Its candidate is the RDM commit the demo imported.
+fn consumer_set() -> BindingSet {
+    let root = workspace_root();
+    let dir = std::env::var(ENV_CONSUMER_BIN_DIR).unwrap_or_else(|_| panic!("RED: {ENV_CONSUMER_BIN_DIR} is not set: build the demo's executables with scripts/i143-rshape-build-consumer.sh and name their directory"));
+    let bin = root.join(&dir).canonicalize().unwrap_or_else(|e| panic!("RED: {ENV_CONSUMER_BIN_DIR}={dir}: {e} (scripts/i143-rshape-build-consumer.sh)"));
+    let manifest = root.join("target/i143-rshape/consumer-build/manifest.json");
+    binding_set_from_build_manifest(&manifest, &bin, provider() == "container").unwrap_or_else(|e| panic!("RED: the demo's build manifest does not bind its executables: {e}"))
 }
 
 const REQUIRED: [&str; 3] = ["broker", "gateway", "compute"];
@@ -123,7 +108,7 @@ struct Planted {
 }
 
 fn planted(sha: &str, scratch: &Path) -> Vec<Planted> {
-    let good = || consumer_set(sha);
+    let good = consumer_set;
     let p = |name, rule, set, candidate: &str, required: Vec<&'static str>| Planted { name, rule, set, candidate: candidate.to_string(), required };
     let mut out = Vec::new();
 
@@ -225,8 +210,9 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let cell = "scenario_runner_launches_explicit_external_binary_set";
     let layer = provider();
     let dir = acceptance_dir(&layer, cell);
-    let sha = candidate_sha();
-    let bound: Vec<PathBuf> = consumer_set(&sha).bindings.iter().map(|b| b.executable.clone()).collect();
+    let set = consumer_set();
+    let sha = set.candidate.sha.clone();
+    let bound: Vec<PathBuf> = set.bindings.iter().map(|b| b.executable.clone()).collect();
     let scratch = std::env::temp_dir().join(format!("i143-2776-planted-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap();
 
@@ -250,7 +236,6 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let _ = std::fs::remove_dir_all(&scratch);
 
     // 2. The healthy set: the presence control. It starts, serves and restarts through the binding.
-    let set = consumer_set(&sha);
     let mut estate = Estate::bootstrap_external(owner(cell, "external-binding"), "fabric1", "mesh1", &set, &sha, &REQUIRED).await.unwrap_or_else(|e| panic!("the healthy set is accepted: {e}"));
     estate.reconcile(&FabricDesired { fabric: "fabric1".into(), meshes: vec![MeshDesired::of("mesh1", [(NodeKind::NodeAdmin, 2), (NodeKind::Broker, 1), (NodeKind::Gateway, 1), (NodeKind::Compute, 1)])] }).await;
     let names: BTreeSet<String> = ["mesh1.admin.1", "mesh1.admin.2", "mesh1.broker.1", "mesh1.gateway.1", "mesh1.compute.1"].iter().map(|n| n.to_string()).collect();
@@ -277,6 +262,8 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     let get = estate.probe(&["get", "--target", "path:mesh1.broker.1", "--key", "7"]);
     assert_eq!((get["outcome"].as_str(), get["reply"]["result"]["value"].as_str()), (Some("Reply"), Some("bound")), "{get}");
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     // Restarts through the same binding: a role node, and the admin that launched the nodes.
     let mut restarts = Vec::new();
     for node in ["mesh1.broker.1", "mesh1.admin.2"] {
@@ -302,7 +289,7 @@ async fn scenario_runner_launches_explicit_external_binary_set() {
     estate.stop().await;
     let spans = estate.spans();
     let services: BTreeSet<String> = spans.iter().filter_map(|s| s["service"].as_str().map(String::from)).collect();
-    assert!(services.contains("consumer-node-admin"), "the consumer admin ran: {services:?}");
+    assert!(services.contains("rshape-node-admin"), "the demo's admin ran: {services:?}");
     assert!(!services.contains("rafka-node-admin"), "no built-in node-admin ran: {services:?}");
     // Every restart was an operation of the Build rectifier: the REST call that opened the attempt,
     // the executor's reconcile of that attempt, the node's update under the reconcile and the

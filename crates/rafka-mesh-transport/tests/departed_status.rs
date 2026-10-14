@@ -1,7 +1,7 @@
 //! i143.e12.s41 follow-up (rafka-v2 #3068), and i143.e12.s53 (R-RX1): a mesh status is taken for what
 //! it carries, whoever its publisher is.
 //!
-//! The design (rafka-v2 docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md R-RX1: no receiver
+//! The design (docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md R-RX1: no receiver
 //! refuses an input because of who sent it; fabric-authority.md §7: "A successor mesh primary
 //! reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally";
 //! R-ML2: the admin a mesh investigation creates is a node-admin joining a live mesh, which as successor
@@ -16,33 +16,10 @@ use iroh::protocol::Router;
 use rafka_mesh_entity::{EndpointId, FabricId, IncarnationId, LifecycleOp, MemberStatus, MeshDigest, MeshId, MeshNode, NodeId};
 use rafka_mesh_transport::membership::{learn_addresses, Frame, Membership, MeshStatus};
 use serde_json::Value;
-use std::path::PathBuf;
 use std::time::Duration;
 
 fn fabric() -> FabricId {
     FabricId::parse("fab000000001").unwrap()
-}
-
-/// The cell's evidence directory: every span this process emits lands here (and at the collector
-/// when `OTEL_EXPORTER_OTLP_ENDPOINT` names one).
-fn evidence(cell: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").join("target/i143-s41").join(cell);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::env::set_var("RDM_EVIDENCE_DIR", &dir);
-    dir
-}
-
-fn spans_of(dir: &std::path::Path) -> Vec<Value> {
-    let mine = format!(".{}-", std::process::id());
-    let mut spans = Vec::new();
-    for e in std::fs::read_dir(dir).unwrap().flatten() {
-        let n = e.file_name().to_string_lossy().to_string();
-        if n.ends_with(".spans.jsonl") && n.contains(&mine) {
-            spans.extend(std::fs::read_to_string(e.path()).unwrap().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()));
-        }
-    }
-    spans.sort_by_key(|s| s["start_unix_nano"].as_u64().unwrap_or(0));
-    spans
 }
 
 fn named<'a>(spans: &'a [Value], name: &str) -> Vec<&'a Value> {
@@ -120,74 +97,70 @@ async fn until(what: &str, mut holds: impl FnMut() -> bool) {
 /// the name, is taken too: a status is never refused for its publisher. Once Y's heartbeat reaches the
 /// member, the same answer again is a repeat of the change held and is not taken again. Must NOT
 /// happen: a status refused for its publisher's name (`via-departed-birth` with `frame=mesh-status`).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_entry_answer_before_its_first_heartbeat() {
-    let cell = "a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_entry_answer_before_its_first_heartbeat";
-    if crate::own_process::delegated(module_path!(), cell) {
-        return;
-    }
-    let dir = evidence(cell);
-    let telemetry = rafka_mesh_telemetry::init_evidence_telemetry("rafka-mesh-transport-s41-departed-status");
+#[test]
+fn a_node_admin_joining_at_a_departed_birth_name_takes_its_mesh_status_from_the_entry_answer_before_its_first_heartbeat() {
+    let dir = crate::evidence_dir();
+    let capture = rafka_mesh_telemetry::EvidenceCapture::start(&dir, "rafka-mesh-transport-s41-departed-status").expect("the cell's evidence file can be created");
+    capture.run(4, async {
+        let (p_node, m_node, y_node) = (node().await, node().await, node().await);
+        let p_addr = addr_of(&p_node.ep);
+        learn_addresses(&m_node.ep, &[p_addr.clone()]).unwrap();
+        learn_addresses(&y_node.ep, &[p_addr.clone()]).unwrap();
+        let mesh_id = MeshId::mint();
+        let clock = rafka_mesh_transport::clock::os_clock;
+        let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![]).await.unwrap();
+        let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr.clone()]).await.unwrap();
+        let y = Membership::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.1", clock(), vec![p_addr]).await.unwrap();
+        m.wait_for_neighbour().await;
+        y.wait_for_neighbour().await;
 
-    let (p_node, m_node, y_node) = (node().await, node().await, node().await);
-    let p_addr = addr_of(&p_node.ep);
-    learn_addresses(&m_node.ep, &[p_addr.clone()]).unwrap();
-    learn_addresses(&y_node.ep, &[p_addr.clone()]).unwrap();
-    let mesh_id = MeshId::mint();
-    let clock = rafka_mesh_transport::clock::os_clock;
-    let p = Membership::join(&p_node.gossip, &p_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.2", clock(), vec![]).await.unwrap();
-    let m = Membership::join(&m_node.gossip, &m_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.rpc.1", clock(), vec![p_addr.clone()]).await.unwrap();
-    let y = Membership::join(&y_node.gossip, &y_node.ep, &fabric(), "mesh2", &mesh_id, "mesh2.admin.1", clock(), vec![p_addr]).await.unwrap();
-    m.wait_for_neighbour().await;
-    y.wait_for_neighbour().await;
+        // mesh2's status as X published it, held by mesh2.admin.2.
+        let fact = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
+        p.learn_statuses(&[fact]);
+        let held = Some(MeshStatus { status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
+        assert_eq!(p.mesh_status("mesh2"), held, "mesh2.admin.2 holds X's status");
 
-    // mesh2's status as X published it, held by mesh2.admin.2.
-    let fact = Frame::MeshStatus { mesh: "mesh2".into(), status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), forwarded_by: None, changed_at_rafka_ms: 5 };
-    p.learn_statuses(&[fact]);
-    let held = Some(MeshStatus { status: "ready-for-traffic".into(), publisher: "mesh2.admin.1".into(), changed_at_rafka_ms: 5 });
-    assert_eq!(p.mesh_status("mesh2"), held, "mesh2.admin.2 holds X's status");
+        // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
+        let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
+        let departure = LifecycleOp { build_id: "dnd82kmawp3h".into(), attempt: 1, operation: "retire-node:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
+        p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
+        until("Y and the member to hold X departed", || y.book.is_departed(x.as_str()) && m.book.is_departed(x.as_str())).await;
+        assert!(y.book.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's book");
 
-    // X's node.delete: its executor publishes NodeDeleted on mesh2's channel.
-    let (x, x_inc) = (NodeId::mint(), IncarnationId::mint());
-    let departure = LifecycleOp { build_id: "bld-s41".into(), attempt: 1, operation: "retire-node:mesh2.admin.1".into(), node_id: x.clone(), incarnation: x_inc.clone(), name: "mesh2.admin.1".parse().unwrap(), event_at_rafka_ms: 7 };
-    p.publish_lifecycle(&Frame::NodeDeleted { op: departure.clone(), forwarded_by: None }).await.unwrap();
-    until("Y and the member to hold X departed", || y.book.is_departed(x.as_str()) && m.book.is_departed(x.as_str())).await;
-    assert!(y.book.all().iter().all(|d| d.node.name.to_string() != "mesh2.admin.1"), "Y has not published: no live birth holds the name in Y's book");
+        // The entry answer: mesh2.admin.2's held statuses, the original publisher kept.
+        let answer = p.status_frames("mesh2.admin.2");
+        assert!(matches!(answer.as_slice(), [Frame::MeshStatus { publisher, forwarded_by: Some(by), .. }] if publisher == "mesh2.admin.1" && by == "mesh2.admin.2"), "{answer:?}");
+        y.learn_statuses(&answer);
+        assert_eq!(y.mesh_status("mesh2"), held, "Y takes its mesh's status before its first heartbeat: X's departure never refuses the name Y holds");
+        m.learn_statuses(&answer);
+        assert_eq!(m.mesh_status("mesh2"), held, "the member takes it too, though no live birth holds the name there");
 
-    // The entry answer: mesh2.admin.2's held statuses, the original publisher kept.
-    let answer = p.status_frames("mesh2.admin.2");
-    assert!(matches!(answer.as_slice(), [Frame::MeshStatus { publisher, forwarded_by: Some(by), .. }] if publisher == "mesh2.admin.1" && by == "mesh2.admin.2"), "{answer:?}");
-    y.learn_statuses(&answer);
-    assert_eq!(y.mesh_status("mesh2"), held, "Y takes its mesh's status before its first heartbeat: X's departure never refuses the name Y holds");
-    m.learn_statuses(&answer);
-    assert_eq!(m.mesh_status("mesh2"), held, "the member takes it too, though no live birth holds the name there");
+        // Y's first heartbeat reaches the member: the name resolves to Y's live birth.
+        let (y_id, y_inc) = (NodeId::mint(), IncarnationId::mint());
+        y.publish(&digest("mesh2.admin.1", &y_id, &y_inc, 41_021)).await.unwrap();
+        until("the member to hold Y's birth", || m.book.get(y_id.as_str()).is_some()).await;
+        m.learn_statuses(&answer);
+        assert_eq!(m.mesh_status("mesh2"), held, "the repeat leaves the held status as it is");
 
-    // Y's first heartbeat reaches the member: the name resolves to Y's live birth.
-    let (y_id, y_inc) = (NodeId::mint(), IncarnationId::mint());
-    y.publish(&digest("mesh2.admin.1", &y_id, &y_inc, 41_021)).await.unwrap();
-    until("the member to hold Y's birth", || m.book.get(y_id.as_str()).is_some()).await;
-    m.learn_statuses(&answer);
-    assert_eq!(m.mesh_status("mesh2"), held, "the repeat leaves the held status as it is");
-
-    for n in [&p_node, &m_node, &y_node] {
-        n.ep.close().await;
-    }
-    drop(telemetry);
-    let spans = spans_of(&dir);
-    let deleted: Vec<&Value> = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|s| attr(s, "node_id") == x.as_str()).collect();
-    let deleted_at_y = deleted.iter().find(|s| attr(s, "holder") == "mesh2.admin.1").unwrap_or_else(|| panic!("Y applied X's departure: {deleted:#?}"));
-    let taken: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-mesh-status").into_iter().filter(|s| attr(s, "mesh") == "mesh2" && attr(s, "via") == "entry-answer").collect();
-    let taken_at_y = taken.iter().find(|s| attr(s, "node") == "mesh2.admin.1").unwrap_or_else(|| panic!("Y opened its status span: {taken:#?}"));
-    assert_eq!((attr(taken_at_y, "publisher"), attr(taken_at_y, "forwarded_by"), attr(taken_at_y, "changed_at_rafka_ms"), attr(taken_at_y, "taken")), ("mesh2.admin.1".to_string(), "mesh2.admin.2".to_string(), "5".to_string(), "true".to_string()));
-    assert!(deleted_at_y["start_unix_nano"].as_u64() < taken_at_y["start_unix_nano"].as_u64(), "the departure was held at Y before the status");
-    let refused: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-departed-birth").into_iter().filter(|s| attr(s, "frame") == "mesh-status").collect();
-    assert!(refused.is_empty(), "no status is refused for its publisher's name: {refused:#?}");
-    let heard_at_m: Vec<(String, String)> = taken.iter().filter(|s| attr(s, "node") == "mesh2.rpc.1").map(|s| (attr(s, "publisher"), attr(s, "taken"))).collect();
-    assert_eq!(heard_at_m, vec![("mesh2.admin.1".to_string(), "true".to_string()), ("mesh2.admin.1".to_string(), "false".to_string())], "the member takes it at the first answer, and the repeat is not taken again");
-    let taken_at_m = taken.iter().find(|s| attr(s, "node") == "mesh2.rpc.1").expect("the member's first status span");
-    let mut lines = String::new();
-    for (what, s) in [("deleted-at-y", *deleted_at_y), ("taken-at-y", *taken_at_y), ("taken-at-member", *taken_at_m)] {
-        lines.push_str(&format!("{what} {} {} holder={} node={} via={} publisher={} taken={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "holder"), attr(s, "node"), attr(s, "via"), attr(s, "publisher"), attr(s, "taken")));
-    }
-    std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
+        for n in [&p_node, &m_node, &y_node] {
+            n.ep.close().await;
+        }
+        let spans = capture.spans().expect("the cell's spans reached its evidence file");
+        let deleted: Vec<&Value> = named(&spans, "rdm.mesh.membership.remove.via-node-deleted").into_iter().filter(|s| attr(s, "node_id") == x.as_str()).collect();
+        let deleted_at_y = deleted.iter().find(|s| attr(s, "holder") == "mesh2.admin.1").unwrap_or_else(|| panic!("Y applied X's departure: {deleted:#?}"));
+        let taken: Vec<&Value> = named(&spans, "rdm.mesh.membership.update.via-mesh-status").into_iter().filter(|s| attr(s, "mesh") == "mesh2" && attr(s, "via") == "entry-answer").collect();
+        let taken_at_y = taken.iter().find(|s| attr(s, "node") == "mesh2.admin.1").unwrap_or_else(|| panic!("Y opened its status span: {taken:#?}"));
+        assert_eq!((attr(taken_at_y, "publisher"), attr(taken_at_y, "forwarded_by"), attr(taken_at_y, "changed_at_rafka_ms"), attr(taken_at_y, "taken")), ("mesh2.admin.1".to_string(), "mesh2.admin.2".to_string(), "5".to_string(), "true".to_string()));
+        assert!(deleted_at_y["start_unix_nano"].as_u64() < taken_at_y["start_unix_nano"].as_u64(), "the departure was held at Y before the status");
+        let refused: Vec<&Value> = named(&spans, "rdm.mesh.membership.reject.via-departed-birth").into_iter().filter(|s| attr(s, "frame") == "mesh-status").collect();
+        assert!(refused.is_empty(), "no status is refused for its publisher's name: {refused:#?}");
+        let heard_at_m: Vec<(String, String)> = taken.iter().filter(|s| attr(s, "node") == "mesh2.rpc.1").map(|s| (attr(s, "publisher"), attr(s, "taken"))).collect();
+        assert_eq!(heard_at_m, vec![("mesh2.admin.1".to_string(), "true".to_string()), ("mesh2.admin.1".to_string(), "false".to_string())], "the member takes it at the first answer, and the repeat is not taken again");
+        let taken_at_m = taken.iter().find(|s| attr(s, "node") == "mesh2.rpc.1").expect("the member's first status span");
+        let mut lines = String::new();
+        for (what, s) in [("deleted-at-y", *deleted_at_y), ("taken-at-y", *taken_at_y), ("taken-at-member", *taken_at_m)] {
+            lines.push_str(&format!("{what} {} {} holder={} node={} via={} publisher={} taken={}\n", s["trace_id"].as_str().unwrap_or(""), s["name"].as_str().unwrap_or(""), attr(s, "holder"), attr(s, "node"), attr(s, "via"), attr(s, "publisher"), attr(s, "taken")));
+        }
+        std::fs::write(dir.join("trace-ids.txt"), lines).unwrap();
+    });
 }

@@ -1,7 +1,7 @@
 //! The Node RPC server (node-rpc.md §12–§19, §26–§32; ownership §6.3).
 //!
-//! Per bi-stream: read the fence (an unserved op → `421`; another node → `425`),
-//! the context, the declared length
+//! Per bi-stream: read the target (an unserved op → `421`; the node id it names is
+//! never a reason to refuse, R-UC1a), the context, the declared length
 //! (oversize → typed `Malformed(TooLarge)`), take admission (full → typed
 //! `Busy`), read the body, and dispatch only after the request direction
 //! finished cleanly. A request the sender reset (`499`) or left unfinished is
@@ -22,7 +22,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rafka_node_rpc_contract::context::{dropped_as_str, CallContext};
-use rafka_node_rpc_contract::framing::Fence;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -175,8 +174,6 @@ pub struct ServerStats {
     pub not_ready: AtomicU64,
     /// Requests reset as protocol violations.
     pub violations: AtomicU64,
-    /// Requests refused `425 STALE_TARGET` (another node).
-    pub stale: AtomicU64,
     /// Handlers that failed or panicked.
     pub faults: AtomicU64,
     /// Handlers dispatched and not yet finished (a drained node waits for it to reach zero).
@@ -254,19 +251,19 @@ pub struct ServerBuilder {
     pub(crate) carried: HashMap<u8, usize>,
     /// Filled at seal for the forward handler, when this node serves it.
     pub(crate) carried_table: Option<Arc<std::sync::OnceLock<HashMap<u8, usize>>>>,
-    /// The source-owned connections observer and the resolver that names an accepted peer,
-    /// when the process writes its own connection facts (connections.md §10).
+    /// The accept trigger and the resolver that names an accepted peer, when the process runs
+    /// direct recovery (R-CN1).
     inbound: Option<Inbound>,
     /// Test seam: withholds the next reply after the handler has applied it.
     withhold: Option<Arc<ReplyWithhold>>,
 }
 
-/// An accepted connection reported to the process's connections observer as Direct Connected
-/// from this node to the peer, once the resolver names the peer's live birth.
+/// An accepted connection handed to the process's accept trigger once the resolver names the
+/// peer's live birth: a recovery trigger, never Direct evidence (R-CN1).
 #[derive(Clone)]
 struct Inbound {
     resolver: Arc<crate::LiveNodeResolver>,
-    observer: Arc<dyn crate::ConnectionObserver>,
+    trigger: Arc<dyn crate::AcceptTrigger>,
 }
 
 impl ServerBuilder {
@@ -291,12 +288,12 @@ impl ServerBuilder {
         self
     }
 
-    /// Report every accepted connection whose peer `resolver` names as a live node to
-    /// `observer` as `direct_accepted` (connections.md §10: a connection accepted from the
-    /// destination is Direct Connected evidence like a dial of this node's own). A peer the
-    /// resolver does not hold (a probe's ephemeral key) is reported to nothing.
-    pub fn with_connection_observer(mut self, resolver: Arc<crate::LiveNodeResolver>, observer: Arc<dyn crate::ConnectionObserver>) -> Self {
-        self.inbound = Some(Inbound { resolver, observer });
+    /// Hand every accepted connection whose peer `resolver` names as a live node to `trigger`
+    /// (R-CN1: an accept is a recovery trigger for this node's own direct dial toward that birth,
+    /// never Direct evidence; the acceptor writes nothing). A peer the resolver does not hold (a
+    /// probe's ephemeral key) is handed to nothing.
+    pub fn with_accept_trigger(mut self, resolver: Arc<crate::LiveNodeResolver>, trigger: Arc<dyn crate::AcceptTrigger>) -> Self {
+        self.inbound = Some(Inbound { resolver, trigger });
         self
     }
 
@@ -346,7 +343,7 @@ impl ServerBuilder {
 
     /// Seal the catalog before the first stream is accepted, as `birth`: the
     /// exact node and incarnation this process is. A request is dispatched only
-    /// when its fence names this node and a served op.
+    /// when its target names this node and a served op.
     pub fn seal(self, birth: ServedBirth) -> Result<NodeRpcServer, Vec<SealError>> {
         let catalog = self.catalog.seal()?;
         if let Some(table) = &self.carried_table {
@@ -431,29 +428,13 @@ impl ReplyWithhold {
     }
 }
 
-/// The exact birth a server is: what every request's fence is checked against.
+/// The exact birth a server is, named in its spans.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServedBirth {
     /// The served node's id.
     pub node_id: String,
     /// The served node's incarnation id.
     pub incarnation: String,
-}
-
-/// Which part of a request's fence this node is not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FenceMismatch {
-    /// The request named another node.
-    NodeId,
-}
-
-impl FenceMismatch {
-    /// The mismatch's name as it appears in spans and refusals.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::NodeId => "node_id",
-        }
-    }
 }
 
 struct Inner {
@@ -472,7 +453,7 @@ struct Inner {
 }
 
 /// One sealed server for the process's one endpoint. The socket a request
-/// arrives on names nothing: the request's fence does.
+/// arrives on names nothing: the request's target does.
 #[derive(Clone)]
 pub struct NodeRpcServer {
     inner: Arc<Inner>,
@@ -489,20 +470,6 @@ fn code(c: ResetCode) -> VarInt {
 }
 
 impl NodeRpcServer {
-    /// Is `fence` this node? `Err` names what is not. The op is the catalog's
-    /// to check.
-    pub(crate) fn check_fence(&self, fence: &Fence) -> Result<(), FenceMismatch> {
-        if fence.target_node_id != self.inner.birth.node_id {
-            return Err(FenceMismatch::NodeId);
-        }
-        Ok(())
-    }
-
-    /// Whether `fence` names this node.
-    pub fn is_current(&self, fence: &Fence) -> bool {
-        self.check_fence(fence).is_ok()
-    }
-
     /// The one sealed effective catalog of this process: what every dispatcher in it serves.
     pub fn catalog(&self) -> &SealedCatalog {
         &self.inner.catalog
@@ -532,13 +499,13 @@ impl NodeRpcServer {
     }
 
     /// Hard-cut the connections this server accepted (`node.connections.delete`), closing each with
-    /// `reason`, except those from `spare` (the peer whose call is in flight and answered on its
-    /// connection). The endpoint stays bound and fresh dials are accepted. Returns how many were
+    /// `reason`, except those from `spare` (the peers whose calls are in flight and answered on their
+    /// connections). The endpoint stays bound and fresh dials are accepted. Returns how many were
     /// closed.
-    pub fn close_connections_except(&self, spare: Option<iroh::PublicKey>, reason: &'static str) -> usize {
+    pub fn close_connections_except(&self, spare: &[iroh::PublicKey], reason: &'static str) -> usize {
         let cut: Vec<Connection> = {
             let held = self.inner.connections.lock().unwrap();
-            held.values().filter(|c| Some(c.remote_id()) != spare).cloned().collect()
+            held.values().filter(|c| !spare.contains(&c.remote_id())).cloned().collect()
         };
         for c in &cut {
             tracing::info_span!("rdm.node_rpc.connection.delete.via-hard-cut", peer = %c.remote_id().fmt_short(), connection = c.stable_id(), direction = "accepted")
@@ -588,9 +555,7 @@ impl NodeRpcServer {
 
     async fn invocation(self, peer: iroh::PublicKey, mut send: SendStream, mut recv: RecvStream) {
         let stats = self.inner.stats.clone();
-        let me = self.clone();
-        let current = move |f: &Fence| me.is_current(f);
-        let mut asm = RequestAssembly::new(&self.inner.catalog, &current);
+        let mut asm = RequestAssembly::new(&self.inner.catalog);
         let mut buf = vec![0u8; 16 * 1024];
         let mut permit: Option<Permit> = None;
         let action = loop {
@@ -638,25 +603,6 @@ impl NodeRpcServer {
                     .in_scope(|| tracing::info!(op, "unserved op: 421"));
                 let _ = send.reset(code(ResetCode::UnservedOp));
                 let _ = recv.stop(code(ResetCode::UnservedOp));
-            }
-            ServerAction::ResetStale { op, fence } => {
-                stats.stale.fetch_add(1, Ordering::SeqCst);
-                let mismatch = self.check_fence(&fence).err().map(FenceMismatch::as_str).unwrap_or("");
-                let span = tracing::info_span!(
-                    "rdm.node_rpc.connection.reject.via-stale-target",
-                    decided_by = "target",
-                    op,
-                    peer = %peer,
-                    node_id = %fence.target_node_id,
-                    op = fence.op,
-                    mismatch,
-                    receiver_node_id = %self.inner.birth.node_id,
-                );
-                // Decided on the fence alone: the context was never read, so the refusal carries
-                // no caller trace and no caller_system (node-rpc-envelope.md, the fence checks).
-                span.in_scope(|| tracing::info!("the request's fence is not this node: 425"));
-                let _ = send.reset(code(ResetCode::StaleTarget));
-                let _ = recv.stop(code(ResetCode::StaleTarget));
             }
             ServerAction::RefuseMalformed { op, kind } => {
                 stats.too_large.fetch_add(1, Ordering::SeqCst);
@@ -777,10 +723,10 @@ impl ProtocolHandler for NodeRpcServer {
         tracing::info_span!("rdm.node_rpc.connection.create.via-accept", peer = %peer.fmt_short(), connection = id).in_scope(|| {
             tracing::info!(step = "accepted", "a node rpc connection was accepted");
             // Once per accepted connection, never per stream: the peer's live birth, as this
-            // process resolves it now, is Direct Connected from this node (connections.md §10).
+            // process resolves it now, is a recovery trigger (R-CN1), never a Direct fact.
             if let Some(inbound) = &self.inner.inbound {
                 if let Some(node) = inbound.resolver.by_endpoint(&peer) {
-                    inbound.observer.direct_accepted(&node);
+                    inbound.trigger.accepted(&node);
                 }
             }
             self.inner.connections.lock().unwrap().insert(id, connection.clone());

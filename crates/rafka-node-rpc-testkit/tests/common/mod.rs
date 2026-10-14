@@ -13,6 +13,8 @@
 
 #![allow(dead_code)]
 
+pub mod admin_view;
+
 use rafka_mesh_entity::{FabricId, IncarnationId, NodeId};
 use rafka_node_admin_core::accepted::{FabricTopology, MeshTopology};
 use rafka_node_admin_core::build::BuildId;
@@ -257,6 +259,7 @@ pub fn template(admin: &AdminSide) -> LaunchTemplate {
         data_root,
         store_dir,
         mesh_issuer: None,
+        connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
     }
 }
 
@@ -396,14 +399,14 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     // One child span per step under the pipeline span, each fully attributed.
     let all = spans.0.lock().unwrap().clone();
     assert!(all.values().any(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-pipeline"
-        && f.get("build_id") == Some(&build_id.0)));
+        && f.get("build_id") == Some(&build_id.to_string())));
     for step in CreateStep::ORDER {
         let (_, parent, f) = all
             .values()
             .find(|(n, _, f)| n == "rdm.node_admin.deployment.update.via-step" && f.get("step").map(String::as_str) == Some(step.name()))
             .unwrap_or_else(|| panic!("no span for step {}", step.name()));
         assert_eq!(parent.as_deref(), Some("rdm.node_admin.deployment.update.via-pipeline"), "{}", step.name());
-        assert_eq!(f.get("build_id"), Some(&build_id.0), "{}", step.name());
+        assert_eq!(f.get("build_id"), Some(&build_id.to_string()), "{}", step.name());
         assert_eq!(f.get("provider").map(String::as_str), Some(expected_provider.as_str()), "{}", step.name());
         assert_eq!(f.get("outcome").map(String::as_str), Some("complete"), "{}", step.name());
         assert_eq!(f.get("attempt").map(String::as_str), Some("1"), "{}", step.name());
@@ -440,4 +443,15 @@ pub async fn deploy_through_every_step(spawn_type: &str, spans: &Spans) -> Smoke
     }
     let _ = std::fs::remove_dir_all(&data_root);
     Smoke::Passed
+}
+
+/// The admin side's Ping (op `0x01`), so a node's data-plane call to it is answered: in RDM
+/// standalone a node's data-plane connection is one the testkit originates (connections.md "Two
+/// planes, two words"), and the cell's admin side is a destination it reaches.
+pub fn serve_ping(b: rafka_node_rpc::ServerBuilder) -> rafka_node_rpc::ServerBuilder {
+    use rafka_node_rpc_contract::ping::{Ping, PingReply, PingRequest};
+    b.serve::<Ping, _, _>(rafka_node_rpc_contract::catalog::OpOwner::Core, |_peer, req: PingRequest| async move {
+        let PingRequest::Ping { payload, .. } = req;
+        Ok(PingReply::Pong { payload })
+    })
 }

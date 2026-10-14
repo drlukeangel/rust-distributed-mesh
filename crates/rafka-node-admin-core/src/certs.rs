@@ -75,7 +75,7 @@ pub struct NoCerts;
 
 impl CertSigner for NoCerts {
     fn issue_member(&self, birth: &BirthIdentity, now_ms: u64) -> Result<Vec<u8>, CertRefusal> {
-        tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.0, issued_at_rafka_ms = now_ms)
+        tracing::info_span!("rdm.node_admin.cert.create.via-no-certs-configured", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), issued_at_rafka_ms = now_ms)
             .in_scope(|| tracing::info!("this node-admin is configured with no certs: the member cert is empty"));
         Ok(Vec::new())
     }
@@ -149,7 +149,7 @@ impl CertIssuer {
             "rdm.node_admin.cert.create.via-join",
             node = %birth.name,
             node_id = %birth.node_id,
-            incarnation_id = %birth.incarnation.0,
+            incarnation_id = %birth.incarnation.as_str(),
             issued_at_rafka_ms = tracing::field::Empty,
             cert_len = tracing::field::Empty,
             outcome = tracing::field::Empty,
@@ -171,7 +171,7 @@ impl CertIssuer {
             }
             Err(r) => {
                 span.record("outcome", "refused");
-                tracing::info_span!("rdm.node_admin.cert.reject.via-signer-refusal", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.0, refusal = %r.name, detail = %r.detail)
+                tracing::info_span!("rdm.node_admin.cert.reject.via-signer-refusal", node = %birth.name, node_id = %birth.node_id, incarnation_id = %birth.incarnation.as_str(), refusal = %r.name, detail = %r.detail)
                     .in_scope(|| tracing::warn!("the signer refused to issue a member cert: the join is refused"));
                 Err(IssueFailure::Refused(r))
             }

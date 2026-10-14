@@ -2,7 +2,7 @@
 //! the selected provider, then executes every operation and assertion over real
 //! Node RPC through `rafka-rpc-probe` (PRD §6: no in-process shortcut).
 
-use crate::estate::{wait_for, Estate, Owner};
+use crate::estate::{Estate, Owner};
 use crate::replay::{EvidenceOwner, Fault, ManifestError, ReplayManifest, ScheduledFault, Source, StepOutcome, SCHEMA_VERSION};
 use crate::scenario::{Assertion, Operation, Scenario};
 use serde_json::{json, Value};
@@ -42,23 +42,15 @@ pub async fn run(scenario: &Scenario, provider: Option<&str>, test: &str) -> Run
     .await;
     estate.artifact("scenario.json", &serde_json::to_value(scenario).expect("scenario serializes"));
 
-    let body = scenario.build_request();
-    estate.artifact("build-request.json", &json!({"route": "POST /api/build", "body": body}));
-    let (status, accepted) = estate.post("/api/build", &body).await;
-    assert_eq!(status, 202, "POST /api/build: {accepted}");
-    let build_id = accepted["build_id"].as_str().expect("build_id").to_string();
-    let done = estate.await_build(&build_id, SETTLE).await;
-    estate.artifact("build-status.json", &done);
+    let desired = scenario.desired();
+    estate.artifact("build-request.json", &json!({"call": "build.create", "desired": desired}));
+    let done = estate.reconcile(&desired).await;
+    let build_id = done.build_id.to_string();
+    estate.artifact("build-status.json", &json!({"build_id": build_id, "attempt": done.attempt, "frames": format!("{:?}", done.frames)}));
 
-    let want_admins: u32 = scenario.meshes.iter().map(|m| m.node_admin).sum();
-    let want_rpc: u32 = scenario.meshes.iter().map(|m| m.rpc_node).sum();
-    wait_for("every desired member ready-for-traffic", SETTLE, || async {
-        let nodes = estate.nodes().await;
-        let ready = |kind: &str| nodes.iter().filter(|n| n["kind"] == kind && n["status"] == "ready-for-traffic").count() as u32;
-        (ready("node_admin") == want_admins && ready("rpc_node") == want_rpc).then_some(())
-    })
-    .await;
-    estate.artifact("nodes-before.json", &json!(estate.nodes().await));
+    let shape: Vec<(&str, u32, u32)> = scenario.meshes.iter().map(|m| (m.name.as_str(), m.node_admin, m.rpc_node)).collect();
+    estate.settles_to(&shape, SETTLE).await;
+    estate.artifact("nodes-before.json", &json!(estate.node_values().await));
 
     let mut failures = Vec::new();
     for (i, op) in scenario.operations.iter().enumerate() {
@@ -99,7 +91,7 @@ pub async fn run(scenario: &Scenario, provider: Option<&str>, test: &str) -> Run
             failures.push(Failure { step: format!("assert[{i}] get {target} {key}"), reason: out.to_string() });
         }
     }
-    estate.artifact("nodes-after.json", &json!(estate.nodes().await));
+    estate.artifact("nodes-after.json", &json!(estate.node_values().await));
     estate.artifact(
         "result.json",
         &json!({"build_id": build_id, "failures": failures.iter().map(|f| json!({"step": f.step, "reason": f.reason})).collect::<Vec<_>>()}),
@@ -163,43 +155,39 @@ pub async fn run_replayable(
     // A run that fails or crashes still leaves its complete manifest: the outcomes are filled in at the end.
     estate.artifact("replay-manifest.json", &serde_json::to_value(&manifest).expect("manifest serializes"));
     estate.artifact("scenario.json", &serde_json::to_value(&sc).expect("scenario serializes"));
-    let body = sc.build_request();
-    let (status, accepted) = estate.post("/api/build", &body).await;
-    assert_eq!(status, 202, "POST /api/build: {accepted}");
-    let build_id = accepted["build_id"].as_str().expect("build_id").to_string();
-    estate.await_build(&build_id, SETTLE).await;
-    let want_admins: u32 = sc.meshes.iter().map(|m| m.node_admin).sum();
-    let want_rpc: u32 = sc.meshes.iter().map(|m| m.rpc_node).sum();
-    wait_for("every desired member ready-for-traffic", SETTLE, || async {
-        let nodes = estate.nodes().await;
-        let ready = |kind: &str| nodes.iter().filter(|n| n["kind"] == kind && n["status"] == "ready-for-traffic").count() as u32;
-        (ready("node_admin") == want_admins && ready("rpc_node") == want_rpc).then_some(())
-    })
-    .await;
+    estate.reconcile(&sc.desired()).await;
+    let shape: Vec<(&str, u32, u32)> = sc.meshes.iter().map(|m| (m.name.as_str(), m.node_admin, m.rpc_node)).collect();
+    estate.settles_to(&shape, SETTLE).await;
 
+    // The initial fabric refuses a node restart until it has first reached ready-for-traffic (states.md "The initial fabric before ready-for-traffic").
+    estate.until_fabric_ready(SETTLE).await;
     let mut failures = Vec::new();
     let mut outcomes = Vec::new();
     let mut fault_no = 0;
     for i in 0..=sc.operations.len() {
         for sf in manifest.fault_schedule.iter().filter(|f| f.before_operation == i) {
             let Fault::RestartNode { node } = &sf.fault;
-            let before = estate.node(node).await;
-            let (status, r) = estate.post(&format!("/api/nodes/{node}/restart"), &Value::Null).await;
+            let before = estate.node_value(node).await;
+            let path: rafka_node_admin_client::PathName = node.parse().unwrap_or_else(|e| panic!("the fault names {node}, not a path.name: {e:?}"));
             let step = format!("fault[{fault_no}]");
             fault_no += 1;
-            if status != 202 {
-                failures.push(Failure { step: step.clone(), reason: format!("restart {node}: {status} {r}") });
-                outcomes.push(StepOutcome { step, action: "restart_node".into(), target: node.clone(), key: None, outcome: format!("Refused({status})"), result: Value::Null });
-                continue;
-            }
-            estate.await_attempt(r["build_id"].as_str().expect("build_id"), Estate::attempt_of(&r), SETTLE).await;
+            let mut restart = match estate.nodes_obj().await.restart(&path).await {
+                Ok(stream) => stream,
+                Err(end) => {
+                    failures.push(Failure { step: step.clone(), reason: format!("restart {node}: {end}") });
+                    outcomes.push(StepOutcome { step, action: "restart_node".into(), target: node.clone(), key: None, outcome: format!("Refused({})", end.outcome()), result: Value::Null });
+                    continue;
+                }
+            };
+            Estate::complete(&mut restart).await;
             // A restart is stop then start of the same process: it keeps the node id and the incarnation
             // (node-restart.md "Kept"); its completed attempt is the restart, and the node is ready again.
-            let after = wait_for(&format!("{node} ready again as the same birth after its restart"), SETTLE, || async {
-                let n = estate.node_opt(node).await?;
-                (n["status"] == "ready-for-traffic" && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"]).then_some(n)
-            })
-            .await;
+            let after = estate
+                .until_node(node, &format!("{node} ready again as the same birth after its restart"), SETTLE, |n| {
+                    let n = serde_json::to_value(n?).expect("a view serializes");
+                    (n["status"] == "ready-for-traffic" && n["node_id"] == before["node_id"] && n["incarnation_id"] == before["incarnation_id"]).then_some(n)
+                })
+                .await;
             outcomes.push(StepOutcome {
                 step,
                 action: "restart_node".into(),

@@ -31,7 +31,7 @@ fn birth() -> Birth {
 }
 
 fn served(b: &Birth) -> ServedBirth {
-    ServedBirth { node_id: b.node_id.to_string(), incarnation: b.incarnation.0.clone() }
+    ServedBirth { node_id: b.node_id.to_string(), incarnation: b.incarnation.to_string() }
 }
 
 fn resolved(b: &Birth, name: &str, addr: std::net::SocketAddr) -> ResolvedNode {
@@ -85,8 +85,8 @@ async fn rig() -> Rig {
     ));
     connections.held().lock().unwrap().set_membership(live.clone());
     connections.hydrate().await.unwrap();
-    let node_rpc = rafka_node_admin_core::node_rpc::ProcessNodeRpc::new(live.clone(), admin_ep.clone(), Some(connections.clone()));
-    let admin_server = rafka_node_admin_core::admin::rpc_server(live.clone(), connections.clone(), node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
+    let node_rpc = rafka_node_admin_core::node_rpc::ProcessNodeRpc::new(live.clone(), admin_ep.clone());
+    let admin_server = rafka_node_admin_core::admin::rpc_server(connections.clone(), node_rpc.client.clone(), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()), Arc::new(OnceLock::new()))
         .seal(served(&admin_birth))
         .unwrap();
     let admin_router = Router::builder(admin_ep).accept(rafka_node_rpc::ALPN, admin_server.clone()).spawn();

@@ -10,24 +10,9 @@ use crate::topology::Topology;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Opaque Build identity. It belongs to fabric control state, not to the
-/// executor that happens to run it.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct BuildId(pub String);
-
-impl BuildId {
-    /// A fresh Build id.
-    pub fn mint() -> Self {
-        Self(format!("bld-{}", hex::encode(rand::random::<[u8; 12]>())))
-    }
-}
-
-impl fmt::Display for BuildId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+/// The Build identity: a Crockford id like every other id (R-BI5). It belongs to fabric control
+/// state, not to the executor that happens to run it.
+pub use rafka_mesh_entity::BuildId;
 
 /// The desired counts of one mesh's nodes by kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,12 +117,12 @@ pub enum BuildOperation {
         /// The node to restart.
         node: PathName,
     },
-    /// Drain the exact birth `from_incarnation` of `node` and keep it running (node-drain.md): the
-    /// operation is `drain-node` and the birth's `node-drained`, nothing else.
-    DrainNode {
-        /// The node to drain.
+    /// `node.connections.delete { All }` of the exact birth `from_incarnation` of `node`; it keeps
+    /// running (node-connections-delete.md).
+    DeleteConnections {
+        /// The node.
         node: PathName,
-        /// The birth drained.
+        /// The birth whose connections are deleted.
         from_incarnation: IncarnationId,
     },
     /// Stop the exact birth `from_incarnation` of `node` (node-stop.md): `stop-node`, its node-left
@@ -175,14 +160,6 @@ pub enum BuildOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         exited: Option<ExitedBirth>,
     },
-    /// node.update of the node at `node` (node-update.md; node-recovery.md sequence step 6): the
-    /// caller-owned meta of the exited birth `from` copied onto the new node created at its path.
-    UpdateNode {
-        /// The node updated: the one created at the exited birth's path.name.
-        node: PathName,
-        /// The exited birth whose caller-owned meta is copied.
-        from: ExitedBirth,
-    },
     /// One step of a recipe (`BuildChange::Recipe`; build.md §1, lifecycles/node-replace.md): its op's
     /// own workflow on the node its path names when it runs, `create-node`, `stop-node`,
     /// `update-node` (node.update's own core at the node's mesh-primary), `start-node`, or
@@ -196,7 +173,7 @@ pub enum BuildOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         birth: Option<PinnedBirth>,
     },
-    /// Shut a whole mesh down (mesh-leave.md): the fabric-primary owns the workflow, the mesh's
+    /// Shut a whole mesh down (mesh-delete.md): the fabric-primary owns the workflow, the mesh's
     /// primary drains and stops every other member, and the fabric-primary stops the final primary
     /// and records the departure. The operation key names the mesh by its minted id.
     ShutdownMesh {
@@ -211,7 +188,7 @@ impl BuildOperation {
     /// The node the operation acts on; `None` for a mesh operation.
     pub fn node(&self) -> Option<&PathName> {
         match self {
-            Self::CreateNode { node, .. } | Self::RestartNode { node } | Self::DrainNode { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::UpdateNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
+            Self::CreateNode { node, .. } | Self::RestartNode { node } | Self::DeleteConnections { node, .. } | Self::StopNode { node, .. } | Self::StartNode { node, .. } | Self::DeleteNode { node, .. } | Self::RetireNode { node, .. } => Some(node),
             Self::RecipeStep { step, .. } => Some(step.node()),
             Self::CreateMesh { .. } | Self::ShutdownMesh { .. } => None,
         }
@@ -232,10 +209,9 @@ impl BuildOperation {
             Self::CreateMesh { mesh, .. } => format!("create-mesh:{mesh}"),
             Self::CreateNode { node, .. } => format!("create-node:{node}"),
             Self::RestartNode { node } => format!("restart-node:{node}"),
-            Self::DrainNode { node, .. } => format!("drain-node:{node}"),
+            Self::DeleteConnections { node, .. } => format!("node.connections.delete:{node}"),
             Self::StopNode { node, .. } => format!("stop-node:{node}"),
             Self::StartNode { node, .. } => format!("start-node:{node}"),
-            Self::UpdateNode { node, .. } => format!("update-node:{node}"),
             Self::RecipeStep { step, .. } => recipe_step_key(step),
             // node.delete has one key, whatever the node's name and whatever state the birth is
             // deleted from (a stopped birth's delete runs no stop steps, a live one's stops it first).
@@ -348,14 +324,14 @@ pub enum BuildReject {
         /// The fabric's provider.
         fabric_provider: crate::model::ProviderKind,
     },
-    /// A mesh's paths and its per-path meta disagree: a materialized path with no meta, or meta
-    /// for a path the mesh does not hold.
-    NodeMetaMismatch {
+    /// A mesh's paths and its per-path config disagree: a materialized path with no path config, or a path
+    /// config for a path the mesh does not hold.
+    PathConfigMismatch {
         /// The mesh.
         mesh: String,
-        /// The paths with no meta.
+        /// The paths with no path config.
         missing: Vec<String>,
-        /// The meta for paths the mesh does not hold.
+        /// The path config for paths the mesh does not hold.
         extra: Vec<String>,
     },
     /// The node belongs to a peer mesh this fabric-primary holds unheard: loss of that mesh's
@@ -375,18 +351,38 @@ pub enum BuildReject {
         /// The node-admin named.
         node: String,
     },
-    /// The Build would drain, stop, restart or retire the fabric-primary while no other
-    /// live node-admin of its mesh can take its seats: TakeSeats moves seats inside the holder's
-    /// mesh only, and the fabric seat leaves a mesh whose last admin holds it only through the
-    /// holder-initiated TakeFabricPrimary inside mesh-leave (node-rpc-envelope.md, "TakeSeats:
-    /// Build-driven seat transfer", Boundary).
+    /// The Build would stop, restart, delete the connections of or retire a seat holder (its
+    /// mesh's primary, or the fabric-primary) whose node.primary.update has no successor (the approved proposal
+    /// node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The no-successor cases", Q7 ruled
+    /// Luke 2026-10-12): refused by name with Q7's exact text, the holder stays primary and nothing is
+    /// admitted.
     LastAdmin {
-        /// The fabric-primary the Build would end.
+        /// The seat holder the Build would end.
         node: String,
         /// Its mesh.
         mesh: String,
-        /// What the Build would do to it (`restart`, `drain`, `stop`, `retire`).
+        /// What the Build would do to it (`restart`, `node.connections.delete`, `stop`, `retire`).
         action: String,
+        /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`, or the
+        /// fabric seat's `cannot transfer fabric seat: ...` naming both searches.
+        refusal: String,
+    },
+    /// The Build would stop, restart, delete the connections of or retire the holder of its
+    /// cohort's seat, a node type other than node-admin, while no other node of its type is in its mesh
+    /// (the approved proposal node-primary-update-fabric-mesh-and-node-type.md, Part C1 "The
+    /// no-successor cases", Q7 ruled Luke 2026-10-12: "a mesh's sole broker ... cannot be stopped or
+    /// restarted until a secondary is ReadyForTraffic"): refused by name with Q7's exact text, the holder
+    /// stays primary and nothing is admitted.
+    NoSecondary {
+        /// The seat holder the Build would end.
+        node: String,
+        /// Its mesh.
+        mesh: String,
+        /// What the Build would do to it (`restart`, `node.connections.delete`, `stop`,
+        /// `retire`, `delete`).
+        action: String,
+        /// Q7's exact text: `cannot transfer: no secondary of type <node_type> in mesh <mesh>`.
+        refusal: String,
     },
     /// The stopped-node garbage collector's delete of a birth that is no longer the one stopped
     /// past the ttl at its admission (fabric-node-lifecycle.md §6.9 Recheck): started, replaced, or
@@ -422,6 +418,15 @@ pub enum BuildReject {
         /// The `path.name` it names.
         node: String,
     },
+    /// The workflow would move a seat or write a caller's row while the initial fabric has not
+    /// first reached ready-for-traffic: before state-commit its rows live only in their holders'
+    /// scratchpads (states.md, "The initial fabric before ready-for-traffic"; R-PB1, R-PC1).
+    FabricNotReady {
+        /// The refused workflow and its subject (`node.stop mesh1.rpc.1`, `mesh.delete mesh2`).
+        workflow: String,
+        /// The fabric's status as this admin holds it.
+        status: String,
+    },
 }
 
 impl BuildReject {
@@ -440,15 +445,17 @@ impl BuildReject {
             Self::FabricMismatch { .. } => "fabric-mismatch",
             Self::EmptyFabric => "empty-fabric",
             Self::ProviderInBuild { .. } => "provider-mismatch",
-            Self::NodeMetaMismatch { .. } => "node-meta-mismatch",
+            Self::PathConfigMismatch { .. } => "path-config-mismatch",
             Self::UnheardMesh { .. } => "unheard-mesh",
             Self::NodeAdminNotNodeRecovered { .. } => "node-admin-not-node-recovered",
             Self::LastAdmin { .. } => "last-admin",
+            Self::NoSecondary { .. } => "no-secondary",
             Self::NodeNotStopped { .. } => "node-not-stopped",
             Self::ReferencedByOpenBuild { .. } => "referenced-by-open-build",
             Self::EmptyRecipe => "empty-recipe",
             Self::RecipeStepRepeated { .. } => "recipe-step-repeated",
             Self::RecipeNodeUnknown { .. } => "recipe-node-unknown",
+            Self::FabricNotReady { .. } => "fabric-not-ready",
         }
     }
 }
@@ -463,7 +470,7 @@ impl fmt::Display for BuildReject {
             Self::MeshIdUnknown { mesh } => write!(f, "mesh `{mesh}` is held, but no member has stated its id: its shutdown cannot be keyed"),
             Self::UnknownNode { node } => write!(f, "node `{node}` is not in the fabric"),
             Self::NodeNotLive { node } => write!(f, "node `{node}` is not live"),
-            Self::WouldLeaveMeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` would be left without a live node-admin"),
+            Self::WouldLeaveMeshWithoutAdmin { mesh } => write!(f, "mesh `{mesh}` would be left without a node-admin in the accepted topology"),
             Self::MeshAlreadyExists { mesh } => write!(f, "mesh `{mesh}` already exists"),
             Self::FabricMismatch { requested, fabric } => write!(f, "Build names fabric `{requested}`, this is `{fabric}`"),
             Self::EmptyFabric => write!(f, "a fabric needs at least one desired mesh"),
@@ -481,13 +488,14 @@ impl fmt::Display for BuildReject {
             Self::EmptyRecipe => write!(f, "a recipe needs at least one step"),
             Self::RecipeStepRepeated { operation } => write!(f, "the recipe names operation `{operation}` twice: each step's receipts are keyed by its operation, so a recipe names each operation once"),
             Self::RecipeNodeUnknown { step, node } => write!(f, "step {step} of the recipe acts on `{node}`, which holds no birth now and which no earlier step creates or renames a node to"),
-            Self::LastAdmin { node, mesh, action } => write!(
+            Self::FabricNotReady { workflow, status } => write!(
                 f,
-                "node `{node}` holds the fabric-primary seat and no other live node-admin of mesh `{mesh}` can take its seats: a {action} of it is refused; TakeSeats moves seats inside the holder's mesh only, and the fabric seat leaves mesh `{mesh}` only through TakeFabricPrimary inside a mesh-leave"
+                "{workflow} is refused: the initial fabric has not first reached ready-for-traffic (it is {status}), and before state-commit its rows live only in their holders' scratchpads, so nothing that moves a seat or writes caller state runs"
             ),
-            Self::NodeMetaMismatch { mesh, missing, extra } => write!(
+            Self::LastAdmin { refusal, .. } | Self::NoSecondary { refusal, .. } => f.write_str(refusal),
+            Self::PathConfigMismatch { mesh, missing, extra } => write!(
                 f,
-                "mesh `{mesh}`: every materialized path carries exactly one NodeMeta; missing [{}], without a node [{}]",
+                "mesh `{mesh}`: every materialized path carries exactly one PathConfig; missing [{}], without a node [{}]",
                 missing.join(", "),
                 extra.join(", ")
             ),

@@ -5,8 +5,9 @@
 //! the one entry point [`adopt_pulled`]:
 //!
 //! - The fabric's Day-0 root, a node-admin with no launcher, no seeds and no recovery flag,
-//!   adopts its own OS clock once at boot ([`adopt_own_clock`]); so does a restarted node-admin
-//!   whose own seat records name it the fabric-primary and that holds no rafka-time.
+//!   adopts its own OS clock once at boot ([`adopt_own_clock`]); so does the node-admin a fabric
+//!   recovery launches on the fabric-primary's inherited data dir when every node the store names,
+//!   the old process on that dir included, is confirmed gone by the provider, never by a wait.
 //! - Every other process adopts from the answer to its pull: the `JoinNode` answer
 //!   ([`crate::wire::JoinControl::rafka_time_ms`]), its start's last step, which refreshes rafka-time
 //!   from a `GetTopology` read ([`rafka_node_rpc_contract::topology::TopologyReply::RafkaTime`]), a
@@ -100,8 +101,9 @@ pub struct Served<'a> {
 pub fn verdict(puller: Puller, seat: Option<Seat>) -> Result<(), Refusal> {
     match (puller, seat) {
         (Puller::Member, _) | (Puller::MeshPrimary, Some(Seat::FabricPrimary)) => Ok(()),
-        (Puller::MeshPrimary, Some(Seat::MeshPrimary)) => Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary),
-        (Puller::MeshPrimary, None) => Err(Refusal::ServedByAReplica),
+        (Puller::MeshPrimary, Some(Seat::MeshPrimary | Seat::Cohort(rafka_mesh_entity::NodeKind::NodeAdmin))) => Err(Refusal::AMeshPrimaryTakesOnlyTheFabricPrimary),
+        // Another cohort's primary holds no time authority: it answers as a replica does.
+        (Puller::MeshPrimary, None | Some(Seat::Cohort(_))) => Err(Refusal::ServedByAReplica),
     }
 }
 
@@ -158,11 +160,14 @@ pub fn adopt_join_answer(parent: &tracing::Span, time: &RafkaTime, node: &str, a
 
 /// Why the Day-0 root adopts its own clock: no authority exists above it.
 pub const OWN_CLOCK_DAY0_ROOT: &str = "day0-root";
-/// Why a restarted fabric-seat holder adopts its own clock: it is the fabric's root and holds none.
-pub const OWN_CLOCK_FABRIC_SEAT: &str = "fabric-seat-held-without-rafka-time";
+/// Why the node-admin a fabric recovery launches on an inherited data dir adopts its own clock when every
+/// node the store names, the old process on that dir included, is confirmed gone by the provider, never by
+/// a wait (fabric-recovery.md "Nothing alive"; origin-ordering.md).
+pub const OWN_CLOCK_NOTHING_ALIVE: &str = "nothing-alive";
 
-/// The fabric's root adopts its own OS clock as rafka-time, once: the Day-0 root at boot, and an
-/// admin that holds the fabric seat and no rafka-time. There is no authority above either.
+/// The fabric's root adopts its own OS clock as rafka-time, once: the Day-0 root at boot, and the
+/// node-admin a fabric recovery launches when every node the store names is confirmed gone by the
+/// provider. No node serves rafka-time to either.
 pub fn adopt_own_clock(parent: &tracing::Span, time: &RafkaTime, node: &str, reason: &'static str) -> Adopted {
     let now = rafka_mesh_transport::clock::Clock::now_rafka_ms(&rafka_mesh_transport::clock::OsClock);
     let adopted = time.adopt(now);
@@ -270,15 +275,13 @@ async fn pull_from_fabric_primary(
     (format!("kept: {last}"), SEAT_MOVE_ATTEMPTS, None)
 }
 
-/// How long a recovering admin looks for a node that holds rafka-time before it refuses to start.
-pub const RECOVERY_PULL_WITHIN: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// A node-admin with no launcher and no `JoinNode` to make (a restart from its own data dir, or a
-/// recovery started with a seed) takes rafka-time from the first node it reaches that holds one.
-/// It judges nothing and publishes nothing until it has: `contacts` are the births its durable map
-/// names (own mesh first), and the book of the membership it joined adds whoever it hears. A
-/// member adopts from whoever answers, so the first reachable node serves it; the lineage descends
-/// from the fabric-primary whichever node that is.
+/// A node-admin with no launcher and no `JoinNode` to make whose store names live nodes takes
+/// rafka-time from the first node it reaches that holds one, with no wait (fabric-recovery.md: when
+/// every node the store names is confirmed gone by the provider, [`OWN_CLOCK_NOTHING_ALIVE`] is the
+/// case and this is not called). It judges nothing and publishes nothing until it has: `contacts`
+/// are the births its durable map names (own mesh first), and the book of the membership it joined
+/// adds whoever it hears. A member adopts from whoever answers, so the first reachable node serves
+/// it; the lineage descends from the fabric-primary whichever node that is.
 ///
 /// Returns the `path.name` of the node it adopted from, or a named refusal listing each node
 /// tried with the outcome of its read.
@@ -289,59 +292,54 @@ pub(crate) async fn adopt_from_reachable(
     resolver: &rafka_node_rpc::LiveNodeResolver,
     membership: &rafka_mesh_transport::membership::Membership,
     contacts: Vec<crate::reenter::MapNode>,
-    within: std::time::Duration,
     parent: &tracing::Span,
 ) -> Result<String, String> {
     use rafka_node_rpc::NodeTarget;
-    let started = std::time::Instant::now();
     let span = tracing::info_span!(parent: parent, "rdm.mesh.entry.resolve.via-recovery-pull", node = %me, contacts = contacts.len(), served_by = tracing::field::Empty, attempts = tracing::field::Empty);
     let outcome = async {
         let mut tried: std::collections::BTreeMap<String, String> = Default::default();
         let mut attempts = 0u32;
-        loop {
-            let mut candidates = contacts.clone();
-            for d in membership.book.current(membership.book.staleness_floor()) {
-                if d.node.name != *me && !candidates.iter().any(|c| c.node_id == d.node.node_id) {
-                    candidates.push(crate::reenter::MapNode {
-                        node_id: d.node.node_id.clone(),
-                        name: d.node.name.clone(),
-                        endpoint_id: d.node.endpoint_id.clone(),
-                        transport_addr: d.node.transport_addr,
-                        incarnation: d.node.incarnation.clone(),
-                        transition: None,
-                        ready: false,
-                        data_dir: None,
-                        admin_api_base: None,
-                    });
-                }
+        let mut candidates = contacts;
+        for d in membership.book.current(membership.book.staleness_floor()) {
+            if d.node.name != *me && !candidates.iter().any(|c| c.node_id == d.node.node_id) {
+                candidates.push(crate::reenter::MapNode {
+                    node_id: d.node.node_id.clone(),
+                    name: d.node.name.clone(),
+                    endpoint_id: d.node.endpoint_id.clone(),
+                    transport_addr: d.node.transport_addr,
+                    incarnation: d.node.incarnation.clone(),
+                    transition: None,
+                    ready: false,
+                    data_dir: None,
+                    admin_api_base: None,
+                });
             }
-            candidates.retain(|c| c.name != *me);
-            candidates.sort_by_key(|c| (c.name.mesh != me.mesh, c.name.to_string()));
-            for c in &candidates {
-                if let Some(r) = c.resolved() {
-                    resolver.apply(r, None);
-                }
-                attempts += 1;
-                match crate::topology_read::read_topology(client, &NodeTarget::ExactNode(c.node_id.clone()), &me.to_string(), Some(&c.name.mesh), None).await {
-                    Ok(read) => match read.rafka_time {
-                        Some(t) => {
-                            adopt_pulled(time, Puller::Member, &me.to_string(), Served { via: "get-topology", served_by: &c.name.to_string(), ms: t.ms, seat: t.seat }).expect("a member adopts from whoever answers");
-                            return Ok(c.name.to_string());
-                        }
-                        None => {
-                            tried.insert(c.name.to_string(), "its answer carries no rafka-time".into());
-                        }
-                    },
-                    Err(e) => {
-                        tried.insert(c.name.to_string(), e.to_string());
-                    }
-                }
-            }
-            if started.elapsed() >= within {
-                return Err(format!("{me}: no node it could reach holds rafka-time within {} s (tried {} reads of {tried:?})", within.as_secs(), attempts));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         }
+        candidates.retain(|c| c.name != *me);
+        candidates.sort_by_key(|c| (c.name.mesh != me.mesh, c.name.to_string()));
+        for c in &candidates {
+            if let Some(r) = c.resolved() {
+                resolver.apply(r, None);
+            }
+            attempts += 1;
+            match crate::topology_read::read_topology(client, &NodeTarget::ExactNode(c.node_id.clone()), &me.to_string(), Some(&c.name.mesh), None).await {
+                Ok(read) => match read.rafka_time {
+                    Some(t) => {
+                        adopt_pulled(time, Puller::Member, &me.to_string(), Served { via: "get-topology", served_by: &c.name.to_string(), ms: t.ms, seat: t.seat }).expect("a member adopts from whoever answers");
+                        span.record("attempts", attempts);
+                        return Ok(c.name.to_string());
+                    }
+                    None => {
+                        tried.insert(c.name.to_string(), "its answer carries no rafka-time".into());
+                    }
+                },
+                Err(e) => {
+                    tried.insert(c.name.to_string(), e.to_string());
+                }
+            }
+        }
+        span.record("attempts", attempts);
+        Err(format!("{me}: no node it could reach holds rafka-time (tried {} reads of {tried:?})", attempts))
     }
     .instrument(span.clone())
     .await;

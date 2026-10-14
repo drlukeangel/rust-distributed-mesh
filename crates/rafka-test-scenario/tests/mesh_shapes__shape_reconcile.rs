@@ -2,8 +2,8 @@
 //! §10) converge through Build alone.
 //!
 //! Each shape runs on a fresh fabric: the first `rafka-node-admin` boots it,
-//! one `POST /api/build` asks for the shape, and the test then checks, from
-//! public surfaces only, that:
+//! one `build.create` asks for the shape, and the test then checks, from
+//! the typed objects and the evidence only, that:
 //! - the Build completes and every desired node is `ready-for-traffic`;
 //! - every cohort has exactly one `is_primary` and the fabric exactly one
 //!   `is_fabric_primary`, a node-admin that is its own mesh's admin primary;
@@ -16,6 +16,8 @@
 //!
 //! The shapes run one after another in one test, each on its own fabric.
 
+use crate::build_log;
+use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -35,14 +37,9 @@ fn owner(shape: &str) -> Owner {
 /// `(mesh, node_admin, rpc_node)` per mesh.
 async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let estate = Estate::bootstrap(owner(shape), "fabric1", "mesh1").await;
-    let desired = json!({
-        "fabric": "fabric1",
-        "meshes": meshes.iter().map(|(m, a, r)| json!({"name": m, "node_admin": a, "rpc_node": r})).collect::<Vec<_>>(),
-    });
-    let (status, accepted) = estate.post("/api/build", &desired).await;
-    assert_eq!(status, 202, "{shape}: {accepted}");
-    let build_id = accepted["build_id"].as_str().unwrap().to_string();
-    let build = estate.await_build(&build_id, Duration::from_secs(120)).await;
+    let desired = FabricDesired { fabric: "fabric1".into(), meshes: meshes.iter().map(|(m, a, r)| MeshDesired::of(*m, [(NodeKind::NodeAdmin, *a), (NodeKind::RpcNode, *r)])).collect() };
+    let build_id = estate.reconcile(&desired).await.build_id.to_string();
+    let build = build_log::build_value(&estate.carrier().await, &build_id).await;
     estate.artifact("build.json", &build);
 
     // Every desired node is live and ready; nothing else exists.
@@ -52,7 +49,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
         want.extend((1..=*r).map(|i| format!("{m}.rpc.{i}")));
     }
     want.sort();
-    let nodes = estate.settled(&want.iter().cloned().collect(), Duration::from_secs(15)).await;
+    let nodes = Estate::values(&estate.settles_to_named(&want.iter().cloned().collect(), Duration::from_secs(15)).await);
     estate.artifact("nodes.json", &json!(nodes));
 
     // One primary per cohort, one fabric primary (an admin primary).
@@ -72,10 +69,10 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     assert_eq!(fabric_primaries.len(), 1, "{shape}: fabric primaries {fabric_primaries:?}");
     let fp = fabric_primaries[0];
     assert_eq!((fp["kind"].as_str(), fp["is_primary"].as_bool()), (Some("node_admin"), Some(true)), "{shape}: {fp}");
-    let (_, fabric) = estate.get("/api/fabric").await;
+    let fabric = serde_json::to_value(estate.fabric_view().await).expect("a view serializes");
     assert_eq!(fabric["fabric_primary"], fp["name"], "{shape}: {fabric}");
     for m in fabric["meshes"].as_array().unwrap() {
-        assert!(m["admin_api_base"].as_str().is_some_and(|b| b.starts_with("http://")), "{shape}: mesh {m} advertises its control API");
+        assert!(m["admin_api_base"].as_str().is_some_and(|b| !b.is_empty()), "{shape}: mesh {m} names its application contact");
     }
 
     // Build -> deployment -> lifecycle, by parent span id. Every process
@@ -83,7 +80,7 @@ async fn converge(shape: &str, meshes: &[(&str, u32, u32)]) {
     let mut estate = estate;
     estate.stop().await;
     let spans = estate.spans();
-    let accepted_span = named(&spans, "rdm.node_admin.build.create.via-rest")
+    let accepted_span = named(&spans, "rdm.node_admin.build.create.via-node-rpc")
         .into_iter()
         .find(|s| s["attributes"]["build_id"] == build_id.as_str())
         .unwrap_or_else(|| panic!("{shape}: no span accepted build {build_id}"))

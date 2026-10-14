@@ -3,7 +3,8 @@
 
 #[path = "../../../tools/test-support/own_process.rs"]
 mod own_process;
+
+mod cadence;
 mod connections;
 mod crockford60_parity;
-mod i143_acceptance_2899;
 mod reconnect;

@@ -4,14 +4,15 @@
 //! closed is named, never ignored; each drop is written under the name the node holds; an empty
 //! list is refused by name and cuts nothing.
 //!
-//! CONTRACT: `mesh1.rpc.1` holds a route to its admin (its join) and to its peer `mesh1.rpc.2` (each
-//! dialled the other). Its admin's `DeleteConnections { Connections([<the peer route's open entry>,
+//! CONTRACT: `mesh1.rpc.1` holds a data-plane route to its admin and to its peer `mesh1.rpc.2`, each
+//! a connection it originated on its data-plane client. Its admin's `DeleteConnections { Connections([<the peer route's open entry>,
 //! <an id the node never wrote>]) }` is answered `ConnectionsDeleted` with the peer route's id in
 //! `closed`, the unknown id in `not_open` and the admin route's id in `held`; the node's client no
-//! longer pools a connection to the peer and still pools the one to its admin; its log holds a
+//! longer pools a connection to the peer; its log holds a
 //! `disconnected` entry for the peer under `mesh1.rpc.1`, with a new id, and its route to the admin
 //! is still `connected`. The same id again is `not_open`. `Connections([])` is
-//! `RejectedConnectionScope` and cuts nothing. What must NOT happen: a cut of a connection not named,
+//! `RejectedConnectionScope` and cuts nothing. The Node RPC pool is no connection: nothing of it is
+//! cut. What must NOT happen: a cut of a connection not named,
 //! a named id dropped silently, or the drop written under another name.
 
 use crate::common::admin_side_serving;
@@ -46,7 +47,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
     let spans = cap.spans.clone();
     cap.run(crate::common::Threads::Workers(4), async move {
         let fabric = FabricId::mint();
-        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, crate::common::serve_ping).await;
         let root = std::env::temp_dir().join(format!("connections-delete-{}", NodeId::mint()));
         let store = root.join("store");
         std::fs::create_dir_all(&store).unwrap();
@@ -57,7 +58,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         let launch_of = |name: &PathName| {
             let dir = root.join(name.to_string());
             std::fs::create_dir_all(&dir).unwrap();
-            RuntimeFact::of_this_process("cell").unwrap().write_record(&dir).unwrap();
+            RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
             let key = node::load_or_mint_key(&dir).unwrap();
             let launch = Launch {
                 fabric: "fabric1".into(),
@@ -74,6 +75,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
                 store_dir: store.clone(),
                 mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
                 mesh_issuer: None,
+                connections_delete_deadline: rafka_mesh_entity::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
             };
             admin.deployed(&launch, &key);
             launch
@@ -91,7 +93,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
             (running, seams.get().cloned().expect("the node handed its seams"))
         };
         let (cut_node, cut_seams) = start(cut.clone()).await;
-        let (peer_node, peer_seams) = start(peer.clone()).await;
+        let (peer_node, _peer_seams) = start(peer.clone()).await;
 
         // Both births are held ready by the admin, and the peer holds the renamed one.
         let book = &admin.observer.membership.book;
@@ -112,17 +114,16 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
             node_digests.changed().await.unwrap();
         }
 
-        // The peer dials the node, and the node dials the peer: the node holds a route to its admin (its
-        // join) and to its peer, both pooled by its own client.
-        match peer_seams.client.call::<Ping>(&NodeTarget::ExactNode(cut.node_id.clone()), &PingRequest::Ping { payload: b"the peer reaches the node".to_vec() }, &CallOptions::default()).await.0 {
-            RpcOutcome::Reply(_) => {}
-            other => panic!("the peer's ping did not end in a reply: {other:?}"),
+        // The node originates a data-plane connection to its admin and one to its peer (connections.md
+        // "Two planes, two words": in RDM standalone the testkit's originate door is the data plane):
+        // the node holds a route to each, both pooled by its data-plane client.
+        for (to, what) in [(admin.launcher.node_id.clone(), "the node reaches its admin"), (peer.node_id.clone(), "the node reaches the peer")] {
+            match cut_seams.client.call::<Ping>(&NodeTarget::ExactNode(to), &PingRequest::Ping { payload: what.as_bytes().to_vec() }, &CallOptions::default()).await.0 {
+                RpcOutcome::Reply(_) => {}
+                other => panic!("{what}: the ping did not end in a reply: {other:?}"),
+            }
         }
-        match cut_seams.client.call::<Ping>(&NodeTarget::ExactNode(peer.node_id.clone()), &PingRequest::Ping { payload: b"the node reaches the peer".to_vec() }, &CallOptions::default()).await.0 {
-            RpcOutcome::Reply(_) => {}
-            other => panic!("the node's ping did not end in a reply: {other:?}"),
-        }
-        cut_seams.connections.drain().await;
+        cut_seams.connections.observations_landed().await;
         let before = kept_log(&store, &fabric, &born);
         for dest in ["mesh1.admin.1", "mesh1.rpc.2"] {
             assert!(before.iter().any(|e| e.source.name == born && e.destination.name.to_string() == dest), "the node holds a route to {dest}: {before:#?}");
@@ -157,11 +158,9 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
         };
         let delete = |ids: Vec<ConnectionId>| StatusRequest::DeleteConnections { node_id: cut.node_id.clone(), incarnation: cut.incarnation.clone(), scope: ConnectionScope::Connections(ids) };
         let never = ConnectionId::mint();
-        let deleted = call(delete(vec![to_peer.id.clone(), never.clone()])).await;
-        // The admin route as the node holds it once the call is answered (the call's own accept is
-        // an entry of that route).
         let to_admin = open("mesh1.admin.1");
-        assert_eq!(deleted, StatusReply::ConnectionsDeleted { closed: vec![to_peer.id.clone()], not_open: vec![never.clone()], held: vec![to_admin.id.clone()] }, "the peer route is cut, the unknown id named, the admin route still held");
+        let deleted = call(delete(vec![to_peer.id.clone(), never.clone()])).await;
+        assert_eq!(deleted, StatusReply::ConnectionsDeleted { closed: vec![to_peer.id.clone()], not_open: vec![never.clone()], held: vec![to_admin.id.clone()], receipt: None }, "the peer route is cut, the unknown id named, the admin route still held");
 
         // Every way the cut can be wrong is named together.
         let mut wrong: Vec<String> = Vec::new();
@@ -170,7 +169,7 @@ fn a_connections_delete_naming_exact_ids_cuts_only_those_and_names_every_id() {
                 wrong.push(what);
             }
         };
-        expect(!pooled_to_peer(), "the node's client no longer pools a connection to its peer".into());
+        expect(!pooled_to_peer(), "the node's data-plane client no longer pools a connection to its peer".into());
         let log = kept_log(&store, &fabric, &born);
         let drop = log.iter().rev().find(|e| e.kind == ConnectionKind::Direct && e.destination.node_id == peer.node_id);
         expect(

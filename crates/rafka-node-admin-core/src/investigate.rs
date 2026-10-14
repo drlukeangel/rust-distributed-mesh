@@ -350,9 +350,9 @@ pub struct Watch {
     pub topology: Arc<tokio::sync::RwLock<Topology>>,
     /// The records this admin holds.
     pub records: Arc<Records>,
-    /// Is the accepted Build settled (not pending, not running)? A mesh the Build is still birthing
-    /// is not unheard.
-    pub settled: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> + Send + Sync>,
+    /// Is the current Build settled (not pending, not running)? A mesh the Build is still birthing
+    /// is not unheard. `Err` names why the builds store could not be read: never read as either.
+    pub settled: Arc<dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>> + Send + Sync>,
     /// The client probes are made through.
     pub client: Arc<NodeRpcClient>,
     /// Does this node hold an Active Direct connection to the exact node?
@@ -396,10 +396,18 @@ pub async fn run(w: Watch) {
         }
         // The clock of a mesh never heard runs while the accepted Build is settled: from the seat, and
         // from each settling, because a mesh the Build is still birthing has not had its chance to be heard.
-        if (w.settled)().await {
-            seat_since.get_or_insert_with(Instant::now);
-        } else {
-            seat_since = None;
+        match (w.settled)().await {
+            Ok(true) => {
+                seat_since.get_or_insert_with(Instant::now);
+            }
+            Ok(false) => seat_since = None,
+            // A store that cannot be read starts no clock: named, and the clock is reset as for a
+            // Build not settled.
+            Err(e) => {
+                tracing::info_span!("rdm.node_admin.build.reject.via-build-store-unreadable", route = "mesh-investigation", node = %w.me, error = %e)
+                    .in_scope(|| tracing::info!("the current Build could not be read: the never-heard clock does not run on a read that failed"));
+                seat_since = None;
+            }
         }
         let book = &w.membership.book;
         let heard = book.backbone_meshes();

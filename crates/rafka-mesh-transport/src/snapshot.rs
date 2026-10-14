@@ -338,8 +338,8 @@ pub enum Refusal {
         /// What is wrong with it.
         why: &'static str,
     },
-    /// A complete snapshot older than the version held from the same publisher.
-    /// The snapshot is older than the version held from the same publisher.
+    /// A topology read chunk below the version this node installed from the same publisher: the
+    /// receive path ignored it (R-RX3, [`crate::receive_order`]).
     OlderThanHeld {
         /// The version held.
         held_version: u64,
@@ -432,8 +432,7 @@ pub enum Moved {
         /// The delta applied.
         delta: Delta,
     },
-    /// The held version is at or past this delta's: a copy already applied. A no-op.
-    /// The delta was already applied.
+    /// The held version is this delta's: a copy of the delta held. A no-op.
     Duplicate {
         /// The version held.
         held_version: u64,
@@ -476,8 +475,10 @@ struct Held {
 /// CONTRACT (gossip.md §3.1, §3.3, proofs 25-27): a snapshot is installed only once EVERY chunk
 /// of it is held; until then the held projection and the held source version stand and no delta
 /// is derived from a partial. A delta applies only when the held version is exactly its
-/// `base_version`; a copy already applied is a no-op; any other is a gap that desynchronizes that
-/// source alone. A desynchronized source applies no delta until a complete snapshot or a top-up
+/// `base_version`; a copy of the delta held (its `topology_version` is the held one) is a no-op;
+/// any other is a gap that desynchronizes that source alone. Nothing here orders by version: a
+/// frame earlier than what the node holds of its source was ignored by the receive path before it
+/// reached here (R-RX3, [`crate::receive_order`]). A desynchronized source applies no delta until a complete snapshot or a top-up
 /// resumes it. Nothing is held for later and nothing is requested here.
 #[derive(Debug, Default)]
 pub struct SnapshotReceiver {
@@ -488,15 +489,11 @@ pub struct SnapshotReceiver {
 }
 
 impl SnapshotReceiver {
-    /// One chunk. The snapshot installs when it is complete and no older than what is held.
+    /// One chunk. The snapshot installs when it is complete. A chunk earlier than what this node
+    /// holds of its source never reaches here: the receive path ignored it (R-RX3).
     pub fn take_chunk(&mut self, c: Chunk) -> Taken {
         if c.chunk_count == 0 || c.chunk_index >= c.chunk_count {
             return Taken::Refused(Refusal::MalformedChunk { chunk_index: c.chunk_index, chunk_count: c.chunk_count, why: "the index is outside the count" });
-        }
-        if let Some(h) = self.held.get(&c.mesh) {
-            if h.publisher == c.publisher && c.topology_version < h.version {
-                return Taken::Refused(Refusal::OlderThanHeld { held_version: h.version, offered_version: c.topology_version });
-            }
         }
         let key = SourceKey { mesh: c.mesh.clone(), publisher: c.publisher.clone(), forwarded_by: c.forwarded_by.clone() };
         // One snapshot per source is assembled at a time: a newer one drops the stale partial.
@@ -537,7 +534,6 @@ impl SnapshotReceiver {
         let (new_epoch, resumed, refreshed) = match self.held.get(&mesh) {
             None => (true, unbased, false),
             Some(h) if h.publisher != publisher => (true, h.desynced.is_some() || unbased, false),
-            Some(h) if version < h.version => return Taken::Refused(Refusal::OlderThanHeld { held_version: h.version, offered_version: version }),
             Some(h) => (false, h.desynced.is_some(), version == h.version),
         };
         self.unbased.remove(&mesh);
@@ -558,9 +554,9 @@ impl SnapshotReceiver {
             let gap = Gap::OtherEpoch { held: h.publisher.clone() };
             return Self::desync(mesh, h, gap);
         }
-        // A copy of what is already held: gossip can deliver one delta twice, and a top-up may have
-        // brought this node past it. Neither is a gap.
-        if h.version >= topology_version {
+        // A copy of the delta held: gossip can deliver one delta twice, and a top-up may have brought
+        // this node to it. Neither is a gap. An earlier one never reaches here (R-RX3, the receive path).
+        if h.version == topology_version {
             return Moved::Duplicate { held_version: h.version };
         }
         if h.desynced.is_some() {
@@ -581,22 +577,6 @@ impl SnapshotReceiver {
             h.desynced = Some(gap.clone());
         }
         Moved::Desynced { mesh: mesh.to_string(), gap: if already { Gap::AlreadyDesynced } else { gap } }
-    }
-
-    /// One chunk of a topology read. Installs like [`SnapshotReceiver::take_chunk`]; a complete
-    /// snapshot older than a version held from the same publisher moves nothing but still ends the
-    /// source's desynchronization: this node is at or past it.
-    pub fn take_read_chunk(&mut self, c: Chunk) -> Taken {
-        let mesh = c.mesh.clone();
-        match self.take_chunk(c) {
-            Taken::Refused(r @ Refusal::OlderThanHeld { .. }) => {
-                if let Some(h) = self.held.get_mut(&mesh) {
-                    h.desynced = None;
-                }
-                Taken::Refused(r)
-            }
-            other => other,
-        }
     }
 
     /// Forget the source projection held of `mesh`: the mesh left, and nothing of it is kept.
@@ -806,5 +786,39 @@ impl Forwarder {
     /// The publisher and version last published for `mesh`, when any.
     pub fn published_version(&self, mesh: &str) -> Option<(PublisherId, u64)> {
         self.published.get(mesh).map(|p| (p.publisher.clone(), p.version))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rafka_mesh_entity::IncarnationId;
+
+    fn chunk(publisher: &PublisherId, topology_version: u64) -> Chunk {
+        Chunk { mesh: "mesh1".into(), publisher: publisher.clone(), forwarded_by: Some("mesh1.admin.1".into()), topology_version, snapshot_id: topology_version, chunk_index: 0, chunk_count: 1, digests: vec![], in_flight: vec![], departed: vec![] }
+    }
+
+    /// CONTRACT (R-RX3, Luke 2026-10-13: an earlier frame is ignored "once, in the gossip receive
+    /// path"; i143 s53: out-of-order frames are ignored only in receive_order.rs; gossip.md §3.1: "A
+    /// receiver applies a delta only when it holds exactly base_version of that source and
+    /// publisher"): the receiver is handed only what the receive path took, so it orders nothing by
+    /// version. Holding mesh1.admin.1's v8, a complete snapshot of the same publisher at v6 installs;
+    /// a copy of the delta it applied (its `topology_version` is the one held) is absorbed as a copy;
+    /// a delta whose base it does not hold is a version gap, whatever its version. Must NOT happen: the
+    /// receiver refusing a snapshot as older than the one held, or absorbing as a copy a delta it never
+    /// applied.
+    #[test]
+    fn a_receiver_orders_nothing_by_version_and_absorbs_only_a_copy_of_the_delta_it_applied() {
+        let p = PublisherId { node: "mesh1.admin.1".into(), incarnation: IncarnationId::mint() };
+        let mut rx = SnapshotReceiver::default();
+        assert!(matches!(rx.take_chunk(chunk(&p, 7)), Taken::Installed(_)));
+        assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Applied { topology_version: 8, .. }));
+        assert!(matches!(rx.take_delta("mesh1", &p, 7, 8, &Delta::default()), Moved::Duplicate { held_version: 8 }), "a copy of the applied delta is absorbed");
+        let gap = rx.take_delta("mesh1", &p, 6, 7, &Delta::default());
+        assert!(matches!(gap, Moved::Desynced { gap: Gap::Version { held: 8, base: 6 }, .. }), "a delta whose base is not held is a gap, not a copy: {gap:?}");
+        let taken = rx.take_chunk(chunk(&p, 6));
+        assert!(matches!(&taken, Taken::Installed(i) if i.topology_version == 6 && !i.new_epoch), "the receiver installs what it is handed: {taken:?}");
+        assert_eq!(rx.held_version("mesh1"), Some((p, 6)));
+        assert!(rx.desynced().is_empty(), "the complete snapshot resumed the source");
     }
 }

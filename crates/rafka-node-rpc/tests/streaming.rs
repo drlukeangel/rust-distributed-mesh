@@ -156,7 +156,7 @@ async fn rig() -> Rig {
                 Ok(CountFrame::Done { sent, caller_gone: gone })
             }
         })
-        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.0.clone() })
+        .seal(ServedBirth { node_id: node_id.to_string(), incarnation: incarnation.to_string() })
         .unwrap();
     let stats = server.stats();
     let key = SecretKey::generate();

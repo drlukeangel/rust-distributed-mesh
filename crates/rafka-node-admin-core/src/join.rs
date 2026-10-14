@@ -238,7 +238,7 @@ impl JoinDoor {
             "rdm.node_admin.node.update.via-join",
             node = %d.node.name,
             node_id = %d.node.node_id,
-            incarnation_id = %d.node.incarnation.0,
+            incarnation_id = %d.node.incarnation.as_str(),
             reported_addr = %d.node.transport_addr,
             served_by = %self.me,
             caller = tracing::field::Empty,
@@ -327,7 +327,7 @@ impl JoinDoor {
                 span.record("outcome", "deployment-abandoned");
                 span.record("build_id", a.build_id.as_str());
                 span.record("attempt", a.attempt);
-                tracing::warn!(build_id = %a.build_id, attempt = a.attempt, node_id = %a.deployed.node_id, incarnation = %a.deployed.incarnation.0, "this admin ended the deployment of this birth before it reported");
+                tracing::warn!(build_id = %a.build_id, attempt = a.attempt, node_id = %a.deployed.node_id, incarnation = %a.deployed.incarnation.as_str(), "this admin ended the deployment of this birth before it reported");
                 JoinReply::DeploymentAbandoned { build_id: a.build_id, attempt: a.attempt, node_id: a.deployed.node_id, incarnation: a.deployed.incarnation }
             }
             Standing::Unknown => {
@@ -393,31 +393,55 @@ impl std::fmt::Display for JoinFailure {
 /// `JoinNode` to `target` (the admin whose endpoint reads `anchor` in short form) with `digest`,
 /// within `attempts` of five seconds each. A refusal by name ends it at once.
 pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str, digest: &MeshDigest, attempts: u32) -> Result<JoinAnswer, JoinFailure> {
+    let next = || {
+        let to = Ok((target.clone(), anchor.to_string()));
+        async move { to }
+    };
+    call_join_to(client, next, digest, attempts).await.map(|(answer, _)| answer)
+}
+
+/// `JoinNode` with `digest`, within `attempts` of five seconds each, each attempt made to whom `next`
+/// names then (a target, and the short endpoint id the attempt's span names as its anchor): a start
+/// after a stop joins the call that commanded it last. A refusal by name ends it at once; an attempt
+/// `next` can name no target for is unanswered, its reason named. The answer, and the target that
+/// gave it.
+pub async fn call_join_to<F, Fut>(client: &NodeRpcClient, mut next: F, digest: &MeshDigest, attempts: u32) -> Result<(JoinAnswer, NodeTarget), JoinFailure>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(NodeTarget, String), String>>,
+{
     let req = JoinRequest::JoinNode { digest: WireDigest::from(digest) };
     let node = digest.node.name.to_string();
     let mut last = String::new();
     for attempt in 1..=attempts.max(1) {
         let opts = rafka_node_rpc::CallOptions { budget: rafka_node_rpc::Budget::Overall(Duration::from_secs(5)), ..Default::default() };
-        let span = tracing::info_span!("rdm.mesh.entry.update.via-pull-attempt", node = %node, anchor, attempt, step = tracing::field::Empty, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
+        let to = next().await;
+        let anchor = match &to {
+            Ok((_, anchor)) => anchor.clone(),
+            Err(_) => String::new(),
+        };
+        let span = tracing::info_span!("rdm.mesh.entry.update.via-pull-attempt", node = %node, anchor = %anchor, attempt, step = tracing::field::Empty, elapsed_ms = tracing::field::Empty, outcome = tracing::field::Empty);
         let started = std::time::Instant::now();
-        let (out, _) = client.call::<Join>(target, &req, &opts).await;
-        let (step, result): (&str, Result<JoinAnswer, JoinFailure>) = match out {
-            RpcOutcome::Reply(r) => match r.value().clone() {
-                JoinReply::Joined { answer } => match crate::wire::answer_from_wire(&answer) {
-                    Ok(a) if a.control.name.is_none() => ("answered", Err(JoinFailure::Refused(format!("{}: its join answer hands no name for this birth to install", a.served_by)))),
-                    Ok(a) => ("answered", Ok(a)),
-                    Err(e) => ("answered", Err(JoinFailure::Refused(format!("the answer does not decode: {e}")))),
+        let (step, result): (&str, Result<JoinAnswer, JoinFailure>) = match &to {
+            Err(why) => ("unaddressed", Err(JoinFailure::Unreached(why.clone()))),
+            Ok((target, _)) => match client.call::<Join>(target, &req, &opts).await.0 {
+                RpcOutcome::Reply(r) => match r.value().clone() {
+                    JoinReply::Joined { answer } => match crate::wire::answer_from_wire(&answer) {
+                        Ok(a) if a.control.name.is_none() => ("answered", Err(JoinFailure::Refused(format!("{}: its join answer hands no name for this birth to install", a.served_by)))),
+                        Ok(a) => ("answered", Ok(a)),
+                        Err(e) => ("answered", Err(JoinFailure::Refused(format!("the answer does not decode: {e}")))),
+                    },
+                    JoinReply::JoinMismatch { field, deployed, reported } => ("refused", Err(JoinFailure::Refused(format!("{field}: deployed {deployed}, reported {reported}")))),
+                    JoinReply::NotAuthority { primary } => ("refused", Err(JoinFailure::Refused(format!("the admin deployed no such birth (it sees mesh primary {primary:?})")))),
+                    JoinReply::DeploymentAbandoned { build_id, attempt, node_id, incarnation } => {
+                        ("refused", Err(JoinFailure::Refused(format!("the admin ended the deployment of this birth before it reported (build {build_id}, attempt {attempt}, node {node_id}, incarnation {incarnation})"))))
+                    }
+                    JoinReply::CertRefused { name, detail } => ("refused", Err(JoinFailure::Refused(format!("the admin's cert signer refused the birth's member cert ({name}): {detail}")))),
+                    JoinReply::Unauthorized { reason } => ("refused", Err(JoinFailure::Refused(reason))),
+                    other => ("not-ready", Err(JoinFailure::Unreached(format!("{}: {other:?}", other.name())))),
                 },
-                JoinReply::JoinMismatch { field, deployed, reported } => ("refused", Err(JoinFailure::Refused(format!("{field}: deployed {deployed}, reported {reported}")))),
-                JoinReply::NotAuthority { primary } => ("refused", Err(JoinFailure::Refused(format!("the admin deployed no such birth (it sees mesh primary {primary:?})")))),
-                JoinReply::DeploymentAbandoned { build_id, attempt, node_id, incarnation } => {
-                    ("refused", Err(JoinFailure::Refused(format!("the admin ended the deployment of this birth before it reported (build {build_id}, attempt {attempt}, node {node_id}, incarnation {incarnation})"))))
-                }
-                JoinReply::CertRefused { name, detail } => ("refused", Err(JoinFailure::Refused(format!("the admin's cert signer refused the birth's member cert ({name}): {detail}")))),
-                JoinReply::Unauthorized { reason } => ("refused", Err(JoinFailure::Refused(reason))),
-                other => ("not-ready", Err(JoinFailure::Unreached(format!("{}: {other:?}", other.name())))),
+                other => ("unanswered", Err(JoinFailure::Unreached(format!("the call ended {}: {other:?}", other.name())))),
             },
-            other => ("unanswered", Err(JoinFailure::Unreached(format!("the call ended {}: {other:?}", other.name())))),
         };
         span.record("step", step);
         span.record("elapsed_ms", started.elapsed().as_millis() as u64);
@@ -427,7 +451,8 @@ pub async fn call_join(client: &NodeRpcClient, target: &NodeTarget, anchor: &str
             Ok(a) => {
                 tracing::info_span!("rdm.mesh.entry.update.via-membership-pulled", node = %node, served_by = %a.served_by, statuses = a.statuses.len(), attempt)
                     .in_scope(|| tracing::info!("joined"));
-                return Ok(a);
+                let (target, _) = to.expect("an answered attempt had a target");
+                return Ok((a, target));
             }
             Err(JoinFailure::Refused(why)) => {
                 tracing::info_span!("rdm.mesh.entry.reject.via-membership-pull-failed", node = %node, reason = %why, attempts = attempt).in_scope(|| tracing::warn!("the join was refused"));
@@ -449,7 +474,7 @@ mod tests {
     use rafka_mesh_entity::{MemberStatus, MeshNode};
 
     fn fact() -> RuntimeFact {
-        RuntimeFact::of_this_process("dep-1").unwrap()
+        RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-1")).unwrap()
     }
 
     fn deployed() -> Deployed {
@@ -515,7 +540,7 @@ mod tests {
         match joins.standing(&d) {
             Standing::Mismatch(m) => {
                 assert_eq!(m.field, "incarnation");
-                assert!(m.deployed.contains(&dep.incarnation.0) && m.reported.contains(&d.node.incarnation.0));
+                assert!(m.deployed.contains(&dep.incarnation.as_str()) && m.reported.contains(&d.node.incarnation.as_str()));
             }
             other => panic!("{other:?}"),
         }
@@ -583,7 +608,7 @@ mod tests {
     fn a_join_digest_with_another_runtime_or_data_dir_or_key_is_refused_by_its_field() {
         let dep = deployed();
         let mut other_fact = digest_of(&dep);
-        other_fact.node.runtime = Some(RuntimeFact::of_this_process("dep-2").unwrap());
+        other_fact.node.runtime = Some(RuntimeFact::of_this_process(&rafka_mesh_entity::fixture_crockford60("dep-2")).unwrap());
         assert_eq!(dep.verify(&other_fact).unwrap_err().field, "runtime");
         let mut dir = digest_of(&dep);
         dir.data_dir = Some("/elsewhere".into());
