@@ -28,6 +28,12 @@ connection). Banned everywhere: `relay`, `cluster`, `tailer`, `sidecar`, `child 
 `operator`, `sysadmin`, `tree`, `partition`, `reborn`. A node is restarted (same node.id and
 incarnation) or re-born (same path.name, new node.id); a mesh is never reborn.
 
+## Rulings
+
+A ruling is asked one at a time, with a recommendation, and is produced with the `ruling-packet`
+skill (`/home/admin/rafka-v2/.claude/skills/ruling-packet`): spec, issue, flame, code, delta, arms. A
+packet without a section 5 delta is returned, not reviewed. Every question and ruling carries a number.
+
 ## Lanes, gate, landing
 
 - A lane is a folder with a source tree: `/home/admin/rdm-lanes/<name>`. Reuse it (rebase on

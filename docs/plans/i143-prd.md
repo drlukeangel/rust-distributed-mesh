@@ -971,6 +971,7 @@ e12.s79 #3120  open: the builder block `e12.s79` below (python3 scripts/prd.py b
 e12.s80 #3121  open: the builder block `e12.s80` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s80)
 e12.s81 #3122  open: the builder block `e12.s81` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s81)
 e12.s82 #3123  open: the builder block `e12.s82` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s82)
+e12.s83 (issue to generate)  open: the builder block `e12.s83` below (python3 scripts/prd.py brief docs/plans/i143-prd.md e12.s83)
 e12.s49 #3078  mesh.delete ends at mesh.deleted: the fabric-primary's leave completes at the
                validated handoff; the final admin stays alive publishing MeshStatus Dead; its
                end is a separate node.delete (fabric-primary executor, exit proof, row Deleted,
@@ -1840,6 +1841,12 @@ absorbed s71 and s74. The first Node RPC frame is the target: landed 87df0a35 (2
 - [ ] the seat record's counter is a **revision**, never an epoch (Luke 2026-10-12: an epoch is timekeeping; this is the count of seat moves): `rafka-mesh-entity/src/seat.rs:42` `SeatHolder.epoch` → `revision`, `SeatEpoch` → `SeatRevision`, `expected_epoch`, `RejectedEpochOverflow` → `RejectedRevisionOverflow`, the `SeatRow` key, spans and comments; the gossip source "epoch" (a new source primary's first full) is the same number and takes the same name; the serde field name changes in the JSON seat rows, so `durable format moved`. Docs done 2026-10-12 (envelope 0x21, elections §3/§4.4, gossip, fabric-primary-update, the node.primary.update proposal); the Kafka-domain producer/claim epochs in jobs, transactions and offsets are not this and keep their word
 - [x] the first Node RPC frame is the **target**, never a fence (Luke 2026-10-12: a fence is an epoch comparison, this frame is the call's address): `framing.rs:26` `Fence { target_node_id, op }` → `Target { node_id, op }`, `RequestHeader::fence` → `::target`, `RpcOutcome::RejectedStale(s).target_node_id()`, the `BadTarget` arm's wording, every `fence` in comments/spans of rafka-node-rpc-contract and rafka-node-rpc; postcard is positional so the wire does not move; the word fence stays only for the seat epoch (`Fenced { node, by }`, the seat row). Docs done 2026-10-12 (envelope §0, "Target and context", node-rpc.md)
 
+- [ ] the Forward op's success reply is `Forwarded { inner }`, never Relayed (relay is banned; node-rpc-envelope.md Forward schema): `rafka-node-rpc-contract/src/forward.rs:55,147,197`, `outcome.rs:414`, `rafka-node-rpc/src/forward.rs:147`; variant position unchanged, no format move
+- [ ] the runtime refusal while a node deletes its connections is `ConnectionsDeleting { reason }`, never Draining (connections are deleted, never drained; node-rpc.md §35, envelope readiness gate): every `Draining` variant and `draining` refusal string in the contract and runtime (224 sites at 152cb4fd), the lifecycle vocabulary table, the spans that name it; position unchanged, no format move
+- [ ] a Build dispatch refused because the fabric-primary yielded its seat answers `SeatYielded { node, by }`, never Fenced (envelope Build op): `Fenced` in the Build reply enum and its 17 sites; position unchanged
+- [ ] a connection's reconnect series is a **recovery round**, never an epoch (connections.md §9.2, the Direct Failed row): the `epoch` field and prose in the connections code (rafka-v2 `rafka-reach-reroute`, `rafka-node-base`, and their RDM port); the durable-job claim counter is `claim_revision` (node-rpc.md durable-job mutation; rafka-v2 jobs code, 8 files, coordinated with the rafka-v2 lead)
+- [ ] the comment-citation sweep after the docs move (2026-10-13, RDM df378f7a): every `//!`/`///` that cites a page by its rafka-v2 path (`rafka-v2 docs/architecture/...`, `docs/plans/rulings/...`, `docs/plans/proposal/...`; 20 sites) cites the in-repo path; `rafka-mesh-ops/src/framer.rs:16` cites the deleted `docs/architecture/mesh.md` and cites the envelope page instead
+- [ ] the envelope page's rafka-owned op families (0x12 data-frame, 0x17 forward-write, 0x18 forward-read, the gateway reach ops) split out to a rafka-v2 page; the core and rdm families stay in `docs/architecture/node-rpc-envelope.md` (a doc edit, Luke's yes on the text)
 - [ ] src/workflows/<op> per lifecycle page; primitives (node.connections.delete, the transport cut, topology reads, ...); renames (mesh_leave -> mesh_delete, retire -> delete, park -> stop, crate::http -> crate::control, departed -> deleted; a mesh is never reborn: the span `rdm.node_admin.mesh.create.via-rebirth` (investigate.rs ~583) is the node.create of a node-admin into the live mesh (mesh-investigation.md step 6), and the "reborn mesh" wording goes from investigate.rs, admin.rs, round.rs, build_drive.rs and their cells (2803_detect 80, rshape_burn_in 35, drift_convergence 23, build_drive 19 hits on main 01a65889); a node's re-birth stays); ~120 comment citations to current doc paths. One mechanical landing after the cuts
 
 ### Acceptance criteria
@@ -2077,6 +2084,41 @@ part B (rafka-node-rpc-testkit) landed 38366fbb (2026-10-13, gate 76 s): 14 env 
 
 - sections: [the-plan-of-record, story-bar]
 <!-- /epic:e12.s82 -->
+<!-- epic:e12.s83 -->
+## e12.s83 — node.create's name claim never returns: the PrepareStorage step idles for the whole deadline with no claim span
+
+**Builder:** RDM Rust engineer (/home/admin/rust-distributed-mesh, a pool lane) · **Tracking issue:** to generate · **Architecture:** `docs/architecture/lifecycles/node-create.md` step 1 (the name claim is the first durable write), `docs/architecture/build.md` §4 (a step's receipt is its commit), `crates/rafka-node-admin-core/src/deployment/pipeline.rs:1471-1495`, `crates/rafka-node-admin-core/src/node_rows.rs:277` (`NodeRows::claim`)
+
+### State
+
+open. Evidence, two runs of `node_objects::a_create_whose_node_is_not_ready_streams_the_blocker_the_ready_check_names` (node-admin-core tests/node_objects.rs:538), one in 200 or so: `rdm.node_admin.deployment.update.via-step` step=PrepareStorage busy 54 µs, idle 5 005 ms, no `outcome`, no `io_calls`, and no `rdm.node_admin.node.create.via-node-row` span opened under it, while AllocateIdentity completed in 0 ms. The step's first await, `rows.claim(...)`, never returned and never opened its span. Artifacts: the gate of 2026-10-13 23:20 on tree df378f7a (`gates-docs-df378f7a.log.detail`, 18 spans, trace 9114ce21563efcf4ee0f8d536301c3bb, copied to the lead's scratchpad `red-node-objects/`), and lane e6s7 `target/i143-testkit/node_objects/*.2795362.spans.json` of 2026-10-12 22:12 (17 spans, same shape). The cell's own 5 s timeout is the bound that fired; it is not moved.
+
+### Remaining
+
+- [ ] read why: the first await inside the step (`rows.claim` → `writer_check` → `put_seeded`, or whatever precedes the `via-node-row` span) with a span or event on every await it holds, run once at gate cadence, the trace naming the await that does not return
+- [ ] fix at the source; delete nothing that was coping; the cell stays as written (5 s)
+- [ ] the span that was missing is emitted before the first await, so a repeat is attributable from the artifact alone
+
+### Acceptance criteria
+
+<!-- crit:e12.s83.1 -->
+- [ ] the trace of a create names every await of PrepareStorage, and the claim span opens before the claim's first await
+<!-- /crit:e12.s83.1 -->
+<!-- crit:e12.s83.2 -->
+- [ ] node-admin-core tests/node_objects.rs green at gate cadence, no bound changed
+<!-- /crit:e12.s83.2 -->
+<!-- crit:e12.s83.3 -->
+- [ ] The story bar holds (section story-bar).
+<!-- /crit:e12.s83.3 -->
+
+### Done when
+
+- [ ] Every acceptance criterion holds; the landing carries the flame of the fixed path; it lands only through the land script; this block's State names the landing sha and the mechanism found.
+
+**Epic metadata**
+
+- sections: [the-plan-of-record, story-bar]
+<!-- /epic:e12.s83 -->
 <!-- epic:e12.s23 -->
 ## e12.s23 — seats and the Build-door admission: a seat moves only by explicit yield or proven loss (R-EL1 = Y + D, R-MT1 node.primary.update), and nothing that moves a seat or writes caller state runs before the initial fabric is ready-for-traffic
 
