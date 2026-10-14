@@ -157,7 +157,7 @@ local Instant         silence and elapsed time                    (receiver-loca
 | [`NodeStopped { op: LifecycleOp, forwarded_by, publisher, topology_version }`](#node-stopped-lifecycle-overlay) | owning mesh channel; backbone Members.in_flight; peer mesh channels | mesh-primary from matching stop-stream stopped | peer mesh primaries preserve op | `(kind, build_id, attempt, operation, node_id, incarnation)` | the lifecycle in-flight overlay | subject is stopped; not runtime-exit proof. `publisher` is the exact publishing birth and `topology_version` the version of the subject's mesh at which the subject changed |
 | [`primary updating`, `primary updated`](#primary-update-announcements) | mesh channel; backbone | the mesh-primary (the holder itself for the `node-admin` cohort), the sole author of member status: "primary updating" before the seat row, "primary updated" after `node.primary.updated`; a node of another cohort never publishes its own seat | peer mesh primaries preserve operation and subject | `(operation, cohort, committed revision)` | announcements only | name the operation, the cohort, both exact births and the revisions; the committed seat row is the authority; a late "updating" never undoes an "updated" |
 | `Seated { seat, holder }` | the holder's mesh channel; backbone | the mesh-primary of the seat's mesh when the ordinary rule fills a seat there with no node.primary.update (its own mesh-primary seat and each other cohort's primary seat, a holder seated again after a failed update included); the fabric-primary for the fabric seat | peer mesh primaries preserve seat, holder and revision and never author a result | the holder record's revision, per seat key (`(mesh, node_type)` for a cohort, `fabric` for the fabric seat); an older record is ignored in the receive path | until the next record of that seat | the ordinary election's holder record with its exact birth ([elections §3](fabric-node-lifecycle-elections.md#3-election-key)), an election input; never sufficient to override a committed seat row |
-| [`NodeDraining`, `NodeDrained`, `NodeLeaving`](#reserved-lifecycle-frame-positions) `{ op: LifecycleOp, forwarded_by }` | reserved positions; never published | none: connections-deleting and stopping reach peers as the member's status in its mesh-primary's projection (the `Members` and `MembersDelta` rows above); node.connections.deleted is a reply on the call, never gossip | — | — | — | — |
+| [`NodeConnectionsDeleting`, `NodeConnectionsDeleted`, `NodeLeaving`](#reserved-lifecycle-frame-positions) `{ op: LifecycleOp, forwarded_by }` | reserved positions; never published | none: connections-deleting and stopping reach peers as the member's status in its mesh-primary's projection (the `Members` and `MembersDelta` rows above); node.connections.deleted is a reply on the call, never gossip | — | — | — | — |
 | `NodeLeft { op: LifecycleOp, forwarded_by }` | reserved position; never published | none: a stopping node gossips nothing and its mesh-primary publishes [NodeStopped](#node-stopped-lifecycle-overlay) | — | — | — | — |
 | `MeshStatus { mesh, status, publisher, changed_at_rafka_ms }` | backbone and the mesh primary's own mesh channel; then each peer mesh channel | the mesh primary only, when its Mesh's status changes | peer mesh primaries, unchanged | `(mesh, publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its holder on a join, heal, refeed or top-up | the Mesh's status projection |
 | `FabricStatus { fabric, status, publisher, changed_at_rafka_ms }` | backbone and the fabric primary's own mesh channel; then each peer mesh channel | the fabric primary only, when the Fabric's status changes | peer mesh primaries, unchanged | `(publisher, changed_at_rafka_ms)` | the held status, until the next change; replayed by its holder on a join, heal, refeed or top-up | the Fabric's status projection |
@@ -226,7 +226,7 @@ Size:
 
 #### Reserved lifecycle frame positions
 
-The frame enum keeps the positions of NodeDraining, NodeLeaving, NodeLeft and NodeDrained. None of
+The frame enum keeps the positions of NodeConnectionsDeleting, NodeLeaving, NodeLeft and NodeConnectionsDeleted. None of
 the four is published. node.connections.delete and node.stop are calls, not gossip: connections-deleting,
 connections-deleted and stopping reach peers as the member's status in its mesh-primary's member
 projection (the `Members` and `MembersDelta` rows of the catalog), and node.connections.deleted is a
@@ -235,10 +235,10 @@ NodeLeft call or node-authored gossip; its mesh-primary publication is
 [NodeStopped](#node-stopped-lifecycle-overlay).
 
 ```rust
-NodeDraining { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
-NodeLeaving  { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
-NodeLeft     { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
-NodeDrained  { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
+NodeConnectionsDeleting { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
+NodeLeaving             { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
+NodeLeft                { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
+NodeConnectionsDeleted  { op: LifecycleOp, forwarded_by: Option<String> }, // reserved: never published
 
 LifecycleOp {
     build_id: String,

@@ -142,7 +142,7 @@ sees only the catalog.
 | `0x01` | ping | core | live | canonical | `Ping` |
 | `0x11` | echo | core | retired | | |
 | `0x1A` | forward | core | live | canonical | `Forward` |
-| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the generated [wire page](/home/admin/rafka-v2/docs/reference/rdm/wire.md); `DrainNode`, `NodeDrained` and `NodeLeft` are reserved positions, never sent; until the initial fabric has first reached ready-for-traffic, every node property command (`UpdateName`, `CreateTags`, `DeleteTags`, `UpdateNodeConfig`) is refused `fabric-not-ready`, and `DeleteMesh` and the node workflow calls are sent only for a Build admitted past that refusal ([States](lifecycles/states.md#fabric-not-ready)) |
+| `0x1B` | status | rdm | live | canonical | the request and reply variants, in positional order, are on the generated [wire page](/home/admin/rafka-v2/docs/reference/rdm/wire.md); `Reserved6`, `Reserved7` and `NodeLeft` are reserved positions, never sent; until the initial fabric has first reached ready-for-traffic, every node property command (`UpdateName`, `CreateTags`, `DeleteTags`, `UpdateNodeConfig`) is refused `fabric-not-ready`, and `DeleteMesh` and the node workflow calls are sent only for a Build admitted past that refusal ([States](lifecycles/states.md#fabric-not-ready)) |
 | `0x1C` | build-claim | rdm | live | canonical | `ClaimAttempt` |
 | `0x1D` | join | rdm | live | canonical | `JoinNode` |
 | `0x1E` | topology | rdm | live | canonical | `GetTopology` |
@@ -233,11 +233,15 @@ These are adapter mappings, not new enum definitions.
 
 | Typed caller | Existing wire / execution component | Caller result / events |
 |---|---|---|
-| [node.create](lifecycles/node-create.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; first join on [JoinNode 0x1D](#join-op-0x1d-rdm); a held name answers NameHeld { by } | every FirstStart event ending node.started, then node.created |
+| [node.create](lifecycles/node-create.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; first join on [JoinNode 0x1D](#join-op-0x1d-rdm); a held name answers NameHeld { by }; the create of a mesh's first node-admin is the mesh-absent arm, [mesh.create](lifecycles/mesh-create.md), with no call of its own | every FirstStart event ending node.started, then node.created |
 | [node.start](lifecycles/node-start.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Join 0x1D](#join-op-0x1d-rdm), [topology 0x1E](#topology-op-0x1e-rdm), [Build facts 0x1F](#build-facts-op-0x1f-rdm), [Status 0x1B](#status-op-0x1b-rdm) | node.joined, node.started; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic |
 | [node.stop](lifecycles/node-stop.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [Status 0x1B StopNode](#node-stop-command-pair); stopped rides the StopNode reply; the stop's first step is `node.connections.delete { scope: All }` | node.connections.deleted, node.stopped; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic |
 | [node.restart](lifecycles/node-restart.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's and the start's ops; no restart opcode | every stop/start event, node.restarted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic |
 | [node.delete](lifecycles/node-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; the stop's ops, then provider inspection, which is not a Node RPC | every stop event, then node.deleted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic |
+| [node.mesh.join](lifecycles/node-mesh-join.md) | The report is [JoinNode 0x1D](#join-op-0x1d-rdm); standalone, [Status 0x1B](#status-op-0x1b-rdm) `JoinMesh`, answered `MeshJoined { joined }`; inside node.start a step of the start's stream | node.mesh.joined; a refused report fails the primitive by the report's refusal |
+| [node.mesh.leave](lifecycles/node-mesh-leave.md) | Standalone, [Status 0x1B](#status-op-0x1b-rdm) `LeaveMesh`, answered `MeshLeft { left }`; node.stop and node.delete end their live part with it, and inside a stop it is the stop's own step and this frame is not sent | node.mesh.left; `BusyHoldingConnections { connections }` while the node holds a connection |
+| [node.tickle](lifecycles/node-tickle.md) | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) direct, and the same probe through up to two live peers of the node's mesh on [Forward 0x1A](#forward-op-0x1a-core) | `reached { answer }` or `unreached`; no event, and unreached is never death |
+| [node.runtime.inspect](lifecycles/node-runtime-inspect.md) | The deployment provider's inspect of the runtime handle recorded at launch; not a Node RPC | `running`, `exit-proven { code }` (recorded as the birth's exit proof) or `unavailable { reason }`; no event |
 | node.get | [Status 0x1B ProbeNodeState](#status-op-0x1b-rdm) for one exact subject; node.get answers one node by id, the nodes of a mesh, or the nodes that carry given tag labels, all of the given labels or any of them; a node's tags are its own property (node.tags.get/create/delete), and the tag filter names a label, matches every node that carries it, and is read through the node store's tags index | Current; stopped answers CurrentParked; no event |
 | [node.topology.get](lifecycles/node-topology-get.md) | [GetTopology 0x1E](#topology-op-0x1e-rdm); complete source snapshot read | complete read result; no event |
 | [node.name.update](lifecycles/node-name-update.md) | Rename, to the node's mesh-primary; frames `UpdateName` and `ApplyNodeName` on [0x1B](#status-op-0x1b-rdm); the node admits no connection | node.name.updated; `NameHeld { by }`, `RejectedAdmittingConnections`, `RejectedName`, `RejectedStaleIncarnation`; `fabric-not-ready` |
@@ -247,6 +251,8 @@ These are adapter mappings, not new enum definitions.
 | mesh.get, mesh.update, mesh.nodes.get, mesh.config.get/update | mesh.get answers one mesh, or every mesh of a fabric; mesh.update puts the full mesh meta as a blind put and never changes status; mesh.nodes.get answers the mesh's members; mesh.config.get/update hold the application's attributes on the mesh row, as node.config does on a node; a mesh's tags are its own property, mesh.tags.get / mesh.tags.create { label | [labels] } / mesh.tags.delete { All | [labels] }, the same shape and label grammar as node.tags; dedicated request mapping is open | read result / mesh.updated / mesh.config.updated |
 | fabric.get, fabric.update, fabric.meshes.get, fabric.nodes.get, fabric.config.get/update | fabric.get answers from memory; fabric.update puts the full fabric meta as a blind put and never changes status; fabric.meshes.get lists the meshes; fabric.nodes.get answers the fabric topology; fabric.config.get/update hold the application's attributes on the fabric row; dedicated request mapping is open | read result / fabric.updated / fabric.config.updated |
 | [mesh.delete](lifecycles/mesh-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow; [0x21](#primaryupdate-op-0x21-rdm) (node.fabric-primary.update) when the mesh holds the fabric-primary seat; [Status 0x1B DeleteMesh / MeshDeleted](#mesh-delete-command-pair); node.delete's ops per member | mesh.deleting, mesh.deleted; `fabric-not-ready` refusal until the initial fabric has first reached ready-for-traffic |
+| [fabric.create](lifecycles/fabric-create.md) | The first node-admin, started with no mesh and no durable topology, is the executor and the fabric-primary; the accepted topology rides [build.create 0x20](#build-op-0x20-rdm) | fabric.created when the fabric is ready-for-traffic |
+| [fabric.delete](lifecycles/fabric-delete.md) | [build.create 0x20](#build-op-0x20-rdm) carries the workflow, one Build the fabric-primary drives: every mesh removed leaf-inward, its own mesh last | fabric.deleted from the fabric-primary, still alive; its own node.delete is a separate call from outside the fabric |
 | [node.primary.update](lifecycles/node-primary-update.md) | [0x21 PrimaryUpdate / PrimaryUpdated](#primaryupdate-op-0x21-rdm), the holder to its successor's exact birth, carrying the committed seat row | node.primary.updated { revisions }; RejectedConflictingPayload; `fabric-not-ready`; on the commanded arm, `Failed { step, reason }` when the update ends failed |
 | [node.fabric-primary.update](lifecycles/node-primary-update.md#fabric-seat) | the same call, the fabric seat as the `fabric` entry of `seats` | node.fabric-primary.updated; the fabric arm's no-successor refusal |
 | build.create/get/delete | [Build 0x20](#build-op-0x20-rdm); the fabric-primary accepts every Build and drives topology Builds; a mesh-primary drives drift attempts of the current Build inside its mesh. [ClaimAttempt 0x1C](#buildclaim-op-0x1c-rdm) is the attempt claim; [FetchBuildFacts 0x1F](#build-facts-op-0x1f-rdm) is the facts read | Started, step frames, Complete / Failed; reattachment reads; deletion result |
@@ -604,10 +610,10 @@ pub enum StatusRequest {
     ProbeNodeState { node_id: NodeId, incarnation: IncarnationId },
     ApplyMeshState { mesh_id: MeshId, mesh_name: String, state: MeshState },
     ApplyFabricEvent { fabric_id: FabricId, event: FabricEvent },
-    DrainNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 6, reserved: never sent
-    NodeDrained { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 7, reserved: never sent
+    Reserved6 { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 6, reserved: never sent
+    Reserved7 { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 7, reserved: never sent
     StopNode { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
-    NodeLeft { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
+    NodeLeft { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String }, // position 9, reserved: never sent
     DeleteMesh { mesh_id: MeshId, build_id: String, attempt: u32, operation: String },
     MeshDeleted {
         mesh_id: MeshId,
@@ -628,13 +634,30 @@ pub enum StatusRequest {
     ApplyNodeConfig { node_id: NodeId, incarnation: IncarnationId, config: BTreeMap<String, String> },
     ApplyNodeName { node_id: NodeId, incarnation: IncarnationId, name: String },
     UpdateName { node_id: NodeId, incarnation: IncarnationId, name: String },
+    DeleteConnections { node_id: NodeId, incarnation: IncarnationId, scope: ConnectionScope },
     CreateTags { node_id: NodeId, incarnation: IncarnationId, labels: Vec<String> },
     DeleteTags { node_id: NodeId, incarnation: IncarnationId, scope: TagScope },
+    JoinMesh { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
+    LeaveMesh { node_id: NodeId, incarnation: IncarnationId, build_id: String, attempt: u32, operation: String },
 }
 
 pub enum TagScope {
     All,
     Labels(Vec<String>),
+}
+
+// node.connections.delete's scope (lifecycles/node-connections-delete.md): All, or the exact
+// connections named by their minted ids, at least one.
+pub enum ConnectionScope {
+    All,
+    Connections(Vec<ConnectionId>),
+}
+
+// Which mesh a node.mesh.join or node.mesh.leave reached: its own mesh, and the node-admin
+// backbone for a node-admin.
+pub enum WhichMesh {
+    Own,
+    Backbone,
 }
 
 pub enum NotAuthority {
@@ -658,7 +681,7 @@ pub struct ConfigOverCap {
 pub enum StatusReply {
     Applied,
     AlreadyApplied,
-    NodeDrainingApplied { in_flight: u64 }, // position 2, reserved: never sent
+    Reserved2 { in_flight: u64 }, // position 2, reserved: never sent
     Current { node_id: NodeId, incarnation: IncarnationId, state: NodeState },
     RejectedStaleIncarnation { held: IncarnationId },
     RejectedStaleMesh { held: MeshId },
@@ -688,9 +711,13 @@ pub enum StatusReply {
     NameHeld { name: String, by: NodeId },
     NodeRowRefused { node: String, reason: String },
     NameNotApplied { node: String, answered: String, reason: String },
+    ConnectionsDeleted { closed: Vec<ConnectionId>, not_open: Vec<ConnectionId>, held: Vec<ConnectionId>, receipt: Option<ConnectionsReceipt> },
+    RejectedConnectionScope { reason: String },
     TagsCreated { node_id: NodeId, incarnation: IncarnationId, already_carried: Vec<String> },
     TagsDeleted { node_id: NodeId, incarnation: IncarnationId, not_carried: Vec<String> },
     BusyHoldingConnections { connections: Vec<ConnectionId> },
+    MeshJoined { node_id: NodeId, incarnation: IncarnationId, joined: Vec<WhichMesh> },
+    MeshLeft { node_id: NodeId, incarnation: IncarnationId, left: Vec<WhichMesh> },
 }
 
 // The event a Blocked hydrate_before_ready hook runs again on (fabric-node-hooks.md,
@@ -755,12 +782,10 @@ The caller contract is [node.stop / node.delete](#typed-object-contract); the se
 The stop's graceful closure is `node.connections.delete { scope: All }`; its receipt is a
 `ConnectionsReceipt`, `Established { in_flight, closed }` or `Deadline { last_in_flight, closed, held }`.
 Stopped rides the StopNode reply as `Stopped { receipt }`, and the receipt keeps the deadline evidence
-when the stop hard-cut at the deadline. DrainNode and NodeDrained keep their positions 6 and 7 and are
-never sent; a receiver refuses them by name. NodeDrainingApplied keeps StatusReply position 2 and is
+when the stop hard-cut at the deadline. Reserved6 and Reserved7 keep their positions 6 and 7 and are
+never sent; a receiver refuses them by name. Reserved2 keeps StatusReply position 2 and is
 never sent. NodeLeft keeps its position and is never sent; a receiver refuses it by name.
 Enum discriminants are never reordered or reused ([Section 2](#section-2-the-body)).
-
-<a id="mesh-leave-command-pair"></a>
 
 ### Mesh delete command pair
 
