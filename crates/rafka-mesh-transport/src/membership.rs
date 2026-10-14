@@ -8372,4 +8372,90 @@ mod tests {
         receiver.apply(&delta);
         assert!(receiver.same_topology(&started), "the receiver holds what the source holds: {delta:?}");
     }
+
+    /// CONTRACT (gossip.md §3.1: "`Members` and `MembersDelta`: `published_at_rafka_ms`, then
+    /// `topology_version`, per mesh; the publisher reads `published_at_rafka_ms` in the same critical
+    /// section that assigns `topology_version` and `snapshot_id`, so a version's stamp is never earlier
+    /// than the one before it"; rejoin_commander trace 75adf49598edd1c7d4a975013f554216): `Backbone::publish`
+    /// reads `published_at_rafka_ms` and queues the forwarder's decision under `self.version.lock()` and
+    /// `self.forwarder.lock()`, and `Backbone::publish_deleted_meshes` reads `published_at_rafka_ms` under
+    /// `self.deleted_versions.lock()`. A concurrent publish or neighbour-up `replay` racing with `now_rafka_ms()`
+    /// cannot step between the clock read and the version/forwarder update: `v1` and `v2` are stamped and
+    /// forwarded in version order, and a member hearing the mesh channel installs both versions in order.
+    /// Must NOT happen: `now_rafka_ms()` read outside `self.version.lock()` / `self.forwarder.lock()` so a
+    /// concurrent publish or replay stamps `v1` at 471 ms while `v2` is stamped at 459 ms, causing
+    /// `ReceiveOrder` to ignore `MembersDelta(1 -> 2)` as `via-earlier-version`.
+    #[tokio::test]
+    async fn interleaved_backbone_publishes_and_neighbour_up_replay_stamp_and_forward_in_version_order() {
+        use crate::clock::{Clock, SharedClock};
+        use iroh::protocol::Router;
+        use std::sync::atomic::AtomicU64;
+        use std::sync::OnceLock;
+
+        #[derive(Debug)]
+        struct RacingClock {
+            now: AtomicU64,
+            version_lock: OnceLock<Arc<Mutex<SourceVersion>>>,
+            forwarder_lock: OnceLock<Arc<Mutex<crate::snapshot::Forwarder>>>,
+            replayed_during_stamp: Mutex<Vec<Frame>>,
+        }
+
+        impl Clock for RacingClock {
+            fn now_rafka_ms(&self) -> u64 {
+                let tick = self.now.fetch_add(1, Ordering::SeqCst);
+                let stamp = match tick {
+                    0 => 450,
+                    1 => 459,
+                    _ => 471 + tick,
+                };
+                // On the v2 publish's clock read (459 ms), a concurrent racer tries to enter the version
+                // and forwarder locks: if `now_rafka_ms()` was read outside those locks, a neighbour-up
+                // replay (or a second publish) steps in at 471 ms while the forwarder still holds v1.
+                if stamp == 459 {
+                    if let Some(f_lock) = self.forwarder_lock.get() {
+                        if let Ok(mut f) = f_lock.try_lock() {
+                            *self.replayed_during_stamp.lock().unwrap() = f.replay("mesh1.admin.1", 471);
+                        }
+                    }
+                    if let Some(v_lock) = self.version_lock.get() {
+                        assert!(v_lock.try_lock().is_err(), "published_at_rafka_ms must be read while Backbone::version is held");
+                    }
+                }
+                stamp
+            }
+        }
+
+        let spans = OpenedSpans::default();
+        let _capture = crate::span_capture::install(spans.clone());
+        let fabric = FabricId::parse("fab000000001").unwrap();
+        let (admin, rpc1, rpc2) = (birth_at("mesh1.admin.1", 1), birth_at("mesh1.rpc.1", 1), birth_at("mesh1.rpc.2", 1));
+        let p = publisher_of(&admin);
+
+        let transport = iroh::endpoint::QuicTransportConfig::builder().build();
+        let ep = rafka_node_rpc::endpoint::bind_exact(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap(), vec![iroh_gossip::ALPN.to_vec()], transport).await.unwrap();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(ep.clone());
+        let _router = Router::builder(ep.clone()).accept(iroh_gossip::ALPN, gossip.clone()).spawn();
+
+        let racing = Arc::new(RacingClock {
+            now: AtomicU64::new(0),
+            version_lock: OnceLock::new(),
+            forwarder_lock: OnceLock::new(),
+            replayed_during_stamp: Mutex::new(Vec::new()),
+        });
+        let clock: SharedClock = racing.clone();
+        let m = Membership::join(&gossip, &ep, &fabric, "mesh1", &MeshId::mint(), "mesh1.admin.1", clock, vec![]).await.unwrap();
+        let bb = Backbone::join(&gossip, &ep, &m, "mesh1", "mesh1.admin.1", admin.node.incarnation.clone(), vec![]).await.unwrap();
+        bb.set_mesh_primary(true);
+        // Clear `full_due` after initial seat take so round 1 is a normal source full and round 2 is a delta.
+        bb.full_due.store(false, Ordering::Relaxed);
+        let _ = racing.version_lock.set(bb.version.clone());
+        let _ = racing.forwarder_lock.set(m.view.forwarder.clone());
+
+        assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone()]).await);
+        assert!(bb.publish(&m, vec![admin.clone(), rpc1.clone(), rpc2.clone()]).await);
+        assert!(racing.replayed_during_stamp.lock().unwrap().is_empty(), "replay could not interleave inside the stamp critical section");
+        assert_eq!(m.view.forwarder.lock().unwrap().published_version("mesh1"), Some((p, 2)), "forwarder advanced to v2 under the version lock");
+        assert!(spans.named("rdm.mesh.membership.reject.via-earlier-version").is_empty(), "no frame was ignored as earlier");
+    }
 }
+
