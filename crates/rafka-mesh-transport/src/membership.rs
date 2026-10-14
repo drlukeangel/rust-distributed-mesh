@@ -1568,6 +1568,26 @@ fn admitted(order: &mut crate::receive_order::ReceiveOrder, f: &Frame, node: &st
     }
 }
 
+/// What a primary replays on `NeighborUp`: either `direct` frames for the channel to broadcast
+/// (on the backbone, which has no forward queue) or frames already queued onto [`ForwardPath`]
+/// under the forwarder's lock (on the mesh channel, so no concurrent delta can pass the replay).
+#[derive(Default)]
+struct Replayed {
+    direct: Vec<Frame>,
+    frames: usize,
+    full_chunks: usize,
+    bytes: usize,
+}
+
+impl Replayed {
+    fn direct(direct: Vec<Frame>) -> Self {
+        let bytes = direct.iter().map(|f| f.encode().len()).sum();
+        let full_chunks = direct.iter().filter(|f| matches!(f, Frame::Members { .. })).count();
+        let frames = direct.len();
+        Self { direct, frames, full_chunks, bytes }
+    }
+}
+
 impl Channel {
     /// Register where the birth `d` names is, and retire the paths a moved key leaves behind.
     fn register(&self, d: &MeshDigest) {
@@ -1586,7 +1606,7 @@ impl Channel {
         order: Arc<Mutex<crate::receive_order::ReceiveOrder>>,
         on_frame: Arc<dyn Fn(Frame, &mut crate::receive_order::ReceiveOrder) + Send + Sync>,
         targets: Arc<dyn Fn() -> Held + Send + Sync>,
-        replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync>,
+        replay: Arc<dyn Fn() -> Replayed + Send + Sync>,
     ) -> Result<Self> {
         for s in &seeds {
             book.fill(s);
@@ -1658,15 +1678,13 @@ impl Channel {
                             // A join, a heal or a refeed brings a neighbour up: the holder says the
                             // statuses it holds once (gossip.md §3.1), the original authors intact.
                             let sender = shared.read().await.clone();
-                            let frames = if sender.is_some() { replay() } else { Vec::new() };
-                            if !frames.is_empty() {
-                                let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
-                                let fulls = frames.iter().filter(|f| matches!(f, Frame::Members { .. })).count();
-                                tracing::info_span!("rdm.mesh.membership.update.via-neighbour-replay", node = %node, channel = %channel, peer = %p.fmt_short(), frames = frames.len(), full_chunks = fulls, bytes)
+                            let replayed = if sender.is_some() { replay() } else { Replayed::default() };
+                            if replayed.frames > 0 {
+                                tracing::info_span!("rdm.mesh.membership.update.via-neighbour-replay", node = %node, channel = %channel, peer = %p.fmt_short(), frames = replayed.frames, full_chunks = replayed.full_chunks, bytes = replayed.bytes)
                                     .in_scope(|| tracing::info!("a neighbour came up: this primary says what it holds once"));
                             }
                             if let Some(sender) = sender {
-                                for f in frames {
+                                for f in replayed.direct {
                                     if sender.broadcast(Bytes::from(f.encode())).await.is_ok() {
                                         sent.fetch_add(1, Ordering::Relaxed);
                                     }
@@ -2889,19 +2907,21 @@ impl Membership {
     /// frame reads it.
     pub async fn join(gossip: &Gossip, endpoint: &Endpoint, fabric: &FabricId, mesh: &str, mesh_id: &MeshId, node: &str, clock: SharedClock, seeds: Vec<EndpointAddr>) -> Result<Self> {
         let view = View::new(mesh, node);
-        let (replay_view, replay_fabric, replay_clock) = (view.clone(), fabric.clone(), clock.clone());
+        let (forward_path, forward_rx) = ForwardPath::pair(view.forwarder.clone(), Arc::default());
+        let (replay_view, replay_fabric, replay_clock, replay_forward_path) = (view.clone(), fabric.clone(), clock.clone(), forward_path.clone());
         // A neighbour coming up on this channel (a join, a heal, a refeed) hears what the primary
         // holds: the statuses, and the forwarded full of every source it has published (gossip.md
-        // §3.1, §3.3).
-        let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
+        // §3.1, §3.3), queued under the forwarder's lock so no delta decided after the replay can
+        // pass it on the channel.
+        let replay: Arc<dyn Fn() -> Replayed + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
                 let replay_me = replay_view.current_name();
-                let mut frames = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
-                frames.extend(replay_view.book.seats.held_frames());
-                frames.extend(replay_view.forwarder.lock().unwrap().replay(&replay_me, replay_clock.now_rafka_ms()));
-                frames
+                let mut prefix = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
+                prefix.extend(replay_view.book.seats.held_frames());
+                let (frames, full_chunks, bytes) = replay_forward_path.replay(&replay_me, prefix, || replay_clock.now_rafka_ms());
+                Replayed { direct: Vec::new(), frames, full_chunks, bytes }
             } else {
-                Vec::new()
+                Replayed::default()
             }
         });
         let location = LocationBook::new(endpoint, node)?.with_held_name(view.held_name.clone());
@@ -2938,7 +2958,7 @@ impl Membership {
             let channel = sink_channel.clone();
             Box::pin(async move { channel.broadcast(&f).await })
         });
-        let forward_path = ForwardPath::new(view.forwarder.clone(), Arc::default(), sink);
+        forward_path.spawn_sender(forward_rx, sink);
         let name = view.held_name.clone();
         let me = Self { mesh: channel, book: view.book.clone(), view, fabric: fabric.clone(), mesh_id: mesh_id.clone(), cut_off: Arc::default(), clock, digest_seq: Arc::default(), load: Arc::new(crate::load::LoadSampler::for_this_process()), forward_path, config: Arc::default(), name };
         me.watch_meshes();
@@ -3628,14 +3648,14 @@ impl Backbone {
             }
         });
         let (replay_view, replay_fabric) = (membership.view.clone(), membership.fabric.clone());
-        let replay: Arc<dyn Fn() -> Vec<Frame> + Send + Sync> = Arc::new(move || {
+        let replay: Arc<dyn Fn() -> Replayed + Send + Sync> = Arc::new(move || {
             if replay_view.primary.load(Ordering::Relaxed) {
                 let replay_me = replay_view.current_name();
                 let mut frames = replay_view.book.statuses.held_frames(&replay_fabric, &replay_me);
                 frames.extend(replay_view.book.seats.held_frames());
-                frames
+                Replayed::direct(frames)
             } else {
-                Vec::new()
+                Replayed::default()
             }
         });
         let (book, own_mesh) = (membership.book.clone(), mesh.to_string());

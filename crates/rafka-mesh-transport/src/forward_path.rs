@@ -39,7 +39,13 @@ enum Job {
     Forwarded { me: String, epoch: u64, source: Option<(String, PublisherId, u64)>, out: Forward },
     /// A lifecycle frame this primary carries into its mesh.
     Carried { me: String, epoch: u64, frame: Frame },
+    /// A neighbour-up replay (statuses, seats, and the forwarder's published fulls), decided and
+    /// queued under the forwarder's lock so no delta decided after it can pass it on the channel.
+    Replayed { me: String, epoch: Option<u64>, frames: Vec<Frame> },
 }
+
+/// The receiver half of a [`ForwardPath::pair`], handed to [`ForwardPath::spawn_sender`].
+pub(crate) struct ForwardRx(mpsc::UnboundedReceiver<Job>);
 
 /// The forwarder, and the one queue its frames are sent from.
 #[derive(Clone)]
@@ -52,10 +58,23 @@ pub(crate) struct ForwardPath {
 impl ForwardPath {
     /// The path over `forwarder`, sending to `sink` from one task that lives as long as any clone.
     /// `owes_full` is the flag whose set state makes the next publication a full of every source.
+    #[cfg(test)]
     pub(crate) fn new(forwarder: Arc<Mutex<Forwarder>>, owes_full: Arc<AtomicBool>, sink: Sink) -> Self {
+        let (me, rx) = Self::pair(forwarder, owes_full);
+        me.spawn_sender(rx, sink);
+        me
+    }
+
+    /// Create the path and its receiver before the channel's sink is bound, so the channel's
+    /// neighbour-up replay closure can queue onto it from the moment the channel subscribes.
+    pub(crate) fn pair(forwarder: Arc<Mutex<Forwarder>>, owes_full: Arc<AtomicBool>) -> (Self, ForwardRx) {
         let (queue, rx) = mpsc::unbounded_channel();
-        tokio::spawn(send_in_order(rx, sink, owes_full.clone(), forwarder.clone()));
-        Self { forwarder, queue, owes_full }
+        (Self { forwarder, queue, owes_full }, ForwardRx(rx))
+    }
+
+    /// Start the single ordered sender task draining `rx` into `sink`.
+    pub(crate) fn spawn_sender(&self, rx: ForwardRx, sink: Sink) {
+        tokio::spawn(send_in_order(rx.0, sink, self.owes_full.clone(), self.forwarder.clone()));
     }
 
     /// Decide what `source_mesh` moving to `version` puts into the mesh, and queue it behind every
@@ -123,6 +142,26 @@ impl ForwardPath {
         self.enqueue(Job::Carried { me: me.to_string(), epoch, frame });
     }
 
+    /// Queue a neighbour-up replay (statuses, seats, and the forwarder's published fulls) under
+    /// the forwarder's lock, behind every frame queued before it and ahead of any delta decided
+    /// after it. Returns `(frames, full_chunks, bytes)`.
+    pub(crate) fn replay(&self, me: &str, mut frames: Vec<Frame>, now_ms: impl FnOnce() -> u64) -> (usize, usize, usize) {
+        let mut forwarder = self.forwarder.lock().unwrap();
+        let now_ms = now_ms();
+        let epoch = forwarder.role();
+        if epoch.is_some() {
+            frames.extend(forwarder.replay(me, now_ms));
+        }
+        if frames.is_empty() {
+            return (0, 0, 0);
+        }
+        let bytes: usize = frames.iter().map(|f| f.encode().len()).sum();
+        let fulls = frames.iter().filter(|f| matches!(f, Frame::Members { .. })).count();
+        let len = frames.len();
+        self.enqueue(Job::Replayed { me: me.to_string(), epoch, frames });
+        (len, fulls, bytes)
+    }
+
     /// Queue `job`, called while the lock that decided it is held. A queue whose task is gone
     /// sends nothing; the span names it and the next publication is a full.
     fn enqueue(&self, job: Job) {
@@ -130,6 +169,7 @@ impl ForwardPath {
             let (me, frames) = match job {
                 Job::Forwarded { me, out, .. } => (me, frames_of(out)),
                 Job::Carried { me, frame, .. } => (me, vec![frame]),
+                Job::Replayed { me, frames, .. } => (me, frames),
             };
             let cause = anyhow::anyhow!("the forward queue of node {me} has no sender task");
             for frame in &frames {
@@ -179,12 +219,15 @@ fn refused(owes_full: &AtomicBool, me: &str, frame: &Frame, cause: &anyhow::Erro
 async fn send_in_order(mut rx: mpsc::UnboundedReceiver<Job>, sink: Sink, owes_full: Arc<AtomicBool>, forwarder: Arc<Mutex<Forwarder>>) {
     while let Some(job) = rx.recv().await {
         let epoch = match &job {
-            Job::Carried { epoch, .. } | Job::Forwarded { epoch, .. } => *epoch,
+            Job::Carried { epoch, .. } | Job::Forwarded { epoch, .. } => Some(*epoch),
+            Job::Replayed { epoch, .. } => *epoch,
         };
-        let current = forwarder.lock().unwrap().role();
-        if current != Some(epoch) {
-            role_dropped(job, epoch, current);
-            continue;
+        if let Some(epoch) = epoch {
+            let current = forwarder.lock().unwrap().role();
+            if current != Some(epoch) {
+                role_dropped(job, epoch, current);
+                continue;
+            }
         }
         match job {
             Job::Carried { me, frame, .. } => {
@@ -193,6 +236,7 @@ async fn send_in_order(mut rx: mpsc::UnboundedReceiver<Job>, sink: Sink, owes_fu
                 }
             }
             Job::Forwarded { me, source, out, .. } => send_forward(&sink, &owes_full, me, source, out).await,
+            Job::Replayed { me, frames, .. } => send_replayed(&sink, &owes_full, me, frames).await,
         }
     }
 }
@@ -203,6 +247,7 @@ fn role_dropped(job: Job, revision: u64, current: Option<u64>) {
     let (me, kind, frames) = match job {
         Job::Forwarded { me, out, .. } => (me, "forwarded", frames_of(out)),
         Job::Carried { me, frame, .. } => (me, "carried", vec![frame]),
+        Job::Replayed { me, frames, .. } => (me, "replayed", frames),
     };
     let sources: BTreeSet<String> = frames.iter().filter_map(|f| identity(f).map(|(mesh, publisher, version)| format!("{mesh}:{publisher}@{version}"))).collect();
     let current = current.map(|c| c.to_string()).unwrap_or_else(|| "none".to_string());
@@ -216,6 +261,24 @@ fn role_dropped(job: Job, revision: u64, current: Option<u64>) {
         sources = %sources.into_iter().collect::<Vec<_>>().join(","),
     )
     .in_scope(|| tracing::info!("decided while this node was its mesh's primary, reached the sender after it lost that role: not sent"));
+}
+
+/// Put what a neighbour-up replay queued onto the mesh channel, in order.
+async fn send_replayed(sink: &Sink, owes_full: &AtomicBool, me: String, frames: Vec<Frame>) {
+    let mut refused_sources: BTreeSet<String> = BTreeSet::new();
+    for frame in &frames {
+        if let Some((mesh, ..)) = identity(frame) {
+            if refused_sources.contains(mesh) {
+                continue;
+            }
+            if let Err(cause) = sink(frame.clone()).await {
+                refused_sources.insert(mesh.to_string());
+                refused(owes_full, &me, frame, &cause);
+            }
+        } else if let Err(cause) = sink(frame.clone()).await {
+            refused(owes_full, &me, frame, &cause);
+        }
+    }
 }
 
 /// Put what the forwarder decided onto the mesh channel, and name it.
@@ -555,8 +618,9 @@ mod tests {
         assert_eq!(*gate.seen.lock().unwrap(), vec![(0, 11)], "the first publication after taking the role is a full, and nothing before it was sent");
     }
 
-    /// CONTRACT: every producer shares the one order: a seat full, a carried lifecycle frame and a
-    /// delta reach the channel in the order they were queued, whatever the first send takes.
+    /// CONTRACT: every producer shares the one order: a seat full, a carried lifecycle frame, a
+    /// neighbour-up replay and a delta reach the channel in the order they were queued, whatever
+    /// the first send takes.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn every_producer_shares_one_order() {
         let ids = vec![(NodeId::mint(), IncarnationId::mint())];
@@ -566,8 +630,10 @@ mod tests {
         let p = publisher();
         path.fulls("mesh2.admin.1", "mesh2", "full-due", &[("mesh1".to_string(), p.clone(), 10, source_at(&ids, 10))], 1);
         path.carry("mesh2.admin.1", Frame::Digest { digest: digest(1, &ids[0].0, &ids[0].1, 1) });
-        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 2);
-        assert_eq!(rec.seen_after(3).await, vec![(0, 10), (1, 1), (10, 11)]);
+        let (replayed, fulls, _) = path.replay("mesh2.admin.1", Vec::new(), || 2);
+        assert_eq!((replayed, fulls), (1, 1));
+        path.source("mesh2.admin.1", "mesh1", &p, 11, &source_at(&ids, 11), 3);
+        assert_eq!(rec.seen_after(4).await, vec![(0, 10), (1, 1), (0, 10), (10, 11)]);
     }
 
     /// CONTRACT: a chunked full stays contiguous on the channel: the chunks of one decision are
