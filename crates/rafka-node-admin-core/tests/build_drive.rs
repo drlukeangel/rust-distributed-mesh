@@ -2169,3 +2169,151 @@ async fn a_commanded_update_claims_the_attempt_first_and_when_it_ends_failed_fai
     assert_eq!(*r.dispatch.dispatched.lock().unwrap(), vec![("mesh2.admin.3".to_string(), 3)], "attempt 3 dispatched the remove to the new mesh2 primary");
     assert_eq!(*r.ran.0.lock().unwrap(), vec!["retire-node:mesh2.admin.1".to_string()]);
 }
+
+/// CONTRACT (R12 / i143 e12.s47 #64): a node-admin born as `<path>.new` and renamed in place by
+/// `node.name.update` to `<path>` acts and spans under the name it holds now (`<path>`), never the
+/// boot `PathName` its structs were constructed with (`<path>.new`). Its `ControlPlane` submits, its
+/// `ClaimDoor` claims, its `DriveEnv` drives, its `RpcDispatcher` dispatches in-process to its own
+/// `RunDoor` and `BuildExecutor`, its `NodeRows` writes rows, and every control-plane, Build and
+/// node-row span names `mesh1.admin.1` and never `mesh1.admin.1.new`.
+#[test]
+fn a_renamed_admin_claims_drives_dispatches_and_spans_under_its_held_name_never_its_boot_name() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let exporter = opentelemetry_sdk::testing::trace::InMemorySpanExporter::default();
+    let (capture, layer) = rafka_mesh_telemetry::span_capture("renamed-admin-held-name", exporter.clone());
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+    let d = dispatch.clone();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .on_thread_start(move || std::mem::forget(tracing::dispatcher::set_default(&d)))
+        .build()
+        .unwrap();
+    let _g = tracing::dispatcher::set_default(&dispatch);
+
+    rt.block_on(async {
+        let boot: PathName = "mesh1.admin.1.new".parse().unwrap();
+        let held: PathName = "mesh1.admin.1".parse().unwrap();
+        let t = Topology {
+            fabric: Fabric { id: FabricId::mint(), name: "fabric1".into(), status: ScopeStatus::ReadyForTraffic, provider: ProviderKind::Process },
+            meshes: vec![Mesh { id: Some(MeshId::mint()), name: "mesh1".into(), status: ScopeStatus::ReadyForTraffic }],
+            nodes: vec![node("mesh1.admin.1", true, true), node("mesh1.rpc.1", false, false)],
+        };
+        let fp_id = t.node(&held).expect("the renamed admin is in the view at its held name").node_id.clone();
+        let builds = Arc::new(MemoryBuildStateAdapter::new());
+        let accepted = AcceptedStore::seeded(&*builds, t.fabric.id.clone(), FabricTopology::of_observed(&t), "mesh1.admin.1").await.unwrap();
+        let topology = Arc::new(RwLock::new(t.clone()));
+        let contexts = Arc::new(AttemptContexts::in_memory());
+        let claims = Arc::new(rafka_node_admin_core::mesh_claims::MeshClaims::in_memory());
+        let mut cp = ControlPlane::new(builds.clone(), accepted, boot.clone(), t, crate::adopted_time()).with_contexts(contexts.clone()).with_claims(claims.clone());
+        cp.topology = topology.clone();
+
+        let change = TopologyChange::ReconcileMesh {
+            desired: MeshDesired::of("mesh1".to_string(), [(rafka_mesh_entity::NodeKind::NodeAdmin, 1), (rafka_mesh_entity::NodeKind::RpcNode, 2)]),
+        };
+        let opened = cp.submit("test", change).await.expect("the renamed fabric-primary admits the Build");
+
+        let nodes_storage = Arc::new(rafka_node_admin_core::storage::MemoryNodesStorage::default());
+        let rows = rafka_node_admin_core::node_rows::NodeRows::new(boot.clone(), fp_id.clone(), topology.clone(), nodes_storage);
+        rows.claim(
+            &"mesh1.rpc.2".parse().unwrap(),
+            &NodeId::mint(),
+            "create-node:mesh1.rpc.2",
+            None,
+            rafka_node_admin_core::node_rows::ClaimFor::Create,
+        )
+        .await
+        .expect("the renamed mesh-primary claims the node row");
+
+        let ran = Arc::new(Creates(Mutex::new(Vec::new()), builds.clone()));
+        let exec = Arc::new(rafka_node_admin_core::executor::BuildExecutor {
+            executor: boot.to_string(),
+            builds: builds.clone(),
+            topology: topology.clone(),
+            runner: ran.clone(),
+        });
+        let run_door = Arc::new(rafka_node_admin_core::build_run::RunDoor {
+            me: boot.clone(),
+            builds: builds.clone(),
+            exec,
+            runs: Arc::new(rafka_node_admin_core::build_run::AttemptRuns::default()),
+            local: builds.clone(),
+            gate: rafka_node_admin_core::park_gate::ParkGate::new(),
+        });
+        let ep = rafka_node_rpc::endpoint::bind(iroh::SecretKey::generate(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let client = Arc::new(rafka_node_rpc::NodeRpcClient::new(ep, Arc::new(rafka_node_rpc::StaticResolver::new())));
+        let rpc_dispatcher = Arc::new(rafka_node_admin_core::build_op::RpcDispatcher {
+            me: boot.clone(),
+            local: run_door,
+            client,
+            topology: topology.clone(),
+        });
+        let switch = Arc::new(Switch {
+            authorizes: AtomicBool::new(true),
+            fenced: AtomicBool::new(false),
+            successor: Mutex::new(None),
+            fence_tx: tokio::sync::watch::channel(false).0,
+            record_holder: Mutex::new(None),
+            peer: Mutex::new(Default::default()),
+        });
+        let env = Arc::new(DriveEnv {
+            me: boot.clone(),
+            topology: topology.clone(),
+            builds: builds.clone(),
+            door: Arc::new(ClaimDoor {
+                node_id: fp_id,
+                me: boot.clone(),
+                topology: topology.clone(),
+                builds: builds.clone(),
+                contexts,
+                claims,
+            }),
+            dispatcher: rpc_dispatcher,
+            gate: switch,
+            departure: Arc::new(crate::loopback::Proofs::default()),
+            verdicts: Arc::new(crate::loopback::NoVerdicts),
+            turns: rafka_node_admin_core::park_gate::ParkGate::new(),
+        });
+
+        let drive = Drive::detached(opened.build_id.clone());
+        let end = env.run(&drive).await;
+        assert_eq!(end, DriveEnd::Terminal, "the renamed admin drives and dispatches in-process under its held name");
+        assert_eq!(*ran.0.lock().unwrap(), vec!["create-node:mesh1.rpc.2".to_string()]);
+        let projected = builds.read_build(&opened.build_id).await.unwrap();
+        assert_eq!(projected.state, rafka_node_admin_core::build_state::BuildState::Complete);
+        assert_eq!(projected.executor.as_deref(), Some("mesh1.admin.1"), "the attempt was claimed for the held name");
+    });
+
+    capture.flush(Duration::from_secs(10)).expect("spans flush");
+    let spans = exporter.get_finished_spans().unwrap();
+    crate::assert_own_story(spans.iter().map(|s| s.name.as_ref()));
+    for s in &spans {
+        for kv in &s.attributes {
+            let val = kv.value.to_string();
+            assert!(
+                !val.contains("mesh1.admin.1.new"),
+                "span {} attribute {}={} still carries the boot name mesh1.admin.1.new",
+                s.name,
+                kv.key,
+                val
+            );
+        }
+    }
+    let attr = |name: &str, key: &str| -> Vec<String> {
+        spans
+            .iter()
+            .filter(|s| s.name == name)
+            .filter_map(|s| s.attributes.iter().find(|kv| kv.key.as_str() == key).map(|kv| kv.value.to_string()))
+            .collect()
+    };
+    assert_eq!(attr("rdm.node_admin.build.create.via-submit", "node"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.node.create.via-node-row", "node"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-claim", "node"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-claim", "served_by"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-dispatch", "node"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-dispatch", "executor"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.serve.via-attempt-run", "node"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-attempt-complete", "node"), vec!["mesh1.admin.1"]);
+    assert_eq!(attr("rdm.node_admin.build.update.via-attempt-complete", "executor"), vec!["mesh1.admin.1"]);
+}
+
