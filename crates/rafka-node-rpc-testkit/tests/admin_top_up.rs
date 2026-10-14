@@ -1,7 +1,7 @@
 //! i143.e12.s52 (rafka-v2 #3082): a node-admin tops up a desynchronized mesh-channel source from its
 //! own Mesh's primary, as every receiver does.
 //!
-//! The design (rafka-v2 docs/architecture/gossip.md §3.3, "A version mismatch desynchronizes, and the
+//! The design (docs/architecture/gossip.md §3.3, "A version mismatch desynchronizes, and the
 //! node tops up"): "A receiver applies a delta only when it holds exactly `base_version` of that
 //! source and publisher. On a mismatch it marks that source's projection desynced, stops applying its
 //! deltas, and pulls the current full fabric topology from its own current mesh-primary with

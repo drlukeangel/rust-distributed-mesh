@@ -1,4 +1,4 @@
-//! Elections (`docs/architecture/node-lifecycle-elections.md` in rafka-v2; ruling R-A2).
+//! Elections (`docs/architecture/fabric-node-lifecycle-elections.md`; ruling R-A2).
 //!
 //! An election is a projection of converged facts, not a voting protocol: no ballot, term, quorum,
 //! timer or election message exists. A seat stays with its holder until that holder is proven

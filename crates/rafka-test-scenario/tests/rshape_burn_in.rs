@@ -475,7 +475,7 @@ async fn converge_connections(f: &Formed, inv: &mut Invariants) -> Value {
 /// [`converge_connections_with`] (`strict = false`) after a restart of `restarted_node_id`. When that node is
 /// its mesh's primary node-admin, canon owes no Direct fact from a role node to its new birth: the role node's
 /// status declaration is idempotent and durable, and a Direct Connected is evidence of activity, not an
-/// obligation (rafka-v2 docs/architecture/connections.md:505-517, section 10). The edge to that new birth is
+/// obligation (docs/architecture/connections.md:505-517, section 10). The edge to that new birth is
 /// therefore not required; a Connected edge to the superseded birth is still listed as stale, never required away.
 async fn converge_connections_after_restart(f: &Formed, inv: &mut Invariants, restarted_node_id: &str) -> Value {
     converge_connections_inner(f, inv, false, Some(restarted_node_id)).await

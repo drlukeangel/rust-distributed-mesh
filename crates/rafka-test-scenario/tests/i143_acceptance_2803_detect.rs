@@ -1,4 +1,4 @@
-//! i143.e4.s10 detection acceptance (rafka-v2 #2803; fabric-node-lifecycle-events-ops-gossip.md
+//! i143.e4.s10 detection acceptance (rafka-v2 #2803; docs/architecture/lifecycles/node-recovery.md
 //! "Mesh Recovery" -> "Detection: the peer-mesh investigation"), PROCESS layer: run by
 //! `scripts/i143-acceptance-gate.sh i143-2803-detect-process`, which exports `I143_ACCEPTANCE_DIR`
 //! (this cell's `result.json` goes there) and whose command sets `RDM_ARTIFACTS_DIR` (the estate's

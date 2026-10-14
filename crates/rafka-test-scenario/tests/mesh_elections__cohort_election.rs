@@ -1,5 +1,5 @@
 //! i143.e4.s14 process E2E: the canonical cohort election (PRD §11;
-//! rafka-v2 `docs/architecture/node-lifecycle-elections.md`).
+//! `docs/architecture/fabric-node-lifecycle-elections.md`).
 //!
 //! A non-admin cohort's primary is its ready member with the lowest NodeId; a
 //! mesh's primary is its node-admin cohort's seat, and the fabric seat stays

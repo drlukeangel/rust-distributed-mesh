@@ -1,5 +1,5 @@
 //! node.primary.update and node.fabric-primary.update on op `0x21` (the approved proposal
-//! rafka-v2 docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 5 and
+//! docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md, Part C3 edit 5 and
 //! Part D: "0x21 carries the primitive's `PrimaryUpdate` / `PrimaryUpdated` for both seats; the
 //! incumbent writes the row").
 //!

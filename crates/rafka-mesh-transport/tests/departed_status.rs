@@ -1,7 +1,7 @@
 //! i143.e12.s41 follow-up (rafka-v2 #3068), and i143.e12.s53 (R-RX1): a mesh status is taken for what
 //! it carries, whoever its publisher is.
 //!
-//! The design (rafka-v2 docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md R-RX1: no receiver
+//! The design (docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md R-RX1: no receiver
 //! refuses an input because of who sent it; fabric-authority.md §7: "A successor mesh primary
 //! reads/hydrates the Mesh lifecycle state that already exists and adopts that exact state locally";
 //! R-ML2: the admin a mesh investigation creates is a node-admin joining a live mesh, which as successor

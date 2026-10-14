@@ -1,5 +1,5 @@
 //! node.primary.update and node.fabric-primary.update (the approved proposal
-//! rafka-v2 docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md, Part C; R-MT1) between
+//! docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md, Part C; R-MT1) between
 //! in-process node-admins over real Node RPC on op `0x21`. The holder of a seat is the row writer of
 //! its node-admin cohort: it pre-checks its successor, says "primary updating", cuts off its seat's
 //! writes (every issued one finished), writes the ONE committed row, then calls `PrimaryUpdate` on the successor, which

@@ -1,5 +1,5 @@
 //! Node-admin restart: product=mesh, feature=node-lifecycle, subfeature=admin-restart, rung=MM.
-//! Spec: rafka-v2 `docs/architecture/fabric-node-lifecycle-events-ops-gossip.md`, Master Event
+//! Spec: `docs/architecture/lifecycles/node-restart.md`, Master Event
 //! Matrix (restart: executing Mesh admin = owning mesh-admin; dissemination = own Mesh channel,
 //! then the backbone aggregate), §13, §17 "Restart Evidence".
 

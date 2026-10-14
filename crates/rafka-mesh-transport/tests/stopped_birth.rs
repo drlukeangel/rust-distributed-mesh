@@ -1,6 +1,6 @@
 //! i143.e12.s52 (rafka-v2 #3082), R-HB1 part 1: a heartbeat is liveness only and never ends a stop.
 //!
-//! The design (rafka-v2 docs/architecture/gossip.md §3.1, "Node-stopped lifecycle overlay";
+//! The design (docs/architecture/gossip.md §3.1, "Node-stopped lifecycle overlay";
 //! lifecycles/node-start.md step 2; lifecycles/states.md "Who sets each state"): after
 //! `node.stopped`, a heartbeat (`Digest`) of that birth is not recognised and is refused by name;
 //! only the mesh-primary's `node.joined` (node.start) or node.delete ends the stop. Own-mesh members

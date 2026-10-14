@@ -2,7 +2,7 @@
 //! earlier version than the one the receiver holds for its source, is ignored, once, in the gossip
 //! framework's receive path, over real gossip.
 //!
-//! The design (rafka-v2 docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md, R-RX3, Luke
+//! The design (docs/plans/rulings/i143-rulings-2026-10-12-rx-authz.md, R-RX3, Luke
 //! 2026-10-12): "One check in the gossip receive path, for every frame kind. A frame whose order key
 //! is older than ... the newest the receiver holds for the same source is ignored. Order keys already
 //! on the wire, so no new field: Members and MembersDelta: `published_at_rafka_ms` then

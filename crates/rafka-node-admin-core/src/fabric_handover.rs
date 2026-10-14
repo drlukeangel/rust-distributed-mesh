@@ -1,5 +1,5 @@
 //! node.primary.update and node.fabric-primary.update on op `0x21` (the approved proposal
-//! rafka-v2 docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md, Part C, Luke yes
+//! docs/plans/proposal/node-primary-update-fabric-mesh-and-node-type.md, Part C, Luke yes
 //! 2026-10-12): "One writer, one row, one point of no return." For the node-admin cohort the holder
 //! NA1 is its mesh's row writer (R-OW1, R14), so it writes the one committed row itself; the commander
 //! is the fabric-primary (a fabric-primary moving its own seats commands itself, having nothing above
