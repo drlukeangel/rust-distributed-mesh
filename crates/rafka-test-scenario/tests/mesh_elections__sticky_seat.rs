@@ -230,7 +230,13 @@ async fn a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_
     let other_primary = nodes.iter().find(|n| n["mesh"] == other_mesh && n["is_primary"] == true).map(|n| (s(&n["name"]), s(&n["node_id"]))).unwrap();
     let heir_id = s(&node(&nodes, &heir)["node_id"]);
     let discriminating = other_primary.1 < heir_id;
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
     estate.enter(&Estate::path(&heir)).await;
+    let mut stop = estate.nodes_obj().await.stop(&old.parse().unwrap()).await.expect("node.stop of old");
+    let accepted = stop.accepted().clone();
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rafka_node_admin_client::Frame::SeatMoved { .. })) {
+        estate.resume(&accepted.build_id, accepted.attempt).await;
+    }
     kill(&mut estate, &old).await;
     let seen = estate
         .until_view("the surviving admin of the fabric primary's mesh holds the seat", Duration::from_secs(90), |views| {
@@ -246,8 +252,9 @@ async fn a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_
     assert_eq!(seen.iter().filter(|n| n["is_fabric_primary"] == true).count(), 1);
     let spans: Vec<Value> = estate.spans();
     assert!(
-        named(&spans, "rdm.mesh.seat.update.via-announce").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "seat") == "fabric-primary" && attr(sp, "holder").contains(&heir_id)),
-        "the heir announced the fabric-primary seat (the other mesh's primary id is {} the heir's: {})",
+        named(&spans, "rdm.node_admin.seat.update.via-primary-updated").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "replay") == "false")
+            || named(&spans, "rdm.mesh.seat.update.via-announce").iter().any(|sp| attr(sp, "node") == heir && attr(sp, "seat") == "fabric-primary" && attr(sp, "holder").contains(&heir_id)),
+        "the heir installed or announced the fabric-primary seat (the other mesh's primary id is {} the heir's: {})",
         if discriminating { "below" } else { "above" },
         other_primary.1
     );

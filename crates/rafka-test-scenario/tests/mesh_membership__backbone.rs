@@ -242,7 +242,14 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
         .map(|n| s(&n["name"]))
         .collect();
     assert!(!survivors.is_empty(), "a live admin other than the fabric primary {fp_name}");
+    estate.until_fabric_ready(Duration::from_secs(120)).await;
+    estate.enter(&Estate::path(&survivors[0])).await;
     let lost_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+    let mut stop = estate.nodes_obj().await.stop(&fp_name.parse().unwrap()).await.expect("node.stop of fp_name");
+    let accepted = stop.accepted().clone();
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rafka_node_admin_client::Frame::SeatMoved { .. })) {
+        estate.resume(&accepted.build_id, accepted.attempt).await;
+    }
     if fp_name == "mesh1.admin.1" {
         estate.kill_bootstrap();
     } else {
@@ -250,7 +257,6 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     }
     let mut dead = dead;
     dead.insert(fp_name.clone(), now_ns());
-    estate.enter(&Estate::path(&survivors[0])).await;
     // The winner is read with the publisher, in one poll: until the lost
     // primary's mesh is heard again through its successor's aggregate, a
     // peer mesh's admin may briefly name itself in its own view (and, gated,
