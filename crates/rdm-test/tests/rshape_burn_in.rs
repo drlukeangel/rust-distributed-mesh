@@ -3025,8 +3025,10 @@ async fn await_edge(estate: &Estate, holder: &str, node_id: &str, new_inc: &str,
     }
 }
 
-/// A carried call (through `via`) to `node`, so `via` dials it and holds an edge; the reply names
-/// the birth that answered.
+/// A carried call (through `via`) to `node`; the reply names the birth that answered. The carrier
+/// keeps nothing of it: a Forward keeps no connection, no id, no row at the forwarder, and a
+/// carrier's Direct edge to the destination is its own fact, a connection it originated for traffic
+/// (connections.md §1 "Two words for a call through a middle node", §6, §8; R-CR6).
 fn carried_get(estate: &Estate, node: &Value, via: &str, key: &str) -> Call {
     let c = probe_call(estate, &["get", "--target", &format!("exact:{}", s(&node["node_id"])), "--via", &format!("path:{via}"), "--key", key]);
     assert_eq!((c.out["outcome"].as_str(), c.out["route"].as_str()), (Some("Reply"), Some("via-peer")), "carried call to {} through {via}: {}", node["name"], c.out);
@@ -3188,13 +3190,14 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
         (ckey, cval) = (a.traffic.ops[ci].0.key.clone(), a.traffic.ops[ci].0.value.clone());
         assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the canary was stored before the restart: {}", a.traffic.ops[ci].1.out);
     }
-    // A broker is dialed by its mesh's gateway first, so that gateway holds a pooled edge to this birth.
-    // The other mesh's gateway dials it too: a cross-mesh pooled edge to the same birth.
+    // A broker is originated to by its mesh's gateway first, so that gateway holds a Direct edge (its own
+    // connection, connections.md §1) to this birth. The other mesh's gateway originates to it too: a
+    // cross-mesh Direct edge to the same birth.
     let gx = format!("{}.gateway.1", MESHES.iter().find(|m| **m != mesh).unwrap());
     if kind == "broker" {
-        carried_get(&f.estate, &n, &gw, &ckey);
+        originate_op(f, a, &gw, &n, "before-restart");
         await_edge(&f.estate, &gw, &node_id, &inc, None).await;
-        carried_get(&f.estate, &n, &gx, &ckey);
+        originate_op(f, a, &gx, &n, "before-restart");
         await_edge(&f.estate, &gx, &node_id, &inc, None).await;
     }
     a.traffic.aim = matches!(kind.as_str(), "broker" | "gateway").then(|| node.to_string());
@@ -3234,28 +3237,28 @@ async fn restart_representative(f: &mut Formed, a: &mut Run, st: &Stable, node: 
         "broker" => {
             let carried = carried_get(&f.estate, &n2, &gw, &ckey);
             assert_eq!(carried.out["reply"]["result"], json!({"found": true, "value": cval}), "{}", carried.out);
-            let edge = await_edge(&f.estate, &gw, &node_id, &inc, None).await;
             let oi = originate_op(f, a, &gw, &n2, "after-restart");
+            let edge = await_edge(&f.estate, &gw, &node_id, &inc, None).await;
             let orig_trace = a.traffic.ops[oi].1.trace_id.clone();
             let orig_route = a.traffic.ops[oi].1.out["route"].clone();
             f.actions.push(action_row(&carried));
-            // The other mesh's gateway: its call over the projection reaches the birth the restart kept, and it
-            // holds an edge to that birth again.
+            // The other mesh's gateway: its call over the projection reaches the birth the restart kept, and
+            // what it originates holds a Direct edge to that birth again.
             let cross_carried = carried_get(&f.estate, &n2, &gx, &ckey);
-            let cross_edge_after = await_edge(&f.estate, &gx, &node_id, &inc, None).await;
             let xi = originate_op(f, a, &gx, &n2, "after-restart");
+            let cross_edge_after = await_edge(&f.estate, &gx, &node_id, &inc, None).await;
             let cross_orig_trace = a.traffic.ops[xi].1.trace_id.clone();
             f.actions.push(action_row(&cross_carried));
             json!({
                 "gateway": gw, "edge": edge, "carried_trace": carried.trace_id, "originated_trace": orig_trace, "originated_route": orig_route,
-                "cross_mesh_gateway": gx, "cross_mesh_edge_after_a_carried_call": cross_edge_after, "cross_mesh_carried_trace": cross_carried.trace_id, "cross_mesh_originated_trace": cross_orig_trace,
+                "cross_mesh_gateway": gx, "cross_mesh_edge_after_its_originated_call": cross_edge_after, "cross_mesh_carried_trace": cross_carried.trace_id, "cross_mesh_originated_trace": cross_orig_trace,
             })
         }
         "gateway" => {
             let broker = st2.nodes.iter().find(|x| x["name"] == format!("{mesh}.broker.1")).cloned().unwrap();
             let carried = carried_get(&f.estate, &broker, node, &format!("canary-of-{node}"));
-            let edge = await_edge(&f.estate, node, &s(&broker["node_id"]), &s(&broker["incarnation_id"]), None).await;
             let oi = originate_op(f, a, node, &broker, "after-restart");
+            let edge = await_edge(&f.estate, node, &s(&broker["node_id"]), &s(&broker["incarnation_id"]), None).await;
             let orig_trace = a.traffic.ops[oi].1.trace_id.clone();
             let orig_route = a.traffic.ops[oi].1.out["route"].clone();
             f.actions.push(action_row(&carried));
@@ -3494,7 +3497,7 @@ async fn retire_via_build(f: &mut Formed, a: &mut Run, st: &Stable, node: &str, 
     let (ckey, cval) = (a.traffic.ops[ci].0.key.clone(), a.traffic.ops[ci].0.value.clone());
     assert_eq!(a.traffic.ops[ci].1.out["reply"]["result"], json!({"stored": true}), "{node}: the canary was stored before the retire: {}", a.traffic.ops[ci].1.out);
     if kind == "broker" && gw != node {
-        carried_get(&f.estate, &n, &gw, &ckey);
+        originate_op(f, a, &gw, &n, "before-retire");
         await_edge(&f.estate, &gw, &node_id, &old_inc, None).await;
     }
     let refusal = refused_by_a_non_writer(f, a, st, node, how).await;
@@ -3937,9 +3940,9 @@ async fn replacement_run(cell: &str, shape: Shape) {
     let gi = op_to(&f, &mut a, &old, None, "to-retired", "after-replacement");
     assert_eq!(bucket(&a.traffic.ops[gi].1.out), Bucket::NotSent, "a call to the retired NodeId still sends nothing once its path.name has a successor: {}", a.traffic.ops[gi].1.out);
     let carried = carried_get(&f.estate, &born, &gw, &ckey);
+    let oi = originate_op(&f, &mut a, &gw, &born, "after-replacement");
     let edge_new = await_edge(&f.estate, &gw, &new_id, &new_inc, None).await;
     let edge_old_gone = await_no_edge(&f.estate, &gw, &old_id).await;
-    let oi = originate_op(&f, &mut a, &gw, &born, "after-replacement");
     let orig_trace = a.traffic.ops[oi].1.trace_id.clone();
     f.actions.push(action_row(&carried));
     let stale_toward_old = stale_facts_toward(&f.estate, &f, &old_id);
