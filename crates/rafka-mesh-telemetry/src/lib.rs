@@ -184,10 +184,28 @@ fn signal_url(base: &str, path: &str) -> String {
 }
 
 /// The HTTP client of both exporters: hyper, non-blocking, on the export runtime, with every request
-/// bounded by [`export::EXPORT_TIMEOUT`]. The exporter builders hold the timeout they are given
-/// but do not apply it to an HTTP request; the bound lives in the client.
-fn export_client() -> HyperClient {
-    HyperClient::with_default_connector(export::EXPORT_TIMEOUT, None)
+/// bounded by [`export::EXPORT_TIMEOUT`] and addressed to the exact signal URL `url` the caller gave
+/// (opentelemetry-otlp's `resolve_http_endpoint` otherwise overrides `with_endpoint` with
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` from the process environment).
+#[derive(Debug)]
+struct ExportClient {
+    inner: HyperClient,
+    uri: http::Uri,
+}
+
+#[async_trait::async_trait]
+impl opentelemetry_http::HttpClient for ExportClient {
+    async fn send(&self, mut request: http::Request<Vec<u8>>) -> Result<http::Response<opentelemetry_http::Bytes>, opentelemetry_http::HttpError> {
+        *request.uri_mut() = self.uri.clone();
+        self.inner.send(request).await
+    }
+}
+
+fn export_client(url: &str) -> ExportClient {
+    ExportClient {
+        inner: HyperClient::with_default_connector(export::EXPORT_TIMEOUT, None),
+        uri: url.parse().expect("valid OTLP signal URL"),
+    }
 }
 
 /// The OTLP span exporter: protobuf over HTTP to `<base>/v1/traces`, built on the export runtime.
@@ -196,7 +214,7 @@ fn build_exporter(endpoint: String) -> WatchedSpans<SpanExporter> {
     let url = signal_url(&endpoint, "/v1/traces");
     let inner = SpanExporter::builder()
         .with_http()
-        .with_http_client(export_client())
+        .with_http_client(export_client(&url))
         .with_protocol(Protocol::HttpBinary)
         .with_endpoint(url.clone())
         .build()
@@ -445,7 +463,7 @@ pub fn init_evidence_telemetry(service_name: &str) -> Option<TelemetryGuard> {
         let _export = export_rt.enter();
         // The log adapter's provider: every log line to the collector's log store, beside spans.
         let logs_url = signal_url(&endpoint, "/v1/logs");
-        match opentelemetry_otlp::LogExporter::builder().with_http().with_http_client(export_client()).with_protocol(Protocol::HttpBinary).with_endpoint(logs_url.clone()).build() {
+        match opentelemetry_otlp::LogExporter::builder().with_http().with_http_client(export_client(&logs_url)).with_protocol(Protocol::HttpBinary).with_endpoint(logs_url.clone()).build() {
             Ok(exporter) => {
                 logs = Some(
                     opentelemetry_sdk::logs::LoggerProvider::builder()
