@@ -1,6 +1,6 @@
 //! `rshape-broker`: the R-shape consumer's broker entry point. It names its role and nothing else.
 
-use rafka_node_base::{NodeKind, Role};
+use rdm_node::{NodeKind, Role};
 
 #[tokio::main]
 async fn main() {

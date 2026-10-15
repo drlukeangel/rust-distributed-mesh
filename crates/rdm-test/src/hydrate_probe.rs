@@ -7,7 +7,7 @@
 //!
 //! [`TESTKIT_OPS`]: rdm_core::catalog::TESTKIT_OPS
 
-use rdm_admin::app_hydration::{HookOutcome, HydrateBeforeReady, HydrateCtx, RetryOn};
+use rdm_node::app_hydration::{HookOutcome, HydrateBeforeReady, HydrateCtx, RetryOn};
 use rdm_transport::{CallOptions, HydrationGate, PeerContext, ServerBuilder};
 use rdm_core::catalog::OpOwner;
 use rdm_core::outcome::{MalformedKind, ReplyKind, RpcOutcome};
@@ -298,8 +298,8 @@ impl HydrateBeforeReady for TestHydrator {
             ctx.attempt,
             ctx.authority.accepted().map(|a| a.name.to_string()),
             match &ctx.authority {
-                rdm_admin::app_hydration::Authority::None(why) => Some(why.reason().to_string()),
-                rdm_admin::app_hydration::Authority::Accepted(_) => None,
+                rdm_node::app_hydration::Authority::None(why) => Some(why.reason().to_string()),
+                rdm_node::app_hydration::Authority::Accepted(_) => None,
             },
         ));
         let mode = self.mode.lock().unwrap().clone();

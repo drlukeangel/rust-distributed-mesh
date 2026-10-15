@@ -8,9 +8,9 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use rafka_admin_ui::admin::Admin;
 use rafka_admin_ui::control::{router, BuildEvents};
-use rafka_node_admin_client::BuildId;
-use rafka_node_admin_core::admin::{start_with, AdminConfig, Running};
-use rafka_node_admin_core::wiring::{FabricHooks, Wiring};
+use rdm_client::BuildId;
+use rdm_admin::admin::{start_with, AdminConfig, Running};
+use rdm_admin::wiring::{FabricHooks, Wiring};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -43,7 +43,7 @@ async fn node_admin(dir: &std::path::Path) -> (Running, Arc<Admin>) {
     let until = std::time::Instant::now() + Duration::from_secs(20);
     loop {
         match admin.fabric().await {
-            Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rafka_node_admin_client::ScopeStatus::ReadyForTraffic => break,
+            Ok(f) if f.fabric_primary.as_ref() == Some(&birth.name) && f.status == rdm_client::ScopeStatus::ReadyForTraffic => break,
             other => assert!(std::time::Instant::now() < until, "the Day-0 admin never named itself the fabric-primary: {other:?}"),
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

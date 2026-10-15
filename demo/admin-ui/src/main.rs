@@ -13,7 +13,7 @@ use rafka_admin_ui::control::{self, BuildEvents};
 use rafka_admin_ui::timeline::{Event, Evidence};
 use rafka_admin_ui::view;
 use rafka_admin_ui::admin::Admin;
-use rafka_node_admin_client::BuildId;
+use rdm_client::BuildId;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -202,7 +202,7 @@ async fn boot_trace(State(s): State<AppState>, Query(q): Query<BootQuery>) -> Re
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let _telemetry = rafka_mesh_telemetry::init_telemetry("rafka-admin-ui");
+    let _telemetry = rdm_transport::telemetry::init_telemetry("rafka-admin-ui");
     let bind = std::env::var("RDM_ADMIN_UI_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:19090".into());
     let static_dir = std::env::var("RDM_UI_STATIC_DIR").unwrap_or_else(|_| format!("{}/web/dist", env!("CARGO_MANIFEST_DIR")));
     let state = AppState {

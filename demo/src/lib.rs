@@ -6,10 +6,10 @@
 //! defines them. No opcode is allocated here.
 
 use anyhow::{anyhow, Result};
-use rafka_mesh_entity::connections::CarrierPolicy;
-use rafka_mesh_entity::NodeKind;
-use rafka_node_base::{compose, drain_deadline_from_env, launch_for, leave_linger_from_env, Oracles, Role};
-use rafka_node_rpc_testkit::{node, originate};
+use rdm_core::connections::CarrierPolicy;
+use rdm_core::NodeKind;
+use rdm_node::{drain_deadline_from_env, launch_for, leave_linger_from_env, Role};
+use rdm_test::{compose, node, originate, Oracles};
 use tracing::Instrument;
 
 /// The carrier policy of this shape: an originated call may travel over a Proxy whose carrier is a
@@ -27,7 +27,7 @@ pub fn serves_originate(role: Role) -> bool {
 /// serve, wait for the stop signal, drain, leave. `binary` names the process in telemetry and
 /// in its exit line.
 pub async fn run(role: Role, binary: &str) -> Result<()> {
-    let _telemetry = rafka_mesh_telemetry::init_evidence_telemetry(binary);
+    let _telemetry = rdm_transport::telemetry::init_evidence_telemetry(binary);
     let launch = launch_for(role)?;
     let boot = tracing::info_span!(
         "rdm.mesh.node.create.via-deployment",
@@ -37,7 +37,7 @@ pub async fn run(role: Role, binary: &str) -> Result<()> {
         kind = role.name(),
     );
     if let Ok(tp) = std::env::var("TRACEPARENT") {
-        rafka_mesh_telemetry::set_parent(&boot, &tp);
+        rdm_transport::telemetry::set_parent(&boot, &tp);
     }
     let oracles = Oracles::open(&launch)?;
     let originates = serves_originate(role);

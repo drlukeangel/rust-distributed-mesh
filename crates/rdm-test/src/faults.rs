@@ -194,8 +194,8 @@ mod tests {
 
 use async_trait::async_trait;
 use rdm_core::connections::{ConnectionIndex, NodeConnection};
-use rdm_admin::record_store::StorageError;
-use rdm_admin::storage::ConnectionsStorage;
+use rdm_node::record_store::StorageError;
+use rdm_node::storage::ConnectionsStorage;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The armed fault: how many index and history writes are still to be refused, and how many

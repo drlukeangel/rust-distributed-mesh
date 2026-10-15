@@ -1756,6 +1756,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce5d3ddc6d3fa000eb1536d85e147bfe31aacaba692ed6a876f95cb7c855be78"
 
 [[package]]
+name = "libyaml-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
+
+[[package]]
 name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2787,13 +2793,11 @@ dependencies = [
  "anyhow",
  "axum",
  "http-body-util",
- "rafka-chaos",
- "rafka-mesh-entity",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
- "rafka-node-admin-client",
- "rafka-node-admin-core",
- "rafka-node-rpc",
+ "rdm-admin",
+ "rdm-client",
+ "rdm-core",
+ "rdm-test",
+ "rdm-transport",
  "reqwest",
  "serde",
  "serde_json",
@@ -2802,184 +2806,6 @@ dependencies = [
  "tower-http",
  "tracing",
  "urlencoding",
-]
-
-[[package]]
-name = "rafka-chaos"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
-name = "rafka-mesh-entity"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "blake3",
- "hex",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "rafka-mesh-telemetry"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "async-trait",
- "futures-util",
- "http",
- "opentelemetry",
- "opentelemetry-http",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
- "opentelemetry_sdk",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-flame",
- "tracing-opentelemetry",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rafka-mesh-transport"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "anyhow",
- "blake3",
- "bytes",
- "futures-lite",
- "iroh",
- "iroh-gossip",
- "postcard",
- "rafka-mesh-entity",
- "rafka-mesh-telemetry",
- "serde",
- "serde_json",
- "sysinfo",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rafka-node-admin-client"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "iroh",
- "rafka-mesh-entity",
- "rafka-node-rpc",
- "rafka-node-rpc-contract",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rafka-node-admin-core"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "async-trait",
- "blake3",
- "bytes",
- "dashmap",
- "futures-lite",
- "futures-util",
- "hex",
- "iroh",
- "iroh-gossip",
- "libc",
- "rafka-mesh-entity",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
- "rafka-node-admin-client",
- "rafka-node-rpc",
- "rafka-node-rpc-contract",
- "rand 0.8.8",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rafka-node-base"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "anyhow",
- "iroh",
- "rafka-mesh-entity",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
- "rafka-node-admin-client",
- "rafka-node-rpc",
- "rafka-node-rpc-contract",
- "rafka-node-rpc-testkit",
- "serde",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rafka-node-rpc"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "anyhow",
- "async-trait",
- "iroh",
- "iroh-gossip",
- "rafka-mesh-entity",
- "rafka-mesh-telemetry",
- "rafka-node-rpc-contract",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "rafka-node-rpc-contract"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "postcard",
- "rafka-mesh-entity",
- "serde",
-]
-
-[[package]]
-name = "rafka-node-rpc-testkit"
-version = "0.1.0"
-source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=c51e232f27499eb2a3f4cb68be181ae65dd0fdc6#c51e232f27499eb2a3f4cb68be181ae65dd0fdc6"
-dependencies = [
- "anyhow",
- "async-trait",
- "hex",
- "iroh",
- "iroh-gossip",
- "rafka-mesh-entity",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
- "rafka-node-admin-client",
- "rafka-node-admin-core",
- "rafka-node-rpc",
- "rafka-node-rpc-contract",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -3036,6 +2862,137 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
 dependencies = [
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "rdm-admin"
+version = "0.1.0"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=3446ca7c135e3888f8a1fd14ce39aa38138e1b74#3446ca7c135e3888f8a1fd14ce39aa38138e1b74"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "bytes",
+ "dashmap",
+ "futures-lite",
+ "futures-util",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "libc",
+ "rand 0.8.8",
+ "rdm-client",
+ "rdm-core",
+ "rdm-node",
+ "rdm-transport",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rdm-client"
+version = "0.1.0"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=3446ca7c135e3888f8a1fd14ce39aa38138e1b74#3446ca7c135e3888f8a1fd14ce39aa38138e1b74"
+dependencies = [
+ "iroh",
+ "rdm-core",
+ "rdm-transport",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rdm-core"
+version = "0.1.0"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=3446ca7c135e3888f8a1fd14ce39aa38138e1b74#3446ca7c135e3888f8a1fd14ce39aa38138e1b74"
+dependencies = [
+ "blake3",
+ "hex",
+ "postcard",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+]
+
+[[package]]
+name = "rdm-node"
+version = "0.1.0"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=3446ca7c135e3888f8a1fd14ce39aa38138e1b74#3446ca7c135e3888f8a1fd14ce39aa38138e1b74"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "rdm-client",
+ "rdm-core",
+ "rdm-transport",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rdm-test"
+version = "0.1.0"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=3446ca7c135e3888f8a1fd14ce39aa38138e1b74#3446ca7c135e3888f8a1fd14ce39aa38138e1b74"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "libc",
+ "rdm-admin",
+ "rdm-client",
+ "rdm-core",
+ "rdm-node",
+ "rdm-transport",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "yaml_serde",
+]
+
+[[package]]
+name = "rdm-transport"
+version = "0.1.0"
+source = "git+https://github.com/drlukeangel/rust-distributed-mesh?rev=3446ca7c135e3888f8a1fd14ce39aa38138e1b74#3446ca7c135e3888f8a1fd14ce39aa38138e1b74"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "bytes",
+ "futures-lite",
+ "futures-util",
+ "http",
+ "iroh",
+ "iroh-gossip",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
+ "postcard",
+ "rdm-core",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-flame",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "unsigned-varint",
 ]
 
 [[package]]
@@ -3126,12 +3083,11 @@ name = "rshape-consumer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "rafka-mesh-entity",
- "rafka-mesh-telemetry",
- "rafka-mesh-transport",
- "rafka-node-admin-core",
- "rafka-node-base",
- "rafka-node-rpc-testkit",
+ "rdm-admin",
+ "rdm-core",
+ "rdm-node",
+ "rdm-test",
+ "rdm-transport",
  "tokio",
  "tracing",
 ]
@@ -4086,6 +4042,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unsigned-varint"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb066959b24b5196ae73cb057f45598450d2c5f71460e98c49b738086eff9c06"
+
+[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4628,6 +4590,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
 dependencies = [
  "xml-rs",
+]
+
+[[package]]
+name = "yaml_serde"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33b729a08a9a6be689bbad3e2bf8015926db54b6622cc89c3a5f7dc174b9e918"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "libyaml-rs",
+ "ryu",
+ "serde",
 ]
 
 [[package]]

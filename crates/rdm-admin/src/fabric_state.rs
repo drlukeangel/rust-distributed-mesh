@@ -188,7 +188,7 @@ pub struct RoundBook {
 }
 
 fn deliverable(n: &Node) -> bool {
-    n.status.is_live() && n.incarnation_id.is_some()
+    matches!(n.status, NodeStatus::ReadyForTraffic | NodeStatus::Draining) && n.incarnation_id.is_some()
 }
 
 impl RoundBook {
@@ -560,12 +560,27 @@ mod tests {
     #[test]
     fn an_undelivered_command_is_not_sent_again_by_reading_the_checklist_again() {
         for typed in [false, true] {
-            let (book, k, n, _) = undelivered(typed, NodeStatus::Pending);
+            let (book, k, n, _) = undelivered(typed, NodeStatus::ReadyForTraffic);
             let view = view_of(vec![n]);
             for _ in 0..3 {
                 assert!(book.take_due(&k, &view).is_empty(), "typed={typed}: nothing happened to the target: the command is not sent again");
             }
         }
+    }
+
+    /// CONTRACT (R-S1, R-S2): a birth in `Pending` (still inside `node.start`) is not commanded by a
+    /// round until it reaches `ReadyForTraffic`.
+    #[test]
+    fn a_pending_birth_is_not_commanded_until_it_reaches_ready_for_traffic() {
+        let (fabric, inc) = (FabricId::mint(), IncarnationId::mint());
+        let book = RoundBook::default();
+        let k = key("66h8qrqvaajk", 1, &fabric);
+        let n = target(&inc, NodeStatus::Pending);
+        book.open(&k);
+        book.expect(&k, planned(&n.node_id, &inc, "mesh2.admin.1"), Vec::new());
+        assert!(book.take_due(&k, &view_of(vec![n.clone()])).is_empty(), "a Pending birth is not commanded before node.start completes");
+        let ready = Node { status: NodeStatus::ReadyForTraffic, ..n };
+        assert_eq!(book.take_due(&k, &view_of(vec![ready])).iter().map(|d| d.2).collect::<Vec<_>>(), ["first"], "commanded once ReadyForTraffic");
     }
 
     /// CONTRACT (R-S2): a command that never got a reply is sent again when the target becomes reachable
@@ -586,7 +601,7 @@ mod tests {
     /// state changed, and when its destination moved, and not otherwise.
     #[test]
     fn an_undelivered_command_is_sent_again_when_the_targets_state_or_destination_changed() {
-        let (book, k, n, inc) = undelivered(true, NodeStatus::Pending);
+        let (book, k, n, inc) = undelivered(true, NodeStatus::Draining);
         assert!(book.take_due(&k, &view_of(vec![n.clone()])).is_empty());
         let ready = Node { status: NodeStatus::ReadyForTraffic, ..n.clone() };
         assert_eq!(book.take_due(&k, &view_of(vec![ready])).iter().map(|d| d.2).collect::<Vec<_>>(), ["state-changed"], "its state changed");

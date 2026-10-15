@@ -17,15 +17,14 @@ description = "Business-empty R-shape consumer: four node entry points composed 
 members = ["admin-ui"]
 
 [dependencies]
-rafka-node-base = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "c51e232f27499eb2a3f4cb68be181ae65dd0fdc6" }
-rafka-node-admin-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "c51e232f27499eb2a3f4cb68be181ae65dd0fdc6" }
-rafka-mesh-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "c51e232f27499eb2a3f4cb68be181ae65dd0fdc6" }
-rafka-mesh-telemetry = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "c51e232f27499eb2a3f4cb68be181ae65dd0fdc6" }
+rdm-node = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "3446ca7c135e3888f8a1fd14ce39aa38138e1b74" }
+rdm-admin = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "3446ca7c135e3888f8a1fd14ce39aa38138e1b74" }
+rdm-transport = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "3446ca7c135e3888f8a1fd14ce39aa38138e1b74" }
 # The carrier policy this shape declares for the originate door (a gateway carries).
-rafka-mesh-entity = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "c51e232f27499eb2a3f4cb68be181ae65dd0fdc6" }
+rdm-core = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "3446ca7c135e3888f8a1fd14ce39aa38138e1b74" }
 # Qualification-only: the testkit protocols 0x70-0x73 (proof store, resolve probe, declare probe,
 # originate) the mock roles serve, and the process bring-up they act through.
-rafka-node-rpc-testkit = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "c51e232f27499eb2a3f4cb68be181ae65dd0fdc6" }
+rdm-test = { git = "https://github.com/drlukeangel/rust-distributed-mesh", rev = "3446ca7c135e3888f8a1fd14ce39aa38138e1b74" }
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 anyhow = "1"

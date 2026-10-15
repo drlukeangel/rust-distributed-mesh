@@ -16,7 +16,8 @@ use std::path::Path;
 const FORBIDDEN: &[(&str, &str)] = &[
     ("ProcessTable", "the process table is node-admin lifecycle"),
     ("process_table", "the process table is node-admin lifecycle"),
-    ("rafka_node_admin_core", "admin-ui talks to node-admin over rafka-node-admin-client only"),
+    ("rafka_node_admin_core", "admin-ui talks to node-admin over rdm-client only"),
+    ("rdm_admin", "admin-ui talks to node-admin over rdm-client only"),
     ("libc::kill", "admin-ui never signals a runtime"),
     ("start_kill", "admin-ui never signals a runtime"),
     (".kill(", "admin-ui never signals a runtime"),
@@ -31,11 +32,17 @@ pub fn lifecycle_violations(root: &Path) -> Vec<String> {
         Ok(m) => {
             // Runtime dependencies only: a test may serve the real control API.
             let deps = dependencies_section(&m);
-            if deps.iter().any(|l| l.trim_start().starts_with("rafka-node-admin-core")) {
-                out.push(format!("{}: depends on rafka-node-admin-core; use rafka-node-admin-client", manifest.display()));
+            if deps.iter().any(|l| {
+                let t = l.trim_start();
+                t.starts_with("rafka-node-admin-core") || t.starts_with("rdm-admin")
+            }) {
+                out.push(format!("{}: depends on rafka-node-admin-core/rdm-admin; use rdm-client", manifest.display()));
             }
-            if !deps.iter().any(|l| l.trim_start().starts_with("rafka-node-admin-client")) {
-                out.push(format!("{}: does not depend on rafka-node-admin-client", manifest.display()));
+            if !deps.iter().any(|l| {
+                let t = l.trim_start();
+                t.starts_with("rafka-node-admin-client") || t.starts_with("rdm-client")
+            }) {
+                out.push(format!("{}: does not depend on rafka-node-admin-client/rdm-client", manifest.display()));
             }
         }
         Err(e) => out.push(format!("{}: {e}", manifest.display())),
@@ -52,7 +59,7 @@ pub fn lifecycle_violations(root: &Path) -> Vec<String> {
                     out.push(format!("{}:{}: `{needle}`: {why}", f.display(), n + 1));
                 }
             }
-            if code.contains("rafka_chaos") && f.file_name().and_then(|n| n.to_str()) != Some("chaos.rs") {
+            if (code.contains("rafka_chaos") || code.contains("rdm_test")) && f.file_name().and_then(|n| n.to_str()) != Some("chaos.rs") {
                 out.push(format!("{}:{}: names the chaos kit outside chaos.rs; faults go through that one door", f.display(), n + 1));
             }
             if code.contains("Command::new") {

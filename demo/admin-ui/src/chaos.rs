@@ -10,8 +10,8 @@
 //! name before the kit is asked. There is no action here that touches more than one node's
 //! runtime, and none that takes every node-admin down.
 
-use rafka_chaos::netfault::Partition;
-use rafka_chaos::process_faults::{ExactRuntime, Fault};
+use rdm_test::netfault::Partition;
+use rdm_test::process_faults::{ExactRuntime, Fault};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;

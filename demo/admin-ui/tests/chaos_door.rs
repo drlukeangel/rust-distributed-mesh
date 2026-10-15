@@ -4,7 +4,7 @@
 #![cfg(target_os = "linux")]
 use rafka_admin_ui::chaos::{Chaos, NodeFacts, FABRIC_PRIMARY_REFUSAL};
 use serde_json::json;
-use rafka_chaos::process_faults::{local_control_domain, proc_state, start_token};
+use rdm_test::process_faults::{local_control_domain, proc_state, start_token};
 use std::process::{Command, Stdio};
 
 /// A sleeper with a published runtime record in a fresh data dir.

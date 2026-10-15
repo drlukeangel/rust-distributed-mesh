@@ -2,8 +2,8 @@
 //! (rdm-crate-and-test-layout.md §2), so the UI enters at the birth a node-admin printed at start
 //! (`RDM_NODE_ADMIN_BIRTH`, the JSON after `RDM_NODE_BIRTH=`) and calls the typed objects there.
 
-use rafka_mesh_entity::{NodeKind, PathName};
-use rafka_node_admin_client::{
+use rdm_core::{NodeKind, PathName};
+use rdm_client::{
     birth_of_view, Accepted, BuildCarrier, BuildId, BuildReceipts, BuildSpec, Builds, CallEnd, Change, ConnectionsView, ExactBirth, FabricDesired, FabricView, Fabrics,
     MeshDesired, MeshNode, NodeSelector, NodeSpec, NodeView, Nodes, Peers,
 };
@@ -58,7 +58,7 @@ impl Admin {
     /// `node.connections.get` of `n`'s exact birth.
     pub async fn connections(&self, n: &NodeView) -> Option<Result<ConnectionsView, CallEnd>> {
         let incarnation = n.incarnation_id.clone()?;
-        let birth = ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation };
+        let birth = ExactBirth { target: rdm_transport::NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation };
         Some(Nodes::new(self.carrier()).connections_get(&birth).await)
     }
 

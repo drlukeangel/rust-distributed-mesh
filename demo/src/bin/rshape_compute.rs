@@ -1,6 +1,6 @@
 //! `rshape-compute`: the R-shape consumer's compute entry point. It names its role and nothing else.
 
-use rafka_node_base::{NodeKind, Role};
+use rdm_node::{NodeKind, Role};
 
 #[tokio::main]
 async fn main() {

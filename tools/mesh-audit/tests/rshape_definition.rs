@@ -107,7 +107,7 @@ fn check_manifest(toml: &str) -> (Vec<String>, BTreeSet<String>) {
         if spec.contains("path =") || spec.contains("path=") {
             v.push(format!("rshape-consumer-path-dependency: `{name}` is a path dependency"));
         }
-        let is_rdm_name = name.starts_with("rafka-");
+        let is_rdm_name = name.starts_with("rdm-") || name.starts_with("rafka-");
         if is_rdm_name && !APPROVED_RDM.contains(&name) {
             v.push(format!("rshape-consumer-business-dependency: `{name}` is not an approved RDM import"));
         }
@@ -155,7 +155,7 @@ fn check_lock(lock: &str, rev: &str) -> Vec<String> {
         } else if let Some(n) = attr(line, "name").filter(|_| line.starts_with("name = ")) {
             name = n.to_string();
         } else if let Some(src) = attr(line, "source").filter(|_| line.starts_with("source = ")) {
-            if name.starts_with("rafka-") {
+            if name.starts_with("rdm-") || name.starts_with("rafka-") {
                 seen_rdm += 1;
                 if src != want {
                     v.push(format!("rshape-consumer-lock-rev-mismatch: `{name}` locks {src}, the manifest pins {want}"));
@@ -225,6 +225,11 @@ fn check_sources(files: &[(String, String)]) -> Vec<String> {
                     if let Some(krate) = word.strip_prefix("rafka_") {
                         let pkg = format!("rafka-{}", krate.replace('_', "-"));
                         if pkg != "rafka-admin-ui" && !APPROVED_RDM.contains(&pkg.as_str()) {
+                            v.push(format!("rshape-consumer-business-dependency: {path}:{} names crate `{pkg}`", i + 1));
+                        }
+                    } else if let Some(krate) = word.strip_prefix("rdm_") {
+                        let pkg = format!("rdm-{}", krate.replace('_', "-"));
+                        if !APPROVED_RDM.contains(&pkg.as_str()) {
                             v.push(format!("rshape-consumer-business-dependency: {path}:{} names crate `{pkg}`", i + 1));
                         }
                     }
@@ -340,15 +345,15 @@ fn rshape_consumer_imports_exact_candidate_without_private_paths() {
     assert!(clean.is_empty(), "the consumer fixture breaks its import rules:\n{}", clean.join("\n"));
 
     // Every rule fails, by name, on a planted violation.
-    let dep = format!("rafka-node-base = {{ git = \"{RDM_URL}\", rev = \"{rev}\" }}");
-    assert!(toml.contains(&dep), "the plant anchors on the node-base dependency line");
+    let dep = format!("rdm-node = {{ git = \"{RDM_URL}\", rev = \"{rev}\" }}");
+    assert!(toml.contains(&dep), "the plant anchors on the rdm-node dependency line");
     let mut planted: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut plant = |rule: &'static str, what: &'static str, v: Vec<String>| {
         assert_names(rule, &v, what);
         planted.entry(rule).or_insert_with(Vec::new).push(what);
     };
-    plant("rshape-consumer-path-dependency", "a path dependency into the checkout", check_manifest(&toml.replace(&dep, "rafka-node-base = { path = \"../../crates/rafka-node-base\" }")).0);
-    plant("rshape-consumer-patch-or-replace", "a [patch] shortcut", check_manifest(&format!("{toml}\n[patch.\"{RDM_URL}\"]\nrafka-node-base = {{ path = \"/x\" }}\n")).0);
+    plant("rshape-consumer-path-dependency", "a path dependency into the checkout", check_manifest(&toml.replace(&dep, "rdm-node = { path = \"../../crates/rdm-node\" }")).0);
+    plant("rshape-consumer-patch-or-replace", "a [patch] shortcut", check_manifest(&format!("{toml}\n[patch.\"{RDM_URL}\"]\nrdm-node = {{ path = \"/x\" }}\n")).0);
     plant("rshape-consumer-floating-dependency", "a branch dependency", check_manifest(&toml.replace(&format!("rev = \"{rev}\""), "branch = \"main\"")).0);
     plant("rshape-consumer-business-dependency", "a Rafka business crate", check_manifest(&toml.replace("[dependencies]\n", &format!("[dependencies]\nrafka-entity-topics-record = {{ git = \"{RDM_URL}\", rev = \"{rev}\" }}\n"))).0);
     plant("rshape-consumer-wrong-source", "a foreign git source", check_manifest(&toml.replace(RDM_URL, "https://github.com/drlukeangel/rafka-v2")).0);
@@ -369,14 +374,14 @@ fn rshape_consumer_imports_exact_candidate_without_private_paths() {
     // nothing else. The planted receipts fail by name either way.
     let good_meta = json!({"packages": [
         {"name": "rshape-consumer", "source": null, "manifest_path": "/w/Cargo.toml"},
-        {"name": "rafka-node-base", "source": format!("git+{RDM_URL}?rev={rev}#{rev}")}]});
+        {"name": "rdm-node", "source": format!("git+{RDM_URL}?rev={rev}#{rev}")}]});
     let bins: serde_json::Map<String, Value> = BINS.iter().map(|b| (b.to_string(), json!("a".repeat(64)))).collect();
     let good_manifest = json!({"candidate_sha": rev, "binaries": bins});
     assert!(check_build_receipt(&good_meta, &good_manifest).is_empty(), "a clean receipt passes");
     let other = "3".repeat(40);
-    let moved = json!({"packages": [{"name": "rafka-node-base", "source": format!("git+{RDM_URL}?rev={other}#{other}")}]});
+    let moved = json!({"packages": [{"name": "rdm-node", "source": format!("git+{RDM_URL}?rev={other}#{other}")}]});
     plant("rshape-consumer-receipt-rev-mismatch", "a package at another rev", check_build_receipt(&moved, &good_manifest));
-    let pathpkg = json!({"packages": [{"name": "rafka-node-base", "source": null, "manifest_path": "/checkout/crates/rafka-node-base/Cargo.toml"}]});
+    let pathpkg = json!({"packages": [{"name": "rdm-node", "source": null, "manifest_path": "/checkout/crates/rdm-node/Cargo.toml"}]});
     plant("rshape-consumer-path-dependency", "a path package in metadata", check_build_receipt(&pathpkg, &good_manifest));
     let built = root().join("target/i143-rshape/consumer-build");
     let receipt_checked = if built.join("metadata.json").exists() && built.join("manifest.json").exists() {

@@ -3,7 +3,7 @@
 
 use crate::chaos::NodeFacts;
 use crate::admin::Admin;
-use rafka_node_admin_client::{BuildId, CallEnd};
+use rdm_client::{BuildId, CallEnd};
 use serde_json::{json, Value};
 
 fn text(v: &Value, k: &str) -> Option<String> {
@@ -13,9 +13,9 @@ fn text(v: &Value, k: &str) -> Option<String> {
 /// The seat a node holds, as the tabs label it. "mesh primary" is the node-admin cohort's primary
 /// only; the fabric-primary is that cohort's primary of its own mesh as well.
 pub fn seat_label(kind: &str, is_primary: bool, is_fabric_primary: bool) -> &'static str {
-    match (kind, is_fabric_primary, is_primary) {
-        (_, true, _) => "fabric primary · mesh primary",
-        ("node_admin", false, true) => "mesh primary",
+    match (kind, is_primary, is_fabric_primary) {
+        (_, _, true) => "fabric primary · mesh primary",
+        ("node_admin", true, false) => "mesh primary",
         _ => "",
     }
 }
@@ -77,7 +77,7 @@ pub async fn overview(admin: &Admin) -> Value {
 }
 
 /// A Build's header as the tabs draw it.
-fn receipts(b: &rafka_node_admin_client::BuildReceipts) -> Value {
+fn receipts(b: &rdm_client::BuildReceipts) -> Value {
     json!({ "build_id": b.build_id.to_string(), "phase": format!("{:?}", b.phase), "attempt": b.attempt, "reason": b.reason, "executor": b.executor, "last_failure": b.last_failure, "steps": b.steps.len() })
 }
 
@@ -104,7 +104,7 @@ pub async fn topology(admin: &Admin) -> Result<Value, CallEnd> {
         .collect();
     let mut edges: Vec<Value> = Vec::new();
     let mut errors = Vec::new();
-    for n in views.iter().filter(|n| n.kind == rafka_mesh_entity::NodeKind::NodeAdmin) {
+    for n in views.iter().filter(|n| n.kind == rdm_core::NodeKind::NodeAdmin) {
         match admin.connections(n).await {
             Some(Ok(c)) => {
                 let by = n.name.to_string();

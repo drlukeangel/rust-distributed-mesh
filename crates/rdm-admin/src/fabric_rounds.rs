@@ -451,11 +451,14 @@ impl FabricRounds {
     /// (`Topology::mesh_unready` decides it); the nodes behind a mesh that is not ready are named
     /// from that same function.
     fn entry_blockers(&self, view: &Topology, accepted: Option<&FabricTopology>) -> Vec<Missing> {
-        let meshes: Vec<String> = match accepted {
-            Some(t) => t.meshes.keys().cloned().collect(),
-            None => view.meshes.iter().map(|m| m.name.clone()).collect(),
+        let (meshes, planned): (Vec<String>, std::collections::BTreeMap<String, std::collections::BTreeSet<PathName>>) = match accepted {
+            Some(t) => (
+                t.meshes.keys().cloned().collect(),
+                t.meshes.iter().map(|(m, mt)| (m.clone(), mt.nodes.clone())).collect(),
+            ),
+            None => (view.meshes.iter().map(|m| m.name.clone()).collect(), self.env.records.planned()),
         };
-        let mut out = mesh_blockers(view, &meshes, &self.env.records.planned());
+        let mut out = mesh_blockers(view, &meshes, &planned);
         let primaries: Vec<(String, Option<IncarnationId>, bool)> =
             meshes.iter().map(|m| { let p = view.cohort_primary(m, NodeKind::NodeAdmin); (m.clone(), p.and_then(|n| n.incarnation_id.clone()), p.is_some_and(|n| n.node_id == self.env.node_id)) }).collect();
         let reports = crate::round::reports_of(&self.env.records.declared.lock().unwrap(), view, meshes.iter().map(String::as_str));
@@ -974,10 +977,13 @@ fn mesh_blockers(view: &Topology, meshes: &[String], planned: &std::collections:
     let mut out = Vec::new();
     for mesh in meshes {
         match view.meshes.iter().find(|m| &m.name == mesh) {
-            Some(m) if m.status == crate::model::ScopeStatus::ReadyForTraffic => {}
-            Some(_) => {
+            Some(m) => {
                 let why = view.mesh_unready(mesh, planned.get(mesh));
-                out.extend(if why.is_empty() { vec![Missing { who: mesh.clone(), why: "not-ready" }] } else { why });
+                if !why.is_empty() {
+                    out.extend(why);
+                } else if m.status != crate::model::ScopeStatus::ReadyForTraffic {
+                    out.push(Missing { who: mesh.clone(), why: "not-ready" });
+                }
             }
             None => out.push(Missing { who: mesh.clone(), why: "no-mesh" }),
         }

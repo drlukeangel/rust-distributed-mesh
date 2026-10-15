@@ -73,7 +73,7 @@ fn clean_fixture_passes() {
         &[
             ("rdm-core", NONE),
             ("rdm-client", &[("rdm-core", "")]),
-            ("rafka-chaos", &[("rdm-client", "")]),
+            ("rdm-test", &[("rdm-client", "")]),
         ],
         &[],
     );
@@ -143,21 +143,21 @@ fn rule3_mesh_entity_on_application_ef_fails() {
 #[test]
 fn rule4_chaos_on_node_admin_core_fails() {
     let f = Fixture::new(
-        &[("rafka-chaos", &[("rafka-node-admin-core", ""), ("rdm-client", "")]), ("rafka-node-admin-core", NONE), ("rdm-client", NONE)],
+        &[("rdm-test", &[("rafka-node-admin-core", ""), ("rdm-client", "")]), ("rafka-node-admin-core", NONE), ("rdm-client", NONE)],
         &[],
     );
     assert_eq!(
         check(&f),
-        vec![Violation::PrivateInterface { package: "rafka-chaos".into(), dependency: "rafka-node-admin-core".into() }]
+        vec![Violation::PrivateInterface { package: "rdm-test".into(), dependency: "rafka-node-admin-core".into() }]
     );
 }
 
 #[test]
 fn rule4_scenario_on_node_base_fails() {
-    let f = Fixture::new(&[("rafka-test-scenario", &[("rafka-node-base", "")]), ("rafka-node-base", NONE)], &[]);
+    let f = Fixture::new(&[("rdm-test", &[("rafka-node-base", "")]), ("rafka-node-base", NONE)], &[]);
     assert_eq!(
         check(&f),
-        vec![Violation::PrivateInterface { package: "rafka-test-scenario".into(), dependency: "rafka-node-base".into() }]
+        vec![Violation::PrivateInterface { package: "rdm-test".into(), dependency: "rafka-node-base".into() }]
     );
 }
 

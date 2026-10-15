@@ -394,7 +394,12 @@ where
         if let Some(v) = check().await {
             return v;
         }
-        assert!(Instant::now() < deadline, "timed out after {within:?} waiting for: {what}");
+        if Instant::now() >= deadline {
+            if let Some(v) = check().await {
+                return v;
+            }
+            panic!("timed out after {within:?} waiting for: {what}");
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
@@ -412,7 +417,12 @@ where
             Ok(v) => return v,
             Err(seen) => seen,
         };
-        assert!(Instant::now() < deadline, "timed out after {within:?} waiting for: {what}; last seen: {last}");
+        if Instant::now() >= deadline {
+            if let Ok(v) = check().await {
+                return v;
+            }
+            panic!("timed out after {within:?} waiting for: {what}; last seen: {last}");
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }

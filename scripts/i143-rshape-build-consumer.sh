@@ -59,6 +59,9 @@ materialize_and_build() {
     if [ "$FIXTURE_REV" != "$CANDIDATE" ]; then
         sed -i "s/$FIXTURE_REV/$CANDIDATE/g" "$WORKSPACE/Cargo.toml" "$WORKSPACE/admin-ui/Cargo.toml" "$WORKSPACE/Cargo.lock" || return 1
     fi
+    for db in "${CARGO_HOME:-$HOME/.cargo}"/git/db/rust-distributed-mesh-*; do
+        [ -d "$db" ] && git -C "$db" fetch -q "$ROOT" "+$CANDIDATE:refs/commit/$CANDIDATE" 2>/dev/null || true
+    done
     cargo build --locked --manifest-path "$WORKSPACE/Cargo.toml" --workspace --bins || return 1
     # The admin UI's own tests (its flows run against node-admin's real control router).
     cargo test --locked --manifest-path "$WORKSPACE/Cargo.toml" -p rafka-admin-ui

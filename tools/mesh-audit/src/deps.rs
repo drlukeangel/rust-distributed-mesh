@@ -35,9 +35,7 @@ pub const GENERIC_PACKAGES: &[&str] = &[
     "rdm-client",
     "rdm-node",
     "rdm-test",
-    "rafka-test-scenario",
     "rafka-node-rpc-testkit",
-    "rafka-chaos",
     "rafka-mesh-telemetry",
 ];
 
@@ -45,18 +43,17 @@ pub const CONTRACT: &str = "rdm-core";
 pub const MESH_ENTITY: &str = "rdm-core";
 
 /// Crates that may only reach RDM through public control/probe interfaces.
-pub const PUBLIC_INTERFACE_CONSUMERS: &[&str] = &["rafka-test-scenario", "rafka-chaos"];
+pub const PUBLIC_INTERFACE_CONSUMERS: &[&str] = &["rdm-test"];
 
 /// The public control/probe interfaces those crates may depend on.
 pub const PUBLIC_INTERFACES: &[&str] = &[
-    "rafka-chaos",
+    "rdm-admin",
     "rdm-client",
     "rdm-node",
     "rdm-core",
     "rdm-transport",
     "rdm-test",
     "rafka-node-rpc-testkit",
-    "rafka-test-scenario",
     "rafka-mesh-telemetry",
 ];
 

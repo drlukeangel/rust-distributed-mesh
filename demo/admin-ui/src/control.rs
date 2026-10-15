@@ -18,9 +18,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, post};
 use axum::{Json, Router};
-use rafka_mesh_entity::{NodeKind, PathName};
+use rdm_core::{NodeKind, PathName};
 use crate::admin::Admin;
-use rafka_node_admin_client::{Accepted, BuildId, CallEnd, FabricDesired, MeshDesired};
+use rdm_client::{Accepted, BuildId, CallEnd, FabricDesired, MeshDesired};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -133,7 +133,7 @@ async fn bootstrap(State(c): State<Control>) -> Response {
         Ok(f) => f.name,
         Err(e) => return answer(&c, "bootstrap", Err(e), None, None),
     };
-    let desired = FabricDesired { fabric, meshes: vec![MeshDesired::of("mesh1", [(rafka_mesh_entity::NodeKind::NodeAdmin, 2), (rafka_mesh_entity::NodeKind::RpcNode, 3)])] };
+    let desired = FabricDesired { fabric, meshes: vec![MeshDesired::of("mesh1", [(rdm_core::NodeKind::NodeAdmin, 2), (rdm_core::NodeKind::RpcNode, 3)])] };
     let r = admin.build_fabric(desired).await;
     answer(&c, "bootstrap", r, None, Some("mesh1"))
 }

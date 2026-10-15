@@ -658,6 +658,9 @@ impl crate::workflows::node_start::AfterHook for AdminFirstStart {
         // in this admin's view as the maker knew it, until membership or the sweep says more. A fabric
         // primary this admin becomes then never plans from an empty view.
         for n in map.iter().filter(|n| n.node_id != self.me_id && n.transition.is_none()) {
+            if let Some(res) = n.resolved() {
+                self.entry.resolver.apply(res, None);
+            }
             self.records.publish(n.as_node(if n.ready { NodeStatus::ReadyForTraffic } else { NodeStatus::PendingReconnect }, self.provider));
         }
         // The maker's stored ids are its meshes' rows on the shared root, written by each mesh's primary:
