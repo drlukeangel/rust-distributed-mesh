@@ -129,7 +129,13 @@ impl Estate {
     /// `node.get` of every node of every mesh `admin` holds, as that admin's view holds them, `None`
     /// when it does not answer for this Fabric within 2 s.
     pub async fn node_views_at(&self, admin: &PathName) -> Option<Vec<NodeView>> {
-        node_views_of(self.peers().await.as_ref(), admin, &self.fabric_id).await
+        let peers = self.peers().await;
+        let views = node_views_of(peers.as_ref(), admin, &self.fabric_id).await?;
+        // What the view lists is reachable from here on: a node created again at a path.name (a new node
+        // id, as a retired admin's successor is) is dialled as the view names it, never by the id the
+        // path held before.
+        self.note(&peers, &views);
+        Some(views)
     }
 
     /// Forget the handover of the entry admin: the next call makes it again, reading the views of every
