@@ -10,7 +10,7 @@
 //! 3. NoActiveRoute: `NotSent`, no connection opened, nothing served.
 //! 4. Selecting the other broker executes that broker; the first broker's store is untouched.
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;

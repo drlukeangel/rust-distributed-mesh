@@ -26,7 +26,7 @@ use crate::node_rows::{Moved, RenameRefused};
 use crate::storage::NodesStorage;
 use crate::topology::Topology;
 use rdm_core::ConnectionId;
-use rafka_node_admin_client::{ExactBirth, NodeRpc, Traffic};
+use rdm_client::{ExactBirth, NodeRpc, Traffic};
 use rafka_node_rpc::{CallOptions, NodeTarget, RouteChoice};
 use rdm_core::status::{NotAuthority, StatusReply, StatusRequest};
 use tokio::sync::RwLock;

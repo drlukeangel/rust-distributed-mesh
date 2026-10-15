@@ -17,7 +17,7 @@
 //! mesh2 admin names mesh1's admin primary as the previous executor.
 
 use crate::build_log;
-use rafka_node_admin_client::{BuildSpec, FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes};
+use rdm_client::{BuildSpec, FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes};
 use rafka_node_admin_core::build_state::BuildState;
 use rafka_test_scenario::estate::{claim_decider, named, Estate, Owner};
 use serde_json::{json, Value};
@@ -50,7 +50,7 @@ fn names(meshes: &[(&str, u32, u32)]) -> BTreeSet<String> {
 }
 
 /// name -> incarnation
-fn births(nodes: &[rafka_node_admin_client::NodeView]) -> BTreeMap<String, String> {
+fn births(nodes: &[rdm_client::NodeView]) -> BTreeMap<String, String> {
     nodes.iter().map(|n| (n.name.to_string(), n.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default())).collect()
 }
 

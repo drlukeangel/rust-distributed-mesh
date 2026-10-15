@@ -484,8 +484,8 @@ async fn quiet_door(rig: &Rig) {
     let _ = rig.authority.configs.set(Arc::new(rafka_node_admin_core::node_config::NodeConfigs::new(Arc::new(NodeRpcClient::new(ep, Arc::new(StaticResolver::new())).with_caller_system("rdm")), rig.authority.configure.clone(), Default::default())));
 }
 
-fn exact(b: &Birth) -> rafka_node_admin_client::ExactBirth {
-    rafka_node_admin_client::ExactBirth { target: NodeTarget::ExactNode(b.node.node_id.clone()), node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap() }
+fn exact(b: &Birth) -> rdm_client::ExactBirth {
+    rdm_client::ExactBirth { target: NodeTarget::ExactNode(b.node.node_id.clone()), node_id: b.node.node_id.clone(), incarnation: b.node.incarnation_id.clone().unwrap() }
 }
 
 /// CONTRACT (ops-naming "Node data": a config update is a single call, not a Build; the node's
@@ -504,7 +504,7 @@ fn a_config_update_at_the_mesh_primary_ends_updated_and_the_node_carries_it() {
         configs_door(&rig, &node).await;
         let config: BTreeMap<String, String> = [("tags".to_string(), "edge,blue".to_string()), ("zone".to_string(), "a".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
         assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()), "the row at mesh1.rpc.1 is this node with the whole config");
@@ -540,7 +540,7 @@ fn a_config_update_naming_a_node_at_its_old_row_name_is_decided_for_that_exact_b
         configs_door(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "d".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&old).await.unwrap().expect("the mesh-primary wrote the node's row at its .old name");
         assert_eq!((row.node_id.clone(), row.config.clone()), (rpc1.node.node_id.clone(), config.clone()));
@@ -572,7 +572,7 @@ fn a_stopped_nodes_config_update_completes_on_its_row_and_tells_the_node_nothing
         stopped_with_row(&rig, stopped, &["edge"]).await;
         let config: BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
         let client = client_of(&rig, &b["admin2"]).await;
-        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(stopped), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: stopped.node.node_id.clone(), incarnation: stopped.node.incarnation_id.clone().unwrap() }, "a stopped node's config update completes on its row");
         let row = rig.nodes.node_row_at(&stopped.node.name).await.unwrap().expect("the mesh-primary wrote the node's row");
         assert_eq!((row.node_id.clone(), row.config.clone(), row.tags.clone()), (stopped.node.node_id.clone(), config, labels(&["edge"])), "the row holds the whole config and keeps its tags");
@@ -602,7 +602,7 @@ async fn a_config_over_its_cap_is_refused_by_name_and_nothing_is_applied() {
     let config: BTreeMap<String, String> = (0..keys).map(|i| (format!("k{i:02}"), "v".to_string())).collect();
     let bytes: usize = config.iter().map(|(k, v)| k.len() + v.len()).sum();
     let client = client_of(&rig, admin2).await;
-    let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config, &CallOptions::default()).await.expect("a typed refusal is a reply");
+    let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config, &CallOptions::default()).await.expect("a typed refusal is a reply");
     assert_eq!(
         reply,
         StatusReply::RejectedConfig { over: rdm_core::ConfigOverCap { keys: keys as u32, bytes: bytes as u32, max_keys: rdm_core::MAX_CONFIG_KEYS as u32, max_bytes: rdm_core::MAX_CONFIG_BYTES as u32 } }
@@ -678,7 +678,7 @@ fn a_config_the_birth_does_not_apply_ends_not_applied_with_the_row_written() {
         configs_door(&rig, &node).await;
         let config: BTreeMap<String, String> = [("zone".to_string(), "b".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         let StatusReply::ConfigNotApplied { node: named, answered, reason } = &reply else { panic!("the row is written and the birth refused: {reply:?}") };
         assert_eq!((named.as_str(), answered.as_str()), ("mesh1.rpc.1", "not-ready"), "{reply:?}");
         assert!(reason.ends_with('…'), "the birth's long answer is cut to the reply's budget: {reason}");
@@ -809,7 +809,7 @@ fn a_caller_reaches_the_nodes_mesh_primary_through_a_carrier_and_it_writes_and_a
         let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
         let config: BTreeMap<String, String> = [("zone".to_string(), "far".to_string())].into();
         let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: m2admin.node.node_id.clone(), path: m2admin.node.name.clone() };
-        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &route, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&rig.admin.node.node_id, &route, &exact(rpc1), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: rpc1.node.node_id.clone(), incarnation: rpc1.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&rpc1.node.name).await.unwrap().expect("mesh1's primary wrote the row");
         assert_eq!(row.config, config);
@@ -854,7 +854,7 @@ fn a_config_update_naming_the_mesh_primary_itself_is_written_and_applied_by_it()
         let me = &rig.admin.node;
         let config: BTreeMap<String, String> = [("admin_api_base".to_string(), "http://127.0.0.1:9".to_string())].into();
         let client = client_of(&rig, admin2).await;
-        let reply = rafka_node_admin_client::NodeRpc::new(&client).config_update(&me.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).config_update(&me.node_id, &rafka_node_rpc::RouteChoice::Direct, &exact(&rig.admin), config.clone(), &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::ConfigUpdated { node_id: me.node_id.clone(), incarnation: me.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&me.name).await.unwrap().expect("mesh1's primary wrote its own row");
         assert_eq!((row.node_id.clone(), row.config.clone()), (me.node_id.clone(), config.clone()));
@@ -1371,7 +1371,7 @@ fn a_callers_rename_reaches_the_nodes_mesh_primary_through_a_carrier_and_ends_na
         let client = NodeRpcClient::new(ep, resolver).with_caller_system("rdm");
         let route = rafka_node_rpc::RouteChoice::ViaPeer { carrier: carrier.node_id.clone(), path: carrier.name.clone() };
         let taken: PathName = "mesh1.rpc.3".parse().unwrap();
-        let reply = rafka_node_admin_client::NodeRpc::new(&client).name_update(&rig.admin.node.node_id, &route, &exact(&succ), "3", &CallOptions::default()).await.expect("a typed reply");
+        let reply = rdm_client::NodeRpc::new(&client).name_update(&rig.admin.node.node_id, &route, &exact(&succ), "3", &CallOptions::default()).await.expect("a typed reply");
         assert_eq!(reply, StatusReply::NameUpdated { node_id: succ.node.node_id.clone(), incarnation: succ.node.incarnation_id.clone().unwrap() });
         let row = rig.nodes.node_row_at(&taken).await.unwrap().expect("the mesh-primary wrote the row at the new name");
         assert_eq!(row.node_id, succ.node.node_id);

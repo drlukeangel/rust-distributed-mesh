@@ -19,7 +19,7 @@
 //! no NodeDeleted.
 
 use crate::build_log;
-use rafka_node_admin_client::{BuildSpec, CallEnd, FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, MeshSelector, PathName};
+use rdm_client::{BuildSpec, CallEnd, FabricDesired, Frame, LaunchKind as NodeKind, MeshDesired, MeshSelector, PathName};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};

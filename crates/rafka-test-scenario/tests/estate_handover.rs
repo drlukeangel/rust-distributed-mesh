@@ -2,7 +2,7 @@
 //! door serves under, and a caller that holds only that line reaches it over Node RPC.
 
 use rdm_core::MeshNode;
-use rafka_node_admin_client::{BuildCarrier, Fabrics};
+use rdm_client::{BuildCarrier, Fabrics};
 use rafka_node_rpc::{NodeRpcClient, ResolvedNode, StaticResolver};
 use rafka_test_scenario::estate::{artifacts_root, bin_dir, binary, estate_root, estate_store_dir, named, wait_for, EstateScope};
 use serde_json::Value;

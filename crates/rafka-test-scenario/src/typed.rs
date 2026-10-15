@@ -5,12 +5,12 @@
 //! The handles start at the node-admin the estate asks (`Estate::admin`, a `path.name`): reads answer
 //! from that admin's view, and a Build call it does not own follows the redirect to the fabric-primary.
 //! The handover reaches that admin once per entry, with no listing read: an admin the estate started
-//! printed its own birth (`rafka_node_admin_client::BIRTH_LINE`), and any other admin is dialled by the
+//! printed its own birth (`rdm_client::BIRTH_LINE`), and any other admin is dialled by the
 //! birth a view the estate read over Node RPC lists for it.
 
 use crate::estate::Estate;
-use rafka_node_admin_client::{LaunchKind as NodeKind, PathName};
-use rafka_node_admin_client::{
+use rdm_client::{LaunchKind as NodeKind, PathName};
+use rdm_client::{
     birth_of_view, Accepted, BuildCarrier, BuildFrame, BuildId, BuildSpec, BuildStream, Builds, CallEnd, Change, FabricDesired, FabricView, Fabrics, Frame, MeshDesired, MeshNode, MeshSelector, MeshView, Meshes, NodeSelector, NodeStatus, NodeView, Nodes, Peers, WorkflowStream,
 };
 use std::sync::Arc;
@@ -304,7 +304,7 @@ impl Estate {
     /// open traffic) after the nodes of a Build are ready, and writes its record at the commit. No stream
     /// announces it; `fabric.get` carries the state.
     pub async fn until_fabric_ready(&self, within: std::time::Duration) {
-        crate::estate::wait_for("the fabric is ready-for-traffic", within, || async { self.try_fabric_view().await.is_ok_and(|f| f.status == rafka_node_admin_client::ScopeStatus::ReadyForTraffic).then_some(()) }).await
+        crate::estate::wait_for("the fabric is ready-for-traffic", within, || async { self.try_fabric_view().await.is_ok_and(|f| f.status == rdm_client::ScopeStatus::ReadyForTraffic).then_some(()) }).await
     }
 
     /// The view the Build left, by name: exactly `names`, every one ready-for-traffic, as one `node.get` per

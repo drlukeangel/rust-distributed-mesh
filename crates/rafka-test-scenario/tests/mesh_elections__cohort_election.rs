@@ -37,7 +37,7 @@
 //! partition case is a named skip; `RDM_REQUIRE_NETFAULT=1` (CI) makes it a
 //! failure.
 
-use rafka_node_admin_client::{CallEnd, LaunchKind as NodeKind, NodeStatus, PathName, WorkflowStream};
+use rdm_client::{CallEnd, LaunchKind as NodeKind, NodeStatus, PathName, WorkflowStream};
 use rafka_test_scenario::elections::{advertised_primaries, expected_primaries, seats_as_expected, seats_kept, Cohort};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};

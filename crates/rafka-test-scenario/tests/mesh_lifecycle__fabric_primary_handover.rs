@@ -29,7 +29,7 @@
 //! the other, so every run covers both placements.
 
 use crate::build_log;
-use rafka_node_admin_client::{Fabrics, ScopeStatus};
+use rdm_client::{Fabrics, ScopeStatus};
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha};
 use serde_json::{json, Value};

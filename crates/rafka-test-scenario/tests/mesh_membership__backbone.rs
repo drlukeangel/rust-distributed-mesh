@@ -30,7 +30,7 @@
 //! the host cannot, cells 6-7 are a named skip, a failure under
 //! `RDM_REQUIRE_NETFAULT=1` (CI).
 
-use rafka_node_admin_client::{BuildSpec, Builds, FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
+use rdm_client::{BuildSpec, Builds, FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
 use serde_json::Value;
@@ -247,7 +247,7 @@ async fn membership_rides_mesh_channels_and_the_admin_backbone() {
     let lost_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     let mut stop = estate.nodes_obj().await.stop(&fp_name.parse().unwrap()).await.expect("node.stop of fp_name");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rafka_node_admin_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     if fp_name == "mesh1.admin.1" {

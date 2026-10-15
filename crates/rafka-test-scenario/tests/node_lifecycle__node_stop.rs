@@ -7,7 +7,7 @@
 
 use rdm_core::PathName;
 use crate::build_log;
-use rafka_node_admin_client::{Frame, LaunchKind as NodeKind, NodeEvent, NodeSelector, NodeStatus, NodeView, Nodes};
+use rdm_client::{Frame, LaunchKind as NodeKind, NodeEvent, NodeSelector, NodeStatus, NodeView, Nodes};
 use rdm_core::status::StatusReply;
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
@@ -32,7 +32,7 @@ fn step_span<'a>(spans: &'a [Value], build: &str, attempt: &str, node: &str, ste
 }
 
 /// Every frame of `stream`, in order, up to and including the terminal one.
-async fn frames(mut stream: rafka_node_admin_client::WorkflowStream) -> Vec<Frame> {
+async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
     let mut out = Vec::new();
     while let Some(f) = stream.next().await {
         let f = f.unwrap_or_else(|e| panic!("the reply stream broke: {e}"));
@@ -182,7 +182,7 @@ async fn a_stopped_node_renamed_at_its_mesh_primary_and_back_is_started_by_the_r
     assert!(parked.parked && parked.status == NodeStatus::Leaving, "{parked:?}");
 
     // The rename: one call to the node's mesh-primary, the row moved, the stopped node told nothing.
-    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
+    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
     let reply = nodes.name_update(&birth, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
     assert_eq!(reply, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
     let listed = view_of(&nodes, &renamed).await;
@@ -254,9 +254,9 @@ async fn a_stopped_nodes_config_update_completes_on_its_row_and_its_start_carrie
 
     // The update: one call to the node's mesh-primary, the row written, the stopped node told nothing.
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
-    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().expect("the stopped node's birth") };
+    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(held.node_id.clone()), node_id: held.node_id.clone(), incarnation: held.incarnation_id.clone().expect("the stopped node's birth") };
     let carrier = estate.carrier().await;
-    let reply = rafka_node_admin_client::NodeRpc::new(carrier.client())
+    let reply = rdm_client::NodeRpc::new(carrier.client())
         .config_update(&primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
         .await
         .expect("node.config.update answered");
@@ -326,7 +326,7 @@ async fn a_node_admin_renamed_while_stopped_starts_under_its_rows_name_on_every_
     assert!(parked.parked && parked.status == NodeStatus::Leaving, "{parked:?}");
 
     // The rename: one call to the node's mesh-primary, the row moved, the stopped node told nothing.
-    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
+    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()), node_id: parked.node_id.clone(), incarnation: parked.incarnation_id.clone().expect("the parked node's birth") };
     let reply = nodes.name_update(&birth, &primary.node_id, &rafka_node_rpc::RouteChoice::Direct, &renamed.name()).await.expect("node.name.update answered");
     assert_eq!(reply, StatusReply::NameUpdated { node_id: before.node_id.clone(), incarnation: before.incarnation_id.clone().unwrap() });
     // Every admin's view names the parked birth by its row, the one that performed no rename included.
@@ -669,7 +669,7 @@ async fn a_stop_of_a_mesh_primary_that_is_its_meshs_only_node_admin_is_refused_b
     let nodes = estate.nodes_obj().await;
     let target: PathName = "mesh2.admin.1".parse().unwrap();
     let refused = nodes.stop(&target).await.err().expect("the stop is refused");
-    let rafka_node_admin_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the stop ends Rejected: {refused:?}") };
+    let rdm_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the stop ends Rejected: {refused:?}") };
     // The typed carrier names the reason before the refusal's own text (build_stream.rs).
     assert_eq!((reason.as_str(), detail.strip_prefix("last-admin: ")), ("last-admin", Some("cannot transfer: no secondary of type node-admin in mesh mesh2")), "{refused:?}");
     for mesh in ["mesh1", "mesh2"] {
@@ -735,7 +735,7 @@ async fn a_stop_or_restart_of_the_fabrics_only_node_admin_is_refused_by_name_and
     let q7 = "cannot transfer fabric seat: no other node-admin ReadyForTraffic in mesh mesh1, no other mesh-primary ReadyForTraffic";
     for (action, refused) in [("stop", nodes.stop(&target).await.err()), ("restart", nodes.restart(&target).await.err())] {
         let refused = refused.unwrap_or_else(|| panic!("the {action} of the fabric's only node-admin was accepted"));
-        let rafka_node_admin_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the {action} ends Rejected: {refused:?}") };
+        let rdm_client::CallEnd::Rejected { reason, detail } = &refused else { panic!("the {action} ends Rejected: {refused:?}") };
         assert_eq!((reason.as_str(), detail.strip_prefix("last-admin: ")), ("last-admin", Some(q7)), "{action}: {refused:?}");
     }
     for now in estate.mesh_node_views("mesh1").await {

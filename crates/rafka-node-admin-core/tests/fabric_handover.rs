@@ -635,7 +635,7 @@ fn the_new_seat_resumes_a_resubmitted_build_it_has_not_heard_from_its_incumbents
         f.incumbent.door.update_primary(Moving::FabricSeatOutside, None, "b0", 1, &op).await.expect("the fabric seat moves outside mesh1");
         assert!(n_log.read_build(&b).await.is_err(), "N has heard nothing of B before the re-submit");
         // The caller re-submits B at the new seat.
-        let at_new_seat = rafka_node_admin_client::BuildCarrier::new(f.incumbent.client.clone(), f.successor.resolved.name.clone());
+        let at_new_seat = rdm_client::BuildCarrier::new(f.incumbent.client.clone(), f.successor.resolved.name.clone());
         let resubmitted = at_new_seat.resubmit(&b, 1).await.map(|s| (s.build_id().to_string(), s.attempt(), s.disposition()));
         let held = n_log.read_build(&b).await.map(|p| (p.attempt, p.executor));
         (resubmitted.map(|r| (b.clone(), r)), held)

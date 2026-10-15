@@ -11,7 +11,7 @@
 //! is asked who holds the fabric and the advertised endpoint is asked at once (the request the
 //! original failure refused); each pair is recorded with the run's own map of control endpoints.
 
-use rafka_node_admin_client::{NodeStatus, NodeView};
+use rdm_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::typed::fabric_view_of;
 use serde_json::{json, Value};

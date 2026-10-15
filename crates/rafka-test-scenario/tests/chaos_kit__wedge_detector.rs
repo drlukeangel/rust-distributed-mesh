@@ -282,7 +282,7 @@ fn wedge_detector_rejects_fault_without_progress_consequence() {
 // ---------------------------------------------------------------------------------------------
 
 use crate::build_log;
-use rafka_node_admin_client::{BuildSpec, BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_client::{BuildSpec, BuildStream, CallEnd, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, Nodes, PathName, WorkflowStream};
 use rafka_node_admin_core::build_state::BuildState;
 use rafka_node_admin_core::deployment::pipeline::{CreateStep, RetireStep};
 use rafka_node_admin_core::lifecycle::HookPhase;

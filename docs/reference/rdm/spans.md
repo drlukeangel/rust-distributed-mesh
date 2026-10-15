@@ -188,7 +188,7 @@ Every span rafka-mesh-audit's scanner (`telemetry::emitters`) finds in the non-t
 | `rdm.node_admin.build.create.via-accepted` | `crates/rafka-node-admin-core/src/build_state.rs` | 541 |
 | `rdm.node_admin.build.create.via-call` | `crates/rdm-core/src/names.rs` | 168 |
 | `rdm.node_admin.build.create.via-node-rpc` | `crates/rafka-node-admin-core/src/build_op.rs` | 137 |
-| `rdm.node_admin.build.create.via-recipe` | `crates/rafka-node-admin-client/src/workflow.rs` | 248 |
+| `rdm.node_admin.build.create.via-recipe` | `crates/rdm-client/src/workflow.rs` | 248 |
 | `rdm.node_admin.build.create.via-rest` | `crates/rafka-node-admin-core/src/control_plane.rs` | 313 |
 | `rdm.node_admin.build.delete.via-call` | `crates/rdm-core/src/names.rs` | 170 |
 | `rdm.node_admin.build.get.via-call` | `crates/rdm-core/src/names.rs` | 169 |

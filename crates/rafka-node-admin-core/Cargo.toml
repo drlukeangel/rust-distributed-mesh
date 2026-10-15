@@ -28,7 +28,7 @@ bytes = "1"
 rafka-mesh-telemetry = { path = "../rafka-mesh-telemetry" }
 rdm-core = { path = "../rdm-core" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }
-rafka-node-admin-client = { path = "../rafka-node-admin-client" }
+rdm-client = { path = "../rdm-client" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 
 [[bin]]

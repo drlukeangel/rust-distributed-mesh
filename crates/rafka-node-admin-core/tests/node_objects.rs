@@ -9,7 +9,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{EndpointId, FabricId, IncarnationId, MemberStatus, MeshDigest, MeshNode, NodeId, RuntimeFact};
-use rafka_node_admin_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
+use rdm_client::{BuildCarrier, Builds, CallEnd, Frame, NodeEvent, NodeOp, NodeSpec, NodeStep, Nodes, Resume, WorkflowKind, WorkflowStream};
 use rafka_node_admin_core::build::{BuildId, BuildOperation};
 use rafka_node_admin_core::build_claim::{AttemptContexts, ClaimDoor};
 use rafka_node_admin_core::build_drive::{DepartureProof, Dispatched, Dispatcher, DriveEnv, Drives, InnerItem, InnerStream, OpenGate};
@@ -675,7 +675,7 @@ fn a_cut_stream_is_indeterminate_and_the_resume_reruns_no_completed_step() {
     assert!(!frames.iter().any(|f| matches!(f, Frame::Failed { .. } | Frame::Complete)), "no step is inferred failed or complete from a broken stream: {frames:?}");
     assert!(!frames.iter().any(|f| matches!(f, Frame::Event(NodeEvent::Joined | NodeEvent::Started | NodeEvent::Created))), "no event past the join was delivered: {frames:?}");
 
-    let completed_steps = |r: &rafka_node_admin_client::BuildReceipts, attempt: u32| -> Vec<String> {
+    let completed_steps = |r: &rdm_client::BuildReceipts, attempt: u32| -> Vec<String> {
         r.steps.iter().filter(|s| s.attempt == attempt && s.result == rdm_core::build::StepResult::Complete).map(|s| s.step.clone()).collect()
     };
     assert_eq!(receipts_after_cut.steps.len(), ATTEMPT_ONE_STEPS.len(), "build.get returns exactly the receipts of the steps that completed: {:?}", receipts_after_cut.steps);
@@ -845,7 +845,7 @@ fn a_recovery_submit_for_a_birth_already_recovered_answers_already_applied_on_th
     });
     assert_eq!(stream, (b0.to_string(), recovering.attempt, rdm_core::build::Disposition::AlreadyApplied), "Started names the Build and attempt that recovered the birth");
     assert_eq!(frames.len(), 1, "one terminal and nothing else: {frames:?}");
-    assert!(matches!(&frames[0], Ok(rafka_node_admin_client::BuildFrame::Complete { attempt }) if *attempt == recovering.attempt), "{frames:?}");
+    assert!(matches!(&frames[0], Ok(rdm_client::BuildFrame::Complete { attempt }) if *attempt == recovering.attempt), "{frames:?}");
     assert_eq!(opened_after, opened_before, "no attempt is opened");
     assert!(!drive, "no drive is made for the Build");
     let spans = cap.spans();
@@ -902,7 +902,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
         let served = serve(door(&rig, Duration::from_secs(1)).await).await;
         let nodes = nodes_over(&served.carrier);
         let node_id = NodeId::mint();
-        let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: IncarnationId::mint() };
+        let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: IncarnationId::mint() };
         // The rename reaches the node's mesh-primary only with a name within the grammar.
         let (mp, route) = (NodeId::mint(), rafka_node_rpc::RouteChoice::Direct);
         for (bad, says) in [("Rpc", "\"Rpc\""), (".old", "starts with '.'"), ("", "empty")] {
@@ -912,8 +912,8 @@ fn calls_no_op_carries_today_say_so_by_name() {
         // Labels that are not a node's tag set, and a tag filter no node can match, are refused here.
         let not_a_label = nodes.tags_create(&birth, &mp, &route, &["Rabbit".to_string()].into()).await.expect("a typed refusal");
         assert!(matches!(&not_a_label, rdm_core::status::StatusReply::RejectedTags { reason } if reason.contains("\"Rabbit\"")), "{not_a_label:?}");
-        for (filter, says) in [(rafka_node_admin_client::TagFilter::All(Default::default()), "names no label"), (rafka_node_admin_client::TagFilter::Any(["a/b".to_string()].into()), "a/b")] {
-            match nodes.get(&rafka_node_admin_client::NodeSelector::Tags(filter.clone())).await {
+        for (filter, says) in [(rdm_client::TagFilter::All(Default::default()), "names no label"), (rdm_client::TagFilter::Any(["a/b".to_string()].into()), "a/b")] {
+            match nodes.get(&rdm_client::NodeSelector::Tags(filter.clone())).await {
                 Err(CallEnd::Rejected { reason, detail }) => assert!(reason == "rejected-tags" && detail.contains(says), "{filter:?}: {reason}: {detail}"),
                 other => panic!("{filter:?} is refused by name before anything is sent, not {other:?}"),
             }
@@ -937,7 +937,7 @@ fn calls_no_op_carries_today_say_so_by_name() {
 #[test]
 fn every_pipeline_step_is_named_by_the_client() {
     use rafka_node_admin_core::deployment::pipeline::{CreateStep, RetireStep};
-    let view = |op: &str, steps: Vec<&str>| -> rafka_node_admin_client::BuildView {
+    let view = |op: &str, steps: Vec<&str>| -> rdm_client::BuildView {
         serde_json::from_value(json!({
             "build_id": "3qcfk1kq47m9", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
             "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": op, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
@@ -946,11 +946,11 @@ fn every_pipeline_step_is_named_by_the_client() {
         .unwrap()
     };
     let create: Vec<&str> = CreateStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Create, &view("node.create:mesh1.rpc.3", create), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Create, &view("node.create:mesh1.rpc.3", create), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Joined), Frame::Event(NodeEvent::Started), Frame::Event(NodeEvent::Created), Frame::Complete]);
     let name: rdm_core::PathName = "mesh1.rpc.3".parse().unwrap();
     let retire: Vec<&str> = RetireStep::ORDER.iter().map(|s| s.name()).collect();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(name.clone()), &view("node.delete:mesh1.rpc.3", retire.clone()), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Delete(name.clone()), &view("node.delete:mesh1.rpc.3", retire.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
@@ -958,7 +958,7 @@ fn every_pipeline_step_is_named_by_the_client() {
     // A restart is one operation: its pre-event, the stop of the live process and the start of the
     // same process are all `node.restart:<path>` receipts, and its one `Complete` ends it.
     let restart = vec!["NodeRestarting", "StopNode", "AwaitNodeLeft", "StartNode", "WaitForNodeReady", "Complete"];
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.restart:mesh1.rpc.3", restart.clone()), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.restart:mesh1.rpc.3", restart.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [
@@ -973,30 +973,30 @@ fn every_pipeline_step_is_named_by_the_client() {
     );
     // A `retire-node` receipt is the delete's, never a step of the restart: the restart folds nothing
     // from it and stands at its own pre-event.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.delete:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.delete:mesh1.rpc.3", vec!["NodeRestarting"]), 1).unwrap();
     assert_eq!((f.frames.len(), f.next), (0, Some(("node.restart".to_string(), "NodeRestarting".to_string()))));
     // Its stop half done, the restart is not over: the fold stands at the start.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.restart:mesh1.rpc.3", restart[..3].to_vec()), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Restart(name.clone()), &view("node.restart:mesh1.rpc.3", restart[..3].to_vec()), 1).unwrap();
     assert_eq!((f.frames.last(), f.next.as_ref().map(|(_, s)| s.as_str())), (Some(&Frame::Event(NodeEvent::Stopped)), Some("StartNode")));
     // A node-admin's workflow is any node's: its seats move by node.primary.update before the operation
     // is dispatched, never as a step of it (the approved proposal node-primary-update-fabric-mesh-and-
     // node-type.md, Part D: the SeatTransfer step goes), so its receipts fold to the same events.
     let admin: rdm_core::PathName = "mesh1.admin.2".parse().unwrap();
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", retire.clone()), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", retire.clone()), 1).unwrap();
     assert_eq!(
         f.frames,
         [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Event(NodeEvent::Deleted), Frame::Complete]
     );
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(admin.clone()), &view("node.stop:mesh1.admin.2", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Stop(admin.clone()), &view("node.stop:mesh1.admin.2", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Stop(name.clone()), &view("node.stop:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Stop(name.clone()), &view("node.stop:mesh1.rpc.3", vec!["StopNode", "AwaitNodeLeft", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Event(NodeEvent::Stopped), Frame::Complete]);
     // A standalone node.connections.delete { All } ends on the birth's node.connections.deleted: the
     // process is not stopped and nothing is deleted.
-    let f = rafka_node_admin_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view("node.connections.delete:mesh1.rpc.3", vec!["DeleteConnections", "Complete"]), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::DeleteConnections(name.clone()), &view("node.connections.delete:mesh1.rpc.3", vec!["DeleteConnections", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::ConnectionsDeleted), Frame::Complete]);
     // A node-admin's delete with only NodeDeleting held resumes at StopNode, as any node's does.
-    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
+    let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(admin.clone()), &view("node.delete:mesh1.admin.2", vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!(r.from, Some(("node.delete".to_string(), "StopNode".to_string())));
     // A SeatTransfer receipt is a retired step: refused by name under any target, never folded.
     for (kind, op, steps) in [
@@ -1004,11 +1004,11 @@ fn every_pipeline_step_is_named_by_the_client() {
         (WorkflowKind::Stop(name.clone()), "node.stop:mesh1.rpc.3", vec!["SeatTransfer"]),
         (WorkflowKind::Stop(admin.clone()), "node.stop:mesh1.admin.2", vec!["SeatTransfer"]),
     ] {
-        assert_eq!(rafka_node_admin_client::fold(&kind, &view(op, steps), 1).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.into(), step: "SeatTransfer".into() }, "{kind:?}");
+        assert_eq!(rdm_client::fold(&kind, &view(op, steps), 1).unwrap_err(), CallEnd::UnrecognisedReceipt { operation: op.into(), step: "SeatTransfer".into() }, "{kind:?}");
     }
     let unknown = view("node.create:mesh1.rpc.3", vec!["AllocateIdentity", "InventedStep"]);
     assert_eq!(
-        rafka_node_admin_client::fold(&WorkflowKind::Create, &unknown, 1).unwrap_err(),
+        rdm_client::fold(&WorkflowKind::Create, &unknown, 1).unwrap_err(),
         CallEnd::UnrecognisedReceipt { operation: "node.create:mesh1.rpc.3".into(), step: "InventedStep".into() }
     );
 }
@@ -1022,7 +1022,7 @@ fn every_pipeline_step_is_named_by_the_client() {
 /// refused by name. A bare path's delete keeps its stop half (a live birth's runs it).
 #[test]
 fn a_dot_old_delete_resumes_after_node_deleting_at_terminate_runtime() {
-    let view = |op: &str, steps: Vec<&str>| -> rafka_node_admin_client::BuildView {
+    let view = |op: &str, steps: Vec<&str>| -> rdm_client::BuildView {
         serde_json::from_value(json!({
             "build_id": "3qcfk1kq47m9", "topology": {}, "submitted_at_ms": 0, "state": "running", "attempt": 1, "executor": null,
             "steps": steps.iter().map(|s| json!({"attempt": 1, "operation": op, "step": s, "outcome": "complete"})).collect::<Vec<_>>(),
@@ -1031,16 +1031,16 @@ fn a_dot_old_delete_resumes_after_node_deleting_at_terminate_runtime() {
         .unwrap()
     };
     let old: rdm_core::PathName = "mesh1.rpc.3.old".parse().unwrap();
-    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting"]), 1).unwrap();
+    let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!(r.from, Some(("node.delete".to_string(), "TerminateRuntime".to_string())), "the stopped predecessor's delete stands at TerminateRuntime");
-    let f = rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]), 1).unwrap();
+    let f = rdm_client::fold(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting", "TerminateRuntime", "NodeDeleted", "Complete"]), 1).unwrap();
     assert_eq!(f.frames, [Frame::Event(NodeEvent::Deleted), Frame::Complete]);
     assert_eq!(
-        rafka_node_admin_client::fold(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting", "StopNode"]), 1).unwrap_err(),
+        rdm_client::fold(&WorkflowKind::Delete(old.clone()), &view("node.delete:mesh1.rpc.3.old", vec!["NodeDeleting", "StopNode"]), 1).unwrap_err(),
         CallEnd::UnrecognisedReceipt { operation: "node.delete:mesh1.rpc.3.old".into(), step: "StopNode".into() }
     );
     let bare: rdm_core::PathName = "mesh1.rpc.3".parse().unwrap();
-    let r = rafka_node_admin_client::Resume::from_view(&WorkflowKind::Delete(bare), &view("node.delete:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
+    let r = rdm_client::Resume::from_view(&WorkflowKind::Delete(bare), &view("node.delete:mesh1.rpc.3", vec!["NodeDeleting"]), 1).unwrap();
     assert_eq!(r.from, Some(("node.delete".to_string(), "StopNode".to_string())), "a bare path's delete keeps its stop half");
 }
 

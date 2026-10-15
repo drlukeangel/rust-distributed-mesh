@@ -15,7 +15,7 @@
 //! whose `executor` is the expected admin, by parent span id.
 
 use crate::build_log;
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus};
 use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;

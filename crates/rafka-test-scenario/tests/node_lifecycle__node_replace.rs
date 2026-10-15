@@ -9,7 +9,7 @@
 //! workflow fails that workflow and the next tick recovers the member.
 
 use crate::build_log;
-use rafka_node_admin_client::{BuildFrame, CallEnd, Change, Frame, NodeEvent, NodeSelector, NodeStatus, Nodes, PathName};
+use rdm_client::{BuildFrame, CallEnd, Change, Frame, NodeEvent, NodeSelector, NodeStatus, Nodes, PathName};
 use rdm_core::build::RecipeStep;
 use rdm_core::status::StatusReply;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
@@ -658,7 +658,7 @@ fn alive(pid: u64) -> bool {
 }
 
 /// Every frame of `stream`, in order, up to and including the terminal one.
-async fn frames(mut stream: rafka_node_admin_client::WorkflowStream) -> Vec<Frame> {
+async fn frames(mut stream: rdm_client::WorkflowStream) -> Vec<Frame> {
     let mut out = Vec::new();
     while let Some(f) = stream.next().await {
         let f = f.unwrap_or_else(|e| panic!("the reply stream broke: {e}"));
@@ -822,8 +822,8 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_the_cutover_and
     let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
-    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
-    let reply = rafka_node_admin_client::NodeRpc::new(&client)
+    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
+    let reply = rdm_client::NodeRpc::new(&client)
         .config_update(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.config.update of {node_path} at {mesh_primary}: {e:?}"));
@@ -831,7 +831,7 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_the_cutover_and
     let told_json = json!({"tier": "gold"});
     wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
     let labels: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
-    let tagged = rafka_node_admin_client::NodeRpc::new(&client)
+    let tagged = rdm_client::NodeRpc::new(&client)
         .tags_create(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, &labels, &rafka_node_rpc::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at {mesh_primary}: {e:?}"));
@@ -870,7 +870,7 @@ async fn a_replaced_nodes_successor_takes_its_config_and_tags_at_the_cutover_and
     let selected: Vec<String> = estate
         .nodes_obj()
         .await
-        .get(&rafka_node_admin_client::NodeSelector::Tags(rafka_node_admin_client::TagFilter::Any(labels.clone())))
+        .get(&rdm_client::NodeSelector::Tags(rdm_client::TagFilter::Any(labels.clone())))
         .await
         .unwrap_or_else(|e| panic!("node.get by the tag rabbit: {e:?}"))
         .into_iter()
@@ -986,7 +986,7 @@ async fn stop_and_rename(estate: &Estate, nodes: &Nodes, node: &str) -> Parked {
     let mesh = nodes.get(&NodeSelector::Mesh(path.mesh.clone())).await.expect("node.get");
     let parked = mesh.iter().find(|n| n.name == path && n.parked).cloned().unwrap_or_else(|| panic!("node.get lists the stopped {node} parked at once after Complete: {mesh:#?}"));
     let primary = mesh.iter().find(|n| n.kind == rdm_core::NodeKind::NodeAdmin && n.is_primary).cloned().expect("the node's mesh-primary");
-    let birth = rafka_node_admin_client::ExactBirth {
+    let birth = rdm_client::ExactBirth {
         target: rafka_node_rpc::NodeTarget::ExactNode(parked.node_id.clone()),
         node_id: parked.node_id.clone(),
         incarnation: parked.incarnation_id.clone().expect("the parked birth has its incarnation"),
@@ -1820,8 +1820,8 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let (client, mp_id) = caller_of(&admin).await;
     let told: std::collections::BTreeMap<String, String> = [("tier".to_string(), "gold".to_string())].into();
     let node_id: rdm_core::NodeId = s(&before["node_id"]).parse().unwrap();
-    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
-    let reply = rafka_node_admin_client::NodeRpc::new(&client)
+    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node_id.clone()), node_id, incarnation: rdm_core::IncarnationId::parse(&s(&before["incarnation_id"])).unwrap() };
+    let reply = rdm_client::NodeRpc::new(&client)
         .config_update(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, told.clone(), &rafka_node_rpc::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.config.update of {node_path} at {mesh_primary}: {e:?}"));
@@ -1829,7 +1829,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let told_json = json!({"tier": "gold"});
     wait_for(&format!("{node_path} carries its config"), Duration::from_secs(30), || async { (estate.node_value(node_path).await["config"] == told_json).then_some(()) }).await;
     let labels: std::collections::BTreeSet<String> = ["rabbit".to_string()].into();
-    let tagged = rafka_node_admin_client::NodeRpc::new(&client)
+    let tagged = rdm_client::NodeRpc::new(&client)
         .tags_create(&mp_id, &rafka_node_rpc::RouteChoice::Direct, &birth, &labels, &rafka_node_rpc::CallOptions::default())
         .await
         .unwrap_or_else(|e| panic!("node.tags.create of {node_path} at {mesh_primary}: {e:?}"));
@@ -1866,7 +1866,7 @@ async fn a_recovered_node_keeps_the_config_and_tags_its_mesh_primary_told_its_pr
     let selected: Vec<String> = estate
         .nodes_obj()
         .await
-        .get(&rafka_node_admin_client::NodeSelector::Tags(rafka_node_admin_client::TagFilter::Any(labels.clone())))
+        .get(&rdm_client::NodeSelector::Tags(rdm_client::TagFilter::Any(labels.clone())))
         .await
         .unwrap_or_else(|e| panic!("node.get by the tag rabbit: {e:?}"))
         .into_iter()
@@ -1909,7 +1909,7 @@ async fn a_member_exit_while_the_fabric_primary_is_stopped_is_recovered_by_its_m
     let accepted = stop.accepted().clone();
     let frames = Estate::frames_of(&mut stop).await;
     match frames.last() {
-        Some(rafka_node_admin_client::Frame::SeatMoved { fabric_primary }) => assert_eq!(fabric_primary.as_deref(), Some(successor_name.as_str()), "the seat moved to mesh1's other node-admin: {frames:?}"),
+        Some(rdm_client::Frame::SeatMoved { fabric_primary }) => assert_eq!(fabric_primary.as_deref(), Some(successor_name.as_str()), "the seat moved to mesh1's other node-admin: {frames:?}"),
         other => panic!("the stop of the fabric-primary moves its seat first: {other:?} of {frames:?}"),
     }
     estate.enter(&Estate::path(&successor_name)).await;

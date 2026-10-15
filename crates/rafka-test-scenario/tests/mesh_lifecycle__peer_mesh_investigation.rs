@@ -10,7 +10,7 @@
 //! (`Rungs::configured`, from the staleness floor `RDM_STALENESS_MS`): probe 1, the silent mark,
 //! probe 2 and the decision at 20 s, 30 s, 40 s and 60 s at the 30 s default floor.
 
-use rafka_node_admin_client::{NodeView, ScopeStatus};
+use rdm_client::{NodeView, ScopeStatus};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::typed::fabric_view_of;
 use rafka_test_scenario::netfault::{udp_ports, Partition};
@@ -270,7 +270,7 @@ async fn peer_mesh_without_admin_is_reborn_only_after_two_carrier_edge_lost_prob
         let estate = &f.estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births_w.clone());
         async move {
-            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
+            let b = estate.builds_obj().await.get(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() >= 1;
             (later && reborn).then_some(b)

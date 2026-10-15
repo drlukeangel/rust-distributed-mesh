@@ -9,7 +9,7 @@
 //!   killed path whatever NodeId it drew (elections §5) — read the way a product reads it, by
 //!   `is_primary` on `node.get` (`Nodes::get`), never computed product-side.
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
 use rafka_test_scenario::elections::{advertised_primaries, seats_as_expected, Cohort};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};

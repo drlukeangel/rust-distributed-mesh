@@ -7,7 +7,7 @@
 //! the lost mesh: the cohort lost is the one whose admins do not hold it (a fabric-primary's mesh is
 //! only ever lost after its authority was handed off; that is a separate cell).
 
-use rafka_node_admin_client::NodeView;
+use rdm_client::NodeView;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -113,7 +113,7 @@ async fn recovery_admin_restores_lost_cohort_preserves_mesh_and_build() {
         let estate = &estate;
         let (accepted, lost_births) = (accepted.clone(), lost_births.clone());
         async move {
-            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
+            let b = estate.builds_obj().await.get(&rdm_client::BuildId::parse(&accepted).unwrap()).await.expect("build.get of the accepted Build");
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(*n).is_some_and(|old| old != *i)).count() == lost_births.len();
             (later && reborn).then_some(b)

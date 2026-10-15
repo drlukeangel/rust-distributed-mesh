@@ -19,7 +19,7 @@
 
 use async_trait::async_trait;
 use crate::model::{FabricId, IncarnationId, MeshId, NodeId, PathName, EndpointId};
-pub use rafka_node_admin_client::NameHeld;
+pub use rdm_client::NameHeld;
 use crate::record_store::{FileRecords, StorageError};
 use rdm_core::connections::{ConnectionIndex, NodeConnection};
 use serde::{Deserialize, Serialize};

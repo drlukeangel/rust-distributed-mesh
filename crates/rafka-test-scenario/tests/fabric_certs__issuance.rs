@@ -11,7 +11,7 @@
 //! spans, and the testkit's `rdm.testkit.cert.resolve.via-running-node` / `...via-launch` spans, in
 //! which each launched process records the bytes it holds.
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus, PathName};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus, PathName};
 use rafka_node_rpc_testkit::test_certs::{TestMemberCert, TestMeshIssuer};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha};

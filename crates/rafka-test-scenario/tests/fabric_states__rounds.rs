@@ -8,7 +8,7 @@
 //! wrote.
 
 use crate::build_log;
-use rafka_node_admin_client::{CallEnd, Change, ExactBirth, FabricDesired, Fabrics, FabricView, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
+use rdm_client::{CallEnd, Change, ExactBirth, FabricDesired, Fabrics, FabricView, LaunchKind as NodeKind, MeshDesired, NodeView, PathName, ScopeStatus};
 use rdm_core::status::StatusReply;
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, binding_set_with_roles, candidate_sha, Door};

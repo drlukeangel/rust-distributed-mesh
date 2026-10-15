@@ -26,7 +26,7 @@
 //! `PublishTopologyAndRuntimeFactAndCurrentRuntimeMetadata` complete, in
 //! order, before its `WaitForNodeReady` step begins.
 
-use rafka_node_admin_client::{LaunchKind as NodeKind, NodeStatus};
+use rdm_client::{LaunchKind as NodeKind, NodeStatus};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -72,7 +72,7 @@ async fn a_successor_manages_births_it_never_launched() {
     estate.enter(&successor.name).await;
     let mut stop = estate.nodes_obj().await.stop(&launcher.name).await.expect("node.stop of mesh1.admin.1");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rafka_node_admin_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.kill_bootstrap();

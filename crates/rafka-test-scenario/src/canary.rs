@@ -6,7 +6,7 @@
 //! registered cells of `i143_acceptance_2777`, each under its own `Owner`.
 
 use crate::estate::{descends_from, named, wait_for, Estate, Owner};
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, PathName};
 use serde_json::{json, Value};
 use std::time::Duration;
 

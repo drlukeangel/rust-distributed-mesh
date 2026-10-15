@@ -16,7 +16,7 @@
 //! The in-flight arm — a dial to a birth that moves before it is pooled ends as
 //! `RejectedStale`, never dispatched — is `crates/rafka-node-rpc/tests/pool.rs`.
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;

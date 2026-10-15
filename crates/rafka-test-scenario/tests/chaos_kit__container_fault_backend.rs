@@ -9,7 +9,7 @@
 
 use rafka_test_scenario::container_faults::{self, Inspected, Silenced};
 use rafka_test_scenario::elections::seats_as_expected;
-use rafka_node_admin_client::{FabricView, NodeView, PathName, ScopeStatus};
+use rdm_client::{FabricView, NodeView, PathName, ScopeStatus};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::typed::fabric_view_of;
 use rafka_test_scenario::wedge::*;
@@ -576,7 +576,7 @@ async fn container_peer_mesh_lost_recovers_under_same_mesh_id() {
     let done = wait_for("the accepted Build completes a later attempt and every lost birth is reborn", Duration::from_secs(300), || {
         let (estate, accepted, lost_births) = (&estate, accepted.clone(), lost_births.clone());
         async move {
-            let b = estate.builds_obj().await.get(&rafka_node_admin_client::BuildId::parse(&accepted).ok()?).await.ok()?;
+            let b = estate.builds_obj().await.get(&rdm_client::BuildId::parse(&accepted).ok()?).await.ok()?;
             let later = b.phase == rdm_core::build::BuildPhase::Complete && u64::from(b.attempt) > attempt_before;
             let reborn = births(&estate.node_values().await).iter().filter(|(n, i)| lost_births.get(n).is_some_and(|old| old != i)).count() == lost_births.len();
             (later && reborn).then_some(b)

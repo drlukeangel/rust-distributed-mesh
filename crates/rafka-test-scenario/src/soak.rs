@@ -43,7 +43,7 @@ use crate::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault};
 use crate::scenario::Operation as ProofOp;
 use crate::sim::Scheduler;
 use crate::wedge::{judge, Control, Evidence, Family, FaultAck, Primitive, Progress as WedgeProgress, Reconciliation, Recovery, Release, Routing};
-use rafka_node_admin_client::{birth_of_view, Accepted, CallEnd, FabricDesired, FabricView, Frame, LaunchKind, MeshDesired, MeshNode, NodeSpec, NodeView, PathName, ScopeStatus, WorkflowStream};
+use rdm_client::{birth_of_view, Accepted, CallEnd, FabricDesired, FabricView, Frame, LaunchKind, MeshDesired, MeshNode, NodeSpec, NodeView, PathName, ScopeStatus, WorkflowStream};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};

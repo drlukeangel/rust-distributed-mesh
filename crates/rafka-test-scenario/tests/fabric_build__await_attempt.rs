@@ -6,7 +6,7 @@
 //! attempt left behind; released, it returns the Build at attempt 2, complete.
 
 use crate::build_log;
-use rafka_node_admin_client::{Frame, LaunchKind as NodeKind, NodeSpec, NodeStatus};
+use rdm_client::{Frame, LaunchKind as NodeKind, NodeSpec, NodeStatus};
 use rafka_node_admin_core::deployment::pipeline::RetireStep;
 use rafka_test_scenario::estate::{Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};

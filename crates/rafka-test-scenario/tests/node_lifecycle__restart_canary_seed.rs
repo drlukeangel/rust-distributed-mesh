@@ -10,7 +10,7 @@
 
 use rafka_test_scenario::canary::restart_canary;
 use rdm_core::NodeKind;
-use rafka_node_admin_client::{BuildSpec, BuildStream, CallEnd, FabricDesired, MeshDesired};
+use rdm_client::{BuildSpec, BuildStream, CallEnd, FabricDesired, MeshDesired};
 use rafka_test_scenario::estate::{artifacts_root, Estate, Owner};
 use rafka_test_scenario::{runner, scenario::Scenario};
 use serde_json::{json, Value};

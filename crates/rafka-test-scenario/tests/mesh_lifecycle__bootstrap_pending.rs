@@ -9,7 +9,7 @@
 //! membership get created; election alone supplies mesh2's primary afterwards.
 
 use rdm_core::NodeKind;
-use rafka_node_admin_client::{NodeStatus, NodeView};
+use rdm_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;

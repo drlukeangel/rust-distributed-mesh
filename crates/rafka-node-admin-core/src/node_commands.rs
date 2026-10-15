@@ -164,7 +164,7 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
     let Some(incarnation) = node.incarnation_id.clone() else {
         return CommandAdmission::NotSent { reason: format!("{} has no known birth to command", node.name) };
     };
-    let build_id = match rafka_node_admin_client::BuildId::parse(&ctx.build_id) {
+    let build_id = match rdm_client::BuildId::parse(&ctx.build_id) {
         Ok(build_id) => build_id,
         Err(e) => return CommandAdmission::NotSent { reason: format!("{}: the command names Build {:?}, which is not a Crockford id: {e}", node.name, ctx.build_id) },
     };
@@ -179,16 +179,16 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
             crate::deployment::pipeline::command_admission(&client.call::<rdm_core::status::Status>(target, &req, &opts).await.0)
         }
         NodeCommand::Stop => {
-            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
-            let stop = rafka_node_admin_client::StopContext::new(build_id, attempt, node.name.clone());
+            let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
+            let stop = rdm_client::StopContext::new(build_id, attempt, node.name.clone());
             let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: commands.connections_delete_reply() }, ..Default::default() };
-            admission_of(rafka_node_admin_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await)
+            admission_of(rdm_client::NodeRpc::new(client).stop(&birth, &stop, &opts).await)
         }
         NodeCommand::Start => {
-            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id, incarnation };
-            let start = rafka_node_admin_client::StartContext::new(build_id, attempt, node.name.clone());
+            let birth = rdm_client::ExactBirth { target: target.clone(), node_id, incarnation };
+            let start = rdm_client::StartContext::new(build_id, attempt, node.name.clone());
             let opts = CallOptions { budget: rafka_node_rpc::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..Default::default() };
-            admission_of(rafka_node_admin_client::NodeRpc::new(client).start(&birth, &start, &opts).await)
+            admission_of(rdm_client::NodeRpc::new(client).start(&birth, &start, &opts).await)
         }
     };
     // The reply of a stop is its completion. The connection it rode is closed now: the node cut every
@@ -212,8 +212,8 @@ pub async fn send_command(client: &NodeRpcClient, commands: &CommandBook, target
 
 /// The arm a `node.stop` or `node.start` object call ended as: only `Applied` and `AlreadyApplied` admit it; every
 /// other reply is `Refused` by its name, an unsent call `NotSent`, an unanswered one `Indeterminate`.
-fn admission_of(r: Result<StatusReply, rafka_node_admin_client::CallEnd>) -> CommandAdmission {
-    use rafka_node_admin_client::CallEnd;
+fn admission_of(r: Result<StatusReply, rdm_client::CallEnd>) -> CommandAdmission {
+    use rdm_client::CallEnd;
     match r {
         Ok(StatusReply::Applied) => CommandAdmission::Admitted {},
         Ok(StatusReply::AlreadyApplied) => CommandAdmission::AlreadyAdmitted {},

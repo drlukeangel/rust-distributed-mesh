@@ -12,7 +12,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 yaml_serde = "0.10"
-rafka-node-admin-client = { path = "../rafka-node-admin-client" }
+rdm-client = { path = "../rdm-client" }
 rdm-core = { path = "../rdm-core" }
 # The fault door (op 0x75): the cells arm, read and release a faulted admin's cuts through its typed calls.
 rafka-node-rpc-testkit = { path = "../rafka-node-rpc-testkit" }

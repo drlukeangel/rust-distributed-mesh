@@ -17,7 +17,7 @@
 //! The shapes run one after another in one test, each on its own fabric.
 
 use crate::build_log;
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{claim_decider, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

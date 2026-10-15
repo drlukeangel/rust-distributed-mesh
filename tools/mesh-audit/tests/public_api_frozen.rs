@@ -16,7 +16,7 @@ const APPROVED: [&str; 9] = [
     "rafka-node-rpc-testkit",
     "rafka-node-rpc",
     "rdm-core",
-    "rafka-node-admin-client",
+    "rdm-client",
     "rafka-chaos",
 ];
 

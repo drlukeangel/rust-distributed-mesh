@@ -34,7 +34,7 @@
 //! `rdm.node_admin.mesh.update.via-crash-proof` (`outcome = proven`), on which the new fabric primary
 //! runs the create of that mesh's first node-admin in process, and nothing else of that mesh.
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, PathName};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, PathName};
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use serde_json::Value;

@@ -8,7 +8,7 @@ members = [
     "crates/rafka-node-rpc",
     "crates/rafka-node-rpc-testkit",
     "crates/rafka-node-admin-core",
-    "crates/rafka-node-admin-client",
+    "crates/rdm-client",
     "crates/rdm-core",
     "crates/rafka-test-scenario",
     "tools/mesh-audit",

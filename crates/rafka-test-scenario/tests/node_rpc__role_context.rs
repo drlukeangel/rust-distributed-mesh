@@ -8,7 +8,7 @@
 //! The malformed-value arm (a bad traceparent is dropped on a `via-context-dropped` span and the
 //! outcome is unchanged) is `rafka-node-base/tests/role_process.rs` on the gateway's own client.
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;

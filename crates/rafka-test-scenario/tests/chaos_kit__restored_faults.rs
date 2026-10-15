@@ -12,7 +12,7 @@
 //! beside the estate's artifacts, and reads back that file and no other.
 
 use rdm_core::NodeId;
-use rafka_node_admin_client::{NodeStatus, NodeView};
+use rdm_client::{NodeStatus, NodeView};
 use rafka_test_scenario::disk_faults::DiskFull;
 use rafka_test_scenario::elections::advertised_fabric_primaries;
 use rafka_test_scenario::estate::{artifacts_root, named, wait_for, Estate, Owner};

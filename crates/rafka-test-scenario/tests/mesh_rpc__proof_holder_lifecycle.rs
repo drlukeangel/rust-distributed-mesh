@@ -54,7 +54,7 @@ fn landed_on(out: &Value, node: &Value, op: &str) {
 
 /// mesh1 with one node-admin and two rpc nodes, through the rectifier: the estate and the Build that
 /// accepted the shape.
-async fn estate(cell: &str) -> (Estate, rafka_node_admin_client::BuildId) {
+async fn estate(cell: &str) -> (Estate, rdm_client::BuildId) {
     let estate = Estate::bootstrap(owner(cell), "fabric1", "mesh1").await;
     let accepted = estate.reconcile_shape("fabric1", &[("mesh1", 1, 2)]).await;
     estate.settled_views(&[("mesh1", 1, 2)]).await;

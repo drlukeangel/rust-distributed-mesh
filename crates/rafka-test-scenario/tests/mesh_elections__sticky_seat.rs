@@ -4,7 +4,7 @@
 //! Each cell runs a two-mesh fabric of two node-admins and three rpc nodes per mesh. A cell that
 //! kills the fabric primary is permitted by R-P1; no other cell kills a fabric-primary node-admin.
 
-use rafka_node_admin_client::{BuildSpec, FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{BuildSpec, FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{descends_from, iroh_observation_shape, named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
@@ -45,29 +45,29 @@ fn names() -> BTreeSet<String> {
 /// fabric-primary a stream that ended `SeatMoved` names (node-rpc-envelope.md TakeSeats: "the caller
 /// resubmits the same `build_id` to N, and N resumes the same attempt").
 struct Caller {
-    peers: std::sync::Arc<rafka_node_admin_client::Peers>,
-    entry: rafka_node_admin_client::PathName,
-    kind: rafka_node_admin_client::WorkflowKind,
-    accepted: rafka_node_admin_client::Accepted,
+    peers: std::sync::Arc<rdm_client::Peers>,
+    entry: rdm_client::PathName,
+    kind: rdm_client::WorkflowKind,
+    accepted: rdm_client::Accepted,
 }
 
 /// What the caller read of one Build: its first stream, and, when that ended `SeatMoved`, the Build
 /// followed on to its terminal.
 struct Followed {
     /// The frames of the stream the call was submitted over, and how it broke before its terminal.
-    first: Vec<rafka_node_admin_client::Frame>,
+    first: Vec<rdm_client::Frame>,
     broke: Option<String>,
     /// The frames of each stream resubmitted after a `SeatMoved`, and the Build's receipts read at the
     /// admin that ended it; the reason when the caller could not follow.
-    onward: Result<(Vec<Vec<rafka_node_admin_client::Frame>>, rafka_node_admin_client::BuildReceipts), String>,
-    kind: rafka_node_admin_client::WorkflowKind,
-    accepted: rafka_node_admin_client::Accepted,
+    onward: Result<(Vec<Vec<rdm_client::Frame>>, rdm_client::BuildReceipts), String>,
+    kind: rdm_client::WorkflowKind,
+    accepted: rdm_client::Accepted,
 }
 
 /// The admin a stream ended `SeatMoved` names, when it did.
-fn seat_moved_to(frames: &[rafka_node_admin_client::Frame]) -> Option<Option<String>> {
+fn seat_moved_to(frames: &[rdm_client::Frame]) -> Option<Option<String>> {
     match frames.last() {
-        Some(rafka_node_admin_client::Frame::SeatMoved { fabric_primary }) => Some(fabric_primary.clone()),
+        Some(rdm_client::Frame::SeatMoved { fabric_primary }) => Some(fabric_primary.clone()),
         _ => None,
     }
 }
@@ -77,8 +77,8 @@ impl Caller {
     /// `build_id` is resubmitted at the admin each `SeatMoved` names the moment it is named, never a
     /// second Build, until a stream ends with a terminal frame. Returns the frames of each resubmitted
     /// stream and the Build's receipts (`build.get`) read at the admin that ended it.
-    async fn follow(&self, first: &[rafka_node_admin_client::Frame]) -> Result<(Vec<Vec<rafka_node_admin_client::Frame>>, rafka_node_admin_client::BuildReceipts), String> {
-        use rafka_node_admin_client::{Builds, Frame, Nodes};
+    async fn follow(&self, first: &[rdm_client::Frame]) -> Result<(Vec<Vec<rdm_client::Frame>>, rdm_client::BuildReceipts), String> {
+        use rdm_client::{Builds, Frame, Nodes};
         let mut seat = seat_moved_to(first);
         let mut streams = Vec::new();
         let mut at = None;
@@ -116,8 +116,8 @@ impl Caller {
 /// the caller's reply stream read to its end on a task of its own: its frames, how a stream that
 /// broke before its terminal ended, and, when the stream ended `SeatMoved`, the Build followed on at
 /// the admin it named as soon as it is named.
-async fn replace_by_recipe(estate: &Estate, entry: &rafka_node_admin_client::PathName, p: &str) -> (String, tokio::task::JoinHandle<Followed>) {
-    use rafka_node_admin_client::{NodeSelector, Nodes};
+async fn replace_by_recipe(estate: &Estate, entry: &rdm_client::PathName, p: &str) -> (String, tokio::task::JoinHandle<Followed>) {
+    use rdm_client::{NodeSelector, Nodes};
     use rdm_core::build::RecipeStep;
     let peers = estate.peers().await;
     let nodes = Nodes::new(peers.carrier_at(entry.clone()));
@@ -144,7 +144,7 @@ async fn replace_by_recipe(estate: &Estate, entry: &rafka_node_admin_client::Pat
         loop {
             match stream.next().await {
                 Some(Ok(f)) => {
-                    let end = f.is_terminal() || matches!(f, rafka_node_admin_client::Frame::SeatMoved { .. });
+                    let end = f.is_terminal() || matches!(f, rdm_client::Frame::SeatMoved { .. });
                     out.push(f);
                     if end {
                         return finished(out, None, caller).await;
@@ -159,7 +159,7 @@ async fn replace_by_recipe(estate: &Estate, entry: &rafka_node_admin_client::Pat
 }
 
 /// The first stream is over: when it ended `SeatMoved` the caller follows the Build at once.
-async fn finished(first: Vec<rafka_node_admin_client::Frame>, broke: Option<String>, caller: Caller) -> Followed {
+async fn finished(first: Vec<rdm_client::Frame>, broke: Option<String>, caller: Caller) -> Followed {
     let onward = if seat_moved_to(&first).is_some() { caller.follow(&first).await } else { Err("the first stream did not end SeatMoved".into()) };
     Followed { first, broke, onward, kind: caller.kind, accepted: caller.accepted }
 }
@@ -234,7 +234,7 @@ async fn a_dead_fabric_primary_hands_the_seat_to_the_surviving_admin_of_its_own_
     estate.enter(&Estate::path(&heir)).await;
     let mut stop = estate.nodes_obj().await.stop(&old.parse().unwrap()).await.expect("node.stop of old");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rafka_node_admin_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     kill(&mut estate, &old).await;
@@ -563,7 +563,7 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     // H, and H drives the rest of the recipe.
     let p_drive: Vec<&Value> = named(&spans, "rdm.node_admin.build.update.via-drive").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(p_drive.iter().any(|sp| attr(sp, "outcome") == "seat-lost"), "P's drive ends at its seat row: {p_drive:#?}");
-    assert!(matches!(first.last(), Some(rafka_node_admin_client::Frame::SeatMoved { fabric_primary: Some(to) }) if *to == h_name), "the caller's stream ends SeatMoved naming H: {first:?}, broke: {broke:?}");
+    assert!(matches!(first.last(), Some(rdm_client::Frame::SeatMoved { fabric_primary: Some(to) }) if *to == h_name), "the caller's stream ends SeatMoved naming H: {first:?}, broke: {broke:?}");
     let p_refused: Vec<&Value> = named(&spans, "rdm.node_admin.build.reject.via-fenced").into_iter().filter(|sp| attr(sp, "node") == p && attr(sp, "build_id") == build).collect();
     assert!(!p_refused.is_empty() && p_refused.iter().all(|sp| attr(sp, "to") == h_name), "P's drive lost the seat at the committed record naming H: {p_refused:#?}");
     // When H is P's successor `<P>.new`, the recipe's stop of `.new` moves the seats once more, to
@@ -584,9 +584,9 @@ async fn a_planned_hand_over_moves_both_seats_in_the_old_holders_one_row_before_
     // caller's last stream is `Complete`, and the Build's receipts say it is complete with no step of
     // the recipe left to run.
     let (followed, receipts) = onward.unwrap_or_else(|why| panic!("the caller could not follow the recipe past the seat move: {why}"));
-    assert!(matches!(followed.last().and_then(|frames| frames.last()), Some(rafka_node_admin_client::Frame::Complete)), "the caller's resubmitted stream ends Complete: {followed:?}");
+    assert!(matches!(followed.last().and_then(|frames| frames.last()), Some(rdm_client::Frame::Complete)), "the caller's resubmitted stream ends Complete: {followed:?}");
     assert_eq!(receipts.phase, rdm_core::build::BuildPhase::Complete, "build.get: the recipe's Build is complete: {receipts:?}");
-    let resume = rafka_node_admin_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the recipe's steps");
+    let resume = rdm_client::Resume::from_receipts(&kind, &receipts, accepted.attempt).expect("the receipts fold into the recipe's steps");
     let step_keys: Vec<String> = {
         let (p, succ) = (p.parse::<rdm_core::PathName>().unwrap(), p.parse::<rdm_core::PathName>().unwrap().successor());
         vec![format!("node.create:{succ}"), format!("node.stop:{p}"), format!("node.update:{p}"), format!("node.stop:{succ}"), format!("node.update:{succ}"), format!("node.start:{p}"), format!("node.delete:{}", p.renamed())]

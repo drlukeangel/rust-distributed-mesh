@@ -114,7 +114,7 @@ fn a_node_admin_probes_and_deletes_the_connections_of_the_exact_birth_over_the_s
         let config: std::collections::BTreeMap<String, String> = [("tags".to_string(), "edge".to_string()), ("zone".to_string(), "a".to_string())].into();
         let told = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: incarnation.clone(), config: config.clone() };
         assert_eq!(call(told).await, StatusReply::Applied);
-        let held = rafka_node_admin_client::NodeRpc::new(&observer.client).held_view(&target, "mesh1", &CallOptions::default()).await.expect("the node's own topology answer");
+        let held = rdm_client::NodeRpc::new(&observer.client).held_view(&target, "mesh1", &CallOptions::default()).await.expect("the node's own topology answer");
         let own = held.members.iter().find(|d| d.node.node_id == node.node_id).expect("the node answers its own digest");
         assert_eq!(own.config, config, "the birth's own digest carries the config it was told");
         let stale_config = StatusRequest::ApplyNodeConfig { node_id: node.node_id.clone(), incarnation: IncarnationId::mint(), config: Default::default() };

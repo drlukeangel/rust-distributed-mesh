@@ -328,8 +328,8 @@ fn send_down(me: &PathName, scope: &'static str, of: &str, targets: Vec<(String,
                         None => "birth-has-no-incarnation".to_string(),
                         Some(incarnation) => {
                             // `node.get` of the exact birth: it reasserts itself and answers its state.
-                            let birth = rafka_node_admin_client::ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation };
-                            match rafka_node_admin_client::NodeRpc::new(client).get(&birth, &CallOptions::default()).await {
+                            let birth = rdm_client::ExactBirth { target: NodeTarget::ExactNode(n.node_id.clone()), node_id: n.node_id.clone(), incarnation };
+                            match rdm_client::NodeRpc::new(client).get(&birth, &CallOptions::default()).await {
                                 Ok(reply) => reply.name().to_string(),
                                 Err(end) => end.rpc_name().to_string(),
                             }

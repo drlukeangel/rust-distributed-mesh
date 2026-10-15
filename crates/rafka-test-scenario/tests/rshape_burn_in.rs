@@ -21,7 +21,7 @@
 //! the typed `RpcOutcome` of a real Node RPC call.
 
 use rdm_core::NodeId;
-use rafka_node_admin_client::{BuildId, FabricDesired, LaunchKind, MeshDesired, PathName};
+use rdm_client::{BuildId, FabricDesired, LaunchKind, MeshDesired, PathName};
 use rafka_node_rpc::stream::StreamItem;
 use rafka_node_rpc::{Budget, CallOptions, NodeTarget};
 use rdm_core::build::{Build, BuildChange, BuildReply, BuildRequest, BuildSubmit};
@@ -188,7 +188,7 @@ fn provider_actions(paths: &[PathBuf]) -> Value {
 /// The exact executable and image a node of the estate runs, observed from the provider (the
 /// process's `/proc/<pid>/exe`, the container's entry point and bind mount), never from a span.
 async fn observe_launch(estate: &Estate, node: &str) -> Value {
-    use rafka_node_admin_client::binding::sha256_file;
+    use rdm_client::binding::sha256_file;
     let n = estate.node_value(node).await;
     if provider() == "container" {
         let id = estate.container_of(node).unwrap_or_else(|| panic!("{node}: no running container"));
@@ -281,7 +281,7 @@ struct Formed {
     shape: Shape,
     seed: u64,
     candidate: String,
-    set: rafka_node_admin_client::binding::BindingSet,
+    set: rdm_client::binding::BindingSet,
     bound: Vec<PathBuf>,
     estate: Estate,
     actions: Vec<Value>,
@@ -300,7 +300,7 @@ fn owner(cell: &str, shape: Shape) -> Owner {
 struct Born {
     dir: PathBuf,
     candidate: String,
-    set: rafka_node_admin_client::binding::BindingSet,
+    set: rdm_client::binding::BindingSet,
     bound: Vec<PathBuf>,
     estate: Estate,
     provider_before: Value,
@@ -1892,7 +1892,7 @@ impl Run {
     /// to the fabric-primary over the `node` objects: the Build it runs on. The attempt it opened is
     /// what [`Self::finish`] waits for. The caller's stream is read on a task of its own.
     async fn write_recipe(&mut self, f: &Formed, st: &Stable, what: &str, node: &str) -> String {
-        use rafka_node_admin_client::Nodes;
+        use rdm_client::Nodes;
         use rdm_core::build::RecipeStep;
         let t0 = now_ms();
         let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
@@ -5449,7 +5449,7 @@ async fn cut_ops_run(cell: &str, shape: Shape) {
     // `node` objects) is refused by name `unheard-mesh` at the Build door: the far mesh's nodes are not the writer's
     // to create, stop, rename or delete across the cut (R-D1).
     {
-        use rafka_node_admin_client::{CallEnd, Nodes};
+        use rdm_client::{CallEnd, Nodes};
         use rdm_core::build::RecipeStep;
         let nodes = Nodes::new(f.estate.carrier_at(&path_of(&st.fp_name())).await);
         for target in [format!("{far_mesh}.gateway.1"), s(&far_secondary["name"]), s(&far_primary["name"])] {

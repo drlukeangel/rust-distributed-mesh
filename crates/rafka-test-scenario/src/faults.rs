@@ -5,8 +5,8 @@
 //! `<root>/faults/<name>.boot.json` instead.
 
 use crate::estate::{bin_dir, wait_for, wait_for_observed, Estate};
-use rafka_node_admin_client::binding::{sha256_file, Binding, BindingSet, Candidate};
-use rafka_node_admin_client::{PathName, Peers};
+use rdm_client::binding::{sha256_file, Binding, BindingSet, Candidate};
+use rdm_client::{PathName, Peers};
 use rafka_node_rpc_testkit::admin_faults::CutSpec;
 use rafka_node_rpc_testkit::fault_door::{self, FaultReply, FaultRequest, FaultState};
 use serde_json::{json, Value};

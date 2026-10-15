@@ -20,7 +20,7 @@
 //! 8. A restart changes no topology: it is an attempt of the accepted Build, under the same id.
 
 use crate::build_log;
-use rafka_node_admin_client::{BuildId, BuildSpec, CallEnd, FabricDesired, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus};
+use rdm_client::{BuildId, BuildSpec, CallEnd, FabricDesired, Fabrics, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

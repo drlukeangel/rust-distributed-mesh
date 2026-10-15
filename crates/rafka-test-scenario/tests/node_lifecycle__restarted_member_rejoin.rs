@@ -8,7 +8,7 @@
 //! by the admin that launched it; the reborn birth's own entry pull and its mesh-channel join are
 //! read from its spans, against the admin's serve span, by the birth's own records.
 
-use rafka_node_admin_client::{NodeStatus, NodeView};
+use rdm_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;

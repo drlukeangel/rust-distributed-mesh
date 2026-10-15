@@ -1,8 +1,8 @@
 [package]
-name = "rafka-node-admin-client"
+name = "rdm-client"
 version = "0.1.0"
 edition = "2021"
-description = "Typed client and DTOs for the node-admin control API (Build, nodes, meshes, fabric)"
+description = "Typed client over the Node RPC op families (build.create, node, mesh, fabric)"
 publish = false
 
 [dependencies]

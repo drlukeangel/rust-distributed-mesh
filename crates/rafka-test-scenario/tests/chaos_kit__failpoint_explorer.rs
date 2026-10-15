@@ -13,7 +13,7 @@
 //! `FetchBuildFacts` (`build_log`).
 
 use crate::build_log;
-use rafka_node_admin_client::{BuildSpec, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, Nodes, PathName, WorkflowStream};
+use rdm_client::{BuildSpec, LaunchKind as NodeKind, MeshDesired, NodeSpec, NodeStatus, Nodes, PathName, WorkflowStream};
 use rafka_node_admin_core::build_state::BuildState;
 use rafka_node_admin_core::deployment::pipeline::{AdoptStep, CreateStep, RetireStep, StartStep};
 use rafka_node_admin_core::lifecycle::HookPhase;

@@ -9,7 +9,7 @@ use rdm_core::connections::NodeConnection;
 use rdm_core::launch::Launch;
 use rdm_core::runtime::RuntimeFact;
 use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId, NodeKind, PathName};
-use rafka_node_admin_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeRpc, NodeSelector, NodeStatus, Nodes, TagFilter};
+use rdm_client::{BuildCarrier, CallEnd, ConnectionsView, ExactBirth, Fabrics, MeshSelector, Meshes, NodeRpc, NodeSelector, NodeStatus, Nodes, TagFilter};
 use rdm_core::status::TagScope;
 use rdm_core::status::StatusReply;
 use rafka_node_admin_core::admin::{start_with, AdminConfig};

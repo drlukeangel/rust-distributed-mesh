@@ -256,8 +256,8 @@ impl Looker {
             if out.reply().is_none() {
                 return false;
             }
-            let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone() };
-            let _ = rafka_node_admin_client::NodeRpc::new(&self.client).get(&birth, &CallOptions::default()).await;
+            let birth = rdm_client::ExactBirth { target: target.clone(), node_id: n.node_id.clone(), incarnation: incarnation.clone() };
+            let _ = rdm_client::NodeRpc::new(&self.client).get(&birth, &CallOptions::default()).await;
             true
         };
         // 2. The same kick through up to two live members of the birth's mesh, at once.

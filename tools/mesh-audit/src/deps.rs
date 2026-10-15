@@ -31,7 +31,7 @@ pub const GENERIC_PACKAGES: &[&str] = &[
     "rafka-mesh-transport",
     "rafka-node-rpc",
     "rafka-node-admin-core",
-    "rafka-node-admin-client",
+    "rdm-client",
     "rafka-test-scenario",
     "rafka-node-rpc-testkit",
     "rafka-chaos",
@@ -47,7 +47,7 @@ pub const PUBLIC_INTERFACE_CONSUMERS: &[&str] = &["rafka-test-scenario", "rafka-
 /// The public control/probe interfaces those crates may depend on.
 pub const PUBLIC_INTERFACES: &[&str] = &[
     "rafka-chaos",
-    "rafka-node-admin-client",
+    "rdm-client",
     "rdm-core",
     "rafka-node-rpc-testkit",
     "rafka-test-scenario",

@@ -7,7 +7,7 @@
 //! settled through a Build; every birth joined its maker with `JoinNode` and read the maker's
 //! topology with `GetTopology`.
 
-use rafka_node_admin_client::NodeView;
+use rdm_client::NodeView;
 use rafka_test_scenario::estate::{descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::path::PathBuf;

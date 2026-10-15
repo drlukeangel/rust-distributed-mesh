@@ -8,7 +8,7 @@
 //! - Its runtime still runs, so it is held, never replaced: no Build removes it and no other birth
 //!   takes its path. Thawed, the same birth is back `ready-for-traffic` (`via-offline-returned`).
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeStatus};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;

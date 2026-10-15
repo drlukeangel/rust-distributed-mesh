@@ -14,7 +14,7 @@
 //! 5. A key or value over its limit is refused by name, and writes nothing.
 
 use crate::build_log;
-use rafka_node_admin_client::NodeStatus;
+use rdm_client::NodeStatus;
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::{json, Value};
 use std::time::Duration;

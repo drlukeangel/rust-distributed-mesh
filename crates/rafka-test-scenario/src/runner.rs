@@ -168,7 +168,7 @@ pub async fn run_replayable(
         for sf in manifest.fault_schedule.iter().filter(|f| f.before_operation == i) {
             let Fault::RestartNode { node } = &sf.fault;
             let before = estate.node_value(node).await;
-            let path: rafka_node_admin_client::PathName = node.parse().unwrap_or_else(|e| panic!("the fault names {node}, not a path.name: {e:?}"));
+            let path: rdm_client::PathName = node.parse().unwrap_or_else(|e| panic!("the fault names {node}, not a path.name: {e:?}"));
             let step = format!("fault[{fault_no}]");
             fault_no += 1;
             let mut restart = match estate.nodes_obj().await.restart(&path).await {

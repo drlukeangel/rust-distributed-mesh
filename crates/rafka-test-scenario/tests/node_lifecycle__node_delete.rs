@@ -18,7 +18,7 @@
 //!    endpoint key; a later spec can inherit them"): the victim's data dir and its endpoint key
 //!    stay, and no step of the delete releases storage.
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, ScopeStatus};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeSpec, ScopeStatus};
 use rafka_test_scenario::estate::{named, wait_for, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::{json, Value};

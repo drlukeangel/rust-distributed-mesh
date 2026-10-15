@@ -3439,8 +3439,8 @@ pub async fn probed_ready_blocker(client: &rafka_node_rpc::NodeRpcClient, book: 
     if digest.status != MemberStatus::Pending {
         return None;
     }
-    let birth = rafka_node_admin_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
-    match rafka_node_admin_client::NodeRpc::new(client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
+    let birth = rdm_client::ExactBirth { target: rafka_node_rpc::NodeTarget::ExactNode(node.node_id.clone()), node_id: node.node_id.clone(), incarnation: incarnation.clone() };
+    match rdm_client::NodeRpc::new(client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
         Ok(rdm_core::status::StatusReply::Blocked { node_id, incarnation: answered, reason, retry_on }) if node_id == node.node_id && answered == incarnation => {
             Some(format!("{}: hydrate_before_ready is blocked: {reason}; it runs again on {}", node.name, retry_on.name()))
         }
@@ -5305,10 +5305,10 @@ impl Running {
     }
 
     /// Print what the process that started this admin reads on its stdout: the birth it runs under
-    /// (`rafka_node_admin_client::BIRTH_LINE`), by which that process reaches it over Node RPC holding
+    /// (`rdm_client::BIRTH_LINE`), by which that process reaches it over Node RPC holding
     /// nothing else, then its control base.
     pub fn announce(&self) {
-        println!("{}{}", rafka_node_admin_client::BIRTH_LINE, serde_json::to_string(&self.birth()).expect("a birth serializes"));
+        println!("{}{}", rdm_client::BIRTH_LINE, serde_json::to_string(&self.birth()).expect("a birth serializes"));
         println!("RDM_NODE_ADMIN_API_BASE={}", self.api_base);
     }
 
@@ -7177,8 +7177,8 @@ async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring::Wiring, b
                                                                 // The ping answered: the status kick. The node re-publishes its presence
                                                                 // and answers its status.
                                                                 let Some(incarnation) = node.incarnation_id.clone() else { return Err(format!("{} ({}) holds no recorded birth: there is no exact birth to tickle", node.name, node.node_id)) };
-                                                                let birth = rafka_node_admin_client::ExactBirth { target: target.clone(), node_id: node.node_id.clone(), incarnation };
-                                                                let kick = match rafka_node_admin_client::NodeRpc::new(&client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
+                                                                let birth = rdm_client::ExactBirth { target: target.clone(), node_id: node.node_id.clone(), incarnation };
+                                                                let kick = match rdm_client::NodeRpc::new(&client).get(&birth, &rafka_node_rpc::CallOptions::default()).await {
                                                                     Ok(reply) => reply.name(),
                                                                     Err(end) => end.rpc_name(),
                                                                 };

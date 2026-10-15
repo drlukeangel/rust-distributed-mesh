@@ -72,8 +72,8 @@ fn clean_fixture_passes() {
     let f = Fixture::new(
         &[
             ("rdm-core", NONE),
-            ("rafka-node-admin-client", &[("rdm-core", "")]),
-            ("rafka-chaos", &[("rafka-node-admin-client", "")]),
+            ("rdm-client", &[("rdm-core", "")]),
+            ("rafka-chaos", &[("rdm-client", "")]),
         ],
         &[],
     );
@@ -143,7 +143,7 @@ fn rule3_mesh_entity_on_application_ef_fails() {
 #[test]
 fn rule4_chaos_on_node_admin_core_fails() {
     let f = Fixture::new(
-        &[("rafka-chaos", &[("rafka-node-admin-core", ""), ("rafka-node-admin-client", "")]), ("rafka-node-admin-core", NONE), ("rafka-node-admin-client", NONE)],
+        &[("rafka-chaos", &[("rafka-node-admin-core", ""), ("rdm-client", "")]), ("rafka-node-admin-core", NONE), ("rdm-client", NONE)],
         &[],
     );
     assert_eq!(

@@ -2193,8 +2193,8 @@ impl DeploymentPipeline<'_> {
     fn command_context(&self, run: &Run<'_>, cmd: crate::node_commands::NodeCommand, node: &Node) -> CommandContext {
         let operation = match cmd {
             crate::node_commands::NodeCommand::DeleteConnections => format!("node.connections.delete:{}", node.name),
-            crate::node_commands::NodeCommand::Stop => rafka_node_admin_client::StopContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
-            crate::node_commands::NodeCommand::Start => rafka_node_admin_client::StartContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
+            crate::node_commands::NodeCommand::Stop => rdm_client::StopContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
+            crate::node_commands::NodeCommand::Start => rdm_client::StartContext::new(run.build_id.clone(), run.attempt, node.name.clone()).operation(),
         };
         CommandContext { build_id: run.build_id.to_string(), attempt: run.attempt, operation }
     }

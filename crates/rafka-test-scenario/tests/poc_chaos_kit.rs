@@ -3,7 +3,7 @@
 //! `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 use rdm_core::NodeKind;
-use rafka_node_admin_client::{BuildSpec, FabricDesired, MeshDesired, NodeStatus};
+use rdm_client::{BuildSpec, FabricDesired, MeshDesired, NodeStatus};
 use rdm_core::build::BuildPhase;
 use rafka_test_scenario::estate::{Estate, Owner};
 use rafka_test_scenario::netfault::{udp_ports, Partition};
@@ -25,7 +25,7 @@ fn owner(test: &str) -> Owner {
     }
 }
 
-fn ready(n: &rafka_node_admin_client::NodeView) -> bool {
+fn ready(n: &rdm_client::NodeView) -> bool {
     n.status == NodeStatus::ReadyForTraffic
 }
 

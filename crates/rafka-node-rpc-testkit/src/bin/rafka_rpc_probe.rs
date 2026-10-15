@@ -10,7 +10,7 @@
 //! ```
 //!
 //! `<birth>` is the entry node-admin's birth, the JSON it prints on its birth line
-//! (`rafka_node_admin_client::BIRTH_LINE`). The probe reads that admin's view over Node RPC
+//! (`rdm_client::BIRTH_LINE`). The probe reads that admin's view over Node RPC
 //! (`fabric.get`, then `node.get` for each mesh the fabric lists) and resolves the target from it:
 //! `exact:` is exactly that logical node and never follows a replacement;
 //! `path:` is whoever holds the path now. `cas` without `--expected` expects
@@ -19,7 +19,7 @@
 //! `Reply` carries the executing node's provenance and the typed result.
 
 use rdm_core::{IncarnationId, MeshNode, NodeId, PathName};
-use rafka_node_admin_client::{BuildCarrier, Fabrics, NodeSelector, NodeView, Nodes};
+use rdm_client::{BuildCarrier, Fabrics, NodeSelector, NodeView, Nodes};
 use rafka_node_rpc::{CallOptions, NodeResolver, NodeRpcClient, NodeTarget, ResolvedNode, StaticResolver};
 use rdm_core::outcome::RpcOutcome;
 use rafka_node_rpc_testkit::proof_store::{ProofReply, ProofRequest, ProofStore};
@@ -548,7 +548,7 @@ async fn run_topology(a: &Args, target: &NodeTarget) -> Result<Value, String> {
 mod tests {
     use super::resolved;
     use rdm_core::{IncarnationId, NodeId, PathName};
-    use rafka_node_admin_client::NodeView;
+    use rdm_client::NodeView;
     use rdm_core::views::NodeStatus;
 
     /// A node of `name` as an admin's view holds it: born when `endpoint`, `addr` and `incarnation`

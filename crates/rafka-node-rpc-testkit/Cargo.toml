@@ -13,7 +13,7 @@ doctest = false
 async-trait = "0.1"
 rafka-node-admin-core = { path = "../rafka-node-admin-core" }
 # rafka-rpc-probe: the entry admin's view, read over Node RPC through the typed objects (fabric.get, node.get).
-rafka-node-admin-client = { path = "../rafka-node-admin-client" }
+rdm-client = { path = "../rdm-client" }
 rafka-node-rpc = { path = "../rafka-node-rpc" }
 rdm-core = { path = "../rdm-core" }
 rafka-mesh-transport = { path = "../rafka-mesh-transport" }

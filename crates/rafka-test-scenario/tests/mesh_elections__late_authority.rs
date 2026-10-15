@@ -16,7 +16,7 @@
 //!   retires births A launched, through its own `node.restart` and `node.delete`, from their published
 //!   runtimes, with A's receipts nowhere.
 
-use rafka_node_admin_client::{CallEnd, LaunchKind as NodeKind, NodeSpec, NodeStatus};
+use rdm_client::{CallEnd, LaunchKind as NodeKind, NodeSpec, NodeStatus};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::time::Duration;
@@ -94,7 +94,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     for _ in 0..12 {
         for admin in [&incumbent_admin, &late_name] {
             let view = estate.node_views_at(admin).await.unwrap_or_else(|| panic!("{admin} does not answer node.get"));
-            let held = |name: &rafka_node_admin_client::PathName| view.iter().find(|n| n.name == *name).map(|n| (n.is_primary, n.is_fabric_primary));
+            let held = |name: &rdm_client::PathName| view.iter().find(|n| n.name == *name).map(|n| (n.is_primary, n.is_fabric_primary));
             assert_eq!(held(&incumbent_admin), Some((true, true)), "the incumbent keeps both seats ({admin}): {view:#?}");
             assert_eq!(held(&late_name), Some((false, false)), "the lower NodeId holds none ({admin}): {view:#?}");
         }
@@ -108,7 +108,7 @@ async fn a_lower_node_id_admin_born_after_a_build_wins_and_manages_its_births() 
     estate.enter(&late_name).await;
     let mut stop = estate.nodes_obj().await.stop(&incumbent_admin).await.expect("node.stop of incumbent_admin");
     let accepted = stop.accepted().clone();
-    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rafka_node_admin_client::Frame::SeatMoved { .. })) {
+    if matches!(Estate::frames_of(&mut stop).await.last(), Some(rdm_client::Frame::SeatMoved { .. })) {
         estate.resume(&accepted.build_id, accepted.attempt).await;
     }
     estate.kill_bootstrap();

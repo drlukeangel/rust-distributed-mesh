@@ -21,7 +21,7 @@ use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::{Event, GossipSender};
 use rdm_core::{FabricId, MeshDigest, MeshId, NodeState};
 use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
-use rafka_node_admin_client::{NodeStatus, NodeView};
+use rdm_client::{NodeStatus, NodeView};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::typed::until_arrival;
 use serde_json::{json, Value};

@@ -3,7 +3,7 @@
 //! Matrix (restart: executing Mesh admin = owning mesh-admin; dissemination = own Mesh channel,
 //! then the backbone aggregate), §13, §17 "Restart Evidence".
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::faults::{binding_set, candidate_sha, Door};
 use serde_json::Value;
@@ -77,7 +77,7 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
         let peers = estate.peers().await;
         let views = estate.node_views().await;
         let target_view = views.iter().find(|n| n.name.to_string() == target).expect("node.get lists the target").clone();
-        for peer in views.iter().filter(|n| n.name != target_view.name && n.kind == rafka_node_admin_client::LaunchKind::RpcNode) {
+        for peer in views.iter().filter(|n| n.name != target_view.name && n.kind == rdm_client::LaunchKind::RpcNode) {
             peers.fact(peer, &target_view.mesh, "it holds the restart target's mesh including the target", |v| v.birth(&target_view.node_id).is_some()).await;
         }
     }
@@ -105,7 +105,7 @@ async fn a_peer_mesh_admin_restart_is_published_by_its_own_mesh_primary_and_reac
         let views = estate.node_views().await;
         let target_view = views.iter().find(|n| n.name.to_string() == target).expect("node.get lists the target").clone();
         assert_eq!((target_view.node_id.to_string(), target_view.incarnation_id.as_ref().map(|i| i.as_str().to_string()).unwrap_or_default()), target_birth.clone(), "the restart keeps the target's birth");
-        for peer in views.iter().filter(|n| n.mesh == home && n.kind == rafka_node_admin_client::LaunchKind::RpcNode) {
+        for peer in views.iter().filter(|n| n.mesh == home && n.kind == rdm_client::LaunchKind::RpcNode) {
             peers
                 .fact(peer, &target_view.mesh, "it holds the restarted target as the same birth, live, with no restart in flight", |v| {
                     v.birth(&target_view.node_id).is_some_and(|d| d.node.incarnation.as_str() == target_birth.1 && d.status == rdm_core::MemberStatus::ReadyForTraffic) && v.overlay(&target_view.node_id, "node.restart:").is_none()

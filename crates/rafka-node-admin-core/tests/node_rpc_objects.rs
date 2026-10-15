@@ -5,7 +5,7 @@
 use iroh::protocol::Router;
 use iroh::SecretKey;
 use rdm_core::{IncarnationId, NodeId};
-use rafka_node_admin_client::{CallEnd, ExactBirth, NodeRpc};
+use rdm_client::{CallEnd, ExactBirth, NodeRpc};
 use rafka_node_rpc::{Budget, CallOptions, NodeRpcClient, NodeTarget, ResolvedNode, ServedBirth, ServerBuilder, StaticResolver};
 use rdm_core::catalog::OpOwner;
 use rdm_core::status::{NodeState, Status, StatusReply, StatusRequest};

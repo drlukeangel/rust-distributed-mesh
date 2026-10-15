@@ -21,7 +21,7 @@ use futures_lite::StreamExt as _;
 use iroh::{Endpoint, EndpointAddr};
 use iroh_gossip::api::Event;
 use rdm_core::{FabricId, MeshId, NodeKind};
-use rafka_node_admin_client::NodeView;
+use rdm_client::NodeView;
 use rafka_mesh_transport::membership::{backbone_topic, learn_addresses, mesh_topic, Frame};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use rafka_test_scenario::typed::until_arrival;

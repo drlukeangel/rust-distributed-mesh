@@ -13,7 +13,7 @@
 //! interfaces (`tools/mesh-audit/src/deps.rs`, rule 4; the core depends on `rafka-node-admin-client`,
 //! so the client cannot host it either).
 
-use rafka_node_admin_client::{await_fact, BuildCarrier, CallEnd};
+use rdm_client::{await_fact, BuildCarrier, CallEnd};
 use rafka_node_admin_core::build::BuildId;
 use rafka_node_admin_core::build_facts_read::{fetch_build_facts, FetchFailure};
 use rafka_node_admin_core::build_state::{fold, BuildFact, BuildProjection, BuildState, StepOutcome};

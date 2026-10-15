@@ -4,7 +4,7 @@
 //! computes it: nothing here orders NodeIds.
 
 use rdm_core::NodeKind;
-use rafka_node_admin_client::NodeView;
+use rdm_client::NodeView;
 
 /// The primary of the `(mesh, kind)` cohort as the view advertises it: the one row with
 /// `is_primary`, or `None` while the view advertises none (an election in flight).

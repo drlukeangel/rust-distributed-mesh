@@ -132,7 +132,7 @@ pub const ACTIVE_TRANSPORT_SOURCES: &[&str] = &[
     "crates/rafka-node-rpc-testkit",
     "crates/rafka-node-base",
     "crates/rafka-node-admin-core",
-    "crates/rafka-node-admin-client",
+    "crates/rdm-client",
     "crates/rafka-test-scenario",
     "tools/mesh-audit",
 ];
@@ -165,7 +165,7 @@ pub const RUNTIME_SOURCES: &[&str] = &[
     "crates/rafka-node-rpc-testkit/src",
     "crates/rafka-node-base/src",
     "crates/rafka-node-admin-core/src",
-    "crates/rafka-node-admin-client/src",
+    "crates/rdm-client/src",
 ];
 
 /// A read of a descriptive map (`extra`, `tags`) in runtime code.

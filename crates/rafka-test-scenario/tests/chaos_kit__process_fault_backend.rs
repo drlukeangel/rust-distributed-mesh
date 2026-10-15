@@ -8,7 +8,7 @@
 //! The cell does not touch the fabric-primary node-admin, and no mesh loses every node-admin.
 
 use rafka_test_scenario::elections::{advertised_fabric_primaries, seats_as_expected};
-use rafka_node_admin_client::NodeStatus;
+use rdm_client::NodeStatus;
 use rafka_test_scenario::estate::{descends_from, named, wait_for, Estate, Owner};
 use rafka_test_scenario::process_faults::{cpu_ticks, proc_state, ExactRuntime, Fault, Refusal as FaultRefusal};
 use rafka_test_scenario::wedge::*;

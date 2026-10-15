@@ -14,7 +14,7 @@
 //!   created again gets a new MeshId, a node removed and created again at the
 //!   same path a new NodeId; the Fabric keeps its id throughout.
 
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes, NodeStatus};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, MeshSelector, Meshes, NodeStatus};
 use rafka_test_scenario::estate::{named, Estate, Owner};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};

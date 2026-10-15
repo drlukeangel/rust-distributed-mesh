@@ -11,7 +11,7 @@
 //!   other roles keep their birth.
 
 use crate::build_log;
-use rafka_node_admin_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeView};
+use rdm_client::{FabricDesired, LaunchKind as NodeKind, MeshDesired, NodeView};
 use rafka_test_scenario::estate::{wait_for, descends_from, named, Estate, Owner};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};

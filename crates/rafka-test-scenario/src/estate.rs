@@ -4,9 +4,9 @@
 //! the `rafka-node-admin` process and its control API, the `rafka-rpc-probe`
 //! binary and the JSONL evidence files. No internal map is read.
 
-use rafka_node_admin_client::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated, ENV_EXECUTABLE_BINDINGS, ENV_EXECUTABLE_CANDIDATE};
-use rafka_node_admin_client::LaunchKind as NodeKind;
-use rafka_node_admin_client::{birth_of_line, MeshNode, BIRTH_LINE};
+use rdm_client::binding::{BindingError, BindingSet, Expect, ProviderImage, Validated, ENV_EXECUTABLE_BINDINGS, ENV_EXECUTABLE_CANDIDATE};
+use rdm_client::LaunchKind as NodeKind;
+use rdm_client::{birth_of_line, MeshNode, BIRTH_LINE};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -59,7 +59,7 @@ pub fn bin_dir() -> PathBuf {
 }
 
 /// What a started node-admin prints before it serves: the birth its Node RPC door serves under
-/// (`rafka_node_admin_client::BIRTH_LINE`), then its control base. The receiver gets the birth once the
+/// (`rdm_client::BIRTH_LINE`), then its control base. The receiver gets the birth once the
 /// base line is read, or the refusal of an admin that printed its base and no birth (or a birth that
 /// does not decode). The reader goes on reading the pipe after it.
 fn read_announcement(stdout: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<Result<MeshNode, String>> {
@@ -439,9 +439,9 @@ pub fn binding_set_from_build_manifest(manifest: &Path, bin_dir: &Path, containe
     for (kind, file) in map {
         let file = file.as_str().ok_or_else(|| format!("{}: executable_map.{kind} is not a file name", manifest.display()))?;
         let sha256 = v["binaries"][file].as_str().ok_or_else(|| format!("{}: binaries names no sha256 for {file}", manifest.display()))?.to_string();
-        bindings.push(rafka_node_admin_client::binding::Binding { launch_id: kind.clone(), executable: bin_dir.join(file), sha256, image: container.then(|| RUNTIME_IMAGE.to_string()) });
+        bindings.push(rdm_client::binding::Binding { launch_id: kind.clone(), executable: bin_dir.join(file), sha256, image: container.then(|| RUNTIME_IMAGE.to_string()) });
     }
-    Ok(BindingSet { candidate: rafka_node_admin_client::binding::Candidate { sha, build: v["consumer_source_sha256"].as_str().unwrap_or_default().to_string() }, launch_ids: bindings.iter().map(|b| b.launch_id.clone()).collect(), bindings })
+    Ok(BindingSet { candidate: rdm_client::binding::Candidate { sha, build: v["consumer_source_sha256"].as_str().unwrap_or_default().to_string() }, launch_ids: bindings.iter().map(|b| b.launch_id.clone()).collect(), bindings })
 }
 
 /// The explicit executable bindings an estate launches from (the external-consumer seam): the
@@ -565,7 +565,7 @@ pub struct Estate {
     pub evidence: PathBuf,
     /// The node-admin the estate enters at: the typed objects start at it, and a probe is given its birth
     /// ([`Self::entry_birth`]). [`Estate::enter`] changes it.
-    pub admin: rafka_node_admin_client::PathName,
+    pub admin: rdm_client::PathName,
     /// This estate's Fabric id. Control addresses are loopback ports that other estates on the
     /// host reuse once a runtime dies: an admin answers for this estate only when its view names
     /// this id ([`Self::fabric_at`]).
@@ -585,7 +585,7 @@ pub struct Estate {
     /// The birth each live node-admin `path.name` holds now, as an admin this estate started printed it
     /// or a view the estate read lists it: the admins the estate reads views of, and the entry a probe is
     /// given ([`Self::entry_birth`]).
-    pub(crate) births: std::sync::Mutex<std::collections::BTreeMap<rafka_node_admin_client::PathName, MeshNode>>,
+    pub(crate) births: std::sync::Mutex<std::collections::BTreeMap<rdm_client::PathName, MeshNode>>,
     /// Dropped last: stops the reaper and removes the root.
     _scope: EstateScope,
 }
@@ -688,7 +688,7 @@ impl Estate {
         // terminal frame before a cell submits anything: a cell's first build.create is never refused
         // for a Build in progress it did not start.
         let day_zero = day_zero.unwrap_or_else(|| panic!("the bootstrap admin {} holds fabric {} and no current Build: its Day-0 Build is accepted before it serves", estate.admin, estate.fabric_id));
-        let id = rafka_node_admin_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
+        let id = rdm_client::BuildId::parse(&day_zero).unwrap_or_else(|e| panic!("fabric.get names the current Build {day_zero}, not a Build id: {e}"));
         let mut stream = estate.carrier().await.resubmit(&id, 1).await.unwrap_or_else(|e| panic!("the bootstrap admin does not stream its Day-0 Build {id}: {e}"));
         Self::until_complete(&mut stream).await;
         estate
@@ -884,13 +884,13 @@ impl Estate {
     /// restarts as the same logical node. Only the operator's environment is given (provider,
     /// binaries, evidence); identity, Mesh and Fabric come from its storage. Returns its
     /// `path.name`.
-    pub fn restart_admin(&mut self, data_dir: &Path) -> rafka_node_admin_client::PathName {
+    pub fn restart_admin(&mut self, data_dir: &Path) -> rdm_client::PathName {
         self.restart_admin_with(data_dir, &[])
     }
 
     /// [`Self::restart_admin`] with more operator environment (the recovery flags
     /// `RDM_MESH_PRIMARY` and `RDM_FABRIC_PRIMARY`).
-    pub fn restart_admin_with(&mut self, data_dir: &Path, operator_env: &[(&str, &str)]) -> rafka_node_admin_client::PathName {
+    pub fn restart_admin_with(&mut self, data_dir: &Path, operator_env: &[(&str, &str)]) -> rdm_client::PathName {
         let mut env = vec![
             ("MESH_SPAWN_TYPE", self.owner.provider.clone()),
             ("RDM_DATA_DIR", data_dir.display().to_string()),
