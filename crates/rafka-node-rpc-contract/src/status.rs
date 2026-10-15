@@ -1870,6 +1870,8 @@ mod tests {
             tags: ["rabbit".to_string(), "zone-a".to_string()].into(),
             config: [("tier".to_string(), "gold".to_string())].into(),
             held_running: None,
+            data_dir_lost: None,
+            data_dir_unreadable: None,
         }
     }
 

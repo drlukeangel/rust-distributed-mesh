@@ -86,6 +86,8 @@ pub fn node_view(n: &Node, load: Option<NodeLoad>, gossip: Option<GossipStats>, 
         tags,
         config: n.config.clone(),
         held_running: None,
+        data_dir_lost: None,
+        data_dir_unreadable: None,
     }
 }
 

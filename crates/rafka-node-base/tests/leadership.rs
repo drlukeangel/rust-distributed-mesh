@@ -28,6 +28,8 @@ fn row(name: &str, kind: NodeKind, primary: bool, fabric: bool) -> NodeView {
         tags: Default::default(),
         config: Default::default(),
         held_running: None,
+        data_dir_lost: None,
+        data_dir_unreadable: None,
     }
 }
 

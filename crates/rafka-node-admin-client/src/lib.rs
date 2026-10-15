@@ -31,7 +31,7 @@ pub use workflow::{fold, fold_receipts, fold_steps, Folded, Frame, Resume, Workf
 
 use rafka_mesh_entity::NodeKind;
 /// What the reads answer: the views travel on op `0x1B` and the control API answers the same shapes.
-pub use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, FabricView, HeldRunning, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
+pub use rafka_node_rpc_contract::views::{ConnectionView, ConnectionsView, DataDirLost, DataDirUnreadable, FabricView, HeldRunning, MeshView, NodeStatus, NodeView, ProviderKind, ScopeStatus};
 /// The executable-binding contract an operator hands node-admin (`RDM_EXECUTABLE_BINDINGS`).
 pub use rafka_mesh_entity::binding;
 pub use rafka_mesh_entity::NodeKind as LaunchKind;
