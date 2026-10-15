@@ -1798,8 +1798,8 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                     // gossip or readiness.
                                     {
                                         let declarer = declarer.clone();
-                                        let (digest, topology, records, me_id, incarnation, client, authority, status_storage) =
-                                            (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), authority.clone(), status_storage.clone());
+                                        let (digest, topology, records, me_id, incarnation, client, resolver, book, authority, status_storage) =
+                                            (digest.clone(), control.topology.clone(), records.clone(), node_id.clone(), incarnation.clone(), node_rpc.client.clone(), node_rpc.resolver.clone(), book.clone(), authority.clone(), status_storage.clone());
                                         let rounds = rounds_slot.clone();
                                         let park = park_gate.clone();
                                         tasks.push(tokio::spawn(async move {
@@ -1830,6 +1830,7 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                 if let Some(rounds) = rounds.get() {
                                                     rounds.withdraw_superseded().await;
                                                 }
+                                                rdm_node::node_rpc::feed_once(&book, &resolver, &me.to_string());
                                                 declarer.round(&me, &me_id, &view, &client, authority.get().map(|a| a.as_ref()), &addressed).await;
                                                 drop(turn);
                                                 // One coalesced wake from the inputs, never a timer: a poke during the round is
@@ -2016,9 +2017,17 @@ pub(crate) async fn start_booted(mut cfg: AdminConfig, mut wiring: crate::wiring
                                                     }
                                                     write(id, Some(NodeStatus::Dead), &mut written).await;
                                                 }
-                                                for id in report.returned.iter().chain(report.reachable_silent.iter()) {
+                                                for id in &report.returned {
                                                     records.offline.lock().unwrap().retain(|(nid, _)| nid.as_str() != id);
                                                     write(id, None, &mut written).await;
+                                                    if let Some(n) = watched.get(id) {
+                                                        records.clear_held_running(n).await;
+                                                    } else if let Some(n) = view.births().find(|n| n.node_id.as_str() == id) {
+                                                        records.clear_held_running(n).await;
+                                                    }
+                                                }
+                                                for id in &report.reachable_silent {
+                                                    verdicts.lock().unwrap().retain(|(nid, _), _| nid.as_str() != id);
                                                     if let Some(n) = watched.get(id) {
                                                         records.clear_held_running(n).await;
                                                     } else if let Some(n) = view.births().find(|n| n.node_id.as_str() == id) {

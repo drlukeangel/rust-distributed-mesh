@@ -5069,13 +5069,19 @@ impl DigestBook {
         if self.inner.lock().unwrap().contains_key(d.node.node_id.as_str()) {
             return;
         }
-        let mut projected = self.projected.lock().unwrap();
-        match projected.get_mut(d.node.node_id.as_str()) {
-            Some((held, _)) if held.node.incarnation == d.node.incarnation => {}
-            Some((held, _)) if held.node.supersedes.as_ref() == Some(&d.node.incarnation) => {}
-            _ => {
-                projected.insert(d.node.node_id.to_string(), (d.clone(), now));
+        let inserted = {
+            let mut projected = self.projected.lock().unwrap();
+            match projected.get_mut(d.node.node_id.as_str()) {
+                Some((held, _)) if held.node.incarnation == d.node.incarnation => false,
+                Some((held, _)) if held.node.supersedes.as_ref() == Some(&d.node.incarnation) => false,
+                _ => {
+                    projected.insert(d.node.node_id.to_string(), (d.clone(), now));
+                    true
+                }
             }
+        };
+        if inserted {
+            self.births.send_modify(|v| *v += 1);
         }
     }
 

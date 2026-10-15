@@ -418,13 +418,16 @@ async fn failpoint_explorer_releases_build_and_hook_stalls_recovers() {
     }
 
     // A restart is an attempt of the accepted Build: stalled at its pre-event receipt, then at the
-    // pre-event's publish.
+    // pre-event's publish. A restart of a cohort's sole member is refused no-secondary (Q7), so a
+    // cohort secondary is present while `node` restarts.
     run.plain_create(NodeKind::RpcNode, node).await;
+    run.plain_create(NodeKind::RpcNode, "mesh1.rpc.2").await;
     let receipt = json!({"kind": "receipt", "step": RetireStep::NodeRestarting.name(), "operation": "node.restart", "node": node});
     restart_cut(&run, &retire_order, "restart:NodeRestarting", receipt, "restart-step", 0, node, 2).await;
     let event = json!({"kind": "event", "event": "restarting", "node": node});
     restart_cut(&run, &retire_order, "event:restarting", event, "lifecycle-event", 1, node, 3).await;
     run.plain_delete(node).await;
+    run.plain_delete("mesh1.rpc.2").await;
 
     // Each reachable phase of the Node Pending -> ReadyForTraffic transition's hooks.
     for phase in [HookPhase::BeforeEligibility, HookPhase::AfterEligibilityBeforeCommit, HookPhase::AfterTransition] {

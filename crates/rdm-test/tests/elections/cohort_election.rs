@@ -265,7 +265,6 @@ async fn every_mn_cohort_elects_the_lowest_ready_node_id_through_the_matrix() {
     let holder_lived_until = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
     estate.kill_node(&killed).await;
     let (_succ, succ_id) = successor(&estate, &admin1, &nodes, &rpc, &killed_id).await;
-    build(&estate, &[("mesh1", 2, 3)]).await;
     // The rebirth is drift recovery's, once the killed runtime is proven exited: wait for the
     // count, then for the seats.
     estate
@@ -412,7 +411,11 @@ async fn a_second_meshs_admin_cohort_elects_its_lowest_node_id() {
     assert_eq!(primary_of(&nodes, &admin2).as_deref(), Some(succ.as_str()), "the announced successor keeps mesh2's admin seat over the birth drift recovery brings back at the killed path: {nodes:#?}");
     estate.artifact("successor-after-kill.json", &json!({"successor": succ, "successor_id": succ_id, "nodes": nodes}));
     assert_eq!(advertised_fabric(&nodes).as_deref(), Some("mesh1.admin.1"), "the fabric seat stays with the Day-0 admin of mesh1 while mesh2 loses and regains admins (R-A2)");
-    build(&estate, &[("mesh1", 2, 3), ("mesh2", 2, 3)]).await;
+    estate
+        .until_view_at(&admin1, "drift recovery restores two live mesh2 admins", rdm_transport::membership::staleness_floor() * 2 + Duration::from_secs(30), |views| {
+            (views.iter().filter(|n| n.mesh == "mesh2" && n.kind == NodeKind::NodeAdmin && n.status == NodeStatus::ReadyForTraffic).count() == 2).then_some(())
+        })
+        .await;
     settle(&estate, &admin1, "mesh2's killed admin is back").await;
     steady(&estate, &admin1, "mesh2's killed admin is back", hold).await;
 

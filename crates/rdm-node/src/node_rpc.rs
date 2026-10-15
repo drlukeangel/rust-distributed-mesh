@@ -89,7 +89,7 @@ pub fn feed_once(book: &DigestBook, resolver: &LiveNodeResolver, node: &str) {
                 .in_scope(|| tracing::info!("the resolver holds the parked birth by its exact id only: its path is given up"));
         }
     }
-    for d in book.all() {
+    for d in book.all().into_iter().chain(book.projected_unheard_at(std::time::Instant::now()).into_iter().map(|(d, _)| d)) {
         let Some(birth) = resolved(&d) else { continue };
         let (target, target_id, incarnation) = (birth.name.to_string(), birth.node_id.to_string(), birth.incarnation.to_string());
         match resolver.apply(birth, d.node.supersedes.as_ref()) {

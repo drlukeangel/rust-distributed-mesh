@@ -277,11 +277,14 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
         let first_req = start(2);
         let first = async { lost.observer.client.call::<Status>(&target, &first_req, &CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(60) }, ..CallOptions::default() }).await.0 };
         let rest = async {
-            let at_lost = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.rpc.1") && f.get("anchor") == Some(&lost_short);
+            let at_lost = |f: &BTreeMap<String, String>| f.get("node").map(String::as_str) == Some("mesh1.rpc.1") && f.get("anchor") == Some(&lost_short) && f.contains_key("outcome");
             if tokio::time::timeout(NEVER, spans.recorded("rdm.mesh.entry.update.via-pull-attempt", at_lost)).await.is_err() {
                 panic!("the start never made a join attempt at the commander that sent it");
             }
-            lost.observer.client.endpoint().close().await;
+            let close_lost = {
+                let ep = lost.observer.client.endpoint().clone();
+                tokio::spawn(async move { ep.close().await })
+            };
 
             // The successor commands the start while the first is under way.
             successor.deployed_as(&launch, &key, launch.name.clone(), Some(launch.name.clone()));
@@ -300,6 +303,7 @@ fn a_start_commanded_again_while_it_joins_a_lost_commander_joins_the_later_comma
                 joins.iter().any(|f| f.get("outcome").map(String::as_str) == Some("answered") && f.get("anchor") == Some(&successor_short)),
                 "an answered join of the start names the successor's key {successor_short}: {joins:?}"
             );
+            let _ = close_lost.await;
         };
         let (_lost_answer, ()) = tokio::join!(first, rest);
         let _ = std::fs::remove_dir_all(&dir);

@@ -231,7 +231,7 @@ impl AdminRunner {
                 .read()
                 .await
                 .members()
-                .filter(|n| n.mesh == mesh && n.status == NodeStatus::ReadyForTraffic)
+                .filter(|n| n.mesh == mesh && matches!(n.status, NodeStatus::ReadyForTraffic | NodeStatus::PendingReconnect))
                 .filter_map(|n| Some((n.endpoint_id.as_ref()?.0.clone(), n.transport_addr?)))
                 .collect();
             for p in peers {
@@ -556,7 +556,10 @@ impl AdminRunner {
         // every node.create of one is: it takes the mesh's issuing material and the fabric primary's
         // Pending hand-off before it is asked to be Ready (e4.s11; mesh-investigation.md "A node-admin
         // joins the live mesh").
-        let first_admin = self.topology.read().await.first_admin_of(node);
+        let first_admin = {
+            let t = self.topology.read().await;
+            t.first_admin_of(node) && crate::executor::held_admins(&node.mesh, Some(node), &t).is_empty()
+        };
         let before_ready = if first_admin { Some(self.mesh_state_hook(node, rdm_core::status::MeshState::Pending)?) } else { None };
         // The launch is the kind's template, as every create's: the new node's config is seeded
         // from the exited birth's Deleted row by the create's name claim (`NodeRows::claim`) and told

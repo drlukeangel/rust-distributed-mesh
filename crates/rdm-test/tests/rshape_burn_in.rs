@@ -424,7 +424,7 @@ struct Call {
 }
 
 fn probe_files(estate: &Estate) -> BTreeSet<PathBuf> {
-    std::fs::read_dir(&estate.evidence).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rafka-rpc-probe."))).collect()
+    std::fs::read_dir(&estate.evidence).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rafka-rpc-probe.") && n.to_string_lossy().ends_with(".spans.jsonl"))).collect()
 }
 
 fn probe_call(estate: &Estate, args: &[&str]) -> Call {
