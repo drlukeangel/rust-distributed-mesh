@@ -976,6 +976,7 @@ e12.s84 (issue to generate)  R-CY1: the canary red read and fixed (Root 1: cohor
 e12.s85 (issue to generate)  layout pre-step: `fence.rs` -> `seat_revision.rs`, `departed_status.rs` -> `deleted_status.rs`, and the 32 `i143_acceptance_*.rs` files renamed into their crates' test binaries with 100% discovery parity and 0 stem violations
 e12.s86 (issue to generate)  R-FM1: hung runtime hold (`RDM_HUNG_HOLD_FLOORS`, default 10), `TerminateRuntime` first step of recovery Build, and `held-running` store fact (`NodeView`/`FabricView`, gossip wire untouched; RED 505d99eb, landed 549493fe, gate 59 s; traces `07f3b640645fb9621219d50fa3135604`, `6f2cee1c90c07a9a7ce03607ded20cdb`, `88f6435305841044a5468305d6c1f66e`, `ed394bca8f94b70380f4cf4ff249b2fa`)
 e12.s87 (issue to generate)  R-FM2: gone vs broken inherited `data_dir` (`RDM_DATA_DIR_GONE_FLOORS`, default 2; `data-dir-lost` and `data-dir-unreadable` store facts + `node.get` fields, gossip wire untouched; RED 5068c55d; traces `3afc5ad0a17c48afa65aebd97fa550b4`, `b969d8fa8549ea89be5403ec5c232a8b`, `1d467f78873ef57f1d928f6e156e24d2`, `d7f84fcf6d32c35ceb719b6db6263a9c`, `3398e9d6a778824a3336aa83c29442ac`, `af93811d9ec896682b5c0ec249c0a3bd`, `2302862bb508b7b0584913877b8b491d`)
+e12.s89 (issue to generate)  the R-shape release cells: nine red cells across the authority, lifecycle, routing and partition chaos-process jobs, each read from its own trace and fixed where it lives
 e12.s49 #3078  mesh.delete ends at mesh.deleted: the fabric-primary's leave completes at the
                validated handoff; the final admin stays alive publishing MeshStatus Dead; its
                end is a separate node.delete (fabric-primary executor, exit proof, row Deleted,
@@ -2455,6 +2456,41 @@ open (added 2026-10-15 from the `1bcc2200` release-suite run: `i143-2777-contain
 
 - sections: [the-plan-of-record, story-bar, 12-2-container-proof]
 <!-- /epic:e12.s88 -->
+
+<!-- epic:e12.s89 -->
+## e12.s89 — the R-shape release cells: each red read from its own trace and fixed where it lives
+
+**Builder:** the lead with RDM engineers in pool lanes (one per job) · **Tracking issue:** to generate · **Architecture:** §14 Export/import gate; `crates/rdm-test/tests/rshape_burn_in.rs`; `tools/mesh-audit/i143-acceptance-jobs.json` `rshape_jobs`; [node-restart.md](/home/admin/rust-distributed-mesh/docs/architecture/lifecycles/node-restart.md); [build.md](/home/admin/rust-distributed-mesh/docs/architecture/build.md); [connections.md](/home/admin/rust-distributed-mesh/docs/architecture/connections.md)
+
+### State
+
+open (added 2026-10-15 from the `7257ff09` release run, `gates-e4s3-7257ff09release.log`; evidence copied to the lead's scratchpad `release-7257ff09/`). The five `rshape-*-process` jobs are in the release suite (`rdm-gate-at.sh` RELEASE_ONLY) and no release run has had them green. `rshape-composition-process` 3/3 green at `7257ff09`. `f877a260` returned the core families to the control-plane client (connections.md "Two planes, two words"); `peer_mesh_investigation` 8/8 at release cadence on it.
+
+### Remaining
+
+- [ ] `i143-rshape-authority-chaos-process`: `mock_authority_handoffs_preserve_one_effective_writer` (`rshape_burn_in.rs:1815`: checkpoint `C2+C4 mesh1: replacement ready`: authority not stable within 30 s, `mesh1.admin.1 does not answer fabric.get for this Fabric`); `mock_recovery_retains_build_and_advances_attempt` (`:2697`: R3, the attempt never seen in flight under `mesh2.admin.1` with `mesh2.broker.1` out of service).
+- [ ] `i143-rshape-lifecycle-chaos-process`: `mock_role_restarts_preserve_identity_and_birth` (`:3289`: `mesh1.admin.2`: the birth left no `rdm.mesh.node.update.via-ready` span after NodeRestarting); `mock_node_replacement_creates_distinct_logical_identity` and `mock_drain_and_retire_preserve_status_and_terminal_proof` (`:1937`: the Build did not complete with its effect visible within 120 s).
+- [ ] `i143-rshape-routing-chaos-process`: `mock_connection_churn_releases_superseded_resources` (`:2220`: attempt 1 executed by `mesh1.admin.1` and `mesh2.admin.1`); `mock_routes_survive_connection_and_birth_supersession` (`:2228`: attempt 2 began before attempt 1); `mock_proxy_cutback_requires_durable_retirement` stays green on `f877a260`.
+- [ ] `i143-rshape-partition-chaos-process`: `mock_control_loss_recovers_without_status_heartbeat` (`:5306`: the observer heard both births of the restarted broker: one incarnation).
+- [ ] An assertion that states a rule the architecture does not hold is corrected to the doc line it cites; one the architecture does hold and the code breaks is fixed in the code, with the red and green traces cited here.
+
+### Acceptance criteria
+
+<!-- crit:e12.s89.1 -->
+- [ ] The five `rshape-*-process` jobs green in one release run, each fix cited here with its doc line and its Jaeger trace.
+<!-- /crit:e12.s89.1 -->
+<!-- crit:e12.s89.2 -->
+- [ ] The story bar holds (section story-bar).
+<!-- /crit:e12.s89.2 -->
+
+### Done when
+
+- [ ] Every acceptance criterion holds; every landing carries the flame of the fixed path and lands only through the land script; this block's State names the landing shas and the mechanism found per cell.
+
+**Epic metadata**
+
+- sections: [the-plan-of-record, story-bar, 14-export-import-gate]
+<!-- /epic:e12.s89 -->
 <!-- epic:e12.s23 -->
 ## e12.s23 — seats and the Build-door admission: a seat moves only by explicit yield or proven loss (R-EL1 = Y + D, R-MT1 node.primary.update), and nothing that moves a seat or writes caller state runs before the initial fabric is ready-for-traffic
 
