@@ -237,7 +237,7 @@ fn forward_reseal_is_atomic_fails_a_moved_count_or_a_lost_fixture() {
 #[test]
 fn one_new_liveness_primitive_fails_a_served_echo_or_an_unretired_echo_row() {
     let t = Planted::of_tree();
-    t.write("crates/rafka-node-rpc-testkit/src/planted.rs", "fn serve(b: ServerBuilder) -> ServerBuilder { b.serve::<Echo, _, _>(OpOwner::Core, echo) }\n");
+    t.write("crates/rdm-test/src/planted.rs", "fn serve(b: ServerBuilder) -> ServerBuilder { b.serve::<Echo, _, _>(OpOwner::Core, echo) }\n");
     only(check(t.root()), Ratchet::OneNewLivenessPrimitive);
     let r = Planted::of_tree();
     r.edit("crates/rdm-core/src/catalog.rs", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Retired", "family: \"echo\".into(), owner: OpOwner::Core, state: OpState::Live");
@@ -264,7 +264,7 @@ const FIXTURE: &str = "rafka.node_rpc.request.serve.via-direct";
 #[cfg(test)] mod tests { fn fixture() { tracing::info_span!("rafka.mesh.fixture.serve.via-test"); } }
 fn emit() { tracing::info_span!("rdm.node_rpc.request.serve.via-direct"); }
 "#);
-    t.write("crates/rafka-chaos/src/planted.rs", "fn emit() { tracing::info_span!(\"rafka.chaos.fault.create.via-injection\"); }\n");
+    t.write("crates/rdm-test/src/planted.rs", "fn emit() { tracing::info_span!(\"rafka.chaos.fault.create.via-injection\"); }\n");
     assert!(check_one(t.root(), Ratchet::RdmSpansAreRdmPrefixed).is_empty());
     t.write("crates/rdm-transport/src/planted.rs", "fn emit() { tracing::span!(tracing::Level::INFO, \"rafka.chaos.fault.create.via-injection\"); }\n");
     only(check(t.root()), Ratchet::RdmSpansAreRdmPrefixed);

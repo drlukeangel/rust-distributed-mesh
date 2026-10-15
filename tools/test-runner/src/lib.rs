@@ -78,22 +78,22 @@ const GATE_RELEASE_ONLY: &[&str] = &[
 ];
 /// Crates whose every executable the fast gate runs.
 const GATE_CRATES: &[&str] = &[
-    "rafka-mesh-audit", "rdm-core", "rdm-transport", "rdm-admin", "rafka-node-rpc-testkit", "rdm-node",
+    "rafka-mesh-audit", "rdm-core", "rdm-transport", "rdm-admin", "rdm-test", "rdm-node",
 ];
 /// Stems that need a container runtime (the gate's `container-proof` job).
 const CONTAINER_STEMS: &[&str] = &["container_proof", "mesh_runtime__container_kill"];
 /// The e11 cells (PRD §13.1): (crate, stem).
 const E11: &[(&str, &str)] = &[
-    ("rafka-test-scenario", "node_rpc__restart_target"),
-    ("rafka-test-scenario", "node_rpc__role_routing"),
-    ("rafka-test-scenario", "node_rpc__role_context"),
-    ("rafka-test-scenario", "mesh_runtime__role_wedge"),
-    ("rafka-test-scenario", "mesh_shapes__role_build"),
-    ("rafka-test-scenario", "mesh_elections__role_cohort"),
-    ("rafka-node-rpc-testkit", "role_process"),
+    ("rdm-test", "node_rpc__restart_target"),
+    ("rdm-test", "node_rpc__role_routing"),
+    ("rdm-test", "node_rpc__role_context"),
+    ("rdm-test", "mesh_runtime__role_wedge"),
+    ("rdm-test", "mesh_shapes__role_build"),
+    ("rdm-test", "mesh_elections__role_cohort"),
+    ("rdm-test", "role_process"),
     ("rdm-node", "leadership"),
     ("rdm-transport", "pool"),
-    ("rafka-test-scenario", "node_rpc__shared_dial"),
+    ("rdm-test", "node_rpc__shared_dial"),
     ("rafka-mesh-audit", "dependency_rules"),
 ];
 
@@ -310,7 +310,7 @@ fn tiers_for(krate: &str, stem: &str, cells: &[Cell]) -> (Vec<String>, bool) {
     let container_stem = CONTAINER_STEMS.contains(&stem);
     let mut container = container_stem;
     let release_only = GATE_RELEASE_ONLY.contains(&stem) || container_stem;
-    if krate == "rafka-test-scenario" {
+    if krate == "rdm-test" {
         if GATE_SCENARIOS.contains(&stem) {
             tiers.insert(if release_only { "release" } else { "fast" });
         }
@@ -1449,8 +1449,8 @@ mod tests {
 
     #[test]
     fn registry_command_parses_env_crate_and_stem_qualified_id() {
-        let (env, krate, id) = parse_command("MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/x cargo test -p rafka-test-scenario --test main a_stem::a_test -- --exact").unwrap();
-        assert_eq!(krate, "rafka-test-scenario");
+        let (env, krate, id) = parse_command("MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/x cargo test -p rdm-test --test main a_stem::a_test -- --exact").unwrap();
+        assert_eq!(krate, "rdm-test");
         assert_eq!(id, "a_stem::a_test");
         assert_eq!(env, vec![("MESH_SPAWN_TYPE".to_string(), "process".to_string()), ("RDM_ARTIFACTS_DIR".to_string(), "target/x".to_string())]);
     }

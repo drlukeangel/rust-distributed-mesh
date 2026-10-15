@@ -8,14 +8,13 @@
 
 use std::path::{Path, PathBuf};
 
-const APPROVED: [&str; 7] = [
+const APPROVED: [&str; 6] = [
     "rdm-node",
     "rdm-admin",
     "rdm-transport",
-    "rafka-node-rpc-testkit",
+    "rdm-test",
     "rdm-core",
     "rdm-client",
-    "rafka-chaos",
 ];
 
 fn root() -> PathBuf {

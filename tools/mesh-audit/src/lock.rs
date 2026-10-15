@@ -129,11 +129,10 @@ impl fmt::Display for Violation {
 pub const ACTIVE_TRANSPORT_SOURCES: &[&str] = &[
     "crates/rafka-node-rpc-contract",
     "crates/rdm-transport",
-    "crates/rafka-node-rpc-testkit",
+    "crates/rdm-test",
     "crates/rdm-node",
     "crates/rdm-admin",
     "crates/rdm-client",
-    "crates/rafka-test-scenario",
     "tools/mesh-audit",
 ];
 
@@ -161,7 +160,7 @@ pub const NODES_STORAGE: &str = "crates/rdm-admin/src/storage.rs";
 pub const RUNTIME_SOURCES: &[&str] = &[
     "crates/rdm-core/src",
     "crates/rdm-transport/src",
-    "crates/rafka-node-rpc-testkit/src",
+    "crates/rdm-test/src",
     "crates/rdm-node/src",
     "crates/rdm-admin/src",
     "crates/rdm-client/src",
@@ -262,9 +261,9 @@ pub const STATUS_WIRE: &str = "crates/rdm-core/tests/status_wire.rs";
 pub const FRAMING: &str = "crates/rdm-core/src/framing.rs";
 pub const CATALOG: &str = "crates/rdm-core/src/catalog.rs";
 pub const CONTEXT_CELLS: &str = "crates/rdm-transport/tests/context.rs";
-pub const RETIRE_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/node_delete_pipeline.rs";
+pub const RETIRE_CELLS: &str = "crates/rdm-test/tests/node_delete_pipeline.rs";
 pub const DRIFT_CELLS: &str = "crates/rdm-admin/tests/drift_convergence.rs";
-pub const PROBE_APPLY_CELLS: &str = "crates/rafka-node-rpc-testkit/tests/status_probe_apply.rs";
+pub const PROBE_APPLY_CELLS: &str = "crates/rdm-test/tests/status_probe_apply.rs";
 
 /// The typed arms of the landed `CommandAdmission` (what a directed `node.connections.delete`,
 /// `stop-node` or `start-node` call established at the exact birth).
@@ -480,7 +479,7 @@ pub fn check_one(root: &Path, ratchet: Ratchet) -> Vec<Violation> {
                 Ok(emitters) => for e in emitters {
                     // The retained chaos harness is a customer-owned exception, not a
                     // license for generic substrate code to emit arbitrary rafka.* spans.
-                    let customer_chaos = e.file.starts_with("crates/rafka-chaos/src/") && e.name.starts_with("rafka.chaos.");
+                    let customer_chaos = (e.file.starts_with("crates/rafka-chaos/src/") || e.file.starts_with("crates/rdm-test/src/")) && e.name.starts_with("rafka.chaos.");
                     if !e.name.starts_with("rdm.") && !customer_chaos {
                         out.push(Violation::Token { ratchet, file: e.file, line: e.line, token: e.name });
                     }

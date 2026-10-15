@@ -2993,17 +2993,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "rafka-chaos"
-version = "0.1.0"
-dependencies = [
- "libc",
- "rdm-core",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
 name = "rafka-docgen"
 version = "0.1.0"
 dependencies = [
@@ -3024,55 +3013,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "syn",
-]
-
-[[package]]
-name = "rafka-node-rpc-testkit"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "ctor",
- "hex",
- "iroh",
- "iroh-gossip",
- "libc",
- "opentelemetry_sdk",
- "rafka-node-rpc-testkit",
- "rdm-admin",
- "rdm-client",
- "rdm-core",
- "rdm-node",
- "rdm-transport",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rafka-test-scenario"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "futures-lite",
- "iroh",
- "iroh-gossip",
- "libc",
- "opentelemetry_sdk",
- "rafka-chaos",
- "rafka-node-rpc-testkit",
- "rdm-admin",
- "rdm-client",
- "rdm-core",
- "rdm-transport",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "yaml_serde",
 ]
 
 [[package]]
@@ -3242,6 +3182,33 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "rdm-test"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "ctor",
+ "futures-lite",
+ "hex",
+ "iroh",
+ "iroh-gossip",
+ "libc",
+ "opentelemetry_sdk",
+ "rdm-admin",
+ "rdm-client",
+ "rdm-core",
+ "rdm-node",
+ "rdm-transport",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "yaml_serde",
 ]
 
 [[package]]

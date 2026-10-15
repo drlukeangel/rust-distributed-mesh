@@ -2,12 +2,10 @@
 members = [
     "crates/rdm-transport",
     "crates/rdm-node",
-    "crates/rafka-chaos",
-    "crates/rafka-node-rpc-testkit",
+    "crates/rdm-test",
     "crates/rdm-admin",
     "crates/rdm-client",
     "crates/rdm-core",
-    "crates/rafka-test-scenario",
     "tools/mesh-audit",
     "tools/docgen",
     "tools/test-runner",

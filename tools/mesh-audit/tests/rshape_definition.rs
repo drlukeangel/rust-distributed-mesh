@@ -660,7 +660,7 @@ fn rshape_definition_covers_every_scenario_without_business_dependencies() {
     plant("rshape-definition-command", "a canonical command that does not bind the consumer binaries", &m, &reg);
     let mut m = matrix.clone();
     m["cells"].as_array_mut().unwrap().push(json!({"test": "mock_unowned_cell", "issue": 2945, "provider": "process", "tier": "canonical", "job": "i143-rshape-x-process",
-        "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-x-process/mock_unowned_cell/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rafka-test-scenario --test main rshape_burn_in::mock_unowned_cell -- --exact"}));
+        "command": "RDM_RSHAPE_CONSUMER_BIN_DIR=target/i143-rshape/consumer-bin MESH_SPAWN_TYPE=process RDM_ARTIFACTS_DIR=target/i143-rshape/i143-rshape-x-process/mock_unowned_cell/estate RDM_RSHAPE_TIER=canonical RDM_RSHAPE_SEED=1431101 cargo test -p rdm-test --test main rshape_burn_in::mock_unowned_cell -- --exact"}));
     plant("rshape-definition-orphan-cell", "a cell that proves no scenario", &m, &reg);
 
     let first_adv = |m: &mut Value| -> usize { m["cells"].as_array().unwrap().iter().position(|c| s(c, "tier") == "adversarial").expect("the matrix holds an adversarial cell") };

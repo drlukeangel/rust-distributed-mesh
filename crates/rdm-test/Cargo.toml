@@ -1,0 +1,70 @@
+[package]
+name = "rdm-test"
+version = "0.1.0"
+edition = "2021"
+description = "Test-kit probes, proof protocols, scenario runner, evidence, and chaos fault backends for RDM"
+publish = false
+autotests = false
+
+[lib]
+doctest = false
+
+[dependencies]
+async-trait = "0.1"
+rdm-admin = { path = "../rdm-admin" }
+rdm-client = { path = "../rdm-client" }
+rdm-transport = { path = "../rdm-transport" }
+rdm-core = { path = "../rdm-core" }
+rdm-node = { path = "../rdm-node" }
+iroh = { workspace = true }
+iroh-gossip = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+yaml_serde = "0.10"
+libc = "0.2"
+
+[features]
+rig = []
+default = ["testkit-skew", "rig"]
+testkit-skew = ["rdm-transport/testkit-skew"]
+
+[dev-dependencies]
+ctor = "0.2"
+tracing-subscriber = { workspace = true }
+# node_rpc__scheduler_replay switches NAT traversal off on its endpoints (R-I3); `test-knobs` is a dev-dependency
+# feature only, and `dep-rules` refuses it anywhere else.
+iroh = { workspace = true, features = ["test-knobs"] }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+futures-lite = "2"
+bytes = "1"
+
+[[bin]]
+name = "rafka-node"
+path = "src/bin/rafka_node.rs"
+
+[[bin]]
+name = "rafka-rpc-node"
+path = "src/bin/rafka_rpc_node.rs"
+
+[[bin]]
+name = "rafka-rpc-probe"
+path = "src/bin/rafka_rpc_probe.rs"
+
+[[bin]]
+name = "faulted-node-admin"
+path = "src/bin/faulted_node_admin.rs"
+
+[[bin]]
+name = "rafka-scenario"
+path = "src/bin/rafka_scenario.rs"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(tokio_taskdump)"] }

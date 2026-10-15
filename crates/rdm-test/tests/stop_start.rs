@@ -1,0 +1,140 @@
+//! A stopped node parks and a started node rejoins as itself (node-stop.md, node-start.md).
+//!
+//! CONTRACT: `stop-node` is answered `Stopped` on its own call, after the node drained, cut its mesh
+//! connections and entered Leaving; the node gossips nothing for it, its process stays alive with its
+//! endpoint bound, and a probe answers `CurrentParked`. `start-node` is answered `Started` once the
+//! same birth (same node id, incarnation, endpoint key and port) rejoined through the admin that
+//! commanded it, and a probe answers `Current` again. What must NOT happen: a stop answered before the
+//! node parked, a digest of a parked node reaching the admin, a start that makes a new birth, or a start
+//! of a node that is not parked.
+//!
+//! Its own process: the cell holds process-wide state (the parking flag).
+
+use crate::common::admin_side_serving;
+use rdm_core::launch::Launch;
+use rdm_core::runtime::RuntimeFact;
+use rdm_core::{FabricId, IncarnationId, MemberStatus, MeshId, NodeId};
+use rdm_transport::{CallOptions, NodeTarget, ResolvedNode};
+use rdm_core::outcome::RpcOutcome;
+use rdm_core::status::{ConnectionsReceipt, NodeState, Status, StatusReply, StatusRequest};
+use rdm_test::node;
+use std::time::Duration;
+
+async fn call(admin: &crate::common::AdminSide, target: &NodeTarget, req: &StatusRequest) -> StatusReply {
+    let opts = CallOptions { budget: rdm_transport::Budget::Split { send: Duration::from_secs(5), reply: Duration::from_secs(30) }, ..CallOptions::default() };
+    match admin.observer.client.call::<Status>(target, req, &opts).await.0 {
+        RpcOutcome::Reply(r) => r.into_value(),
+        other => panic!("{} did not end in a reply: {other:?}", req.op()),
+    }
+}
+
+#[test]
+fn a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth() {
+    let cap = crate::common::capture("a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth");
+    cap.run(crate::common::Threads::Workers(4), async move {
+        if crate::own_process::delegated(module_path!(), "a_stopped_node_parks_and_a_started_node_rejoins_as_the_same_birth") {
+            return;
+        }
+        let fabric = FabricId::mint();
+        let admin = admin_side_serving("127.0.0.1".parse().unwrap(), &fabric, MemberStatus::ReadyForTraffic, |b| b).await;
+        let dir = std::env::temp_dir().join(format!("park-start-{}", NodeId::mint()));
+        std::fs::create_dir_all(&dir).unwrap();
+        RuntimeFact::of_this_process(&rdm_core::fixture_crockford60("cell")).unwrap().write_record(&dir).unwrap();
+        let key = node::load_or_mint_key(&dir).unwrap();
+        let launch = Launch {
+            fabric: "fabric1".into(),
+            fabric_id: fabric,
+            name: "mesh1.rpc.1".parse().unwrap(),
+            node_id: NodeId::mint(),
+            incarnation: IncarnationId::mint(),
+            supersedes: None,
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            listeners: vec![],
+            seeds: vec![admin.seed.clone()],
+            launcher: Some(admin.launcher.clone()),
+            data_dir: dir.clone(),
+            store_dir: dir.clone(),
+            mesh_id: Some(MeshId::parse(crate::common::TEST_MESH_ID).unwrap()),
+            mesh_issuer: None,
+            connections_delete_deadline: rdm_core::launch::DEFAULT_CONNECTIONS_DELETE_DEADLINE,
+        };
+        admin.deployed(&launch, &key);
+        let running = node::start(&launch, |b, _| b).await.expect("the node comes up");
+
+        let book = &admin.observer.membership.book;
+        let mut heard = book.heard_changes();
+        while book.get(launch.node_id.as_str()).is_none_or(|(d, _)| d.status != MemberStatus::ReadyForTraffic) {
+            heard.changed().await.unwrap();
+        }
+        let (born, _) = book.get(launch.node_id.as_str()).unwrap();
+        admin.observer.resolver.insert(ResolvedNode {
+            node_id: born.node.node_id.clone(),
+            name: born.node.name.clone(),
+            endpoint_id: born.node.endpoint_id.0.parse().unwrap(),
+            incarnation: born.node.incarnation.clone(),
+            transport_addr: born.node.transport_addr,
+        });
+        let target = NodeTarget::ExactNode(born.node.node_id.clone());
+        let (node_id, incarnation) = (born.node.node_id.clone(), born.node.incarnation.clone());
+        let probe = StatusRequest::ProbeNodeState { node_id: node_id.clone(), incarnation: incarnation.clone() };
+        let stop = StatusRequest::StopNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 1, operation: "node.stop:mesh1.rpc.1".into() };
+        let start = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 2, operation: "node.start:mesh1.rpc.1".into() };
+
+        // A live node refuses a start: only a parked one starts.
+        assert!(matches!(call(&admin, &target, &start).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "a start of a live node is refused naming its state");
+
+        // The stop is answered Stopped on its own call, with the drain's receipt.
+        let left = call(&admin, &target, &stop).await;
+        assert!(matches!(left, StatusReply::Stopped { receipt: ConnectionsReceipt::Established { .. } }), "{left:?}");
+        assert!(matches!(call(&admin, &target, &probe).await, StatusReply::CurrentParked { .. }), "a parked node answers CurrentParked");
+        assert_eq!(running.membership.neighbours(), 0, "the node left its gossip topic");
+        // Stopping a parked node is done: the same receipt again.
+        assert_eq!(call(&admin, &target, &stop).await, left);
+
+        // The node gossips nothing while parked: the admin hears no digest of it after the stop.
+        let seq_at_stop = book.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq).unwrap();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert_eq!(book.get(launch.node_id.as_str()).map(|(d, _)| d.digest_seq), Some(seq_at_stop), "no digest of a parked node reaches the admin");
+        assert!(node::stop_commanded(), "the process is parked");
+
+        // The start: the same birth rejoins through the admin that commands it.
+        admin.deployed(&launch, &key);
+        assert_eq!(call(&admin, &target, &start).await, StatusReply::Started);
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if matches!(call(&admin, &target, &probe).await, StatusReply::Current { state: NodeState::ReadyForTraffic, .. }) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the started node never reported ready");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // The admin holds the started birth again from the digests the node publishes once it is back
+        // on its topic (its Pending, then its beats), delivered by gossip; the node's own probe
+        // answer does not order them, and the join's digest is the birth's held one, not newer than
+        // what the admin holds. The cell awaits that fact, inside the same deadline.
+        let mut digests = book.digest_changes();
+        let after = loop {
+            if let Some((d, _)) = book.get(launch.node_id.as_str()).filter(|(d, _)| d.digest_seq > seq_at_stop) {
+                break d;
+            }
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), digests.changed())
+                .await
+                .expect("the admin never took a digest of the started birth newer than the one it held at the stop: its digest sequence did not continue across the cycle")
+                .unwrap();
+        };
+        assert_eq!((after.node.node_id.clone(), after.node.incarnation.clone(), after.node.endpoint_id.clone(), after.node.transport_addr), (born.node.node_id.clone(), born.node.incarnation.clone(), born.node.endpoint_id.clone(), born.node.transport_addr), "the same birth at the same endpoint and port");
+        assert!(after.digest_seq > seq_at_stop, "its digest sequence continued across the cycle");
+        assert!(!node::stop_commanded(), "the process is live again");
+        assert!(running.membership.neighbours() >= 1, "the node is a neighbour again");
+        // The same start reissued by a later attempt of its Build (a successor executor whose
+        // predecessor was lost after the node started) settles as AlreadyApplied: the command is
+        // keyed by its build and operation, not its attempt (node-rpc-envelope.md: "Reissuing a
+        // naturally idempotent uncertain step can settle it"). Another command's start of this live
+        // node is still refused naming its state.
+        let reissued = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "93q3dgshcb1f".into(), attempt: 3, operation: "node.start:mesh1.rpc.1".into() };
+        assert_eq!(call(&admin, &target, &reissued).await, StatusReply::AlreadyApplied, "the reissued start settles as already applied");
+        let other = StatusRequest::StartNode { node_id: node_id.clone(), incarnation: incarnation.clone(), build_id: "7kq2m9vx4pzr".into(), attempt: 1, operation: "node.start:mesh1.rpc.1".into() };
+        assert!(matches!(call(&admin, &target, &other).await, StatusReply::RejectedInvalidNodeTransition { current: NodeState::ReadyForTraffic }), "another Build's start of the live node is refused naming its state");
+        let _ = std::fs::remove_dir_all(&dir);
+    })
+}

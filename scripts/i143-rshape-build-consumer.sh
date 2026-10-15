@@ -73,8 +73,8 @@ python3 -I - "$OUTPUT/metadata.json" "$CANDIDATE" "$RDM_URL" <<'PY' || exit 1
 import json, sys
 meta, cand, url = sys.argv[1:4]
 m = json.load(open(meta))
-APPROVED = {"rdm-node", "rdm-admin", "rdm-transport", "rafka-node-rpc-testkit",
-            "rdm-core", "rdm-client", "rafka-chaos"}
+APPROVED = {"rdm-node", "rdm-admin", "rdm-transport", "rdm-test",
+            "rdm-core", "rdm-client"}
 bad = []
 rdm = []
 for p in m["packages"]:
@@ -94,7 +94,7 @@ for p in m["packages"]:
             rdm.append(p["name"])
         elif base not in ("https://github.com/drlukeangel/iroh-gossip", "https://github.com/drlukeangel/iroh", "https://github.com/drlukeangel/netwatch", "https://github.com/drlukeangel/noq"):
             bad.append(f"{p['name']} comes from the unapproved git source {src}")
-for need in ("rdm-node", "rdm-admin", "rafka-node-rpc-testkit"):
+for need in ("rdm-node", "rdm-admin", "rdm-test"):
     if need not in rdm:
         bad.append(f"{need} is not imported from the candidate")
 if bad:
